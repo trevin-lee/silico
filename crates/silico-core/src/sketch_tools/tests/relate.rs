@@ -847,6 +847,65 @@ fn f7_tangent_at_an_end_held_on_is_a_tangent_on_replacing_the_on() {
 }
 
 #[test]
+fn tangent_again_where_a_tangent_on_holds_the_end_adds_nothing_and_replaces_nothing() {
+    // f7's flow, then Tangent again on the same selection, as the selection stays. The
+    // tangent_on kt000101 now holds pe000013 on ce000001, so it's the one place (C3), and the
+    // tangent_on the click would write, same as drawn, is kt000101 itself: left out (C6).
+    let s = s5();
+    let after = taken(&s, &edit(&s, Tangent, &["ne000008", "ce000001"]));
+    // The message names the two as picked.
+    for (picks, named) in [
+        (
+            ["ne000008", "ce000001"],
+            "line ne000008 and circle ce000001",
+        ),
+        (
+            ["ce000001", "ne000008"],
+            "circle ce000001 and line ne000008",
+        ),
+    ] {
+        assert_eq!(
+            click(&after, Tangent, &picks).unwrap(),
+            Related {
+                edit: None,
+                already: vec![id("kt000101")],
+                message: Some(format!("{named} are already tangent: nothing was added")),
+            },
+            "{picks:?}"
+        );
+    }
+    // A tangent_on held the other way round (opposite, where the drawing reads same): the
+    // click's isn't its repeat, and is added, to conflict, by a plain add: with no `on` there,
+    // nothing is removed (C5).
+    let mut opposite = after.clone();
+    if let Some(Form::TangentOn { direction, .. }) = opposite
+        .constraints
+        .iter_mut()
+        .find(|c| c.id == id("kt000101"))
+        .map(|c| &mut c.form)
+    {
+        *direction = Direction::Opposite;
+    }
+    let made = edit(&opposite, Tangent, &["ne000008", "ce000001"]);
+    assert_eq!(
+        made,
+        RelateEdit::Add(Members {
+            constraints: vec![kt(
+                "kt000102",
+                Form::TangentOn {
+                    a: el("ne000008"),
+                    at: el("pe000013"),
+                    b: el("ce000001"),
+                    direction: Direction::Same,
+                },
+            )],
+            ..Members::default()
+        })
+    );
+    taken(&opposite, &made);
+}
+
+#[test]
 fn a_tangent_on_whose_curve_leaves_against_the_circle_is_opposite() {
     // ne000008 drawn the other way, from pe000013 (20, 15) to pe000014 (0, 15): leaving
     // pe000013, its start, along (−20, 0) still; the circle's own direction there (−5, 0):

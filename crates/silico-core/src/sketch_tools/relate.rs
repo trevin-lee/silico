@@ -169,8 +169,9 @@ enum Plan {
     Merge(Vec<ElementId>),
 }
 
-/// A place two curves can be tangent at (C3): an end they share, or an end of `curve` that
-/// the `on`s `ons` hold on `on`.
+/// A place two curves can be tangent at (C3): an end they share, or an end of `curve` held
+/// on `on` by the `on`s `ons`, or by a `tangent_on`, which holds its end on its `b` as an `on`
+/// does (`ons` empty where only a `tangent_on` holds it: then there's no `on` to replace).
 enum Place<'p> {
     Shared,
     Held {
@@ -196,13 +197,14 @@ enum Place<'p> {
 ///   two or more points, a merge, the first surviving; a point and the origin, #278's A pair,
 ///   whichever was picked first. The origin with two or more points is refused.
 /// - **Tangent:** two curves, and a point if it says which place. The places they can be
-///   tangent at are the ends they share and the ends of one that an `on` holds on the other:
+///   tangent at are the ends they share and the ends of one that an `on` or a `tangent_on`
+///   holds on the other (so a second click where a `tangent_on` holds is C6's repeat):
 ///   none, an edge `tangent`, its `side` the side of the line the round's centre is drawn on
 ///   (an axis faces +x or +y), or for two rounds `outside` where their centres are at least
 ///   the larger radius apart, else `inside` (FreeCAD's rule); one, or the one picked, a
 ///   `tangent_at` there, `same` where `a` arriving and `b` leaving have a dot product of at
 ///   least 0, or a `tangent_on` of the curve that ends there, `same` by trim's rule, which
-///   replaces the `on`.
+///   replaces an `on` holding that end, where one does (C5).
 /// - **Equal:** two or more lines, circles, or arcs, each with the first picked (lines with
 ///   rounds are the gate's). **Parallel:** two or more lines, likewise. **Perpendicular:**
 ///   two lines.
@@ -706,7 +708,7 @@ impl<'p> Picked<'p> {
     }
 
     /// The places `a` and `b` can be tangent at, by point (C3): each end they share, then
-    /// each end of one that an `on` holds on the other.
+    /// each end of one that an `on` or a `tangent_on` holds on the other.
     fn places(&self, a: &'p Reference, b: &'p Reference) -> BTreeMap<&'p ElementId, Place<'p>> {
         let (ends_a, ends_b) = (ends(self.read, a), ends(self.read, b));
         let mut places = BTreeMap::new();
@@ -717,8 +719,9 @@ impl<'p> Picked<'p> {
         }
         for (curve, on, curve_ends) in [(a, b, &ends_a), (b, a, &ends_b)] {
             for end in curve_ends {
-                let held = ons(self.read, &Reference::Element((*end).clone()), on);
-                if !held.is_empty() {
+                let end_ref = Reference::Element((*end).clone());
+                let held = ons(self.read, &end_ref, on);
+                if !held.is_empty() || tangent_on_holds(self.read, &end_ref, on) {
                     places.entry(*end).or_insert(Place::Held {
                         curve,
                         on,
@@ -798,6 +801,14 @@ fn ons(read: &Sketch, point: &Reference, curve: &Reference) -> Vec<ElementId> {
         })
         .map(|c| c.id.clone())
         .collect()
+}
+
+/// Whether a `tangent_on` of the sketch holds `point` on `curve`: its `at` on its `b`, as an
+/// `on` holds a point (the gate's tangent rule reads it so, #258).
+fn tangent_on_holds(read: &Sketch, point: &Reference, curve: &Reference) -> bool {
+    read.constraints.iter().any(|SketchConstraint { form, .. }| {
+        matches!(form, Form::TangentOn { at, b, .. } if at == point && b == curve)
+    })
 }
 
 /// A line's or an arc's two ends; none for anything else.
