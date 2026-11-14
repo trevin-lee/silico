@@ -435,7 +435,7 @@ pub struct SavedSelection {
 /// How a feature is selected: as itself (its timeline item, a sketch's row: it tints the
 /// faces it made), or as its body (its body's row in the browser: the body's every face).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum As {
+pub enum SelectedAs {
     Itself,
     Body,
 }
@@ -732,13 +732,8 @@ impl Selection {
     /// Cancel's undo publishes the model they were found in again.
     pub fn restore(&mut self, saved: SavedSelection) {
         let SavedSelection { items, wholes } = saved;
-        if items != self.items {
-            self.set(items);
-        }
         // How each feature was selected, as itself or as its body, put back with it.
-        self.wholes_are(wholes);
-        self.said = None;
-        self.click = None;
+        self.select_alone(items, wholes);
         self.again = false;
         self.held = Some(Held::Unsent);
     }
@@ -870,8 +865,10 @@ impl Selection {
         self.select_alone(vec![Item::Feature(id)], BTreeSet::new());
     }
 
-    /// The features `ids` selected, in order, each as itself, and nothing else: a test's
-    /// seam for a selection of several (the app's clicks select one at a time).
+    /// For the crate's tests only: the features `ids` selected, in order, each as itself, and
+    /// nothing else, a test hook for a selection of several (the app's clicks select one at
+    /// a time).
+    #[doc(hidden)]
     pub fn select_features(&mut self, ids: Vec<FeatureId>) {
         self.select_alone(
             ids.into_iter().map(Item::Feature).collect(),
@@ -899,10 +896,19 @@ impl Selection {
         self.click = None;
     }
 
-    /// Whether feature `id` alone is selected `as_` its timeline item ([`As::Itself`]) or its
-    /// body's row ([`As::Body`]) selects it.
-    pub fn row_selected(&self, id: &FeatureId, as_: As) -> bool {
-        self.feature() == Some(id) && self.wholes.contains(id) == (as_ == As::Body)
+    /// Feature `id` selected alone, `how`: as itself ([`select_feature`](Self::select_feature))
+    /// or as its body ([`select_bodies`](Self::select_bodies)).
+    pub fn select_as(&mut self, id: FeatureId, how: SelectedAs) {
+        match how {
+            SelectedAs::Itself => self.select_feature(id),
+            SelectedAs::Body => self.select_bodies(vec![id]),
+        }
+    }
+
+    /// Whether feature `id` alone is selected `how`: as itself (its timeline item, a sketch's
+    /// row) or as its body (its body's row).
+    pub fn selected_as(&self, id: &FeatureId, how: SelectedAs) -> bool {
+        self.feature() == Some(id) && self.wholes.contains(id) == (how == SelectedAs::Body)
     }
 
     /// The features selected as bodies, tinted whole, are `wholes`: worked out again if that
@@ -3493,18 +3499,18 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_feature_is_selected_as_its_item_or_its_bodys_row_selects_it() {
+    fn a_feature_is_selected_as_itself_or_as_its_body() {
         let mut selection = Selection::default();
         selection.select_feature(fid("aaaaaaaa"));
-        assert!(selection.row_selected(&fid("aaaaaaaa"), As::Itself));
-        assert!(!selection.row_selected(&fid("aaaaaaaa"), As::Body));
+        assert!(selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Itself));
+        assert!(!selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Body));
         selection.select_bodies(vec![fid("aaaaaaaa")]);
-        assert!(selection.row_selected(&fid("aaaaaaaa"), As::Body));
-        assert!(!selection.row_selected(&fid("aaaaaaaa"), As::Itself));
+        assert!(selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Body));
+        assert!(!selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Itself));
         // Another, or several: neither.
-        assert!(!selection.row_selected(&fid("bbbbbbbb"), As::Body));
+        assert!(!selection.selected_as(&fid("bbbbbbbb"), SelectedAs::Body));
         selection.select_bodies(vec![fid("aaaaaaaa"), fid("bbbbbbbb")]);
-        assert!(!selection.row_selected(&fid("aaaaaaaa"), As::Body));
+        assert!(!selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Body));
     }
 
     #[test]

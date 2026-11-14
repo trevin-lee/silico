@@ -712,9 +712,8 @@ fn items(
         }
         response.context_menu(|ui| {
             // Selected as it's opened, as its left click selects it (the prototype's
-            // `contextmenu` calls `selectFeature`): as itself, unless it's so already or an
-            // open dialog's boxes hold the selection (`Tab::menu_selects`, the browser's rule).
-            if tab.menu_selects(&entry.id, crate::selection::As::Itself) {
+            // `contextmenu` calls `selectFeature`), by `Tab::menu_selects`.
+            if tab.menu_selects(&entry.id, crate::selection::SelectedAs::Itself) {
                 asked.selected = Some(entry.id.clone());
             }
             if let Some(act) = feature_menu::menu(ui, tab, entry, feature_menu::Place::Timeline) {

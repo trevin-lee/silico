@@ -22,7 +22,7 @@ use crate::dialog::Action;
 use crate::icons::{self, Icon, IconSize};
 use crate::measures::Answers;
 use crate::properties;
-use crate::selection::{As, Picked};
+use crate::selection::{Picked, SelectedAs};
 use crate::shortcuts::Command;
 use crate::tab::{Hideable, Tab};
 use crate::theme;
@@ -274,8 +274,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
         for what in asked.toggled {
             tab.toggle_shown(what);
         }
-        if let Some(id) = asked.selected {
-            row_clicked(tab, id, Click::Left);
+        if let Some((id, how)) = asked.selected {
+            row_clicked(tab, id, how, Click::Left);
         }
         if let Some(id) = asked.deselected {
             if tab.pick_body(&id) {
@@ -285,9 +285,9 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 tab.selection_mut().deselect_feature(&id);
             }
         }
-        if let Some(id) = asked.menu_selected {
-            // Selected as its menu opens, by the timeline's rule (`Tab::menu_selects`).
-            row_clicked(tab, id, Click::Menu);
+        if let Some((id, how)) = asked.menu_selected {
+            // Selected as its menu opens, by both panes' rule (`Tab::menu_selects`).
+            row_clicked(tab, id, how, Click::Menu);
         }
         if let Some(act) = asked.act {
             *self.next_frame |= crate::feature_menu::act(tab, self.sessions, act);
@@ -1209,11 +1209,13 @@ fn units() -> String {
 #[derive(Default)]
 struct Asked {
     toggled: Vec<Hideable>,
-    selected: Option<FeatureId>,
+    /// A row clicked: its feature, and how its row selects it.
+    selected: Option<(FeatureId, SelectedAs)>,
     /// A selected row Ctrl-clicked (Cmd on macOS): its feature taken out of the selection.
     deselected: Option<FeatureId>,
-    /// A row right-clicked, selected as its menu opens.
-    menu_selected: Option<FeatureId>,
+    /// A row right-clicked, selected as its menu opens: its feature, and how its row selects
+    /// it.
+    menu_selected: Option<(FeatureId, SelectedAs)>,
     edit: Option<FeatureId>,
     root: bool,
     act: Option<crate::feature_menu::Act>,
@@ -1267,11 +1269,12 @@ enum Click {
 /// The browser's row `id` clicked, or right-clicked as its menu opens ([`Click::Menu`]):
 /// with a left click, a dialog's box that takes a body takes it, or says why it doesn't
 /// (section 9: the selection is then the bodies the boxes hold), and a sketch's row fills a
-/// box that takes a sketch, once (never a menu's, which a click alone makes); then the row
-/// selected alone, its body whole for a body's row (the prototype's `bodyRow`, `maker:
-/// '*'`), the feature itself for a sketch's, whatever was selected before. Either way the
-/// browser is where the selection was made (F2's field opens over the row).
-fn row_clicked(tab: &mut Tab, id: FeatureId, click: Click) {
+/// box that takes a sketch, once (never a menu's, which a click alone makes); then the row's
+/// feature selected alone `how` its row selects it, its body whole for a body's row (the
+/// prototype's `bodyRow`, `maker: '*'`), itself for a sketch's, whatever was selected
+/// before. Either way the browser is where the selection was made (F2's field opens over the
+/// row).
+fn row_clicked(tab: &mut Tab, id: FeatureId, how: SelectedAs, click: Click) {
     tab.selected_in = crate::feature_menu::Place::Browser;
     if click == Click::Left {
         if tab.pick_body(&id) {
@@ -1281,11 +1284,7 @@ fn row_clicked(tab: &mut Tab, id: FeatureId, click: Click) {
             tab.pick(&id);
         }
     }
-    if tab.browser.has_body(&id) {
-        tab.selection_mut().select_bodies(vec![id]);
-    } else {
-        tab.selection_mut().select_feature(id);
-    }
+    tab.selection_mut().select_as(id, how);
 }
 
 /// The browser's tree, for `tab`: what its rows ask is put in `asked`, and a feature's name
@@ -1440,6 +1439,13 @@ fn tree(
                         clicks: false,
                     },
                 );
+                // How its row selects its feature, once for the click and the menu: a body's
+                // whole, a sketch as itself.
+                let how = if sketches {
+                    SelectedAs::Itself
+                } else {
+                    SelectedAs::Body
+                };
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
                 } else if answer.row.clicked() {
@@ -1448,21 +1454,15 @@ fn tree(
                     {
                         asked.deselected = Some(each.id.clone());
                     } else {
-                        asked.selected = Some(each.id.clone());
+                        asked.selected = Some((each.id.clone(), how));
                     }
                 }
                 if let Some(entry) = tab.entry(each.id.as_str()) {
                     answer.row.context_menu(|ui| {
-                        // Selected as it's opened, as the prototype's `contextmenu` selects it:
-                        // as its row selects it, its body whole for a body's, by the one rule
-                        // both panes' menus take (`Tab::menu_selects`).
-                        let as_ = if tab.browser.has_body(&each.id) {
-                            As::Body
-                        } else {
-                            As::Itself
-                        };
-                        if tab.menu_selects(&each.id, as_) {
-                            asked.menu_selected = Some(each.id.clone());
+                        // Selected as it's opened, as the prototype's `contextmenu` selects it,
+                        // by `Tab::menu_selects`.
+                        if tab.menu_selects(&each.id, how) {
+                            asked.menu_selected = Some((each.id.clone(), how));
                         }
                         let place = crate::feature_menu::Place::Browser;
                         if let Some(act) = crate::feature_menu::menu(ui, tab, entry, place) {

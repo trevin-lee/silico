@@ -1217,14 +1217,6 @@ impl Dialog {
         self.body_box().is_some()
     }
 
-    /// Whether it has boxes of one body (a boolean's): the selection is the bodies they hold
-    /// while it's open (section 9).
-    pub fn holds_bodies(&self) -> bool {
-        self.inputs
-            .iter()
-            .any(|input| matches!(input.value, Value::Body(_)))
-    }
-
     /// The selection box at `at` made the active one (a click on it, the prototype's
     /// `activateBox`), if it's one.
     pub fn activate(&mut self, at: usize) {

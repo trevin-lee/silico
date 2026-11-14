@@ -39,7 +39,7 @@ use ui::{
     AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, FakeBrowser, In, TRIAD_DOT, added, advance,
     answer_question, anywhere, begin_sketch_on, body_of, boxed, button_event, choose, chosen,
     click_at, click_canvas, close_window, create, create_sketch, dialog, dialog_open, drag,
-    every_face, everything, f2_typed, field, hand_clock, hover_item, in_status_bar,
+    every_face, everything, f2_typed, faces_made_by, field, hand_clock, hover_item, in_status_bar,
     lavapipe_render_state, leave_sketch, leave_sketch_unsettled, looks_from, meshes_settled,
     modify, modify_field, name_field, new_part, ok_enabled, on_lavapipe, open_export, plain_read,
     pointer_away, press, prompt, redo_by_key, rename_field, repaint_delay, retype, save_as_of,
@@ -18742,16 +18742,8 @@ fn hovering_a_timeline_item_tints_the_faces_named_as_its_features_not_its_bodys(
                 .collect(),
         )
     };
-    let named = |prefix: &str| -> Vec<(u32, silico_app::renderer::Element)> {
-        names
-            .iter()
-            .zip(1u32..)
-            .filter(|(name, _)| name.starts_with(prefix))
-            .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
-            .collect()
-    };
-    let plates = named("b0000001.");
-    let pads = named("r0000002.");
+    let plates = faces_made_by(&h, number, "b0000001");
+    let pads = faces_made_by(&h, number, "r0000002");
     assert!(!plates.is_empty() && !pads.is_empty(), "{names:?}");
     assert!(plates.len() + pads.len() < names.len(), "{names:?}");
     for (name, want) in [("Plate", &plates), ("Raised", &pads)] {
@@ -18909,12 +18901,7 @@ fn a_timeline_item_selected_tints_its_own_faces_as_hovered_and_its_body_row_the_
                 .collect(),
         )
     };
-    let own: Vec<_> = names
-        .iter()
-        .zip(1u32..)
-        .filter(|(name, _)| name.starts_with("q0000003."))
-        .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
-        .collect();
+    let own = faces_made_by(&h, number, "q0000003");
     let every = every_face(&h, number);
     assert_eq!(every.len(), names.len());
     assert!(!own.is_empty() && own.len() < every.len(), "{names:?}");
@@ -18997,14 +18984,7 @@ fn a_body_rows_right_click_selects_the_body_whole_whatever_was_selected_before()
     h.hover_at(away);
     step(&mut h);
     step(&mut h);
-    let number = body_of(&h, "q0000003");
-    let own: Vec<_> = view(&h).bodies()[&number]
-        .faces
-        .iter()
-        .zip(1u32..)
-        .filter(|(face, _)| face.name.to_string().starts_with("q0000003."))
-        .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
-        .collect();
+    let own = faces_made_by(&h, body_of(&h, "q0000003"), "q0000003");
     assert!(!own.is_empty() && own.len() < every.len());
     assert_eq!(tinted(&record), own, "its own faces first");
     ui::pause(&mut h);
@@ -19051,7 +19031,7 @@ fn a_timeline_items_right_click_after_its_body_row_selects_it_as_itself_as_its_l
     let tab = &h.state().tabs()[0];
     assert!(
         tab.selection()
-            .row_selected(&cut, silico_app::selection::As::Itself)
+            .selected_as(&cut, silico_app::selection::SelectedAs::Itself)
     );
     assert_eq!(tab.selected_in, silico_app::feature_menu::Place::Timeline);
     h.key_press(eframe::egui::Key::Escape);
@@ -19061,6 +19041,76 @@ fn a_timeline_items_right_click_after_its_body_row_selects_it_as_itself_as_its_l
         tinted(&record),
         own,
         "its own faces, as its left click selects"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_on_a_feature_selected_so_already_leaves_where_it_was_selected() {
+    // `Tab::menu_selects`: a right-click selects only what isn't selected so already. The
+    // triangle sketch selected by its timeline item, then its browser row right-clicked: a
+    // sketch's row selects it as itself, as it is, so it stays selected from the timeline.
+    // The other way, selected by its browser row, then its timeline item right-clicked:
+    // selected from the browser still.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Triangle"));
+    let tab = |h: &AppHarness| -> (silico_app::feature_menu::Place, Vec<String>) {
+        let tab = &h.state().tabs()[0];
+        let ids = tab
+            .selection()
+            .items()
+            .iter()
+            .filter_map(|item| match item {
+                silico_app::selection::Item::Feature(id) => Some(id.as_str().to_owned()),
+                silico_app::selection::Item::Element(_) => None,
+            })
+            .collect();
+        (tab.selected_in, ids)
+    };
+    select(&mut h, "Triangle");
+    assert_eq!(
+        tab(&h),
+        (
+            silico_app::feature_menu::Place::Timeline,
+            vec!["s0000001".to_owned()]
+        )
+    );
+    ui::pause(&mut h);
+    menu_on(&mut h, "Browser", "Triangle");
+    step(&mut h);
+    assert_eq!(
+        tab(&h),
+        (
+            silico_app::feature_menu::Place::Timeline,
+            vec!["s0000001".to_owned()]
+        ),
+        "its browser row right-clicked"
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    ui::pause(&mut h);
+    browser(&h).get_by_label("Triangle").click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        tab(&h),
+        (
+            silico_app::feature_menu::Place::Browser,
+            vec!["s0000001".to_owned()]
+        )
+    );
+    ui::pause(&mut h);
+    menu_on(&mut h, "Timeline", "Triangle");
+    step(&mut h);
+    assert_eq!(
+        tab(&h),
+        (
+            silico_app::feature_menu::Place::Browser,
+            vec!["s0000001".to_owned()]
+        ),
+        "its timeline item right-clicked"
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -19120,6 +19170,21 @@ fn with_a_union_open_a_right_click_on_a_row_or_an_item_leaves_its_boxes_and_the_
         assert!(dialog_open(&h), "{pane}: the dialog closed");
         ui::pause(&mut h);
     }
+    // Its target, the plate, right-clicked in the timeline: still selected as its body, the
+    // box's, not as itself.
+    menu_on(&mut h, "Timeline", "Plate");
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let plate = silico_core::document::FeatureId::new("b0000001").unwrap();
+    assert!(
+        h.state().tabs()[0]
+            .selection()
+            .selected_as(&plate, silico_app::selection::SelectedAs::Body)
+    );
+    assert_eq!(boxed_bodies(&h), held(&[Some("b0000001"), None]));
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
     assert_eq!(never_waits::waits(), 0);
 }
 

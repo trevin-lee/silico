@@ -1838,17 +1838,17 @@ impl Tab {
         self.selection.light(&mut self.view);
     }
 
-    /// Whether a right-click on feature `id`'s timeline item or browser row selects it, `as_`
-    /// that item or row selects it (the prototype's `contextmenu` calls `selectFeature` for
-    /// both): unless it's selected so already, or an open dialog's boxes of one body hold the
-    /// selection (section 9: the selection is the bodies they hold, so the menu opens over it
-    /// as it is, as a right-click never fills a box).
-    pub(crate) fn menu_selects(&self, id: &FeatureId, as_: crate::selection::As) -> bool {
+    /// Whether a right-click on feature `id`'s timeline item or browser row selects it,
+    /// `how` that item or row selects it (the prototype's `contextmenu` calls `selectFeature`
+    /// for both): unless it's selected so already, or a boolean's dialog is open (section 9:
+    /// the selection is the bodies its boxes hold, so the menu opens over it as it is, as a
+    /// right-click never fills a box). Both panes' menus take this one rule.
+    pub(crate) fn menu_selects(&self, id: &FeatureId, how: crate::selection::SelectedAs) -> bool {
         let boxes_hold = self
             .dialog
             .as_ref()
-            .is_some_and(crate::dialog::Dialog::holds_bodies);
-        !boxes_hold && !self.selection.row_selected(id, as_)
+            .is_some_and(|dialog| dialog.kind.combines());
+        !boxes_hold && !self.selection.selected_as(id, how)
     }
 
     /// The tab not shown: its canvas's hover let go, the selection's and the view's (the
@@ -3266,7 +3266,7 @@ impl Tab {
                                     self.before_dialog = Some(self.selection.saved());
                                     // A boolean's boxes hold its bodies: selected, so the
                                     // canvas lights what of them it shows.
-                                    if dialog.takes_bodies() {
+                                    if dialog.kind.combines() {
                                         self.selection.select_bodies(dialog.bodies());
                                     } else {
                                         self.selection.clear();
@@ -5433,7 +5433,7 @@ impl Tab {
         remembered.apply(&mut dialog);
         if let Some(kinds) = dialog.takes() {
             self.before_dialog = Some(self.selection.saved());
-            if dialog.takes_bodies() {
+            if dialog.kind.combines() {
                 self.take_bodies(&mut dialog, kinds);
             } else {
                 self.take_selection(&mut dialog, kinds);
@@ -6669,7 +6669,7 @@ impl Tab {
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
-        if !dialog.takes_bodies() {
+        if !dialog.kind.combines() {
             return false;
         }
         let is_body = self.browser.has_body(id);

@@ -2583,13 +2583,7 @@ fn a_hover_left_in_a_tab_tints_nothing_in_another_or_in_it_when_shown_again() {
     );
     assert!(tinted(&record).is_empty(), "{:?}", tinted(&record));
     hover_item(&mut h, "Block");
-    let blocks: Vec<_> = view(&h).bodies()[&1]
-        .faces
-        .iter()
-        .zip(1u32..)
-        .filter(|(face, _)| face.name.feature().as_str() == "k7f2qx3m")
-        .map(|(_, n)| (1, silico_app::renderer::Element::Face(n)))
-        .collect();
+    let blocks = ui::faces_made_by(&h, 1, "k7f2qx3m");
     assert!(!blocks.is_empty());
     assert_eq!(tinted(&record), blocks);
     let from = record.lock().unwrap().frames.len();

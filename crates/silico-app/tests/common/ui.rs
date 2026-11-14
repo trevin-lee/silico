@@ -508,6 +508,22 @@ pub fn every_face<P: AppKernel>(
         .collect()
 }
 
+/// The faces of body `number` that feature `feature` made, as each face's name says
+/// (`Name::feature`), in order.
+pub fn faces_made_by<P: AppKernel>(
+    h: &AppUi<P>,
+    number: u32,
+    feature: &str,
+) -> Vec<(u32, silico_app::renderer::Element)> {
+    view(h).bodies()[&number]
+        .faces
+        .iter()
+        .zip(1u32..)
+        .filter(|(face, _)| face.name.feature().as_str() == feature)
+        .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
+        .collect()
+}
+
 /// The body whose feature is `id`, by its number in the view's table.
 pub fn body_of<P: AppKernel>(h: &AppUi<P>, id: &str) -> u32 {
     view(h)
