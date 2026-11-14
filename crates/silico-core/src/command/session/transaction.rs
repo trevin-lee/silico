@@ -17,7 +17,7 @@ use super::registry::Unclaimed;
 use super::registry::claim;
 use super::{
     Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
-    RolledBack, Session, SessionId, Transaction, shown_path,
+    RolledBack, Session, SessionId, Transaction, digest, shown_path,
 };
 use crate::command::edit::Candidate;
 use crate::command::wire::Named;
@@ -1534,10 +1534,18 @@ impl<C: Kernel + 'static> Session<C> {
     /// next save says where its old text is), until it holds what the session last read or
     /// wrote again: the old text put back, which clears the mark.
     ///
+    /// Given `settled`, the digest of the bytes the disk watch found settled (its own reload,
+    /// A3, never a command's), a file found outside a transaction as neither those bytes nor
+    /// what the session holds changed again after the watch found it: perhaps a write begun
+    /// since, so perhaps part of one. It's found as inside a transaction (claimed as there,
+    /// so only a claim refuses it), never reloaded ([`Reload::Unsettled`]); the watch reads
+    /// it again, and its reload is queued once it has settled again (#479).
+    ///
     /// An untitled session has no file to read: what it holds is as held, always.
     pub(super) fn reload(
         &self,
         rereads: Rereads,
+        settled: Option<&[u8; 32]>,
         claim: &dyn Fn(Claim<'_>) -> Result<(), Unclaimed>,
     ) -> Result<Reload, Problems> {
         let (own, bytes, transaction) = {
@@ -1593,7 +1601,14 @@ impl<C: Kernel + 'static> Session<C> {
             }
             return Ok(Reload::AsHeld);
         }
-        if transaction {
+        // The disk watch's own reload, for the bytes it found settled: a file found as neither
+        // those nor what the session holds changed again since, perhaps mid-write, and is
+        // found as inside a transaction, never loaded (#479).
+        let unsettled = settled.is_some_and(|settled| match &found {
+            Ok((_, now)) => *now != *bytes && digest(now) != *settled,
+            Err(_) => true,
+        });
+        if transaction || unsettled {
             let outside = match found {
                 Ok((opened, now)) if now == *bytes => {
                     claimed(opened)?;
@@ -1610,8 +1625,12 @@ impl<C: Kernel + 'static> Session<C> {
                 Err(error) if gone() => Outside::Gone(of_file(&path, &error)),
                 Err(error) => Outside::Unreadable(of_file(&path, &error)),
             };
-            tracing::info!(session = %self.id, "the file changed outside the session, inside a transaction: not reloaded");
-            return Ok(Reload::Outside(outside));
+            if transaction {
+                tracing::info!(session = %self.id, "the file changed outside the session, inside a transaction: not reloaded");
+                return Ok(Reload::Outside(outside));
+            }
+            tracing::info!(session = %self.id, "the file changed again before its reload read it: not reloaded until it settles");
+            return Ok(Reload::Unsettled(outside));
         }
         let (opened, now) = found.map_err(|error| {
             let suggestion = if gone() {
@@ -1992,6 +2011,12 @@ pub(super) enum Reload {
     /// ([`Rereads::Always`]): found not as the session last read or wrote it, and not
     /// reloaded, for the commit to refuse if it would write, or the read to give or refuse.
     Outside(Outside),
+    /// Outside a transaction, for the disk watch's own reload only (given the bytes it found
+    /// settled): found as neither those bytes nor what the session last read or wrote, and
+    /// so changed again since the watch found it, perhaps mid-write; found as
+    /// [`Outside`](Reload::Outside) finds it, and not reloaded until the watch finds it
+    /// settled again (#479).
+    Unsettled(Outside),
 }
 
 impl Reload {
@@ -2004,7 +2029,15 @@ impl Reload {
     /// wrote it.
     pub(super) fn outside(self) -> Option<Outside> {
         match self {
-            Reload::Outside(outside) => Some(outside),
+            Reload::Outside(outside) | Reload::Unsettled(outside) => Some(outside),
+            Reload::AsHeld | Reload::Reloaded => None,
+        }
+    }
+
+    /// [`outside`](Self::outside), borrowed.
+    pub(super) fn as_outside(&self) -> Option<&Outside> {
+        match self {
+            Reload::Outside(outside) | Reload::Unsettled(outside) => Some(outside),
             Reload::AsHeld | Reload::Reloaded => None,
         }
     }

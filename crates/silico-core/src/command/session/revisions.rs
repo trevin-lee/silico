@@ -316,26 +316,26 @@ impl<C: Kernel + 'static> Session<C> {
             ));
         };
         let shown = shown_path(Path::new(&file.path));
-        match reload {
-            Reload::Outside(Outside::Changed(bytes)) => Ok(disk(Arc::clone(bytes))),
-            Reload::Outside(Outside::TooLong) => Err(too_long(Path::new(&file.path))
+        match reload.as_outside() {
+            Some(Outside::Changed(bytes)) => Ok(disk(Arc::clone(bytes))),
+            Some(Outside::TooLong) => Err(too_long(Path::new(&file.path))
                 .with_parameter(parameter)
                 .with_cause(DISK_READ)),
-            Reload::Outside(Outside::Gone(error)) => Err(error
+            Some(Outside::Gone(error)) => Err(error
                 .clone()
                 .with_parameter(parameter)
                 .with_cause(DISK_READ)
                 .with_suggestion(format!(
                     "put the file back at {shown}, then read \"disk\" again"
                 ))),
-            Reload::Outside(Outside::Unreadable(error)) => Err(error
+            Some(Outside::Unreadable(error)) => Err(error
                 .clone()
                 .with_parameter(parameter)
                 .with_cause(DISK_READ)
                 .with_suggestion(format!(
                     "make the file at {shown} a regular file this user may read, then read \"disk\" again"
                 ))),
-            Reload::AsHeld | Reload::Reloaded => match &file.part_written {
+            None => match &file.part_written {
                 // The file isn't what the session holds, and the session knows it: never its
                 // held bytes for it.
                 Some(old) => Err(part_written(&file.path, old).with_parameter(parameter)),

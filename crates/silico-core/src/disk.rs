@@ -33,10 +33,17 @@
 //! told of it ([`DiskWatch::held`], [`Saving::saved`]) reads as unchanged until the file
 //! changes again; the session's next command, which reads the file itself, still finds it.
 //!
-//! It reloads nothing: what to do with a finding is the session's (A3), told each time a
-//! comparison finds the file changed ([`DiskWatch::when_changed`]), not only when the finding
-//! changes, so a reload the session couldn't make at one comparison is asked again at the
-//! next.
+//! It reloads nothing: what to do with a finding is the session's (A3), told of a change only
+//! once it has settled ([`DiskWatch::when_changed`]): once two comparisons in a row, against
+//! the same bytes of the session's, have found the file changed to the same bytes. A file
+//! another program writes in place is truncated, then written, perhaps in parts: read
+//! between them, it's empty, or part of what's written, or the old text with the new over
+//! its start, any of which may even read as a document. Read at one comparison, it's other
+//! bytes at the next, so it's never told, however it reads (#479). Its finding is `changed`
+//! from the first comparison all the same, as the file is. A file that stays as it was
+//! written, a broken one too, is told at the second comparison, an interval later. Told each
+//! time a comparison finds it settled, not only when the finding changes, so a reload the
+//! session couldn't make at one comparison is asked again at the next.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -98,11 +105,12 @@ pub type Reader = Arc<dyn Fn(&Path) -> Found + Send + Sync>;
 /// the interval without waiting it out.
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
-/// What a watch tells its session each time a comparison finds the file changed (with what
-/// it read, and the count of the session's reads and writes it compared against), with no
-/// lock held, so the session can reload it ([`DiskWatch::when_changed`]): only if the count
-/// is still the session's ([`DiskWatch::current`]), as it checks under its own lock, since a
-/// read or write of the session's may come between the finding and this.
+/// What a watch tells its session each time a comparison finds the file changed and settled,
+/// the comparison before it having found the same bytes (with what it read, and the count of
+/// the session's reads and writes it compared against), with no lock held, so the session can
+/// reload it ([`DiskWatch::when_changed`]): only if the count is still the session's
+/// ([`DiskWatch::current`]), as it checks under its own lock, since a read or write of the
+/// session's may come between the finding and this.
 pub type Changed = Arc<dyn Fn(&[u8], u64) + Send + Sync>;
 
 /// A session's file watched for changes on disk.
@@ -131,6 +139,10 @@ struct Shared {
     /// How many times `changed` has been told and returned, in this crate's tests only.
     #[cfg(test)]
     changed_told: std::sync::atomic::AtomicUsize,
+    /// How many comparisons have ended, each with its telling done (or none to do), in this
+    /// crate's tests only.
+    #[cfg(test)]
+    compared: std::sync::atomic::AtomicUsize,
     state: Mutex<State>,
 }
 
@@ -143,6 +155,12 @@ struct State {
     /// The last comparison's finding against the session's current bytes; none before one
     /// has ended.
     finding: Option<Disk>,
+    /// The bytes the last comparison found, if it found the file changed, against the
+    /// session's current bytes: a change is told only once the next comparison finds these
+    /// same bytes (it has settled). None after any other finding, and whenever the session
+    /// reads or writes, so a change is told only for two comparisons in a row against what
+    /// the session holds.
+    unsettled: Option<Arc<Vec<u8>>>,
     /// The finding the waker was last told of: what a new one is told against, whatever
     /// the session's reads and writes cleared since (so its own save, found unchanged
     /// again, tells nothing).
@@ -180,6 +198,7 @@ impl Drop for Saving<'_> {
 fn hold(state: &mut State, bytes: Option<Arc<Vec<u8>>>) {
     state.counter = state.counter.wrapping_add(1);
     state.saving = false;
+    state.unsettled = None;
     match bytes {
         Some(bytes) => {
             state.held = bytes;
@@ -238,12 +257,15 @@ impl DiskWatch {
                 before_changed: Mutex::new(None),
                 #[cfg(test)]
                 changed_told: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(test)]
+                compared: std::sync::atomic::AtomicUsize::new(0),
                 state: Mutex::new(State {
                     path: path.into(),
                     held,
                     counter: 0,
                     // None before a first comparison ends (`status`'s `null`).
                     finding: None,
+                    unsettled: None,
                     told: None,
                     running: false,
                     saving: false,
@@ -254,9 +276,10 @@ impl DiskWatch {
         }
     }
 
-    /// From now on, `changed` is told of each comparison that finds the file changed, with
-    /// the bytes it read, with no lock held: the session's reload of a file changed on disk
-    /// (A3). Given once, as the session is made; given again, it's ignored.
+    /// From now on, `changed` is told of each comparison that finds the file changed to the
+    /// bytes the comparison before it found (settled), with those bytes, with no lock held:
+    /// the session's reload of a file changed on disk (A3). Given once, as the session is
+    /// made; given again, it's ignored.
     pub fn when_changed(&self, changed: Changed) {
         let _ = self.shared.changed.set(changed);
     }
@@ -267,8 +290,9 @@ impl DiskWatch {
         lock(&self.shared.state).counter == counter
     }
 
-    /// From now on, each comparison that finds the file changed calls `hold` after its
-    /// finding is kept and before it tells the session, in this crate's tests only.
+    /// From now on, each comparison that finds the file changed and settled calls `hold`
+    /// after its finding is kept and before it tells the session, in this crate's tests
+    /// only.
     #[cfg(test)]
     pub(crate) fn before_changed(&self, hold: Arc<dyn Fn() + Send + Sync>) {
         *lock(&self.shared.before_changed) = Some(hold);
@@ -280,6 +304,16 @@ impl DiskWatch {
     pub(crate) fn changed_told(&self) -> usize {
         self.shared
             .changed_told
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// How many comparisons have ended, each with its finding kept or dropped and its
+    /// telling done, in this crate's tests only: once it has moved, a comparison that told
+    /// nothing never will.
+    #[cfg(test)]
+    pub(crate) fn compared(&self) -> usize {
+        self.shared
+            .compared
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
@@ -358,18 +392,26 @@ impl DiskWatch {
 }
 
 /// One comparison of the file at `path` with `held`, the session's bytes at `counter`:
-/// its finding kept if the session still holds them, and told if it changed.
+/// its finding kept if the session still holds them, and told if it changed and settled.
 fn compare(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
+    compared(shared, path, counter, held);
+    #[cfg(test)]
+    shared
+        .compared
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// [`compare`]'s work.
+fn compared(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
     let _span = tracing::debug_span!("disk_compare").entered();
     // If the read panics (a test's reader), the comparison has ended all the same: the
     // next can start.
     let ended = Ended(shared);
-    let read = (shared.read)(path);
-    let found = match &read {
-        Found::Bytes(bytes) if bytes.as_slice() == held => Disk::Unchanged,
-        Found::Bytes(_) => Disk::Changed,
-        Found::Gone => Disk::Gone,
-        Found::Unreadable => Disk::Unreadable,
+    let (found, changed) = match (shared.read)(path) {
+        Found::Bytes(bytes) if bytes.as_slice() == held => (Disk::Unchanged, None),
+        Found::Bytes(bytes) => (Disk::Changed, Some(Arc::new(bytes))),
+        Found::Gone => (Disk::Gone, None),
+        Found::Unreadable => (Disk::Unreadable, None),
     };
     let now = (shared.now)();
     let mut state = lock(&shared.state);
@@ -383,6 +425,13 @@ fn compare(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
     if state.counter != counter {
         return;
     }
+    // Settled: the comparison before this one, against the same bytes of the session's,
+    // found the file changed to these same bytes. Read mid-write (truncated, part written,
+    // still growing), it's other bytes at the next comparison, so it's never told (#479).
+    let settled = changed
+        .as_ref()
+        .is_some_and(|bytes| state.unsettled.as_ref() == Some(bytes));
+    state.unsettled.clone_from(&changed);
     let told = state.told != Some(found);
     state.finding = Some(found);
     state.told = Some(found);
@@ -390,7 +439,8 @@ fn compare(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
     if told && let Some(notify) = &shared.notify {
         notify();
     }
-    if let (Found::Bytes(bytes), Disk::Changed) = (&read, found)
+    if settled
+        && let Some(bytes) = &changed
         && let Some(changed) = shared.changed.get()
     {
         #[cfg(test)]

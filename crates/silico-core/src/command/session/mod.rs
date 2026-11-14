@@ -428,12 +428,12 @@ impl<C: Kernel + 'static> Session<C> {
 }
 
 impl<C: Kernel + 'static> Session<C> {
-    /// Whether a comparison that found the file changed, as `found`, should queue the
-    /// session's own reload (A3): not inside a transaction (only `commit` reads the file
-    /// there), nor while its own save has left the file part written (the next save says
-    /// where its old text is), nor while one is queued, nor for the bytes a reload refused
-    /// last (a file another session holds, say), which would be refused again; nor for a
-    /// comparison made against `counter`, a count of the session's reads and writes no
+    /// Whether a comparison that found the file changed and settled, as `found`, should
+    /// queue the session's own reload (A3): not inside a transaction (only `commit` reads
+    /// the file there), nor while its own save has left the file part written (the next
+    /// save says where its old text is), nor while one is queued, nor for the bytes a reload
+    /// refused last (a file another session holds, say), which would be refused again; nor
+    /// for a comparison made against `counter`, a count of the session's reads and writes no
     /// longer its own (it read or wrote since: dropped, never reported). If it should, it's
     /// marked queued.
     fn reload_wanted(&self, found: &[u8], claims: u64, counter: u64) -> bool {
@@ -468,9 +468,10 @@ impl<C: Kernel + 'static> Session<C> {
     /// ([`Session::reload`] as `commit` reads the file, inside a transaction too): reloaded
     /// at a new revision; the file found as the session holds it (a `begin` or another
     /// command ahead of it reloaded it first), the finding then `unchanged`; inside a
-    /// transaction and changed, nothing, the finding left `changed`; or refused, `found`
-    /// kept with `claims` so the same bytes aren't queued again until a claim changes; any
-    /// other answer forgets a refusal. Whether the client should be woken.
+    /// transaction and changed, or changed again since the watch found it settled, nothing,
+    /// the finding left `changed`; or refused, `found` kept with `claims` so the same bytes
+    /// aren't queued again until a claim changes; any other answer forgets a refusal.
+    /// Whether the client should be woken.
     fn reloaded_itself(
         &self,
         reloaded: Result<Reload, Problems>,
@@ -490,7 +491,8 @@ impl<C: Kernel + 'static> Session<C> {
                 }
                 (true, None)
             }
-            Ok(Reload::Outside(_)) => (false, None),
+            // Changed again since it settled: the watch finds it again (#479).
+            Ok(Reload::Outside(_) | Reload::Unsettled(_)) => (false, None),
             Err(problems) => {
                 tracing::warn!(
                     session = %self.id,
@@ -531,8 +533,10 @@ fn reloader<P: Clients + 'static>(
 
 /// The session's own reload, a job on its queue (A3): the file read as `commit` reads it
 /// (claimed as every command's read is, outside a transaction reloaded at a new revision),
-/// named `reload` in `status.running` and the session's logs while it runs, and the client
-/// woken by what it changed. A session closed first never runs it.
+/// but loaded only if it still holds `found`, the digest of the bytes the disk watch found
+/// settled (otherwise it changed again since, perhaps mid-write, and the watch reads it
+/// again: #479), named `reload` in `status.running` and the session's logs while it runs,
+/// and the client woken by what it changed. A session closed first never runs it.
 fn reload_job<P: Clients + 'static>(
     registry: Weak<Registry<P>>,
     found: [u8; 32],
@@ -565,7 +569,8 @@ fn reload_job<P: Clients + 'static>(
             let claims = registry
                 .upgrade()
                 .map_or(0, |registry| lock(&registry.book).claims);
-            let reloaded = session.reload(Rereads::Always, &claimed);
+            // Only the bytes the watch found settled are loaded (#479).
+            let reloaded = session.reload(Rereads::Always, Some(&found), &claimed);
             let woken = session.reloaded_itself(reloaded, found, claims);
             // A drag ends at any new revision.
             session.end_stale_drag();
@@ -2155,7 +2160,7 @@ impl<P: Clients + 'static> Sessions<P> {
                             };
                             // The session's own work, which stands whatever the command
                             // comes to: a cancel after it still says `reloaded`.
-                            let (reloaded, result) = match session.reload(rereads, &claimed) {
+                            let (reloaded, result) = match session.reload(rereads, None, &claimed) {
                                 Ok(reload) => {
                                     (reload.reloaded(), work(session, &stop, &mut model, reload))
                                 }
