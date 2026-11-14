@@ -76,7 +76,8 @@
 //!
 //! A session also watches its file on disk (docs/design/m5.0-app.md, section 4): `status`
 //! starts a comparison off the caller's thread at most once each [`DISK_CHECK_INTERVAL`],
-//! and says what the last found (`disk`). One that finds the file changed with no
+//! and says what the last found (`disk`). One that finds the file changed and settled (the
+//! comparison before it found the same bytes, and they aren't empty: #479) with no
 //! transaction open queues the session's own reload on its thread, at most one at a time
 //! (A3): a new revision no command asked for, named `reload` in `status.running`, which
 //! nothing cancels. A client that polls is woken as things it draws change
@@ -112,7 +113,7 @@ use super::edit::{self, FeatureIds};
 use super::logs::{LogBuffer, LogQuery, Logs};
 use super::{Cancellable, Gated, Problems, ReadCommand, RunningCommand, SessionCommand};
 use crate::cache::{Cache, Cleared};
-use crate::disk::{DISK_CHECK_INTERVAL, Disk, DiskWatch};
+use crate::disk::{DISK_CHECK_INTERVAL, Disk, DiskWatch, digest};
 use crate::document::FeatureId;
 use crate::document::json::Node;
 use crate::file::{Workspace, shown_path};
@@ -250,12 +251,6 @@ struct Session<C: Kernel + 'static> {
 struct Reloads {
     queued: bool,
     refused: Option<([u8; 32], u64)>,
-}
-
-/// The digest of a file's bytes, as a refused reload keeps them.
-fn digest(bytes: &[u8]) -> [u8; 32] {
-    use sha2::Digest as _;
-    sha2::Sha256::digest(bytes).into()
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).
@@ -491,8 +486,9 @@ impl<C: Kernel + 'static> Session<C> {
                 }
                 (true, None)
             }
-            // Changed again since it settled: the watch finds it again (#479).
-            Ok(Reload::Outside(_) | Reload::Unsettled(_)) => (false, None),
+            // Changed again since it settled: unclaimed, and no refusal kept of bytes it never
+            // read; the watch finds it again (#479).
+            Ok(Reload::Outside(_) | Reload::Unsettled) => (false, None),
             Err(problems) => {
                 tracing::warn!(
                     session = %self.id,
@@ -510,10 +506,10 @@ impl<C: Kernel + 'static> Session<C> {
     }
 }
 
-/// What a session's disk watch tells it when a comparison finds its file changed: the
-/// session's own reload queued on its thread, behind its commands, if one is wanted
-/// ([`Session::reload_wanted`]), as the next command would reload it (A3). Holds both
-/// weakly, so the watch keeps neither alive.
+/// What a session's disk watch tells it when a comparison finds its file changed and
+/// settled: the session's own reload queued on its thread, behind its commands, if one is
+/// wanted ([`Session::reload_wanted`]), as the next command would reload it (A3). Holds
+/// both weakly, so the watch keeps neither alive.
 fn reloader<P: Clients + 'static>(
     registry: Weak<Registry<P>>,
     session: Weak<Session<P::Client>>,
@@ -570,7 +566,7 @@ fn reload_job<P: Clients + 'static>(
                 .upgrade()
                 .map_or(0, |registry| lock(&registry.book).claims);
             // Only the bytes the watch found settled are loaded (#479).
-            let reloaded = session.reload(Rereads::Always, Some(&found), &claimed);
+            let reloaded = session.reload(Rereads::Settled(found), &claimed);
             let woken = session.reloaded_itself(reloaded, found, claims);
             // A drag ends at any new revision.
             session.end_stale_drag();
@@ -2160,7 +2156,7 @@ impl<P: Clients + 'static> Sessions<P> {
                             };
                             // The session's own work, which stands whatever the command
                             // comes to: a cancel after it still says `reloaded`.
-                            let (reloaded, result) = match session.reload(rereads, None, &claimed) {
+                            let (reloaded, result) = match session.reload(rereads, &claimed) {
                                 Ok(reload) => {
                                     (reload.reloaded(), work(session, &stop, &mut model, reload))
                                 }

@@ -35,19 +35,31 @@
 //!
 //! It reloads nothing: what to do with a finding is the session's (A3), told of a change only
 //! once it has settled ([`DiskWatch::when_changed`]): once two comparisons in a row, against
-//! the same bytes of the session's, have found the file changed to the same bytes. A file
-//! another program writes in place is truncated, then written, perhaps in parts: read
-//! between them, it's empty, or part of what's written, or the old text with the new over
-//! its start, any of which may even read as a document. Read at one comparison, it's other
-//! bytes at the next, so it's never told, however it reads (#479). Its finding is `changed`
-//! from the first comparison all the same, as the file is. A file that stays as it was
-//! written, a broken one too, is told at the second comparison, an interval later. Told each
-//! time a comparison finds it settled, not only when the finding changes, so a reload the
-//! session couldn't make at one comparison is asked again at the next.
+//! the same bytes of the session's, have found the file changed to the same bytes, not
+//! empty. A file another program writes in place is truncated, then written, perhaps in
+//! parts: read between them, it's empty, or part of what's written, or the old text with the
+//! new over its start, any of which but the empty file may even read as a document (#479).
+//! - **Empty, it's never told,** however long it stays so: it's never a document, and it's
+//!   what a write in place leaves until it writes (a shell's redirect of a slow program, a
+//!   copy over a slow link). Its finding is `changed` for as long as it stays, and a command
+//!   still reads it as it is.
+//! - **Part written, it's told only if it stays so:** read at one comparison, it's other
+//!   bytes at the next, so it's never told. A writer that leaves a part of its text for
+//!   longer than an interval has it read the same twice in a row, so that part is told, and
+//!   reloaded as a broken file is, then the whole once it's written: two reloads. That's the
+//!   limit of settling.
+//!
+//! Its finding is `changed` from the first comparison all the same, as the file is. A file
+//! that stays as it was written, a broken one too, is told at the second comparison, an
+//! interval later. Told each time a comparison finds it settled, not only when the finding
+//! changes, so a reload the session couldn't make at one comparison is asked again at the
+//! next.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use sha2::Digest as _;
 
 use crate::document::json::MAX_INPUT_LEN;
 use crate::file::{Unresolved, Workspace};
@@ -130,7 +142,8 @@ struct Shared {
     read: Reader,
     now: Clock,
     notify: Option<Notify>,
-    /// Told of each comparison that finds the file changed: the session's reload.
+    /// Told of each comparison that finds the file changed and settled: the session's
+    /// reload.
     changed: OnceLock<Changed>,
     /// Called between a comparison's finding and its telling `changed`, in this crate's
     /// tests only: to hold it there.
@@ -155,12 +168,13 @@ struct State {
     /// The last comparison's finding against the session's current bytes; none before one
     /// has ended.
     finding: Option<Disk>,
-    /// The bytes the last comparison found, if it found the file changed, against the
-    /// session's current bytes: a change is told only once the next comparison finds these
-    /// same bytes (it has settled). None after any other finding, and whenever the session
-    /// reads or writes, so a change is told only for two comparisons in a row against what
-    /// the session holds.
-    unsettled: Option<Arc<Vec<u8>>>,
+    /// The digest of the bytes the last comparison found, if it found the file changed and
+    /// not empty, against the session's current bytes: a change is told only once the next
+    /// comparison finds bytes of this same digest (it has settled). None after any other
+    /// finding, and whenever the session reads or writes, so a change is told only for two
+    /// comparisons in a row against what the session holds. A digest, not the bytes: a file
+    /// may be as long as Silico reads, and stay changed for as long as a transaction is open.
+    unsettled: Option<[u8; 32]>,
     /// The finding the waker was last told of: what a new one is told against, whatever
     /// the session's reads and writes cleared since (so its own save, found unchanged
     /// again, tells nothing).
@@ -277,9 +291,9 @@ impl DiskWatch {
     }
 
     /// From now on, `changed` is told of each comparison that finds the file changed to the
-    /// bytes the comparison before it found (settled), with those bytes, with no lock held:
-    /// the session's reload of a file changed on disk (A3). Given once, as the session is
-    /// made; given again, it's ignored.
+    /// bytes the comparison before it found, not empty (settled), with those bytes, with no
+    /// lock held: the session's reload of a file changed on disk (A3). Given once, as the
+    /// session is made; given again, it's ignored.
     pub fn when_changed(&self, changed: Changed) {
         let _ = self.shared.changed.set(changed);
     }
@@ -394,7 +408,7 @@ impl DiskWatch {
 /// One comparison of the file at `path` with `held`, the session's bytes at `counter`:
 /// its finding kept if the session still holds them, and told if it changed and settled.
 fn compare(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
-    compared(shared, path, counter, held);
+    compare_once(shared, path, counter, held);
     #[cfg(test)]
     shared
         .compared
@@ -402,17 +416,25 @@ fn compare(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
 }
 
 /// [`compare`]'s work.
-fn compared(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
+fn compare_once(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
     let _span = tracing::debug_span!("disk_compare").entered();
     // If the read panics (a test's reader), the comparison has ended all the same: the
     // next can start.
     let ended = Ended(shared);
-    let (found, changed) = match (shared.read)(path) {
+    let (found, bytes) = match (shared.read)(path) {
         Found::Bytes(bytes) if bytes.as_slice() == held => (Disk::Unchanged, None),
-        Found::Bytes(bytes) => (Disk::Changed, Some(Arc::new(bytes))),
+        Found::Bytes(bytes) => (Disk::Changed, Some(bytes)),
         Found::Gone => (Disk::Gone, None),
         Found::Unreadable => (Disk::Unreadable, None),
     };
+    // What the file changed to, as the next comparison must find it for the change to have
+    // settled: worked out before the lock is taken, which `status` takes each frame. None
+    // for an empty file, which never settles: it's never a document, and it's what a write
+    // in place leaves until it writes, however long that takes (#479).
+    let changed_to = bytes
+        .as_deref()
+        .filter(|bytes| !bytes.is_empty())
+        .map(digest);
     let now = (shared.now)();
     let mut state = lock(&shared.state);
     // Ended in the step its finding is kept in, so no one who sees the finding sees the
@@ -428,10 +450,8 @@ fn compared(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
     // Settled: the comparison before this one, against the same bytes of the session's,
     // found the file changed to these same bytes. Read mid-write (truncated, part written,
     // still growing), it's other bytes at the next comparison, so it's never told (#479).
-    let settled = changed
-        .as_ref()
-        .is_some_and(|bytes| state.unsettled.as_ref() == Some(bytes));
-    state.unsettled.clone_from(&changed);
+    let settled = changed_to.is_some() && state.unsettled == changed_to;
+    state.unsettled = changed_to;
     let told = state.told != Some(found);
     state.finding = Some(found);
     state.told = Some(found);
@@ -440,7 +460,7 @@ fn compared(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
         notify();
     }
     if settled
-        && let Some(bytes) = &changed
+        && let Some(bytes) = &bytes
         && let Some(changed) = shared.changed.get()
     {
         #[cfg(test)]
@@ -458,6 +478,13 @@ fn compared(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
             .changed_told
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
+}
+
+/// The SHA-256 digest of a file's bytes: what the disk watch keeps of a change until it
+/// settles, what the session's own reload checks the file still holds before it loads it,
+/// and what a reload the session refused keeps, so the same bytes aren't queued again.
+pub(crate) fn digest(bytes: &[u8]) -> [u8; 32] {
+    sha2::Sha256::digest(bytes).into()
 }
 
 /// A comparison's end if its read panics: none running, and the time it ended.

@@ -1,12 +1,14 @@
 //! #479: a session's file written in place by another program, as `std::fs::write` writes
 //! one (truncated as it's opened, then written through the handle), read by the disk watch
 //! between the steps. A change is reloaded only once two comparisons in a row have found the
-//! same bytes, and the session's own reload loads only those bytes, so a file the watch reads
-//! empty, half written, or still growing never becomes the session's document and makes no
-//! revision of its own; a file that stays as written, a broken one too, is reloaded, and its
-//! problems reported, at the comparison after the one that found it. A command still reads
-//! the file as it is when it runs (decision 2), half written too; nothing writes what it read
-//! back over the finished file.
+//! same bytes, never empty, and the session's own reload loads only those bytes, so a file
+//! the watch reads empty, or half written or still growing at one comparison and otherwise
+//! at the next, never becomes the session's document and makes no revision of its own; a
+//! file that stays as written, a broken one too, is reloaded, and its problems reported, at
+//! the comparison after the one that found it, and so is a part of a write left for longer
+//! than an interval (the limit settling leaves). A command still reads the file as it is
+//! when it runs (decision 2), half written too; nothing writes what it read back over the
+//! finished file.
 //!
 //! Each test writes in steps through one handle and runs each comparison itself
 //! ([`Watched::compare`]: the clock moved a whole interval, the comparison waited for until
@@ -42,7 +44,7 @@ impl InPlace {
 
 impl Watched {
     /// How many times a comparison has told the session the file changed and settled.
-    fn told(&self) -> usize {
+    fn told_count(&self) -> usize {
         self.f.session().disk.get().unwrap().changed_told()
     }
 
@@ -55,7 +57,7 @@ impl Watched {
         assert!(status.running.is_none(), "{status:?}");
         assert_eq!(status.disk, Some(disk));
         assert!(!lock(&self.f.session().reloads).queued);
-        assert_eq!(self.told(), told);
+        assert_eq!(self.told_count(), told);
     }
 
     /// The text of `revision`, as the session holds it, read without reading the file
@@ -76,7 +78,7 @@ impl Watched {
     fn reloaded_once_to(&self, revision: Revision) -> String {
         self.f
             .status_reaches(|status, at| at == revision && status.running.is_none());
-        let told = self.told();
+        let told = self.told_count();
         for _ in 0..2 {
             self.compare();
             self.holds(revision, told, Disk::Unchanged);
@@ -108,7 +110,7 @@ fn a_file_read_empty_between_its_truncate_and_its_write_is_reloaded_once() {
     w.holds(Revision::OPENED, 0, Disk::Changed);
     // Read whole again: settled, and reloaded, once.
     w.compare();
-    assert_eq!(w.told(), 1);
+    assert_eq!(w.told_count(), 1);
     assert_eq!(w.reloaded_once_to(Revision(2)), SPHERE);
     // The one revision it made replaced the opened one: no empty one between.
     assert_eq!(w.text_of(Revision::OPENED), BOX);
@@ -243,9 +245,10 @@ fn a_file_deleted_mid_write_is_gone_never_reloaded_and_a_complete_one_put_back_i
         w.compare();
         w.holds(Revision::OPENED, 0, Disk::Gone);
     }
-    // A command reads it too, and is refused: the session as it was.
-    let refused = w.f.sessions.text(&w.f.id, None).wait();
-    assert!(refused.result.is_err());
+    // A command reads it too, and is refused, naming the file: the session as it was.
+    let refused = w.f.sessions.text(&w.f.id, None).wait().result.unwrap_err();
+    assert_eq!(refused.errors()[0].parameter(), Some("path"));
+    assert_eq!(refused.errors()[0].cause(), Some(NOT_RELOADED));
     assert_eq!(w.f.at(), Revision::OPENED);
     // The part read before the removal is forgotten: the same bytes put back at the path
     // are read as new, and settle only at the comparison after.
@@ -286,21 +289,38 @@ fn a_file_replaced_by_rename_mid_write_is_reloaded_once_as_renamed() {
 #[test]
 fn a_file_written_again_while_its_reload_waits_is_never_loaded_part_written() {
     let w = watching_box();
+    let count = counting(&w.f.sessions);
     let (reload_started, through) = shut(&w.f.session().reloading);
     std::fs::write(&w.f.path, SPHERE).unwrap();
     w.compare();
     w.compare();
     // Settled, and the reload queued: it waits at its gate, before it reads.
-    assert_eq!(w.told(), 1);
+    assert_eq!(w.told_count(), 1);
     reload_started.recv_timeout(WAIT).unwrap();
     // Another write begun meanwhile: the file half written as the reload reads it.
     let other = BOX.replace("Block", "Brick");
     let (head, tail) = other.split_at(other.len() / 2);
     let mut writer = InPlace::truncating(&w.f.path);
     writer.write(head);
+    let wakes = count.load(Ordering::SeqCst);
     open_gate(&w.f.session().reloading);
     through.send(()).unwrap();
-    // Neither the bytes the watch found nor the session's: not loaded, nor refused.
+    // Neither the bytes the watch found nor the session's: not loaded, nor refused, and the
+    // client not woken, as nothing it draws changed. A read queued behind the reload, held
+    // as it starts, starts only once the reload has returned, its wake given if it gave one.
+    let (read_started, read_through) = shut(&w.f.session().gate);
+    let read =
+        w.f.sessions
+            .text_at(&w.f.id, None, Some(Named::Revision(Revision::OPENED)));
+    read_started.recv_timeout(WAIT).unwrap();
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        wakes,
+        "the reload woke the client"
+    );
+    open_gate(&w.f.session().gate);
+    read_through.send(()).unwrap();
+    assert_eq!(read.wait().result.unwrap().text, BOX);
     w.f.status_reaches(|status, _| {
         status.running.is_none() && !lock(&w.f.session().reloads).queued
     });
@@ -314,7 +334,7 @@ fn a_file_written_again_while_its_reload_waits_is_never_loaded_part_written() {
     w.compare();
     w.holds(Revision::OPENED, 1, Disk::Changed);
     w.compare();
-    assert_eq!(w.told(), 2);
+    assert_eq!(w.told_count(), 2);
     assert_eq!(w.reloaded_once_to(Revision(2)), other);
 }
 
@@ -424,12 +444,15 @@ fn a_command_sent_mid_write_reads_the_file_as_it_is_and_what_it_loaded_is_never_
     );
     let restore = w.text_of(Revision(2));
     assert_eq!(restore, head);
-    w.f.begin();
+    // Outside a transaction, where an edit taken is saved at once: refused, nothing written.
     let replaced =
         w.f.sessions
             .replace_text(&w.f.id, Revision(3), restore)
-            .wait();
-    assert!(replaced.result.is_err());
+            .wait()
+            .result
+            .unwrap_err();
+    assert_eq!(replaced.errors()[0].parameter(), Some("text"));
+    assert_eq!(w.f.at(), Revision(3));
     assert_eq!(w.f.file(), SPHERE);
 }
 
@@ -457,7 +480,7 @@ fn a_file_removed_while_its_reload_waits_is_neither_loaded_nor_refused_and_is_re
     w.compare();
     w.holds(Revision::OPENED, 1, Disk::Changed);
     w.compare();
-    assert_eq!(w.told(), 2);
+    assert_eq!(w.told_count(), 2);
     assert_eq!(w.reloaded_once_to(Revision(2)), SPHERE);
 }
 
@@ -472,19 +495,19 @@ fn a_write_read_once_cut_at_every_byte_offset_is_reloaded_once_whole() {
     for cut in 0..=longest {
         for text in [SPHERE, BOX] {
             let (head, tail) = text.split_at(cut.min(text.len()));
-            let told = w.told();
+            let told = w.told_count();
             let mut writer = InPlace::truncating(&w.f.path);
             writer.write(head);
             w.compare();
             w.holds(at, told, Disk::Changed);
             writer.write(tail);
             w.compare();
-            if w.told() == told {
+            if w.told_count() == told {
                 // Read cut, then whole: not settled until whole twice.
                 w.holds(at, told, Disk::Changed);
                 w.compare();
             }
-            assert_eq!(w.told(), told + 1, "cut at {cut} of {text}");
+            assert_eq!(w.told_count(), told + 1, "cut at {cut} of {text}");
             at = Revision(at.0 + 1);
             assert_eq!(w.reloaded_once_to(at), text, "cut at {cut}");
         }
@@ -522,6 +545,233 @@ fn bytes_found_before_the_sessions_own_read_and_save_settle_only_at_two_comparis
     w.compare();
     w.holds(Revision(3), 0, Disk::Changed);
     w.compare();
-    assert_eq!(w.told(), 1);
+    assert_eq!(w.told_count(), 1);
     assert_eq!(w.reloaded_once_to(Revision(4)), SPHERE);
+}
+
+// ---- #488's review: the reviewers' proofs ----
+
+#[test]
+fn rv488_a_file_overwritten_in_place_without_truncation_is_reloaded_once_whole() {
+    // Overwritten from its start, never truncated (as `dd conv=notrunc`, or an editor
+    // writing through its handle): every read is the old document's length, the new text
+    // over the old one's start.
+    let w = watching_box();
+    let new = BOX
+        .replace("Block", "Brick")
+        .replace("\"length\": 40", "\"length\": 41")
+        .replace("\"width\": 20", "\"width\": 21");
+    assert_eq!(new.len(), BOX.len());
+    let m1 = new.find("Brick").unwrap() + "Brick".len();
+    let m2 = new.find("\"length\": 41").unwrap() + "\"length\": 41".len();
+    let mut writer = InPlace(
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&w.f.path)
+            .unwrap(),
+    );
+    writer.write(&new[..m1]);
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    writer.write(&new[m1..m2]);
+    // Brick, 41, 20: neither document, yet one, and the last read's length.
+    let mixed = w.f.file();
+    assert!(crate::document::read(mixed.as_bytes()).is_ok());
+    assert_eq!(mixed.len(), BOX.len());
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    writer.write(&new[m2..]);
+    assert_eq!(w.f.file(), new);
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    w.compare();
+    assert_eq!(w.reloaded_once_to(Revision(2)), new);
+}
+
+#[test]
+fn rv488_settled_bytes_put_back_after_a_claim_refused_their_unsettled_reload_are_reloaded() {
+    // The design (#479): a reload that finds the file changed again since it settled
+    // "keeps no refusal of those bytes", so the same bytes put back are reloaded.
+    let w = watching_box();
+    let other = w.f.path.with_file_name("b.silico");
+    let brick = BOX.replace("Block", "Brick");
+    std::fs::write(&other, &brick).unwrap();
+    let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+    // One comparison of this session's file (the other session's reads share the reader).
+    let step = || {
+        let before = w.compared();
+        w.clock.advance(DISK_CHECK_INTERVAL);
+        w.f.status();
+        let deadline = Instant::now() + WAIT;
+        while w.compared() == before {
+            assert!(Instant::now() < deadline, "no comparison ran");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let (reload_started, through) = shut(&w.f.session().reloading);
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    step();
+    step();
+    reload_started.recv_timeout(WAIT).unwrap();
+    // While the reload waits: the other session's file put at the path, through a link.
+    std::fs::remove_file(&w.f.path).unwrap();
+    std::os::unix::fs::symlink(&other, &w.f.path).unwrap();
+    open_gate(&w.f.session().reloading);
+    through.send(()).unwrap();
+    w.f.status_reaches(|status, _| {
+        status.running.is_none() && !lock(&w.f.session().reloads).queued
+    });
+    assert_eq!(w.f.at(), Revision::OPENED);
+    let refused = lock(&w.f.session().reloads).refused;
+    // The settled bytes put back, as a regular file.
+    std::fs::remove_file(&w.f.path).unwrap();
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    let told = w.told_count();
+    step();
+    step();
+    assert!(w.told_count() > told, "the watch never told");
+    let queued = lock(&w.f.session().reloads).queued;
+    assert!(
+        queued || w.f.at() == Revision(2),
+        "the sphere put back is never reloaded: refused {refused:?}"
+    );
+}
+
+#[test]
+fn rv488_two_in_place_saves_of_the_held_text_never_reload_the_empty_file_between() {
+    // An editor saving the session's own text twice, each a truncate then a write: read
+    // empty, then whole (unchanged), then empty again. Empty in two comparisons, but never
+    // two in a row.
+    let w = watching_box();
+    let mut first = InPlace::truncating(&w.f.path);
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    first.write(BOX);
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Unchanged);
+    let mut second = InPlace::truncating(&w.f.path);
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    second.write(BOX);
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Unchanged);
+}
+
+#[test]
+fn rv488_two_in_place_saves_of_the_held_text_never_reload_the_part_between() {
+    // The same, each save written in two parts: read half written, then whole (unchanged),
+    // then half written again. The same changed bytes in two comparisons, but never two in
+    // a row.
+    let w = watching_box();
+    let (head, tail) = BOX.split_at(BOX.len() / 2);
+    for _ in 0..2 {
+        let mut save = InPlace::truncating(&w.f.path);
+        save.write(head);
+        w.compare();
+        w.holds(Revision::OPENED, 0, Disk::Changed);
+        save.write(tail);
+        w.compare();
+        w.holds(Revision::OPENED, 0, Disk::Unchanged);
+    }
+}
+
+#[test]
+fn rv488_the_same_part_read_either_side_of_an_unreadable_file_is_never_settled() {
+    // Half written, then not a file this user may read (a directory put at the path), then
+    // half written again: the same changed bytes in two comparisons, but not in a row.
+    let w = watching_box();
+    let (head, _) = SPHERE.split_at(SPHERE.len() / 2);
+    std::fs::write(&w.f.path, head).unwrap();
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    std::fs::remove_file(&w.f.path).unwrap();
+    std::fs::create_dir(&w.f.path).unwrap();
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Unreadable);
+    std::fs::remove_dir(&w.f.path).unwrap();
+    std::fs::write(&w.f.path, head).unwrap();
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    w.compare();
+    assert_eq!(w.reloaded_once_to(Revision(2)), SPHERE);
+}
+
+#[test]
+fn rv488_a_write_paused_past_an_interval_after_its_truncate_never_reloads_the_empty_file() {
+    // A writer that truncates, then takes longer than an interval to write (a shell
+    // redirect of a slow script, a copy over a slow link): the empty file is read at
+    // comparison after comparison. It's never a document, so the watch never tells of it.
+    let w = watching_box();
+    let mut writer = InPlace::truncating(&w.f.path);
+    for _ in 0..3 {
+        w.compare();
+        w.holds(Revision::OPENED, 0, Disk::Changed);
+    }
+    writer.write(SPHERE);
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    w.compare();
+    assert_eq!(w.told_count(), 1);
+    assert_eq!(w.reloaded_once_to(Revision(2)), SPHERE);
+    assert_eq!(w.text_of(Revision::OPENED), BOX);
+}
+
+#[test]
+fn a_file_left_empty_stays_changed_and_a_command_reads_it_and_reports_the_readers_error() {
+    // Never told, the empty file is still reported: `status.disk` says changed for as long
+    // as it stays so, and a command reads it as it is (decision 2), its problems said, as
+    // for any file that doesn't read.
+    let w = watching_box();
+    drop(InPlace::truncating(&w.f.path));
+    for _ in 0..3 {
+        w.compare();
+        w.holds(Revision::OPENED, 0, Disk::Changed);
+    }
+    let read = w.f.sessions.text(&w.f.id, None).wait();
+    let session = read.session.unwrap();
+    assert!(session.reloaded);
+    assert_eq!(session.revision, Revision(2));
+    assert_eq!(read.result.unwrap().text, "");
+    let problems =
+        w.f.sessions
+            .check(&w.f.id, CheckModel::Current { fresh: false })
+            .wait()
+            .result
+            .unwrap()
+            .problems;
+    assert_eq!(problems.errors().len(), 1);
+    assert!(
+        problems.errors()[0]
+            .message()
+            .starts_with("the document isn't valid JSON: "),
+        "{problems:?}"
+    );
+    // The session holds the empty file now: unchanged, nothing more told.
+    w.compare();
+    w.holds(Revision(2), 0, Disk::Unchanged);
+}
+
+#[test]
+fn a_part_left_written_for_more_than_an_interval_is_reloaded_then_the_whole_the_stated_limit() {
+    // The limit #479 leaves: a writer that leaves a part of its text, not nothing, for
+    // longer than an interval has it read the same at two comparisons in a row, settled,
+    // and reloaded as it is, its problems reported, as a file that stayed broken; then the
+    // whole, once it's written and settled.
+    let w = watching_box();
+    let (head, tail) = SPHERE.split_at(SPHERE.len() / 2);
+    let mut writer = InPlace::truncating(&w.f.path);
+    writer.write(head);
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Changed);
+    w.compare();
+    assert_eq!(w.reloaded_once_to(Revision(2)), head);
+    assert!(!w.f.status().gated);
+    writer.write(tail);
+    w.compare();
+    w.holds(Revision(2), 1, Disk::Changed);
+    w.compare();
+    assert_eq!(w.reloaded_once_to(Revision(3)), SPHERE);
 }

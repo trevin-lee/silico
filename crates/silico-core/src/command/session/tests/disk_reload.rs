@@ -221,7 +221,7 @@ fn open_gate(gate: &Gate) {
 /// comparison in these sessions (with no interval; a session with a test's clock compares
 /// only as the test moves it).
 #[track_caller]
-fn told(f: &Fixture) {
+fn wait_told(f: &Fixture) {
     let deadline = Instant::now() + WAIT;
     while f.session().disk.get().unwrap().changed_told() == 0 {
         f.status();
@@ -430,7 +430,7 @@ fn changes_found_while_the_reload_waits_queue_no_second_and_make_one_revision() 
         std::thread::sleep(Duration::from_millis(1));
     }
     // The reload queued before the command ahead runs (and reads the file itself).
-    told(&f);
+    wait_told(&f);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     // The command ahead reloads it itself (decision 2): revision 2.
@@ -496,7 +496,8 @@ fn an_edit_queued_as_the_change_is_found_meets_a_conflict_and_the_agents_commit_
         std::thread::sleep(Duration::from_millis(1));
     }
     std::fs::write(&f.path, SPHERE).unwrap();
-    // The edit waits behind a command held, so the reload is found while it's queued.
+    // The edit waits behind a command held, so the change is found, settles at the next
+    // comparison, and its reload is queued (behind the edit) while the edit is queued.
     let (started, through) = shut(&f.session().gate);
     let held = f.sessions.text(&f.id, None);
     started.recv_timeout(WAIT).unwrap();
@@ -509,6 +510,9 @@ fn an_edit_queued_as_the_change_is_found_meets_a_conflict_and_the_agents_commit_
     );
     w.reader.release();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    w.compare();
+    assert_eq!(f.session().disk.get().unwrap().changed_told(), 1);
+    assert!(lock(&f.session().reloads).queued);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     held.wait().result.unwrap();
@@ -522,8 +526,9 @@ fn an_edit_queued_as_the_change_is_found_meets_a_conflict_and_the_agents_commit_
             .is_some_and(|cause| cause.contains("was reloaded")),
         "{conflict:?}"
     );
-    // One new revision, the agent's text, never written over.
-    f.status_reaches(|status, _| status.running.is_none());
+    // One new revision, the agent's text, never written over: the watch's reload, queued
+    // behind the edit, found the file as the held command had reloaded it.
+    f.status_reaches(|status, _| status.running.is_none() && !lock(&f.session().reloads).queued);
     assert_eq!(f.at(), Revision(2));
     assert_eq!(f.held_text(), SPHERE);
     assert_eq!(f.file(), SPHERE);
@@ -573,7 +578,7 @@ fn a_reload_queued_behind_a_begin_that_reloaded_the_file_makes_no_revision() {
     std::fs::write(&f.path, SPHERE).unwrap();
     // Found, its reload queued behind the begin.
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
-    told(&f);
+    wait_told(&f);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     // The begin reloads the file itself, at revision 2, then opens its transaction.
@@ -603,7 +608,7 @@ fn a_file_changed_again_after_that_begin_stays_changed() {
     // Its reload queued (behind the begin) before the begin runs: the comparison tells the
     // session after its finding is kept, and once the begin has read the file the
     // comparison is the session's no longer, and queues nothing.
-    told(&f);
+    wait_told(&f);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     assert_eq!(begin.wait().result.unwrap().base, Revision(2));

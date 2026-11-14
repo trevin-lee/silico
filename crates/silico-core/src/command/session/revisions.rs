@@ -316,26 +316,28 @@ impl<C: Kernel + 'static> Session<C> {
             ));
         };
         let shown = shown_path(Path::new(&file.path));
-        match reload.as_outside() {
-            Some(Outside::Changed(bytes)) => Ok(disk(Arc::clone(bytes))),
-            Some(Outside::TooLong) => Err(too_long(Path::new(&file.path))
+        match reload {
+            Reload::Outside(Outside::Changed(bytes)) => Ok(disk(Arc::clone(bytes))),
+            Reload::Outside(Outside::TooLong) => Err(too_long(Path::new(&file.path))
                 .with_parameter(parameter)
                 .with_cause(DISK_READ)),
-            Some(Outside::Gone(error)) => Err(error
+            Reload::Outside(Outside::Gone(error)) => Err(error
                 .clone()
                 .with_parameter(parameter)
                 .with_cause(DISK_READ)
                 .with_suggestion(format!(
                     "put the file back at {shown}, then read \"disk\" again"
                 ))),
-            Some(Outside::Unreadable(error)) => Err(error
+            Reload::Outside(Outside::Unreadable(error)) => Err(error
                 .clone()
                 .with_parameter(parameter)
                 .with_cause(DISK_READ)
                 .with_suggestion(format!(
                     "make the file at {shown} a regular file this user may read, then read \"disk\" again"
                 ))),
-            None => match &file.part_written {
+            // `Unsettled` is the disk watch's own reload's (`Rereads::Settled`), never a
+            // command's, so never a read's that names the file.
+            Reload::AsHeld | Reload::Reloaded | Reload::Unsettled => match &file.part_written {
                 // The file isn't what the session holds, and the session knows it: never its
                 // held bytes for it.
                 Some(old) => Err(part_written(&file.path, old).with_parameter(parameter)),
