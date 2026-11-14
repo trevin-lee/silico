@@ -45,12 +45,12 @@ use bar::{DimensionShown, PaletteView, Settings, StateShown, StatusLine};
 use dimension::{Ask, EditBox, Edited, ModifyAction, ModifyView, OfferView, value_of};
 use drag::Drag;
 use draw::{
-    Curve, Drawn, Geometry, RegionFill, Scale, Selected, Shown, View, add, angle, bounds,
+    Curve, Drawn, DrawnSelection, Geometry, RegionFill, Scale, Shown, View, add, angle, bounds,
     dimension_preview, direction, dot, drawing, fill_scale, ghost, length, mul, preview,
     region_fills, sub, to_shapes,
 };
-use hit::{Hit, Picked, hit};
-use selection::Selection;
+use hit::{Hit, SketchPick, hit};
+use selection::SketchSelection;
 use style::*;
 use tools::{Input, Tools};
 
@@ -256,7 +256,7 @@ struct DrawnOf {
     read: u64,
     /// The drag's solved frames drawn, while a drag's frame is drawn in the read's place.
     drag: Option<u64>,
-    selected: Selected,
+    selected: DrawnSelection,
     shown: Shown,
     probes: [Option<Pos2>; 4],
     scale: Scale,
@@ -300,8 +300,8 @@ pub struct SketchMode {
     /// What's selected, in pick order: members, each with its kind, and the origin and the
     /// axes; and a press under way, what's under it and whether Ctrl was held, to select on
     /// its release.
-    pub selection: Selection,
-    pressed: Option<(Option<Picked>, bool)>,
+    pub selection: SketchSelection,
+    pressed: Option<(Option<SketchPick>, bool)>,
     pub settings: Settings,
     /// The tool chosen, if one is (M5.11b's): what it draws as it's used, what it says, and
     /// what it asks of the core, which the tab sends.
@@ -356,7 +356,7 @@ impl SketchMode {
             fill_builds: 0,
             drawn: None,
             drawings: 0,
-            selection: Selection::default(),
+            selection: SketchSelection::default(),
             pressed: None,
             settings: Settings::default(),
             tools: Tools::default(),
@@ -421,10 +421,12 @@ impl SketchMode {
     /// let go, if it's of a later one.
     pub(crate) fn took(&mut self, read: Read) {
         if let Ok(sketch) = &read.result {
-            let held: BTreeSet<&ElementId> = sketch.members.elements().map(|(id, _)| id).collect();
-            self.selection.keep_members(|id| held.contains(id));
+            self.selection.retain_held(sketch);
             if let Some(edit) = &self.edit_box
-                && !held.contains(&edit.constraint)
+                && !sketch
+                    .members
+                    .elements()
+                    .any(|(id, _)| *id == edit.constraint)
             {
                 self.edit_box = None;
             }
@@ -462,14 +464,6 @@ impl SketchMode {
         {
             self.edit_offer = None;
         }
-    }
-
-    /// A click in the viewport, on `picked` (none: empty space), with Ctrl or not (open
-    /// item 24, as SolidWorks' selection): a plain click selects only what it's on, a
-    /// Ctrl-click adds it at the end or takes it away, and a click on nothing clears the
-    /// selection ([`Selection::click`]).
-    pub fn click(&mut self, picked: Option<Picked>, ctrl: bool) {
-        self.selection.click(picked, ctrl);
     }
 
     /// What Delete would do with the selection's members, the origin and the axes ignored
@@ -552,7 +546,7 @@ impl SketchMode {
                     if dragged.is_none() {
                         *dragged = found
                             .as_ref()
-                            .and_then(Picked::member)
+                            .and_then(SketchPick::member)
                             .and_then(|hit| self.grab(hit, input, event.at));
                     }
                     self.pressed = Some((found, event.ctrl));
@@ -581,16 +575,15 @@ impl SketchMode {
                     }
                     if let Some((found, ctrl)) = self.pressed.take() {
                         // What the press was on, if the read now still holds it: a read
-                        // taken between the press and its release may have let it go. The
-                        // origin and the axes are every sketch's.
+                        // taken between the press and its release may have let it go.
                         let held = found.filter(|picked| {
-                            picked.member().is_none_or(|hit| {
+                            picked.held_by(|id| {
                                 self.drawable().is_some_and(|read| {
-                                    read.members.elements().any(|(id, _)| id == &hit.id)
+                                    read.members.elements().any(|(held, _)| held == id)
                                 })
                             })
                         });
-                        self.click(held, ctrl);
+                        self.selection.click(held, ctrl);
                     }
                 }
                 PointerAction::Cancel => {
@@ -647,12 +640,24 @@ impl SketchMode {
 
     /// What's under `at` on the screen, within the pick tolerance at the view's scale there:
     /// of what's drawn, the drag's last frame while it lasts (once it has ended, until the
-    /// read of its edit comes), or else the newest read.
-    fn found(&self, input: &FrameInput<'_>, at: Pos2, dragged: Option<&Drag>) -> Option<Picked> {
+    /// read of its edit comes), or else the newest read. An axis only where it's drawn
+    /// within the pick tolerance on the screen too ([`axis_near`]).
+    fn found(
+        &self,
+        input: &FrameInput<'_>,
+        at: Pos2,
+        dragged: Option<&Drag>,
+    ) -> Option<SketchPick> {
         let read = dragged.and_then(Drag::shown).or_else(|| self.drawable())?;
         let scale = scale_at(input.to_plane, at)?;
         let on = (input.to_plane)(at)?;
-        hit(read, on, scale.mm(SKETCH_PICK_TOLERANCE), scale)
+        let picked = hit(read, on, scale.mm(SKETCH_PICK_TOLERANCE), scale)?;
+        let along = match picked {
+            SketchPick::XAxis => [1.0, 0.0],
+            SketchPick::YAxis => [0.0, 1.0],
+            _ => return Some(picked),
+        };
+        axis_near(input.project, along, on, at, scale).then_some(picked)
     }
 
     /// A drag of `hit`, pressed at `at` on the screen: a point, or a line's, a circle's, or
@@ -702,7 +707,7 @@ impl SketchMode {
         if self.offer().is_some() || self.edit_box.as_ref().is_some_and(|edit| edit.sent) {
             return;
         }
-        let Some(Picked::Member(found)) = self.found(input, at, dragged) else {
+        let Some(SketchPick::Member(found)) = self.found(input, at, dragged) else {
             return;
         };
         let Some(read) = self.drawable() else {
@@ -825,7 +830,7 @@ impl SketchMode {
         let of = DrawnOf {
             read: self.taken,
             drag: dragged.map(|(.., frames)| frames),
-            selected: Selected::of(&self.selection),
+            selected: DrawnSelection::of(&self.selection),
             shown: self.shown(),
             probes: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]].map(|p| (view.project)(p)),
             scale: view.scale,
@@ -859,7 +864,7 @@ impl SketchMode {
             .map_or(&[][..], |(_, fills)| fills.as_slice());
         let mut drawn = drawing(read, view, of.shown, &of.selected, fills);
         if let Some((shown, begin, _)) = dragged {
-            let begun = drawing(begin, view, of.shown, &Selected::default(), &[]);
+            let begun = drawing(begin, view, of.shown, &DrawnSelection::default(), &[]);
             let mut ghosted = ghost(&begun, begin, shown);
             ghosted.append(&mut drawn);
             drawn = ghosted;
@@ -1246,6 +1251,34 @@ pub(crate) fn on_curve(curve: Curve, at: [f64; 2]) -> Option<[f64; 2]> {
         }
     };
     (on[0].is_finite() && on[1].is_finite()).then_some(on)
+}
+
+/// Whether the axis along `along` (a unit vector through the origin) is drawn within the
+/// pick tolerance of the screen's point `at`, whose place on the plane is `on`: the
+/// screen's distance from `at` to the line the view draws the axis along, through its
+/// place nearest `on` and a point's step (`scale`) on from there (a view draws a line of
+/// the plane as a line). None near where the view draws neither. The pick's millimetres
+/// are the mean of a point's step across and down ([`scale_at`]): in a view oblique to the
+/// plane, they reach farther than the pick's points one way on the screen, and an axis,
+/// which runs the whole view, would be taken there far off it (R3).
+fn axis_near(
+    project: &dyn Fn([f64; 2]) -> Option<Pos2>,
+    along: [f64; 2],
+    on: [f64; 2],
+    at: Pos2,
+    scale: Scale,
+) -> bool {
+    let foot = mul(along, dot(on, along));
+    let (Some(a), Some(b)) = (project(foot), project(add(foot, mul(along, scale.0)))) else {
+        return false;
+    };
+    let (ab, off) = (b - a, at - a);
+    let across = if ab.length() > 0.0 {
+        (ab.x * off.y - ab.y * off.x).abs() / ab.length()
+    } else {
+        off.length()
+    };
+    across <= SKETCH_PICK_TOLERANCE
 }
 
 /// Millimetres per screen point on the plane at `at`: the mean of how far one point across

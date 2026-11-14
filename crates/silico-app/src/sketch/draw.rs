@@ -21,8 +21,8 @@ use silico_core::kernel::SketchPlane;
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
 use silico_core::sketch_tools::{DimensionPreview, MeasureKind, Preview, Relation};
 
-use super::hit::Picked;
-use super::selection::Selection;
+use super::hit::SketchPick;
+use super::selection::SketchSelection;
 use super::style::*;
 
 /// The most segments one curve's polyline has, however near the view: past it, a curve far
@@ -974,27 +974,27 @@ pub(crate) fn tessellate(loops: &[Vec<[f64; 2]>]) -> Option<Vec<[[f64; 2]; 3]>> 
 
 /// What's drawn selected: the members, by ID, and the origin and the axes (C9).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Selected {
+pub struct DrawnSelection {
     pub members: BTreeSet<ElementId>,
     pub origin: bool,
     /// The x axis's and the y axis's.
     pub axes: [bool; 2],
 }
 
-impl Selected {
+impl DrawnSelection {
     /// What `selection` holds.
-    pub fn of(selection: &Selection) -> Self {
-        Selected {
+    pub fn of(selection: &SketchSelection) -> Self {
+        DrawnSelection {
             members: selection.members().map(|hit| hit.id.clone()).collect(),
-            origin: selection.contains(&Picked::Origin),
-            axes: [Picked::XAxis, Picked::YAxis].map(|axis| selection.contains(&axis)),
+            origin: selection.contains(&SketchPick::Origin),
+            axes: [SketchPick::XAxis, SketchPick::YAxis].map(|axis| selection.contains(&axis)),
         }
     }
 }
 
 /// What's drawn of `read`, seen through `view`, what `selected` holds drawn selected: the
 /// plane's grid and axes (where the view says what's in it), an axis selected across all
-/// the view shows of it, and the origin; the profile's fill (unless the sketch is over
+/// the view draws of it ([`selected_axis`]), and the origin; the profile's fill (unless the sketch is over
 /// defined); each curve a polyline (an arc or a circle within the view's chord tolerance of
 /// itself), construction dashed; each point a square; and each relation's glyphs and each
 /// dimension; each as `shown` says.
@@ -1002,7 +1002,7 @@ pub fn drawing(
     read: &SketchRead,
     view: &View<'_>,
     shown: Shown,
-    selected: &Selected,
+    selected: &DrawnSelection,
     fills: &[RegionFill],
 ) -> Vec<Drawn> {
     let geometry = Geometry::of(read);
@@ -1011,14 +1011,9 @@ pub fn drawing(
     let members = &read.members;
     let colours = axis_colours(read.plane.as_ref().ok());
     let mut drawn = grid(view, colours);
-    // A selected axis over the grid's, white over the halo as a member's line, wherever the
-    // view shows it: the grid's stops short of the far plane, and a pick takes an axis
-    // anywhere along it.
-    if let Some(visible) = view.visible {
-        for (axis, colour) in [0, 1].into_iter().zip(colours) {
-            if selected.axes[axis] {
-                drawn.extend(axis_line(view, axis, visible, colour, true));
-            }
+    for (axis, colour) in [0, 1].into_iter().zip(colours) {
+        if selected.axes[axis] {
+            drawn.extend(selected_axis(view, axis, colour));
         }
     }
     if let Some(at) = view.at([0.0, 0.0]) {
@@ -1234,31 +1229,34 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
     }
     // The axes: the sketch's x along y = 0, its y along x = 0.
     for (axis, colour) in [0, 1].into_iter().zip(axes) {
-        drawn.extend(axis_line(view, axis, (lo, hi), colour, false));
+        let other = 1 - axis;
+        if lo[other] <= 0.0 && 0.0 <= hi[other] {
+            drawn.extend(axis_stroke(view, axis, [lo[axis], hi[axis]], colour, false));
+        }
     }
     drawn
 }
 
-/// The axis `axis` (0, the sketch's x, along y = 0; 1, its y, along x = 0) across the part
-/// of the plane from `lo` to `hi`, in `colour`, selected or not: none where that part
-/// doesn't reach it, or the view can't show it.
-fn axis_line(
+/// How far each way along a selected axis it's drawn where the view doesn't say what part of
+/// the plane it shows: a kilometre, as far as a sketch's points may be.
+const SELECTED_AXIS_REACH: f64 = silico_protocol::MAX_LENGTH;
+
+/// The place `t` along the axis `axis` (0, the sketch's x, along y = 0; 1, its y, along
+/// x = 0).
+fn on_axis(axis: usize, t: f64) -> [f64; 2] {
+    if axis == 0 { [t, 0.0] } else { [0.0, t] }
+}
+
+/// The axis `axis` from `ends[0]` to `ends[1]` along it, in `colour`, selected or not: none
+/// where the view can't show it.
+fn axis_stroke(
     view: &View<'_>,
     axis: usize,
-    (lo, hi): ([f64; 2], [f64; 2]),
+    ends: [f64; 2],
     colour: Color32,
     selected: bool,
 ) -> Option<Drawn> {
-    let other = 1 - axis;
-    if !(lo[other] <= 0.0 && 0.0 <= hi[other]) {
-        return None;
-    }
-    let ends = if axis == 0 {
-        [[lo[0], 0.0], [hi[0], 0.0]]
-    } else {
-        [[0.0, lo[1]], [0.0, hi[1]]]
-    };
-    let run = runs(ends.iter().map(|&p| view.at(p)).collect()).pop()?;
+    let run = runs(ends.iter().map(|&t| view.at(on_axis(axis, t))).collect()).pop()?;
     Some(Drawn::Stroke {
         of: None,
         kind: StrokeKind::Axis,
@@ -1266,6 +1264,46 @@ fn axis_line(
         colour,
         selected,
     })
+}
+
+/// A selected axis, white over the halo as a member's line, across all the view draws of
+/// it: the part of the plane the view says it shows (not the grid's part of it: a pick takes
+/// an axis anywhere along it), or, where it doesn't say (its corners' rays miss the plane,
+/// the horizon in view), [`SELECTED_AXIS_REACH`] each way; and that cut where the view
+/// stops drawing it, at the eye in perspective. The part of a line a view draws is one
+/// stretch of it (in perspective, what's at least the drawing's cut ahead of the eye), so
+/// where a stretch's end isn't drawn, its cut is found by halving toward the end that is.
+/// None where the view draws none of it.
+fn selected_axis(view: &View<'_>, axis: usize, colour: Color32) -> Option<Drawn> {
+    let other = 1 - axis;
+    let [lo, hi] = match view.visible {
+        Some((lo, hi)) if lo[other] <= 0.0 && 0.0 <= hi[other] => [lo[axis], hi[axis]],
+        Some(_) => return None,
+        None => [-SELECTED_AXIS_REACH, SELECTED_AXIS_REACH],
+    };
+    let drawn = |t: f64| view.at(on_axis(axis, t)).is_some();
+    // From a place drawn toward one that isn't, the last drawn, to the float.
+    let cut = |mut inside: f64, mut outside: f64| {
+        for _ in 0..1100 {
+            let middle = inside + (outside - inside) / 2.0;
+            if middle == inside || middle == outside {
+                break;
+            }
+            if drawn(middle) {
+                inside = middle;
+            } else {
+                outside = middle;
+            }
+        }
+        inside
+    };
+    let ends = match (drawn(lo), drawn(hi)) {
+        (true, true) => [lo, hi],
+        (true, false) => [lo, cut(lo, hi)],
+        (false, true) => [cut(hi, lo), hi],
+        (false, false) => return None,
+    };
+    axis_stroke(view, axis, ends, colour, true)
 }
 
 #[cfg(test)]

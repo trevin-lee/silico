@@ -21,11 +21,12 @@ use silico_core::sketch_tools::{
 };
 
 use super::draw::{
-    Drawn, Flat, GlyphKind, LabelKind, MAX_CURVE_SEGMENTS, Scale, Selected, Shown, StrokeKind,
-    View, drawing, preview, region_fills, round_points, segments, tessellate,
+    Drawn, DrawnSelection, Flat, GlyphKind, LabelKind, MAX_CURVE_SEGMENTS, Scale, Shown,
+    StrokeKind, View, drawing, preview, region_fills, round_points, segments, tessellate,
 };
 use super::draw::{add, direction, mul};
-use super::hit::{Hit, Picked, hit};
+use super::hit::{Hit, SketchPick, hit};
+use super::screen::Placed;
 use super::style::*;
 use super::*;
 
@@ -35,6 +36,11 @@ pub(crate) fn id(text: &str) -> ElementId {
 
 fn element(text: &str) -> Reference {
     Reference::Element(id(text))
+}
+
+/// The member `name`, of `kind`, as a click picks it.
+fn member(name: &str, kind: ElementKind) -> Option<SketchPick> {
+    Some(SketchPick::Member(Hit { id: id(name), kind }))
 }
 
 pub(crate) fn point(name: &str, x: f64, y: f64) -> SketchPoint {
@@ -1006,22 +1012,21 @@ fn a_construction_previews_curves_are_drawn_as_construction() {
 fn hit_takes_a_point_before_a_curve_and_the_nearest_curve_before_a_farther_one() {
     let read = under(rectangle(Vec::new()));
     let found = |at: [f64; 2], tolerance: f64| hit(&read, at, tolerance, HAND);
-    let hit_of = |name: &str, kind: ElementKind| Some(Picked::Member(Hit { id: id(name), kind }));
     // (1, 0.5): the corner pa000001 is √1.25 = 1.118 off, past 1; the bottom side 0.5,
     // the left side 1.0: the bottom.
     assert_eq!(
         found([1.0, 0.5], 1.0),
-        hit_of("na000001", ElementKind::Line)
+        member("na000001", ElementKind::Line)
     );
     // (0.3, 0.3): the corner 0.424 off, a side 0.3: the point first.
     assert_eq!(
         found([0.3, 0.3], 1.0),
-        hit_of("pa000001", ElementKind::Point)
+        member("pa000001", ElementKind::Point)
     );
     // (0.5, 0.5) within 0.6: the corner is 0.707 off; both sides 0.5: the lower ID.
     assert_eq!(
         found([0.5, 0.5], 0.6),
-        hit_of("na000001", ElementKind::Line)
+        member("na000001", ElementKind::Line)
     );
     // The middle, 10 from every side: nothing.
     assert_eq!(found([20.0, 10.0], 1.0), None);
@@ -1038,7 +1043,7 @@ fn hit_ties_between_points_go_to_the_lower_id() {
     sketch.points = vec![point("pb000002", 2.0, 0.0), point("pb000001", 0.0, 0.0)];
     assert_eq!(
         hit(&under(sketch), [1.0, 0.0], 1.5, HAND),
-        Some(Picked::Member(Hit {
+        Some(SketchPick::Member(Hit {
             id: id("pb000001"),
             kind: ElementKind::Point
         }))
@@ -1067,8 +1072,72 @@ fn hit_finds_a_glyph_and_a_dimension_where_theyre_drawn() {
     assert_eq!(found([20.0, 15.0]), None);
 }
 
+/// The rectangle with its bottom horizontal and its length dimensioned: the glyph's box about
+/// (11.2, −1.3), 0.8 mm either way (the bottom runs +x, its right −y, the glyph 0.28 along it
+/// and 1.3 below); the dimension's line 2.6 below the bottom, its value at (20, −2.6), and its
+/// extension lines from 0.4 to 3.1 below it, at x = 0 (along the y axis) and x = 40.
+fn dimensioned() -> SketchRead {
+    under(rectangle(vec![
+        horizontal("ka000001", "na000001"),
+        length("ka000002", "na000001", "40", true),
+    ]))
+}
+
+/// The rectangle moved to (−20, 2.6), its bottom's length dimensioned, so the value "40" sits
+/// over the origin, at (0, 0): its box 1.16011 mm either way across (two characters of 0.574 ×
+/// 11.5 points and 5 a side) and 0.9 up; and a point pf000001 at (−0.8, −0.5), under the box.
+fn value_over_the_origin() -> SketchRead {
+    let mut sketch = rectangle_at(
+        [-20.0, 2.6],
+        vec![length("ka000002", "na000001", "40", true)],
+    );
+    sketch.points.push(point("pf000001", -0.8, -0.5));
+    under(sketch)
+}
+
 #[test]
-fn an_arc_is_hit_on_its_sweep_and_past_it_only_near_its_ends() {
+fn hit_takes_points_and_the_origin_then_boxes_then_curves_then_dimension_lines_then_axes() {
+    let constraint = |name: &str| member(name, ElementKind::Constraint);
+    let read = dimensioned();
+    // (11.2, −0.6): inside the glyph's box, and 0.6 from the bottom (and the x axis it
+    // covers), within the 0.7: the glyph, drawn over the line.
+    assert_eq!(hit(&read, [11.2, -0.6], 0.7, HAND), constraint("ka000001"));
+    // (0, −1.5): 1.5 from the corner, the origin, and the left side; on the y axis, and on
+    // the left extension line: the dimension, the axis running everywhere.
+    assert_eq!(hit(&read, [0.0, -1.5], 0.7, HAND), constraint("ka000002"));
+    // Past the extension line's end, (0, −3.5): 0.4 from it, but the axis is 0 off: the
+    // dimension's line is still the nearer thing drawn there, within the pick.
+    assert_eq!(hit(&read, [0.0, -3.5], 0.7, HAND), constraint("ka000002"));
+    // (0, −4): 0.9 past the line's end, beyond the pick: the axis.
+    assert_eq!(hit(&read, [0.0, -4.0], 0.7, HAND), Some(SketchPick::YAxis));
+    let read = value_over_the_origin();
+    // (0.9, 0.1): inside the value's box over the x axis, 0.1 from the axis, 0.906 from the
+    // origin: the dimension.
+    assert_eq!(hit(&read, [0.9, 0.1], 0.7, HAND), constraint("ka000002"));
+    // (0.2, 0.1), inside the box: the origin, 0.224 off, before it.
+    assert_eq!(hit(&read, [0.2, 0.1], 0.7, HAND), Some(SketchPick::Origin));
+    // (−0.8, −0.3), inside the box: the point, 0.2 off (the origin 0.854), before it.
+    assert_eq!(
+        hit(&read, [-0.8, -0.3], 0.7, HAND),
+        member("pf000001", ElementKind::Point)
+    );
+}
+
+#[test]
+fn a_double_click_on_an_extension_line_along_an_axis_opens_its_dimensions_modify_box() {
+    // (0, −1.5), at (100, 515): on the length's left extension line, along the y axis.
+    let mut mode = mode_on(dimensioned());
+    frame_of(
+        &mut mode,
+        &mut None,
+        &[event(PointerAction::DoubleClick, pos2(100.0, 515.0), false)],
+    );
+    let edit = mode.edit_box.as_ref().map(|edit| edit.constraint.clone());
+    assert_eq!(edit, Some(id("ka000002")));
+}
+
+#[test]
+fn an_arc_is_hit_on_its_sweep_and_not_on_its_circle_off_it() {
     let sketch = Sketch {
         plane: OriginPlane::Xy.into(),
         points: vec![
@@ -1122,7 +1191,10 @@ fn an_empty_sketch_draws_only_the_origin_and_hits_only_the_origin_and_the_axes()
     );
     // The origin at its place (C9); (3, 4) is 5 from it, 4 from the x axis, and 3 from the
     // y axis: nothing within 2.
-    assert_eq!(hit(&read, [0.0, 0.0], 100.0, HAND), Some(Picked::Origin));
+    assert_eq!(
+        hit(&read, [0.0, 0.0], 100.0, HAND),
+        Some(SketchPick::Origin)
+    );
     assert_eq!(hit(&read, [3.0, 4.0], 2.0, HAND), None);
     assert_eq!(state_shown(&read).words, "Empty");
 }
@@ -1228,7 +1300,11 @@ fn huge_coordinates_draw_finite_and_a_huge_circle_takes_at_most_the_cap() {
                 .all(|p| p.x.is_finite() && p.y.is_finite())
         );
     }
-    assert!(hit(&read, [1e6, 0.0], 1.0, Scale(0.001)).is_some());
+    // Its top, (1e6, 0), is on the x axis too: the circle, the sketch's own on the tie.
+    assert_eq!(
+        hit(&read, [1e6, 0.0], 1.0, Scale(0.001)),
+        member("ca000001", ElementKind::Circle)
+    );
 }
 
 #[test]
@@ -1535,11 +1611,11 @@ fn a_frames_presses_select_ctrl_adds_and_a_press_on_nothing_clears() {
 #[test]
 fn a_selected_member_is_drawn_selected_its_state_colour_kept() {
     let read = under(rectangle(vec![horizontal("ka000001", "na000001")]));
-    let selected = Selected {
+    let selected = DrawnSelection {
         members: [id("na000001"), id("ka000001"), id("pa000002")]
             .into_iter()
             .collect(),
-        ..Selected::default()
+        ..DrawnSelection::default()
     };
     let drawn = drawing(&read, &view(), Shown::default(), &selected, &[]);
     for name in ["na000001", "ka000001", "pa000002"] {
@@ -1565,7 +1641,7 @@ fn every_kind_turns_into_shapes_none_left_out() {
         holes: Vec::new(),
     }];
     read.members.lines[3].construction = true;
-    let selected = Selected {
+    let selected = DrawnSelection {
         members: [
             id("na000002"),
             id("ka000002"),
@@ -1575,7 +1651,7 @@ fn every_kind_turns_into_shapes_none_left_out() {
         .into_iter()
         .collect(),
         origin: true,
-        ..Selected::default()
+        ..DrawnSelection::default()
     };
     let mut drawn = drawing(&read, &view(), Shown::default(), &selected, &[]);
     drawn.extend(preview(
@@ -1605,19 +1681,21 @@ fn delete_joins_a_lone_point_two_curves_end_at_and_removes_anything_else() {
     let mut sketch = rectangle(Vec::new());
     sketch.lines.pop();
     let mut mode = mode_on(under(sketch));
-    let hit = |name: &str, kind| Some(Picked::Member(Hit { id: id(name), kind }));
     assert_eq!(mode.deletion(), None);
     // pa000002: na000001 ends there, na000002 starts there.
-    mode.click(hit("pa000002", ElementKind::Point), false);
+    mode.selection
+        .click(member("pa000002", ElementKind::Point), false);
     assert_eq!(mode.deletion(), Some(Deletion::Join(id("pa000002"))));
     // pa000001, its one side (na000004) gone: removed.
-    mode.click(hit("pa000001", ElementKind::Point), false);
+    mode.selection
+        .click(member("pa000001", ElementKind::Point), false);
     assert_eq!(
         mode.deletion(),
         Some(Deletion::Remove(vec![element("pa000001")]))
     );
     // A point and a line: removed together, by ID.
-    mode.click(hit("na000001", ElementKind::Line), true);
+    mode.selection
+        .click(member("na000001", ElementKind::Line), true);
     assert_eq!(
         mode.deletion(),
         Some(Deletion::Remove(vec![
@@ -1631,8 +1709,8 @@ fn delete_joins_a_lone_point_two_curves_end_at_and_removes_anything_else() {
 fn a_new_read_lets_go_of_selected_members_it_no_longer_holds() {
     let mut mode = SketchMode::new(1, None);
     for (name, ctrl) in [("na000002", false), ("nz000009", true)] {
-        mode.click(
-            Some(Picked::Member(Hit {
+        mode.selection.click(
+            Some(SketchPick::Member(Hit {
                 id: id(name),
                 kind: ElementKind::Line,
             })),
@@ -1650,35 +1728,22 @@ fn a_new_read_lets_go_of_selected_members_it_no_longer_holds() {
 // Sketch mode's selection in pick order, with the origin and the axes (the constraint
 // tools' C9, docs/study/constraint-tools.md, section 9).
 
+/// [`rectangle`] with `constraints`, moved by `by`.
+fn rectangle_at(by: [f64; 2], constraints: Vec<SketchConstraint>) -> Sketch {
+    let mut sketch = rectangle(constraints);
+    for p in &mut sketch.points {
+        p.x = Coordinate::new(p.x.mm() + by[0]).unwrap();
+        p.y = Coordinate::new(p.y.mm() + by[1]).unwrap();
+    }
+    sketch
+}
+
 /// [`rectangle`] moved to (10, 10), clear of the origin and the axes: its corners
 /// pa000001 (10, 10), pa000002 (50, 10), pa000003 (50, 30), pa000004 (10, 30), and its sides
 /// na000001 (bottom), na000002 (right), na000003 (top), na000004 (left). Through [`hand`],
 /// the corners are at (200, 400), (600, 400), (600, 200), and (200, 200).
 fn box_off_the_origin() -> Sketch {
-    let mut sketch = rectangle(Vec::new());
-    for p in &mut sketch.points {
-        p.x = Coordinate::new(p.x.mm() + 10.0).unwrap();
-        p.y = Coordinate::new(p.y.mm() + 10.0).unwrap();
-    }
-    sketch
-}
-
-/// One frame of the hand view's with `events`, the pointer off the viewport.
-fn hand_frame(mode: &mut SketchMode, events: &[PointerEvent]) {
-    with_painter(|painter| {
-        let input = FrameInput {
-            events,
-            pointer: None,
-            project: &hand,
-            to_plane: &unhand,
-        };
-        mode.frame(painter, &input, &mut None);
-    });
-}
-
-/// The member `name`, of `kind`, as a click picks it.
-fn member(name: &str, kind: ElementKind) -> Option<Picked> {
-    Some(Picked::Member(Hit { id: id(name), kind }))
+    rectangle_at([10.0, 10.0], Vec::new())
 }
 
 #[test]
@@ -1687,7 +1752,7 @@ fn ctrl_clicks_keep_their_pick_order_and_one_clicked_back_on_joins_at_the_end() 
     // Ctrl on the top's middle, (20, 20) at (300, 300); the corner pa000002, (40, 0) at
     // (500, 500); and the right side's middle, (40, 10) at (500, 400): not their ID order.
     for at in [pos2(300.0, 300.0), pos2(500.0, 500.0), pos2(500.0, 400.0)] {
-        hand_frame(&mut mode, &press(at, true));
+        frame_of(&mut mode, &mut None, &press(at, true));
     }
     assert_eq!(
         mode.selection.references(),
@@ -1698,12 +1763,12 @@ fn ctrl_clicks_keep_their_pick_order_and_one_clicked_back_on_joins_at_the_end() 
         ]
     );
     // The corner Ctrl-clicked off, then on again: at the end.
-    hand_frame(&mut mode, &press(pos2(500.0, 500.0), true));
+    frame_of(&mut mode, &mut None, &press(pos2(500.0, 500.0), true));
     assert_eq!(
         mode.selection.references(),
         [element("na000003"), element("na000002")]
     );
-    hand_frame(&mut mode, &press(pos2(500.0, 500.0), true));
+    frame_of(&mut mode, &mut None, &press(pos2(500.0, 500.0), true));
     assert_eq!(
         mode.selection.references(),
         [
@@ -1714,9 +1779,9 @@ fn ctrl_clicks_keep_their_pick_order_and_one_clicked_back_on_joins_at_the_end() 
     );
     // A plain click on the bottom's middle, (20, 0) at (300, 500), replaces them all; one
     // on nothing, (20, 10) at (300, 400), 10 from every side, clears it.
-    hand_frame(&mut mode, &press(pos2(300.0, 500.0), false));
+    frame_of(&mut mode, &mut None, &press(pos2(300.0, 500.0), false));
     assert_eq!(mode.selection.references(), [element("na000001")]);
-    hand_frame(&mut mode, &press(pos2(300.0, 400.0), false));
+    frame_of(&mut mode, &mut None, &press(pos2(300.0, 400.0), false));
     assert!(mode.selection.is_empty());
 }
 
@@ -1725,19 +1790,29 @@ fn a_click_at_the_origin_selects_it_and_one_on_an_axis_far_along_it_selects_the_
     let mut mode = mode_on(under(box_off_the_origin()));
     // (0.2, 0.2) at (102, 498): 0.28 from the origin, within the 7-point pick (0.7 mm);
     // the box's nearest corner is 13.9 off.
-    hand_frame(&mut mode, &press(pos2(102.0, 498.0), false));
+    frame_of(&mut mode, &mut None, &press(pos2(102.0, 498.0), false));
     assert_eq!(mode.selection.references(), [Reference::Origin]);
     // (80, 0.5) at (900, 495): 0.5 off the x axis, 80 along it, 30 past the box: the axis.
-    hand_frame(&mut mode, &press(pos2(900.0, 495.0), false));
+    frame_of(&mut mode, &mut None, &press(pos2(900.0, 495.0), false));
     assert_eq!(mode.selection.references(), [Reference::XAxis]);
     // (−0.5, −40) at (95, 900), Ctrl: the y axis, after it.
-    hand_frame(&mut mode, &press(pos2(95.0, 900.0), true));
+    frame_of(&mut mode, &mut None, &press(pos2(95.0, 900.0), true));
     assert_eq!(
         mode.selection.references(),
         [Reference::XAxis, Reference::YAxis]
     );
+    // The x axis Ctrl-clicked off; the origin Ctrl-clicked on, at the end, and off again.
+    frame_of(&mut mode, &mut None, &press(pos2(900.0, 495.0), true));
+    assert_eq!(mode.selection.references(), [Reference::YAxis]);
+    frame_of(&mut mode, &mut None, &press(pos2(102.0, 498.0), true));
+    assert_eq!(
+        mode.selection.references(),
+        [Reference::YAxis, Reference::Origin]
+    );
+    frame_of(&mut mode, &mut None, &press(pos2(102.0, 498.0), true));
+    assert_eq!(mode.selection.references(), [Reference::YAxis]);
     // (80, 0.8) at (900, 492), past the pick: nothing there, so the click clears it.
-    hand_frame(&mut mode, &press(pos2(900.0, 492.0), false));
+    frame_of(&mut mode, &mut None, &press(pos2(900.0, 492.0), false));
     assert!(mode.selection.is_empty());
 }
 
@@ -1757,10 +1832,10 @@ fn a_point_at_the_origins_place_and_a_line_along_an_axis_win_over_them() {
     );
     // (45, 0.3), past the bottom's end (5 from it, and from the corner and the right
     // side): the axis.
-    assert_eq!(hit(&read, [45.0, 0.3], 0.7, HAND), Some(Picked::XAxis));
+    assert_eq!(hit(&read, [45.0, 0.3], 0.7, HAND), Some(SketchPick::XAxis));
     // A click at the origin's place, (100, 500), selects the corner.
     let mut mode = mode_on(read);
-    hand_frame(&mut mode, &press(pos2(100.0, 500.0), false));
+    frame_of(&mut mode, &mut None, &press(pos2(100.0, 500.0), false));
     assert_eq!(mode.selection.references(), [element("pa000001")]);
 }
 
@@ -1782,7 +1857,7 @@ fn the_same_clicks_give_the_same_order() {
         clicks
             .iter()
             .map(|&at| {
-                hand_frame(&mut mode, &press(at, true));
+                frame_of(&mut mode, &mut None, &press(at, true));
                 mode.selection.references()
             })
             .collect::<Vec<_>>()
@@ -1808,31 +1883,36 @@ fn the_same_clicks_give_the_same_order() {
 fn delete_ignores_the_origin_and_the_axes() {
     let mut mode = mode_on(under(rectangle(Vec::new())));
     // The origin and the x axis alone: nothing to delete.
-    mode.click(Some(Picked::Origin), false);
-    mode.click(Some(Picked::XAxis), true);
+    mode.selection.click(Some(SketchPick::Origin), false);
+    mode.selection.click(Some(SketchPick::XAxis), true);
     assert_eq!(mode.deletion(), None);
     // With the top: the top alone removed.
-    mode.click(member("na000003", ElementKind::Line), true);
+    mode.selection
+        .click(member("na000003", ElementKind::Line), true);
     assert_eq!(
         mode.deletion(),
         Some(Deletion::Remove(vec![element("na000003")]))
     );
     // The origin and the corner pa000002, where the bottom ends and the right side starts:
     // the corner joined, as if it were alone.
-    mode.click(Some(Picked::Origin), false);
-    mode.click(member("pa000002", ElementKind::Point), true);
+    mode.selection.click(Some(SketchPick::Origin), false);
+    mode.selection
+        .click(member("pa000002", ElementKind::Point), true);
     assert_eq!(mode.deletion(), Some(Deletion::Join(id("pa000002"))));
 }
 
 #[test]
 fn a_read_without_a_selected_member_drops_it_and_keeps_the_rest_in_their_order() {
     let mut mode = mode_on(under(box_off_the_origin()));
-    // Picked: the top, the origin, the bottom, the x axis, and the corner pa000002.
-    mode.click(member("na000003", ElementKind::Line), false);
-    mode.click(Some(Picked::Origin), true);
-    mode.click(member("na000001", ElementKind::Line), true);
-    mode.click(Some(Picked::XAxis), true);
-    mode.click(member("pa000002", ElementKind::Point), true);
+    // SketchPick: the top, the origin, the bottom, the x axis, and the corner pa000002.
+    mode.selection
+        .click(member("na000003", ElementKind::Line), false);
+    mode.selection.click(Some(SketchPick::Origin), true);
+    mode.selection
+        .click(member("na000001", ElementKind::Line), true);
+    mode.selection.click(Some(SketchPick::XAxis), true);
+    mode.selection
+        .click(member("pa000002", ElementKind::Point), true);
     // A read without the bottom, as an edit that removed it leaves: the bottom goes, the
     // rest stay as they were picked.
     let mut fewer = box_off_the_origin();
@@ -1861,38 +1941,6 @@ fn a_read_without_a_selected_member_drops_it_and_keeps_the_rest_in_their_order()
     assert_eq!(
         mode.selection.references(),
         [Reference::Origin, Reference::XAxis]
-    );
-}
-
-#[test]
-fn members_joining_together_join_in_id_order_after_whats_selected() {
-    let mut selection = selection::Selection::default();
-    selection.click(member("na000003", ElementKind::Line), false);
-    selection.click(Some(Picked::Origin), true);
-    // As a box's would: the y axis, pa000002, na000001, the top and the origin (selected
-    // already), and na000002. Those not selected join after, by ID, then the axis.
-    selection.add_together(
-        [
-            Some(Picked::YAxis),
-            member("pa000002", ElementKind::Point),
-            member("na000001", ElementKind::Line),
-            member("na000003", ElementKind::Line),
-            Some(Picked::Origin),
-            member("na000002", ElementKind::Line),
-        ]
-        .into_iter()
-        .flatten(),
-    );
-    assert_eq!(
-        selection.references(),
-        [
-            element("na000003"),
-            Reference::Origin,
-            element("na000001"),
-            element("na000002"),
-            element("pa000002"),
-            Reference::YAxis,
-        ]
     );
 }
 
@@ -1927,7 +1975,13 @@ fn the_origin_and_an_axis_selected_are_drawn_white_over_the_members_halo() {
             .cloned()
     };
     // Nothing selected: neither is.
-    let plain = drawing(&read, &seen, Shown::default(), &Selected::default(), &[]);
+    let plain = drawing(
+        &read,
+        &seen,
+        Shown::default(),
+        &DrawnSelection::default(),
+        &[],
+    );
     assert!(selected_axes(&plain).is_empty());
     assert_eq!(
         origin(&plain),
@@ -1938,10 +1992,10 @@ fn the_origin_and_an_axis_selected_are_drawn_white_over_the_members_halo() {
     );
     // The origin and the x axis selected: the origin, and the axis across the view, (−10,
     // 0) to (60, 0), (0, 500) to (700, 500).
-    let selected = Selected {
+    let selected = DrawnSelection {
         origin: true,
         axes: [true, false],
-        ..Selected::default()
+        ..DrawnSelection::default()
     };
     let drawn = drawing(&read, &seen, Shown::default(), &selected, &[]);
     assert_eq!(
@@ -1997,21 +2051,233 @@ fn the_origin_and_an_axis_selected_are_drawn_white_over_the_members_halo() {
     assert_eq!(plain.len(), 1);
 }
 
+/// The selected axis strokes of `drawn`, each its points.
+fn selected_axes(drawn: &[Drawn]) -> Vec<Vec<Pos2>> {
+    drawn
+        .iter()
+        .filter_map(|d| match d {
+            Drawn::Stroke {
+                kind: StrokeKind::Axis,
+                points,
+                selected: true,
+                ..
+            } => Some(points.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
-fn a_frame_draws_the_origin_selected_once_its_clicked() {
+fn a_frame_draws_the_origin_and_each_axis_selected_as_theyre_clicked() {
     // The drawing is kept between frames until what it's of changes: the selection of the
-    // origin is one such change.
+    // origin, or of an axis, is one such change.
     let mut mode = mode_on(under(box_off_the_origin()));
-    hand_frame(&mut mode, &[]);
+    frame_of(&mut mode, &mut None, &[]);
     let origin_selected = |mode: &SketchMode| {
         mode.last_drawn()
             .iter()
             .any(|d| matches!(d, Drawn::Origin { selected: true, .. }))
     };
     assert!(!origin_selected(&mode));
-    hand_frame(&mut mode, &press(pos2(100.0, 500.0), false));
-    hand_frame(&mut mode, &[]);
+    assert!(selected_axes(mode.last_drawn()).is_empty());
+    frame_of(&mut mode, &mut None, &press(pos2(100.0, 500.0), false));
+    frame_of(&mut mode, &mut None, &[]);
     assert!(origin_selected(&mode));
+    // Through the hand view the x axis is the row y = 500, the y axis the column x = 100.
+    let level = |points: &Vec<Pos2>| points.len() == 2 && points.iter().all(|p| p.y == 500.0);
+    let plumb = |points: &Vec<Pos2>| points.len() == 2 && points.iter().all(|p| p.x == 100.0);
+    // Ctrl on the x axis at (80, 0), (900, 500): one selected stroke, along it.
+    frame_of(&mut mode, &mut None, &press(pos2(900.0, 500.0), true));
+    let axes = selected_axes(mode.last_drawn());
+    assert!(axes.len() == 1 && level(&axes[0]), "{axes:?}");
+    // Ctrl on the y axis at (0, −40), (100, 900): a second, down it.
+    frame_of(&mut mode, &mut None, &press(pos2(100.0, 900.0), true));
+    let axes = selected_axes(mode.last_drawn());
+    assert!(axes.len() == 2, "{axes:?}");
+    assert!(axes.iter().any(level) && axes.iter().any(plumb), "{axes:?}");
+    // The x axis Ctrl-clicked off: the y axis's alone.
+    frame_of(&mut mode, &mut None, &press(pos2(900.0, 500.0), true));
+    let axes = selected_axes(mode.last_drawn());
+    assert!(axes.len() == 1 && plumb(&axes[0]), "{axes:?}");
+}
+
+#[test]
+fn a_selected_axis_spans_the_whole_view_past_the_grid_and_where_no_grid_is_drawn() {
+    let read = under(box_off_the_origin());
+    let selected = DrawnSelection {
+        axes: [true, false],
+        ..DrawnSelection::default()
+    };
+    // The plane from (−500, −5) to (500, 40) in view: the grid's axis stops at its fade, 200
+    // from the origin; the selected one runs the view's width, (−500, 0) to (500, 0), at
+    // (−4900, 500) to (5100, 500).
+    let wide = View {
+        project: &hand,
+        scale: HAND,
+        visible: Some(([-500.0, -5.0], [500.0, 40.0])),
+        chord_tolerance: SKETCH_CHORD_TOLERANCE,
+    };
+    let drawn = drawing(&read, &wide, Shown::default(), &selected, &[]);
+    assert_eq!(
+        selected_axes(&drawn),
+        [vec![pos2(-4900.0, 500.0), pos2(5100.0, 500.0)]]
+    );
+    // Zoomed out to ten millimetres a point: even the grid's 50 mm lines would be 5 points
+    // apart, under its 8, so no grid and no plain axis; the selected axis all the same, from
+    // (−1000, 0) to (1000, 0), at (0, 500) to (200, 500).
+    let far = |at: [f64; 2]| {
+        Some(pos2(
+            (100.0 + 0.1 * at[0]) as f32,
+            (500.0 - 0.1 * at[1]) as f32,
+        ))
+    };
+    let out = View {
+        project: &far,
+        scale: Scale(10.0),
+        visible: Some(([-1000.0, -1000.0], [1000.0, 1000.0])),
+        chord_tolerance: SKETCH_CHORD_TOLERANCE,
+    };
+    let drawn = drawing(&read, &out, Shown::default(), &selected, &[]);
+    let plain = drawn.iter().any(|d| {
+        matches!(
+            d,
+            Drawn::Stroke {
+                kind: StrokeKind::GridMinor | StrokeKind::GridMajor | StrokeKind::Axis,
+                selected: false,
+                ..
+            }
+        )
+    });
+    assert!(!plain);
+    assert_eq!(
+        selected_axes(&drawn),
+        [vec![pos2(0.0, 500.0), pos2(200.0, 500.0)]]
+    );
+}
+
+/// The part of the plane a view shows, as [`View`] holds it.
+type Visible = Option<([f64; 2], [f64; 2])>;
+
+/// The XY plane through `camera`, an image 800 by 600 pixels at a point a pixel: where it
+/// places the plane on the screen, and the part of the plane its corners' rays meet, as a
+/// frame works it out (none if one misses).
+fn through(camera: silico_protocol::Camera) -> (Placed, Visible) {
+    let placed = Placed::new(
+        &camera,
+        [800, 600],
+        1.0,
+        pos2(0.0, 0.0),
+        silico_core::kernel::SketchPlane::Xy,
+    )
+    .unwrap();
+    let corners = [(0.0, 0.0), (800.0, 0.0), (0.0, 600.0), (800.0, 600.0)];
+    let visible = corners
+        .iter()
+        .map(|&(x, y)| placed.to_plane(pos2(x, y)))
+        .collect::<Option<Vec<_>>>()
+        .and_then(|corners| super::draw::bounds(corners.into_iter()));
+    (placed, visible)
+}
+
+/// A camera 200 mm from (100, 0, 0) looking at it, raised `pitch` degrees above the plane
+/// and turned 10° from looking along +x, in perspective 30° high.
+fn panned(pitch: f64) -> silico_protocol::Camera {
+    let (p, y) = (pitch.to_radians(), 10f64.to_radians());
+    let target = [100.0, 0.0, 0.0];
+    let back = [
+        -libm::cos(p) * libm::cos(y),
+        -libm::cos(p) * libm::sin(y),
+        libm::sin(p),
+    ];
+    silico_protocol::Camera {
+        projection: silico_protocol::Projection::Perspective {
+            field_of_view: 30.0,
+        },
+        eye: std::array::from_fn(|k| target[k] + 200.0 * back[k]),
+        target,
+        up: [0.0, 0.0, 1.0],
+    }
+}
+
+#[test]
+fn in_perspective_a_selected_axis_is_drawn_where_its_in_front_of_the_eye() {
+    // The x axis runs through the view's target, (100, 0), at the image's middle, and on
+    // under the eye and behind it. Raised 25°, every corner's ray meets the plane; raised 8°,
+    // the top corners' rays miss it (15° above the view's line, 7° above the plane), the
+    // horizon in view, so the frame knows no part of the plane it shows. Either way the
+    // selected axis is drawn: one stroke, its ends finite, along the line through the
+    // target's place, to within a pixel.
+    let selected = DrawnSelection {
+        axes: [true, false],
+        ..DrawnSelection::default()
+    };
+    let read = under(box_off_the_origin());
+    for pitch in [25.0, 8.0] {
+        let (placed, visible) = through(panned(pitch));
+        assert_eq!(visible.is_none(), pitch == 8.0, "{pitch}");
+        let project = |at: [f64; 2]| placed.project(at);
+        let view = View {
+            project: &project,
+            scale: HAND,
+            visible,
+            chord_tolerance: SKETCH_CHORD_TOLERANCE,
+        };
+        let drawn = drawing(&read, &view, Shown::default(), &selected, &[]);
+        let axes = selected_axes(&drawn);
+        let [ends] = axes.as_slice() else {
+            panic!("{pitch}: {axes:?}");
+        };
+        let [a, b] = [ends[0], ends[1]].map(|p| [f64::from(p.x), f64::from(p.y)]);
+        assert!(
+            a.iter().chain(&b).all(|v| v.is_finite()),
+            "{pitch}: {ends:?}"
+        );
+        let middle = project([100.0, 0.0]).unwrap();
+        let m = [f64::from(middle.x), f64::from(middle.y)];
+        let (d, off) = ([b[0] - a[0], b[1] - a[1]], [m[0] - a[0], m[1] - a[1]]);
+        let across = (d[0] * off[1] - d[1] * off[0]).abs() / libm::hypot(d[0], d[1]);
+        assert!(across < 1.0, "{pitch}: {across} px off, {ends:?}");
+    }
+}
+
+#[test]
+fn in_a_view_oblique_to_the_plane_an_axis_is_taken_only_within_the_picks_points() {
+    // Orthographic, 100 mm high on 600 pixels (a sixth of a millimetre a pixel across),
+    // looking along +y at (0, 100) from 5° above the plane: the y axis runs down the middle
+    // of the screen, and a pixel down it is 1/6 ÷ sin 5° = 1.91 mm. The pick's millimetres
+    // are the mean of a pixel's step across and down, 1.04, so 7 pixels' reach 7.28 mm;
+    // but a click 20 pixels from the axis on the screen is 3.33 mm from it, within that.
+    let target = [0.0, 100.0, 0.0];
+    let e = 5f64.to_radians();
+    let camera = silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 100.0 },
+        eye: [0.0, 100.0 - 500.0 * libm::cos(e), 500.0 * libm::sin(e)],
+        target,
+        up: [0.0, 0.0, 1.0],
+    };
+    let (placed, _) = through(camera);
+    let project = |at: [f64; 2]| placed.project(at);
+    let to_plane = |at: Pos2| placed.to_plane(at);
+    let click = |mode: &mut SketchMode, at: Pos2| {
+        with_painter(|painter| {
+            let events = press(at, false);
+            let input = FrameInput {
+                events: &events,
+                pointer: None,
+                project: &project,
+                to_plane: &to_plane,
+            };
+            mode.frame(painter, &input, &mut None);
+        });
+    };
+    let middle = project([0.0, 100.0]).unwrap();
+    let mut mode = mode_on(under(box_off_the_origin()));
+    // 5 pixels right of the axis: the axis.
+    click(&mut mode, middle + vec2(5.0, 0.0));
+    assert_eq!(mode.selection.references(), [Reference::YAxis]);
+    // 20 pixels right of it, past the 7: nothing, so the click clears the selection.
+    click(&mut mode, middle + vec2(20.0, 0.0));
+    assert!(mode.selection.is_empty());
 }
 
 #[test]
@@ -2245,7 +2511,7 @@ fn delete_joins_two_arcs_or_a_line_and_an_arc_at_their_point_and_removes_a_point
     };
     let deleting = |sketch: Sketch, point: &str| {
         let mut mode = mode_on(under(sketch));
-        mode.click(Some(point_hit(point).into()), false);
+        mode.selection.click(Some(point_hit(point).into()), false);
         mode.deletion()
     };
     // A split arc's two pieces about pc000000: the first ends at pm000000, the second starts
@@ -2535,8 +2801,8 @@ fn a_plate_with_sixty_holes_fills_less_its_holes_and_steady_frames_reuse_the_dra
     };
     frames(&mut mode, 10.0, 20);
     assert_eq!((mode.drawings, mode.fill_builds), (1, 1));
-    mode.click(
-        Some(Picked::Member(Hit {
+    mode.selection.click(
+        Some(SketchPick::Member(Hit {
             id: id("na000001"),
             kind: ElementKind::Line,
         })),
@@ -6458,7 +6724,7 @@ fn hit_takes_no_place_thats_no_number_even_at_any_tolerance_and_an_exact_one_at_
     // At a point exactly, with no tolerance: that point.
     assert_eq!(
         hit(&read, [40.0, 20.0], 0.0, HAND),
-        Some(Picked::Member(Hit {
+        Some(SketchPick::Member(Hit {
             id: id("pa000003"),
             kind: ElementKind::Point,
         }))
@@ -6486,23 +6752,6 @@ fn a_glyphs_and_a_values_boxes_are_hit_to_their_edges_and_not_past_them() {
     assert_eq!(found([21.1, -1.75], 0.05), Some(element("ka000002")));
     assert_eq!(found([21.26, -1.75], 0.05), None);
     assert_eq!(found([20.0, -1.6], 0.05), None);
-}
-
-#[test]
-fn an_arcs_distance_is_its_rims_on_its_sweep_and_its_nearer_ends_past_it() {
-    // About (0, 0), radius 10, from 90° through 90°: from (0, 10) to (−10, 0).
-    let quarter = super::draw::Curve::Round {
-        centre: [0.0, 0.0],
-        radius: 10.0,
-        start: FRAC_PI_2,
-        sweep: FRAC_PI_2,
-    };
-    let distance = |at| super::hit::distance(quarter, at);
-    // At 135°, 1 outside the rim: 1.
-    let out = 11.0 * std::f64::consts::FRAC_1_SQRT_2;
-    assert!((distance([-out, out]) - 1.0).abs() < 1e-9);
-    // (−10, −1), just past its end: 1 from (−10, 0).
-    assert!((distance([-10.0, -1.0]) - 1.0).abs() < 1e-9);
 }
 
 // The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,

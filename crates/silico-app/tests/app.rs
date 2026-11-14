@@ -20870,6 +20870,7 @@ fn select_member(h: &mut AppHarness, member: &str, kind: silico_core::document::
         .sketch
         .as_mut()
         .unwrap()
+        .selection
         .click(Some(hit.into()), false);
 }
 
