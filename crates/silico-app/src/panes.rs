@@ -1384,16 +1384,24 @@ fn tree(
         None if any_features => "No body: nothing builds one yet".to_owned(),
         _ => "None yet. A pad makes one.".to_owned(),
     };
+    // Each group with how its rows select their features: a body's whole, a sketch as itself.
     let groups = [
-        ("Bodies", tab.browser.bodies(), Icon::Body, no_body),
+        (
+            "Bodies",
+            tab.browser.bodies(),
+            Icon::Body,
+            no_body,
+            SelectedAs::Body,
+        ),
         (
             "Sketches",
             tab.browser.sketches(),
             Icon::Sketch,
             "None yet. Create Sketch starts one.".to_owned(),
+            SelectedAs::Itself,
         ),
     ];
-    for (group_name, rows, icon, empty) in groups {
+    for (group_name, rows, icon, empty, how) in groups {
         let count = rows.is_empty().then_some("0");
         if !header(ui, group_name, count) {
             continue;
@@ -1439,13 +1447,6 @@ fn tree(
                         clicks: false,
                     },
                 );
-                // How its row selects its feature, once for the click and the menu: a body's
-                // whole, a sketch as itself.
-                let how = if sketches {
-                    SelectedAs::Itself
-                } else {
-                    SelectedAs::Body
-                };
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
                 } else if answer.row.clicked() {

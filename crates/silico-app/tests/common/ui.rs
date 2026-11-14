@@ -508,18 +508,20 @@ pub fn every_face<P: AppKernel>(
         .collect()
 }
 
-/// The faces of body `number` that feature `feature` made, as each face's name says
-/// (`Name::feature`), in order.
+/// The faces of body `number` that feature `feature` made, as each face's name's text says
+/// (it starts with the feature's ID and a dot), in order: read from the text, not as the
+/// viewport reads a name.
 pub fn faces_made_by<P: AppKernel>(
     h: &AppUi<P>,
     number: u32,
     feature: &str,
 ) -> Vec<(u32, silico_app::renderer::Element)> {
+    let prefix = format!("{feature}.");
     view(h).bodies()[&number]
         .faces
         .iter()
         .zip(1u32..)
-        .filter(|(face, _)| face.name.feature().as_str() == feature)
+        .filter(|(face, _)| face.name.to_string().starts_with(&prefix))
         .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
         .collect()
 }

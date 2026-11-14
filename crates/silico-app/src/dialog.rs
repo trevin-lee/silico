@@ -1211,9 +1211,17 @@ impl Dialog {
         }
     }
 
-    /// Whether its active box takes a body: the canvas's picks and the browser's body rows
-    /// are its while it does.
-    pub fn takes_bodies(&self) -> bool {
+    /// Whether its boxes hold the selection as bodies (a boolean's boxes of one body, section
+    /// 9): while it's open, the selection is the bodies they hold, a canvas pick or a body's
+    /// browser row goes to its active box, and a right-click selects nothing. The one gate
+    /// for that, wherever it's asked.
+    pub fn boxes_hold_bodies(&self) -> bool {
+        self.kind.combines()
+    }
+
+    /// Whether its active box is a box of one body: what [`took_body`](Self::took_body) and
+    /// [`took_row`](Self::took_row) take a body into.
+    fn takes_bodies(&self) -> bool {
         self.body_box().is_some()
     }
 

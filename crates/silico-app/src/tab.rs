@@ -1759,7 +1759,7 @@ impl Tab {
             .and_then(|timeline| timeline.features.as_deref())
             .unwrap_or_default();
         let own = dialog.feature.clone();
-        if dialog.takes_bodies() {
+        if dialog.boxes_hold_bodies() {
             // A box of one body: each body picked once, in the order picked (a box drawn over
             // a body's edges picks it once), and the selection the bodies the boxes hold.
             let mut seen: Vec<&FeatureId> = Vec::new();
@@ -1847,7 +1847,7 @@ impl Tab {
         let boxes_hold = self
             .dialog
             .as_ref()
-            .is_some_and(|dialog| dialog.kind.combines());
+            .is_some_and(crate::dialog::Dialog::boxes_hold_bodies);
         !boxes_hold && !self.selection.selected_as(id, how)
     }
 
@@ -3266,7 +3266,7 @@ impl Tab {
                                     self.before_dialog = Some(self.selection.saved());
                                     // A boolean's boxes hold its bodies: selected, so the
                                     // canvas lights what of them it shows.
-                                    if dialog.kind.combines() {
+                                    if dialog.boxes_hold_bodies() {
                                         self.selection.select_bodies(dialog.bodies());
                                     } else {
                                         self.selection.clear();
@@ -5433,7 +5433,7 @@ impl Tab {
         remembered.apply(&mut dialog);
         if let Some(kinds) = dialog.takes() {
             self.before_dialog = Some(self.selection.saved());
-            if dialog.kind.combines() {
+            if dialog.boxes_hold_bodies() {
                 self.take_bodies(&mut dialog, kinds);
             } else {
                 self.take_selection(&mut dialog, kinds);
@@ -6660,16 +6660,16 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// The browser's row of the feature `id` chosen while the dialog's active box takes a
-    /// body: taken into it, if it's a body's row (one the dialog's own feature isn't built
-    /// into), or refused, said under it; and the selection the bodies the boxes hold. Whether
-    /// the box took the row (taken or refused), so it isn't selected as itself: false if no
-    /// box of one body is active.
+    /// The browser's row of the feature `id` chosen while the open dialog's boxes hold the
+    /// selection as bodies (`Dialog::boxes_hold_bodies`): taken into its active box, if it's a
+    /// body's row (one the dialog's own feature isn't built into), or refused, said under it;
+    /// and the selection the bodies the boxes hold. Whether the row went to the box (taken or
+    /// refused), so it isn't selected as itself: false with no such dialog open.
     pub fn pick_body(&mut self, id: &FeatureId) -> bool {
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
-        if !dialog.kind.combines() {
+        if !dialog.boxes_hold_bodies() {
             return false;
         }
         let is_body = self.browser.has_body(id);

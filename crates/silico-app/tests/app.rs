@@ -19056,19 +19056,7 @@ fn a_right_click_on_a_feature_selected_so_already_leaves_where_it_was_selected()
     let (mut h, _record) = f.drawn("ladder.silico", LADDER);
     meshes_settled(&mut h);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Triangle"));
-    let tab = |h: &AppHarness| -> (silico_app::feature_menu::Place, Vec<String>) {
-        let tab = &h.state().tabs()[0];
-        let ids = tab
-            .selection()
-            .items()
-            .iter()
-            .filter_map(|item| match item {
-                silico_app::selection::Item::Feature(id) => Some(id.as_str().to_owned()),
-                silico_app::selection::Item::Element(_) => None,
-            })
-            .collect();
-        (tab.selected_in, ids)
-    };
+    let tab = |h: &AppHarness| (h.state().tabs()[0].selected_in, selected_features(h));
     select(&mut h, "Triangle");
     assert_eq!(
         tab(&h),
