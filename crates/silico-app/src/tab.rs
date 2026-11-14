@@ -10194,7 +10194,10 @@ mod tests {
         }
     }
 
-    /// A session of one box, unbuilt, its tab, and every kernel request held from here on.
+    /// A session of one box, unbuilt, its tab, and every kernel request held from here on;
+    /// its rebuild started once by a published read and stopped, so a published read (the
+    /// tab's timeline read sends one) starts it no more, and the first read of the current
+    /// model starts it itself, as its waiter ([`waiting`](Self::waiting)).
     struct HeldBox {
         _dir: tempfile::TempDir,
         kernel: Arc<silico_core::fake::FakeKernel>,
@@ -10202,6 +10205,8 @@ mod tests {
         id: SessionId,
         tab: Tab,
         hold: silico_core::fake::Hold,
+        /// The boxes asked of the kernel by the stopped rebuild, before any of the tab's.
+        stopped_boxes: usize,
     }
 
     impl HeldBox {
@@ -10225,6 +10230,17 @@ mod tests {
                 &opened.result.unwrap().problems,
             );
             let hold = kernel.hold(|_| true);
+            // A published read with nothing published starts the rebuild with no command
+            // waiting on it (decision 13), and a read cancelled before it reaches its wait
+            // stops nothing (decision 34), so a read sent after such a start could be
+            // cancelled with the rebuild left running. Stopped, the rebuild is started again
+            // only by a read of the current model, which waits on what it starts.
+            let _ = sessions.published(&id);
+            assert!(kernel.wait_running(1, HELD_WAIT));
+            assert!(sessions.cancel(&id, Cancellable::Rebuild).result.is_ok());
+            assert!(kernel.wait_idle(HELD_WAIT));
+            let stopped_boxes = boxes(&kernel);
+            assert_eq!(stopped_boxes, 1);
             HeldBox {
                 _dir: dir,
                 kernel,
@@ -10232,12 +10248,13 @@ mod tests {
                 id,
                 tab,
                 hold,
+                stopped_boxes,
             }
         }
 
-        /// How many times the box was asked of the kernel.
+        /// How many times the box was asked of the kernel since the stopped rebuild asked it.
         fn boxes(&self) -> usize {
-            boxes(&self.kernel)
+            boxes(&self.kernel) - self.stopped_boxes
         }
 
         /// The tab's timeline read sent, of the current model, nothing being published.
@@ -10260,7 +10277,8 @@ mod tests {
         }
 
         /// Until `command` is the session's queued command running, waiting on the rebuild,
-        /// the box held.
+        /// the box held: the rebuild running at all says the read started it, and so waits on
+        /// it, nothing else starting it ([`HeldBox`]).
         fn waiting(&self, command: silico_core::command::SessionCommand) {
             until("the read waiting on the rebuild", &|| {
                 self.sessions.status(&self.id).result.is_ok_and(|status| {
@@ -10325,8 +10343,8 @@ mod tests {
                     OwnRead::Check
                 }
                 _ => {
-                    // Of the published model: it starts the rebuild, which the read sent
-                    // next waits on, and is answered at once, nothing being published.
+                    // Of the published model: answered at once, refused, nothing being
+                    // published and its rebuild stopped; the read sent next starts it.
                     held.send_check(Some(Revision::OPENED));
                     held.send_timeline();
                     assert!(held.tab.check_first);
