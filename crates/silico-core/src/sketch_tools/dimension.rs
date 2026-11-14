@@ -81,7 +81,7 @@ use super::adds::Adds;
 use super::build::Builder;
 use super::geometry::{cross, distance, dot, length, scale, sub, unit};
 use super::infer::{View, pick_in};
-use super::{AddToken, Context, Message, NewIds, Outcome, Xy, geometry};
+use super::{AddToken, Axes, Context, Message, NewIds, Outcome, Xy, geometry};
 use crate::command::Revision;
 use crate::command::sketch::SketchRead;
 use crate::document::json::{self, At, Node, Value};
@@ -787,7 +787,7 @@ impl SmartDimension {
     /// opened, unless the last placement's offer isn't settled (the offer is modal).
     fn click(&mut self, view: &View<'_>, tolerance: f64, at: Xy) -> Outcome {
         if self.picks.len() < 2
-            && let Some(hit) = pick_in(view, tolerance, at)
+            && let Some(hit) = pick_in(view, tolerance, at, Axes::BOTH)
             && !self.picks.contains(&hit)
         {
             self.picks.push(hit);
@@ -903,7 +903,8 @@ impl SmartDimension {
             return preview;
         };
         if self.picks.len() < 2 {
-            preview.hover = pick_in(view, tolerance, at).filter(|r| !self.picks.contains(r));
+            preview.hover =
+                pick_in(view, tolerance, at, Axes::BOTH).filter(|r| !self.picks.contains(r));
         }
         let locked = self.lock == Some(Measure::PointLine);
         match offered(view, &self.picks, at, self.lock, locked) {

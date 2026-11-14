@@ -707,14 +707,35 @@ fn not_finite(what: &str) -> Error {
     .with_suggestion(crate::worker::SILICO_BUG)
 }
 
+/// Which of the axes a pick may take, the x axis and the y axis: both, for Smart Dimension;
+/// for sketch mode's selection, each only where the viewport draws it within the pick's
+/// points of the click on the screen, which the core can't see (in a view oblique to the
+/// plane, the pick's millimetres reach farther one way than its points do).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Axes {
+    pub x: bool,
+    pub y: bool,
+}
+
+impl Axes {
+    /// Either axis may be picked.
+    pub const BOTH: Axes = Axes { x: true, y: true };
+}
+
 /// What a click at `at` picks of `sketch`, within `tolerance` millimetres, as Smart Dimension
 /// picks: a point of the sketch, or the origin where it's nearer (the point on a tie, and
 /// a point at the origin's place always); else the nearest curve, a line or an arc where
-/// it's drawn, a circle all round, an axis anywhere along it but where a line of the sketch
-/// lies along it (the sketch's own curve on a tie); else nothing. Sketch mode's selection
-/// hits the origin and the axes by it (the constraint tools' C9), so the two rank them by
-/// one rule. A tolerance that isn't a finite number above 0 is taken as 0, as Smart
+/// it's drawn, a circle all round, an axis `axes` allows anywhere along it but where a line
+/// of the sketch lies along it (the sketch's own curve on a tie); else nothing. An axis
+/// `axes` doesn't allow drops out, so the nearest of the rest is taken. Sketch mode's
+/// selection hits the origin and the axes by it (the constraint tools' C9), so the two rank
+/// them by one rule. A tolerance that isn't a finite number above 0 is taken as 0, as Smart
 /// Dimension takes one; a place that isn't finite picks nothing.
-pub fn pick(sketch: &Sketch, at: Xy, tolerance: f64) -> Option<Reference> {
-    infer::pick_in(&infer::View::of(sketch, &Members::default()), tolerance, at)
+pub fn pick(sketch: &Sketch, at: Xy, tolerance: f64, axes: Axes) -> Option<Reference> {
+    infer::pick_in(
+        &infer::View::of(sketch, &Members::default()),
+        tolerance,
+        at,
+        axes,
+    )
 }
