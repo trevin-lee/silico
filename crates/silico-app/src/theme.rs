@@ -796,6 +796,37 @@ pub const VIEW_CUBE_EDGE: Stroke = Stroke {
 /// [`AXIS_Z`]), a WebGL line's 1 pixel, here 1 point (viewport.js's `buildCube`, `ax`).
 pub const VIEW_CUBE_STUB_WIDTH: f32 = 1.0;
 
+/// The triad's origin, as far in from the canvas's left as up from its bottom
+/// (viewport.js's `drawOverlay`: `ox = 44, oy = h - 44`).
+pub const TRIAD_INSET: f32 = 44.0;
+/// An axis's length on the screen square across the view, each shorter by how far it points
+/// along it (`L = 26`).
+pub const TRIAD_LENGTH: f32 = 26.0;
+/// An axis's stroke, in its colour ([`AXIS_X`], [`AXIS_Y`], [`AXIS_Z`]), its ends round
+/// (`stroke-width="2" stroke-linecap="round"`).
+pub const TRIAD_WIDTH: f32 = 2.0;
+/// How far past an axis's end its letter stands, along it (`L + 9`); how far below that the
+/// letter's baseline is (`ly + 3.5`), the letter's middle across there (`text-anchor:
+/// middle`); and its size (`font-size="10.5"`), in its axis's colour.
+pub const TRIAD_LABEL_PAST: f32 = 9.0;
+pub const TRIAD_LABEL_DROP: f32 = 3.5;
+pub const TRIAD_LABEL_SIZE: f32 = 10.5;
+/// The dot over the origin, drawn last: its radius and its fill (`<circle r="2"
+/// fill="#cfcfcf"/>`, Gray.750).
+pub const TRIAD_ORIGIN_RADIUS: f32 = 2.0;
+pub const TRIAD_ORIGIN: Color32 = GRAY_750;
+
+/// The view label beside the triad (styles.css's `.view-label`, at `left: 82px` as app.js's
+/// `renderCanvasUI` places it): its line's left, in from the canvas's left; its line's
+/// bottom, up from the canvas's bottom (`bottom: 12px`); and its line's height (the body's
+/// 16).
+pub const VIEW_LABEL_LEFT: f32 = 82.0;
+pub const VIEW_LABEL_BOTTOM: f32 = 12.0;
+pub const VIEW_LABEL_LINE_HEIGHT: f32 = BODY_LINE_HEIGHT;
+/// Its words: [`CANVAS_LABEL_SIZE`] (`--fs-small`, 11) in Gray.500 (`--g500`).
+pub const VIEW_LABEL_SIZE: f32 = CANVAS_LABEL_SIZE;
+pub const VIEW_LABEL_TEXT: Color32 = GRAY_500;
+
 /// The navigation bar's width and height, and its margin from the canvas's bottom (the
 /// prototype's `.nav-bar`, 12 from the bottom). Its height is a 24 high button, 3 of padding,
 /// and a 1 border, each above and below; its width, its seven buttons as app.js's
@@ -2747,6 +2778,33 @@ mod tests {
         assert_eq!(VIEW_CUBE_BUTTON_BG, opaque(0x212121));
         assert_eq!(VIEW_CUBE_MENU_FROM_BUTTON, Vec2::new(-150.0, 2.0));
         assert_eq!(VIEW_CUBE_MENU_FROM_CLICK, Vec2::new(-160.0, 0.0));
+    }
+
+    /// The triad, typed from viewport.js's `drawOverlay`, and the view label, from
+    /// styles.css's `.view-label` and the body's font, and app.js's `left:82px`.
+    #[test]
+    fn the_triads_and_the_view_labels_look_is_the_prototypes() {
+        // `ox = 44, oy = h - 44, L = 26`; each `<line>` `stroke-width="2"`; each `<text>` at
+        // `L + 9`, its `y` 3.5 below, `font-size="10.5"`; `<circle r="2" fill="#cfcfcf"/>`.
+        assert_eq!(TRIAD_INSET, 44.0);
+        assert_eq!(TRIAD_LENGTH, 26.0);
+        assert_eq!(TRIAD_WIDTH, 2.0);
+        assert_eq!(TRIAD_LABEL_PAST, 9.0);
+        assert_eq!(TRIAD_LABEL_DROP, 3.5);
+        assert_eq!(TRIAD_LABEL_SIZE, 10.5);
+        assert_eq!(TRIAD_ORIGIN_RADIUS, 2.0);
+        assert_eq!(TRIAD_ORIGIN, Color32::from_rgb(0xcf, 0xcf, 0xcf));
+        // The axes' `#ff6981`, `#00b266`, `#7a95ff`, opaque.
+        assert_eq!(AXIS_X, [0xff, 0x69, 0x81, 0xff]);
+        assert_eq!(AXIS_Y, [0x00, 0xb2, 0x66, 0xff]);
+        assert_eq!(AXIS_Z, [0x7a, 0x95, 0xff, 0xff]);
+        // `left: 82px` (app.js), `bottom: 12px`, `--lh: 16px`, `--fs-small: 11px`,
+        // `color: var(--g500)`, `#827f7f`.
+        assert_eq!(VIEW_LABEL_LEFT, 82.0);
+        assert_eq!(VIEW_LABEL_BOTTOM, 12.0);
+        assert_eq!(VIEW_LABEL_LINE_HEIGHT, 16.0);
+        assert_eq!(VIEW_LABEL_SIZE, 11.0);
+        assert_eq!(VIEW_LABEL_TEXT, Color32::from_rgb(0x82, 0x7f, 0x7f));
     }
 
     /// The navigation bar, typed from styles.css's `.nav-bar`, `.nav-bar .ab-btn`, and

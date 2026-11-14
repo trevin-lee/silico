@@ -351,6 +351,32 @@ pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
     across.map(|part| part / length)
 }
 
+/// How near a view must be to a named view to be at it, in radians: the prototype's
+/// (viewport.js's `viewName`, which takes a view whose elevation and azimuth are each within
+/// 0.01 of the named view's), here the angle between the two views' directions, and between
+/// their ups.
+pub const AT_NAMED_VIEW: f64 = 0.01;
+
+/// The angle between the unit vectors `a` and `b`, in radians, from 0 to π: by its sine and
+/// cosine together, so it keeps its precision near 0 and π, where the cosine's arc doesn't.
+fn angle_between(a: [f64; 3], b: [f64; 3]) -> f64 {
+    let c = cross(a, b);
+    libm::atan2(dot(c, c).sqrt(), dot(a, b))
+}
+
+/// Whether `camera` is at the named view `view`: looking from within [`AT_NAMED_VIEW`] of its
+/// direction, its up within as much of the view's ([`NamedView::up`]). Looking straight down
+/// or up, Top or Bottom whatever its up, as the prototype's `viewName` takes them at any
+/// azimuth. Never for a camera that makes no frame ([`Camera::frame`]).
+pub fn at_view(camera: &Camera, view: NamedView) -> bool {
+    let Ok(frame) = camera.frame() else {
+        return false;
+    };
+    let along = angle_between(frame.back, view.direction()) < AT_NAMED_VIEW;
+    let any_up = matches!(view, NamedView::Top | NamedView::Bottom);
+    along && (any_up || angle_between(frame.up, view.up()) < AT_NAMED_VIEW)
+}
+
 /// The view switched to a perspective one (Fusion's ViewCube menu, *Camera*), at
 /// [`PERSPECTIVE_FIELD_OF_VIEW`], its eye moved along the view so the target's depth shows
 /// as much as before; or to an orthographic one, as high as the perspective view is at the
@@ -797,6 +823,26 @@ mod tests {
             look_at([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], L, 1000, 800, BANDS),
             named_in(NamedView::Front, L, 1000, 800, BANDS)
         );
+    }
+
+    #[test]
+    fn each_named_views_camera_is_at_that_view_and_no_other_in_either_projection() {
+        // The nearest two named views are a face and a corner, acos(1/√3) = 54.7° apart, far
+        // past a hundredth of a radian: each view's own camera, fitted to a box off the
+        // origin, is at it alone, and in perspective too.
+        let bounds = [[10.0, -20.0, 5.0], [70.0, 15.0, 45.0]];
+        for view in views::NAMED_VIEWS {
+            let camera = named(view, bounds, 1000, 800).unwrap();
+            let seen = projected(&camera, true).unwrap();
+            for other in views::NAMED_VIEWS {
+                assert_eq!(at_view(&camera, other), other == view, "{view:?} {other:?}");
+                assert_eq!(at_view(&seen, other), other == view, "{view:?} {other:?}");
+            }
+        }
+        // A camera that makes no frame is at none.
+        let mut bad = front();
+        bad.eye = bad.target;
+        assert!(views::NAMED_VIEWS.iter().all(|v| !at_view(&bad, *v)));
     }
 
     #[test]

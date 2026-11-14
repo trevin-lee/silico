@@ -656,6 +656,30 @@ pub fn frame<P: AppKernel>(h: &AppUi<P>) -> Option<&silico_app::viewport::ViewFr
     h.state().tabs()[0].view.frame()
 }
 
+/// The view label's node in the viewport, as a screen reader finds it: the viewport's one
+/// label that names the projection.
+pub fn view_label_node<P: AppKernel>(h: &AppUi<P>) -> egui_kittest::Node<'_> {
+    let mut labels: Vec<_> = h
+        .get_by_role_and_label(Role::Pane, "Viewport")
+        .query_all_by_role(Role::Label)
+        .filter(|node| {
+            node.accesskit_node().value().is_some_and(|words| {
+                words.starts_with("Orthographic") || words.starts_with("Perspective")
+            })
+        })
+        .collect();
+    assert_eq!(labels.len(), 1, "not one view label");
+    labels.remove(0)
+}
+
+/// The view label's words, as a screen reader has them.
+pub fn view_label<P: AppKernel>(h: &AppUi<P>) -> String {
+    view_label_node(h)
+        .accesskit_node()
+        .value()
+        .unwrap_or_default()
+}
+
 /// A button's press or release at `at`, `modifiers` held.
 pub fn button_event<P: AppKernel>(
     h: &AppUi<P>,

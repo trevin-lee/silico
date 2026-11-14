@@ -1,7 +1,8 @@
 //! The viewport (docs/design/m5.0-app.md, sections 2, 3, 8, and 10; M5.6): the canvas that
 //! draws the tab's published model through a renderer ([`crate::renderer`]), under the tab's
 //! own camera (decision 29), with Fusion's navigation (the wheel, the middle button, F6),
-//! its ViewCube at the canvas's top right, and its navigation bar at its bottom centre.
+//! its ViewCube at the canvas's top right, its navigation bar at its bottom centre, and the
+//! triad and the view label at its bottom left ([`crate::triad`]).
 //!
 //! Each tab holds its meshes ([`View`]): the newest `meshes` answer's bodies by number, each
 //! with its key, its level, its box, the half pixels it serves, its mesh, and its faces' and
@@ -2030,16 +2031,29 @@ pub fn show<P: Clients + 'static>(
         // An idle egui draws no frame, and its answer is taken only in one.
         ui.ctx().request_repaint();
     }
+    // The triad at the canvas's bottom left, over the bodies and under what the tab's mode
+    // draws, and the view label beside it over that (the prototype's triad is its overlay's
+    // first, its label HTML above the overlay), both of the camera this frame draws.
+    let painter = ui.painter_at(rect);
+    if let Some(triad) = crate::triad::triad(&view.camera, rect) {
+        painter.extend(triad.shapes(&painter));
+    }
+    let label = crate::triad::view_label(&view.camera, rect);
     // Over the bodies, under the ViewCube and the bar, in the pane's own layer: what the
     // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
     // the bar's, registered after, come first. A camera they change is drawn next frame.
     if let Some(mut frame) = view.frame.take() {
-        overlaid(tab, sessions, &ui.painter_at(rect), &frame);
+        overlaid(tab, sessions, &painter, &frame);
         // Handed on once: what reads the frame after reads no event again.
         frame.left.clear();
         frame.secondary.clear();
         tab.view.frame = Some(frame);
     }
+    let (words, line) = label.shape(&painter);
+    painter.add(words);
+    // In the accessibility tree as a label, taking no click or drag of the canvas's.
+    let said = ui.interact(line, ui.id().with("view_label"), Sense::hover());
+    said.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label.words));
     view_cube(ui, rect, &mut tab.view, size_px);
     // The bar's Look At, as Ctrl+8's: square to the face selected, or to the sketch.
     if navigation_bar(ui, rect, &mut tab.view, size_px) {
@@ -2483,7 +2497,7 @@ fn capitalised(words: &str) -> String {
 }
 
 /// A named view's words, as the ViewCube labels it: `top_front_right` is "Top front right".
-fn words(view: NamedView) -> String {
+pub(crate) fn words(view: NamedView) -> String {
     capitalised(&view.name().replace('_', " "))
 }
 

@@ -32,7 +32,7 @@ use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
 use ui::{
     FAKE_WAIT as WAIT, advance, button_event, hand_clock, meshes_settled, meshes_settled_in,
-    repaint_delay, step, step_until, tessellated, the_viewport, view, view_mut,
+    repaint_delay, step, step_until, tessellated, the_viewport, view, view_label, view_mut,
 };
 
 const EXAMPLE: &str = r#"{
@@ -2093,4 +2093,292 @@ fn a_menu_open_over_the_canvas_as_its_tab_closes_goes_with_it() {
         assert!(!a_menu_open(&h), "{label}");
         assert_eq!(never_waits::waits(), 0);
     }
+}
+
+// ---- The triad and the view label at the canvas's bottom left ----
+
+/// The axes' colours (`#ff6981`, `#00b266`, `#7a95ff`) and the triad's dot's (`#cfcfcf`).
+const AXES: [egui::Color32; 3] = [
+    egui::Color32::from_rgb(0xff, 0x69, 0x81),
+    egui::Color32::from_rgb(0x00, 0xb2, 0x66),
+    egui::Color32::from_rgb(0x7a, 0x95, 0xff),
+];
+const TRIAD_DOT: egui::Color32 = egui::Color32::from_rgb(0xcf, 0xcf, 0xcf);
+
+#[test]
+fn a_window_too_small_for_a_viewport_clips_the_triad_and_its_label_to_what_is_left() {
+    // 60 by 40 points, the viewport a few points or none: the triad's origin, 44 in and up
+    // from the canvas's corner, is off it, and the label's line, 82 in, too. Each is still
+    // laid out, finite, and painted only within the viewport, as the prototype's
+    // `overflow: hidden` canvas clips its overlay; the label says the home view.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (60.0, 40.0));
+    meshes_settled(&mut h);
+    step(&mut h);
+    let viewport = the_viewport(&h);
+    assert_eq!(view_label(&h), "Orthographic · Iso");
+    let origin = egui::pos2(viewport.left() + 44.0, viewport.bottom() - 44.0);
+    let mut seen = 0;
+    for clipped in &h.output().shapes {
+        let of_the_triad = match &clipped.shape {
+            egui::Shape::Circle(c) => c.center == origin && c.fill == TRIAD_DOT,
+            egui::Shape::LineSegment { points, stroke } => {
+                points[0] == origin && AXES.contains(&stroke.color)
+            }
+            egui::Shape::Text(t) => {
+                t.galley.text() == "Orthographic · Iso"
+                    || (["X", "Y", "Z"].contains(&t.galley.text())
+                        && AXES.contains(&t.fallback_color))
+            }
+            _ => false,
+        };
+        if of_the_triad {
+            seen += 1;
+            let clip = clipped.clip_rect;
+            assert!(
+                !clip.is_positive() || viewport.contains_rect(clip),
+                "{clip:?} past {viewport:?}: {:?}",
+                clipped.shape
+            );
+            let at = clipped.shape.visual_bounding_rect();
+            assert!(!at.is_positive() || at.is_finite(), "{:?}", clipped.shape);
+        }
+    }
+    // Three strokes, three letters, the dot, and the label.
+    assert_eq!(seen, 8);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The way the eye looks from the target, made a unit.
+fn toward(camera: &Camera) -> [f64; 3] {
+    let n = distance(camera);
+    std::array::from_fn(|k| (camera.eye[k] - camera.target[k]) / n)
+}
+
+#[test]
+fn a_view_changed_every_frame_is_named_by_the_label_of_the_frame_that_draws_it() {
+    // A standard view's key every frame, three times round, as fast as frames come: each
+    // key is taken before the canvas is drawn, so the frame the renderer is given looks
+    // from the key's view, and the label of that same frame names it. Two keys in one
+    // frame: the second's view, drawn and named. A ViewCube click is taken after the canvas
+    // is drawn: for a frame the old view is drawn and named, the next frame both the new.
+    use egui::Key::{Home, Num1, Num2, Num3, Num4, Num5, Num6, Num7};
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    let d = 1.0 / 3f64.sqrt();
+    let ctrl = Modifiers::COMMAND;
+    let keys = [
+        (ctrl, Num1, "Front", [0.0, -1.0, 0.0]),
+        (ctrl, Num2, "Back", [0.0, 1.0, 0.0]),
+        (ctrl, Num3, "Left", [-1.0, 0.0, 0.0]),
+        (ctrl, Num4, "Right", [1.0, 0.0, 0.0]),
+        (ctrl, Num5, "Top", [0.0, 0.0, 1.0]),
+        (ctrl, Num6, "Bottom", [0.0, 0.0, -1.0]),
+        (ctrl, Num7, "Iso", [d, -d, d]),
+        (Modifiers::NONE, Home, "Iso", [d, -d, d]),
+    ];
+    let drawn = |record: &Record| record.lock().unwrap().frames.last().unwrap().camera.clone();
+    let from = |camera: &Camera, way: [f64; 3]| {
+        let at = toward(camera);
+        (0..3).all(|k| (at[k] - way[k]).abs() < 1e-9)
+    };
+    for _ in 0..3 {
+        for (held, key, name, way) in keys {
+            h.key_press_modifiers(held, key);
+            step(&mut h);
+            let camera = drawn(&record);
+            assert!(from(&camera, way), "{name}: {camera:?}");
+            assert_eq!(view_label(&h), format!("Orthographic · {name}"));
+        }
+    }
+    h.key_press_modifiers(ctrl, Num1);
+    h.key_press_modifiers(ctrl, Num5);
+    step(&mut h);
+    assert!(from(&drawn(&record), [0.0, 0.0, 1.0]));
+    assert_eq!(view_label(&h), "Orthographic · Top");
+    // The cube's top front edge, clickable from the top: its view, between the top's and
+    // the front's, is unnamed.
+    h.get_by_role_and_label(egui::accesskit::Role::Group, "ViewCube")
+        .get_by_label("Top front")
+        .click();
+    step(&mut h);
+    assert!(from(&drawn(&record), [0.0, 0.0, 1.0]));
+    assert_eq!(view_label(&h), "Orthographic · Top");
+    step(&mut h);
+    let r = std::f64::consts::FRAC_1_SQRT_2;
+    assert!(from(&drawn(&record), [0.0, -r, r]));
+    assert_eq!(view_label(&h), "Orthographic");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_orbit_a_point_a_frame_keeps_the_name_for_half_a_degree_and_drops_it_at_one() {
+    // The navigation bar's Orbit, its left drag moved one point a frame from the front
+    // view: half a degree a point (0.008727 rad) is inside the prototype's hundredth of a
+    // radian, so the first frame's view is still Front; the second's, 1° (0.017453), isn't.
+    use egui::accesskit::Role::Toolbar;
+    let f = fixture();
+    let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Num1);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    h.get_by_role_and_label(Toolbar, "Navigation bar")
+        .get_by_label("Orbit")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    h.hover_at(at + vec2(1.0, 0.0));
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    h.hover_at(at + vec2(2.0, 0.0));
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic");
+    // Back by as much: the front again, to within its rounding.
+    h.hover_at(at);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    button_event(&h, at, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn from_straight_above_the_z_axis_is_its_letter_alone_at_the_dot_and_drawn_last() {
+    // Ctrl+5, the top view: Z along the view, toward the viewer, so no stroke of it is
+    // painted, its letter stands at the origin over X's and Y's strokes, and the dot over it.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Num5);
+    step(&mut h);
+    step(&mut h);
+    let viewport = the_viewport(&h);
+    let origin = egui::pos2(viewport.left() + 44.0, viewport.bottom() - 44.0);
+    let shapes: Vec<egui::Shape> = h
+        .output()
+        .shapes
+        .iter()
+        .map(|clipped| clipped.shape.clone())
+        .collect();
+    let strokes: Vec<(usize, egui::Color32)> = shapes
+        .iter()
+        .enumerate()
+        .filter_map(|(k, shape)| match shape {
+            egui::Shape::LineSegment { points, stroke }
+                if points[0] == origin && AXES.contains(&stroke.color) =>
+            {
+                Some((k, stroke.color))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        strokes.iter().map(|(_, c)| *c).collect::<Vec<_>>(),
+        AXES[..2]
+    );
+    let z = shapes
+        .iter()
+        .position(|shape| {
+            matches!(shape, egui::Shape::Text(t) if t.galley.text() == "Z" && t.fallback_color == AXES[2])
+        })
+        .unwrap();
+    let dot = shapes
+        .iter()
+        .position(|shape| matches!(shape, egui::Shape::Circle(c) if c.center == origin && c.fill == TRIAD_DOT))
+        .unwrap();
+    assert!(
+        strokes.iter().all(|(k, _)| *k < z) && z < dot,
+        "{strokes:?} {z} {dot}"
+    );
+    let egui::Shape::Text(letter) = &shapes[z] else {
+        unreachable!()
+    };
+    let middle = letter.pos.x + letter.galley.size().x / 2.0;
+    assert!((middle - origin.x).abs() < 1e-3, "{letter:?}");
+    assert_eq!(view_label(&h), "Orthographic · Top");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn each_tab_shows_its_own_views_label_and_only_the_shown_tabs() {
+    // Two documents, a at the front view and b at the top: the label is the shown tab's,
+    // one label only, and follows each switch the frame it's shown.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Num1);
+    step(&mut h);
+    let path = f.file("b.silico", TWO_BOXES);
+    h.state_mut().open(&path, false);
+    step_until(&mut h, "b shown", |h| h.state().tabs().len() == 2);
+    meshes_settled_in(&mut h, 1);
+    assert_eq!(view_label(&h), "Orthographic · Iso");
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Num5);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Top");
+    for (name, said) in [
+        ("a.silico", "Orthographic · Front"),
+        ("b.silico", "Orthographic · Top"),
+        ("a.silico", "Orthographic · Front"),
+    ] {
+        h.get_by_label(name).click();
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(view_label(&h), said, "{name} shown");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_camera_that_makes_no_frame_draws_no_triad_and_the_label_says_the_projection_alone() {
+    // A camera with no frame (its eye at its target, or a NaN in its up), set as a control
+    // would set it, kept as it is: no triad is painted, the label says only
+    // "Orthographic", and the next view the person asks for draws and names again.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("a.silico", EXAMPLE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    for broken in [
+        Camera {
+            eye: [0.0; 3],
+            ..front(80.0)
+        },
+        Camera {
+            up: [0.0, f64::NAN, 1.0],
+            ..front(80.0)
+        },
+    ] {
+        view_mut(&mut h).set_camera(broken.clone());
+        step(&mut h);
+        step(&mut h);
+        let viewport = the_viewport(&h);
+        let origin = egui::pos2(viewport.left() + 44.0, viewport.bottom() - 44.0);
+        let dots = h
+            .output()
+            .shapes
+            .iter()
+            .filter(|clipped| {
+                matches!(&clipped.shape, egui::Shape::Circle(c) if c.center == origin && c.fill == TRIAD_DOT)
+            })
+            .count();
+        assert!(
+            view(&h).camera().frame().is_err(),
+            "{:?}",
+            view(&h).camera()
+        );
+        assert_eq!(dots, 0, "{broken:?}");
+        assert_eq!(view_label(&h), "Orthographic", "{broken:?}");
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Num1);
+        step(&mut h);
+        assert_eq!(view_label(&h), "Orthographic · Front");
+        assert!(view(&h).camera().frame().is_ok());
+    }
+    assert_eq!(never_waits::waits(), 0);
 }
