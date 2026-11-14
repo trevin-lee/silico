@@ -493,10 +493,10 @@ pub struct View {
     /// The elements drawn hovered (M5.7's pre-selection), set from outside, passed through
     /// as `highlights` are.
     pub hovered: BTreeSet<(u32, Element)>,
-    /// The faces of the features selected (a timeline item, a browser row: a body's whole),
-    /// set from outside (M5.7's selection): tinted as a feature hovered in the timeline is,
-    /// while none is ([`maker_faces`](Self::maker_faces)).
-    pub feature_faces: BTreeSet<(u32, Element)>,
+    /// The faces of the features selected (a timeline item: the faces it made; a body by
+    /// its browser row: its every face), set from outside (M5.7's selection): tinted as a
+    /// feature hovered in the timeline is, while none is ([`maker_faces`](Self::maker_faces)).
+    pub selected_feature_faces: BTreeSet<(u32, Element)>,
     /// The radius, in points, within which a pick takes a vertex, if it takes vertices,
     /// set from outside (the selection's filter, M5.7): the renderer's
     /// [`crate::renderer::Frame::vertices`]. None picks none.
@@ -612,7 +612,7 @@ impl Default for View {
             grid: true,
             highlights: BTreeSet::new(),
             hovered: BTreeSet::new(),
-            feature_faces: BTreeSet::new(),
+            selected_feature_faces: BTreeSet::new(),
             vertices: None,
             edges: true,
             candidate: None,
@@ -733,19 +733,10 @@ impl View {
     /// The faces the feature hovered in the timeline made ([`linked`](Self::linked)), in
     /// every body that holds one, as each face's name says: none with none hovered.
     pub fn linked_faces(&self) -> Vec<(u32, Element)> {
-        let Some(feature) = &self.linked else {
-            return Vec::new();
-        };
-        self.bodies
-            .iter()
-            .flat_map(|(number, body)| {
-                body.faces
-                    .iter()
-                    .zip(1u32..)
-                    .filter(|(face, _)| face.name.feature() == feature)
-                    .map(|(_, n)| (*number, Element::Face(n)))
-            })
-            .collect()
+        match &self.linked {
+            Some(feature) => faces_of(feature, &self.bodies, false),
+            None => Vec::new(),
+        }
     }
 
     /// The faces tinted as their maker's (the prototype's `maker`, `hoverFeature ||
@@ -754,7 +745,7 @@ impl View {
     pub fn maker_faces(&self) -> Vec<(u32, Element)> {
         match self.linked {
             Some(_) => self.linked_faces(),
-            None => self.feature_faces.iter().copied().collect(),
+            None => self.selected_feature_faces.iter().copied().collect(),
         }
     }
 
@@ -1898,6 +1889,11 @@ pub fn show<P: Clients + 'static>(
         }
         _ => {}
     }
+    // A table taken just now numbers the bodies afresh: the selection's highlights and
+    // tints worked out for it before this frame is handed on, never drawn by the numbers of
+    // the table before it.
+    tab.light_selection();
+    let view = &mut tab.view;
     // An answer to a pick of another tab, or of a table since made again, isn't this one's.
     if let Some((picking, session, generation)) = drawing.answered()
         && session == tab.id
@@ -2080,6 +2076,30 @@ pub fn show<P: Clients + 'static>(
     if navigation_bar(ui, rect, &mut tab.view, size_px) {
         tab.look_at();
     }
+}
+
+/// The faces `feature` made in `bodies`, as each face's name says ([`Name::feature`]), in
+/// every body that holds one, ascending; or, `whole`, a body's every face where it's the
+/// body `feature` made (a body selected by its browser row, the prototype's `maker: '*'`).
+/// One rule for a feature hovered in the timeline and one selected.
+///
+/// [`Name::feature`]: silico_core::naming::Name::feature
+pub fn faces_of(
+    feature: &FeatureId,
+    bodies: &BTreeMap<u32, ViewBody>,
+    whole: bool,
+) -> Vec<(u32, Element)> {
+    bodies
+        .iter()
+        .flat_map(|(number, body)| {
+            let whole = whole && &body.feature == feature;
+            body.faces
+                .iter()
+                .zip(1u32..)
+                .filter(move |(face, _)| whole || face.name.feature() == feature)
+                .map(|(_, n)| (*number, Element::Face(n)))
+        })
+        .collect()
 }
 
 /// The tint of the faces a feature hovered in the timeline made, from the theme, as plain
@@ -3875,7 +3895,7 @@ mod tests {
         let ctx = egui::Context::default();
         selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
         let lit = |body: u32| BTreeSet::from([(body, Element::Face(1)), (body, Element::Face(2))]);
-        assert_eq!(view.feature_faces, lit(1));
+        assert_eq!(view.selected_feature_faces, lit(1));
         assert_eq!(view.maker_faces(), Vec::from_iter(lit(1)));
         assert!(view.highlights.is_empty());
         let mesh = Arc::clone(&view.bodies[&1].mesh);
@@ -3884,7 +3904,65 @@ mod tests {
             ..meshed(2, 1, 0.03125, Some(mesh))
         }]);
         selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
-        assert_eq!(view.feature_faces, lit(2));
+        assert_eq!(view.selected_feature_faces, lit(2));
+    }
+
+    #[test]
+    fn one_feature_tints_the_same_faces_hovered_in_the_timeline_or_selected_and_its_body_all() {
+        // Body m3tq8v0z, the feature's own: its Face1 named as aaaaaaaa's, its Face2 as its
+        // own. Selected by its timeline item (`select_feature`, the prototype's
+        // `selectFeature`: the maker is the feature), it tints its Face2 alone, as hovered in
+        // the timeline it does; selected by its browser row (`select_body`, `bodyRow`'s
+        // `maker: '*'`), the body's both.
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let named = |id: &str, index: u32| MeshElement {
+            name: Arc::new(Name::Element {
+                feature: FeatureId::new(id).unwrap(),
+                made: TypeWord::Primitive(PrimitiveKind::Box),
+                element: ElementRef {
+                    kind: ElementKind::Face,
+                    index,
+                },
+            }),
+            stable: true,
+            count: None,
+        };
+        let mut held = body(0.03125, [0.03125, 0.0625], CUT);
+        held.faces = vec![named("aaaaaaaa", 1), named("m3tq8v0z", 2)];
+        let mut view = view_with(&[(1, held)], 3);
+        let id = FeatureId::new("m3tq8v0z").unwrap();
+        let frame = ViewFrame {
+            session: SessionId::parse("s1").unwrap(),
+            rect: Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 100.0)),
+            camera: front(80.0),
+            size_px: [100, 100],
+            pixels_per_point: 1.0,
+            pointer_px: None,
+            left: Vec::new(),
+            secondary: Vec::new(),
+            drawn: Vec::new(),
+            now: now(),
+        };
+        let ctx = egui::Context::default();
+        let mut selection = crate::selection::Selection::default();
+        selection.select_feature(id.clone());
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        let selected = view.maker_faces();
+        assert_eq!(selected, [(1, Element::Face(2))]);
+        view.linked = Some(id.clone());
+        assert_eq!(view.maker_faces(), selected, "selected against hovered");
+        view.linked = None;
+        selection.select_body(id.clone());
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(
+            view.maker_faces(),
+            [(1, Element::Face(1)), (1, Element::Face(2))]
+        );
+        // Its timeline item clicked again: itself, its own face.
+        selection.select_feature(id);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), [(1, Element::Face(2))]);
     }
 
     #[test]
@@ -3914,7 +3992,8 @@ mod tests {
             named("bbbbbbbb", 3),
         ];
         let mut view = view_with(&[(1, held)], 3);
-        view.feature_faces = BTreeSet::from([(1, Element::Face(1)), (1, Element::Face(2))]);
+        view.selected_feature_faces =
+            BTreeSet::from([(1, Element::Face(1)), (1, Element::Face(2))]);
         assert_eq!(
             view.maker_faces(),
             [(1, Element::Face(1)), (1, Element::Face(2))]

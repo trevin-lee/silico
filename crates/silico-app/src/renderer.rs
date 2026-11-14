@@ -310,9 +310,10 @@ struct Callback<R> {
 
 /// A frame's preparation, its GPU's half aside: the changes waiting made; the frame drawn
 /// without the bodies whose uploads were refused, and without highlights, hovers, or tints
-/// of a body it doesn't draw (the renderer refuses a whole frame for one); a refusal said once until a
-/// frame is drawn again; and a picking answer kept for the pane. With no renderer installed,
-/// the changes are taken, every upload among them refused, so none waits for ever.
+/// of a body it doesn't draw (the renderer refuses a whole frame for one); a refusal said
+/// once until a frame is drawn again; and a picking answer kept for the pane. With no
+/// renderer installed, the changes are taken, every upload among them refused, so none
+/// waits for ever.
 fn prepared<R: ViewRenderer>(
     renderer: Option<&mut R>,
     shared: &Mutex<Shared>,
@@ -437,7 +438,13 @@ mod tests {
     use super::*;
 
     /// A frame as the renderer was given it: its bodies, highlights, and hover.
-    type Drawn = (Vec<u32>, Vec<(u32, Element)>, Vec<(u32, Element)>);
+    /// A frame's bodies, highlights, hover, and tinted faces.
+    type Drawn = (
+        Vec<u32>,
+        Vec<(u32, Element)>,
+        Vec<(u32, Element)>,
+        Vec<(u32, Element)>,
+    );
 
     #[derive(Default)]
     struct Counting {
@@ -466,6 +473,7 @@ mod tests {
                 frame.bodies.to_vec(),
                 frame.highlights.to_vec(),
                 frame.hovered.to_vec(),
+                frame.tinted.to_vec(),
             ));
             if self.backing_off {
                 return Err(format!("backing off, {} frame(s)", self.frames.len()));
@@ -657,43 +665,13 @@ mod tests {
         };
         let made = prepared(Some(&mut renderer), &shared, &frame);
         assert!(made.is_empty());
-        assert_eq!(renderer.frames, [(vec![1], vec![face], vec![face])]);
+        assert_eq!(renderer.frames, [(vec![1], vec![face], vec![face], vec![])]);
         assert_eq!(
             locked(&shared).refused.iter().copied().collect::<Vec<_>>(),
             [2]
         );
         assert_eq!(locked(&shared).picked, Some(pick));
         assert!(locked(&shared).changes.is_empty());
-    }
-
-    /// A renderer that refuses a mesh of more than 10 points, as `Counting` does, and keeps
-    /// what each frame drew and tinted.
-    #[derive(Default)]
-    struct Tints {
-        frames: Vec<Tinted>,
-    }
-
-    /// A frame's bodies and its tinted faces.
-    type Tinted = (Vec<u32>, Vec<(u32, Element)>);
-
-    impl ViewRenderer for Tints {
-        type Failure = String;
-        fn upload(&mut self, _: u32, mesh: &Arc<Mesh>) -> Result<(), String> {
-            if mesh.positions.len() > 10 {
-                return Err("out of memory".to_owned());
-            }
-            Ok(())
-        }
-        fn forget(&mut self, _: u32) {}
-        fn prepare(&mut self, frame: &Frame<'_>) -> Result<wgpu::CommandBuffer, String> {
-            self.frames
-                .push((frame.bodies.to_vec(), frame.tinted.to_vec()));
-            Err("no GPU here".to_owned())
-        }
-        fn composite(&self, _: &mut wgpu::RenderPass<'_>) {}
-        fn take_picking(&mut self) -> Option<Picking> {
-            None
-        }
     }
 
     #[test]
@@ -710,9 +688,9 @@ mod tests {
             tinted: vec![face(1), face(2)],
             ..data(&[1, 2], &[])
         };
-        let mut renderer = Tints::default();
+        let mut renderer = Counting::default();
         prepared(Some(&mut renderer), &shared, &frame);
-        assert_eq!(renderer.frames, [(vec![1], vec![face(1)])]);
+        assert_eq!(renderer.frames, [(vec![1], vec![], vec![], vec![face(1)])]);
     }
 
     #[test]

@@ -283,7 +283,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 // A sketch chosen here fills an open dialog's selection box (section 9).
                 tab.pick(&id);
                 tab.selected_in = crate::feature_menu::Place::Browser;
-                tab.selection_mut().select_feature(id);
+                select_row(tab, id);
+            } else if is_body_row(tab, &id) {
+                // Its feature selected already, as itself (its timeline item): its body now.
+                tab.selection_mut().select_body(id);
             }
         }
         if let Some(id) = asked.deselected {
@@ -300,7 +303,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             // Selected as its menu opens, as the timeline's right-click selects: never an
             // open dialog's pick, which a click alone makes.
             tab.selected_in = crate::feature_menu::Place::Browser;
-            tab.selection_mut().select_feature(id);
+            select_row(tab, id);
         }
         if let Some(act) = asked.act {
             *self.next_frame |= crate::feature_menu::act(tab, self.sessions, act);
@@ -1272,6 +1275,21 @@ fn prefix_colour(prefix: &str) -> Color32 {
 
 /// The browser's tree, for `tab`: what its rows ask is put in `asked`, and a feature's name
 /// typed in `renaming`'s field, over its row.
+/// Whether `id` is a body's row in the browser (its Bodies group), not a sketch's.
+fn is_body_row(tab: &Tab, id: &FeatureId) -> bool {
+    tab.browser.bodies().iter().any(|row| &row.id == id)
+}
+
+/// The browser's row `id` selected alone: a body's as its body, tinted whole (the
+/// prototype's `bodyRow`), a sketch's as itself.
+fn select_row(tab: &mut Tab, id: FeatureId) {
+    if is_body_row(tab, &id) {
+        tab.selection_mut().select_body(id);
+    } else {
+        tab.selection_mut().select_feature(id);
+    }
+}
+
 fn tree(
     ui: &mut Ui,
     tab: &Tab,

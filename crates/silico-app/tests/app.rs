@@ -18860,9 +18860,9 @@ fn a_feature_selected_is_tinted_until_another_is_hovered_in_the_timeline() {
     // The prototype's one maker, `syncHighlight`'s `S.hoverFeature || S.selFeature`, each
     // face whose maker it is tinted by `applyHighlight`: the small box selected, its six
     // faces tinted; the large one hovered in the timeline, its six alone (the selected
-    // one's left); a sketch hovered, which made none, none; the pointer off the timeline,
-    // the small box's again. Nothing is highlighted throughout: a feature selected is no
-    // element selected (`selectFeature` empties `S.sel`).
+    // one's left); the pointer off the timeline, the small box's again. Nothing is
+    // highlighted throughout: a feature selected is no element selected (`selectFeature`
+    // empties `S.sel`).
     use silico_app::renderer::Element::Face;
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
@@ -18881,6 +18881,71 @@ fn a_feature_selected_is_tinted_until_another_is_hovered_in_the_timeline() {
     step(&mut h);
     step(&mut h);
     assert_eq!(tinted(&record), of(small));
+    assert!(highlighted(&record).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_timeline_item_selected_tints_its_own_faces_as_hovered_and_its_body_row_the_whole_body() {
+    // LADDER's one body is the pocket's (q0000003, Cut), its faces named from the plate's,
+    // the pad's, and its own. Cut selected by its timeline item tints the faces named as its
+    // own alone, the prototype's `selectFeature` making it the maker, as hovering its item
+    // does; its body selected by its browser row tints the body's every face, as `bodyRow`'s
+    // `maker: '*'`; the item hovered then, its own again (`hoverFeature` first).
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    let (number, names): (u32, Vec<String>) = {
+        let bodies = view(&h).bodies();
+        assert_eq!(bodies.len(), 1, "one body");
+        let (number, body) = bodies.iter().next().unwrap();
+        assert_eq!(body.feature.as_str(), "q0000003");
+        (
+            *number,
+            body.faces
+                .iter()
+                .map(|face| face.name.to_string())
+                .collect(),
+        )
+    };
+    let own: Vec<_> = names
+        .iter()
+        .zip(1u32..)
+        .filter(|(name, _)| name.starts_with("q0000003."))
+        .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
+        .collect();
+    let every: Vec<_> = (1..=u32::try_from(names.len()).unwrap())
+        .map(|n| (number, silico_app::renderer::Element::Face(n)))
+        .collect();
+    assert!(!own.is_empty() && own.len() < every.len(), "{names:?}");
+    let away = timeline(&h).get_by_label("Cut").rect().center() + eframe::egui::vec2(0.0, -200.0);
+    let off = |h: &mut AppHarness| {
+        h.hover_at(away);
+        step(h);
+        step(h);
+    };
+    select(&mut h, "Cut");
+    off(&mut h);
+    assert_eq!(tinted(&record), own, "selected by its item: {names:?}");
+    hover_item(&mut h, "Cut");
+    assert_eq!(tinted(&record), own, "hovered: {names:?}");
+    browser(&h).get_by_label("Cut").click();
+    off(&mut h);
+    assert_eq!(tinted(&record), every, "its body's row");
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .map(|id| id.as_str()),
+        Some("q0000003")
+    );
+    hover_item(&mut h, "Cut");
+    assert_eq!(tinted(&record), own, "hovered over its body's row");
+    // Its item clicked: itself again, its own faces.
+    timeline(&h).get_by_label("Cut").click();
+    off(&mut h);
+    assert_eq!(tinted(&record), own, "its item again");
     assert!(highlighted(&record).is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -18923,7 +18988,7 @@ fn a_face_hovered_in_the_canvas_rings_its_features_item_from_the_next_frame_aske
     meshes_settled(&mut h);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Large"));
     let large = body_of(&h, "a91cw0de");
-    let outlined = |h: &AppHarness| {
+    let ringed = |h: &AppHarness| {
         view(h)
             .ringed_feature
             .as_ref()
@@ -18942,21 +19007,21 @@ fn a_face_hovered_in_the_canvas_rings_its_features_item_from_the_next_frame_aske
     step_until(&mut h, "the hover", |h| {
         h.state().tabs()[0].selection().hovered().is_some()
     });
-    assert_eq!(outlined(&h), None, "drawn before the hover was taken");
+    assert_eq!(ringed(&h), None, "drawn before the hover was taken");
     assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
     step(&mut h);
-    assert_eq!(outlined(&h).as_deref(), Some("a91cw0de"));
+    assert_eq!(ringed(&h).as_deref(), Some("a91cw0de"));
     at_rest(&mut h);
-    assert_eq!(outlined(&h).as_deref(), Some("a91cw0de"));
+    assert_eq!(ringed(&h).as_deref(), Some("a91cw0de"));
     // Off the canvas, over the properties' empty foot.
     let properties = h.get_by_role_and_label(Role::Pane, "Properties").rect();
     h.hover_at(properties.left_bottom() + eframe::egui::vec2(20.0, -20.0));
     step(&mut h);
     assert!(h.state().tabs()[0].selection().hovered().is_none());
-    assert_eq!(outlined(&h).as_deref(), Some("a91cw0de"));
+    assert_eq!(ringed(&h).as_deref(), Some("a91cw0de"));
     assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
     step(&mut h);
-    assert_eq!(outlined(&h), None);
+    assert_eq!(ringed(&h), None);
     at_rest(&mut h);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -34331,18 +34396,16 @@ fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them()
     assert_eq!(active_box(&h), Some("Tool Body"));
     step(&mut h);
     {
+        use silico_app::renderer::Element::Face;
         let told = record.lock().unwrap();
         let last = told.frames.last().unwrap();
         assert!(last.highlights.is_empty());
-        let mut lit: Vec<_> = last.tinted.iter().chain(&last.hovered).copied().collect();
-        lit.sort_unstable();
-        assert_eq!(
-            lit,
-            whole_box(block),
-            "{:?} {:?}",
-            last.tinted,
-            last.hovered
-        );
+        assert_eq!(last.hovered, [(block, Face(3))]);
+        let others: Vec<_> = whole_box(block)
+            .into_iter()
+            .filter(|face| *face != (block, Face(3)))
+            .collect();
+        assert_eq!(last.tinted, others);
     }
     assert!(!ok_enabled(&h));
     assert_eq!(h.state().tabs()[0].sent, []);

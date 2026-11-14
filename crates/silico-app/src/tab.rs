@@ -1825,6 +1825,13 @@ impl Tab {
         &mut self.selection
     }
 
+    /// The selection's highlights and tints set on the view for its bodies table as it is
+    /// now ([`Selection::light`](crate::selection::Selection::light)): the canvas's, as it
+    /// takes a new table, before it hands its frame on.
+    pub(crate) fn light_selection(&mut self) {
+        self.selection.light(&mut self.view);
+    }
+
     /// The tab not shown: its canvas's hover let go, the selection's and the view's (the
     /// outline its last frame drew), unless a menu holds it, so shown again it neither
     /// outlines, rings, nor says a hover of before.

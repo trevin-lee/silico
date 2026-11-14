@@ -2888,3 +2888,99 @@ fn a_tab_shown_again_outlines_no_hover_it_had_before_it_was_hidden() {
     drop(told);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_feature_deselected_lets_its_tint_go() {
+    // The large cube selected by its timeline item, the pointer then on the app bar's tab:
+    // its six faces tinted. The selection cleared: none, the very next frames.
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    let large = body_of(&h, "a91cw0de");
+    ui::select(&mut h, "Large");
+    let tab = h.get_by_label("a.silico").rect().center();
+    h.hover_at(tab);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tinted(&record), box_faces(large));
+    h.state_mut().tabs_mut()[0].selection_mut().clear();
+    step(&mut h);
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert!(tinted(&record).is_empty(), "{:?}", tinted(&record));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_empty_canvas_after_a_feature_selected_lets_its_tint_go() {
+    // The large cube selected by its timeline item, tinted; a click on the canvas where a
+    // pick finds nothing lets the selection go (SolidWorks' click on empty space), and the
+    // tint with it.
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    let large = body_of(&h, "a91cw0de");
+    ui::select(&mut h, "Large");
+    let tab = h.get_by_label("a.silico").rect().center();
+    h.hover_at(tab);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tinted(&record), box_faces(large));
+    finding(&record, None);
+    let centre = the_viewport(&h).center();
+    ui::click_canvas(&mut h, centre, false);
+    step_until(&mut h, "the selection let go", |h| {
+        h.state().tabs()[0].selection().is_empty()
+    });
+    step(&mut h);
+    step(&mut h);
+    assert!(tinted(&record).is_empty(), "{:?}", tinted(&record));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_feature_selected_across_a_reload_that_renumbers_its_body_is_tinted_by_each_frames_table() {
+    // The large cube alone (body 1) selected by its timeline item, the pointer on the tab;
+    // then the small cube written back before it on disk, so the large one is body 2. Every
+    // frame drawing the new table (bodies 1 and 2) tints body 2's faces, the very first too:
+    // never body 1's, the small cube's, by the numbers of the table before it.
+    let f = watching();
+    let (mut h, record) = f.drawn("boxes.silico", LARGE_ALONE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its item", |h| item(h, "Large").is_some());
+    assert_eq!(body_of(&h, "a91cw0de"), 1);
+    ui::select(&mut h, "Large");
+    let tab = h.get_by_label("boxes.silico").rect().center();
+    h.hover_at(tab);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tinted(&record), box_faces(1));
+    let from = record.lock().unwrap().frames.len();
+    f.file("boxes.silico", TWO_BOXES);
+    step_until(&mut h, "the small cube back", |h| {
+        item(h, "Small").is_some() && view(h).bodies().len() == 2
+    });
+    meshes_settled(&mut h);
+    step(&mut h);
+    assert_eq!(body_of(&h, "a91cw0de"), 2);
+    let told = record.lock().unwrap();
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    let mut renumbered = 0;
+    for frame in &told.frames[from..] {
+        let want = match frame.bodies.as_slice() {
+            [] => Vec::new(),
+            [1] => box_faces(1),
+            [1, 2] => {
+                renumbered += 1;
+                box_faces(2)
+            }
+            other => panic!("bodies {other:?}"),
+        };
+        assert_eq!(frame.tinted, want, "of {:?}", frame.bodies);
+    }
+    assert!(renumbered > 0);
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}
