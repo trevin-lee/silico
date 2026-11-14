@@ -2991,9 +2991,11 @@ fn a_hover_across_a_reload_that_renumbers_its_body_is_never_drawn_by_the_old_num
     // then the small cube written back before it on disk, so body 1 is the small cube. The
     // pointer still and every pick from then finding nothing: no frame drawing the new
     // table (bodies 1 and 2) outlines body 1's first face, the small cube's, by the number
-    // the hover had in the table before, the very first such frame too. (Here the hover is
-    // let go as the new model is published, before its meshes come; the selection's light
-    // lets a hover by an old table's numbers go too, which the viewport's unit tests pin.)
+    // the hover had in the table before, the very first such frame too. An end-to-end
+    // regression test: here the hover is let go as the new model is published, before its
+    // meshes come, so it passes without the selection's light dropping a hover by an old
+    // table's numbers, which the viewport's unit test
+    // `a_new_bodies_table_lets_a_hover_and_a_candidate_by_its_old_numbers_go` pins.
     use silico_app::renderer::Element::Face;
     let f = watching();
     let (mut h, record) = f.drawn("boxes.silico", LARGE_ALONE, (1280.0, 800.0));

@@ -3953,7 +3953,7 @@ mod tests {
         view.linked = Some(id.clone());
         assert_eq!(view.maker_faces(), selected, "selected against hovered");
         view.linked = None;
-        selection.select_body(id.clone());
+        selection.select_bodies(vec![id.clone()]);
         selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
         assert_eq!(
             view.maker_faces(),
@@ -3969,7 +3969,7 @@ mod tests {
         selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
         assert_eq!(view.maker_faces(), whole, "a dialog's body box");
         // Selected by its row, then a dialog taking edges alone, then its Cancel: whole.
-        selection.select_body(id.clone());
+        selection.select_bodies(vec![id.clone()]);
         selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
         assert_eq!(view.maker_faces(), whole);
         let saved = selection.saved();
@@ -4030,6 +4030,24 @@ mod tests {
                 assert!(view.hovered.is_empty());
             }
         }
+    }
+
+    #[test]
+    fn a_selection_change_on_the_same_table_keeps_the_hover_and_the_candidate() {
+        // The table unchanged and the selection changed between two lights (a feature
+        // selected): its highlights and tints are worked out again, but the hover drawn and a
+        // lit candidate are of this table's numbers still, and stay.
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let mut selection = crate::selection::Selection::default();
+        selection.light(&mut view);
+        view.hovered = BTreeSet::from([(1, Element::Face(1))]);
+        view.candidate = Some((1, Element::Face(2)));
+        let before = selection.version();
+        selection.select_feature(FeatureId::new("m3tq8v0z").unwrap());
+        assert_ne!(selection.version(), before);
+        selection.light(&mut view);
+        assert_eq!(view.hovered, BTreeSet::from([(1, Element::Face(1))]));
+        assert_eq!(view.candidate, Some((1, Element::Face(2))));
     }
 
     #[test]

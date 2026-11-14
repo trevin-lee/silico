@@ -1166,7 +1166,7 @@ pub struct Tab {
     /// The selection as it was before the open dialog's box of names took it, put back if
     /// the dialog is cancelled, as SolidWorks returns to the selection its command started
     /// with.
-    before_dialog: Option<crate::selection::Saved>,
+    before_dialog: Option<crate::selection::SavedSelection>,
     /// The last dialog OK'd, for the window to remember its values ([`take_oked`]
     /// (Self::take_oked), [`crate::dialog::Remembered`]).
     oked: Option<Dialog>,
@@ -1831,10 +1831,24 @@ impl Tab {
     }
 
     /// The selection's highlights and tints set on the view for its bodies table as it is
-    /// now ([`Selection::light`](crate::selection::Selection::light)): the canvas's, as it
-    /// takes a new table, before it hands its frame on.
+    /// now, a new table dropping the hover drawn and a lit candidate, by the old numbers
+    /// ([`Selection::light`](crate::selection::Selection::light)): the canvas's, as it takes
+    /// a new table, before it hands its frame on.
     pub(crate) fn light_selection(&mut self) {
         self.selection.light(&mut self.view);
+    }
+
+    /// Whether a right-click on feature `id`'s timeline item or browser row selects it, `as_`
+    /// that item or row selects it (the prototype's `contextmenu` calls `selectFeature` for
+    /// both): unless it's selected so already, or an open dialog's boxes of one body hold the
+    /// selection (section 9: the selection is the bodies they hold, so the menu opens over it
+    /// as it is, as a right-click never fills a box).
+    pub(crate) fn menu_selects(&self, id: &FeatureId, as_: crate::selection::As) -> bool {
+        let boxes_hold = self
+            .dialog
+            .as_ref()
+            .is_some_and(crate::dialog::Dialog::holds_bodies);
+        !boxes_hold && !self.selection.row_selected(id, as_)
     }
 
     /// The tab not shown: its canvas's hover let go, the selection's and the view's (the
@@ -6138,8 +6152,8 @@ impl Tab {
             self.rebrowse();
         } else {
             self.dropped(closed.as_ref());
-            if let Some(items) = before {
-                self.selection.restore(items);
+            if let Some(saved) = before {
+                self.selection.restore(saved);
             }
         }
         self.edits.queue.push_back(Queued::Closed {

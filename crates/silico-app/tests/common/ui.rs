@@ -497,6 +497,17 @@ pub fn hover_item<P: AppKernel>(h: &mut AppUi<P>, name: &str) {
     step(h);
 }
 
+/// Every face of body `number`, by its number in the view's table, in order.
+pub fn every_face<P: AppKernel>(
+    h: &AppUi<P>,
+    number: u32,
+) -> Vec<(u32, silico_app::renderer::Element)> {
+    let count = view(h).bodies()[&number].faces.len();
+    (1..=u32::try_from(count).unwrap())
+        .map(|n| (number, silico_app::renderer::Element::Face(n)))
+        .collect()
+}
+
 /// The body whose feature is `id`, by its number in the view's table.
 pub fn body_of<P: AppKernel>(h: &AppUi<P>, id: &str) -> u32 {
     view(h)

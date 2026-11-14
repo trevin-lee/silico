@@ -39,13 +39,13 @@ use ui::{
     AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, FakeBrowser, In, TRIAD_DOT, added, advance,
     answer_question, anywhere, begin_sketch_on, body_of, boxed, button_event, choose, chosen,
     click_at, click_canvas, close_window, create, create_sketch, dialog, dialog_open, drag,
-    everything, f2_typed, field, hand_clock, hover_item, in_status_bar, lavapipe_render_state,
-    leave_sketch, leave_sketch_unsettled, looks_from, meshes_settled, modify, modify_field,
-    name_field, new_part, ok_enabled, on_lavapipe, open_export, plain_read, pointer_away, press,
-    prompt, redo_by_key, rename_field, repaint_delay, retype, save_as_of, select, selected_names,
-    settled, sketch_mode, sketch_read, step, step_until, tab_named, tessellated, the_viewport,
-    tooltip_title, triad_origin, type_name, undo_by_key, view, view_direction, view_label,
-    view_label_node, view_mut, wheel, window_told,
+    every_face, everything, f2_typed, field, hand_clock, hover_item, in_status_bar,
+    lavapipe_render_state, leave_sketch, leave_sketch_unsettled, looks_from, meshes_settled,
+    modify, modify_field, name_field, new_part, ok_enabled, on_lavapipe, open_export, plain_read,
+    pointer_away, press, prompt, redo_by_key, rename_field, repaint_delay, retype, save_as_of,
+    select, selected_names, settled, sketch_mode, sketch_read, step, step_until, tab_named,
+    tessellated, the_viewport, tooltip_title, triad_origin, type_name, undo_by_key, view,
+    view_direction, view_label, view_label_node, view_mut, wheel, window_told,
 };
 
 /// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
@@ -18915,9 +18915,8 @@ fn a_timeline_item_selected_tints_its_own_faces_as_hovered_and_its_body_row_the_
         .filter(|(name, _)| name.starts_with("q0000003."))
         .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
         .collect();
-    let every: Vec<_> = (1..=u32::try_from(names.len()).unwrap())
-        .map(|n| (number, silico_app::renderer::Element::Face(n)))
-        .collect();
+    let every = every_face(&h, number);
+    assert_eq!(every.len(), names.len());
     assert!(!own.is_empty() && own.len() < every.len(), "{names:?}");
     let away = timeline(&h).get_by_label("Cut").rect().center() + eframe::egui::vec2(0.0, -200.0);
     let off = |h: &mut AppHarness| {
@@ -18969,18 +18968,6 @@ fn a_timeline_item_selected_tints_its_own_faces_as_hovered_and_its_body_row_the_
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// LADDER's one body, the pocket's: its number, and its every face.
-fn ladder_body(h: &AppHarness) -> (u32, Vec<(u32, silico_app::renderer::Element)>) {
-    let bodies = view(h).bodies();
-    assert_eq!(bodies.len(), 1, "one body");
-    let (number, body) = bodies.iter().next().unwrap();
-    let count = u32::try_from(body.faces.len()).unwrap();
-    let every = (1..=count)
-        .map(|n| (*number, silico_app::renderer::Element::Face(n)))
-        .collect();
-    (*number, every)
-}
-
 #[test]
 fn a_body_rows_right_click_selects_the_body_whole_whatever_was_selected_before() {
     // The pocket's body's row right-clicked, nothing selected: the body, whole (16 faces,
@@ -18990,7 +18977,7 @@ fn a_body_rows_right_click_selects_the_body_whole_whatever_was_selected_before()
     let (mut h, record) = f.drawn("ladder.silico", LADDER);
     meshes_settled(&mut h);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
-    let (_, every) = ladder_body(&h);
+    let every = every_face(&h, body_of(&h, "q0000003"));
     menu_on(&mut h, "Browser", "Cut");
     step(&mut h);
     step(&mut h);
@@ -19010,7 +18997,16 @@ fn a_body_rows_right_click_selects_the_body_whole_whatever_was_selected_before()
     h.hover_at(away);
     step(&mut h);
     step(&mut h);
-    assert!(tinted(&record).len() < every.len(), "its own faces first");
+    let number = body_of(&h, "q0000003");
+    let own: Vec<_> = view(&h).bodies()[&number]
+        .faces
+        .iter()
+        .zip(1u32..)
+        .filter(|(face, _)| face.name.to_string().starts_with("q0000003."))
+        .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
+        .collect();
+    assert!(!own.is_empty() && own.len() < every.len());
+    assert_eq!(tinted(&record), own, "its own faces first");
     ui::pause(&mut h);
     menu_on(&mut h, "Browser", "Cut");
     step(&mut h);
@@ -19020,6 +19016,110 @@ fn a_body_rows_right_click_selects_the_body_whole_whatever_was_selected_before()
         every,
         "right-clicked after its timeline item"
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_timeline_items_right_click_after_its_body_row_selects_it_as_itself_as_its_left_click_does() {
+    // The prototype's `contextmenu` calls `selectFeature(id)` for a timeline item as its
+    // click does: the pocket selected by its body's row (every face), then its timeline
+    // item right-clicked selects it as itself, from the timeline (its own five faces).
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    let every = every_face(&h, body_of(&h, "q0000003"));
+    let cut = silico_core::document::FeatureId::new("q0000003").unwrap();
+    let away = timeline(&h).get_by_label("Cut").rect().center() + eframe::egui::vec2(0.0, -200.0);
+    let off = |h: &mut AppHarness| {
+        h.hover_at(away);
+        step(h);
+        step(h);
+    };
+    select(&mut h, "Cut");
+    off(&mut h);
+    let own = tinted(&record);
+    assert!(own.len() < every.len());
+    ui::pause(&mut h);
+    browser(&h).get_by_label("Cut").click();
+    off(&mut h);
+    assert_eq!(tinted(&record), every);
+    ui::pause(&mut h);
+    menu_on(&mut h, "Timeline", "Cut");
+    step(&mut h);
+    step(&mut h);
+    let tab = &h.state().tabs()[0];
+    assert!(
+        tab.selection()
+            .row_selected(&cut, silico_app::selection::As::Itself)
+    );
+    assert_eq!(tab.selected_in, silico_app::feature_menu::Place::Timeline);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    off(&mut h);
+    assert_eq!(
+        tinted(&record),
+        own,
+        "its own faces, as its left click selects"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_body_rows_right_click_makes_the_browser_where_the_selection_was_made() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    select(&mut h, "Cut");
+    assert_eq!(
+        h.state().tabs()[0].selected_in,
+        silico_app::feature_menu::Place::Timeline
+    );
+    ui::pause(&mut h);
+    menu_on(&mut h, "Browser", "Cut");
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].selected_in,
+        silico_app::feature_menu::Place::Browser
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_a_union_open_a_right_click_on_a_row_or_an_item_leaves_its_boxes_and_the_selection() {
+    // Section 9: while a boolean's boxes are open, the selection is the bodies they hold. A
+    // right-click on another body's browser row, or its timeline item, opens its menu over
+    // the selection as it is (the coordinator's decision, #485's round 4): it neither
+    // fills a box, as a click would, nor selects the body in the boxes' place.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("sketched.silico", SKETCHED);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's rows", |h| {
+        shows(h, "Browser", "Washer")
+    });
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .select_bodies(vec![
+            silico_core::document::FeatureId::new("b0000001").unwrap(),
+        ]);
+    modify(&mut h, "Union");
+    settled(&mut h);
+    assert_eq!(boxed_bodies(&h), held(&[Some("b0000001"), None]));
+    assert_eq!(selected_features(&h), ["b0000001"]);
+    for pane in ["Browser", "Timeline"] {
+        menu_on(&mut h, pane, "Washer");
+        for _ in 0..5 {
+            step(&mut h);
+        }
+        assert_eq!(boxed_bodies(&h), held(&[Some("b0000001"), None]), "{pane}");
+        assert_eq!(selected_features(&h), ["b0000001"], "{pane}");
+        h.key_press(eframe::egui::Key::Escape);
+        step(&mut h);
+        step(&mut h);
+        assert!(dialog_open(&h), "{pane}: the dialog closed");
+        ui::pause(&mut h);
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -19076,10 +19176,7 @@ fn a_unions_target_body_clicked_in_the_canvas_tints_its_every_face_not_its_featu
     meshes_settled(&mut h);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Spare"));
     let body = body_of(&h, "q0000003");
-    let count = u32::try_from(view(&h).bodies()[&body].faces.len()).unwrap();
-    let every: Vec<_> = (1..=count)
-        .map(|n| (body, silico_app::renderer::Element::Face(n)))
-        .collect();
+    let every = every_face(&h, body);
     modify(&mut h, "Union");
     click_face(&mut h, &record, body, 1);
     bodies_boxed_until(&mut h, &[Some("q0000003"), None]);
@@ -35262,7 +35359,7 @@ fn the_bodies_selected_as_a_union_opens_fill_target_then_tool_and_the_rest_is_no
     };
     h.state_mut().tabs_mut()[0]
         .selection_mut()
-        .select_bodies(ids(&["b0000001", "s0000001", "b0000002"]));
+        .select_features(ids(&["b0000001", "s0000001", "b0000002"]));
     modify(&mut h, "Union");
     assert_eq!(
         boxed_bodies(&h),

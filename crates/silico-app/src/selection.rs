@@ -427,16 +427,17 @@ enum Held {
 /// A selection as it was, to put back ([`Selection::saved`], [`Selection::restore`]: a
 /// dialog's Cancel): its items, and which features among them were selected as their bodies.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Saved {
+pub struct SavedSelection {
     items: Vec<Item>,
     wholes: BTreeSet<FeatureId>,
 }
 
-impl Saved {
-    /// Its items, in the order picked.
-    pub fn items(&self) -> &[Item] {
-        &self.items
-    }
+/// How a feature is selected: as itself (its timeline item, a sketch's row: it tints the
+/// faces it made), or as its body (its body's row in the browser: the body's every face).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum As {
+    Itself,
+    Body,
 }
 
 /// The tab's selection and hover.
@@ -714,8 +715,8 @@ impl Selection {
 
     /// Its items as they are, and which features among them are selected as their bodies,
     /// to put back later ([`restore`](Self::restore)).
-    pub fn saved(&self) -> Saved {
-        Saved {
+    pub fn saved(&self) -> SavedSelection {
+        SavedSelection {
             items: self.items.clone(),
             wholes: self.wholes.clone(),
         }
@@ -729,8 +730,8 @@ impl Selection {
     /// published. Until then, a model published may be a preview of the dialog's, which
     /// may have consumed them, its edits' previews landing even after the Cancel; the
     /// Cancel's undo publishes the model they were found in again.
-    pub fn restore(&mut self, saved: Saved) {
-        let Saved { items, wholes } = saved;
+    pub fn restore(&mut self, saved: SavedSelection) {
+        let SavedSelection { items, wholes } = saved;
         if items != self.items {
             self.set(items);
         }
@@ -866,29 +867,42 @@ impl Selection {
     /// row in the browser): it tints the faces it made. A click in the canvas waiting for its
     /// pick is let go: it came before.
     pub fn select_feature(&mut self, id: FeatureId) {
-        if self.feature() != Some(&id) {
-            self.set(vec![Item::Feature(id)]);
+        self.select_alone(vec![Item::Feature(id)], BTreeSet::new());
+    }
+
+    /// The features `ids` selected, in order, each as itself, and nothing else: a test's
+    /// seam for a selection of several (the app's clicks select one at a time).
+    pub fn select_features(&mut self, ids: Vec<FeatureId>) {
+        self.select_alone(
+            ids.into_iter().map(Item::Feature).collect(),
+            BTreeSet::new(),
+        );
+    }
+
+    /// The bodies the features `ids` made selected, in order, and nothing else, each tinted
+    /// whole (a body's row in the browser, the prototype's `bodyRow`; a boolean's dialog's
+    /// boxes: each body they hold, marked in the browser too). A click in the canvas waiting
+    /// for its pick is let go: it came before.
+    pub fn select_bodies(&mut self, ids: Vec<FeatureId>) {
+        let wholes = ids.iter().cloned().collect();
+        self.select_alone(ids.into_iter().map(Item::Feature).collect(), wholes);
+    }
+
+    /// `items` selected, and nothing else, `wholes` among them selected as their bodies; what
+    /// was said of the selection, and a click in the canvas waiting for its pick, let go.
+    fn select_alone(&mut self, items: Vec<Item>, wholes: BTreeSet<FeatureId>) {
+        if items != self.items {
+            self.set(items);
         }
-        self.wholes_are(BTreeSet::new());
+        self.wholes_are(wholes);
         self.said = None;
         self.click = None;
     }
 
-    /// The body feature `id` made selected alone, by its row in the browser: as
-    /// [`select_feature`](Self::select_feature), but it tints the body's every face.
-    pub fn select_body(&mut self, id: FeatureId) {
-        if self.feature() != Some(&id) {
-            self.set(vec![Item::Feature(id.clone())]);
-        }
-        self.wholes_are(BTreeSet::from([id]));
-        self.said = None;
-        self.click = None;
-    }
-
-    /// Whether feature `id` alone is selected as its browser row selects it: as its body, if
-    /// `body` (a body's row), else as itself (a sketch's).
-    pub fn row_selected(&self, id: &FeatureId, body: bool) -> bool {
-        self.feature() == Some(id) && self.wholes.contains(id) == body
+    /// Whether feature `id` alone is selected `as_` its timeline item ([`As::Itself`]) or its
+    /// body's row ([`As::Body`]) selects it.
+    pub fn row_selected(&self, id: &FeatureId, as_: As) -> bool {
+        self.feature() == Some(id) && self.wholes.contains(id) == (as_ == As::Body)
     }
 
     /// The features selected as bodies, tinted whole, are `wholes`: worked out again if that
@@ -913,20 +927,6 @@ impl Selection {
                 .collect();
             self.set(rest);
         }
-        self.said = None;
-        self.click = None;
-    }
-
-    /// The bodies the features `ids` made selected, in order, and nothing else (a boolean's
-    /// dialog's boxes: each body they hold, tinted whole in the canvas and marked in the
-    /// browser). A click in the canvas waiting for its pick is let go: it came before.
-    pub fn select_bodies(&mut self, ids: Vec<FeatureId>) {
-        let wholes = ids.iter().cloned().collect();
-        let items: Vec<Item> = ids.into_iter().map(Item::Feature).collect();
-        if items != self.items {
-            self.set(items);
-        }
-        self.wholes_are(wholes);
         self.said = None;
         self.click = None;
     }
@@ -1791,7 +1791,9 @@ impl Selection {
     /// The highlights and the selected features' faces set on `view`, worked out again
     /// only when the selection or the bodies table changed: by the canvas as it draws a frame
     /// that takes a new table, before it hands the frame on, so no frame lights an element by
-    /// a number another table gave it ([`View::table`]); and after, with the hover.
+    /// a number another table gave it ([`View::table`]); and after, with the hover. A new
+    /// table drops the hover drawn (unless a menu holds it) and a lit candidate too, both by
+    /// the old numbers.
     pub(crate) fn light(&mut self, view: &mut View) {
         let key = (self.version, view.table());
         if self.drawn.map(|(_, table)| table) != Some(view.table()) {
@@ -3358,7 +3360,7 @@ pub(crate) mod tests {
         selection.click = Some(waiting_click(Instant::now(), None));
         selection.said = Some("said".to_owned());
         selection.restore(saved.clone());
-        assert_eq!(selection.items(), saved.items());
+        assert_eq!(selection.items(), saved.items.as_slice());
         assert_eq!(
             selection.names(),
             ["aaaaaaaa.box.Face3", "aaaaaaaa.box.Face2"]
@@ -3386,7 +3388,7 @@ pub(crate) mod tests {
         // A body selected by its browser row, then a dialog whose box takes edges alone
         // (Fillet) lets the feature go, then its Cancel: put back as the body, whole.
         let mut selection = Selection::default();
-        selection.select_body(fid("rrrrrrrr"));
+        selection.select_bodies(vec![fid("rrrrrrrr")]);
         assert!(selection.wholes.contains(&fid("rrrrrrrr")));
         let saved = selection.saved();
         selection.keep_only(Filter {
@@ -3415,11 +3417,15 @@ pub(crate) mod tests {
         assert_eq!(selection.feature(), Some(&fid("rrrrrrrr")));
         assert!(selection.wholes.is_empty(), "put back as itself");
         assert_ne!(selection.version(), version, "its tint worked out again");
+    }
+
+    #[test]
+    fn set_prunes_the_wholes_of_features_no_longer_selected() {
         // A body selected by its row, then a face picked in its place: the body is no longer
         // selected, so nor is it whole.
         let mut selection = Selection::default();
         selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);
-        selection.select_body(fid("aaaaaaaa"));
+        selection.select_bodies(vec![fid("aaaaaaaa")]);
         selection.pick("aaaaaaaa.box.Face3", How::Replace);
         assert_eq!(selection.names(), ["aaaaaaaa.box.Face3"]);
         assert!(selection.wholes.is_empty(), "{:?}", selection.wholes);
@@ -3430,7 +3436,7 @@ pub(crate) mod tests {
                 let saved = selection.saved();
                 selection.restore(saved);
             }
-            selection.select_body(fid("aaaaaaaa"));
+            selection.select_bodies(vec![fid("aaaaaaaa")]);
             assert!(selection.wholes.contains(&fid("aaaaaaaa")));
             selection.pick_all(&["aaaaaaaa.box.Face2".to_owned()], How::Replace);
             assert_eq!(selection.names(), ["aaaaaaaa.box.Face2"], "{waiting}");
@@ -3440,6 +3446,65 @@ pub(crate) mod tests {
                 selection.wholes
             );
         }
+        // A dialog's box taking edges alone lets the body go, its whole with it.
+        selection.select_bodies(vec![fid("aaaaaaaa")]);
+        selection.keep_only(Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        });
+        assert!(selection.wholes.is_empty(), "{:?}", selection.wholes);
+        // Taken out by a Ctrl-click, the others kept whole.
+        selection.select_bodies(vec![fid("aaaaaaaa"), fid("bbbbbbbb")]);
+        selection.deselect_feature(&fid("aaaaaaaa"));
+        assert_eq!(selection.wholes, BTreeSet::from([fid("bbbbbbbb")]));
+    }
+
+    #[test]
+    fn selecting_lets_a_waiting_click_and_what_was_said_go() {
+        // Each way of selecting features alone: a body's row, a timeline item, several.
+        type Select = fn(&mut Selection);
+        let ways: [(&str, Select); 3] = [
+            ("select_bodies", |s| s.select_bodies(vec![fid("aaaaaaaa")])),
+            ("select_feature", |s| s.select_feature(fid("aaaaaaaa"))),
+            ("select_features", |s| {
+                s.select_features(vec![fid("aaaaaaaa")])
+            }),
+        ];
+        for (way, select) in ways {
+            let mut selection = Selection {
+                click: Some(waiting_click(Instant::now(), None)),
+                said: Some("Can't select x".to_owned()),
+                ..Selection::default()
+            };
+            select(&mut selection);
+            assert!(selection.click.is_none(), "{way}: the waiting click kept");
+            assert_eq!(selection.said(), None, "{way}");
+            // And again, the same selection already: let go all the same.
+            selection.click = Some(waiting_click(Instant::now(), None));
+            selection.said = Some("Can't select x".to_owned());
+            select(&mut selection);
+            assert!(
+                selection.click.is_none(),
+                "{way} again: the waiting click kept"
+            );
+            assert_eq!(selection.said(), None, "{way} again");
+        }
+    }
+
+    #[test]
+    fn a_feature_is_selected_as_its_item_or_its_bodys_row_selects_it() {
+        let mut selection = Selection::default();
+        selection.select_feature(fid("aaaaaaaa"));
+        assert!(selection.row_selected(&fid("aaaaaaaa"), As::Itself));
+        assert!(!selection.row_selected(&fid("aaaaaaaa"), As::Body));
+        selection.select_bodies(vec![fid("aaaaaaaa")]);
+        assert!(selection.row_selected(&fid("aaaaaaaa"), As::Body));
+        assert!(!selection.row_selected(&fid("aaaaaaaa"), As::Itself));
+        // Another, or several: neither.
+        assert!(!selection.row_selected(&fid("bbbbbbbb"), As::Body));
+        selection.select_bodies(vec![fid("aaaaaaaa"), fid("bbbbbbbb")]);
+        assert!(!selection.row_selected(&fid("aaaaaaaa"), As::Body));
     }
 
     #[test]
