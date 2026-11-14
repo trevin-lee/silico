@@ -388,10 +388,39 @@ fn pick_ranks_the_origin_with_the_points_and_the_axes_with_the_curves() {
     // A line along the x axis, (10, 0) to (50, 0), 0.2 off both at (30, 0.2): the line.
     let [(along_x, _, _), _] = along_the_axes("zz000001");
     assert_eq!(pick(&along_x, [30.0, 0.2], 0.5), Some(el("zz000001")));
-    // Nothing 3 from everything; nothing for a tolerance below zero or not a number.
+    // A place that isn't finite picks nothing, at any tolerance: (0, ∞) is ∞ from the
+    // origin and the x axis, which an infinite tolerance would otherwise reach.
+    assert_eq!(pick(&empty(), [f64::INFINITY, 0.0], 0.5), None);
+    assert_eq!(pick(&empty(), [0.0, f64::NAN], 0.5), None);
+    assert_eq!(pick(&empty(), [0.0, f64::INFINITY], f64::INFINITY), None);
+    // Nothing 3 from everything. A tolerance below zero or not a number is 0, as Smart
+    // Dimension takes it: nothing 0.14 off, and the origin exactly there.
     assert_eq!(pick(&empty(), [3.0, 3.0], 0.5), None);
-    assert_eq!(pick(&empty(), [0.0, 0.0], -1.0), None);
-    assert_eq!(pick(&empty(), [0.0, 0.0], f64::NAN), None);
+    assert_eq!(pick(&empty(), [0.1, 0.1], -1.0), None);
+    assert_eq!(pick(&empty(), [0.1, 0.1], f64::NAN), None);
+    assert_eq!(
+        pick(&empty(), [0.0, 0.0], f64::NAN),
+        Some(Reference::Origin)
+    );
+}
+
+#[test]
+fn a_point_at_the_origins_place_is_picked_over_the_origin_from_any_side() {
+    // A point solved to (1e-15, 0), one place with the origin to the kernel (1e-7), clicked
+    // at (−0.2, 0): the origin is 0.2 off and the point 0.2 + 1e-15, yet the point stands
+    // for the origin and is picked. On its own side, (0.2, 0), it's nearer anyway.
+    let solved = with_point(empty(), "p0000001", [1e-15, 0.0]);
+    assert_eq!(pick(&solved, [-0.2, 0.0], 0.5), Some(el("p0000001")));
+    assert_eq!(pick(&solved, [0.2, 0.0], 0.5), Some(el("p0000001")));
+    // Within the tolerance of the origin but not of the point, which is 1e-15 farther: the
+    // point all the same, at its place.
+    assert_eq!(pick(&solved, [-0.5, 0.0], 0.5), Some(el("p0000001")));
+    // A point 2e-7 off, past one place: the origin, 0.2 off, against 0.2000002.
+    let apart = with_point(empty(), "p0000001", [2e-7, 0.0]);
+    assert_eq!(pick(&apart, [-0.2, 0.0], 0.5), Some(Reference::Origin));
+    // And a nearer point elsewhere still wins: (0.3, 0) clicked at (0.25, 0), 0.05 from it.
+    let both = with_point(solved, "p0000002", [0.3, 0.0]);
+    assert_eq!(pick(&both, [0.25, 0.0], 0.5), Some(el("p0000002")));
 }
 
 // --- SD1: two points, by the pointer; signs and order ---------------------------------
