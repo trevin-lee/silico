@@ -2336,9 +2336,14 @@ fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
     step_until(&mut h, "the first reload announced", |h| {
         anywhere(h, &reloaded_sub(1, 2))
     });
-    // The Block's dialog opened, its read of the feature waiting behind the hold too: the
-    // read ahead reloads the file, so the diff from 1 is refused, while the tab's read is
-    // under way, so no newer banner takes this one's place.
+    // Behind the diff, a second check, its rebuild of the block 12 high held; behind it,
+    // the Block's dialog's read of the feature. The read ahead reloads the file, so the
+    // diff from 1 is refused, while the tab's read waits, so nothing has said the reload
+    // yet and no newer banner takes this one's place.
+    let twelve = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dz, .. }) if *dz == 12.0));
+    let second = f.sessions.check(&id, CheckModel::Current { fresh: true });
     double_click(&mut h, "Timeline", "Block");
     hold.release();
     let _ = check.wait();
@@ -2347,15 +2352,8 @@ fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
         "session {id} doesn't hold the text of revision 1: it holds revisions 2 and 3 \
          (candidates: 2, 3)"
     );
-    step_until(&mut h, "the diff's refusal said, the dialog open", |h| {
-        anywhere(h, &refused) && dialog_open(h)
-    });
-    // The dialog cancelled, having changed nothing: the banner still the first reload's.
-    settled(&mut h);
-    h.key_press(eframe::egui::Key::Escape);
-    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    settled(&mut h);
-    assert!(!h.state().tabs()[0].transaction);
+    step_until(&mut h, "the diff's refusal said", |h| anywhere(h, &refused));
+    assert!(!dialog_open(&h));
     assert!(anywhere(&h, &reloaded_sub(1, 2)));
     // Restore of revision 1 could only be refused: off, saying why.
     let restore = h.get_by_role_and_label(Role::Button, "Restore revision 1");
@@ -2364,6 +2362,26 @@ fn restore_is_off_and_says_why_once_the_reloads_diff_finds_its_revision_gone() {
     let why = "Silico no longer holds revision 1: the file changed again before what \
                changed was read, so it can't be put back";
     step_until(&mut h, "its tooltip", |h| anywhere(h, why));
+    // The read let go: it answers at the reload ahead of it, 3, said in the first one's
+    // place, the first said as never listed.
+    twelve.release();
+    let _ = second.wait();
+    step_until(
+        &mut h,
+        "the second reload announced, the dialog open",
+        |h| anywhere(h, &reloaded_sub(2, 3)) && dialog_open(h),
+    );
+    assert!(anywhere(
+        &h,
+        "An earlier change, revision 1 → 2, couldn't be listed: the file changed again \
+         before it was read, so its features aren't marked."
+    ));
+    // The dialog cancelled, having changed nothing: no transaction left.
+    settled(&mut h);
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].transaction);
     assert_eq!(never_waits::waits(), 0);
 }
 
