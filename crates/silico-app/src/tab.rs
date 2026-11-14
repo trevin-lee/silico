@@ -10357,11 +10357,15 @@ mod tests {
             };
             assert_eq!(held.tab.check_first, waiter == OwnRead::Check, "{case}");
             let kernel = Arc::clone(&held.kernel);
+            let stopped_boxes = held.stopped_boxes;
             let stopped = held.tab.halt_with(&held.sessions, |cancelled| {
                 // The waiter cancelled, the other read still uncancelled: the session runs it
-                // next, which starts the rebuild again, asking for the box.
+                // next, which starts the rebuild again, asking for the box. Counted as
+                // `HeldBox::boxes` counts, from the setup's stopped rebuild.
                 if cancelled == waiter {
-                    until("the stopped rebuild started again", &|| boxes(&kernel) > 1);
+                    until("the stopped rebuild started again", &|| {
+                        boxes(&kernel) - stopped_boxes > 1
+                    });
                 }
             });
             assert!(stopped.is_ok(), "{case}");
@@ -12081,11 +12085,12 @@ mod tests {
             pin_named_at(&file, "Nut");
             hold.release();
             let _ = check.wait();
+            // Polled until the tab is at the session's revision too: the read's answer moves the
+            // dialog, not the tab's revision, which the poll after takes from `status`.
             polled_until(&mut tab, &sessions, |tab| {
-                tab.dialog.is_some() && tab.quiet()
+                tab.dialog.is_some() && tab.quiet() && tab.revision == rev(5)
             });
-            // The session's revision, as `status` gives it: the read's answer moves the dialog,
-            // not the tab's revision, which the poll after takes from `status`.
+            assert_eq!(tab.revision, rev(5), "save as: {save_as}");
             assert_eq!(revision_now(&tab, &sessions), rev(5), "save as: {save_as}");
             assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
             assert_eq!(banner_unlisted(&tab), NONE_UNLISTED, "save as: {save_as}");
