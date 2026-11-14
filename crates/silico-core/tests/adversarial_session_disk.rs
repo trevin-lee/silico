@@ -347,7 +347,7 @@ fn a_commit_over_a_changed_file_that_writes_nothing_leaves_it_for_the_sessions_o
 #[test]
 fn a_reload_of_text_the_gate_refuses_is_unchanged_at_once() {
     // The empty file is never the session's own reload (#479): the test after this one.
-    // One byte, the least that settles, as many as a broken file may hold.
+    // One byte, the least that settles, as few as a broken file may hold.
     for text in ["{", "not json", "{\"silico\": 1}", "\u{feff}{}", "\0\0\0"] {
         let f = opened(BLOCK);
         f.reaches(Disk::Unchanged);

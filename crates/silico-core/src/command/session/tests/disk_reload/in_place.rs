@@ -85,15 +85,13 @@ impl Watched {
         }
         self.text_of(revision)
     }
-}
 
-impl Watched {
     /// One comparison of this session's file, as [`compare`](Watched::compare) runs one, for
     /// a test whose other sessions share the reader (so its count of reads isn't this
     /// session's alone): the clock moved a whole interval and `status` asked, then waited
     /// for until a comparison has ended and told what it tells.
     #[track_caller]
-    fn compare_alone(&self) {
+    fn compare_with_shared_reader(&self) {
         let before = self.compared();
         self.clock.advance(DISK_CHECK_INTERVAL);
         self.f.status();
@@ -119,8 +117,8 @@ impl Watched {
         let _ = std::fs::remove_file(&self.f.path);
         std::fs::write(&self.f.path, SPHERE).unwrap();
         let told = self.told_count();
-        self.compare_alone();
-        self.compare_alone();
+        self.compare_with_shared_reader();
+        self.compare_with_shared_reader();
         assert!(self.told_count() > told, "the watch never told");
         self.reload_ends();
         assert_eq!(
@@ -642,8 +640,8 @@ fn settled_bytes_put_back_after_another_sessions_file_was_linked_in_mid_reload_a
     let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
     let (reload_started, through) = shut(&w.f.session().reloading);
     std::fs::write(&w.f.path, SPHERE).unwrap();
-    w.compare_alone();
-    w.compare_alone();
+    w.compare_with_shared_reader();
+    w.compare_with_shared_reader();
     reload_started.recv_timeout(WAIT).unwrap();
     // While the reload waits: the other session's file put at the path, through a link.
     std::fs::remove_file(&w.f.path).unwrap();
@@ -844,7 +842,8 @@ fn settled_bytes_put_back_after_a_link_out_of_the_workspace_are_reloaded() {
     open_gate(&w.f.session().reloading);
     through.send(()).unwrap();
     w.reload_ends();
-    assert_eq!(w.f.at(), Revision::OPENED);
+    // Nothing done: the finding as the last comparison left it, changed.
+    w.holds(Revision::OPENED, 1, Disk::Changed);
     assert!(lock(&w.f.session().reloads).refused.is_none());
     w.settled_put_back_is_reloaded();
 }
@@ -860,8 +859,8 @@ fn settled_bytes_put_back_after_a_link_to_another_sessions_copy_of_the_held_text
     let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
     let (reload_started, through) = shut(&w.f.session().reloading);
     std::fs::write(&w.f.path, SPHERE).unwrap();
-    w.compare_alone();
-    w.compare_alone();
+    w.compare_with_shared_reader();
+    w.compare_with_shared_reader();
     reload_started.recv_timeout(WAIT).unwrap();
     std::fs::remove_file(&w.f.path).unwrap();
     std::os::unix::fs::symlink(&other, &w.f.path).unwrap();
@@ -887,8 +886,8 @@ fn a_settled_reload_inside_a_transaction_finding_another_sessions_file_claims_an
     let begin = w.f.sessions.begin(&w.f.id);
     started.recv_timeout(WAIT).unwrap();
     std::fs::write(&w.f.path, SPHERE).unwrap();
-    w.compare_alone();
-    w.compare_alone();
+    w.compare_with_shared_reader();
+    w.compare_with_shared_reader();
     assert_eq!(w.told_count(), 1);
     assert!(lock(&w.f.session().reloads).queued);
     open_gate(&w.f.session().gate);
@@ -929,4 +928,37 @@ fn a_settled_reload_queued_behind_a_begin_finds_the_file_changed_again_and_leave
     reload_through.send(()).unwrap();
     w.reload_ends();
     w.holds(Revision(2), 1, Disk::Changed);
+}
+
+#[test]
+fn a_settled_reload_inside_a_transaction_finding_the_settled_bytes_leaves_the_finding_changed() {
+    // Queued behind a `begin` that reloads other bytes, the reload runs inside its
+    // transaction and finds the settled bytes back: claimed, as `commit` claims what it
+    // reads, but nothing reloaded and nothing kept, and the finding stays changed.
+    let w = watching_box();
+    let (reload_started, reload_through) = shut(&w.f.session().reloading);
+    let (started, through) = shut(&w.f.session().gate);
+    let begin = w.f.sessions.begin(&w.f.id);
+    started.recv_timeout(WAIT).unwrap();
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    w.compare();
+    w.compare();
+    assert_eq!(w.told_count(), 1);
+    assert!(lock(&w.f.session().reloads).queued);
+    let other = BOX.replace("Block", "Other");
+    std::fs::write(&w.f.path, &other).unwrap();
+    open_gate(&w.f.session().gate);
+    through.send(()).unwrap();
+    assert_eq!(begin.wait().result.unwrap().base, Revision(2));
+    reload_started.recv_timeout(WAIT).unwrap();
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    w.compare();
+    assert_eq!(w.f.status().disk, Some(Disk::Changed));
+    open_gate(&w.f.session().reloading);
+    reload_through.send(()).unwrap();
+    w.reload_ends();
+    w.holds(Revision(2), 1, Disk::Changed);
+    assert!(lock(&w.f.session().reloads).refused.is_none());
+    // Read after the reload has ended: queued behind it, it would wait at its gate.
+    assert_eq!(w.text_of(Revision(2)), other);
 }

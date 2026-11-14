@@ -1564,10 +1564,13 @@ impl<C: Kernel + 'static> Session<C> {
             Ok(Some(reread)) => reread,
             Ok(None) => return SettledReload::AsHeld,
             // Out of the workspace: refused before anything was read.
-            Err(_) => return SettledReload::Nothing,
+            Err(problems) => {
+                tracing::info!(session = %self.id, "the file's reload read nothing, so nothing of it is kept: {}", messages(&problems));
+                return SettledReload::Nothing;
+            }
         };
         let read_settled = matches!(&reread.found, Ok((_, now)) if digest(now) == *settled);
-        let read_held = matches!(&reread.found, Ok((_, now)) if *now == *reread.held);
+        let read_held = matches!(&reread.found, Ok((_, now)) if *now == *reread.bytes);
         if !read_settled && !read_held {
             tracing::info!(session = %self.id, "the file changed again before its reload read it: not reloaded until it settles");
             return SettledReload::Nothing;
@@ -1581,7 +1584,10 @@ impl<C: Kernel + 'static> Session<C> {
             Err(problems) if read_settled => SettledReload::Refused(problems),
             // The session's own bytes refused (another session's copy of them, through a
             // link): not what settled, so nothing is kept.
-            Err(_) => SettledReload::Nothing,
+            Err(problems) => {
+                tracing::info!(session = %self.id, "the file's reload found the session's own text and couldn't take it, so nothing of it is kept: {}", messages(&problems));
+                SettledReload::Nothing
+            }
         }
     }
 
@@ -1589,7 +1595,7 @@ impl<C: Kernel + 'static> Session<C> {
     /// it isn't read (no file, or a command that doesn't read it here). Refused, nothing
     /// read, if its path now leads out of the workspace.
     fn reread(&self, rereads: Rereads) -> Result<Option<Reread>, Problems> {
-        let (own, held, transaction) = {
+        let (own, bytes, transaction) = {
             let held = self.held.read();
             (
                 held.file.as_ref().map(|own| {
@@ -1626,7 +1632,7 @@ impl<C: Kernel + 'static> Session<C> {
             path,
             resolved,
             found_at,
-            held,
+            bytes,
             part_written,
             transaction,
             found,
@@ -1645,7 +1651,7 @@ impl<C: Kernel + 'static> Session<C> {
             path,
             resolved,
             found_at,
-            held: bytes,
+            bytes,
             part_written,
             transaction,
             found,
@@ -1733,8 +1739,10 @@ impl<C: Kernel + 'static> Session<C> {
             disk.held(now);
         }
         held.last_reload = Some(next);
-        drop(held);
+        // Logged before the held state is let go, so whoever sees the new revision finds
+        // this in the session's logs too (the logs' own lock is taken alone).
         tracing::info!(session = %self.id, revision = next.number(), "the file changed outside the session: reloaded");
+        drop(held);
         Ok(Reload::Reloaded)
     }
 
@@ -2072,40 +2080,6 @@ pub(super) enum Reload {
     Outside(Outside),
 }
 
-/// What the disk watch's own reload came to ([`Session::reload_settled`]; A3, #479).
-pub(super) enum SettledReload {
-    /// Found changed, the settled bytes, and reloaded at a new revision.
-    Reloaded,
-    /// Nothing to change: the file as the session last read or wrote it (a command ahead of
-    /// the reload reloaded it first), the finding stale.
-    AsHeld,
-    /// Nothing done, and nothing kept: inside a transaction (a `begin` queued ahead of it),
-    /// or the file found other than the settled bytes or the session's (changed again since
-    /// it settled, perhaps mid-write; gone; unreadable; leading out of the workspace), or the
-    /// session's own bytes refused (another session's copy of them, through a link). The
-    /// finding as the last comparison left it.
-    Nothing,
-    /// The settled bytes, refused (a file another session holds, no revision left to
-    /// give): kept, so the same bytes aren't queued again until a claim changes.
-    Refused(Problems),
-}
-
-/// The session's file as [`Session::reread`] read it, for [`Session::take`]: its path as
-/// `open` was given it, as its links resolved then, and where it leads now; the bytes the
-/// session held as it read; whether its own save left it part written, and whether a
-/// transaction was open; and the read. The reload's span, entered as it read, lasts until
-/// what it read is taken.
-struct Reread {
-    _span: tracing::span::EnteredSpan,
-    path: String,
-    resolved: PathBuf,
-    found_at: PathBuf,
-    held: Arc<Vec<u8>>,
-    part_written: bool,
-    transaction: bool,
-    found: Result<(std::fs::File, Vec<u8>), Error>,
-}
-
 impl Reload {
     /// Whether the file was reloaded: the response's `reloaded`.
     pub(super) fn reloaded(&self) -> bool {
@@ -2120,6 +2094,48 @@ impl Reload {
             Reload::AsHeld | Reload::Reloaded => None,
         }
     }
+}
+
+/// Each of `problems`' messages, for a log.
+fn messages(problems: &Problems) -> String {
+    let messages: Vec<&str> = problems.errors().iter().map(Error::message).collect();
+    messages.join("; ")
+}
+
+/// What the disk watch's own reload came to ([`Session::reload_settled`]; A3, #479).
+pub(super) enum SettledReload {
+    /// Found changed, the settled bytes, and reloaded at a new revision.
+    Reloaded,
+    /// Nothing to change: the file as the session last read or wrote it (a command ahead of
+    /// the reload reloaded it first), the finding stale.
+    AsHeld,
+    /// Nothing reloaded, and nothing kept: inside a transaction (a `begin` queued ahead of
+    /// it), where the settled bytes or the session's are claimed, as `commit` claims what it
+    /// reads, but nothing is reloaded; or the file found other than the settled bytes or the
+    /// session's (changed again since it settled, perhaps mid-write; gone; unreadable;
+    /// leading out of the workspace), not claimed; or the session's own bytes refused
+    /// (another session's copy of them, through a link). The finding as the last comparison
+    /// left it.
+    Nothing,
+    /// The settled bytes, refused (a file another session holds, no revision left to
+    /// give): kept, so the same bytes aren't queued again until a claim changes.
+    Refused(Problems),
+}
+
+/// The session's file as [`Session::reread`] read it, for [`Session::take`]: its path as
+/// `open` was given it, as its links resolved then, and where it leads now; the bytes the
+/// session last read or wrote, as it read; whether its own save left it part written, and
+/// whether a transaction was open; and the read. The reload's span, entered as it read,
+/// lasts until what it read is taken.
+struct Reread {
+    _span: tracing::span::EnteredSpan,
+    path: String,
+    resolved: PathBuf,
+    found_at: PathBuf,
+    bytes: Arc<Vec<u8>>,
+    part_written: bool,
+    transaction: bool,
+    found: Result<(std::fs::File, Vec<u8>), Error>,
 }
 
 /// A file found, inside a transaction, not as its session last read or wrote it: for a
