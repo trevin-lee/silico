@@ -6,7 +6,7 @@ use eframe::egui::epaint::TextShape;
 use eframe::egui::{self, Color32, Pos2, Rect, Shape, pos2, vec2};
 use silico_protocol::{Camera, Projection};
 
-use super::{Triad, baseline, triad, view_label, view_name};
+use super::{Triad, triad, view_label, view_name};
 
 /// The canvas: 800 by 600 points from (100, 50), so the triad's origin is at (144, 606), 44
 /// in from its left and up from its bottom (650), and the label's line's bottom left at
@@ -198,12 +198,47 @@ fn with_painter_at(pixels_per_point: f32, f: impl FnOnce(&egui::Painter)) {
     output.textures_delta.clear();
 }
 
-/// A text shape's middle across and its baseline.
-fn text_place(text: &TextShape) -> Pos2 {
-    pos2(
-        text.pos.x + text.galley.size().x / 2.0,
-        text.pos.y + baseline(&text.galley),
-    )
+/// A text shape's middle across.
+fn middle_across(text: &TextShape) -> f32 {
+    text.pos.x + text.galley.size().x / 2.0
+}
+
+/// Where a text shape's first glyph's ink ends, down the window: the bottom of its glyph's
+/// mesh, as rasterized. For a capital with no descender (X, Y, Z) that's its baseline, to
+/// within the rasterizer's pixel, measured apart from how the layout says where the baseline
+/// is.
+fn ink_bottom(text: &TextShape) -> f32 {
+    let row = &text.galley.rows[0];
+    text.pos.y + row.pos.y + row.row.visuals.mesh_bounds.max.y
+}
+
+/// A text shape's first glyph's baseline as the layout places it, down the window: the row's
+/// place and the glyph's (epaint's `Glyph::pos`, "baseline position, relative to the row"),
+/// read here, not through the code's own helper.
+fn laid_baseline(text: &TextShape) -> f32 {
+    let row = &text.galley.rows[0];
+    text.pos.y + row.pos.y + row.row.glyphs[0].pos.y
+}
+
+/// That `text` is the letter `letter`, its middle across at `x`, and its baseline at `y`: its
+/// ink ending there to within a point, and the layout's baseline there exactly.
+#[track_caller]
+fn letter_at(text: &TextShape, letter: &str, x: f32, y: f32, ppp: f32) {
+    assert_eq!(text.galley.text(), letter, "{ppp}");
+    assert!(
+        (middle_across(text) - x).abs() < 1e-4,
+        "{ppp} {letter}: {text:?}"
+    );
+    let ink = ink_bottom(text);
+    assert!(
+        (ink - y).abs() <= 1.0,
+        "{ppp} {letter}: ink to {ink}, not {y}"
+    );
+    let laid = laid_baseline(text);
+    assert!(
+        (laid - y).abs() < 1e-4,
+        "{ppp} {letter}: laid at {laid}, not {y}"
+    );
 }
 
 #[test]
@@ -220,10 +255,9 @@ fn the_triads_shapes_are_each_axis_farthest_first_its_stroke_cap_and_letter_then
             let Shape::Text(text) = shape else {
                 panic!("{shape:?}");
             };
-            assert_eq!(text.galley.text(), want);
             assert_eq!(text.galley.job.sections[0].format.font_id.size, 10.5);
             assert_eq!(text.galley.job.sections[0].format.color, colour);
-            at(text_place(text), place);
+            letter_at(text, want, place.x, place.y, 1.0);
         };
         let x = Color32::from_rgb(0xff, 0x69, 0x81);
         let y = Color32::from_rgb(0x00, 0xb2, 0x66);
@@ -260,30 +294,30 @@ fn the_triads_shapes_are_each_axis_farthest_first_its_stroke_cap_and_letter_then
 }
 
 #[test]
-fn each_letters_baseline_is_3_5_below_its_place_at_every_scale_not_its_middle() {
+fn each_letters_ink_sits_on_its_baseline_3_5_below_its_place_at_every_scale() {
     // SVG's `<text y>` is the baseline: each letter's baseline 3.5 below `letter_at`, its
-    // middle across at it, whatever the font's line box at 1, 1.5, 2, or 3 pixels a point
-    // (where centring the line box on the place would land its baseline elsewhere). From the
-    // front: X's at (179, 609.5), Z's at (144, 574.5), Y's at the origin's (144, 609.5).
+    // middle across at it, at 1, 1.5, 2, and 3 pixels a point. X, Y, and Z are capitals with
+    // no descender, so each glyph's rasterized mesh ends at its baseline: measured so, apart
+    // from how the code finds the baseline. From the front: X's at (179, 609.5), Z's at
+    // (144, 574.5), Y's at the origin's (144, 609.5). (Centring the letter's line box on its
+    // place instead would land its ink 3.8 points higher.)
     for ppp in [1.0, 1.5, 2.0, 3.0] {
         with_painter_at(ppp, |painter| {
             let shapes = triad(&front(), canvas()).unwrap().shapes(painter);
-            let letters: Vec<(String, Pos2)> = shapes
+            let letters: Vec<&TextShape> = shapes
                 .iter()
                 .filter_map(|shape| match shape {
-                    Shape::Text(text) => Some((text.galley.text().to_owned(), text_place(text))),
+                    Shape::Text(text) => Some(text),
                     _ => None,
                 })
                 .collect();
-            let want = [
-                ("Y", pos2(144.0, 609.5)),
-                ("X", pos2(179.0, 609.5)),
-                ("Z", pos2(144.0, 574.5)),
-            ];
-            assert_eq!(letters.len(), 3, "{ppp}: {letters:?}");
-            for ((letter, place), (wanted, at_place)) in letters.iter().zip(want) {
-                assert_eq!(letter, wanted, "{ppp}");
-                at(*place, at_place);
+            assert_eq!(letters.len(), 3, "{ppp}");
+            for (text, (letter, x, y)) in letters.into_iter().zip([
+                ("Y", 144.0, 609.5),
+                ("X", 179.0, 609.5),
+                ("Z", 144.0, 574.5),
+            ]) {
+                letter_at(text, letter, x, y, ppp);
             }
         });
     }
