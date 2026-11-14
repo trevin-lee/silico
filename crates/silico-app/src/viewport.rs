@@ -1,7 +1,8 @@
 //! The viewport (docs/design/m5.0-app.md, sections 2, 3, 8, and 10; M5.6): the canvas that
 //! draws the tab's published model through a renderer ([`crate::renderer`]), under the tab's
 //! own camera (decision 29), with Fusion's navigation (the wheel, the middle button, F6),
-//! its ViewCube at the canvas's top right, and its navigation bar at its bottom centre.
+//! its ViewCube at the canvas's top right, its navigation bar at its bottom centre, and the
+//! triad and the view label at its bottom left ([`crate::triad`]).
 //!
 //! Each tab holds its meshes ([`View`]): the newest `meshes` answer's bodies by number, each
 //! with its key, its level, its box, the half pixels it serves, its mesh, and its faces' and
@@ -2030,16 +2031,29 @@ pub fn show<P: Clients + 'static>(
         // An idle egui draws no frame, and its answer is taken only in one.
         ui.ctx().request_repaint();
     }
+    // The triad at the canvas's bottom left, over the bodies and under what the tab's mode
+    // draws, and the view label beside it over that (the prototype's triad is its overlay's
+    // first, its label HTML above the overlay), both of the camera this frame draws.
+    let painter = ui.painter_at(rect);
+    if let Some(triad) = crate::triad::triad(&view.camera, rect) {
+        painter.extend(triad.shapes(&painter));
+    }
+    let label = crate::triad::view_label(&view.camera, rect);
     // Over the bodies, under the ViewCube and the bar, in the pane's own layer: what the
     // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
     // the bar's, registered after, come first. A camera they change is drawn next frame.
     if let Some(mut frame) = view.frame.take() {
-        overlaid(tab, sessions, &ui.painter_at(rect), &frame);
+        overlaid(tab, sessions, &painter, &frame);
         // Handed on once: what reads the frame after reads no event again.
         frame.left.clear();
         frame.secondary.clear();
         tab.view.frame = Some(frame);
     }
+    let (shape, line) = label.shape(&painter);
+    painter.add(shape);
+    // In the accessibility tree as a label, taking no click or drag of the canvas's.
+    let label_response = ui.interact(line, ui.id().with("view_label"), Sense::hover());
+    label_response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label.words));
     view_cube(ui, rect, &mut tab.view, size_px);
     // The bar's Look At, as Ctrl+8's: square to the face selected, or to the sketch.
     if navigation_bar(ui, rect, &mut tab.view, size_px) {
@@ -2473,20 +2487,6 @@ fn label_cube_face(painter: &egui::Painter, on: OnFace, per_unit: f32, words: &s
     }
 }
 
-/// Words as the ViewCube labels a view, the first a capital: `top front right` is "Top front
-/// right".
-fn capitalised(words: &str) -> String {
-    let mut chars = words.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
-
-/// A named view's words, as the ViewCube labels it: `top_front_right` is "Top front right".
-fn words(view: NamedView) -> String {
-    capitalised(&view.name().replace('_', " "))
-}
-
 /// An edge's words, as the ViewCube labels it: the two faces it joins, named in the order a
 /// corner's are (`top_front_right`: top or bottom, then front or back, then left or right),
 /// so "Top front", "Front right", "Top right".
@@ -2509,7 +2509,7 @@ fn edge_words(edge: CubeEdge) -> String {
     .into_iter()
     .flatten()
     .collect();
-    capitalised(&named.join(" "))
+    crate::words::capitalised(&named.join(" "))
 }
 
 /// An edge's view (the prototype's cube clicked near an edge, viewport.js's `mouseup`: the
@@ -2581,7 +2581,10 @@ fn cube_menu(ui: &mut Ui, perspective: bool) -> Option<CubeAct> {
     }
     lines.push(menu::Line::Separator);
     lines.push(menu::Line::Head("Camera"));
-    for (word, wanted) in [("Orthographic", false), ("Perspective", true)] {
+    for (word, wanted) in [
+        (crate::words::ORTHOGRAPHIC, false),
+        (crate::words::PERSPECTIVE, true),
+    ] {
         let item = menu::Item {
             icon: None,
             label: word,
@@ -2633,7 +2636,7 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
         menu::Line::Item(
             item(
                 Some(Icon::Ortho),
-                "Orthographic",
+                crate::words::ORTHOGRAPHIC,
                 Checked::Choice(!perspective),
             ),
             DisplayAct::Perspective(false),
@@ -2641,7 +2644,7 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
         menu::Line::Item(
             item(
                 Some(Icon::Persp),
-                "Perspective",
+                crate::words::PERSPECTIVE,
                 Checked::Choice(perspective),
             ),
             DisplayAct::Perspective(true),
@@ -2719,11 +2722,7 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
         }
         let mut parts = vec![cube];
         let scale = f64::from(side) * CUBE_HALF_SIDE;
-        let offset = |v: [f64; 3]| {
-            let x = silico_protocol::vec3::dot(v, frame.right) * scale;
-            let y = -silico_protocol::vec3::dot(v, frame.up) * scale;
-            Vec2::new(x as f32, y as f32)
-        };
+        let offset = |v: [f64; 3]| navigate::screen_offset(&frame, v, scale);
         let at = |v: [f64; 3]| rect.center() + offset(v);
         let facing = |normal: [f64; 3]| silico_protocol::vec3::dot(normal, frame.back);
         let painter = ui.painter_at(rect);
@@ -2740,7 +2739,7 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             };
             paint_cube_face(&painter, on, cube_face_fill(face.view));
             if faced > CUBE_FACE_LABELLED {
-                let label = words(face.view);
+                let label = crate::words::view_words(face.view);
                 label_cube_face(&painter, on, scale as f32, &label.to_uppercase());
                 let part = Rect::from_center_size(on.centre, Vec2::splat(side * 0.3));
                 let response = cube_part(ui, part, &label);
@@ -2806,7 +2805,7 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             let response = cube_part(
                 ui,
                 Rect::from_center_size(corner, Vec2::splat(CUBE_CORNER_SIDE)),
-                &words(named),
+                &crate::words::view_words(named),
             );
             if response.clicked() {
                 chosen = Some(ViewAsk::Named(named));
@@ -3355,12 +3354,6 @@ mod tests {
     fn a_read_asks_at_most_the_largest_side_a_read_takes() {
         assert_eq!(read_size([0, 5000]), [1, 4096]);
         assert_eq!(read_size([1600, 1000]), [1600, 1000]);
-    }
-
-    #[test]
-    fn the_view_cubes_labels_are_the_named_views_in_words() {
-        assert_eq!(words(NamedView::TopFrontRight), "Top front right");
-        assert_eq!(words(NamedView::Front), "Front");
     }
 
     #[test]
