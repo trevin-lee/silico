@@ -827,6 +827,46 @@ pub const VIEW_LABEL_LINE_HEIGHT: f32 = BODY_LINE_HEIGHT;
 pub const VIEW_LABEL_SIZE: f32 = CANVAS_LABEL_SIZE;
 pub const VIEW_LABEL_TEXT: Color32 = GRAY_500;
 
+/// A feature dialog's distance arrow in the canvas (interact.js's `arrowGeom` and its
+/// overlay): its colour, Blue.525 (`#4676ff`, the focus ring's), and while it's dragged,
+/// white (`dragArrow ? '#ffffff' : '#4676ff'`).
+pub const ARROW: Color32 = FOCUS;
+pub const ARROW_HELD: Color32 = GRAY_1000;
+/// Its shaft: its width (`stroke-width="2.5"`), and its length on the screen from its base
+/// along the sweep, whatever the zoom (`tip = a + u * 56`).
+pub const ARROW_WIDTH: f32 = 2.5;
+pub const ARROW_LENGTH: f32 = 56.0;
+/// Its head, a triangle filled in its colour: its point this far past the shaft's end
+/// (`g.ux * 12`), its corners this far either side of the shaft's end (`px * 6`).
+pub const ARROW_HEAD_LENGTH: f32 = 12.0;
+pub const ARROW_HEAD_HALF_WIDTH: f32 = 6.0;
+/// The dot over its base, in its colour (`<circle r="3.5">`).
+pub const ARROW_DOT_RADIUS: f32 = 3.5;
+/// Its label, the value in mm: its box's left this far past the shaft's end along the arrow
+/// (`g.ux * 22`), and this far right of that (`+ 6`), its middle down there; its height
+/// (`height="20"`), its corners (`rx="4"`), and the room before its words and after them
+/// (`lx + 6`, and the width's `+ 12`); filled `#212121`, outlined 1 point in the arrow's
+/// colour (SVG's default `stroke-width`); its words 11.5 high in white (`font-size="11.5"`,
+/// `fill="#fff"`), their baseline 4 below its middle (`ly + 4`).
+pub const ARROW_LABEL_PAST: f32 = 22.0;
+pub const ARROW_LABEL_SHIFT: f32 = 6.0;
+pub const ARROW_LABEL_HEIGHT: f32 = 20.0;
+pub const ARROW_LABEL_RADIUS: u8 = 4;
+pub const ARROW_LABEL_PAD: f32 = 6.0;
+pub const ARROW_LABEL_FILL: Color32 = GRAY_200;
+pub const ARROW_LABEL_OUTLINE: f32 = 1.0;
+pub const ARROW_LABEL_SIZE: f32 = 11.5;
+pub const ARROW_LABEL_TEXT: Color32 = GRAY_1000;
+pub const ARROW_LABEL_DROP: f32 = 4.0;
+/// Where a press takes an arrow (`arrowHit`): nearer than 14 points to its shaft's end, or
+/// than 6 to its shaft.
+pub const ARROW_HIT_TIP: f32 = 14.0;
+pub const ARROW_HIT_SHAFT: f32 = 6.0;
+/// The flip arrow's shaft, from the profile along the sweep: half the distance arrow's.
+/// Silico's own: the prototype draws no flip arrow (its Direction is the dialog's, `dlgRev`),
+/// so it's drawn as the distance arrow is, shorter, with no dot and no label.
+pub const FLIP_ARROW_LENGTH: f32 = 28.0;
+
 /// The navigation bar's width and height, and its margin from the canvas's bottom (the
 /// prototype's `.nav-bar`, 12 from the bottom). Its height is a 24 high button, 3 of padding,
 /// and a 1 border, each above and below; its width, its seven buttons as app.js's
@@ -2805,6 +2845,37 @@ mod tests {
         assert_eq!(VIEW_LABEL_LINE_HEIGHT, 16.0);
         assert_eq!(VIEW_LABEL_SIZE, 11.0);
         assert_eq!(VIEW_LABEL_TEXT, Color32::from_rgb(0x82, 0x7f, 0x7f));
+    }
+
+    /// The distance arrow, typed from interact.js's overlay of `arrowGeom`'s arrow, and its
+    /// hit area from `arrowHit`.
+    #[test]
+    fn the_distance_arrows_look_is_the_prototypes() {
+        // `col = dragArrow ? '#ffffff' : '#4676ff'`; `stroke-width="2.5"`; `ux * 56`.
+        assert_eq!(ARROW, Color32::from_rgb(0x46, 0x76, 0xff));
+        assert_eq!(ARROW_HELD, Color32::from_rgb(0xff, 0xff, 0xff));
+        assert_eq!(ARROW_WIDTH, 2.5);
+        assert_eq!(ARROW_LENGTH, 56.0);
+        // The head's `g.ux * 12` and `px * 6`; the base's `r="3.5"`.
+        assert_eq!(ARROW_HEAD_LENGTH, 12.0);
+        assert_eq!(ARROW_HEAD_HALF_WIDTH, 6.0);
+        assert_eq!(ARROW_DOT_RADIUS, 3.5);
+        // `lx = tip.x + ux * 22 + 6`, `y = ly - 10`, `height="20"`, `rx="4"`,
+        // `fill="#212121"`, `x = lx + 6`, `font-size="11.5"`, `fill="#fff"`, `y = ly + 4`.
+        assert_eq!(ARROW_LABEL_PAST, 22.0);
+        assert_eq!(ARROW_LABEL_SHIFT, 6.0);
+        assert_eq!(ARROW_LABEL_HEIGHT, 20.0);
+        assert_eq!(ARROW_LABEL_RADIUS, 4);
+        assert_eq!(ARROW_LABEL_PAD, 6.0);
+        assert_eq!(ARROW_LABEL_FILL, Color32::from_rgb(0x21, 0x21, 0x21));
+        assert_eq!(ARROW_LABEL_OUTLINE, 1.0);
+        assert_eq!(ARROW_LABEL_SIZE, 11.5);
+        assert_eq!(ARROW_LABEL_TEXT, Color32::from_rgb(0xff, 0xff, 0xff));
+        assert_eq!(ARROW_LABEL_DROP, 4.0);
+        // `Math.hypot(m.x - g.tip.x, m.y - g.tip.y) < 14 || segD(m, g.a, g.tip) < 6`.
+        assert_eq!(ARROW_HIT_TIP, 14.0);
+        assert_eq!(ARROW_HIT_SHAFT, 6.0);
+        assert_eq!(FLIP_ARROW_LENGTH, ARROW_LENGTH / 2.0);
     }
 
     /// The navigation bar, typed from styles.css's `.nav-bar`, `.nav-bar .ab-btn`, and

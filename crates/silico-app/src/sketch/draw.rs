@@ -1258,7 +1258,7 @@ pub(crate) fn polyline(curve: Curve, scale: Scale, tolerance: f32) -> Vec<[f64; 
 /// as its outline's: each curve run from the end the last one ended at (the first, toward
 /// the one after it). None for a curve the read hasn't, or a loop whose curves don't meet
 /// end to end.
-fn walk(
+pub(crate) fn walk(
     curves: &[ElementId],
     geometry: &Geometry,
     scale: Scale,

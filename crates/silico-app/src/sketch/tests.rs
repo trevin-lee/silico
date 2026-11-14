@@ -1944,7 +1944,7 @@ fn fill_area(fills: &[draw::RegionFill]) -> f64 {
         .sum()
 }
 
-fn region(outer: &[&str], holes: &[&[&str]]) -> Region {
+pub(crate) fn region(outer: &[&str], holes: &[&[&str]]) -> Region {
     Region {
         outer: outer.iter().map(|n| id(n)).collect(),
         holes: holes
