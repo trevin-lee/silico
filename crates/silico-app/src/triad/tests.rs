@@ -378,10 +378,10 @@ fn an_unnamed_view_in_perspective_says_perspective_alone() {
 }
 
 #[test]
-fn a_view_is_named_within_a_hundredth_of_a_radian_of_its_direction_whatever_its_up() {
-    // The prototype's `viewName`: its elevation and azimuth within 0.01 of the named view's,
-    // its up not looked at. Turned about z by 0.0099 from the front, still Front; by 0.0101,
-    // not. Tilted up as much, the same.
+fn a_view_is_named_within_a_hundredth_of_a_radian_each_way_whatever_its_up() {
+    // The prototype's `viewName`: its elevation and its azimuth each within 0.01 of the named
+    // view's, its up not looked at. Turned about z by 0.0099 from the front (its azimuth),
+    // still Front; by 0.0101, not. Tilted up as much (its elevation), the same.
     for (angle, named) in [(0.0099f64, true), (0.0101, false)] {
         let (s, c) = (libm::sin(angle), libm::cos(angle));
         let turned = looking([s, -c, 0.0], [0.0, 0.0, 1.0]);
@@ -430,6 +430,53 @@ fn a_view_is_named_within_a_hundredth_of_a_radian_of_its_direction_whatever_its_
         view_name(&looking([1.0, -1.0, 1.0], [q, q, 0.0])).as_deref(),
         Some("Iso")
     );
+}
+
+#[test]
+fn a_view_is_named_by_its_elevation_and_azimuth_each_within_a_hundredth_as_the_prototype_does() {
+    // The prototype's `viewName` holds a view by its azimuth and elevation, `dirOf(az, el) =
+    // (cos el sin az, −cos el cos az, sin el)`, and names it where each is within 0.01 of the
+    // named view's: a square, not a disc. So the front at az = el = 0.008 is Front, though its
+    // direction is 0.0113 from the front's; and the home corner turned 0.011 in azimuth (at its
+    // elevation, asin(1/√3)) isn't Iso, though its direction is only 0.011 cos(35.26°) =
+    // 0.0090 from the corner's. Azimuths are compared round the circle: the back, at az = π,
+    // is Back from az = −π + 0.005 as from π − 0.005.
+    let dir = |az: f64, el: f64| {
+        [
+            libm::cos(el) * libm::sin(az),
+            -libm::cos(el) * libm::cos(az),
+            libm::sin(el),
+        ]
+    };
+    let z = [0.0, 0.0, 1.0];
+    assert_eq!(
+        view_name(&looking(dir(0.008, 0.008), z)).as_deref(),
+        Some("Front")
+    );
+    let iso_el = libm::asin(1.0 / 3f64.sqrt());
+    assert_eq!(
+        view_name(&looking(
+            dir(std::f64::consts::FRAC_PI_4 + 0.011, iso_el),
+            z
+        )),
+        None
+    );
+    assert_eq!(
+        view_name(&looking(
+            dir(std::f64::consts::FRAC_PI_4 + 0.009, iso_el),
+            z
+        ))
+        .as_deref(),
+        Some("Iso")
+    );
+    let pi = std::f64::consts::PI;
+    for az in [-pi + 0.005, pi - 0.005] {
+        assert_eq!(
+            view_name(&looking(dir(az, 0.0), z)).as_deref(),
+            Some("Back"),
+            "{az}"
+        );
+    }
 }
 
 #[test]

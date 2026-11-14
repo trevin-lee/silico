@@ -351,27 +351,43 @@ pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
     across.map(|part| part / length)
 }
 
-/// How near a view must be to a named view to be at it, in radians: the prototype's
-/// (viewport.js's `viewName`, which takes a view whose elevation and azimuth are each within
-/// 0.01 of the named view's), here the angle between the two views' directions.
+/// How near a view's elevation and its azimuth must each be to a named view's to be at it, in
+/// radians: the prototype's (viewport.js's `viewName`).
 pub const AT_NAMED_VIEW: f64 = 0.01;
 
-/// The angle between the unit vectors `a` and `b`, in radians, from 0 to π: by its sine and
-/// cosine together, so it keeps its precision near 0 and π, where the cosine's arc doesn't.
-fn angle_between(a: [f64; 3], b: [f64; 3]) -> f64 {
-    let c = cross(a, b);
-    libm::atan2(dot(c, c).sqrt(), dot(a, b))
+/// The elevation past which a named view takes any azimuth, in radians: the prototype's
+/// (`viewName`'s `Math.abs(v.el) > 1.5`), which only the top and the bottom (±π/2) pass.
+const ANY_AZIMUTH_PAST: f64 = 1.5;
+
+/// The azimuth and the elevation, in radians, of a unit direction `d` from the target to the
+/// eye, as the prototype's camera holds a view (viewport.js's `dirOf(az, el) = (cos el sin
+/// az, −cos el cos az, sin el)`): the elevation `asin(d.z)` (its z held to ±1, as the
+/// prototype's ViewCube holds it), the azimuth `atan2(d.x, −d.y)`, from the front (−y)
+/// toward +x.
+fn azimuth_and_elevation(d: [f64; 3]) -> (f64, f64) {
+    (libm::atan2(d[0], -d[1]), libm::asin(d[2].clamp(-1.0, 1.0)))
 }
 
-/// Whether `camera` is at the named view `view`: looking from within [`AT_NAMED_VIEW`] of its
-/// direction, whatever its up, as the prototype's `viewName` compares a view's elevation and
-/// azimuth alone. So a view turned about its own axis (a sketch's Look At whose y isn't the
-/// view's up, or an orbit over a pole, upside down) is still at the view it looks from.
-/// Never for a camera that makes no frame ([`Camera::frame`]).
+/// Whether `camera` is at the named view `view`, by the prototype's rule (viewport.js's
+/// `viewName`): its elevation within [`AT_NAMED_VIEW`] of the view's, and its azimuth too,
+/// compared round the circle (the difference brought into [−π, π) as the prototype brings it,
+/// `((a − b + π) % 2π + 2π) % 2π − π`), but for the top and the bottom, which take any
+/// azimuth. Each is [`azimuth_and_elevation`] of a direction: the camera's, and the view's
+/// ([`NamedView::direction`]; the prototype's iso is at its corner's elevation rounded,
+/// 35.264°, the app's at asin(1/√3) = 35.26439°). Its up isn't looked at, as the
+/// prototype's camera has none of its own: so a view turned about its own axis (a sketch's
+/// Look At whose y isn't the view's up, or an orbit over a pole, upside down) is still at the
+/// view it looks from. Never for a camera that makes no frame ([`Camera::frame`]).
 pub fn at_view(camera: &Camera, view: NamedView) -> bool {
-    camera
-        .frame()
-        .is_ok_and(|frame| angle_between(frame.back, view.direction()) < AT_NAMED_VIEW)
+    use std::f64::consts::{PI, TAU};
+    let Ok(frame) = camera.frame() else {
+        return false;
+    };
+    let (azimuth, elevation) = azimuth_and_elevation(frame.back);
+    let (view_azimuth, view_elevation) = azimuth_and_elevation(view.direction());
+    let turned = (((azimuth - view_azimuth + PI) % TAU + TAU) % TAU - PI).abs();
+    (elevation - view_elevation).abs() < AT_NAMED_VIEW
+        && (turned < AT_NAMED_VIEW || view_elevation.abs() > ANY_AZIMUTH_PAST)
 }
 
 /// The view switched to a perspective one (Fusion's ViewCube menu, *Camera*), at
