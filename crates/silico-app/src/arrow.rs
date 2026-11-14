@@ -65,7 +65,7 @@ use silico_protocol::Camera;
 use silico_render::render::project;
 
 use crate::dialog::{self, Dialog, Kind, Part, Value};
-use crate::sketch::draw::{Geometry, Scale, bounds, walk};
+use crate::sketch::draw::{Curve, Geometry, add, direction, mul, oriented, sub};
 use crate::theme;
 use crate::viewport::{LeftEvent, LeftKind};
 
@@ -80,12 +80,6 @@ pub const FLAT: f64 = 0.6;
 /// Half a millimetre, in nanometres: a drag's value is a whole number of them, and at least
 /// one (`Math.max(0.5, Math.round(v * 2) / 2)`).
 pub const HALF_MM_NM: i64 = 500_000;
-
-/// The scale and chord tolerance a profile's centroid is worked out at: a thousandth of a
-/// millimetre a point, its arcs' chords within a point of them, a micrometre (at most
-/// `MAX_CURVE_SEGMENTS` a curve).
-const CENTROID_SCALE: Scale = Scale(1e-3);
-const CENTROID_TOLERANCE: f32 = 1.0;
 
 /// A length of the extent a distance arrow drags, in model space.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -120,56 +114,111 @@ pub struct Handles {
 }
 
 /// The centroid of `read`'s profile, in the sketch's millimetres: of every region's area, its
-/// outer loop's less its holes', each loop walked as its outline is drawn ([`walk`], its arcs
-/// and circles in chords within a micrometre of them). None for a sketch that makes no profile,
-/// a loop that doesn't run end to end, or a profile whose area isn't above 0.
+/// outer loop's less its holes', each loop's worked out exactly from its curves as the walk of
+/// its outline runs them ([`oriented`]; [`moments`]). None for a sketch that makes no
+/// profile, a loop that doesn't run end to end, or a profile whose area isn't above 0.
 pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
     let geometry = Geometry::of(read);
-    let mut rings: Vec<(Vec<[f64; 2]>, f64)> = Vec::new();
+    let mut loops: Vec<(Vec<(Curve, bool)>, f64)> = Vec::new();
     for region in &read.regions {
-        let outer = walk(&region.outer, &geometry, CENTROID_SCALE, CENTROID_TOLERANCE)?;
-        rings.push((outer, 1.0));
+        loops.push((oriented(&region.outer, &geometry)?, 1.0));
         for hole in &region.holes {
-            let hole = walk(hole, &geometry, CENTROID_SCALE, CENTROID_TOLERANCE)?;
-            rings.push((hole, -1.0));
+            loops.push((oriented(hole, &geometry)?, -1.0));
         }
     }
-    // About the middle of their bounds, so a profile far from the sketch's origin keeps the
-    // precision its size has.
-    let (lo, hi) = bounds(rings.iter().flat_map(|(ring, _)| ring.iter().copied()))?;
-    let middle = [lo[0] + (hi[0] - lo[0]) / 2.0, lo[1] + (hi[1] - lo[1]) / 2.0];
+    // Each loop about a corner of its own, then all about the first's: a profile far from the
+    // sketch's origin, or a loop far from the others, keeps the precision its own size has.
+    let mut about: Option<[f64; 2]> = None;
     let (mut area, mut moment) = (0.0, [0.0, 0.0]);
-    for (ring, role) in &rings {
-        let (ring_area, ring_moment) = moments(ring, middle);
-        // However a ring runs (a lone circle runs counter-clockwise, a hole or not), it counts
+    for (walked, role) in &loops {
+        let corner = first_point(walked)?;
+        let shift = sub(corner, *about.get_or_insert(corner));
+        let (loop_area, loop_moment) = moments(walked, corner);
+        // However a loop runs (a lone circle runs counter-clockwise, a hole or not), it counts
         // by what it is: an outer loop's area added, a hole's taken away.
-        let sense = role * ring_area.signum();
-        area += sense * ring_area;
-        moment = [
-            moment[0] + sense * ring_moment[0],
-            moment[1] + sense * ring_moment[1],
-        ];
+        let sense = role * loop_area.signum();
+        area += sense * loop_area;
+        moment = add(moment, mul(add(loop_moment, mul(shift, loop_area)), sense));
     }
-    let centroid = [middle[0] + moment[0] / area, middle[1] + moment[1] / area];
+    let centroid = add(about?, mul(moment, 1.0 / area));
     (area > 0.0 && centroid.iter().all(|c| c.is_finite())).then_some(centroid)
 }
 
-/// The polygon `ring`'s signed area (above 0 counter-clockwise) and its first moments, its
-/// area times its centroid, each about `about`: the shoelace's sums.
-fn moments(ring: &[[f64; 2]], about: [f64; 2]) -> (f64, [f64; 2]) {
+/// Where a walk of `walked` starts: its first curve's first point as it's run.
+fn first_point(walked: &[(Curve, bool)]) -> Option<[f64; 2]> {
+    Some(match walked.first()? {
+        (Curve::Line { from, to }, backwards) => {
+            if *backwards {
+                *to
+            } else {
+                *from
+            }
+        }
+        (
+            Curve::Round {
+                centre,
+                radius,
+                start,
+                sweep,
+            },
+            backwards,
+        ) => {
+            let first = if *backwards { start + sweep } else { *start };
+            add(*centre, mul(direction(first), *radius))
+        }
+    })
+}
+
+/// A closed walk of `walked`'s signed area (above 0 counter-clockwise) and first moments (its
+/// area times its centroid) about `about`, exactly, by Green's theorem: each curve's chord's
+/// share of the shoelace's sums, and each arc's or circle's segment between its chord and
+/// itself, of area r²(φ − sin φ)/2 for the turn φ it's run through (below 0 run clockwise),
+/// whose first moment about the circle's centre is (2/3)r³sin³(φ/2) along the turn's middle.
+fn moments(walked: &[(Curve, bool)], about: [f64; 2]) -> (f64, [f64; 2]) {
     let (mut twice, mut x6, mut y6) = (0.0, 0.0, 0.0);
-    for (at, p) in ring.iter().enumerate() {
-        let q = ring[(at + 1) % ring.len()];
-        let (p, q) = (
-            [p[0] - about[0], p[1] - about[1]],
-            [q[0] - about[0], q[1] - about[1]],
-        );
+    let (mut bulge, mut bulge_moment) = (0.0, [0.0, 0.0]);
+    for &(curve, backwards) in walked {
+        let (from, to) = match curve {
+            Curve::Line { from, to } if backwards => (to, from),
+            Curve::Line { from, to } => (from, to),
+            Curve::Round {
+                centre,
+                radius,
+                start,
+                sweep,
+            } => {
+                let (first, turn) = if backwards {
+                    (start + sweep, -sweep)
+                } else {
+                    (start, sweep)
+                };
+                let segment = radius * radius * (turn - libm::sin(turn)) / 2.0;
+                let half = libm::sin(turn / 2.0);
+                let reach = 2.0 / 3.0 * radius * radius * radius * half * half * half;
+                bulge += segment;
+                bulge_moment = add(
+                    bulge_moment,
+                    add(
+                        mul(sub(centre, about), segment),
+                        mul(direction(first + turn / 2.0), reach),
+                    ),
+                );
+                (
+                    add(centre, mul(direction(first), radius)),
+                    add(centre, mul(direction(first + turn), radius)),
+                )
+            }
+        };
+        let (p, q) = (sub(from, about), sub(to, about));
         let cross = p[0] * q[1] - q[0] * p[1];
         twice += cross;
         x6 += (p[0] + q[0]) * cross;
         y6 += (p[1] + q[1]) * cross;
     }
-    (twice / 2.0, [x6 / 6.0, y6 / 6.0])
+    (
+        twice / 2.0 + bulge,
+        [x6 / 6.0 + bulge_moment[0], y6 / 6.0 + bulge_moment[1]],
+    )
 }
 
 /// `dialog`'s arrows in model space, its sketch on `plane` with its profile's centroid at

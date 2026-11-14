@@ -1255,52 +1255,59 @@ pub(crate) fn polyline(curve: Curve, scale: Scale, tolerance: f32) -> Vec<[f64; 
 
 /// The polygon a loop of `curves` walks, in order, in the sketch's millimetres, its arcs and
 /// circles at `scale`'s and `tolerance`'s segments ([`curve_segments`]), its vertices on them
-/// as its outline's: each curve run from the end the last one ended at (the first, toward
-/// the one after it). None for a curve the read hasn't, or a loop whose curves don't meet
-/// end to end.
-pub(crate) fn walk(
+/// as its outline's: each curve run as [`oriented`] runs it. None for a curve the read
+/// hasn't, or a loop whose curves don't meet end to end.
+fn walk(
     curves: &[ElementId],
     geometry: &Geometry,
     scale: Scale,
     tolerance: f32,
 ) -> Option<Vec<[f64; 2]>> {
-    let curve_points = |id: &ElementId| -> Option<Vec<[f64; 2]>> {
-        Some(polyline(geometry.curves.get(id)?.0, scale, tolerance))
-    };
+    let mut polygon = Vec::new();
+    // A lone curve, a circle's whole turn, too: its ring closed by its last point let go.
+    for (curve, backwards) in oriented(curves, geometry)? {
+        let mut piece = polyline(curve, scale, tolerance);
+        if backwards {
+            piece.reverse();
+        }
+        piece.pop();
+        polygon.extend(piece);
+    }
+    Some(polygon)
+}
+
+/// The curves a loop of `curves` walks, in order, each with whether the walk runs it
+/// backwards, from its end to its start: each from the end the last one ended at (the first,
+/// toward the one after it); a lone curve, a circle's whole turn, as drawn. None for a curve
+/// the read hasn't, or a loop whose curves don't meet end to end.
+pub(crate) fn oriented(curves: &[ElementId], geometry: &Geometry) -> Option<Vec<(Curve, bool)>> {
+    let curve = |id: &ElementId| geometry.curves.get(id).map(|(curve, _)| *curve);
     let [first, rest @ ..] = curves else {
         return None;
     };
-    // A lone curve: a circle's whole turn, its ring closed.
     if rest.is_empty() {
-        let mut ring = curve_points(first)?;
-        ring.pop();
-        return Some(ring);
+        return Some(vec![(curve(first)?, false)]);
     }
     let ends = |id: &ElementId| geometry.ends.get(id).copied();
     let (start, end) = ends(first)?;
     let (next_start, next_end) = ends(&rest[0])?;
     let forward = end == next_start || end == next_end;
     let mut at = if forward { end } else { start };
-    let mut polygon = curve_points(first)?;
-    if !forward {
-        polygon.reverse();
-    }
-    polygon.pop();
+    let mut walked = vec![(curve(first)?, !forward)];
     for id in rest {
         let (start, end) = ends(id)?;
-        let mut piece = curve_points(id)?;
-        if start == at {
+        let backwards = if start == at {
             at = end;
+            false
         } else if end == at {
             at = start;
-            piece.reverse();
+            true
         } else {
             return None;
-        }
-        piece.pop();
-        polygon.extend(piece);
+        };
+        walked.push((curve(id)?, backwards));
     }
-    Some(polygon)
+    Some(walked)
 }
 
 /// What's drawn of a tool's preview (the core's `sketch_tools::Preview`), seen through

@@ -205,9 +205,7 @@ fn the_prototypes_bracket_profiles_centroid_is_where_it_puts_its_arrow_to_round_
 fn a_hole_takes_its_area_away_whichever_way_its_circle_runs() {
     // The rectangle less a circle of radius 5 about (10, 10), which runs counter-clockwise
     // as a lone circle walks, a hole all the same: (800·20 − 25π·10) / (800 − 25π) across,
-    // 10 up. The circle's chords stray at most a micrometre, so its area is short by at most
-    // its perimeter times that, 0.0314 mm², which moves the centroid by at most
-    // 0.0314 · 11.1 / 721 = 5e-4 mm across, and not at all up (its chords are symmetric).
+    // 10 up, exactly (no chords: a circle's area is its own).
     let mut read = rectangle_read();
     read.members.points.push(point("pc000001", 10.0, 10.0));
     read.members.circles.push(SketchCircle {
@@ -221,14 +219,72 @@ fn a_hole_takes_its_area_away_whichever_way_its_circle_runs() {
         &[&["ca000001"]],
     )];
     let hole = 25.0 * PI;
-    let centroid = profile_centroid(&read).unwrap();
     near(
-        centroid,
+        profile_centroid(&read).unwrap(),
         [(16_000.0 - 10.0 * hole) / (800.0 - hole), 10.0],
-        1e-3,
+        1e-12,
     );
-    // Not the rectangle's, which a hole added would move the other way.
-    assert!(centroid[0] > 21.0, "{centroid:?}");
+    // An island in it, a disc of radius 2 about the same centre, a region of its own, added
+    // back: (16000 − 21π·10) / (800 − 21π) across.
+    read.members.circles.push(SketchCircle {
+        id: id("cb000001"),
+        center: id("pc000001"),
+        radius: Coordinate::new(2.0).unwrap(),
+        construction: false,
+    });
+    read.regions.push(region(&["cb000001"], &[]));
+    let ring = 21.0 * PI;
+    near(
+        profile_centroid(&read).unwrap(),
+        [(16_000.0 - 10.0 * ring) / (800.0 - ring), 10.0],
+        1e-12,
+    );
+}
+
+#[test]
+fn an_arc_run_clockwise_takes_its_bite_out() {
+    // A 20 × 20 square, a half disc of radius 5 about (10, 20) bitten from its top: the arc
+    // drawn counter-clockwise from (5, 20) round the bottom to (15, 20), and walked back,
+    // clockwise. 400 − 12.5π mm²; the bite's centroid 20/3π below (10, 20); so
+    // (4000 − 12.5π(20 − 20/3π)) / (400 − 12.5π) up, 10 across.
+    let sketch = Sketch {
+        plane: OriginPlane::Xy.into(),
+        points: vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 20.0, 0.0),
+            point("pa000003", 20.0, 20.0),
+            point("pa000004", 15.0, 20.0),
+            point("pa000005", 5.0, 20.0),
+            point("pa000006", 0.0, 20.0),
+            point("pc000001", 10.0, 20.0),
+        ],
+        lines: vec![
+            line("na000001", "pa000001", "pa000002"),
+            line("na000002", "pa000002", "pa000003"),
+            line("na000003", "pa000003", "pa000004"),
+            line("na000005", "pa000005", "pa000006"),
+            line("na000006", "pa000006", "pa000001"),
+        ],
+        circles: Vec::new(),
+        arcs: vec![SketchArc {
+            id: id("ca000001"),
+            center: id("pc000001"),
+            start: id("pa000005"),
+            end: id("pa000004"),
+            construction: false,
+        }],
+        constraints: Vec::new(),
+    };
+    let mut read = under(sketch);
+    read.regions = vec![region(
+        &[
+            "na000001", "na000002", "na000003", "ca000001", "na000005", "na000006",
+        ],
+        &[],
+    )];
+    let bite = 12.5 * PI;
+    let up = (4000.0 - bite * (20.0 - 20.0 / (3.0 * PI))) / (400.0 - bite);
+    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-12);
 }
 
 #[test]
@@ -236,8 +292,7 @@ fn an_arcs_cap_counts_its_half_disc_whichever_way_the_loop_walks_it() {
     // A 20 × 10 rectangle capped by a half circle of radius 10 about (10, 10), the arc drawn
     // counter-clockwise from (20, 10) to (0, 10), the loop walking it so: 200 mm² about
     // (10, 5) and 50π about (10, 10 + 40/3π). Across, 10 by symmetry; up,
-    // (1000 + 50π(10 + 40/3π)) / (200 + 50π). The arc's chords stray a micrometre at most,
-    // its area short by 0.0314 mm² at most, moving the centroid up by 4e-4 at most.
+    // (1000 + 50π(10 + 40/3π)) / (200 + 50π), exactly.
     let sketch = Sketch {
         plane: OriginPlane::Xy.into(),
         points: vec![
@@ -269,15 +324,14 @@ fn an_arcs_cap_counts_its_half_disc_whichever_way_the_loop_walks_it() {
         &["na000001", "na000002", "ca000001", "na000004"],
         &[],
     )];
-    let centroid = profile_centroid(&read).unwrap();
-    near(centroid, [10.0, up], 1e-3);
-    assert!((centroid[0] - 10.0).abs() < 1e-9, "{centroid:?}");
-    // The loop listed the other way round, from the left side: the same region.
+    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-12);
+    // The loop listed the other way round, from the left side, the arc run clockwise: the
+    // same region.
     read.regions = vec![region(
         &["na000004", "ca000001", "na000002", "na000001"],
         &[],
     )];
-    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-3);
+    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-12);
 }
 
 #[test]
@@ -318,6 +372,16 @@ fn a_profile_far_from_the_origin_keeps_its_own_precision() {
         (100_000.002, 100_000.001),
         (100_000.0, 100_000.001),
     ]);
+    near(
+        profile_centroid(&read).unwrap(),
+        [100_000.001, 100_000.000_5],
+        1e-9,
+    );
+    // And a point of the sketch's at the far corner of its reach, in no loop: the same.
+    let mut read = read;
+    read.members
+        .points
+        .push(point("pz000001", -1_000_000.0, -1_000_000.0));
     near(
         profile_centroid(&read).unwrap(),
         [100_000.001, 100_000.000_5],
