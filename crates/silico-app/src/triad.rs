@@ -36,7 +36,7 @@
 
 use eframe::egui::{FontId, Galley, Painter, Pos2, Rect, Shape, Stroke, pos2};
 use silico_core::views::NamedView;
-use silico_protocol::{Camera, Projection};
+use silico_protocol::Camera;
 
 use crate::navigate;
 use crate::theme;
@@ -90,7 +90,7 @@ pub fn triad(camera: &Camera, rect: Rect) -> Option<Triad> {
     let across = |k: usize, scale: f64| {
         let mut unit = [0.0; 3];
         unit[k] = 1.0;
-        crate::viewport::on_screen(&frame, unit, scale)
+        navigate::screen_offset(&frame, unit, scale)
     };
     let axis = |k: usize, letter: &'static str, colour: theme::Rgba8| TriadAxis {
         letter,
@@ -113,10 +113,10 @@ impl Triad {
     /// Its shapes, in the order they're painted: for each axis in its order, its stroke from
     /// the origin to its end, [`theme::TRIAD_WIDTH`] wide in its colour with a round cap at
     /// its end (a disc as wide as the stroke, its radius half the stroke's width; the cap at
-    /// the origin is under the dot), then its letter, [`theme::TRIAD_LABEL_SIZE`] high in its colour, its middle
-    /// across at `letter_at` and its baseline [`theme::TRIAD_LABEL_DROP`] below; then the dot
-    /// over the origin. An axis seen end on has no stroke, its letter at the origin, as the
-    /// prototype draws it (a line of no length, its caps under the dot).
+    /// the origin is under the dot), then its letter, [`theme::TRIAD_LABEL_SIZE`] high in its
+    /// colour, its middle across at `letter_at` and its baseline [`theme::TRIAD_LABEL_DROP`]
+    /// below; then the dot over the origin. An axis seen end on has no stroke, its letter at
+    /// the origin, as the prototype draws it (a line of no length, its caps under the dot).
     pub fn shapes(&self, painter: &Painter) -> Vec<Shape> {
         let _span = tracing::debug_span!("triad").entered();
         let mut shapes = Vec::new();
@@ -196,8 +196,7 @@ pub struct ViewLabel {
 /// [`theme::VIEW_LABEL_LEFT`] in from the canvas's left and [`theme::VIEW_LABEL_BOTTOM`] up
 /// from its bottom.
 pub fn view_label(camera: &Camera, rect: Rect) -> ViewLabel {
-    let perspective = matches!(camera.projection, Projection::Perspective { .. });
-    let projection = crate::words::projection_words(perspective);
+    let projection = crate::words::projection_words(&camera.projection);
     let words = match view_name(camera) {
         Some(name) => format!("{projection} · {name}"),
         None => projection.to_owned(),

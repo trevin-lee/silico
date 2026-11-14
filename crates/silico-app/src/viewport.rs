@@ -37,7 +37,7 @@ use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
 use silico_core::recompute::Key;
 use silico_core::views::{NamedView, half_pixel_at, meshing_depth};
-use silico_protocol::{Camera, Frame, MAX_RENDER_SIDE, Mesh, Projection};
+use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 
 use crate::bar;
 use crate::icons::Icon;
@@ -2581,10 +2581,13 @@ fn cube_menu(ui: &mut Ui, perspective: bool) -> Option<CubeAct> {
     }
     lines.push(menu::Line::Separator);
     lines.push(menu::Line::Head("Camera"));
-    for wanted in [false, true] {
+    for (word, wanted) in [
+        (crate::words::ORTHOGRAPHIC, false),
+        (crate::words::PERSPECTIVE, true),
+    ] {
         let item = menu::Item {
             icon: None,
-            label: crate::words::projection_words(wanted),
+            label: word,
             sub: None,
             caps: &[],
             off: None,
@@ -2633,7 +2636,7 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
         menu::Line::Item(
             item(
                 Some(Icon::Ortho),
-                crate::words::projection_words(false),
+                crate::words::ORTHOGRAPHIC,
                 Checked::Choice(!perspective),
             ),
             DisplayAct::Perspective(false),
@@ -2641,7 +2644,7 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
         menu::Line::Item(
             item(
                 Some(Icon::Persp),
-                crate::words::projection_words(true),
+                crate::words::PERSPECTIVE,
                 Checked::Choice(perspective),
             ),
             DisplayAct::Perspective(true),
@@ -2653,16 +2656,6 @@ fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct
         ),
     ];
     menu::lines(ui, DISPLAY_SETTINGS, &lines)
-}
-
-/// Where the document's vector `v` points on the screen as the camera's `frame` sees it,
-/// `scale` points to each of its millimetres square across the view: its part along the
-/// view's right, rightward, and along its up, upward (the screen's y down). The ViewCube's
-/// and the triad's turn with the camera by it.
-pub(crate) fn on_screen(frame: &Frame, v: [f64; 3], scale: f64) -> Vec2 {
-    let x = silico_protocol::vec3::dot(v, frame.right) * scale;
-    let y = -silico_protocol::vec3::dot(v, frame.up) * scale;
-    Vec2::new(x as f32, y as f32)
 }
 
 /// Where the ViewCube is drawn in `viewport`: its margin in from the canvas's top and right.
@@ -2729,7 +2722,7 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
         }
         let mut parts = vec![cube];
         let scale = f64::from(side) * CUBE_HALF_SIDE;
-        let offset = |v: [f64; 3]| on_screen(&frame, v, scale);
+        let offset = |v: [f64; 3]| navigate::screen_offset(&frame, v, scale);
         let at = |v: [f64; 3]| rect.center() + offset(v);
         let facing = |normal: [f64; 3]| silico_protocol::vec3::dot(normal, frame.back);
         let painter = ui.painter_at(rect);
@@ -3361,13 +3354,6 @@ mod tests {
     fn a_read_asks_at_most_the_largest_side_a_read_takes() {
         assert_eq!(read_size([0, 5000]), [1, 4096]);
         assert_eq!(read_size([1600, 1000]), [1600, 1000]);
-    }
-
-    #[test]
-    fn the_view_cubes_labels_are_the_named_views_in_words() {
-        use crate::words::view_words;
-        assert_eq!(view_words(NamedView::TopFrontRight), "Top front right");
-        assert_eq!(view_words(NamedView::Front), "Front");
     }
 
     #[test]

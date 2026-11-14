@@ -1417,11 +1417,7 @@ fn worded(name: &str, rank: &silico_core::Rank) -> String {
         ),
     };
     if rank.same_feature {
-        let mut chars = said.chars();
-        chars
-            .next()
-            .map(|first| first.to_uppercase().chain(chars).collect())
-            .unwrap_or_default()
+        crate::words::capitalised(&said)
     } else {
         format!("Another feature's: {said}")
     }

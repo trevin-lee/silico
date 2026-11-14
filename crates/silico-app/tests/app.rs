@@ -38502,10 +38502,9 @@ fn over_a_planar_face_the_context_menus_look_at_turns_the_view_square_to_it_as_c
             .click();
         step_until(&mut h, "turned", |h| view(h).camera() != &before);
         let camera = view(&h).camera().clone();
-        let back: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
-        let length = (back[0] * back[0] + back[1] * back[1] + back[2] * back[2]).sqrt();
+        let back = view_direction(&camera);
         for (k, want) in [0.6, 0.0, 0.8].into_iter().enumerate() {
-            assert!((back[k] / length - want).abs() < 1e-12, "{camera:?}");
+            assert!((back[k] - want).abs() < 1e-12, "{camera:?}");
             assert!(
                 (camera.up[k] - [-0.8, 0.0, 0.6][k]).abs() < 1e-12,
                 "{camera:?}"
@@ -41754,9 +41753,7 @@ fn a_shown_sketch_its_plane_doesnt_place_draws_no_lines() {
 /// `up` up the image, each to 1e-9.
 fn looks(h: &AppHarness, toward: [f64; 3], up: [f64; 3]) -> bool {
     let camera = view(h).camera();
-    let d: [f64; 3] = std::array::from_fn(|k| camera.eye[k] - camera.target[k]);
-    let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-    (0..3).all(|k| (d[k] / n - toward[k]).abs() < 1e-9 && (camera.up[k] - up[k]).abs() < 1e-9)
+    looks_from(camera, toward) && (0..3).all(|k| (camera.up[k] - up[k]).abs() < 1e-9)
 }
 
 /// Where the open sketch's place `at` is drawn, as sketch mode draws it (its `Screen`).

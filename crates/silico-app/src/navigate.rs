@@ -13,9 +13,10 @@
 //! orthographic view no smaller than their reach allows at the pane's height in pixels),
 //! which the viewport asks of every camera a control makes.
 
+use eframe::egui::Vec2;
 use silico_core::views::{self, NamedView};
 use silico_protocol::vec3::{cross, dot, sub};
-use silico_protocol::{Camera, Projection, least_view_height};
+use silico_protocol::{Camera, Frame, Projection, least_view_height};
 
 /// How far a drag of one point orbits, in degrees: half a turn across 360 points.
 pub const ORBIT_DEGREES_PER_POINT: f64 = 0.5;
@@ -349,6 +350,16 @@ pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
         return [0.0, 1.0, 0.0];
     }
     across.map(|part| part / length)
+}
+
+/// Where the document's vector `v` points on the screen as a camera's `frame` sees it, at
+/// `scale` points per unit of `v` square across the view: its part along the view's right,
+/// rightward, and along its up, upward (the screen's y down). The ViewCube and the triad turn
+/// with the camera by it.
+pub fn screen_offset(frame: &Frame, v: [f64; 3], scale: f64) -> Vec2 {
+    let x = dot(v, frame.right) * scale;
+    let y = -dot(v, frame.up) * scale;
+    Vec2::new(x as f32, y as f32)
 }
 
 /// How near a view's elevation and its azimuth must each be to a named view's to be at it, in
