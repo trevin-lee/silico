@@ -51,7 +51,7 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 - Hovering an item in the list highlights it in the model; Tab or the wheel steps through the list; a click in the list or the graphics area selects; right-clicking the model hides a face to reveal what's behind it ([Select Other](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_SelectOther_dlg.htm)).
 - The right-click toolbar on empty space offers Box, Lasso, Selection Filters, Select Other, and the magnifier ([Selection Context Toolbar](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Selection_Tool_access.htm)).
 
-## 2. Sketch inference and automatic relations
+## 2. Sketch relations: inferred, automatic, and added by hand
 
 ### Relations added while sketching
 
@@ -69,11 +69,11 @@ A study note for M5 (docs/roadmap/m5-app.md, *Study*): what SolidWorks does in t
 
 ### Relations added by hand
 
-- Relations are added to a selection: "Ctrl + select two lines. On the context toolbar, click Make Parallel" ([Context Toolbar dimensions](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Control_Dimension_Context_Toolbar.htm)); or from *Add Relations*, whose list "includes only relations that are possible for the selected entity" ([Line Properties PM](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_DVE_SKETCH_LINE.htm)).
+- Relations are added to a selection: "Ctrl + select two lines. On the context toolbar, click Make Parallel" ([Controlling Dimensions with the Context Toolbar](https://help.solidworks.com/2027/english/SolidWorks/sldworks/t_Control_Dimension_Context_Toolbar.htm)); or from *Add Relations*, whose list "includes only relations that are possible for the selected entity" ([Line Properties PropertyManager](https://help.solidworks.com/2027/english/SolidWorks/sldworks/HIDD_DVE_SKETCH_LINE.htm)).
 - The context toolbar "stays visible to allow you to add multiple relations" to the same selection ([Sketch Relations Overview](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Sketch_Relations_Overview.htm)).
 - What each takes ([Description of Sketch Relations](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_Description_of_Sketch_Relations.htm)): Horizontal or Vertical, "One or more lines or two or more points"; Coincident, "A point and a line, arc, or ellipse"; Merge Points, "Two sketch points or endpoints"; Tangent, "An arc, ellipse, or spline, and a line or arc"; Equal, "Two or more lines or two or more arcs"; Parallel, "Two or more lines"; Perpendicular, "Two lines"; Midpoint, "Two lines or a point and a line"; Symmetric, "A centerline and two points, lines, arcs, or ellipses"; Fix, "Any entity".
 - A relation that conflicts is added, and the sketch reads over defined; a redundant one is added, and "The sketch is still fully defined" ([FAQ Sketch Relations](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_FAQ_Sketch_Relations.htm)). No page offers to make a relation driven.
-- Silico's tools, and where they differ (Fix as two dimensions, Symmetric of points only), are M5.0's open item 34. The full study is docs/study/constraint-tools.md.
+- Silico's tools, and where they differ (among them Fix as two dimensions, Symmetric of points only, and a merge refused where its solve is worse), are M5.0's open item 34. The full study is docs/study/constraint-tools.md.
 
 ### Inference lines and snaps
 
