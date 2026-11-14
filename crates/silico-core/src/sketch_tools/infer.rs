@@ -648,12 +648,13 @@ impl Pointer<'_, '_> {
         kept
     }
 
-    /// What a click at `at` picks to dimension (Smart Dimension): a point of the sketch
-    /// within the tolerance, or the origin where it's nearer, as [`snap`](Self::snap) finds
-    /// them; else the curve nearest, within the tolerance, as `snap` finds curves (a line or
-    /// an arc where it's drawn, a circle all round, an axis anywhere along it but where a
-    /// line of the sketch lies along it), ties as `snap`'s (in [`Reference`]'s order); else
-    /// nothing. Whether relations are inferred plays no part: a pick is no relation.
+    /// What a click at `at` picks to dimension (Smart Dimension), or selects in sketch mode
+    /// ([`super::pick`]): a point of the sketch within the tolerance, or the origin where
+    /// it's nearer, as [`snap`](Self::snap) finds them; else the curve nearest, within the
+    /// tolerance, as `snap` finds curves (a line or an arc where it's drawn, a circle all
+    /// round, an axis anywhere along it but where a line of the sketch lies along it), ties
+    /// as `snap`'s (in [`Reference`]'s order); else nothing. Whether relations are inferred
+    /// plays no part: a pick is no relation.
     pub(super) fn pick(&self, at: Xy) -> Option<Reference> {
         let point = self.point_near(at);
         let origin = distance(at, [0.0, 0.0]);

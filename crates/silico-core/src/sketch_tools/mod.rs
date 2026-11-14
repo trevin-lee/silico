@@ -706,3 +706,24 @@ fn not_finite(what: &str) -> Error {
     )
     .with_suggestion(crate::worker::SILICO_BUG)
 }
+
+/// What a click at `at` picks of `sketch`, within `tolerance` millimetres, as Smart Dimension
+/// picks: a point of the sketch, or the origin where it's nearer (the point on a tie); else
+/// the nearest curve, a line or an arc where it's drawn, a circle all round, an axis
+/// anywhere along it but where a line of the sketch lies along it (the sketch's own curve
+/// on a tie); else nothing. Sketch mode's selection hits the origin and the axes by it (the
+/// constraint tools' C9), so the two rank them by one rule. Nothing for a tolerance that
+/// isn't a number or is below zero, or a place that isn't one.
+pub fn pick(sketch: &Sketch, at: Xy, tolerance: f64) -> Option<Reference> {
+    let view = infer::View::of(sketch, &Members::default());
+    // A pick infers no relation, so it judges none: its pointer's classes are never built.
+    let classes = implied::ViewClasses::default();
+    let pointer = infer::Pointer {
+        view: &view,
+        tolerance,
+        infer: true,
+        woken: &[],
+        classes: &classes,
+    };
+    pointer.pick(at)
+}

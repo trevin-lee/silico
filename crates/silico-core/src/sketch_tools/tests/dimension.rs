@@ -371,6 +371,29 @@ fn an_axis_is_picked_where_no_line_of_the_sketch_lies_on_it() {
     }
 }
 
+#[test]
+fn pick_ranks_the_origin_with_the_points_and_the_axes_with_the_curves() {
+    // Sketch mode's selection's pick (C9), within 0.5. The empty sketch at (0.2, 0.1): the
+    // origin, √0.05 = 0.224 off, though the x axis is nearer, 0.1 off (points first).
+    assert_eq!(pick(&empty(), [0.2, 0.1], 0.5), Some(Reference::Origin));
+    // A point at the origin's place, as near: the point (the sketch's own on a tie).
+    let at_origin = with_point(empty(), "p0000001", [0.0, 0.0]);
+    assert_eq!(pick(&at_origin, [0.2, 0.1], 0.5), Some(el("p0000001")));
+    // A point at (0.4, 0), and (0.1, 0): the origin 0.1 off, the point 0.3: the origin.
+    let beside = with_point(empty(), "p0000001", [0.4, 0.0]);
+    assert_eq!(pick(&beside, [0.1, 0.0], 0.5), Some(Reference::Origin));
+    // Far along an axis, 0.3 off it: the axis, anywhere along it.
+    assert_eq!(pick(&empty(), [500.0, 0.3], 0.5), Some(Reference::XAxis));
+    assert_eq!(pick(&empty(), [0.3, -700.0], 0.5), Some(Reference::YAxis));
+    // A line along the x axis, (10, 0) to (50, 0), 0.2 off both at (30, 0.2): the line.
+    let [(along_x, _, _), _] = along_the_axes("zz000001");
+    assert_eq!(pick(&along_x, [30.0, 0.2], 0.5), Some(el("zz000001")));
+    // Nothing 3 from everything; nothing for a tolerance below zero or not a number.
+    assert_eq!(pick(&empty(), [3.0, 3.0], 0.5), None);
+    assert_eq!(pick(&empty(), [0.0, 0.0], -1.0), None);
+    assert_eq!(pick(&empty(), [0.0, 0.0], f64::NAN), None);
+}
+
 // --- SD1: two points, by the pointer; signs and order ---------------------------------
 
 /// Two points: p (10, 10), q (40, 30). The box they span: x 10 to 40, y 10 to 30.
