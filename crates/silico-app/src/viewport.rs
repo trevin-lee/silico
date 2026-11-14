@@ -2049,11 +2049,11 @@ pub fn show<P: Clients + 'static>(
         frame.secondary.clear();
         tab.view.frame = Some(frame);
     }
-    let (words, line) = label.shape(&painter);
-    painter.add(words);
+    let (shape, line) = label.shape(&painter);
+    painter.add(shape);
     // In the accessibility tree as a label, taking no click or drag of the canvas's.
-    let said = ui.interact(line, ui.id().with("view_label"), Sense::hover());
-    said.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label.words));
+    let label_response = ui.interact(line, ui.id().with("view_label"), Sense::hover());
+    label_response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label.words));
     view_cube(ui, rect, &mut tab.view, size_px);
     // The bar's Look At, as Ctrl+8's: square to the face selected, or to the sketch.
     if navigation_bar(ui, rect, &mut tab.view, size_px) {

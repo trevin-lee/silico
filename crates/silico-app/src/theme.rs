@@ -814,7 +814,7 @@ pub const TRIAD_LABEL_SIZE: f32 = 10.5;
 /// The dot over the origin, drawn last: its radius and its fill (`<circle r="2"
 /// fill="#cfcfcf"/>`, Gray.750).
 pub const TRIAD_ORIGIN_RADIUS: f32 = 2.0;
-pub const TRIAD_ORIGIN: Color32 = GRAY_750;
+pub const TRIAD_ORIGIN_FILL: Color32 = GRAY_750;
 
 /// The view label beside the triad (styles.css's `.view-label`, at `left: 82px` as app.js's
 /// `renderCanvasUI` places it): its line's left, in from the canvas's left; its line's
@@ -2793,7 +2793,7 @@ mod tests {
         assert_eq!(TRIAD_LABEL_DROP, 3.5);
         assert_eq!(TRIAD_LABEL_SIZE, 10.5);
         assert_eq!(TRIAD_ORIGIN_RADIUS, 2.0);
-        assert_eq!(TRIAD_ORIGIN, Color32::from_rgb(0xcf, 0xcf, 0xcf));
+        assert_eq!(TRIAD_ORIGIN_FILL, Color32::from_rgb(0xcf, 0xcf, 0xcf));
         // The axes' `#ff6981`, `#00b266`, `#7a95ff`, opaque.
         assert_eq!(AXIS_X, [0xff, 0x69, 0x81, 0xff]);
         assert_eq!(AXIS_Y, [0x00, 0xb2, 0x66, 0xff]);

@@ -141,7 +141,7 @@ impl Triad {
         shapes.push(Shape::circle_filled(
             self.origin,
             theme::TRIAD_ORIGIN_RADIUS,
-            theme::TRIAD_ORIGIN,
+            theme::TRIAD_ORIGIN_FILL,
         ));
         shapes
     }
@@ -159,7 +159,7 @@ pub fn baseline(galley: &Galley) -> f32 {
 /// isometric view, its `iso` capitalised as it writes it (`vn[0].toUpperCase() +
 /// vn.slice(1)`); the faces are the ViewCube's words, "Front" to "Bottom", as the prototype's
 /// keys capitalised are.
-const NAMED: [NamedView; 7] = [
+const LABELLED_VIEWS: [NamedView; 7] = [
     NamedView::Front,
     NamedView::Back,
     NamedView::Left,
@@ -171,9 +171,9 @@ const NAMED: [NamedView; 7] = [
 const ISO: &str = "Iso";
 
 /// The name the view label gives the view `camera` is at, if it's at one it names: the first
-/// of [`NAMED`] it's at ([`navigate::at_view`]; it's never within reach of two).
+/// of [`LABELLED_VIEWS`] it's at ([`navigate::at_view`]; it's never within reach of two).
 pub fn view_name(camera: &Camera) -> Option<String> {
-    let view = NAMED
+    let view = LABELLED_VIEWS
         .into_iter()
         .find(|view| navigate::at_view(camera, *view))?;
     Some(if view == navigate::ISOMETRIC {
