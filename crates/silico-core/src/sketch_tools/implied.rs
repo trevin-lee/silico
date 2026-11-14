@@ -237,10 +237,13 @@ impl Classes {
 pub(super) enum ClassRel {
     /// Two points sharing a y (`Partition::Y`) or an x.
     Same(Partition, Key, Key),
-    /// A point on a line: in the line's class while the line is level or plumb.
+    /// A point on a line: in the line's class while the line is level or plumb. The ID may
+    /// name no line the classes hold (a circle, an arc, or a line not taken up): every reader
+    /// takes that as `Other`.
     OnLine(Key, ElementId),
     /// A point at a line's middle: in the line's class as one on it is, and only partly
-    /// implied (its place along the line no class holds), so never left out.
+    /// implied (its place along the line no class holds), so never left out. The ID may name
+    /// no line the classes hold, read as `Other`, as `OnLine`'s.
     Midpoint(Key, ElementId),
     /// A relation that reads these points' values and asserts nothing the classes hold: a
     /// `perpendicular`, `parallel`, or `tangent_at` (Rule F).
@@ -367,8 +370,8 @@ impl Implied {
             Form::On { point, curve } => match (key(point), curve) {
                 (Some(p), Reference::XAxis) => ClassRel::Same(Partition::Y, p, Key::Origin),
                 (Some(p), Reference::YAxis) => ClassRel::Same(Partition::X, p, Key::Origin),
-                // A curve that's no line of the sketch's (a circle, an arc) is read as on a
-                // line it hasn't: `implies` and `merge` take nothing from it, as from `Other`.
+                // On a line the classes don't hold (a circle, an arc, or a line not taken
+                // up): `implies` and `merge` take nothing from it, as from `Other`.
                 (Some(p), Reference::Element(line)) => ClassRel::OnLine(p, line.clone()),
                 _ => ClassRel::Other,
             },
@@ -376,6 +379,7 @@ impl Implied {
                 point,
                 line: Reference::Element(line),
             } => match key(point) {
+                // Of a line the classes don't hold: taken as `Other`, as `OnLine`'s.
                 Some(p) => ClassRel::Midpoint(p, line.clone()),
                 None => ClassRel::Other,
             },

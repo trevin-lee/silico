@@ -1525,6 +1525,18 @@ fn an_arcs_second_point_never_lines_up_with_its_own_shared_first_point() {
     assert_eq!(preview.pointer, Some([10.3, 30.0]));
     assert_eq!(preview.guides, [[[10.0, 10.0], [10.3, 30.0]]]);
 
+    // The control for an end: a three-point arc from a new start (30, 40), its end toward
+    // (50, 10.3), 0.3 mm off q0000001's horizontal: lined up with it, at (50, 10), its chord
+    // from (30, 40) and a guide across from (10, 10).
+    let mut d = Drive::new(ToolKind::ThreePointArc, s.clone());
+    d.to(10.1, 10.1).click(30.0, 40.0).to(50.0, 10.3);
+    let preview = d.tool.preview();
+    assert_eq!(preview.pointer, Some([50.0, 10.0]));
+    assert_eq!(
+        preview.guides,
+        [[[30.0, 40.0], [50.0, 10.0]], [[10.0, 10.0], [50.0, 10.0]]]
+    );
+
     // A three-point arc from q0000001: its end toward (30, 10.3), 0.3 mm off the start's
     // horizontal, stays where the pointer is, its chord the only guide.
     let mut d = Drive::new(ToolKind::ThreePointArc, s);
