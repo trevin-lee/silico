@@ -2430,8 +2430,8 @@ impl Tab {
     /// go, so its answer never lands in this banner. An older banner whose changes weren't
     /// listed (its diff still out, or refused: the session no longer held its `from`, a
     /// reload queued ahead of the diff having replaced it) is said in this one, as are
-    /// those it carried. Only for a reload not seen yet ([`reload_is_new`]
-    /// (Self::reload_is_new)).
+    /// those it carried. Only for a reload not seen yet
+    /// ([`reload_is_new`](Self::reload_is_new)).
     fn announce_reload<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -3619,13 +3619,13 @@ impl Tab {
                     });
                 }
                 Queued::Opened { serial } => {
-                    let transaction = if self.transaction || self.beginning {
+                    let owner = if self.transaction {
                         Owner::Before
                     } else {
                         Owner::Opened
                     };
                     // Sketch mode's own opening, never another's: what its undo stops at.
-                    self.opens_at(self.revision, transaction, Some(serial));
+                    self.opens_at(self.revision, owner, Some(serial));
                 }
                 Queued::AddSketch { serial, feature } => {
                     self.begin_if_none(sessions);
@@ -3867,13 +3867,13 @@ impl Tab {
                         });
                     }
                 }
-                Queued::Save { then_close } if !self.transaction && !self.beginning => {
+                Queued::Save { then_close } if !self.transaction => {
                     if then_close {
                         self.under.push(Under::Close(sessions.close(&self.id)));
                         self.edits.queue.clear();
                     }
                 }
-                Queued::Revert { then_close } if !self.transaction && !self.beginning => {
+                Queued::Revert { then_close } if !self.transaction => {
                     self.land(Lands::Everything, self.revision);
                     if then_close {
                         self.under.push(Under::Close(sessions.close(&self.id)));
@@ -3972,7 +3972,9 @@ impl Tab {
     /// Whether what's queued waits: an edit, a save, a revert, a step, or a dialog's add (or
     /// its body's read) running; or a `begin` whose answer isn't taken yet, which may say the
     /// session reloaded its file first, and so where what comes next (a dialog's close)
-    /// starts from, whatever answers after it were taken first.
+    /// starts from, whatever answers after it were taken first. So no queued item is ever
+    /// taken while a `begin` is out: in [`advance`](Self::advance)'s arms `beginning` is
+    /// false.
     fn blocked(&self) -> bool {
         self.edits.in_flight.is_some()
             || self.beginning
@@ -5483,16 +5485,16 @@ impl Tab {
 
     /// A dialog or sketch mode opening at `at`, the one writer of its opening: where its
     /// Cancel undoes back to and its OK's or Finish's one step starts; whose the transaction
-    /// since then is; nothing of the tab's applied since; and, if it's sketch mode's opening
-    /// (`sketch`, its number), what sketch mode's undo stops at.
-    fn opens_at(&mut self, at: Revision, transaction: Owner, sketch: Option<u64>) {
+    /// since then is (`owner`); and nothing of the tab's applied since. Sketch mode's own
+    /// opening (what its undo stops at) moves only if `serial` is sketch mode's number.
+    fn opens_at(&mut self, at: Revision, owner: Owner, serial: Option<u64>) {
         self.dialog_base = Some(at);
-        self.dialog_began = transaction == Owner::Opened;
+        self.dialog_began = owner == Owner::Opened;
         self.sketch_edited = false;
         if let Some(mode) = self
             .sketch
             .as_mut()
-            .filter(|mode| Some(mode.serial) == sketch)
+            .filter(|mode| Some(mode.serial) == serial)
         {
             mode.opened_at = Some(at);
         }
@@ -11723,6 +11725,7 @@ mod tests {
         pin_named_at(&file, "Bolt");
         assert_eq!(reloaded_past(&tab, &sessions, rev(4)), rev(5));
         pin_named_at(&file, "Nut");
+        // A read of the document now, outside a transaction: it reloads the file.
         let read = sessions.text(&tab.id, None).wait();
         assert_eq!(read.session.unwrap().revision, rev(6));
         status_then_answers(&mut tab, &sessions);
@@ -11747,6 +11750,7 @@ mod tests {
             revision_now(&tab, &sessions) >= rev(5)
         });
         std::fs::write(&copy, pin_radius_six_tenths()).unwrap();
+        // A read of the document now, outside a transaction: it reloads the file.
         let read = sessions.text(&tab.id, None).wait();
         assert_eq!(read.session.unwrap().revision, rev(6));
         status_then_answers(&mut tab, &sessions);
@@ -11812,17 +11816,11 @@ mod tests {
         // step is made of the reload.
         let (_dir, sessions, mut tab, pin) = pins_dialog_over_a_changed_file();
         tab.edit(&sessions, field_set(&pin, "radius", "0.75"));
-        let _ = sessions.text(&tab.id, None).wait();
+        answered_so_far(&tab, &sessions);
         tab.close_dialog(&sessions, true);
         polled_until(&mut tab, &sessions, Tab::quiet);
         assert_eq!(banner(&tab), Some((rev(1), rev(2))));
-        let groups: Vec<_> = tab.groups.iter().map(|g| (g.start, g.end)).collect();
-        let open = sessions.status(&tab.id).session.unwrap().transaction;
-        assert!(
-            !open,
-            "OK left an empty transaction open; groups {groups:?}"
-        );
-        assert_eq!(groups, Vec::<(Revision, Revision)>::new());
+        assert_closed_with_nothing(&tab, &sessions, "OK");
     }
 
     #[test]
@@ -11832,17 +11830,11 @@ mod tests {
         let (_dir, sessions, mut tab, pin) = pins_dialog_over_a_changed_file();
         tab.edit(&sessions, field_set(&pin, "radius", "0.75"));
         tab.close_dialog(&sessions, true);
-        let _ = sessions.text(&tab.id, None).wait();
+        answered_so_far(&tab, &sessions);
         tab.advance(&sessions);
         polled_until(&mut tab, &sessions, Tab::quiet);
         assert_eq!(banner(&tab), Some((rev(1), rev(2))));
-        let groups: Vec<_> = tab.groups.iter().map(|g| (g.start, g.end)).collect();
-        let open = sessions.status(&tab.id).session.unwrap().transaction;
-        assert!(
-            !open,
-            "OK left an empty transaction open; groups {groups:?}"
-        );
-        assert_eq!(groups, Vec::<(Revision, Revision)>::new());
+        assert_closed_with_nothing(&tab, &sessions, "OK");
     }
 
     #[test]
@@ -11865,7 +11857,7 @@ mod tests {
         let groups_before = tab.groups.len();
         std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
         tab.edit(&sessions, field_set(&pin, "radius", "0.75"));
-        let _ = sessions.text(&tab.id, None).wait();
+        answered_so_far(&tab, &sessions);
         tab.close_dialog(&sessions, true);
         polled_until(&mut tab, &sessions, Tab::quiet);
         assert_eq!(banner(&tab).map(|(from, _)| from), Some(rev(3)));
@@ -11915,17 +11907,11 @@ mod tests {
         std::fs::write(dir.path().join("part.silico"), &theirs).unwrap();
         let pin = FeatureId::new("a91cw0de").unwrap();
         tab.edit(&sessions, field_set(&pin, "radius", "0.75"));
-        let _ = sessions.text(&tab.id, None).wait();
+        answered_so_far(&tab, &sessions);
         tab.finish_sketch(&sessions, true);
         polled_until(&mut tab, &sessions, Tab::quiet);
         assert_eq!(banner(&tab), Some((rev(1), rev(2))));
-        let groups: Vec<_> = tab.groups.iter().map(|g| (g.start, g.end)).collect();
-        let open = sessions.status(&tab.id).session.unwrap().transaction;
-        assert!(
-            !open,
-            "Finish left an empty transaction open; groups {groups:?}"
-        );
-        assert_eq!(groups, Vec::<(Revision, Revision)>::new());
+        assert_closed_with_nothing(&tab, &sessions, "Finish");
     }
 
     #[test]
@@ -11967,11 +11953,12 @@ mod tests {
     }
 
     #[test]
-    fn a_reload_seen_by_both_edit_features_read_and_a_begin_is_announced_once() {
+    fn a_reload_seen_by_both_edit_features_read_and_a_begin_is_announced_and_read_once() {
         // BLOCK at 1, quiet; another program writes the pin's radius; Edit Feature asked, its
         // read sent at 1, and in the same frame the block renamed, its begin sent at 1 too and
         // queued behind the read, which reloads the file (2) first. Both answers say the
-        // session moved past 1, taken together: one reload, announced once.
+        // session moved past 1, taken together: one reload, announced once, and the dialog
+        // the read's answer opens read no second time.
         let (dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
         polled_until(&mut tab, &sessions, |tab| {
             tab.timeline.is_some() && tab.quiet()
@@ -11979,12 +11966,11 @@ mod tests {
         std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
         let resets = tab.resets;
         tab.edit_feature(&sessions, &FeatureId::new("a91cw0de").unwrap());
+        let opened = tab.loading;
         tab.rename(&sessions, FeatureId::new("k7f2qx3m").unwrap(), "Slab");
-        let _ = sessions.text(&tab.id, None).wait();
+        answered_so_far(&tab, &sessions);
         taken_until(&mut tab, &sessions, |tab| {
-            !tab.under
-                .iter()
-                .any(|under| matches!(under, Under::Begin { .. } | Under::Load { .. }))
+            tab.quiet() && tab.dialog.is_some()
         });
         assert_eq!(banner(&tab), Some((rev(1), rev(2))));
         assert_eq!(
@@ -11992,25 +11978,6 @@ mod tests {
             resets + 1,
             "the reload announced more than once"
         );
-    }
-
-    #[test]
-    fn a_reload_said_by_the_read_and_a_begin_reads_the_dialog_once() {
-        // As the test above, the dialog's serial watched: the read's answer opens it, and the
-        // begin's, saying the same reload, reads it no second time.
-        let (dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
-        polled_until(&mut tab, &sessions, |tab| {
-            tab.timeline.is_some() && tab.quiet()
-        });
-        std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
-        tab.edit_feature(&sessions, &FeatureId::new("a91cw0de").unwrap());
-        let opened = tab.loading;
-        tab.rename(&sessions, FeatureId::new("k7f2qx3m").unwrap(), "Slab");
-        let _ = sessions.text(&tab.id, None).wait();
-        taken_until(&mut tab, &sessions, |tab| {
-            tab.quiet() && tab.dialog.is_some()
-        });
-        assert_eq!(banner(&tab), Some((rev(1), rev(2))));
         assert_eq!(tab.dialog.as_ref().map(|dialog| dialog.serial), opened);
     }
 
@@ -12119,6 +12086,7 @@ mod tests {
                 assert_eq!(tab.revision, rev(3));
             }
             std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+            // A read of the document now, outside a transaction: it reloads the file.
             let reloaded = sessions
                 .text(&tab.id, None)
                 .wait()
@@ -12139,6 +12107,25 @@ mod tests {
             );
             cancel_after_an_edit(dir, sessions, tab, &pin, reloaded);
         }
+    }
+
+    /// Waited, off any poll, until the session has answered everything the tab sent before
+    /// now: it answers in turn, so a read of its text asked now answers only after them. Each
+    /// use asks it after a `begin`, inside whose transaction it reads nothing of the file.
+    fn answered_so_far(tab: &Tab, sessions: &FakeSessions) {
+        let _ = sessions.text(&tab.id, None).wait();
+    }
+
+    /// Once a dialog's OK or sketch mode's Finish (`closed`) is taken: no transaction left
+    /// open, and no step made of the reload.
+    fn assert_closed_with_nothing(tab: &Tab, sessions: &FakeSessions, closed: &str) {
+        let groups: Vec<_> = tab.groups.iter().map(|g| (g.start, g.end)).collect();
+        let open = sessions.status(&tab.id).session.unwrap().transaction;
+        assert!(
+            !open,
+            "{closed} left an empty transaction open; groups {groups:?}"
+        );
+        assert_eq!(groups, Vec::<(Revision, Revision)>::new());
     }
 
     /// The open dialog's radius, as the document holds it as far as it knows.
