@@ -360,6 +360,24 @@ fn the_view_label_is_the_projection_and_the_named_view_the_prototype_names() {
 }
 
 #[test]
+fn an_unnamed_view_in_perspective_says_perspective_alone() {
+    // A ViewCube edge's view (between the top and the front) and a corner the prototype
+    // doesn't name (top front left), each in perspective: "Perspective", no name.
+    let r = std::f64::consts::FRAC_1_SQRT_2;
+    let s = 6f64.sqrt();
+    for camera in [
+        in_perspective([0.0, -r, r], [0.0, r, r]),
+        in_perspective([-1.0, -1.0, 1.0], [1.0 / s, 1.0 / s, 2.0 / s]),
+    ] {
+        assert_eq!(
+            view_label(&camera, canvas()).words,
+            "Perspective",
+            "{camera:?}"
+        );
+    }
+}
+
+#[test]
 fn a_view_is_named_within_a_hundredth_of_a_radian_of_its_direction_and_its_up() {
     // The prototype's `viewName`: within 0.01 of the named view. Turned about z by 0.0099
     // from the front, still Front; by 0.0101, not. Tilted up as much, the same; rolled about

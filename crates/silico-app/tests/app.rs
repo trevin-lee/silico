@@ -43274,6 +43274,29 @@ fn an_orbit_drops_the_view_labels_name_and_a_pan_or_a_zoom_keeps_it() {
     step(&mut h);
     step(&mut h);
     assert_eq!(view_label(&h), "Orthographic · Iso");
+    // In perspective (Display settings), the same: named at Home, the projection alone
+    // once the bar's Orbit turns it.
+    click_on_bar(&mut h, "Display settings");
+    step(&mut h);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Menu, "Display settings")
+        .get_by_label("Perspective")
+        .click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Perspective · Iso");
+    click_on_bar(&mut h, "Orbit");
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        centre,
+        centre + vec2(30.0, 0.0),
+        3,
+    );
+    step(&mut h);
+    click_on_bar(&mut h, "Orbit");
+    assert!(view(&h).perspective());
+    assert_eq!(view_label(&h), "Perspective");
     assert_eq!(never_waits::waits(), 0);
 }
 
