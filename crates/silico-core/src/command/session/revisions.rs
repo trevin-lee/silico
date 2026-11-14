@@ -335,9 +335,7 @@ impl<C: Kernel + 'static> Session<C> {
                 .with_suggestion(format!(
                     "make the file at {shown} a regular file this user may read, then read \"disk\" again"
                 ))),
-            // `Unsettled` is the disk watch's own reload's (`Rereads::Settled`), never a
-            // command's, so never a read's that names the file.
-            Reload::AsHeld | Reload::Reloaded | Reload::Unsettled => match &file.part_written {
+            Reload::AsHeld | Reload::Reloaded => match &file.part_written {
                 // The file isn't what the session holds, and the session knows it: never its
                 // held bytes for it.
                 Some(old) => Err(part_written(&file.path, old).with_parameter(parameter)),

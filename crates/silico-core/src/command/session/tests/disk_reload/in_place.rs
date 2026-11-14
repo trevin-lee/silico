@@ -87,6 +87,51 @@ impl Watched {
     }
 }
 
+impl Watched {
+    /// One comparison of this session's file, as [`compare`](Watched::compare) runs one, for
+    /// a test whose other sessions share the reader (so its count of reads isn't this
+    /// session's alone): the clock moved a whole interval and `status` asked, then waited
+    /// for until a comparison has ended and told what it tells.
+    #[track_caller]
+    fn compare_alone(&self) {
+        let before = self.compared();
+        self.clock.advance(DISK_CHECK_INTERVAL);
+        self.f.status();
+        let deadline = Instant::now() + WAIT;
+        while self.compared() == before {
+            assert!(Instant::now() < deadline, "no comparison ran");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Waits until the session's own reload, queued or running, has ended.
+    #[track_caller]
+    fn reload_ends(&self) {
+        self.f.status_reaches(|status, _| {
+            status.running.is_none() && !lock(&self.f.session().reloads).queued
+        });
+    }
+
+    /// [`SPHERE`] put back at the session's path as a regular file, found at two comparisons
+    /// in a row, told, and reloaded: revision 2, the sphere.
+    #[track_caller]
+    fn settled_put_back_is_reloaded(&self) {
+        let _ = std::fs::remove_file(&self.f.path);
+        std::fs::write(&self.f.path, SPHERE).unwrap();
+        let told = self.told_count();
+        self.compare_alone();
+        self.compare_alone();
+        assert!(self.told_count() > told, "the watch never told");
+        self.reload_ends();
+        assert_eq!(
+            self.f.at(),
+            Revision(2),
+            "the sphere put back is never reloaded"
+        );
+        assert_eq!(self.text_of(Revision(2)), SPHERE);
+    }
+}
+
 /// A [`Watched`] session on [`BOX`], its first comparison run: the file unchanged.
 fn watching_box() -> Watched {
     let w = watched(BOX);
@@ -549,10 +594,8 @@ fn bytes_found_before_the_sessions_own_read_and_save_settle_only_at_two_comparis
     assert_eq!(w.reloaded_once_to(Revision(4)), SPHERE);
 }
 
-// ---- #488's review: the reviewers' proofs ----
-
 #[test]
-fn rv488_a_file_overwritten_in_place_without_truncation_is_reloaded_once_whole() {
+fn a_file_overwritten_in_place_without_truncation_is_reloaded_once_whole() {
     // Overwritten from its start, never truncated (as `dd conv=notrunc`, or an editor
     // writing through its handle): every read is the old document's length, the new text
     // over the old one's start.
@@ -589,56 +632,32 @@ fn rv488_a_file_overwritten_in_place_without_truncation_is_reloaded_once_whole()
 }
 
 #[test]
-fn rv488_settled_bytes_put_back_after_a_claim_refused_their_unsettled_reload_are_reloaded() {
-    // The design (#479): a reload that finds the file changed again since it settled
-    // "keeps no refusal of those bytes", so the same bytes put back are reloaded.
+fn settled_bytes_put_back_after_another_sessions_file_was_linked_in_mid_reload_are_reloaded() {
+    // The reload finds other bytes than settled, another session's, through a link: neither
+    // claimed nor refused, so the settled bytes put back are reloaded.
     let w = watching_box();
     let other = w.f.path.with_file_name("b.silico");
     let brick = BOX.replace("Block", "Brick");
     std::fs::write(&other, &brick).unwrap();
     let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
-    // One comparison of this session's file (the other session's reads share the reader).
-    let step = || {
-        let before = w.compared();
-        w.clock.advance(DISK_CHECK_INTERVAL);
-        w.f.status();
-        let deadline = Instant::now() + WAIT;
-        while w.compared() == before {
-            assert!(Instant::now() < deadline, "no comparison ran");
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    };
     let (reload_started, through) = shut(&w.f.session().reloading);
     std::fs::write(&w.f.path, SPHERE).unwrap();
-    step();
-    step();
+    w.compare_alone();
+    w.compare_alone();
     reload_started.recv_timeout(WAIT).unwrap();
     // While the reload waits: the other session's file put at the path, through a link.
     std::fs::remove_file(&w.f.path).unwrap();
     std::os::unix::fs::symlink(&other, &w.f.path).unwrap();
     open_gate(&w.f.session().reloading);
     through.send(()).unwrap();
-    w.f.status_reaches(|status, _| {
-        status.running.is_none() && !lock(&w.f.session().reloads).queued
-    });
+    w.reload_ends();
     assert_eq!(w.f.at(), Revision::OPENED);
-    let refused = lock(&w.f.session().reloads).refused;
-    // The settled bytes put back, as a regular file.
-    std::fs::remove_file(&w.f.path).unwrap();
-    std::fs::write(&w.f.path, SPHERE).unwrap();
-    let told = w.told_count();
-    step();
-    step();
-    assert!(w.told_count() > told, "the watch never told");
-    let queued = lock(&w.f.session().reloads).queued;
-    assert!(
-        queued || w.f.at() == Revision(2),
-        "the sphere put back is never reloaded: refused {refused:?}"
-    );
+    assert!(lock(&w.f.session().reloads).refused.is_none());
+    w.settled_put_back_is_reloaded();
 }
 
 #[test]
-fn rv488_two_in_place_saves_of_the_held_text_never_reload_the_empty_file_between() {
+fn two_in_place_saves_of_the_held_text_never_reload_the_empty_file_between() {
     // An editor saving the session's own text twice, each a truncate then a write: read
     // empty, then whole (unchanged), then empty again. Empty in two comparisons, but never
     // two in a row.
@@ -658,7 +677,7 @@ fn rv488_two_in_place_saves_of_the_held_text_never_reload_the_empty_file_between
 }
 
 #[test]
-fn rv488_two_in_place_saves_of_the_held_text_never_reload_the_part_between() {
+fn two_in_place_saves_of_the_held_text_never_reload_the_part_between() {
     // The same, each save written in two parts: read half written, then whole (unchanged),
     // then half written again. The same changed bytes in two comparisons, but never two in
     // a row.
@@ -676,7 +695,7 @@ fn rv488_two_in_place_saves_of_the_held_text_never_reload_the_part_between() {
 }
 
 #[test]
-fn rv488_the_same_part_read_either_side_of_an_unreadable_file_is_never_settled() {
+fn the_same_part_read_either_side_of_an_unreadable_file_is_never_settled() {
     // Half written, then not a file this user may read (a directory put at the path), then
     // half written again: the same changed bytes in two comparisons, but not in a row.
     let w = watching_box();
@@ -700,7 +719,7 @@ fn rv488_the_same_part_read_either_side_of_an_unreadable_file_is_never_settled()
 }
 
 #[test]
-fn rv488_a_write_paused_past_an_interval_after_its_truncate_never_reloads_the_empty_file() {
+fn a_write_paused_past_an_interval_after_its_truncate_never_reloads_the_empty_file() {
     // A writer that truncates, then takes longer than an interval to write (a shell
     // redirect of a slow script, a copy over a slow link): the empty file is read at
     // comparison after comparison. It's never a document, so the watch never tells of it.
@@ -774,4 +793,140 @@ fn a_part_left_written_for_more_than_an_interval_is_reloaded_then_the_whole_the_
     w.holds(Revision(2), 1, Disk::Changed);
     w.compare();
     assert_eq!(w.reloaded_once_to(Revision(3)), SPHERE);
+}
+
+#[test]
+fn settled_bytes_put_back_after_a_link_out_of_the_workspace_are_reloaded() {
+    // The reload finds the path leading out of the workspace: refused before anything is
+    // read, so nothing is kept of the bytes the watch found settled.
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let root = dir.path().join("work");
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("a.silico");
+    std::fs::write(&path, BOX).unwrap();
+    let outside = dir.path().join("outside.silico");
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let clock = TestClock::new();
+    let reader = Arc::new(HeldReader::default());
+    let sessions = Sessions::with_stand_ins(
+        Arc::clone(&kernel),
+        move |cache| Cache::with_secret(cache, &secret),
+        || Ok(Box::new(crate::fake::FakeSketches::new()) as Box<dyn SketchSolver>),
+    )
+    .watching_disk(DISK_CHECK_INTERVAL, reader.reader(), clock.clock())
+    .unwrap()
+    .in_workspace(&root)
+    .unwrap();
+    let id = sessions.open(&path, false).wait().session.unwrap().id;
+    let w = Watched {
+        f: Fixture {
+            _dir: dir,
+            kernel,
+            sessions,
+            id,
+            path,
+        },
+        clock,
+        reader,
+    };
+    w.compare();
+    w.holds(Revision::OPENED, 0, Disk::Unchanged);
+    let (reload_started, through) = shut(&w.f.session().reloading);
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    w.compare();
+    w.compare();
+    assert_eq!(w.told_count(), 1);
+    reload_started.recv_timeout(WAIT).unwrap();
+    std::fs::write(&outside, BOX.replace("Block", "Brick")).unwrap();
+    std::fs::remove_file(&w.f.path).unwrap();
+    std::os::unix::fs::symlink(&outside, &w.f.path).unwrap();
+    open_gate(&w.f.session().reloading);
+    through.send(()).unwrap();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision::OPENED);
+    assert!(lock(&w.f.session().reloads).refused.is_none());
+    w.settled_put_back_is_reloaded();
+}
+
+#[test]
+fn settled_bytes_put_back_after_a_link_to_another_sessions_copy_of_the_held_text_are_reloaded() {
+    // The reload finds the session's own text, but through a link to another session's
+    // file: refused by the claim, for bytes that aren't the ones the watch found settled, so
+    // nothing is kept of those.
+    let w = watching_box();
+    let other = w.f.path.with_file_name("b.silico");
+    std::fs::write(&other, BOX).unwrap();
+    let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+    let (reload_started, through) = shut(&w.f.session().reloading);
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    w.compare_alone();
+    w.compare_alone();
+    reload_started.recv_timeout(WAIT).unwrap();
+    std::fs::remove_file(&w.f.path).unwrap();
+    std::os::unix::fs::symlink(&other, &w.f.path).unwrap();
+    open_gate(&w.f.session().reloading);
+    through.send(()).unwrap();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision::OPENED);
+    assert!(lock(&w.f.session().reloads).refused.is_none());
+    w.settled_put_back_is_reloaded();
+}
+
+#[test]
+fn a_settled_reload_inside_a_transaction_finding_another_sessions_file_claims_and_keeps_nothing() {
+    // Queued behind a `begin`, the reload runs inside its transaction, and finds another
+    // session's file linked at the path: neither the bytes the watch found settled nor the
+    // session's, so it's neither claimed nor kept.
+    let w = watching_box();
+    let other = w.f.path.with_file_name("b.silico");
+    std::fs::write(&other, BOX.replace("Block", "Brick")).unwrap();
+    let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+    let (reload_started, reload_through) = shut(&w.f.session().reloading);
+    let (started, through) = shut(&w.f.session().gate);
+    let begin = w.f.sessions.begin(&w.f.id);
+    started.recv_timeout(WAIT).unwrap();
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    w.compare_alone();
+    w.compare_alone();
+    assert_eq!(w.told_count(), 1);
+    assert!(lock(&w.f.session().reloads).queued);
+    open_gate(&w.f.session().gate);
+    through.send(()).unwrap();
+    // The begin reloads the sphere itself (revision 2), then opens its transaction.
+    assert_eq!(begin.wait().result.unwrap().base, Revision(2));
+    reload_started.recv_timeout(WAIT).unwrap();
+    std::fs::remove_file(&w.f.path).unwrap();
+    std::os::unix::fs::symlink(&other, &w.f.path).unwrap();
+    open_gate(&w.f.session().reloading);
+    reload_through.send(()).unwrap();
+    w.reload_ends();
+    assert!(lock(&w.f.session().reloads).refused.is_none());
+    assert_eq!(w.f.at(), Revision(2));
+    assert!(w.f.status().transaction.is_some());
+}
+
+#[test]
+fn a_settled_reload_queued_behind_a_begin_finds_the_file_changed_again_and_leaves_it_changed() {
+    let w = watching_box();
+    let (reload_started, reload_through) = shut(&w.f.session().reloading);
+    let (started, through) = shut(&w.f.session().gate);
+    let begin = w.f.sessions.begin(&w.f.id);
+    started.recv_timeout(WAIT).unwrap();
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    w.compare();
+    w.compare();
+    assert_eq!(w.told_count(), 1);
+    assert!(lock(&w.f.session().reloads).queued);
+    open_gate(&w.f.session().gate);
+    through.send(()).unwrap();
+    assert_eq!(begin.wait().result.unwrap().base, Revision(2));
+    reload_started.recv_timeout(WAIT).unwrap();
+    std::fs::write(&w.f.path, BOX.replace("Block", "Other")).unwrap();
+    w.compare();
+    assert_eq!(w.f.status().disk, Some(Disk::Changed));
+    open_gate(&w.f.session().reloading);
+    reload_through.send(()).unwrap();
+    w.reload_ends();
+    w.holds(Revision(2), 1, Disk::Changed);
 }

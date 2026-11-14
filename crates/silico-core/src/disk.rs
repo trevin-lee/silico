@@ -118,12 +118,12 @@ pub type Reader = Arc<dyn Fn(&Path) -> Found + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// What a watch tells its session each time a comparison finds the file changed and settled,
-/// the comparison before it having found the same bytes (with what it read, and the count of
-/// the session's reads and writes it compared against), with no lock held, so the session can
-/// reload it ([`DiskWatch::when_changed`]): only if the count is still the session's
-/// ([`DiskWatch::current`]), as it checks under its own lock, since a read or write of the
-/// session's may come between the finding and this.
-pub type Changed = Arc<dyn Fn(&[u8], u64) + Send + Sync>;
+/// the comparison before it having found the same bytes (with the digest of what it read,
+/// [`digest`], and the count of the session's reads and writes it compared against), with no
+/// lock held, so the session can reload it ([`DiskWatch::when_changed`]): only if the count
+/// is still the session's ([`DiskWatch::current`]), as it checks under its own lock, since a
+/// read or write of the session's may come between the finding and this.
+pub type Changed = Arc<dyn Fn(&[u8; 32], u64) + Send + Sync>;
 
 /// A session's file watched for changes on disk.
 pub struct DiskWatch {
@@ -291,7 +291,7 @@ impl DiskWatch {
     }
 
     /// From now on, `changed` is told of each comparison that finds the file changed to the
-    /// bytes the comparison before it found, not empty (settled), with those bytes, with no
+    /// bytes the comparison before it found, not empty (settled), with their digest, with no
     /// lock held: the session's reload of a file changed on disk (A3). Given once, as the
     /// session is made; given again, it's ignored.
     pub fn when_changed(&self, changed: Changed) {
@@ -421,20 +421,17 @@ fn compare_once(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
     // If the read panics (a test's reader), the comparison has ended all the same: the
     // next can start.
     let ended = Ended(shared);
-    let (found, bytes) = match (shared.read)(path) {
+    // What the file changed to, as the next comparison must find it for the change to have
+    // settled: its digest, worked out before the lock is taken, which `status` takes each
+    // frame. None for an empty file, which never settles: it's never a document, and it's
+    // what a write in place leaves until it writes, however long that takes (#479).
+    let (found, changed_to) = match (shared.read)(path) {
         Found::Bytes(bytes) if bytes.as_slice() == held => (Disk::Unchanged, None),
-        Found::Bytes(bytes) => (Disk::Changed, Some(bytes)),
+        Found::Bytes(bytes) if bytes.is_empty() => (Disk::Changed, None),
+        Found::Bytes(bytes) => (Disk::Changed, Some(digest(&bytes))),
         Found::Gone => (Disk::Gone, None),
         Found::Unreadable => (Disk::Unreadable, None),
     };
-    // What the file changed to, as the next comparison must find it for the change to have
-    // settled: worked out before the lock is taken, which `status` takes each frame. None
-    // for an empty file, which never settles: it's never a document, and it's what a write
-    // in place leaves until it writes, however long that takes (#479).
-    let changed_to = bytes
-        .as_deref()
-        .filter(|bytes| !bytes.is_empty())
-        .map(digest);
     let now = (shared.now)();
     let mut state = lock(&shared.state);
     // Ended in the step its finding is kept in, so no one who sees the finding sees the
@@ -460,7 +457,7 @@ fn compare_once(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
         notify();
     }
     if settled
-        && let Some(bytes) = &bytes
+        && let Some(changed_to) = &changed_to
         && let Some(changed) = shared.changed.get()
     {
         #[cfg(test)]
@@ -472,7 +469,7 @@ fn compare_once(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
         }
         // Told with the count it compared against: the session may have read or written
         // since the finding was kept, the lock let go (its own reload, taking these bytes).
-        changed(bytes, counter);
+        changed(changed_to, counter);
         #[cfg(test)]
         shared
             .changed_told
