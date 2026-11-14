@@ -2984,3 +2984,46 @@ fn a_feature_selected_across_a_reload_that_renumbers_its_body_is_tinted_by_each_
     drop(told);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_hover_across_a_reload_that_renumbers_its_body_is_never_drawn_by_the_old_numbers() {
+    // The large cube alone (body 1), its first face hovered in the canvas and outlined;
+    // then the small cube written back before it on disk, so body 1 is the small cube. The
+    // pointer still and every pick from then finding nothing: no frame drawing the new
+    // table (bodies 1 and 2) outlines body 1's first face, the small cube's, by the number
+    // the hover had in the table before, the very first such frame too.
+    use silico_app::renderer::Element::Face;
+    let f = watching();
+    let (mut h, record) = f.drawn("boxes.silico", LARGE_ALONE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its item", |h| item(h, "Large").is_some());
+    finding(&record, Some((1, Face(1))));
+    h.hover_at(the_viewport(&h).center());
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    step(&mut h);
+    assert_eq!(
+        record.lock().unwrap().frames.last().unwrap().hovered,
+        [(1, Face(1))]
+    );
+    finding(&record, None);
+    let from = record.lock().unwrap().frames.len();
+    f.file("boxes.silico", TWO_BOXES);
+    step_until(&mut h, "the small cube back", |h| {
+        item(h, "Small").is_some() && view(h).bodies().len() == 2
+    });
+    meshes_settled(&mut h);
+    let told = record.lock().unwrap();
+    let renumbered: Vec<_> = told.frames[from..]
+        .iter()
+        .filter(|frame| frame.bodies == [1, 2])
+        .collect();
+    assert!(!renumbered.is_empty());
+    for frame in renumbered {
+        assert!(frame.hovered.is_empty(), "{:?}", frame.hovered);
+    }
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}

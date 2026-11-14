@@ -920,6 +920,11 @@ impl Browser {
         &self.bodies
     }
 
+    /// Whether `id` has a body's row (its Bodies group), not a sketch's.
+    pub fn has_body(&self, id: &FeatureId) -> bool {
+        self.bodies.iter().any(|row| &row.id == id)
+    }
+
     /// Its sketches' rows, in the timeline's order.
     pub fn sketches(&self) -> &[Row] {
         &self.sketches
@@ -1161,7 +1166,7 @@ pub struct Tab {
     /// The selection as it was before the open dialog's box of names took it, put back if
     /// the dialog is cancelled, as SolidWorks returns to the selection its command started
     /// with.
-    before_dialog: Option<Vec<crate::selection::Item>>,
+    before_dialog: Option<crate::selection::Saved>,
     /// The last dialog OK'd, for the window to remember its values ([`take_oked`]
     /// (Self::take_oked), [`crate::dialog::Remembered`]).
     oked: Option<Dialog>,
@@ -1773,7 +1778,7 @@ impl Tab {
                 dialog.took_body(toggled, standing, &holds);
             }
             if !toggled.is_empty() {
-                self.selection.select_features(dialog.bodies());
+                self.selection.select_bodies(dialog.bodies());
             }
             return !toggled.is_empty();
         }
@@ -3248,7 +3253,7 @@ impl Tab {
                                     // A boolean's boxes hold its bodies: selected, so the
                                     // canvas lights what of them it shows.
                                     if dialog.takes_bodies() {
-                                        self.selection.select_features(dialog.bodies());
+                                        self.selection.select_bodies(dialog.bodies());
                                     } else {
                                         self.selection.clear();
                                     }
@@ -5466,7 +5471,7 @@ impl Tab {
             if let crate::selection::Item::Feature(id) = item
                 && bodies.len() < 2
                 && !bodies.contains(id)
-                && self.browser.bodies().iter().any(|row| &row.id == id)
+                && self.browser.has_body(id)
             {
                 bodies.push(id.clone());
             }
@@ -5487,7 +5492,7 @@ impl Tab {
             )
         });
         dialog.take_bodies(&bodies, left_out);
-        self.selection.select_features(dialog.bodies());
+        self.selection.select_bodies(dialog.bodies());
         self.selection.take_into(Some(kinds));
     }
 
@@ -6653,7 +6658,7 @@ impl Tab {
         if !dialog.takes_bodies() {
             return false;
         }
-        let is_body = self.browser.bodies().iter().any(|row| &row.id == id);
+        let is_body = self.browser.has_body(id);
         let entries = self
             .timeline
             .as_ref()
@@ -6661,7 +6666,7 @@ impl Tab {
             .unwrap_or_default();
         let standing = standing(entries, id, dialog.feature.as_ref());
         dialog.took_row(id, is_body, standing);
-        self.selection.select_features(dialog.bodies());
+        self.selection.select_bodies(dialog.bodies());
         true
     }
 

@@ -18969,6 +18969,132 @@ fn a_timeline_item_selected_tints_its_own_faces_as_hovered_and_its_body_row_the_
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// LADDER's one body, the pocket's: its number, and its every face.
+fn ladder_body(h: &AppHarness) -> (u32, Vec<(u32, silico_app::renderer::Element)>) {
+    let bodies = view(h).bodies();
+    assert_eq!(bodies.len(), 1, "one body");
+    let (number, body) = bodies.iter().next().unwrap();
+    let count = u32::try_from(body.faces.len()).unwrap();
+    let every = (1..=count)
+        .map(|n| (*number, silico_app::renderer::Element::Face(n)))
+        .collect();
+    (*number, every)
+}
+
+#[test]
+fn a_body_rows_right_click_selects_the_body_whole_whatever_was_selected_before() {
+    // The pocket's body's row right-clicked, nothing selected: the body, whole (16 faces,
+    // not the pocket's own 5), as a left click selects it. Then the pocket selected by its
+    // timeline item (its own faces) and the row right-clicked again: the body, whole.
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    let (_, every) = ladder_body(&h);
+    menu_on(&mut h, "Browser", "Cut");
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .map(|id| id.as_str()),
+        Some("q0000003")
+    );
+    assert_eq!(tinted(&record), every, "its body's row, right-clicked");
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    ui::pause(&mut h);
+    select(&mut h, "Cut");
+    let away = timeline(&h).get_by_label("Cut").rect().center() + eframe::egui::vec2(0.0, -200.0);
+    h.hover_at(away);
+    step(&mut h);
+    step(&mut h);
+    assert!(tinted(&record).len() < every.len(), "its own faces first");
+    ui::pause(&mut h);
+    menu_on(&mut h, "Browser", "Cut");
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        tinted(&record),
+        every,
+        "right-clicked after its timeline item"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn f2_after_a_body_rows_click_renames_on_the_row_whatever_selected_its_feature_first() {
+    // The pocket selected by its timeline item (F2 would rename it there), then its body's
+    // row clicked: the selection made in the browser now, so F2 opens the field over the
+    // row.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    select(&mut h, "Cut");
+    assert_eq!(
+        h.state().tabs()[0].selected_in,
+        silico_app::feature_menu::Place::Timeline
+    );
+    ui::pause(&mut h);
+    browser(&h).get_by_label("Cut").click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].selected_in,
+        silico_app::feature_menu::Place::Browser
+    );
+    h.key_press(eframe::egui::Key::F2);
+    step_until(&mut h, "the rename field", |h| {
+        rename_field(h, "Cut").is_some()
+    });
+    assert_eq!(
+        h.state().tabs()[0]
+            .renaming
+            .as_ref()
+            .map(|renaming| renaming.place),
+        Some(silico_app::feature_menu::Place::Browser)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_unions_target_body_clicked_in_the_canvas_tints_its_every_face_not_its_features_own() {
+    // LADDER's body is the pocket's, most of its faces named from the plate's and the pad's:
+    // a union's target box takes it whole (Fusion's body), so every face but the one the
+    // pointer hovers is tinted, not only the pocket's own (`select_bodies`: the prototype's
+    // `maker: '*'` for a body).
+    // A box beside it, so a union has a second body to take.
+    let text = LADDER.replace(
+        "\n  ]\n}",
+        ",\n    {\"id\": \"t0000004\", \"type\": \"box\", \"v\": 1, \"name\": \"Spare\", \"position\": [100, 0, 0], \"length\": 10, \"width\": 10, \"height\": 10}\n  ]\n}",
+    );
+    assert!(text.contains("Spare"));
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", &text);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Spare"));
+    let body = body_of(&h, "q0000003");
+    let count = u32::try_from(view(&h).bodies()[&body].faces.len()).unwrap();
+    let every: Vec<_> = (1..=count)
+        .map(|n| (body, silico_app::renderer::Element::Face(n)))
+        .collect();
+    modify(&mut h, "Union");
+    click_face(&mut h, &record, body, 1);
+    bodies_boxed_until(&mut h, &[Some("q0000003"), None]);
+    step(&mut h);
+    step(&mut h);
+    let told = record.lock().unwrap();
+    let last = told.frames.last().unwrap();
+    let face = (body, silico_app::renderer::Element::Face(1));
+    assert_eq!(last.hovered, [face]);
+    let others: Vec<_> = every.iter().copied().filter(|f| *f != face).collect();
+    assert_eq!(last.tinted, others);
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_feature_selected_is_untinted_while_a_sketch_that_made_no_face_is_hovered() {
     // LADDER: the plate selected, its faces tinted; the triangle sketch hovered, the maker
@@ -35136,7 +35262,7 @@ fn the_bodies_selected_as_a_union_opens_fill_target_then_tool_and_the_rest_is_no
     };
     h.state_mut().tabs_mut()[0]
         .selection_mut()
-        .select_features(ids(&["b0000001", "s0000001", "b0000002"]));
+        .select_bodies(ids(&["b0000001", "s0000001", "b0000002"]));
     modify(&mut h, "Union");
     assert_eq!(
         boxed_bodies(&h),
@@ -35172,7 +35298,7 @@ fn the_bodies_selected_as_a_union_opens_fill_target_then_tool_and_the_rest_is_no
     });
     h.state_mut().tabs_mut()[0]
         .selection_mut()
-        .select_features(ids(&["b0000002", "b0000001"]));
+        .select_bodies(ids(&["b0000002", "b0000001"]));
     modify(&mut h, "Subtract");
     assert_eq!(
         boxed_bodies(&h),
@@ -35197,7 +35323,7 @@ fn a_third_body_selected_as_a_union_opens_is_left_out_and_said() {
         .map(|id| silico_core::document::FeatureId::new(id).unwrap());
     h.state_mut().tabs_mut()[0]
         .selection_mut()
-        .select_features(ids.to_vec());
+        .select_bodies(ids.to_vec());
     modify(&mut h, "Intersect");
     assert_eq!(
         boxed_bodies(&h),
@@ -40896,7 +41022,7 @@ fn with_a_union_open_a_cmd_click_on_a_boxed_body_goes_to_its_box_and_the_selecti
     // waits, and nothing is added yet, so both rows are there.
     h.state_mut().tabs_mut()[0]
         .selection_mut()
-        .select_features(vec![
+        .select_bodies(vec![
             silico_core::document::FeatureId::new("b0000001").unwrap(),
         ]);
     modify(&mut h, "Union");

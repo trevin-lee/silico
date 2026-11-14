@@ -3960,9 +3960,43 @@ mod tests {
             [(1, Element::Face(1)), (1, Element::Face(2))]
         );
         // Its timeline item clicked again: itself, its own face.
-        selection.select_feature(id);
+        selection.select_feature(id.clone());
         selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
         assert_eq!(view.maker_faces(), [(1, Element::Face(2))]);
+        // A dialog's body box (Union's) takes it as its body: whole.
+        let whole = [(1, Element::Face(1)), (1, Element::Face(2))];
+        selection.select_bodies(vec![id.clone()]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole, "a dialog's body box");
+        // Selected by its row, then a dialog taking edges alone, then its Cancel: whole.
+        selection.select_body(id.clone());
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole);
+        let saved = selection.saved();
+        selection.keep_only(crate::selection::Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        });
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert!(view.maker_faces().is_empty());
+        selection.restore(saved);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole, "after the dialog's Cancel");
+        // Selected by its timeline item, then a dialog's body box, then its Cancel: its own
+        // face again.
+        selection.select_feature(id.clone());
+        let saved = selection.saved();
+        selection.select_bodies(vec![id]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole);
+        selection.restore(saved);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(
+            view.maker_faces(),
+            [(1, Element::Face(2))],
+            "after the body box's Cancel"
+        );
     }
 
     #[test]

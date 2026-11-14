@@ -437,8 +437,7 @@ impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
 mod tests {
     use super::*;
 
-    /// A frame as the renderer was given it: its bodies, highlights, and hover.
-    /// A frame's bodies, highlights, hover, and tinted faces.
+    /// A frame as the renderer was given it: its bodies, highlights, hover, and tinted faces.
     type Drawn = (
         Vec<u32>,
         Vec<(u32, Element)>,
