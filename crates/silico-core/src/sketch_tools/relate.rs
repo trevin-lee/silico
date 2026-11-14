@@ -597,11 +597,11 @@ impl<'p> Picked<'p> {
                 .iter()
                 .map(|line| {
                     let line = line.clone();
-                    if vertical {
+                    made(if vertical {
                         Form::Vertical { line }
                     } else {
                         Form::Horizontal { line }
-                    }
+                    })
                 })
                 .collect()
         } else if self.all(&[Kind::Point]) && self.picks.len() >= 2 {
@@ -618,7 +618,7 @@ impl<'p> Picked<'p> {
         let all: Vec<&Reference> = self.picks.iter().collect();
         let word = if vertical { "vertical" } else { "horizontal" };
         Ok(Plan::Constraints {
-            forms: built(forms),
+            forms,
             replaces: Vec::new(),
             said_if_there: format!("{} {} already {word}", self.named(&all), be(all.len())),
         })
@@ -663,12 +663,17 @@ impl<'p> Picked<'p> {
                     .saturating_mul(curves.len())
                     .saturating_sub(there.len()),
             )?;
-            let forms = built(points.iter().flat_map(|point| {
-                curves.iter().map(|curve| Form::On {
-                    point: (*point).clone(),
-                    curve: (*curve).clone(),
+            let forms = points
+                .iter()
+                .flat_map(|point| {
+                    curves.iter().map(|curve| {
+                        made(Form::On {
+                            point: (*point).clone(),
+                            curve: (*curve).clone(),
+                        })
+                    })
                 })
-            }));
+                .collect();
             return Ok(Plan::Constraints {
                 forms,
                 replaces: Vec::new(),
@@ -692,7 +697,7 @@ impl<'p> Picked<'p> {
                 let point = Reference::Element((*point).clone());
                 Ok(Plan::Constraints {
                     said_if_there: format!("{} is already at the origin", self.noun(&point)),
-                    forms: built(at_origin(point)),
+                    forms: at_origin(point).map(made).into(),
                     replaces: Vec::new(),
                 })
             }
@@ -713,7 +718,7 @@ impl<'p> Picked<'p> {
         }
         let all: Vec<&Reference> = self.picks.iter().collect();
         Ok(Plan::Constraints {
-            forms: built(star(self.picks, form)),
+            forms: star(self.picks, form),
             replaces: Vec::new(),
             said_if_there: format!("{} are already {word}", self.named(&all)),
         })
@@ -728,10 +733,10 @@ impl<'p> Picked<'p> {
             return Err(self.refused(RelationTool::Perpendicular));
         }
         Ok(Plan::Constraints {
-            forms: built([Form::Perpendicular {
+            forms: vec![made(Form::Perpendicular {
                 a: a.clone(),
                 b: b.clone(),
-            }]),
+            })],
             replaces: Vec::new(),
             said_if_there: format!("{} are already perpendicular", self.named(&[a, b])),
         })
@@ -745,10 +750,10 @@ impl<'p> Picked<'p> {
             return Err(self.refused(RelationTool::Midpoint));
         };
         Ok(Plan::Constraints {
-            forms: built([Form::Midpoint {
+            forms: vec![made(Form::Midpoint {
                 point: (*point).clone(),
                 line: (*line).clone(),
-            }]),
+            })],
             replaces: holds(self.read, point, line).ons,
             said_if_there: format!(
                 "{} is already the midpoint of {}",
@@ -772,11 +777,11 @@ impl<'p> Picked<'p> {
             _ => return Err(refused()),
         };
         Ok(Plan::Constraints {
-            forms: built([Form::Symmetric {
+            forms: vec![made(Form::Symmetric {
                 a: a.clone(),
                 b: b.clone(),
                 about: about.clone(),
-            }]),
+            })],
             replaces: Vec::new(),
             said_if_there: format!(
                 "{} and {} are already symmetric about {}",
@@ -802,12 +807,12 @@ impl<'p> Picked<'p> {
             for axis in [DistanceAxis::X, DistanceAxis::Y] {
                 let form = distance_along(axis, origin, (point, at))
                     .map_err(|message| self.refusal(message.text()))?;
-                forms.push(form);
+                forms.push(made(form));
             }
         }
         let all: Vec<&Reference> = self.picks.iter().collect();
         Ok(Plan::Constraints {
-            forms: built(forms),
+            forms,
             replaces: Vec::new(),
             said_if_there: format!("{} {} already fixed", self.named(&all), be(all.len())),
         })
@@ -914,7 +919,7 @@ impl<'p> Picked<'p> {
             }
         };
         Ok(Plan::Constraints {
-            forms: built([form]),
+            forms: vec![made(form)],
             replaces,
             said_if_there,
         })
@@ -1011,16 +1016,12 @@ impl<'p> Picked<'p> {
     }
 }
 
-/// `forms` collected for a plan, each counted in tests as it's built ([`work::BUILT`]), so a
-/// click refused before its forms are built is seen to build none.
-fn built(forms: impl IntoIterator<Item = Form>) -> Vec<Form> {
-    forms
-        .into_iter()
-        .inspect(|_| {
-            #[cfg(test)]
-            work::BUILT.with(|n| n.set(n.get() + 1));
-        })
-        .collect()
+/// `form`, as a plan makes it: counted in tests ([`work::BUILT`]) where it's made, so a click
+/// refused before its forms are made is seen to make none, however they'd be gathered.
+fn made(form: Form) -> Form {
+    #[cfg(test)]
+    work::BUILT.with(|n| n.set(n.get() + 1));
+    form
 }
 
 /// Each member of `picks` after the first, paired with the first (C8), `form(first, other)`.
@@ -1029,7 +1030,7 @@ fn star(picks: &[Reference], form: impl Fn(Reference, Reference) -> Form) -> Vec
         return Vec::new();
     };
     rest.iter()
-        .map(|other| form(first.clone(), other.clone()))
+        .map(|other| made(form(first.clone(), other.clone())))
         .collect()
 }
 
