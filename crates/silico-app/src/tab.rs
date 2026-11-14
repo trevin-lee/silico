@@ -11288,7 +11288,17 @@ mod tests {
     /// The file at `path` written by another program: BLOCK with its pin named `name`.
     fn pin_named_at(path: &std::path::Path, name: &str) {
         let named = BLOCK.replace(r#""name": "Pin""#, &format!(r#""name": "{name}""#));
-        std::fs::write(path, named).unwrap();
+        written_by_another_program(path, &named);
+    }
+
+    /// `text` written at `path` as another program saves a file, and as Silico saves one
+    /// (`silico_core::file::save_over`): whole, to a file beside it renamed over it, so
+    /// nothing reads part of it. Written in place, a disk-watch comparison could read it
+    /// half-written, and the session reload it twice, the first of part of the file.
+    fn written_by_another_program(path: &std::path::Path, text: &str) {
+        let beside = path.with_extension("theirs");
+        std::fs::write(&beside, text).unwrap();
+        std::fs::rename(&beside, path).unwrap();
     }
 
     /// The session's revision as `status` says it now.
@@ -11610,7 +11620,7 @@ mod tests {
             tab.dialog.is_some() && tab.quiet()
         });
         assert_eq!((tab.revision, tab.transaction), (rev(1), false));
-        std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+        written_by_another_program(&dir.path().join("part.silico"), &pin_radius_six_tenths());
         (dir, sessions, tab, pin)
     }
 
@@ -11767,7 +11777,7 @@ mod tests {
         until("the copy written", &|| {
             revision_now(&tab, &sessions) >= rev(5)
         });
-        std::fs::write(&copy, pin_radius_six_tenths()).unwrap();
+        written_by_another_program(&copy, &pin_radius_six_tenths());
         // A read of the document now, outside a transaction: it reloads the file.
         let read = sessions.text(&tab.id, None).wait();
         assert_eq!(read.session.unwrap().revision, rev(6));
@@ -11873,7 +11883,7 @@ mod tests {
         polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
         assert_eq!(tab.revision, rev(3));
         let groups_before = tab.groups.len();
-        std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+        written_by_another_program(&dir.path().join("part.silico"), &pin_radius_six_tenths());
         tab.edit(&sessions, field_set(&pin, "radius", "0.75"));
         answered_so_far(&tab, &sessions);
         tab.close_dialog(&sessions, true);
@@ -11922,7 +11932,7 @@ mod tests {
         });
         assert_eq!((tab.revision, tab.transaction), (rev(1), false));
         let theirs = text.replace(r#""radius": 0.5"#, r#""radius": 0.6"#);
-        std::fs::write(dir.path().join("part.silico"), &theirs).unwrap();
+        written_by_another_program(&dir.path().join("part.silico"), &theirs);
         let pin = FeatureId::new("a91cw0de").unwrap();
         tab.edit(&sessions, field_set(&pin, "radius", "0.75"));
         answered_so_far(&tab, &sessions);
@@ -11942,7 +11952,7 @@ mod tests {
             tab.timeline.is_some() && tab.quiet()
         });
         assert_eq!((tab.revision, tab.transaction), (rev(1), false));
-        std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+        written_by_another_program(&dir.path().join("part.silico"), &pin_radius_six_tenths());
         let resets = tab.resets;
         let pin = FeatureId::new("a91cw0de").unwrap();
         tab.edit_feature(&sessions, &pin);
@@ -11981,7 +11991,7 @@ mod tests {
         polled_until(&mut tab, &sessions, |tab| {
             tab.timeline.is_some() && tab.quiet()
         });
-        std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+        written_by_another_program(&dir.path().join("part.silico"), &pin_radius_six_tenths());
         let resets = tab.resets;
         tab.edit_feature(&sessions, &FeatureId::new("a91cw0de").unwrap());
         let opened = tab.loading;
@@ -12008,7 +12018,7 @@ mod tests {
         polled_until(&mut tab, &sessions, |tab| {
             tab.timeline.is_some() && tab.quiet()
         });
-        std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+        written_by_another_program(&dir.path().join("part.silico"), &pin_radius_six_tenths());
         tab.edit_feature(&sessions, &FeatureId::new("a91cw0de").unwrap());
         let opened = tab.loading;
         taken_until(&mut tab, &sessions, |tab| {
@@ -12074,7 +12084,9 @@ mod tests {
             polled_until(&mut tab, &sessions, |tab| {
                 tab.dialog.is_some() && tab.quiet()
             });
-            assert_eq!(tab.revision, rev(5), "save as: {save_as}");
+            // The session's revision, as `status` gives it: the read's answer moves the dialog,
+            // not the tab's revision, which the poll after takes from `status`.
+            assert_eq!(revision_now(&tab, &sessions), rev(5), "save as: {save_as}");
             assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
             assert_eq!(banner_unlisted(&tab), NONE_UNLISTED, "save as: {save_as}");
         }
@@ -12103,7 +12115,7 @@ mod tests {
                 polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
                 assert_eq!(tab.revision, rev(3));
             }
-            std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+            written_by_another_program(&dir.path().join("part.silico"), &pin_radius_six_tenths());
             // A read of the document now, outside a transaction: it reloads the file.
             let reloaded = sessions
                 .text(&tab.id, None)
