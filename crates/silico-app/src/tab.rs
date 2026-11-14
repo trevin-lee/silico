@@ -3741,10 +3741,9 @@ impl Tab {
                     let undone = self.revision.next().unwrap_or(self.revision);
                     // What a dialog's Cancel lands (its unmade feature, an Edit Feature's
                     // freeze): where its undo or rollback answers, or here if it sends none.
-                    let lands = match dialog {
-                        Some(serial) if !ok => Lands::Dialog(serial),
-                        _ => Lands::Nothing,
-                    };
+                    // An OK'd dialog's serial has nothing to land: its entries come only from
+                    // its Cancel, and OK waits for its add's answer, so none is late.
+                    let lands = dialog.map_or(Lands::Nothing, Lands::Dialog);
                     let Some(base) = self.dialog_base.take() else {
                         self.read_restored_from(ok, self.revision);
                         self.land(lands, self.revision);
