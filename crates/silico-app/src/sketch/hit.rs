@@ -1,13 +1,16 @@
 //! Hit-testing a sketch in its own millimetres (the M5.11 plan, *The pointer in the
 //! sketch*): what's under the pointer, from the newest `sketch` read alone, no GPU picking.
-//! In the order they're drawn over one another: a point first, then a relation's glyph or a
-//! dimension's value (each a box on the screen), then a curve, then a dimension's lines;
-//! each the nearest within the tolerance, ties to the lower ID.
+//! In the order they're drawn over one another: a point or the origin first, then a
+//! relation's glyph or a dimension's value (each a box on the screen), then a curve or an
+//! axis, then a dimension's lines; each the nearest within the tolerance, ties to the lower
+//! ID. Points and the origin, and curves and the axes, are ranked as Smart Dimension ranks
+//! its picks, by the core's one rule (`sketch_tools::pick`; the constraint tools' C9).
 
 use std::f64::consts::TAU;
 
 use silico_core::command::sketch::SketchRead;
-use silico_core::document::{ElementId, ElementKind};
+use silico_core::document::{ElementId, ElementKind, Reference};
+use silico_core::sketch_tools;
 
 use super::draw::{
     Curve, Geometry, Scale, add, angle, direction, dot, foot, length, mul, placed, sub,
@@ -29,13 +32,71 @@ pub struct Hit {
     pub kind: ElementKind,
 }
 
+/// What a click picks in sketch mode, and what its selection holds: a member of the sketch,
+/// or the origin or one of its axes (the constraint tools' C9). In [`Reference`]'s order:
+/// the members by ID, then the origin, the x axis, and the y axis.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Picked {
+    Member(Hit),
+    Origin,
+    XAxis,
+    YAxis,
+}
+
+impl Picked {
+    /// What it is as a constraint names it.
+    pub fn reference(&self) -> Reference {
+        match self {
+            Picked::Member(hit) => Reference::Element(hit.id.clone()),
+            Picked::Origin => Reference::Origin,
+            Picked::XAxis => Reference::XAxis,
+            Picked::YAxis => Reference::YAxis,
+        }
+    }
+
+    /// The member it is, if it's one.
+    pub fn member(&self) -> Option<&Hit> {
+        match self {
+            Picked::Member(hit) => Some(hit),
+            Picked::Origin | Picked::XAxis | Picked::YAxis => None,
+        }
+    }
+
+    /// What `reference` names in `read`: a member, with its kind, if the read holds it; the
+    /// origin; or an axis.
+    fn of(read: &SketchRead, reference: Reference) -> Option<Picked> {
+        match reference {
+            Reference::Element(id) => {
+                let kind = read
+                    .members
+                    .elements()
+                    .find(|(held, _)| **held == id)
+                    .map(|(_, kind)| kind)?;
+                Some(Picked::Member(Hit { id, kind }))
+            }
+            Reference::Origin => Some(Picked::Origin),
+            Reference::XAxis => Some(Picked::XAxis),
+            Reference::YAxis => Some(Picked::YAxis),
+        }
+    }
+}
+
+impl From<Hit> for Picked {
+    fn from(hit: Hit) -> Self {
+        Picked::Member(hit)
+    }
+}
+
 /// What of `read` is at `at` (the sketch's millimetres), within `tolerance` millimetres, in
-/// the order they're drawn over one another: the nearest point; or else the nearest
-/// relation glyph or dimension value, each a box (placed at `scale`, as they're drawn, the
-/// box upright on the screen); or else the nearest curve; or else the nearest dimension's
-/// line. Ties go to the lower ID. None for nothing that near, a tolerance below zero, or a
-/// place that isn't one.
-pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Option<Hit> {
+/// the order they're drawn over one another: the nearest point, or the origin where it's
+/// nearer (the point on a tie); or else the nearest relation glyph or dimension value, each
+/// a box (placed at `scale`, as they're drawn, the box upright on the screen); or else the
+/// nearest curve, or an axis anywhere along it (the curve on a tie, and where a line of the
+/// sketch lies along the axis); or else the nearest dimension's line. Points, the origin,
+/// curves, and the axes are ranked by the core's `sketch_tools::pick`, as Smart Dimension
+/// picks; other ties go to the lower ID. None for nothing that near, a tolerance below
+/// zero, or a place that isn't one.
+pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Option<Picked> {
     if !(at[0].is_finite() && at[1].is_finite()) || tolerance.is_nan() || tolerance < 0.0 {
         return None;
     }
@@ -45,18 +106,23 @@ pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Opt
             .into_iter()
             .filter(|(d, ..)| *d <= tolerance)
             .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)))
-            .map(|(_, id, kind)| Hit {
-                id: id.clone(),
-                kind,
+            .map(|(_, id, kind)| {
+                Picked::Member(Hit {
+                    id: id.clone(),
+                    kind,
+                })
             })
     };
-    let points = geometry
-        .points()
-        .map(|(id, p)| (length(sub(p, at)), id, ElementKind::Point))
-        .collect();
-    if let Some(hit) = near(points) {
-        return Some(hit);
-    }
+    // A point or the origin, if one is near, else a curve or an axis, if one is.
+    let picked = sketch_tools::pick(&read.members, at, tolerance)
+        .and_then(|reference| Picked::of(read, reference));
+    let curve = match picked {
+        Some(Picked::Origin) => return Some(Picked::Origin),
+        Some(Picked::Member(hit)) if hit.kind == ElementKind::Point => {
+            return Some(Picked::Member(hit));
+        }
+        other => other,
+    };
     let placed = placed(read, &geometry, scale);
     let glyph = scale.mm(SKETCH_GLYPH_SIZE) / 2.0;
     let mut boxes: Vec<(f64, &ElementId, ElementKind)> = placed
@@ -83,12 +149,8 @@ pub fn hit(read: &SketchRead, at: [f64; 2], tolerance: f64, scale: Scale) -> Opt
     if let Some(hit) = near(boxes) {
         return Some(hit);
     }
-    let curves = geometry
-        .curves()
-        .map(|(id, curve, kind)| (distance(curve, at), id, kind))
-        .collect();
-    if let Some(hit) = near(curves) {
-        return Some(hit);
+    if curve.is_some() {
+        return curve;
     }
     let lines = placed
         .dimensions

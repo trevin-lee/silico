@@ -21,6 +21,8 @@ use silico_core::kernel::SketchPlane;
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
 use silico_core::sketch_tools::{DimensionPreview, MeasureKind, Preview, Relation};
 
+use super::hit::Picked;
+use super::selection::Selection;
 use super::style::*;
 
 /// The most segments one curve's polyline has, however near the view: past it, a curve far
@@ -191,6 +193,7 @@ pub enum Drawn {
     },
     Origin {
         at: Pos2,
+        selected: bool,
     },
     Glyph {
         of: Option<ElementId>,
@@ -255,10 +258,11 @@ impl Drawn {
         match self {
             Drawn::Stroke { selected, .. }
             | Drawn::Point { selected, .. }
+            | Drawn::Origin { selected, .. }
             | Drawn::Glyph { selected, .. }
             | Drawn::Arrow { selected, .. }
             | Drawn::Label { selected, .. } => *selected,
-            Drawn::Fill { .. } | Drawn::Origin { .. } | Drawn::Ring { .. } => false,
+            Drawn::Fill { .. } | Drawn::Ring { .. } => false,
         }
     }
 
@@ -268,7 +272,7 @@ impl Drawn {
             Drawn::Stroke { points, .. } => points.clone(),
             Drawn::Fill { triangles, .. } => triangles.iter().flatten().copied().collect(),
             Drawn::Point { at, .. }
-            | Drawn::Origin { at }
+            | Drawn::Origin { at, .. }
             | Drawn::Glyph { at, .. }
             | Drawn::Label { at, .. }
             | Drawn::Ring { at, .. } => vec![*at],
@@ -968,25 +972,60 @@ pub(crate) fn tessellate(loops: &[Vec<[f64; 2]>]) -> Option<Vec<[[f64; 2]; 3]>> 
         .collect()
 }
 
-/// What's drawn of `read`, seen through `view`, the members in `selected` drawn selected:
-/// the plane's grid and axes (where the view says what's in it) and the origin; the
-/// profile's fill (unless the sketch is over defined); each curve a polyline (an arc or a
-/// circle within the view's chord tolerance of itself), construction dashed; each point a
-/// square; and each relation's glyphs and each dimension; each as `shown` says.
+/// What's drawn selected: the members, by ID, and the origin and the axes (C9).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Selected {
+    pub members: BTreeSet<ElementId>,
+    pub origin: bool,
+    /// The x axis's and the y axis's.
+    pub axes: [bool; 2],
+}
+
+impl Selected {
+    /// What `selection` holds.
+    pub fn of(selection: &Selection) -> Self {
+        Selected {
+            members: selection.members().map(|hit| hit.id.clone()).collect(),
+            origin: selection.contains(&Picked::Origin),
+            axes: [Picked::XAxis, Picked::YAxis].map(|axis| selection.contains(&axis)),
+        }
+    }
+}
+
+/// What's drawn of `read`, seen through `view`, what `selected` holds drawn selected: the
+/// plane's grid and axes (where the view says what's in it), an axis selected across all
+/// the view shows of it, and the origin; the profile's fill (unless the sketch is over
+/// defined); each curve a polyline (an arc or a circle within the view's chord tolerance of
+/// itself), construction dashed; each point a square; and each relation's glyphs and each
+/// dimension; each as `shown` says.
 pub fn drawing(
     read: &SketchRead,
     view: &View<'_>,
     shown: Shown,
-    selected: &BTreeSet<ElementId>,
+    selected: &Selected,
     fills: &[RegionFill],
 ) -> Vec<Drawn> {
     let geometry = Geometry::of(read);
     let sketch = read.states.state;
     let states = &read.states;
     let members = &read.members;
-    let mut drawn = grid(view, axis_colours(read.plane.as_ref().ok()));
+    let colours = axis_colours(read.plane.as_ref().ok());
+    let mut drawn = grid(view, colours);
+    // A selected axis over the grid's, white over the halo as a member's line, wherever the
+    // view shows it: the grid's stops short of the far plane, and a pick takes an axis
+    // anywhere along it.
+    if let Some(visible) = view.visible {
+        for (axis, colour) in [0, 1].into_iter().zip(colours) {
+            if selected.axes[axis] {
+                drawn.extend(axis_line(view, axis, visible, colour, true));
+            }
+        }
+    }
     if let Some(at) = view.at([0.0, 0.0]) {
-        drawn.push(Drawn::Origin { at });
+        drawn.push(Drawn::Origin {
+            at,
+            selected: selected.origin,
+        });
     }
     if shown.profile && sketch != SketchState::OverDefined {
         for fill in fills {
@@ -1049,7 +1088,7 @@ pub fn drawing(
                 kind,
                 points: run,
                 colour: member_colour(sketch, state),
-                selected: selected.contains(id),
+                selected: selected.members.contains(id),
             });
         }
     }
@@ -1060,7 +1099,7 @@ pub fn drawing(
                     of: Some(id.clone()),
                     at,
                     colour: member_colour(sketch, states.points.get(id).copied()),
-                    selected: selected.contains(id),
+                    selected: selected.members.contains(id),
                 });
             }
         }
@@ -1084,7 +1123,7 @@ pub fn drawing(
                     kind: glyph.kind,
                     at,
                     colour: colour_of(&glyph.of),
-                    selected: selected.contains(&glyph.of),
+                    selected: selected.members.contains(&glyph.of),
                 });
             }
         }
@@ -1092,7 +1131,7 @@ pub fn drawing(
     if shown.dimensions {
         for dimension in &placed.dimensions {
             let colour = colour_of(&dimension.of);
-            let selected = selected.contains(&dimension.of);
+            let selected = selected.members.contains(&dimension.of);
             for line in &dimension.lines {
                 for run in runs(line.iter().map(|&p| view.at(p)).collect()) {
                     drawn.push(Drawn::Stroke {
@@ -1195,26 +1234,38 @@ fn grid(view: &View<'_>, axes: [Color32; 2]) -> Vec<Drawn> {
     }
     // The axes: the sketch's x along y = 0, its y along x = 0.
     for (axis, colour) in [0, 1].into_iter().zip(axes) {
-        let other = 1 - axis;
-        if !(lo[other] <= 0.0 && 0.0 <= hi[other]) {
-            continue;
-        }
-        let ends = if axis == 0 {
-            [[lo[0], 0.0], [hi[0], 0.0]]
-        } else {
-            [[0.0, lo[1]], [0.0, hi[1]]]
-        };
-        if let Some(run) = runs(ends.iter().map(|&p| view.at(p)).collect()).pop() {
-            drawn.push(Drawn::Stroke {
-                of: None,
-                kind: StrokeKind::Axis,
-                points: run,
-                colour,
-                selected: false,
-            });
-        }
+        drawn.extend(axis_line(view, axis, (lo, hi), colour, false));
     }
     drawn
+}
+
+/// The axis `axis` (0, the sketch's x, along y = 0; 1, its y, along x = 0) across the part
+/// of the plane from `lo` to `hi`, in `colour`, selected or not: none where that part
+/// doesn't reach it, or the view can't show it.
+fn axis_line(
+    view: &View<'_>,
+    axis: usize,
+    (lo, hi): ([f64; 2], [f64; 2]),
+    colour: Color32,
+    selected: bool,
+) -> Option<Drawn> {
+    let other = 1 - axis;
+    if !(lo[other] <= 0.0 && 0.0 <= hi[other]) {
+        return None;
+    }
+    let ends = if axis == 0 {
+        [[lo[0], 0.0], [hi[0], 0.0]]
+    } else {
+        [[0.0, lo[1]], [0.0, hi[1]]]
+    };
+    let run = runs(ends.iter().map(|&p| view.at(p)).collect()).pop()?;
+    Some(Drawn::Stroke {
+        of: None,
+        kind: StrokeKind::Axis,
+        points: run,
+        colour,
+        selected,
+    })
 }
 
 #[cfg(test)]
@@ -1858,12 +1909,14 @@ pub fn to_shapes(painter: &Painter, drawn: &[Drawn]) -> Vec<Shape> {
                     shapes.push(Shape::rect_filled(square, 0.0, *colour));
                 }
             }
-            Drawn::Origin { at } => {
-                shapes.push(Shape::circle_stroke(
-                    *at,
-                    SKETCH_ORIGIN_RING_RADIUS,
-                    Stroke::new(SKETCH_ORIGIN_RING.width, SKETCH_ORIGIN_RING.color),
-                ));
+            Drawn::Origin { at, selected } => {
+                let stroke = if *selected {
+                    shapes.push(Shape::circle_stroke(*at, SKETCH_ORIGIN_RING_RADIUS, halo));
+                    Stroke::new(SKETCH_SELECTED_WIDTH, SKETCH_SELECTED_STROKE)
+                } else {
+                    Stroke::new(SKETCH_ORIGIN_RING.width, SKETCH_ORIGIN_RING.color)
+                };
+                shapes.push(Shape::circle_stroke(*at, SKETCH_ORIGIN_RING_RADIUS, stroke));
             }
             Drawn::Glyph {
                 kind,

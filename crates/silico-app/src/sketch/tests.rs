@@ -21,11 +21,11 @@ use silico_core::sketch_tools::{
 };
 
 use super::draw::{
-    Drawn, Flat, GlyphKind, LabelKind, MAX_CURVE_SEGMENTS, Scale, Shown, StrokeKind, View, drawing,
-    preview, region_fills, round_points, segments, tessellate,
+    Drawn, Flat, GlyphKind, LabelKind, MAX_CURVE_SEGMENTS, Scale, Selected, Shown, StrokeKind,
+    View, drawing, preview, region_fills, round_points, segments, tessellate,
 };
 use super::draw::{add, direction, mul};
-use super::hit::{Hit, hit};
+use super::hit::{Hit, Picked, hit};
 use super::style::*;
 use super::*;
 
@@ -205,7 +205,8 @@ fn an_under_defined_rectangle_draws_blue_each_side_from_corner_to_corner_and_the
     assert_eq!(
         drawn[0],
         Drawn::Origin {
-            at: pos2(100.0, 500.0)
+            at: pos2(100.0, 500.0),
+            selected: false,
         }
     );
     let corners = [
@@ -1005,7 +1006,7 @@ fn a_construction_previews_curves_are_drawn_as_construction() {
 fn hit_takes_a_point_before_a_curve_and_the_nearest_curve_before_a_farther_one() {
     let read = under(rectangle(Vec::new()));
     let found = |at: [f64; 2], tolerance: f64| hit(&read, at, tolerance, HAND);
-    let hit_of = |name: &str, kind: ElementKind| Some(Hit { id: id(name), kind });
+    let hit_of = |name: &str, kind: ElementKind| Some(Picked::Member(Hit { id: id(name), kind }));
     // (1, 0.5): the corner pa000001 is √1.25 = 1.118 off, past 1; the bottom side 0.5,
     // the left side 1.0: the bottom.
     assert_eq!(
@@ -1037,10 +1038,10 @@ fn hit_ties_between_points_go_to_the_lower_id() {
     sketch.points = vec![point("pb000002", 2.0, 0.0), point("pb000001", 0.0, 0.0)];
     assert_eq!(
         hit(&under(sketch), [1.0, 0.0], 1.5, HAND),
-        Some(Hit {
+        Some(Picked::Member(Hit {
             id: id("pb000001"),
             kind: ElementKind::Point
-        })
+        }))
     );
 }
 
@@ -1058,11 +1059,11 @@ fn hit_finds_a_glyph_and_a_dimension_where_theyre_drawn() {
         MemberState::FullyDefined,
         &[],
     );
-    let found = |at: [f64; 2]| hit(&read, at, 0.1, HAND).map(|h| h.id);
-    assert_eq!(found([28.8, 21.3]), Some(id("ka000001")));
-    assert_eq!(found([20.0, -2.6]), Some(id("ka000002")));
+    let found = |at: [f64; 2]| hit(&read, at, 0.1, HAND).map(|h| h.reference());
+    assert_eq!(found([28.8, 21.3]), Some(element("ka000001")));
+    assert_eq!(found([20.0, -2.6]), Some(element("ka000002")));
     // On an extension line, (40, −1.5).
-    assert_eq!(found([40.0, -1.5]), Some(id("ka000002")));
+    assert_eq!(found([40.0, -1.5]), Some(element("ka000002")));
     assert_eq!(found([20.0, 15.0]), None);
 }
 
@@ -1087,7 +1088,8 @@ fn an_arc_is_hit_on_its_sweep_and_past_it_only_near_its_ends() {
         constraints: Vec::new(),
     };
     let read = under(sketch);
-    let found = |at: [f64; 2]| hit(&read, at, 0.5, HAND).map(|h| h.kind);
+    let found =
+        |at: [f64; 2]| hit(&read, at, 0.5, HAND).and_then(|h| h.member().map(|member| member.kind));
     // On the sweep, at 45°, 0.2 outside the rim.
     let r = 10.2 * std::f64::consts::FRAC_1_SQRT_2;
     assert_eq!(found([r, r]), Some(ElementKind::Arc));
@@ -1096,7 +1098,7 @@ fn an_arc_is_hit_on_its_sweep_and_past_it_only_near_its_ends() {
 }
 
 #[test]
-fn an_empty_sketch_draws_only_the_origin_and_hits_nothing() {
+fn an_empty_sketch_draws_only_the_origin_and_hits_only_the_origin_and_the_axes() {
     let empty = Sketch {
         plane: OriginPlane::Xy.into(),
         points: Vec::new(),
@@ -1114,10 +1116,14 @@ fn an_empty_sketch_draws_only_the_origin_and_hits_nothing() {
     assert_eq!(
         drawn(&read),
         [Drawn::Origin {
-            at: pos2(100.0, 500.0)
+            at: pos2(100.0, 500.0),
+            selected: false,
         }]
     );
-    assert_eq!(hit(&read, [0.0, 0.0], 100.0, HAND), None);
+    // The origin at its place (C9); (3, 4) is 5 from it, 4 from the x axis, and 3 from the
+    // y axis: nothing within 2.
+    assert_eq!(hit(&read, [0.0, 0.0], 100.0, HAND), Some(Picked::Origin));
+    assert_eq!(hit(&read, [3.0, 4.0], 2.0, HAND), None);
     assert_eq!(state_shown(&read).words, "Empty");
 }
 
@@ -1529,9 +1535,12 @@ fn a_frames_presses_select_ctrl_adds_and_a_press_on_nothing_clears() {
 #[test]
 fn a_selected_member_is_drawn_selected_its_state_colour_kept() {
     let read = under(rectangle(vec![horizontal("ka000001", "na000001")]));
-    let selected = [id("na000001"), id("ka000001"), id("pa000002")]
-        .into_iter()
-        .collect();
+    let selected = Selected {
+        members: [id("na000001"), id("ka000001"), id("pa000002")]
+            .into_iter()
+            .collect(),
+        ..Selected::default()
+    };
     let drawn = drawing(&read, &view(), Shown::default(), &selected, &[]);
     for name in ["na000001", "ka000001", "pa000002"] {
         assert!(of(&drawn, name).iter().all(|d| d.selected()), "{name}");
@@ -1556,14 +1565,18 @@ fn every_kind_turns_into_shapes_none_left_out() {
         holes: Vec::new(),
     }];
     read.members.lines[3].construction = true;
-    let selected = [
-        id("na000002"),
-        id("ka000002"),
-        id("pa000001"),
-        id("ka000001"),
-    ]
-    .into_iter()
-    .collect();
+    let selected = Selected {
+        members: [
+            id("na000002"),
+            id("ka000002"),
+            id("pa000001"),
+            id("ka000001"),
+        ]
+        .into_iter()
+        .collect(),
+        origin: true,
+        ..Selected::default()
+    };
     let mut drawn = drawing(&read, &view(), Shown::default(), &selected, &[]);
     drawn.extend(preview(
         &Preview {
@@ -1592,19 +1605,19 @@ fn delete_joins_a_lone_point_two_curves_end_at_and_removes_anything_else() {
     let mut sketch = rectangle(Vec::new());
     sketch.lines.pop();
     let mut mode = mode_on(under(sketch));
-    let hit = |name: &str, kind| Hit { id: id(name), kind };
+    let hit = |name: &str, kind| Some(Picked::Member(Hit { id: id(name), kind }));
     assert_eq!(mode.deletion(), None);
     // pa000002: na000001 ends there, na000002 starts there.
-    mode.click(Some(hit("pa000002", ElementKind::Point)), false);
+    mode.click(hit("pa000002", ElementKind::Point), false);
     assert_eq!(mode.deletion(), Some(Deletion::Join(id("pa000002"))));
     // pa000001, its one side (na000004) gone: removed.
-    mode.click(Some(hit("pa000001", ElementKind::Point)), false);
+    mode.click(hit("pa000001", ElementKind::Point), false);
     assert_eq!(
         mode.deletion(),
         Some(Deletion::Remove(vec![element("pa000001")]))
     );
     // A point and a line: removed together, by ID.
-    mode.click(Some(hit("na000001", ElementKind::Line)), true);
+    mode.click(hit("na000001", ElementKind::Line), true);
     assert_eq!(
         mode.deletion(),
         Some(Deletion::Remove(vec![
@@ -1619,10 +1632,10 @@ fn a_new_read_lets_go_of_selected_members_it_no_longer_holds() {
     let mut mode = SketchMode::new(1, None);
     for (name, ctrl) in [("na000002", false), ("nz000009", true)] {
         mode.click(
-            Some(Hit {
+            Some(Picked::Member(Hit {
                 id: id(name),
                 kind: ElementKind::Line,
-            }),
+            })),
             ctrl,
         );
     }
@@ -1630,8 +1643,375 @@ fn a_new_read_lets_go_of_selected_members_it_no_longer_holds() {
         model: None,
         result: Ok(under(rectangle(Vec::new()))),
     });
-    let kept: Vec<&str> = mode.selection.iter().map(|h| h.id.as_str()).collect();
+    let kept: Vec<&str> = mode.selection.members().map(|h| h.id.as_str()).collect();
     assert_eq!(kept, ["na000002"]);
+}
+
+// Sketch mode's selection in pick order, with the origin and the axes (the constraint
+// tools' C9, docs/study/constraint-tools.md, section 9).
+
+/// [`rectangle`] moved to (10, 10), clear of the origin and the axes: its corners
+/// pa000001 (10, 10), pa000002 (50, 10), pa000003 (50, 30), pa000004 (10, 30), and its sides
+/// na000001 (bottom), na000002 (right), na000003 (top), na000004 (left). Through [`hand`],
+/// the corners are at (200, 400), (600, 400), (600, 200), and (200, 200).
+fn box_off_the_origin() -> Sketch {
+    let mut sketch = rectangle(Vec::new());
+    for p in &mut sketch.points {
+        p.x = Coordinate::new(p.x.mm() + 10.0).unwrap();
+        p.y = Coordinate::new(p.y.mm() + 10.0).unwrap();
+    }
+    sketch
+}
+
+/// One frame of the hand view's with `events`, the pointer off the viewport.
+fn hand_frame(mode: &mut SketchMode, events: &[PointerEvent]) {
+    with_painter(|painter| {
+        let input = FrameInput {
+            events,
+            pointer: None,
+            project: &hand,
+            to_plane: &unhand,
+        };
+        mode.frame(painter, &input, &mut None);
+    });
+}
+
+/// The member `name`, of `kind`, as a click picks it.
+fn member(name: &str, kind: ElementKind) -> Option<Picked> {
+    Some(Picked::Member(Hit { id: id(name), kind }))
+}
+
+#[test]
+fn ctrl_clicks_keep_their_pick_order_and_one_clicked_back_on_joins_at_the_end() {
+    let mut mode = mode_on(under(rectangle(Vec::new())));
+    // Ctrl on the top's middle, (20, 20) at (300, 300); the corner pa000002, (40, 0) at
+    // (500, 500); and the right side's middle, (40, 10) at (500, 400): not their ID order.
+    for at in [pos2(300.0, 300.0), pos2(500.0, 500.0), pos2(500.0, 400.0)] {
+        hand_frame(&mut mode, &press(at, true));
+    }
+    assert_eq!(
+        mode.selection.references(),
+        [
+            element("na000003"),
+            element("pa000002"),
+            element("na000002")
+        ]
+    );
+    // The corner Ctrl-clicked off, then on again: at the end.
+    hand_frame(&mut mode, &press(pos2(500.0, 500.0), true));
+    assert_eq!(
+        mode.selection.references(),
+        [element("na000003"), element("na000002")]
+    );
+    hand_frame(&mut mode, &press(pos2(500.0, 500.0), true));
+    assert_eq!(
+        mode.selection.references(),
+        [
+            element("na000003"),
+            element("na000002"),
+            element("pa000002")
+        ]
+    );
+    // A plain click on the bottom's middle, (20, 0) at (300, 500), replaces them all; one
+    // on nothing, (20, 10) at (300, 400), 10 from every side, clears it.
+    hand_frame(&mut mode, &press(pos2(300.0, 500.0), false));
+    assert_eq!(mode.selection.references(), [element("na000001")]);
+    hand_frame(&mut mode, &press(pos2(300.0, 400.0), false));
+    assert!(mode.selection.is_empty());
+}
+
+#[test]
+fn a_click_at_the_origin_selects_it_and_one_on_an_axis_far_along_it_selects_the_axis() {
+    let mut mode = mode_on(under(box_off_the_origin()));
+    // (0.2, 0.2) at (102, 498): 0.28 from the origin, within the 7-point pick (0.7 mm);
+    // the box's nearest corner is 13.9 off.
+    hand_frame(&mut mode, &press(pos2(102.0, 498.0), false));
+    assert_eq!(mode.selection.references(), [Reference::Origin]);
+    // (80, 0.5) at (900, 495): 0.5 off the x axis, 80 along it, 30 past the box: the axis.
+    hand_frame(&mut mode, &press(pos2(900.0, 495.0), false));
+    assert_eq!(mode.selection.references(), [Reference::XAxis]);
+    // (−0.5, −40) at (95, 900), Ctrl: the y axis, after it.
+    hand_frame(&mut mode, &press(pos2(95.0, 900.0), true));
+    assert_eq!(
+        mode.selection.references(),
+        [Reference::XAxis, Reference::YAxis]
+    );
+    // (80, 0.8) at (900, 492), past the pick: nothing there, so the click clears it.
+    hand_frame(&mut mode, &press(pos2(900.0, 492.0), false));
+    assert!(mode.selection.is_empty());
+}
+
+#[test]
+fn a_point_at_the_origins_place_and_a_line_along_an_axis_win_over_them() {
+    // The rectangle's corner pa000001 is at the origin, its bottom along the x axis.
+    let read = under(rectangle(Vec::new()));
+    // At the origin, the corner, 0 off as the origin is: the sketch's own.
+    assert_eq!(
+        hit(&read, [0.0, 0.0], 0.7, HAND),
+        member("pa000001", ElementKind::Point)
+    );
+    // (20, −0.3): 0.3 from the bottom and from the axis it lies along: the bottom.
+    assert_eq!(
+        hit(&read, [20.0, -0.3], 0.7, HAND),
+        member("na000001", ElementKind::Line)
+    );
+    // (45, 0.3), past the bottom's end (5 from it, and from the corner and the right
+    // side): the axis.
+    assert_eq!(hit(&read, [45.0, 0.3], 0.7, HAND), Some(Picked::XAxis));
+    // A click at the origin's place, (100, 500), selects the corner.
+    let mut mode = mode_on(read);
+    hand_frame(&mut mode, &press(pos2(100.0, 500.0), false));
+    assert_eq!(mode.selection.references(), [element("pa000001")]);
+}
+
+#[test]
+fn the_same_clicks_give_the_same_order() {
+    // Ctrl on the origin, (100, 500); the top's middle, (30, 30) at (400, 200); the x axis
+    // at (80, 0), (900, 500); the left side's middle, (10, 20) at (200, 300); the y axis at
+    // (0, −40), (100, 900); and the corner pa000002, (50, 10) at (600, 400).
+    let clicks = [
+        pos2(100.0, 500.0),
+        pos2(400.0, 200.0),
+        pos2(900.0, 500.0),
+        pos2(200.0, 300.0),
+        pos2(100.0, 900.0),
+        pos2(600.0, 400.0),
+    ];
+    let run = || {
+        let mut mode = mode_on(under(box_off_the_origin()));
+        clicks
+            .iter()
+            .map(|&at| {
+                hand_frame(&mut mode, &press(at, true));
+                mode.selection.references()
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = run();
+    assert_eq!(
+        first.last().unwrap(),
+        &[
+            Reference::Origin,
+            element("na000003"),
+            Reference::XAxis,
+            element("na000004"),
+            Reference::YAxis,
+            element("pa000002"),
+        ]
+    );
+    for _ in 0..3 {
+        assert_eq!(run(), first);
+    }
+}
+
+#[test]
+fn delete_ignores_the_origin_and_the_axes() {
+    let mut mode = mode_on(under(rectangle(Vec::new())));
+    // The origin and the x axis alone: nothing to delete.
+    mode.click(Some(Picked::Origin), false);
+    mode.click(Some(Picked::XAxis), true);
+    assert_eq!(mode.deletion(), None);
+    // With the top: the top alone removed.
+    mode.click(member("na000003", ElementKind::Line), true);
+    assert_eq!(
+        mode.deletion(),
+        Some(Deletion::Remove(vec![element("na000003")]))
+    );
+    // The origin and the corner pa000002, where the bottom ends and the right side starts:
+    // the corner joined, as if it were alone.
+    mode.click(Some(Picked::Origin), false);
+    mode.click(member("pa000002", ElementKind::Point), true);
+    assert_eq!(mode.deletion(), Some(Deletion::Join(id("pa000002"))));
+}
+
+#[test]
+fn a_read_without_a_selected_member_drops_it_and_keeps_the_rest_in_their_order() {
+    let mut mode = mode_on(under(box_off_the_origin()));
+    // Picked: the top, the origin, the bottom, the x axis, and the corner pa000002.
+    mode.click(member("na000003", ElementKind::Line), false);
+    mode.click(Some(Picked::Origin), true);
+    mode.click(member("na000001", ElementKind::Line), true);
+    mode.click(Some(Picked::XAxis), true);
+    mode.click(member("pa000002", ElementKind::Point), true);
+    // A read without the bottom, as an edit that removed it leaves: the bottom goes, the
+    // rest stay as they were picked.
+    let mut fewer = box_off_the_origin();
+    fewer.lines.remove(0);
+    mode.took(Read {
+        model: None,
+        result: Ok(under(fewer)),
+    });
+    assert_eq!(
+        mode.selection.references(),
+        [
+            element("na000003"),
+            Reference::Origin,
+            Reference::XAxis,
+            element("pa000002")
+        ]
+    );
+    // A read of an empty sketch: the origin and the axis, every sketch's, stay.
+    let mut empty = box_off_the_origin();
+    empty.points.clear();
+    empty.lines.clear();
+    mode.took(Read {
+        model: None,
+        result: Ok(under(empty)),
+    });
+    assert_eq!(
+        mode.selection.references(),
+        [Reference::Origin, Reference::XAxis]
+    );
+}
+
+#[test]
+fn members_joining_together_join_in_id_order_after_whats_selected() {
+    let mut selection = selection::Selection::default();
+    selection.click(member("na000003", ElementKind::Line), false);
+    selection.click(Some(Picked::Origin), true);
+    // As a box's would: the y axis, pa000002, na000001, the top and the origin (selected
+    // already), and na000002. Those not selected join after, by ID, then the axis.
+    selection.add_together(
+        [
+            Some(Picked::YAxis),
+            member("pa000002", ElementKind::Point),
+            member("na000001", ElementKind::Line),
+            member("na000003", ElementKind::Line),
+            Some(Picked::Origin),
+            member("na000002", ElementKind::Line),
+        ]
+        .into_iter()
+        .flatten(),
+    );
+    assert_eq!(
+        selection.references(),
+        [
+            element("na000003"),
+            Reference::Origin,
+            element("na000001"),
+            element("na000002"),
+            element("pa000002"),
+            Reference::YAxis,
+        ]
+    );
+}
+
+#[test]
+fn the_origin_and_an_axis_selected_are_drawn_white_over_the_members_halo() {
+    let read = under(box_off_the_origin());
+    // The plane from (−10, −5) to (60, 40) in view.
+    let seen = View {
+        project: &hand,
+        scale: HAND,
+        visible: Some(([-10.0, -5.0], [60.0, 40.0])),
+        chord_tolerance: SKETCH_CHORD_TOLERANCE,
+    };
+    let selected_axes = |drawn: &[Drawn]| -> Vec<Vec<Pos2>> {
+        drawn
+            .iter()
+            .filter_map(|d| match d {
+                Drawn::Stroke {
+                    kind: StrokeKind::Axis,
+                    points,
+                    selected: true,
+                    ..
+                } => Some(points.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let origin = |drawn: &[Drawn]| {
+        drawn
+            .iter()
+            .find(|d| matches!(d, Drawn::Origin { .. }))
+            .cloned()
+    };
+    // Nothing selected: neither is.
+    let plain = drawing(&read, &seen, Shown::default(), &Selected::default(), &[]);
+    assert!(selected_axes(&plain).is_empty());
+    assert_eq!(
+        origin(&plain),
+        Some(Drawn::Origin {
+            at: pos2(100.0, 500.0),
+            selected: false,
+        })
+    );
+    // The origin and the x axis selected: the origin, and the axis across the view, (−10,
+    // 0) to (60, 0), (0, 500) to (700, 500).
+    let selected = Selected {
+        origin: true,
+        axes: [true, false],
+        ..Selected::default()
+    };
+    let drawn = drawing(&read, &seen, Shown::default(), &selected, &[]);
+    assert_eq!(
+        selected_axes(&drawn),
+        [vec![pos2(0.0, 500.0), pos2(700.0, 500.0)]]
+    );
+    assert_eq!(
+        origin(&drawn),
+        Some(Drawn::Origin {
+            at: pos2(100.0, 500.0),
+            selected: true,
+        })
+    );
+    // Each as a member's line is: the halo under, 6 wide, then white, 2.4 wide.
+    let halo = egui::Stroke::new(6.0, SKETCH_SELECTED_HALO);
+    let white = egui::Stroke::new(2.4, SKETCH_SELECTED_STROKE);
+    let rings: Vec<(Pos2, f32, egui::Stroke)> = shapes_of(Drawn::Origin {
+        at: pos2(100.0, 500.0),
+        selected: true,
+    })
+    .iter()
+    .map(|s| match s {
+        egui::Shape::Circle(c) => (c.center, c.radius, c.stroke),
+        other => panic!("{other:?}"),
+    })
+    .collect();
+    assert_eq!(
+        rings,
+        [
+            (pos2(100.0, 500.0), 3.0, halo),
+            (pos2(100.0, 500.0), 3.0, white)
+        ]
+    );
+    let axis = drawn
+        .iter()
+        .find(|d| d.selected() && matches!(d, Drawn::Stroke { .. }))
+        .cloned()
+        .unwrap();
+    let lines: Vec<(Vec<Pos2>, egui::epaint::PathStroke)> = shapes_of(axis)
+        .iter()
+        .map(|s| match s {
+            egui::Shape::Path(path) => (path.points.clone(), path.stroke.clone()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    let along = vec![pos2(0.0, 500.0), pos2(700.0, 500.0)];
+    assert_eq!(lines, [(along.clone(), halo.into()), (along, white.into())]);
+    // Unselected, the origin is its one ring.
+    let plain = shapes_of(Drawn::Origin {
+        at: pos2(100.0, 500.0),
+        selected: false,
+    });
+    assert_eq!(plain.len(), 1);
+}
+
+#[test]
+fn a_frame_draws_the_origin_selected_once_its_clicked() {
+    // The drawing is kept between frames until what it's of changes: the selection of the
+    // origin is one such change.
+    let mut mode = mode_on(under(box_off_the_origin()));
+    hand_frame(&mut mode, &[]);
+    let origin_selected = |mode: &SketchMode| {
+        mode.last_drawn()
+            .iter()
+            .any(|d| matches!(d, Drawn::Origin { selected: true, .. }))
+    };
+    assert!(!origin_selected(&mode));
+    hand_frame(&mut mode, &press(pos2(100.0, 500.0), false));
+    hand_frame(&mut mode, &[]);
+    assert!(origin_selected(&mode));
 }
 
 #[test]
@@ -1865,7 +2245,7 @@ fn delete_joins_two_arcs_or_a_line_and_an_arc_at_their_point_and_removes_a_point
     };
     let deleting = |sketch: Sketch, point: &str| {
         let mut mode = mode_on(under(sketch));
-        mode.click(Some(point_hit(point)), false);
+        mode.click(Some(point_hit(point).into()), false);
         mode.deletion()
     };
     // A split arc's two pieces about pc000000: the first ends at pm000000, the second starts
@@ -2156,10 +2536,10 @@ fn a_plate_with_sixty_holes_fills_less_its_holes_and_steady_frames_reuse_the_dra
     frames(&mut mode, 10.0, 20);
     assert_eq!((mode.drawings, mode.fill_builds), (1, 1));
     mode.click(
-        Some(Hit {
+        Some(Picked::Member(Hit {
             id: id("na000001"),
             kind: ElementKind::Line,
-        }),
+        })),
         false,
     );
     frames(&mut mode, 10.0, 5);
@@ -5737,7 +6117,11 @@ fn each_drawn_item_holds_its_own_positions() {
         selected: false,
     };
     assert_eq!(arrow.positions(), [c]);
-    assert_eq!(Drawn::Origin { at: b }.positions(), [b]);
+    let origin = Drawn::Origin {
+        at: b,
+        selected: false,
+    };
+    assert_eq!(origin.positions(), [b]);
 }
 
 /// The shapes `drawn` turns into.
@@ -6074,10 +6458,10 @@ fn hit_takes_no_place_thats_no_number_even_at_any_tolerance_and_an_exact_one_at_
     // At a point exactly, with no tolerance: that point.
     assert_eq!(
         hit(&read, [40.0, 20.0], 0.0, HAND),
-        Some(Hit {
+        Some(Picked::Member(Hit {
             id: id("pa000003"),
             kind: ElementKind::Point,
-        })
+        }))
     );
 }
 
@@ -6092,13 +6476,14 @@ fn a_glyphs_and_a_values_boxes_are_hit_to_their_edges_and_not_past_them() {
         horizontal("ka000001", "na000001"),
         length("ka000002", "na000001", "40", true),
     ]));
-    let found = |at: [f64; 2], tolerance: f64| hit(&read, at, tolerance, HAND).map(|h| h.id);
+    let found =
+        |at: [f64; 2], tolerance: f64| hit(&read, at, tolerance, HAND).map(|h| h.reference());
     // Inside the glyph's box, off its middle both ways; 0.2 below it, out of a 0.1 reach.
-    assert_eq!(found([11.7, -1.8], 0.1), Some(id("ka000001")));
+    assert_eq!(found([11.7, -1.8], 0.1), Some(element("ka000001")));
     assert_eq!(found([11.2, -2.3], 0.1), None);
     // Inside the value's box, 0.85 above its line, off its middle; 0.1 past either edge,
     // out of a 0.05 reach.
-    assert_eq!(found([21.1, -1.75], 0.05), Some(id("ka000002")));
+    assert_eq!(found([21.1, -1.75], 0.05), Some(element("ka000002")));
     assert_eq!(found([21.26, -1.75], 0.05), None);
     assert_eq!(found([20.0, -1.6], 0.05), None);
 }

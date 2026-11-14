@@ -1,10 +1,11 @@
 //! Sketch mode (docs/design/m5.0-app.md, section 9, *Sketching*; the M5.11 plan): a tab's
 //! state while a sketch is open, never a pane of its own. The sketch open and the revision
 //! sketch mode opened at; the newest `sketch` read, one in flight at a time, the one
-//! source of what's drawn, the status, and the tools' context; the sketch's members
-//! selected; the palette's settings; and the tool chosen ([`tools`]), with what it asks of
-//! the core. Entering, Finish, Cancel, and the edits are the tab's (`tab.rs`), through its
-//! queue, as a feature dialog's are.
+//! source of what's drawn, the status, and the tools' context; what's selected, the
+//! sketch's members and its origin and axes, in pick order ([`selection`]); the palette's
+//! settings; and the tool chosen ([`tools`]), with what it asks of the core. Entering,
+//! Finish, Cancel, and the edits are the tab's (`tab.rs`), through its queue, as a feature
+//! dialog's are.
 //!
 //! The viewport calls [`SketchMode::frame`] each frame (through `Tab::sketch_frame`, which
 //! then sends what the tool asked) with its left button's events, a projection to the
@@ -22,6 +23,7 @@ pub mod draw;
 pub mod hit;
 pub mod lines;
 pub mod screen;
+pub mod selection;
 pub mod style;
 pub mod tools;
 
@@ -43,10 +45,12 @@ use bar::{DimensionShown, PaletteView, Settings, StateShown, StatusLine};
 use dimension::{Ask, EditBox, Edited, ModifyAction, ModifyView, OfferView, value_of};
 use drag::Drag;
 use draw::{
-    Curve, Drawn, Geometry, RegionFill, Scale, Shown, View, add, angle, bounds, dimension_preview,
-    direction, dot, drawing, fill_scale, ghost, length, mul, preview, region_fills, sub, to_shapes,
+    Curve, Drawn, Geometry, RegionFill, Scale, Selected, Shown, View, add, angle, bounds,
+    dimension_preview, direction, dot, drawing, fill_scale, ghost, length, mul, preview,
+    region_fills, sub, to_shapes,
 };
-use hit::{Hit, hit};
+use hit::{Hit, Picked, hit};
+use selection::Selection;
 use style::*;
 use tools::{Input, Tools};
 
@@ -252,7 +256,7 @@ struct DrawnOf {
     read: u64,
     /// The drag's solved frames drawn, while a drag's frame is drawn in the read's place.
     drag: Option<u64>,
-    selected: BTreeSet<ElementId>,
+    selected: Selected,
     shown: Shown,
     probes: [Option<Pos2>; 4],
     scale: Scale,
@@ -293,10 +297,11 @@ pub struct SketchMode {
     /// The last frame's drawing, and how many drawings it has worked out.
     drawn: Option<(DrawnOf, Vec<Drawn>)>,
     pub drawings: u64,
-    /// The members selected, each with its kind; and a press under way, what's under it and
-    /// whether Ctrl was held, to select on its release.
-    pub selection: BTreeSet<Hit>,
-    pressed: Option<(Option<Hit>, bool)>,
+    /// What's selected, in pick order: members, each with its kind, and the origin and the
+    /// axes; and a press under way, what's under it and whether Ctrl was held, to select on
+    /// its release.
+    pub selection: Selection,
+    pressed: Option<(Option<Picked>, bool)>,
     pub settings: Settings,
     /// The tool chosen, if one is (M5.11b's): what it draws as it's used, what it says, and
     /// what it asks of the core, which the tab sends.
@@ -351,7 +356,7 @@ impl SketchMode {
             fill_builds: 0,
             drawn: None,
             drawings: 0,
-            selection: BTreeSet::new(),
+            selection: Selection::default(),
             pressed: None,
             settings: Settings::default(),
             tools: Tools::default(),
@@ -410,13 +415,14 @@ impl SketchMode {
         self.reading = Some(sessions.sketch(session, ModelChoice::Published, sketch.clone()));
     }
 
-    /// `read` kept as the newest, and the selection kept to what it still holds; Smart
-    /// Dimension given it (`settle`); and an edit of a dimension judged on it, if it's of the
-    /// revision the edit made, or its offer let go, if it's of a later one.
+    /// `read` kept as the newest, and the selection kept to what it still holds, in its
+    /// order (the origin and the axes always); Smart Dimension given it (`settle`); and an
+    /// edit of a dimension judged on it, if it's of the revision the edit made, or its offer
+    /// let go, if it's of a later one.
     pub(crate) fn took(&mut self, read: Read) {
         if let Ok(sketch) = &read.result {
             let held: BTreeSet<&ElementId> = sketch.members.elements().map(|(id, _)| id).collect();
-            self.selection.retain(|hit| held.contains(&hit.id));
+            self.selection.keep_members(|id| held.contains(id));
             if let Some(edit) = &self.edit_box
                 && !held.contains(&edit.constraint)
             {
@@ -458,36 +464,25 @@ impl SketchMode {
         }
     }
 
-    /// A click in the viewport, on `hit` (none: empty space), with Ctrl or not (open item
-    /// 24, as SolidWorks' selection): a plain click selects only what it's on, a Ctrl-click
-    /// adds it or takes it away, and a click on nothing clears the selection.
-    pub fn click(&mut self, hit: Option<Hit>, ctrl: bool) {
-        match (hit, ctrl) {
-            (None, _) => self.selection.clear(),
-            (Some(hit), false) => {
-                self.selection.clear();
-                self.selection.insert(hit);
-            }
-            (Some(hit), true) => {
-                if !self.selection.remove(&hit) {
-                    self.selection.insert(hit);
-                }
-            }
-        }
+    /// A click in the viewport, on `picked` (none: empty space), with Ctrl or not (open
+    /// item 24, as SolidWorks' selection): a plain click selects only what it's on, a
+    /// Ctrl-click adds it at the end or takes it away, and a click on nothing clears the
+    /// selection ([`Selection::click`]).
+    pub fn click(&mut self, picked: Option<Picked>, ctrl: bool) {
+        self.selection.click(picked, ctrl);
     }
 
-    /// What Delete would do with the selection: a lone point whose two curves end there,
-    /// the pieces a split leaves, joined (whether `sketch_join` takes them is its own to
-    /// say); anything else removed, as `sketch_remove` judges it. None with nothing
-    /// selected.
+    /// What Delete would do with the selection's members, the origin and the axes ignored
+    /// (C9): a lone point whose two curves end there, the pieces a split leaves, joined
+    /// (whether `sketch_join` takes them is its own to say); anything else removed, by ID,
+    /// as `sketch_remove` judges it. None with no member selected.
     pub fn deletion(&self) -> Option<Deletion> {
-        if self.selection.is_empty() {
+        let mut selected: Vec<&Hit> = self.selection.members().collect();
+        if selected.is_empty() {
             return None;
         }
-        if let ([only], Some(sketch)) = (
-            self.selection.iter().collect::<Vec<_>>().as_slice(),
-            self.drawable(),
-        ) && only.kind == ElementKind::Point
+        if let ([only], Some(sketch)) = (selected.as_slice(), self.drawable())
+            && only.kind == ElementKind::Point
         {
             let id = &only.id;
             let members = &sketch.members;
@@ -508,9 +503,10 @@ impl SketchMode {
                 return Some(Deletion::Join(id.clone()));
             }
         }
+        selected.sort();
         Some(Deletion::Remove(
-            self.selection
-                .iter()
+            selected
+                .into_iter()
                 .map(|hit| Reference::Element(hit.id.clone()))
                 .collect(),
         ))
@@ -556,6 +552,7 @@ impl SketchMode {
                     if dragged.is_none() {
                         *dragged = found
                             .as_ref()
+                            .and_then(Picked::member)
                             .and_then(|hit| self.grab(hit, input, event.at));
                     }
                     self.pressed = Some((found, event.ctrl));
@@ -584,10 +581,13 @@ impl SketchMode {
                     }
                     if let Some((found, ctrl)) = self.pressed.take() {
                         // What the press was on, if the read now still holds it: a read
-                        // taken between the press and its release may have let it go.
-                        let held = found.filter(|hit| {
-                            self.drawable().is_some_and(|read| {
-                                read.members.elements().any(|(id, _)| id == &hit.id)
+                        // taken between the press and its release may have let it go. The
+                        // origin and the axes are every sketch's.
+                        let held = found.filter(|picked| {
+                            picked.member().is_none_or(|hit| {
+                                self.drawable().is_some_and(|read| {
+                                    read.members.elements().any(|(id, _)| id == &hit.id)
+                                })
                             })
                         });
                         self.click(held, ctrl);
@@ -648,7 +648,7 @@ impl SketchMode {
     /// What's under `at` on the screen, within the pick tolerance at the view's scale there:
     /// of what's drawn, the drag's last frame while it lasts (once it has ended, until the
     /// read of its edit comes), or else the newest read.
-    fn found(&self, input: &FrameInput<'_>, at: Pos2, dragged: Option<&Drag>) -> Option<Hit> {
+    fn found(&self, input: &FrameInput<'_>, at: Pos2, dragged: Option<&Drag>) -> Option<Picked> {
         let read = dragged.and_then(Drag::shown).or_else(|| self.drawable())?;
         let scale = scale_at(input.to_plane, at)?;
         let on = (input.to_plane)(at)?;
@@ -702,7 +702,7 @@ impl SketchMode {
         if self.offer().is_some() || self.edit_box.as_ref().is_some_and(|edit| edit.sent) {
             return;
         }
-        let Some(found) = self.found(input, at, dragged) else {
+        let Some(Picked::Member(found)) = self.found(input, at, dragged) else {
             return;
         };
         let Some(read) = self.drawable() else {
@@ -825,7 +825,7 @@ impl SketchMode {
         let of = DrawnOf {
             read: self.taken,
             drag: dragged.map(|(.., frames)| frames),
-            selected: self.selection.iter().map(|hit| hit.id.clone()).collect(),
+            selected: Selected::of(&self.selection),
             shown: self.shown(),
             probes: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]].map(|p| (view.project)(p)),
             scale: view.scale,
@@ -859,7 +859,7 @@ impl SketchMode {
             .map_or(&[][..], |(_, fills)| fills.as_slice());
         let mut drawn = drawing(read, view, of.shown, &of.selected, fills);
         if let Some((shown, begin, _)) = dragged {
-            let begun = drawing(begin, view, of.shown, &BTreeSet::new(), &[]);
+            let begun = drawing(begin, view, of.shown, &Selected::default(), &[]);
             let mut ghosted = ghost(&begun, begin, shown);
             ghosted.append(&mut drawn);
             drawn = ghosted;
@@ -885,9 +885,9 @@ impl SketchMode {
             .map(|(_, fills)| fills.as_slice())
     }
 
-    /// The IDs selected.
+    /// The members' IDs selected.
     pub fn selected_ids(&self) -> BTreeSet<ElementId> {
-        self.selection.iter().map(|hit| hit.id.clone()).collect()
+        self.selection.members().map(|hit| hit.id.clone()).collect()
     }
 
     /// What the palette's settings show.
