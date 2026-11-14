@@ -9,16 +9,14 @@
 //! double-click (or Edit feature in its menu) opens its dialog (a sketch's, Edit Sketch,
 //! sketch mode), a drag moves it
 //! (`move_feature`), and hovering it tints the faces it made in the viewport (`View::linked`).
-//! Its right-click menu is the feature's commands (`crate::feature_menu`): Edit feature,
-//! Rename (whose field opens over the item), Suppress or Unsuppress, Find in browser, and
-//! Delete.
+//! The other way, an element hovered in the canvas outlines the item of the feature that
+//! made it (`.hovered-from-canvas`, from `tab.selection().hovered_feature()`). Its right-click
+//! menu is the feature's commands (`crate::feature_menu`): Edit feature, Rename (whose field
+//! opens over the item), Suppress or Unsuppress, Find in browser, and Delete.
 //!
 //! Left out, each for a reason: the rollback bar (the core has no rollback; Fusion's marker
-//! is out of M5, DESIGN.md flags Onshape's as a proposal), the gear's timeline options (none
-//! exist), and the reverse of
-//! the hover linking, a face hovered outlining its feature here (`.hovered-from-canvas`):
-//! SEAM, the outline's look, from `tab.selection().hovered_feature()` (M5.7: the feature
-//! that made what the pointer is over in the canvas).
+//! is out of M5, DESIGN.md flags Onshape's as a proposal), and the gear's timeline options
+//! (none exist).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -169,12 +167,14 @@ pub fn step_of_each(entries: &[Entry], listed: Revision, rebuild: Option<&Rebuil
 }
 
 /// How an item is drawn (`.tl-item` and its states, in styles.css's order, each later rule
-/// winning over an earlier one): its fill, its icon's colour, the line along its bottom, the
-/// opacity of the whole, a suppressed one's strike, the spinner, and the mark at its corner.
+/// winning over an earlier one): its fill, its icon's colour, the ring inside its border,
+/// the line along its bottom, the opacity of the whole, a suppressed one's strike, the
+/// spinner, and the mark at its corner.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Look {
     pub fill: Option<Color32>,
     pub icon: Color32,
+    pub outline: Option<Color32>,
     pub line: Option<Color32>,
     pub opacity: f32,
     pub strike: bool,
@@ -182,14 +182,18 @@ pub struct Look {
     pub badge: Option<Health>,
 }
 
-/// An item's look, of a feature at `step`, a sketch or not, hovered or not, and selected or
-/// not: `:hover`, then `.selected`, then `.sketch`, then `.err` and `.warn`, as styles.css
-/// gives them, so a selected sketch's icon is the sketch's grey on the selection's blue, and
-/// a failed feature's icon is red whatever else it is.
-pub fn look(step: Step, sketch: bool, hovered: bool, selected: bool) -> Look {
+/// An item's look, of a feature at `step`, a sketch or not, hovered or not, selected or
+/// not, and the maker of what the canvas's hover is over or not (`from_canvas`): `:hover`,
+/// then `.selected`, then `.hovered-from-canvas`, then `.sketch`, then `.err` and `.warn`, as
+/// styles.css gives them, so a selected sketch's icon is the sketch's grey on the
+/// selection's blue, a failed feature's icon is red whatever else it is, and a failed or
+/// warned one's line along its bottom takes the place of the canvas's ring (each a
+/// `box-shadow`, the later rule's whole).
+pub fn look(step: Step, sketch: bool, hovered: bool, selected: bool, from_canvas: bool) -> Look {
     let mut look = Look {
         fill: None,
         icon: theme::TIMELINE_ITEM_ICON,
+        outline: None,
         line: None,
         opacity: 1.0,
         strike: false,
@@ -204,17 +208,22 @@ pub fn look(step: Step, sketch: bool, hovered: bool, selected: bool) -> Look {
         look.fill = Some(theme::TIMELINE_ITEM_SELECTED_BG);
         look.icon = theme::TIMELINE_ITEM_SELECTED_ICON;
     }
+    if from_canvas {
+        look.outline = Some(theme::TIMELINE_CANVAS_HOVER);
+    }
     if sketch {
         look.icon = theme::TIMELINE_SKETCH_ICON;
     }
     match step {
         Step::Settled(Health::Error) => {
             look.icon = theme::TIMELINE_ERROR;
+            look.outline = None;
             look.line = Some(theme::TIMELINE_ERROR);
             look.badge = Some(Health::Error);
         }
         Step::Settled(Health::Warning) => {
             look.icon = theme::TIMELINE_WARNING;
+            look.outline = None;
             look.line = Some(theme::TIMELINE_WARNING);
             look.badge = Some(Health::Warning);
         }
@@ -354,6 +363,8 @@ fn features<P: Clients + 'static>(
     sessions: &Arc<Sessions<P>>,
     next_frame: &mut bool,
 ) {
+    // What the canvas's hover is over was made by this feature: its item is outlined.
+    tab.view.outlined = tab.selection().hovered_feature().cloned();
     let Some(timeline) = &tab.timeline else {
         words(ui, rect, panes::building(tab));
         tab.view.linked = None;
@@ -594,6 +605,7 @@ fn items(
     let mut rects = Vec::with_capacity(entries.len());
     let mut dragged = None;
     let mut dropped = None;
+    let from_canvas = tab.view.outlined.as_ref();
     for (at, (entry, step)) in entries.iter().zip(steps).enumerate() {
         let (rect, _) =
             ui.allocate_exact_size(Vec2::splat(theme::TIMELINE_ITEM_SIZE), Sense::hover());
@@ -617,7 +629,13 @@ fn items(
             ui.scroll_to_rect(rect, Some(Align::Center));
         }
         let sketch = entry.kind == "sketch";
-        let look = look(*step, sketch, hovered, selected);
+        let look = look(
+            *step,
+            sketch,
+            hovered,
+            selected,
+            from_canvas == Some(&entry.id),
+        );
         paint(ui, rect, Icon::of_kind(entry.kind), &look);
         theme::focus_ring(
             ui,
@@ -766,6 +784,15 @@ fn paint(ui: &Ui, rect: Rect, icon: Icon, look: &Look) {
     let radius = theme::TIMELINE_ITEM_CORNER_RADIUS;
     if let Some(fill) = look.fill {
         painter.rect_filled(rect, radius, fade(fill));
+    }
+    if let Some(outline) = look.outline {
+        // `box-shadow: inset 0 0 0 1px`: a ring inside the item's border, round its corners.
+        painter.rect_stroke(
+            rect,
+            radius,
+            Stroke::new(theme::TIMELINE_CANVAS_HOVER_WIDTH, fade(outline)),
+            egui::StrokeKind::Inside,
+        );
     }
     if let Some(line) = look.line {
         // `box-shadow: inset 0 -2px 0`: along the bottom, inside the item's corners.
@@ -1008,50 +1035,110 @@ mod tests {
     fn an_items_look_follows_styles_css() {
         let healthy = Step::Settled(Health::Healthy);
         // `.tl-item`: `--g750`, no fill.
-        let rest = look(healthy, false, false, false);
+        let rest = look(healthy, false, false, false, false);
         assert_eq!((rest.fill, rest.icon), (None, rgb(0xcfcfcf)));
         assert_eq!((rest.line, rest.opacity, rest.badge), (None, 1.0, None));
         // `:hover`: `--g1000` on `--g300`.
-        let hover = look(healthy, false, true, false);
+        let hover = look(healthy, false, true, false, false);
         assert_eq!(
             (hover.fill, hover.icon),
             (Some(rgb(0x2c2b2b)), rgb(0xffffff))
         );
         // `.selected`, after `:hover`: `--blue-text` on `--blue`, hovered or not.
         for hovered in [false, true] {
-            let chosen = look(healthy, false, hovered, true);
+            let chosen = look(healthy, false, hovered, true, false);
             assert_eq!(
                 (chosen.fill, chosen.icon),
                 (Some(rgb(0x186add)), rgb(0xf0f2ff))
             );
         }
         // `.sketch`, after `.selected`: `--g600`, on the blue when selected.
-        let sketch = look(healthy, true, false, true);
+        let sketch = look(healthy, true, false, true, false);
         assert_eq!(
             (sketch.fill, sketch.icon),
             (Some(rgb(0x186add)), rgb(0x9f9f9f))
         );
         // `.err`: `--red`, its line `--red`, its badge; selected too, on the blue.
-        let failed = look(Step::Settled(Health::Error), true, false, true);
+        let failed = look(Step::Settled(Health::Error), true, false, true, false);
         assert_eq!(failed.icon, rgb(0xff3865));
         assert_eq!(failed.line, Some(rgb(0xff3865)));
         assert_eq!(failed.fill, Some(rgb(0x186add)));
         assert_eq!(failed.badge, Some(Health::Error));
         // `.warn`: `--orange`, its line and badge.
-        let warned = look(Step::Settled(Health::Warning), false, false, false);
+        let warned = look(Step::Settled(Health::Warning), false, false, false, false);
         assert_eq!(
             (warned.icon, warned.line, warned.badge),
             (rgb(0xff7a0c), Some(rgb(0xff7a0c)), Some(Health::Warning))
         );
         // `.suppressed`: `.35`, struck; `.queued`: `.45`; `.building`: the spinner.
-        let suppressed = look(Step::Settled(Health::Suppressed), false, false, false);
+        let suppressed = look(
+            Step::Settled(Health::Suppressed),
+            false,
+            false,
+            false,
+            false,
+        );
         assert_eq!((suppressed.opacity, suppressed.strike), (0.35, true));
-        assert_eq!(look(Step::Queued, false, false, false).opacity, 0.45);
-        let running = look(Step::Running, false, false, false);
+        assert_eq!(look(Step::Queued, false, false, false, false).opacity, 0.45);
+        let running = look(Step::Running, false, false, false, false);
         assert!(running.spinner);
         assert_eq!((running.opacity, running.badge), (1.0, None));
         // Built in the running rebuild: as at rest, no mark until it ends.
-        assert_eq!(look(Step::Built, false, false, false), rest);
+        assert_eq!(look(Step::Built, false, false, false, false), rest);
+        assert_eq!(rest.outline, None);
+    }
+
+    #[test]
+    fn an_item_whose_feature_the_canvass_hover_is_over_is_ringed_as_styles_css_gives_it() {
+        let healthy = Step::Settled(Health::Healthy);
+        // `.hovered-from-canvas`: `box-shadow: inset 0 0 0 1px var(--g600)`, `#9f9f9f`, at
+        // rest, selected (over the blue, `.selected` before it changing only the fill), on a
+        // sketch, and running or built in a rebuild; nothing else about the item changes.
+        let ring = Some(rgb(0x9f9f9f));
+        for (step, sketch, selected) in [
+            (healthy, false, false),
+            (healthy, false, true),
+            (healthy, true, false),
+            (healthy, true, true),
+            (Step::Running, false, false),
+            (Step::Built, false, false),
+        ] {
+            let plain = look(step, sketch, false, selected, false);
+            let ringed = look(step, sketch, false, selected, true);
+            assert_eq!(ringed.outline, ring, "{step:?} {sketch} {selected}");
+            assert_eq!(plain.outline, None);
+            assert_eq!(
+                Look {
+                    outline: None,
+                    ..ringed
+                },
+                plain,
+                "{step:?} {sketch} {selected}"
+            );
+        }
+        // Dimmed with the item: `.suppressed` and `.queued` set the opacity of the whole, the
+        // ring's too (drawn faded by it, as the fill and the icon are).
+        let suppressed = look(Step::Settled(Health::Suppressed), false, false, false, true);
+        assert_eq!((suppressed.outline, suppressed.opacity), (ring, 0.35));
+        let queued = look(Step::Queued, false, false, false, true);
+        assert_eq!((queued.outline, queued.opacity), (ring, 0.45));
+        let unknown = look(Step::Settled(Health::Unknown), false, false, false, true);
+        assert_eq!((unknown.outline, unknown.opacity), (ring, 0.45));
+        // `.err` and `.warn` come after it, each with a `box-shadow` of its own: their line
+        // along the bottom in its place, no ring.
+        for (health, line) in [
+            (Health::Error, rgb(0xff3865)),
+            (Health::Warning, rgb(0xff7a0c)),
+        ] {
+            for selected in [false, true] {
+                let marked = look(Step::Settled(health), false, false, selected, true);
+                assert_eq!((marked.outline, marked.line), (None, Some(line)));
+                assert_eq!(
+                    marked,
+                    look(Step::Settled(health), false, false, selected, false)
+                );
+            }
+        }
     }
 
     #[test]

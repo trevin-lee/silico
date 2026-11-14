@@ -21,7 +21,7 @@ use eframe::egui_wgpu;
 use eframe::wgpu;
 use silico_protocol::{Camera, Mesh};
 pub use silico_render::render::{
-    Element, Frame, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer,
+    Element, Frame, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer, Tint,
 };
 
 /// A [`Frame`] whose values it holds: what the pane hands on, to be drawn once the paint
@@ -36,6 +36,10 @@ pub struct FrameData {
     pub highlights: Vec<(u32, Element)>,
     pub hovered: Vec<(u32, Element)>,
     pub outlines: Outlines,
+    /// The faces tinted: the feature hovered in the timeline's, but those selected or
+    /// hovered (`crate::viewport`'s `tinted_faces`).
+    pub tinted: Vec<(u32, Element)>,
+    pub tint: Tint,
     pub picking: Option<PixelRect>,
     pub edges: bool,
     pub vertices: Option<f32>,
@@ -57,6 +61,8 @@ impl FrameData {
             highlights: &self.highlights,
             hovered: &self.hovered,
             outlines: self.outlines,
+            tinted: &self.tinted,
+            tint: self.tint,
             picking: self.picking,
             edges: self.edges,
             vertices: self.vertices,
@@ -553,6 +559,8 @@ mod tests {
             highlights: highlights.to_vec(),
             hovered: Vec::new(),
             outlines: Outlines::DEFAULT,
+            tinted: Vec::new(),
+            tint: Tint::NONE,
             picking: None,
             edges: true,
             vertices: None,

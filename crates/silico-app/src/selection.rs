@@ -775,6 +775,17 @@ impl Selection {
         }
     }
 
+    /// What's hovered let go, as the pointer leaving the canvas lets it go, unless a menu
+    /// holds it: for a tab not shown, whose canvas the pointer can't be over, so the tab
+    /// shown again says no hover of before (its timeline's ring, its status bar's name) and
+    /// asks its canvas again.
+    pub fn let_go_hover(&mut self) {
+        if !self.hover_held {
+            self.hovered = None;
+            self.hover_asked = None;
+        }
+    }
+
     /// Whether a menu holds the hover.
     pub fn hover_held(&self) -> bool {
         self.hover_held
@@ -1793,7 +1804,8 @@ fn toggled(added: bool, place: usize, picked: &Picked) -> Toggled {
 /// element found, in the body it's in (a vertex as the viewport's dot), if the answer it's drawn by
 /// is of that model (an element's number in another model may be another element of these
 /// meshes); each feature's faces, a body's whole (its browser row), else those it made, as
-/// each face's name says (as `View::linked` lights a feature hovered in the timeline).
+/// each face's name says (as `View::linked_faces` finds the faces of a feature hovered in the
+/// timeline).
 fn highlights(
     items: &[Item],
     bodies: &BTreeMap<u32, ViewBody>,

@@ -528,8 +528,9 @@ pub const VIEWPORT_SELECTION_TINT_AMOUNT: f32 = 0.55;
 pub const VIEWPORT_SELECTION_EDGE: Rgba8 = rgba8(0x5b95ff);
 /// A selected edge's width.
 pub const VIEWPORT_SELECTION_EDGE_WIDTH: f32 = 3.5;
-/// The faces a feature made, while it's hovered in the timeline: Blue.800, mixed in at
-/// [`VIEWPORT_FEATURE_HOVER_TINT_AMOUNT`].
+/// The faces a feature made, while it's hovered in the timeline: Blue.800, mixed into a
+/// face's colour in linear light at [`VIEWPORT_FEATURE_HOVER_TINT_AMOUNT`], before it's lit
+/// (`crate::viewport::feature_tint`).
 pub const VIEWPORT_FEATURE_HOVER_TINT: Rgba8 = rgba8(0xd4dbff);
 /// How much of [`VIEWPORT_FEATURE_HOVER_TINT`] those faces take.
 pub const VIEWPORT_FEATURE_HOVER_TINT_AMOUNT: f32 = 0.4;
@@ -1117,6 +1118,12 @@ pub const TIMELINE_ITEM_SELECTED_BG: Color32 = SELECTION_BG;
 /// A sketch's icon (`.sketch`), Gray.600, whether hovered or selected: styles.css gives it
 /// after both.
 pub const TIMELINE_SKETCH_ICON: Color32 = GRAY_600;
+
+/// An item whose feature made what the canvas's hover is over (`.hovered-from-canvas`): a
+/// ring of Gray.600 inside its border, round its corners (`box-shadow: inset 0 0 0 1px
+/// var(--g600)`), this wide.
+pub const TIMELINE_CANVAS_HOVER: Color32 = GRAY_600;
+pub const TIMELINE_CANVAS_HOVER_WIDTH: f32 = 1.0;
 
 /// A failed feature (`.err`): its icon Red.550 and a line of it along the item's bottom;
 /// a warned one's (`.warn`) the warning's orange. The line's width.
@@ -2355,9 +2362,19 @@ mod tests {
                 VIEWPORT_VERTEX_RING_COLOR,
                 [0, 0, 0, 0xff],
             ),
+            // viewport.js's `MAKER`, `#d4dbff`: DESIGN.md's "a feature's faces on hover:
+            // Blue.800", re_ui 0.38.1's Blue.800 (`color_table.ron`).
+            (
+                "VIEWPORT_FEATURE_HOVER_TINT",
+                VIEWPORT_FEATURE_HOVER_TINT,
+                [0xd4, 0xdb, 0xff, 0xff],
+            ),
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        // viewport.js's `applyHighlight`: a maker's face `uTintAmt.value = 0.4` (DESIGN.md's
+        // "tint 40%").
+        assert_eq!(VIEWPORT_FEATURE_HOVER_TINT_AMOUNT, 0.4);
         assert_eq!(VIEWPORT_FRAME_BG, None);
         // The dot's `r="4.5"` and its ring's `stroke-width="1"`.
         assert_eq!((VIEWPORT_VERTEX_RADIUS, VIEWPORT_VERTEX_RING), (4.5, 1.0));
@@ -2626,6 +2643,8 @@ mod tests {
         assert_eq!(TIMELINE_ITEM_GAP, 2.0);
         assert_eq!(TIMELINE_ITEM_SIZE, 30.0);
         assert_eq!(TIMELINE_ITEM_CORNER_RADIUS, 4);
+        // `.hovered-from-canvas`: `inset 0 0 0 1px`.
+        assert_eq!(TIMELINE_CANVAS_HOVER_WIDTH, 1.0);
         // `.err`/`.warn`: `inset 0 -2px 0`; `.suppressed`: `opacity: .35`, its strike
         // `left: 5px; right: 5px; height: 1.5px; rotate(-35deg)`; `.queued`: `.45`.
         assert_eq!(TIMELINE_MARK_LINE_WIDTH, 2.0);
@@ -2678,6 +2697,8 @@ mod tests {
                 0x186add,
             ),
             ("TIMELINE_SKETCH_ICON", TIMELINE_SKETCH_ICON, 0x9f9f9f),
+            // `.hovered-from-canvas`, `--g600`.
+            ("TIMELINE_CANVAS_HOVER", TIMELINE_CANVAS_HOVER, 0x9f9f9f),
             // `.err`, `--red`; `.warn`, `--orange`; `.err-text`, `--red`.
             ("TIMELINE_ERROR", TIMELINE_ERROR, 0xff3865),
             ("TIMELINE_WARNING", TIMELINE_WARNING, 0xff7a0c),
