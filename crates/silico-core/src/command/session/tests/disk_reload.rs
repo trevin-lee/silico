@@ -772,18 +772,21 @@ fn settled(f: &Fixture, count: &AtomicUsize) -> usize {
 /// [`settled`], of the session `id` of `sessions`.
 #[track_caller]
 fn settled_in(sessions: &Sessions<Arc<FakeKernel>>, id: &SessionId, count: &AtomicUsize) -> usize {
+    settled_by(sessions, id, count, || sessions.text(id, None))
+}
+
+/// [`settled_in`], the read held being `read`'s, a read queued on the session `id`.
+#[track_caller]
+fn settled_by<T>(
+    sessions: &Sessions<Arc<FakeKernel>>,
+    id: &SessionId,
+    count: &AtomicUsize,
+    read: impl FnOnce() -> Running<T>,
+) -> usize {
     let session = sessions.find(id).unwrap();
-    let watchers = std::mem::replace(&mut lock(&session.rebuilds).watchers, Threads::new());
-    watchers.join();
-    let reads = lock(&session.reads)
-        .threads
-        .as_mut()
-        .map(|threads| std::mem::replace(threads, Threads::new()));
-    if let Some(reads) = reads {
-        reads.join();
-    }
+    wakers_joined(&session);
     let (started, through) = shut(&session.gate);
-    let text = sessions.text(id, None);
+    let text = read();
     started.recv_timeout(WAIT).unwrap();
     let before = count.load(Ordering::SeqCst);
     through.send(()).unwrap();
@@ -793,6 +796,20 @@ fn settled_in(sessions: &Sessions<Arc<FakeKernel>>, id: &SessionId, count: &Atom
     text.wait().result.unwrap();
     woken(count, before + 1);
     before + 1
+}
+
+/// The session's rebuilds' watchers and its published reads' threads joined: each wakes the
+/// client before it ends.
+fn wakers_joined(session: &Session<FakeClient>) {
+    let watchers = std::mem::replace(&mut lock(&session.rebuilds).watchers, Threads::new());
+    watchers.join();
+    let reads = lock(&session.reads)
+        .threads
+        .as_mut()
+        .map(|threads| std::mem::replace(threads, Threads::new()));
+    if let Some(reads) = reads {
+        reads.join();
+    }
 }
 
 #[test]

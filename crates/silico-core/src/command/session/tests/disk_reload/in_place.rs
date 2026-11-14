@@ -102,6 +102,30 @@ impl Watched {
         }
     }
 
+    /// The client's wakes so far, exactly, of what came before: the session's rebuilds'
+    /// watchers and published reads' threads joined (each wakes before it ends). For a test
+    /// whose session runs no command meanwhile, and whose comparisons wake as they end.
+    fn wakes_now(&self, count: &AtomicUsize) -> usize {
+        wakers_joined(&self.f.session());
+        count.load(Ordering::SeqCst)
+    }
+
+    /// The client's wakes once the session's own reload, let through at its gate, has
+    /// returned, exactly: as [`settled`] counts them, but by a read of the text of `at`, a
+    /// revision by number, which reads nothing of the file (as `settled`'s read of the
+    /// document now would, reloading it or refused), held as it starts, after the reload has
+    /// returned and woken the client, if it woke it. Counted then, before the read's own
+    /// wake.
+    #[track_caller]
+    fn wakes_once_the_reload_returns(&self, count: &AtomicUsize, at: Revision) -> usize {
+        let read = || {
+            self.f
+                .sessions
+                .text_at(&self.f.id, None, Some(Named::Revision(at)))
+        };
+        settled_by(&self.f.sessions, &self.f.id, count, read) - 1
+    }
+
     /// Waits until the session's own reload, queued or running, has ended.
     #[track_caller]
     fn reload_ends(&self) {
@@ -828,6 +852,7 @@ fn settled_bytes_put_back_after_a_link_out_of_the_workspace_are_reloaded() {
         clock,
         reader,
     };
+    let count = counting(&w.f.sessions);
     w.compare();
     w.holds(Revision::OPENED, 0, Disk::Unchanged);
     let (reload_started, through) = shut(&w.f.session().reloading);
@@ -839,8 +864,15 @@ fn settled_bytes_put_back_after_a_link_out_of_the_workspace_are_reloaded() {
     std::fs::write(&outside, BOX.replace("Block", "Brick")).unwrap();
     std::fs::remove_file(&w.f.path).unwrap();
     std::os::unix::fs::symlink(&outside, &w.f.path).unwrap();
+    let wakes = w.wakes_now(&count);
     open_gate(&w.f.session().reloading);
     through.send(()).unwrap();
+    // Nothing done, so nothing the client draws changed: no wake.
+    assert_eq!(
+        w.wakes_once_the_reload_returns(&count, Revision::OPENED),
+        wakes,
+        "the reload woke the client"
+    );
     w.reload_ends();
     // Nothing done: the finding as the last comparison left it, changed.
     w.holds(Revision::OPENED, 1, Disk::Changed);
@@ -854,9 +886,12 @@ fn settled_bytes_put_back_after_a_link_to_another_sessions_copy_of_the_held_text
     // file: refused by the claim, for bytes that aren't the ones the watch found settled, so
     // nothing is kept of those.
     let w = watching_box();
+    let count = counting(&w.f.sessions);
     let other = w.f.path.with_file_name("b.silico");
     std::fs::write(&other, BOX).unwrap();
-    let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+    let second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+    // Its open's wake given, as its next command answers.
+    settled_in(&w.f.sessions, &second, &count);
     let (reload_started, through) = shut(&w.f.session().reloading);
     std::fs::write(&w.f.path, SPHERE).unwrap();
     w.compare_with_shared_reader();
@@ -864,10 +899,18 @@ fn settled_bytes_put_back_after_a_link_to_another_sessions_copy_of_the_held_text
     reload_started.recv_timeout(WAIT).unwrap();
     std::fs::remove_file(&w.f.path).unwrap();
     std::os::unix::fs::symlink(&other, &w.f.path).unwrap();
+    let wakes = w.wakes_now(&count);
     open_gate(&w.f.session().reloading);
     through.send(()).unwrap();
+    // Nothing done, so nothing the client draws changed: no wake.
+    assert_eq!(
+        w.wakes_once_the_reload_returns(&count, Revision::OPENED),
+        wakes,
+        "the reload woke the client"
+    );
     w.reload_ends();
-    assert_eq!(w.f.at(), Revision::OPENED);
+    // Nothing done: the finding as the last comparison left it, changed.
+    w.holds(Revision::OPENED, 1, Disk::Changed);
     assert!(lock(&w.f.session().reloads).refused.is_none());
     w.settled_put_back_is_reloaded();
 }
@@ -936,6 +979,7 @@ fn a_settled_reload_inside_a_transaction_finding_the_settled_bytes_leaves_the_fi
     // transaction and finds the settled bytes back: claimed, as `commit` claims what it
     // reads, but nothing reloaded and nothing kept, and the finding stays changed.
     let w = watching_box();
+    let count = counting(&w.f.sessions);
     let (reload_started, reload_through) = shut(&w.f.session().reloading);
     let (started, through) = shut(&w.f.session().gate);
     let begin = w.f.sessions.begin(&w.f.id);
@@ -954,8 +998,15 @@ fn a_settled_reload_inside_a_transaction_finding_the_settled_bytes_leaves_the_fi
     std::fs::write(&w.f.path, SPHERE).unwrap();
     w.compare();
     assert_eq!(w.f.status().disk, Some(Disk::Changed));
+    let wakes = w.wakes_now(&count);
     open_gate(&w.f.session().reloading);
     reload_through.send(()).unwrap();
+    // Nothing reloaded, so nothing the client draws changed: no wake.
+    assert_eq!(
+        w.wakes_once_the_reload_returns(&count, Revision(2)),
+        wakes,
+        "the reload woke the client"
+    );
     w.reload_ends();
     w.holds(Revision(2), 1, Disk::Changed);
     assert!(lock(&w.f.session().reloads).refused.is_none());
