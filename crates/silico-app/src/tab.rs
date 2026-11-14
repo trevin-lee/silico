@@ -586,7 +586,12 @@ impl Edits {
 
 /// A command a tab has under way, besides its reads and its edits.
 enum Under {
-    Begin(Running<Begun>),
+    /// A `begin`, sent at the tab's revision `sent_at`: the session reads its file first,
+    /// and reloads it if it changed on disk, before the transaction opens.
+    Begin {
+        sent_at: Revision,
+        running: Running<Begun>,
+    },
     Commit {
         running: Running<Committed>,
         then_close: bool,
@@ -737,7 +742,7 @@ impl Under {
             | Under::SketchCut { sending, .. }
             | Under::DimensionValue { sending, .. }
             | Under::OfferField { sending, .. } => Some(sending.state),
-            Under::Begin(_)
+            Under::Begin { .. }
             // Names are never carried across a save (see `Tab::names`).
             | Under::Commit { .. }
             | Under::SaveAs { .. }
@@ -2220,7 +2225,7 @@ impl Tab {
             | Under::SketchCut { .. }
             | Under::DimensionValue { .. }
             | Under::OfferField { .. } => true,
-            Under::Begin(_)
+            Under::Begin { .. }
             | Under::Commit { .. }
             | Under::Rollback { .. }
             | Under::Step { .. }
@@ -2288,7 +2293,7 @@ impl Tab {
             after_status();
         }
         // Answered at once, of the session as it is: its revision and transaction are now.
-        let mut reloaded = false;
+        let mut reloaded = None;
         if let Some(session) = &status.session {
             // Moved with nothing of the tab's under way and no transaction open: the
             // session's own reload. A session never reloads inside a transaction, so a move
@@ -2299,7 +2304,7 @@ impl Tab {
                 && !session.transaction
                 && self.quiet()
             {
-                reloaded = true;
+                reloaded = Some(session.revision);
                 self.reload_seen(sessions, self.revision, session.revision);
             }
             self.revision = session.revision;
@@ -2336,8 +2341,8 @@ impl Tab {
                 return;
             }
         }
-        if reloaded {
-            self.reloaded_under_dialog(sessions);
+        if let Some(to) = reloaded {
+            self.reloaded_under_dialog(to);
         }
         let published = sessions.published(&self.id);
         self.count_published(&published);
@@ -2453,7 +2458,29 @@ impl Tab {
         };
         if session.reloaded || session.revision != sent_at {
             self.reload_seen(sessions, sent_at, session.revision);
-            self.reloaded_under_dialog(sessions);
+            self.reloaded_under_dialog(session.revision);
+        }
+    }
+
+    /// The session's own reload, once a commit, a Save As, or a rollback ended the
+    /// transaction, seen by `status` before that command's answer, `session`, was taken: the
+    /// answer's revision behind the tab's, and no transaction open as it answered (a session
+    /// never reloads inside one: a refused commit's transaction stays open, and a move past
+    /// it is another client's edit). Nothing of the tab's runs while one of them does, so
+    /// nothing else moves it. Seen as [`poll`](Self::poll) sees one, which it can't while
+    /// the command is under way.
+    fn reload_after_end<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        session: Option<&SessionInfo>,
+    ) {
+        if let Some(session) = session
+            && !session.transaction
+            && session.revision < self.revision
+        {
+            let to = self.revision;
+            self.reload_seen(sessions, session.revision, to);
+            self.reloaded_under_dialog(to);
         }
     }
 
@@ -2725,22 +2752,27 @@ impl Tab {
         close: &mut bool,
     ) -> Option<Under> {
         match under {
-            Under::Begin(running) => match running.try_take() {
+            Under::Begin { sent_at, running } => match running.try_take() {
                 Ok(response) => {
                     self.beginning = false;
+                    // The session's reload of its file, changed on disk, before the
+                    // transaction opened, which nothing said while the begin ran: seen as a
+                    // poll sees one.
+                    self.reload_in(sessions, sent_at, response.session.as_ref());
                     self.took_session(&response);
                     if let Err(problems) = response.result {
                         self.message = Some(said(&problems));
                     }
                     None
                 }
-                Err(running) => Some(Under::Begin(running)),
+                Err(running) => Some(Under::Begin { sent_at, running }),
             },
             Under::Commit {
                 running,
                 then_close,
             } => match running.try_take() {
                 Ok(response) => {
+                    self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
                     self.ended(response.result.map(|_| ()), then_close, close);
                     None
@@ -2757,6 +2789,7 @@ impl Tab {
                 then_close,
             } => match running.try_take() {
                 Ok(response) => {
+                    self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
                     match response.result {
                         // The session holds the new file from now on, by the path given: its
@@ -2800,16 +2833,7 @@ impl Tab {
             } => match running.try_take() {
                 Ok(response) => {
                     self.landed(lands, response.session.as_ref());
-                    // Past its revision already: the session's own reload, once the
-                    // transaction ended, seen by `status` before this answer was taken
-                    // (nothing of the tab's runs while a rollback does, so nothing else
-                    // moves it).
-                    if let Some(session) = &response.session
-                        && session.revision < self.revision
-                    {
-                        self.reload_seen(sessions, session.revision, self.revision);
-                        self.reloaded_under_dialog(sessions);
-                    }
+                    self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
                     // Typing queued after it is applied next: the field keeps it.
                     if response.result.is_ok() && self.edits.idle() {
@@ -3138,16 +3162,21 @@ impl Tab {
                 Ok(response) => {
                     if self.loading == Some(serial) {
                         self.loading = None;
-                        // The session moved between the dialog's opening and its read (its
-                        // reload of a file changed on disk): it opens at the revision it read,
-                        // nothing of the tab's having been sent in between.
+                        // The session reloaded its file between the dialog's opening and its
+                        // read (the read's own, or the disk watch's): it opens at the revision
+                        // it read, nothing of the tab's having been sent in between. A move
+                        // inside a transaction is no reload, a session never reloading inside
+                        // one: it's what was sent after the dialog opened (an edit typed into
+                        // it before a reload had it read again, applied after the reload), its
+                        // own.
                         if let Some(session) = &response.session
+                            && !session.transaction
                             && self
                                 .dialog_base
                                 .is_some_and(|base| base != session.revision)
                         {
                             self.dialog_base = Some(session.revision);
-                            self.dialog_began = !session.transaction;
+                            self.dialog_began = true;
                         }
                         let node = response
                             .result
@@ -3271,9 +3300,8 @@ impl Tab {
                         }
                         Err(problems) => {
                             // At another revision than it was sent against: the session
-                            // reloaded first (its `begin`'s read of the file), which no
-                            // answer said while it ran.
-                            self.reload_in(sessions, sending.against, response.session.as_ref());
+                            // reloaded first, its `begin`'s read of the file, announced as
+                            // that answer was taken, so never here again.
                             // Its own transaction, begun for it, ended: it held nothing,
                             // and, left open, the session would follow the file no more.
                             self.roll_back |= began;
@@ -3833,7 +3861,10 @@ impl Tab {
                     let began = !self.transaction && !self.beginning;
                     if began {
                         self.beginning = true;
-                        self.under.push(Under::Begin(sessions.begin(&self.id)));
+                        self.under.push(Under::Begin {
+                            sent_at: self.revision,
+                            running: sessions.begin(&self.id),
+                        });
                     }
                     self.saves += 1;
                     self.under.push(Under::SaveAs {
@@ -4857,7 +4888,10 @@ impl Tab {
         if !self.transaction && !self.beginning {
             self.beginning = true;
             self.record(Sent::Begin);
-            self.under.push(Under::Begin(sessions.begin(&self.id)));
+            self.under.push(Under::Begin {
+                sent_at: self.revision,
+                running: sessions.begin(&self.id),
+            });
         }
     }
 
@@ -5404,15 +5438,20 @@ impl Tab {
     }
 
     /// A dialog opening: numbered, the revision it opens at marked in the queue, and what
-    /// the last one left (a refusal said, its refused fields) let go. Its number.
+    /// the last one left let go ([`new_dialog`](Self::new_dialog)). Its number.
     fn opening(&mut self) -> u64 {
+        let serial = self.new_dialog();
+        self.edits.queue.push_back(Queued::Opened { serial });
+        serial
+    }
+
+    /// A dialog numbered, the next, and what the last one left (a refusal said, its refused
+    /// fields, the selection its box took) let go. Its number.
+    fn new_dialog(&mut self) -> u64 {
         self.hush();
         self.refused.clear();
         self.before_dialog = None;
         self.dialogs += 1;
-        self.edits.queue.push_back(Queued::Opened {
-            serial: self.dialogs,
-        });
         self.dialogs
     }
 
@@ -5442,28 +5481,40 @@ impl Tab {
         feature: FeatureId,
     ) {
         let serial = self.opening();
+        self.queue_read(serial, kind, feature);
+        self.advance(sessions);
+    }
+
+    /// The feature `feature`'s text read for the dialog numbered `serial`, of `kind`, queued:
+    /// sent by the next [`advance`](Self::advance).
+    fn queue_read(&mut self, serial: u64, kind: Kind, feature: FeatureId) {
         self.loading = Some(serial);
         self.edits.queue.push_back(Queued::Load {
             serial,
             kind,
             feature,
         });
-        self.advance(sessions);
     }
 
-    /// The session reloaded its file with a dialog open: an existing
-    /// feature's dialog is read again, opening at the reloaded revision, its values the
-    /// file's; a new feature's not yet added opens at the reloaded revision; one already
-    /// added can't have been reloaded under (its add opened a transaction, and a session
-    /// never reloads inside one), but if it was, it's closed, said.
-    fn reloaded_under_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+    /// The session reloaded its file, to the revision `to`, with a dialog or sketch mode
+    /// open. A session reloads only with no transaction open, so each opens at `to` with none
+    /// open there: whatever is sent after it is its own, a transaction its own edits'
+    /// `begin` opened as it reloaded the file included. An existing feature's dialog is read
+    /// again, its values the file's; a new feature's not yet added stays open; one already
+    /// added can't have been reloaded under (its add opened a transaction), but if it was,
+    /// it's closed, said.
+    ///
+    /// The read is queued, never sent here: a reload is seen as a poll reads `status` or takes
+    /// its answers, and the advance after them sends it, behind what's still under way, or
+    /// not at all once a save or a revert closing the tab has let go of what was queued.
+    fn reloaded_under_dialog(&mut self, to: Revision) {
         // Sketch mode on a sketch with nothing of its own sent (a session reloads only with
         // no transaction open, and Create Sketch's add opens one): it opens at the reloaded
         // revision, its next read the reloaded sketch's.
         if let Some(mode) = self.sketch.as_mut() {
-            self.dialog_base = Some(self.revision);
+            self.dialog_base = Some(to);
             self.dialog_began = true;
-            mode.opened_at = Some(self.revision);
+            mode.opened_at = Some(to);
             // What its tool added is the file's no longer: forgotten, with its gesture.
             mode.tools.forget_pending();
         }
@@ -5471,11 +5522,16 @@ impl Tab {
             return;
         };
         match (dialog.made, dialog.feature.clone()) {
-            (false, Some(feature)) => self.load(sessions, dialog.kind, feature),
+            (false, Some(feature)) => {
+                // Opened at `to` now, not as its read is queued: an edit queued before the
+                // read is sent after the reload, its own.
+                let serial = self.new_dialog();
+                self.dialog_base = Some(to);
+                self.dialog_began = true;
+                self.queue_read(serial, dialog.kind, feature);
+            }
             (true, None) => {
-                // A session reloads only with no transaction open: the dialog's own edits
-                // will begin one.
-                self.dialog_base = Some(self.revision);
+                self.dialog_base = Some(to);
                 self.dialog_began = true;
                 self.dialog = Some(dialog);
             }
@@ -11159,6 +11215,19 @@ mod tests {
             .map(|reloaded| (reloaded.from, reloaded.to))
     }
 
+    /// The reloads the banner shown says replaced theirs before their changes were listed:
+    /// one reload announced twice would list itself here, its first banner's diff not yet
+    /// answered.
+    fn unlisted(tab: &Tab) -> Vec<(Revision, Revision)> {
+        tab.reloaded
+            .as_ref()
+            .map(|reloaded| reloaded.unlisted.clone())
+            .unwrap_or_default()
+    }
+
+    /// No reload unlisted.
+    const NONE_UNLISTED: Vec<(Revision, Revision)> = Vec::new();
+
     /// The session's status read, then its answers taken, as a poll takes them, but no
     /// timeline read started: what `status` says comes before the answers it may be ahead of.
     fn status_then_answers(tab: &mut Tab, sessions: &FakeSessions) {
@@ -11219,17 +11288,22 @@ mod tests {
     fn a_saves_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
         // PinA, listed; PinB answered; a save, applied; another program then writes the file with
         // the pin named Bolt, and the session reloads it, its revision read from `status` before
-        // the save's answer is taken. The pin suppressed then, from the reload's state: nothing
-        // named till a timeline lists it, then Bolt, never the PinB the save kept.
+        // the save's answer is taken: the reload's banner, as a rollback's, announced once. The
+        // pin suppressed then, from the reload's state: nothing named till a timeline lists it,
+        // then Bolt, never the PinB the save kept.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         taken_until(&mut tab, &sessions, Tab::quiet);
         tab.save(&sessions, false);
         ended_off_poll(&tab, &sessions);
-        let saved = revision_now(&tab, &sessions);
+        // Counted: 1 at open, PinA 2, PinB 3, the save 4; the reload, once the file is written
+        // after it, 5.
+        let saved = rev(4);
         pin_named_bolt_at(&dir.path().join("part.silico"));
-        reloaded_past(&tab, &sessions, saved);
+        assert_eq!(reloaded_past(&tab, &sessions, saved), rev(5));
         status_then_answers(&mut tab, &sessions);
+        assert_eq!(banner(&tab), Some((saved, rev(5))));
+        assert_eq!(unlisted(&tab), NONE_UNLISTED);
         tab.suppress_feature(&sessions, pin, true);
         assert_eq!(undo_named(&mut tab, &sessions), None);
         assert_eq!(
@@ -11241,17 +11315,22 @@ mod tests {
     #[test]
     fn a_save_as_answer_taken_after_the_sessions_own_reload_lends_the_reload_no_names() {
         // As the save above, a Save As: it writes another file, and the session, holding that file
-        // from then on, reloads it once another program writes it Bolt.
+        // from then on, reloads it once another program writes it Bolt: its banner, from the Save
+        // As's revision to the reload's, announced once.
         let (dir, sessions, mut tab, pin) = pin_renamed();
         tab.rename(&sessions, pin.clone(), "PinB");
         taken_until(&mut tab, &sessions, Tab::quiet);
         let copy = dir.path().join("copy.silico");
         tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
         ended_off_poll(&tab, &sessions);
-        let saved = revision_now(&tab, &sessions);
+        // Counted as the save's: the Save As 4 (inside PinA's transaction, so no begin of its
+        // own), the reload 5.
+        let saved = rev(4);
         pin_named_bolt_at(&copy);
-        reloaded_past(&tab, &sessions, saved);
+        assert_eq!(reloaded_past(&tab, &sessions, saved), rev(5));
         status_then_answers(&mut tab, &sessions);
+        assert_eq!(banner(&tab), Some((saved, rev(5))));
+        assert_eq!(unlisted(&tab), NONE_UNLISTED);
         tab.suppress_feature(&sessions, pin, true);
         assert_eq!(undo_named(&mut tab, &sessions), None);
         assert_eq!(
@@ -11260,22 +11339,82 @@ mod tests {
         );
     }
 
+    /// PinA listed, PinB answered; then `end` (a save, a Save As, or a revert) asked, the
+    /// file as the session holds it: its answer taken with `status` read once it's applied
+    /// (`status_first`), or with no status read. The reload banner then.
+    fn banner_after(
+        status_first: bool,
+        end: impl FnOnce(&mut Tab, &FakeSessions, &std::path::Path),
+    ) -> Option<(Revision, Revision)> {
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin, "PinB");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        end(&mut tab, &sessions, dir.path());
+        if status_first {
+            ended_off_poll(&tab, &sessions);
+            status_now(&mut tab, &sessions);
+        }
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        banner(&tab)
+    }
+
     #[test]
     fn a_reverts_answer_with_no_reload_before_it_shows_no_banner() {
         // The person's own revert, the file unchanged: whether `status` read the revision it
         // came to before its answer was taken or nothing read it, no reload is announced.
         for status_first in [true, false] {
-            let (_dir, sessions, mut tab, pin) = pin_renamed();
-            tab.rename(&sessions, pin, "PinB");
-            taken_until(&mut tab, &sessions, Tab::quiet);
-            tab.revert(&sessions, false);
-            if status_first {
-                ended_off_poll(&tab, &sessions);
-                status_now(&mut tab, &sessions);
-            }
-            taken_until(&mut tab, &sessions, Tab::quiet);
-            assert_eq!(banner(&tab), None, "status first: {status_first}");
+            let shown = banner_after(status_first, |tab, sessions, _| tab.revert(sessions, false));
+            assert_eq!(shown, None, "status first: {status_first}");
         }
+    }
+
+    #[test]
+    fn a_saves_answer_with_no_reload_before_it_shows_no_banner() {
+        // As a revert, the person's own save.
+        for status_first in [true, false] {
+            let shown = banner_after(status_first, |tab, sessions, _| tab.save(sessions, false));
+            assert_eq!(shown, None, "status first: {status_first}");
+        }
+    }
+
+    #[test]
+    fn a_save_as_answer_with_no_reload_before_it_shows_no_banner() {
+        // As a save, a Save As to another file.
+        for status_first in [true, false] {
+            let shown = banner_after(status_first, |tab, sessions, dir| {
+                let copy = dir.join("copy.silico");
+                tab.save_as(sessions, copy.to_str().unwrap().to_owned(), false, false);
+            });
+            assert_eq!(shown, None, "status first: {status_first}");
+        }
+    }
+
+    #[test]
+    fn a_refused_saves_answer_behind_another_clients_edit_shows_no_banner() {
+        // PinA (2), its transaction open; another program writes the file, so a save, which
+        // reads it inside the transaction too, is refused, the transaction left open; then
+        // another client of the session renames the pin inside it (3), read from `status`
+        // before the save's answer is taken. The answer, at 2, is behind the tab, but a
+        // session never reloads inside a transaction: no banner.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        assert!(tab.transaction);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
+        tab.save(&sessions, false);
+        let renamed = sessions
+            .set_field(
+                &tab.id,
+                rev(2),
+                pin,
+                "name".to_owned(),
+                silico_core::document::json::read(br#""Nut""#).unwrap(),
+            )
+            .wait();
+        assert_eq!(renamed.session.unwrap().revision, rev(3));
+        status_now(&mut tab, &sessions);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert!(tab.message.is_some(), "the save wasn't refused");
+        assert!(tab.transaction);
+        assert_eq!(banner(&tab), None);
     }
 
     #[test]
@@ -11322,6 +11461,443 @@ mod tests {
             named_once_listed(&mut tab, &sessions).as_deref(),
             Some("Suppress Bolt")
         );
+    }
+
+    #[test]
+    fn a_save_as_whose_own_begin_reloaded_the_file_shows_the_reloads_banner_once() {
+        // PinA (2), saved (3), no transaction open; another program writes the file with the
+        // pin named Bolt; a Save As, whose own `begin`, sent at 3, reloads the file first (4),
+        // the copy then written (5) of what it reloaded: the reload's banner, from 3 to 4,
+        // announced once.
+        let (dir, sessions, mut tab, _pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert_eq!(tab.revision, rev(3));
+        assert!(!tab.transaction);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
+        let copy = dir.path().join("copy.silico");
+        tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert_eq!(tab.revision, rev(5));
+        assert_eq!(banner(&tab), Some((rev(3), rev(4))));
+        assert_eq!(unlisted(&tab), NONE_UNLISTED);
+        let written = std::fs::read_to_string(&copy).unwrap();
+        assert!(written.contains(r#""name": "Bolt""#), "{written}");
+    }
+
+    /// BLOCK, its pin's radius 0.6, as another program writes it.
+    fn pin_radius_six_tenths() -> String {
+        BLOCK.replace(r#""radius": 0.5"#, r#""radius": 0.6"#)
+    }
+
+    /// The pin's radius set to `value`, as its Edit Feature dialog sends it.
+    fn radius(pin: &FeatureId, value: &str) -> Edit {
+        Edit {
+            feature: pin.clone(),
+            field: "radius".to_owned(),
+            value: silico_core::document::json::read(value.as_bytes()).unwrap(),
+        }
+    }
+
+    /// BLOCK open and listed (1), the pin's Edit Feature dialog open on it, nothing of the
+    /// tab's under way and no transaction open; another program writes the pin's radius 0.6;
+    /// then the dialog's first edit, the radius 0.75, sent at 1, its `begin` reloading the
+    /// file first (2), so the edit, sent against 1, is refused. Its answers taken by polls
+    /// (`polled`), or with no `status` read, so the tab is still at 1 as the begin answers.
+    /// The reload's banner, from 1 to 2, announced once; and the dialog, read again, at 2,
+    /// its radius the file's, the transaction the begin opened its own.
+    fn first_edit_whose_begin_reloads(polled: bool) -> (tempfile::TempDir, FakeSessions, Tab) {
+        let (dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        tab.edit_feature(&sessions, &pin);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.dialog.is_some() && tab.quiet()
+        });
+        assert_eq!((tab.revision, tab.transaction), (rev(1), false));
+        std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+        tab.edit(&sessions, radius(&pin, "0.75"));
+        let done = |tab: &Tab| tab.quiet() && tab.dialog.is_some();
+        if polled {
+            polled_until(&mut tab, &sessions, done);
+        } else {
+            taken_until(&mut tab, &sessions, done);
+        }
+        assert_eq!(banner(&tab), Some((rev(1), rev(2))));
+        assert_eq!(unlisted(&tab), NONE_UNLISTED);
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(
+            said.contains("revision"),
+            "the edit wasn't refused: {said:?}"
+        );
+        assert_eq!(
+            tab.dialog
+                .as_ref()
+                .unwrap()
+                .sent("radius")
+                .map(String::as_str),
+            Some("0.6")
+        );
+        assert_eq!(tab.dialog_base, Some(rev(2)));
+        assert!(sessions.status(&tab.id).session.unwrap().transaction);
+        (dir, sessions, tab)
+    }
+
+    /// The dialog closed (`ok`), and polled until nothing of the tab's is under way: whether
+    /// the session has a transaction open then, and the file's text.
+    fn closed_after_the_reload(
+        dir: &tempfile::TempDir,
+        sessions: &FakeSessions,
+        mut tab: Tab,
+        ok: bool,
+    ) -> (bool, String) {
+        tab.close_dialog(sessions, ok);
+        polled_until(&mut tab, sessions, Tab::quiet);
+        let open = sessions.status(&tab.id).session.unwrap().transaction;
+        let text = std::fs::read_to_string(dir.path().join("part.silico")).unwrap();
+        (open, text)
+    }
+
+    #[test]
+    fn edit_features_first_edit_whose_begin_reloads_the_file_then_cancel_leaves_no_transaction() {
+        // The dialog's first edit refused after its own begin reloaded the file: the
+        // transaction that begin opened is the dialog's, so Cancel rolls it back, and the
+        // session follows its file again.
+        let (dir, sessions, tab) = first_edit_whose_begin_reloads(true);
+        let (open, text) = closed_after_the_reload(&dir, &sessions, tab, false);
+        assert!(!open, "Cancel left a transaction open");
+        assert_eq!(text, pin_radius_six_tenths());
+    }
+
+    #[test]
+    fn edit_features_only_edit_refused_after_its_begin_reloaded_the_file_then_ok_leaves_no_transaction()
+     {
+        // As Cancel, OK: nothing of the dialog's changed the document, so it ends the
+        // transaction its own begin opened.
+        let (dir, sessions, tab) = first_edit_whose_begin_reloads(true);
+        let (open, text) = closed_after_the_reload(&dir, &sessions, tab, true);
+        assert!(!open, "OK left a transaction open");
+        assert_eq!(text, pin_radius_six_tenths());
+    }
+
+    #[test]
+    fn a_begins_reload_taken_before_status_read_it_opens_the_dialog_at_the_reload() {
+        // The begin's answer taken with the tab still at 1: the dialog opens at the reload's
+        // revision, 2, never the tab's, so its OK, nothing of its own changed, ends the
+        // transaction.
+        let (dir, sessions, tab) = first_edit_whose_begin_reloads(false);
+        let (open, _) = closed_after_the_reload(&dir, &sessions, tab, true);
+        assert!(!open, "OK left a transaction open");
+    }
+
+    #[test]
+    fn a_dialogs_two_edits_whose_first_begin_reloads_the_file_are_its_own_to_cancel() {
+        // The pin's dialog open at 1; another program writes the radius 0.6; the radius 0.75
+        // typed, then the height 4 behind it: the first, its begin reloading the file (2),
+        // refused; the second sent after, at 2, applied (3), before the dialog is read
+        // again. Both after the reload, so both the dialog's: OK keeps the height, one step
+        // from the reload; Cancel rolls the transaction back, the file as the other program
+        // wrote it.
+        for ok in [true, false] {
+            let (dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+            polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+            let pin = FeatureId::new("a91cw0de").unwrap();
+            tab.edit_feature(&sessions, &pin);
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.dialog.is_some() && tab.quiet()
+            });
+            std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+            tab.edit(&sessions, radius(&pin, "0.75"));
+            tab.edit(
+                &sessions,
+                Edit {
+                    feature: pin.clone(),
+                    field: "height".to_owned(),
+                    value: silico_core::document::json::read(b"4").unwrap(),
+                },
+            );
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.quiet() && tab.dialog.is_some()
+            });
+            assert_eq!(banner(&tab), Some((rev(1), rev(2))), "ok: {ok}");
+            assert_eq!(tab.revision, rev(3), "ok: {ok}");
+            assert_eq!(tab.dialog_base, Some(rev(2)), "ok: {ok}");
+            tab.close_dialog(&sessions, ok);
+            polled_until(&mut tab, &sessions, Tab::quiet);
+            let open = sessions.status(&tab.id).session.unwrap().transaction;
+            assert_eq!(open, ok, "ok: {ok}");
+            if ok {
+                let groups: Vec<_> = tab.groups.iter().map(|g| (g.start, g.end)).collect();
+                assert_eq!(groups, [(rev(2), rev(3))]);
+            } else {
+                let text = std::fs::read_to_string(dir.path().join("part.silico")).unwrap();
+                assert_eq!(text, pin_radius_six_tenths());
+            }
+        }
+    }
+
+    #[test]
+    fn two_reloads_before_a_saves_answer_show_one_banner_over_both() {
+        // A save applied (4); another program writes the file twice, each reloaded (5, 6),
+        // before `status` reads the session at 6 and the save's answer, at 4, is taken: the
+        // tab saw neither, so one banner, from 4 to 6, with nothing unlisted.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin, "PinB");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.save(&sessions, false);
+        ended_off_poll(&tab, &sessions);
+        let file = dir.path().join("part.silico");
+        pin_named_bolt_at(&file);
+        assert_eq!(reloaded_past(&tab, &sessions, rev(4)), rev(5));
+        std::fs::write(&file, BLOCK.replace(r#""name": "Pin""#, r#""name": "Nut""#)).unwrap();
+        let read = sessions.text(&tab.id, None).wait();
+        assert_eq!(read.session.unwrap().revision, rev(6));
+        status_then_answers(&mut tab, &sessions);
+        assert_eq!(banner(&tab), Some((rev(4), rev(6))));
+        assert_eq!(unlisted(&tab), NONE_UNLISTED);
+    }
+
+    #[test]
+    fn a_reload_by_a_save_as_begin_and_another_after_it_end_on_the_second_ones_banner() {
+        // PinA (2), saved (3); another program writes the file Bolt; a Save As, its own begin
+        // reloading it (4), the copy written (5); then another program writes the copy, and
+        // the session reloads it (6), read by `status` before either answer is taken. The
+        // banner the second's, from 5 to 6; the first listed as replaced only if its diff
+        // hadn't answered, and nothing else.
+        let (dir, sessions, mut tab, _pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
+        let copy = dir.path().join("copy.silico");
+        tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, false);
+        until("the copy written", &|| {
+            revision_now(&tab, &sessions) >= rev(5)
+        });
+        std::fs::write(&copy, pin_radius_six_tenths()).unwrap();
+        let read = sessions.text(&tab.id, None).wait();
+        assert_eq!(read.session.unwrap().revision, rev(6));
+        status_then_answers(&mut tab, &sessions);
+        assert_eq!(banner(&tab), Some((rev(5), rev(6))));
+        let unlisted = unlisted(&tab);
+        assert!(
+            unlisted.iter().all(|older| *older == (rev(3), rev(4))),
+            "{unlisted:?}"
+        );
+    }
+
+    #[test]
+    fn cancel_while_the_dialog_is_read_again_after_its_begins_reload_leaves_no_transaction() {
+        // The pin's dialog open at 1; another program writes the radius 0.6; the radius 0.75
+        // typed, its begin reloading the file (2): Cancel as soon as the begin's answer is
+        // taken, the dialog not yet read again. The transaction that begin opened is still the
+        // dialog's: rolled back, none left open.
+        let (dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        tab.edit_feature(&sessions, &pin);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.dialog.is_some() && tab.quiet()
+        });
+        std::fs::write(dir.path().join("part.silico"), pin_radius_six_tenths()).unwrap();
+        tab.edit(&sessions, radius(&pin, "0.75"));
+        taken_until(&mut tab, &sessions, |tab| {
+            !tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Begin { .. }))
+        });
+        assert!(tab.dialog.is_none() && tab.loading.is_some());
+        assert_eq!(banner(&tab), Some((rev(1), rev(2))));
+        let (open, text) = closed_after_the_reload(&dir, &sessions, tab, false);
+        assert!(!open, "Cancel left a transaction open");
+        assert_eq!(text, pin_radius_six_tenths());
+    }
+
+    #[test]
+    fn a_save_as_and_close_whose_own_begin_reloads_under_a_dialog_still_closes() {
+        // PinA (2), saved (3), the pin's dialog open, no transaction; another program writes
+        // the file; Save As and close (an untitled part's Close), its own begin reloading the
+        // file (4) under the dialog, which is read again, queued: the copy written, the tab
+        // closes, nothing queued sent into a new transaction.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.edit_feature(&sessions, &pin);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.dialog.is_some() && tab.quiet()
+        });
+        assert!(!tab.transaction);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
+        let copy = dir.path().join("copy.silico");
+        tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, true);
+        taken_until(&mut tab, &sessions, |tab| tab.closed || tab.close_refused);
+        assert!(!tab.take_close_refused(), "{:?}", tab.message);
+        assert!(tab.closed);
+        let written = std::fs::read_to_string(&copy).unwrap();
+        assert!(written.contains(r#""name": "Bolt""#), "{written}");
+    }
+
+    #[test]
+    fn a_reload_opens_sketch_mode_and_a_new_features_dialog_at_the_reloads_revision() {
+        // The tab still at 3 as a reload to 5 is seen (a begin's answer taken before any
+        // status read it): each opens at 5, no transaction open there, so what's sent after is
+        // its own.
+        let mut sketching = tab();
+        sketching.revision = rev(3);
+        sketching.sketch = Some(SketchMode::new(
+            1,
+            Some(FeatureId::new("s0000001").unwrap()),
+        ));
+        sketching.reloaded_under_dialog(rev(5));
+        assert_eq!(sketching.sketch.as_ref().unwrap().opened_at, Some(rev(5)));
+        assert_eq!(
+            (sketching.dialog_base, sketching.dialog_began),
+            (Some(rev(5)), true)
+        );
+        let mut padding = tab();
+        padding.revision = rev(3);
+        padding.dialog = Some(Dialog::new(Kind::Pad, None, 1));
+        padding.reloaded_under_dialog(rev(5));
+        assert!(padding.dialog.is_some());
+        assert_eq!(
+            (padding.dialog_base, padding.dialog_began),
+            (Some(rev(5)), true)
+        );
+    }
+
+    #[test]
+    fn a_new_features_dialog_open_through_a_save_answered_after_a_reload_opens_at_the_reload() {
+        // PinA listed; PinB answered; a new Pad's dialog opened, with nothing in it to add;
+        // a save, applied (4); another program writes the file, and the session reloads it
+        // (5), read from `status` before the save's answer is taken. The dialog, its feature
+        // not added, stays open, opening at the reload's revision, as at a reload a poll sees.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.rename(&sessions, pin, "PinB");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.open_dialog(&sessions, Kind::Pad, &crate::dialog::Remembered::default());
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert!(
+            tab.dialog
+                .as_ref()
+                .is_some_and(|dialog| dialog.feature.is_none())
+        );
+        assert_eq!(tab.dialog_base, Some(rev(3)));
+        tab.save(&sessions, false);
+        ended_off_poll(&tab, &sessions);
+        pin_named_bolt_at(&dir.path().join("part.silico"));
+        assert_eq!(reloaded_past(&tab, &sessions, rev(4)), rev(5));
+        status_then_answers(&mut tab, &sessions);
+        assert!(tab.dialog.is_some(), "{:?}", tab.message);
+        assert_eq!(tab.dialog_base, Some(rev(5)));
+        assert_eq!(banner(&tab), Some((rev(4), rev(5))));
+    }
+
+    #[test]
+    fn a_save_and_close_answered_after_a_reload_with_a_dialog_open_still_closes() {
+        // The pin's Edit Feature dialog open; Save and close asked (a save, or an untitled
+        // part's Save As), and the pin's radius typed behind it; the save applied, another
+        // program writes the file, and the session reloads it, read from `status` before the
+        // save's answer is taken. The tab closes: nothing queued behind the save is sent, so
+        // no transaction is open for the close to be refused in.
+        for save_as in [false, true] {
+            let (dir, sessions, mut tab, pin) = pin_renamed();
+            tab.edit_feature(&sessions, &pin);
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.dialog.is_some() && tab.quiet()
+            });
+            let file = if save_as {
+                let copy = dir.path().join("copy.silico");
+                tab.save_as(&sessions, copy.to_str().unwrap().to_owned(), false, true);
+                copy
+            } else {
+                tab.save(&sessions, true);
+                dir.path().join("part.silico")
+            };
+            tab.edit(&sessions, radius(&pin, "0.75"));
+            ended_off_poll(&tab, &sessions);
+            // 1 at open, PinA 2, the save 3; the reload 4.
+            pin_named_bolt_at(&file);
+            assert_eq!(reloaded_past(&tab, &sessions, rev(3)), rev(4));
+            status_now(&mut tab, &sessions);
+            taken_until(&mut tab, &sessions, |tab| tab.closed || tab.close_refused);
+            assert!(
+                !tab.take_close_refused(),
+                "save as: {save_as}: {:?}",
+                tab.message
+            );
+            assert!(tab.closed, "save as: {save_as}");
+        }
+    }
+
+    #[test]
+    fn a_restores_put_back_refused_by_its_begins_reload_announces_that_reload_once() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // Kernel requests held while each flag is set, each by a hold of its own.
+        let (first, second) = (
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let mut holds = Vec::new();
+        let (dir, sessions, mut tab) = opened_on(BLOCK, |kernel| {
+            for flag in [&first, &second] {
+                let flag = Arc::clone(flag);
+                holds.push(kernel.hold(move |_| flag.load(Ordering::SeqCst)));
+            }
+        });
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let file = dir.path().join("part.silico");
+        // Another program's write, reloaded (2) and announced by a poll.
+        pin_named_bolt_at(&file);
+        polled_until(&mut tab, &sessions, |tab| {
+            banner(tab).is_some() && tab.quiet()
+        });
+        assert_eq!(banner(&tab), Some((rev(1), rev(2))));
+        // Restore of 1: its read, of a revision, reads nothing of the file. The session's queue
+        // then held behind a fresh check, so the put-back's begin and edit, sent at 2 once the
+        // read answers, wait for it.
+        tab.restore(&sessions, Revision::OPENED);
+        first.store(true, Ordering::SeqCst);
+        let check_first = sessions.check(&tab.id, CheckModel::Current { fresh: true });
+        until("the first check running", &|| {
+            sessions.status(&tab.id).result.unwrap().running
+                == Some(silico_core::command::RunningCommand::Command(
+                    silico_core::command::SessionCommand::Check,
+                ))
+        });
+        taken_until(&mut tab, &sessions, |tab| {
+            tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Replace { began: true, .. }))
+        });
+        // Another program's second write, before the begin runs: its read of the file reloads
+        // it (3), so the put-back, sent against 2, is refused. Once a read behind them has
+        // answered, a second check, held, so the reload's diff, asked as the first answer is
+        // taken, can't answer before the second is.
+        std::fs::write(&file, BLOCK.replace(r#""name": "Pin""#, r#""name": "Nut""#)).unwrap();
+        let behind = sessions.text(&tab.id, None);
+        holds[0].release();
+        let behind = behind.wait();
+        assert_eq!(behind.session.unwrap().revision, rev(3));
+        second.store(true, Ordering::SeqCst);
+        let check_second = sessions.check(&tab.id, CheckModel::Current { fresh: true });
+        until("the second check running", &|| {
+            sessions.status(&tab.id).result.unwrap().running
+                == Some(silico_core::command::RunningCommand::Command(
+                    silico_core::command::SessionCommand::Check,
+                ))
+        });
+        taken_until(&mut tab, &sessions, |tab| {
+            !tab.under
+                .iter()
+                .any(|under| matches!(under, Under::Begin { .. } | Under::Replace { .. }))
+        });
+        // The reload announced once, from 2 to 3: no banner of its own listed as replaced.
+        assert_eq!(banner(&tab), Some((rev(2), rev(3))));
+        assert_eq!(unlisted(&tab), NONE_UNLISTED);
+        holds[1].release();
+        let _ = (check_first.wait(), check_second.wait());
+        // The transaction begun for the put-back rolled back: none open.
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        assert!(!sessions.status(&tab.id).session.unwrap().transaction);
     }
 
     /// BLOCK open and listed (revision 1); then `change` asked of the tab and applied by the

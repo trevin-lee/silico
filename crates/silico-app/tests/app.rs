@@ -2055,6 +2055,13 @@ fn restore_refused_by_a_reload_before_its_begin(read: StatusRead) {
         .as_ref()
         .map(|reloaded| (reloaded.from.number(), reloaded.to.number()));
     assert_eq!(banner, Some((2, 3)), "{at}");
+    // Announced once, by the begin's answer: the put-back's refusal, behind it, never again,
+    // which would list the reload as one its own banner replaced.
+    let unlisted = h.state().tabs()[0]
+        .reloaded
+        .as_ref()
+        .map(|reloaded| reloaded.unlisted.clone());
+    assert_eq!(unlisted, Some(Vec::new()), "{at}");
     // The reload announced in the first's place, with what it changed.
     step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
     assert!(anywhere(&h, &reloaded_sub(2, 3)), "{at}");
