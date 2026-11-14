@@ -40127,7 +40127,11 @@ fn ctrl_r_reloads_on_windows_and_linux() {
 
 #[test]
 fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reload_drops_them() {
-    let f = fixture();
+    // Only Reload's own read finds the file changed: the disk watch's comparisons are held
+    // before it changes, so no banner announces it. Announced, its banner's "Reload, discard
+    // my edits" would stand beside the question's, as soon as a comparison came.
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     select(&mut h, "Pin");
@@ -40136,6 +40140,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
         let tab = &h.state().tabs()[0];
         tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
     });
+    reader.hold(&mut h);
     let theirs = example_theirs();
     std::fs::write(&path, &theirs).unwrap();
     // Inside the transaction, `text` reads the session's document, never the file.
@@ -40176,6 +40181,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
     settled(&mut h);
     assert!(h.state().tabs()[0].reloaded.is_none());
     assert_eq!(text_of(&f, &h), theirs);
+    reader.open();
     assert_eq!(never_waits::waits(), 0);
 }
 
