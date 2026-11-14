@@ -367,17 +367,17 @@ impl Implied {
             Form::On { point, curve } => match (key(point), curve) {
                 (Some(p), Reference::XAxis) => ClassRel::Same(Partition::Y, p, Key::Origin),
                 (Some(p), Reference::YAxis) => ClassRel::Same(Partition::X, p, Key::Origin),
-                (Some(p), Reference::Element(line)) if self.lines.contains_key(line) => {
-                    ClassRel::OnLine(p, line.clone())
-                }
+                // A curve that's no line of the sketch's (a circle, an arc) is read as on a
+                // line it hasn't: `implies` and `merge` take nothing from it, as from `Other`.
+                (Some(p), Reference::Element(line)) => ClassRel::OnLine(p, line.clone()),
                 _ => ClassRel::Other,
             },
             Form::Midpoint {
                 point,
                 line: Reference::Element(line),
             } => match key(point) {
-                Some(p) if self.lines.contains_key(line) => ClassRel::Midpoint(p, line.clone()),
-                _ => ClassRel::Other,
+                Some(p) => ClassRel::Midpoint(p, line.clone()),
+                None => ClassRel::Other,
             },
             Form::Perpendicular { a, b } | Form::Parallel { a, b } => {
                 match (self.reads(a), self.reads(b)) {
