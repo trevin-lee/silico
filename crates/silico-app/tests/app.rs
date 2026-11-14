@@ -40059,12 +40059,16 @@ fn command_r(h: &mut AppHarness) {
 
 #[test]
 fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_every_feature() {
-    // No disk watch: only a command reads the file, so Reload's own read finds the change.
-    let f = fixture();
+    // The disk watch's comparisons held before the file changes, so no comparison finds it
+    // (one would reload it, with nothing held): only a command reads the file, and Reload's
+    // own read finds the change.
+    let reader = Arc::new(HeldReader::default());
+    let f = fixture_reading(Some(reader.reader()));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
     settled(&mut h);
     assert_eq!(boxes_asked(&f), 1);
+    reader.hold(&mut h);
     let theirs = example_theirs();
     std::fs::write(&path, &theirs).unwrap();
     for _ in 0..10 {
@@ -40101,6 +40105,7 @@ fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_e
         boxes_asked(&f) == 4 && !h.state().tabs()[0].checking()
     });
     assert_eq!(h.state().tabs()[0].rebuilds_all, 3);
+    reader.open();
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -40108,11 +40113,15 @@ fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_e
 fn ctrl_r_reloads_on_windows_and_linux() {
     use eframe::egui::os::OperatingSystem;
     for os in [OperatingSystem::Windows, OperatingSystem::Nix] {
-        let f = fixture();
+        // The disk watch's comparisons held before the file changes: only Reload's read
+        // finds it.
+        let reader = Arc::new(HeldReader::default());
+        let f = fixture_reading(Some(reader.reader()));
         let (mut h, path) = f.opened("example.silico", EXAMPLE);
         h.ctx.set_os(os);
         step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
         settled(&mut h);
+        reader.hold(&mut h);
         std::fs::write(&path, example_theirs()).unwrap();
         // ⌘ isn't Ctrl there: the Mac's Command alone does nothing.
         h.key_press_modifiers(eframe::egui::Modifiers::MAC_CMD, eframe::egui::Key::R);
@@ -40126,6 +40135,7 @@ fn ctrl_r_reloads_on_windows_and_linux() {
             shows(h, "Timeline", "Drill") && !h.state().tabs()[0].checking()
         });
         assert_eq!(h.state().tabs()[0].rebuilds_all, 1, "{os:?}");
+        reader.open();
         assert_eq!(never_waits::waits(), 0);
     }
 }
