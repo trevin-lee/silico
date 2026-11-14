@@ -20,11 +20,13 @@
 //! `Math.max(0.5, Math.round((D0 + dd) * 2) / 2)`, set only where it differs from the input's.
 //! So a drag past the profile stops at 0.5 mm and never turns the sweep over. But where the
 //! closed span from the value at the press to where the drag takes it holds no half
-//! millimetre, the value stays exactly as it was (Main's rule on the council's round 1; the
-//! prototype puts it on the half millimetres at the first move), worked in whole nanometres: a
-//! value on the grid moves as the prototype's does, and one off it, 10.3, stays 10.3 until the
-//! drag reaches 10.5 (then 10.5, and 11 from 10.75) or 10 (then 10, and 9.5 from 9.75), and is
-//! 10.3 again when the drag comes back. A move square across the arrow never rewrites a value.
+//! millimetre a drag can land on (from 0.5 up), the value stays exactly as it was (Main's rule
+//! in #480's review; the prototype puts it on the half millimetres at the first move), worked
+//! in whole nanometres: a value on the grid moves as the prototype's does, and one off it,
+//! 10.3, stays 10.3 until the drag reaches 10.5 (then 10.5, and 11 from 10.75) or 10 (then 10,
+//! and 9.5 from 9.75), and is 10.3 again when the drag comes back. A move square across the
+//! arrow never rewrites a value, and a drag never moves one against its own way (from 0.3,
+//! down to 0 leaves 0.3).
 //! Nothing caps a drag above: a value past what a sweep takes is the core's to refuse, as a
 //! typed one is. An arrow whose sweep the view foreshortens to under
 //! 0.6 points a millimetre (seen end on, or zoomed far out) isn't drawn and takes no press, as
@@ -68,7 +70,7 @@ use eframe::egui::{
     CornerRadius, CursorIcon, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2,
 };
 use silico_core::command::sketch::SketchRead;
-use silico_core::document::Length;
+use silico_core::document::{ElementKind, Length};
 use silico_core::kernel::SketchPlane;
 use silico_protocol::Camera;
 use silico_render::render::project;
@@ -88,8 +90,9 @@ pub const PROBE_MM: f64 = 10.0;
 /// `flat`).
 pub const FLAT: f64 = 0.6;
 
-/// Half a millimetre, in nanometres: a drag's value is a whole number of them, and at least
-/// one (`Math.max(0.5, Math.round(v * 2) / 2)`).
+/// Half a millimetre, in nanometres: the grid a drag's value lands on, where it leaves the
+/// value at its press (`Math.max(0.5, Math.round(v * 2) / 2)`), each value of it a whole
+/// number of them from one up.
 pub const HALF_MM_NM: i64 = (crate::properties::NM_PER_MM / 2) as i64;
 
 /// A length of the extent a distance arrow drags, in model space.
@@ -126,9 +129,10 @@ pub struct Handles {
 
 /// The centroid of `read`'s profile, in the sketch's millimetres: of every region's area, its
 /// outer loop's less its holes'. Each loop is its curves as the walk of its outline runs them
-/// ([`oriented`]), sent as the kernel's faces request takes them, and measured exactly by the
-/// request's own measure ([`silico_protocol::area_moments`], beside its area and perimeter).
-/// None for a sketch that makes no profile, a loop that doesn't run end to end, or a profile
+/// ([`oriented`]), rebuilt from the read's stored points as the faces request would take
+/// them ([`rebuilt`], for display alone), and measured exactly by the request's own measure
+/// ([`silico_protocol::area_moments`], beside its area and perimeter). None for a sketch that
+/// makes no profile, a loop that doesn't run end to end or whose arc makes none, or a profile
 /// whose area isn't above 0.
 pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
     let geometry = Geometry::of(read);
@@ -140,11 +144,11 @@ pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
         let loops = std::iter::once((&region.outer, 1.0))
             .chain(region.holes.iter().map(|hole| (hole, -1.0)));
         for (curves, role) in loops {
-            let walked = oriented(curves, &geometry)?;
-            let lone = walked.len() == 1;
-            let as_sent: Vec<silico_protocol::Curve> =
-                walked.iter().map(|walked| sent(walked, lone)).collect();
-            let measured = silico_protocol::area_moments(&as_sent);
+            let rebuilt: Vec<silico_protocol::Curve> = oriented(curves, &geometry)?
+                .iter()
+                .map(rebuilt)
+                .collect::<Option<_>>()?;
+            let measured = silico_protocol::area_moments(&rebuilt);
             let shift = sub(measured.about, *about.get_or_insert(measured.about));
             // However a loop runs (a lone circle counter-clockwise, a hole or not), it counts by
             // what it is: an outer loop's area added, a hole's taken away.
@@ -158,39 +162,57 @@ pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
     (area > 0.0 && centroid.iter().all(|c| c.is_finite())).then_some(centroid)
 }
 
-/// `walked` as the kernel's faces request takes a curve: a line from where the walk enters it
-/// to where it leaves; an arc so, its angles swapped when it's run backwards (so it turns
-/// clockwise); and, `lone` in its loop, a circle's whole turn as a circle.
-fn sent(walked: &Walked, lone: bool) -> silico_protocol::Curve {
+/// `walked` rebuilt as the kernel's faces request takes a curve, for the app's display alone:
+/// the profile's centroid the arrows stand on, measured with the request's own
+/// `area_moments`. It isn't the core's conversion of a profile (`sketch` gives the regions'
+/// curves by ID, not as sent), but follows its rules from the read's stored points: each
+/// point's zeros taken as +0; a line from the stored point the walk enters it at to the one it
+/// leaves by; an arc by `silico_protocol::arc_from_points` from its stored centre and ends,
+/// sent end first with its angles swapped when the walk runs it backwards; a circle, by its
+/// kind, its centre and radius. None for an arc its points make none of (its ends at one angle
+/// from its centre), or a curve whose stored points the read hasn't.
+fn rebuilt(walked: &Walked) -> Option<silico_protocol::Curve> {
     use silico_protocol::Curve as Sent;
-    let (start, end) = walked.ends();
-    match walked.curve {
-        Curve::Line { .. } => Sent::Line { start, end },
-        Curve::Round { centre, radius, .. } if lone => Sent::Circle {
-            center: centre,
+    let unsigned = |[x, y]: [f64; 2]| [x + 0.0, y + 0.0];
+    Some(match (walked.kind, walked.curve) {
+        (ElementKind::Circle, Curve::Round { centre, radius, .. }) => Sent::Circle {
+            center: unsigned(centre),
             radius,
         },
-        Curve::Round {
-            centre,
-            radius,
-            start: from,
-            sweep,
-        } => {
-            let (start_angle, end_angle) = if walked.backwards {
-                (from + sweep, from)
+        (ElementKind::Arc, Curve::Round { centre, .. }) => {
+            let (from, to) = walked.points?;
+            let (center, start, end) = (unsigned(centre), unsigned(from), unsigned(to));
+            let [radius, start_angle, end_angle] =
+                silico_protocol::arc_from_points(center, start, end)?;
+            if walked.backwards {
+                Sent::Arc {
+                    center,
+                    start: end,
+                    end: start,
+                    radius,
+                    start_angle: end_angle,
+                    end_angle: start_angle,
+                }
             } else {
-                (from, from + sweep)
-            };
-            Sent::Arc {
-                center: centre,
-                start,
-                end,
-                radius,
-                start_angle,
-                end_angle,
+                Sent::Arc {
+                    center,
+                    start,
+                    end,
+                    radius,
+                    start_angle,
+                    end_angle,
+                }
             }
         }
-    }
+        (ElementKind::Line, Curve::Line { .. }) => {
+            let (start, end) = walked.ends()?;
+            Sent::Line {
+                start: unsigned(start),
+                end: unsigned(end),
+            }
+        }
+        _ => return None,
+    })
 }
 
 /// `dialog`'s arrows in model space, its sketch on `plane` with its profile's centroid at
@@ -520,7 +542,7 @@ pub fn cursor(hit: Hit) -> CursorIcon {
 /// past what one holds, or one that isn't a number).
 pub fn dragged(distance: &Distance, arrow: &Arrow, press: Pos2, at: Pos2) -> Option<Length> {
     let moved = dot(sub(wide(at), wide(press)), arrow.unit) / arrow.per_mm;
-    let by = distance.factor * moved * 1e6;
+    let by = distance.factor * moved * crate::properties::NM_PER_MM as f64;
     if !by.is_finite() {
         return None;
     }
@@ -530,17 +552,21 @@ pub fn dragged(distance: &Distance, arrow: &Arrow, press: Pos2, at: Pos2) -> Opt
     stepped(distance.value, to)
 }
 
-/// The value a drag from `from` to `to` (in nanometres) gives (Main's rule on the council's
-/// round 1): `from`, exactly, where the closed span between them holds no half millimetre;
-/// else `to` on the half millimetres, as the prototype puts a drag's value ([`on_the_grid`]).
-/// So a value on the grid, which its span always holds, moves as the prototype's does; and
-/// one off it, 10.3, stays until the drag reaches a half millimetre, 10.5 or 10, and comes
-/// back to itself when the drag does. Worked in whole nanometres, so each edge is exact.
+/// The value a drag from `from` to `to` (in nanometres) gives (Main's rule in #480's review):
+/// `from`, exactly, where the closed span between them holds no value a drag can land on, a
+/// half millimetre from 0.5 up; else `to` on the half millimetres, as the prototype puts a
+/// drag's value ([`on_the_grid`]). So a value on the grid, which its span always holds, moves
+/// as the prototype's does; one off it, 10.3, stays until the drag reaches a half millimetre,
+/// 10.5 or 10, and comes back to itself when the drag does; and a drag never moves a value
+/// against its own way: from 0.3, down to 0 or below leaves 0.3, and up to 0.5 gives 0.5.
+/// Worked in whole nanometres, so each edge is exact.
 fn stepped(from: Length, to: i128) -> Option<Length> {
     let half = i128::from(HALF_MM_NM);
     let at = i128::from(from.nm());
-    let (low, high) = (at.min(to), at.max(to));
-    // The first half millimetre at or above `low` (`low` is at most `from`, so it fits).
+    // The least value a drag lands on is half a millimetre: none below it is in the span.
+    let (low, high) = (at.min(to).max(half), at.max(to));
+    // The first half millimetre at or above `low` (`low` is at most `from` or `half`, so it
+    // fits).
     let first = low.div_euclid(half) + i128::from(low.rem_euclid(half) != 0);
     if first * half > high {
         return Some(from);

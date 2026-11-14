@@ -247,7 +247,7 @@ fn a_hole_takes_its_area_away_whichever_way_its_circle_runs() {
 
 #[test]
 fn sectors_whose_arcs_turn_other_than_a_half_have_their_own_centroid_walked_either_way() {
-    // The council's proof (T1): a sector of radius 10 about the origin through π/2 and 3π/2,
+    // #480's review, T1's proof: a sector of radius 10 about the origin through π/2 and 3π/2,
     // its centroid 2r·sin α / 3α along its bisector α. The arc formulas themselves are the
     // protocol's (`silico_protocol::area_moments`, tested there at turns either side of a
     // half, both ways); this is the read's arcs sent to them, walked as listed or the other way.
@@ -283,6 +283,99 @@ fn sectors_whose_arcs_turn_other_than_a_half_have_their_own_centroid_walked_eith
         read.regions = vec![region(&["na000002", "ca000001", "na000001"], &[])];
         near(profile_centroid(&read).unwrap(), want, 1e-12);
     }
+}
+
+#[test]
+fn an_arc_run_clockwise_takes_its_bite_out() {
+    // A 20 × 20 square, a half disc of radius 5 about (10, 20) bitten from its top: the arc
+    // drawn counter-clockwise from (5, 20) round the bottom to (15, 20), and walked back,
+    // clockwise. 400 − 12.5π mm²; the bite's centroid 20/3π below (10, 20); so
+    // (4000 − 12.5π(20 − 20/3π)) / (400 − 12.5π) up, 10 across.
+    let sketch = Sketch {
+        plane: OriginPlane::Xy.into(),
+        points: vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 20.0, 0.0),
+            point("pa000003", 20.0, 20.0),
+            point("pa000004", 15.0, 20.0),
+            point("pa000005", 5.0, 20.0),
+            point("pa000006", 0.0, 20.0),
+            point("pc000001", 10.0, 20.0),
+        ],
+        lines: vec![
+            line("na000001", "pa000001", "pa000002"),
+            line("na000002", "pa000002", "pa000003"),
+            line("na000003", "pa000003", "pa000004"),
+            line("na000005", "pa000005", "pa000006"),
+            line("na000006", "pa000006", "pa000001"),
+        ],
+        circles: Vec::new(),
+        arcs: vec![SketchArc {
+            id: id("ca000001"),
+            center: id("pc000001"),
+            start: id("pa000005"),
+            end: id("pa000004"),
+            construction: false,
+        }],
+        constraints: Vec::new(),
+    };
+    let mut read = under(sketch);
+    read.regions = vec![region(
+        &[
+            "na000001", "na000002", "na000003", "ca000001", "na000005", "na000006",
+        ],
+        &[],
+    )];
+    let bite = 12.5 * PI;
+    let up = (4000.0 - bite * (20.0 - 20.0 / (3.0 * PI))) / (400.0 - bite);
+    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-12);
+}
+
+#[test]
+fn an_arcs_cap_counts_its_half_disc_whichever_way_the_loop_walks_it() {
+    // A 20 × 10 rectangle capped by a half circle of radius 10 about (10, 10), the arc drawn
+    // counter-clockwise from (20, 10) to (0, 10), the loop walking it so: 200 mm² about
+    // (10, 5) and 50π about (10, 10 + 40/3π). Across, 10 by symmetry; up,
+    // (1000 + 50π(10 + 40/3π)) / (200 + 50π), exactly.
+    let sketch = Sketch {
+        plane: OriginPlane::Xy.into(),
+        points: vec![
+            point("pa000001", 0.0, 0.0),
+            point("pa000002", 20.0, 0.0),
+            point("pa000003", 20.0, 10.0),
+            point("pa000004", 0.0, 10.0),
+            point("pc000001", 10.0, 10.0),
+        ],
+        lines: vec![
+            line("na000001", "pa000001", "pa000002"),
+            line("na000002", "pa000002", "pa000003"),
+            line("na000004", "pa000004", "pa000001"),
+        ],
+        circles: Vec::new(),
+        arcs: vec![SketchArc {
+            id: id("ca000001"),
+            center: id("pc000001"),
+            start: id("pa000003"),
+            end: id("pa000004"),
+            construction: false,
+        }],
+        constraints: Vec::new(),
+    };
+    let cap = 50.0 * PI;
+    let up = (1000.0 + cap * (10.0 + 40.0 / (3.0 * PI))) / (200.0 + cap);
+    let mut read = under(sketch);
+    read.regions = vec![region(
+        &["na000001", "na000002", "ca000001", "na000004"],
+        &[],
+    )];
+    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-12);
+    // The loop listed the other way round, from the left side, the arc run clockwise: the
+    // same region.
+    read.regions = vec![region(
+        &["na000004", "ca000001", "na000002", "na000001"],
+        &[],
+    )];
+    near(profile_centroid(&read).unwrap(), [10.0, up], 1e-12);
 }
 
 #[test]
@@ -935,6 +1028,22 @@ fn a_value_off_the_grid_stays_until_the_drag_reaches_a_half_millimetre_by_hand()
         assert_eq!(stepped(mm("0.7"), nm(t)), Some(mm(to)), "{t}");
     }
     assert_eq!(stepped(mm("0.7"), i128::MIN), Some(mm("0.5")));
+    // Never against a drag's own way: the least value a drag lands on is 0.5, so from 0.3 a
+    // drag down to 0, or past it, leaves 0.3; up, 0.49 leaves it, and 0.5 is 0.5, 0.74 too.
+    for (t, to) in [
+        ("0", "0.3"),
+        ("-3", "0.3"),
+        ("0.29", "0.3"),
+        ("0.49", "0.3"),
+        ("0.5", "0.5"),
+        ("0.74", "0.5"),
+        ("0.75", "1"),
+    ] {
+        assert_eq!(stepped(mm("0.3"), nm(t)), Some(mm(to)), "{t}");
+    }
+    assert_eq!(stepped(mm("0.3"), i128::MIN), Some(mm("0.3")));
+    // A value at the least, 0.5, holds itself: dragged down it stays 0.5.
+    assert_eq!(stepped(mm("0.5"), nm("-1")), Some(mm("0.5")));
 }
 
 // ---- Asked of the dialog ----

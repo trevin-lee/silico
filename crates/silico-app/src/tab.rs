@@ -1674,7 +1674,7 @@ impl Tab {
         left
     }
 
-    /// The field an arrow's drag holds back (`crate::arrow`; the council's A1): while the
+    /// The field an arrow's drag holds back (`crate::arrow`; #480's review, A1): while the
     /// open dialog's last edit's preview hasn't answered ([`preview_pending`]), the drag's
     /// newest value waits in the dialog's field, which still follows the pointer, so a steady
     /// drag keeps one preview rebuilding with the newest value waiting, as the sketch's drag
@@ -1745,6 +1745,17 @@ impl Tab {
             .map(|at_px| sketch::at_points(at_px, frame.pixels_per_point, frame.rect.left_top()));
         if let Some(hit) = held.or_else(|| pointer.and_then(|at| arrows.hit(at))) {
             painter.ctx().set_cursor_icon(crate::arrow::cursor(hit));
+        }
+    }
+
+    /// An arrow's drag under way let go of and what it held back sent, before a save or a
+    /// Save As that closes the tab is queued (#480's review, R2-1): so what the save writes
+    /// is what the field shows, which then stays as it is while the tab closes, the rest of
+    /// the stream asking nothing.
+    fn flush_arrow<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if self.grip.holding() {
+            self.grip.let_go();
+            self.dialog_changed(sessions);
         }
     }
 
@@ -2412,6 +2423,9 @@ impl Tab {
         then_close: bool,
     ) {
         self.hush();
+        if then_close {
+            self.flush_arrow(sessions);
+        }
         self.edits.queue.push_back(Queued::SaveAs {
             path,
             replace,
@@ -4408,6 +4422,9 @@ impl Tab {
     /// `then_close` too. A save that comes up with nothing to save does nothing (or closes).
     pub fn save<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
         self.hush();
+        if then_close {
+            self.flush_arrow(sessions);
+        }
         match self.edits.queue.back_mut() {
             Some(Queued::Save { then_close: last }) => *last |= then_close,
             _ => self.edits.queue.push_back(Queued::Save { then_close }),
@@ -4434,7 +4451,8 @@ impl Tab {
             self.reload_asked = true;
         }
         // The document goes back to the file's: a dialog or a sketch open on it has nothing
-        // to edit.
+        // to edit, and an arrow's drag held in one nothing to send.
+        self.grip.let_go();
         let dropped = self.dialog.take();
         self.dropped(dropped.as_ref());
         self.loading = None;
@@ -5999,6 +6017,11 @@ impl Tab {
     /// an edit of each field that changed, coalesced as the property panel's are. Whether
     /// anything was.
     pub fn dialog_changed<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        // Nothing once the tab closes: what it saves was queued before its save
+        // ([`flush_arrow`](Self::flush_arrow)), and the dialog's inputs are off.
+        if self.closing() {
+            return false;
+        }
         // An edit of its feature still to answer: its boxes of one body wait for it.
         let waiting = self
             .dialog

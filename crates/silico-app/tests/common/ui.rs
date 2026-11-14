@@ -947,28 +947,53 @@ pub fn pad_extent(length: &str, reversed: bool) -> Plain {
     )
 }
 
-/// The extent of the pad of the first tab's document, as its session holds it now.
-pub fn pads_extent<P: AppKernel>(sessions: &Sessions<P>, h: &AppUi<P>) -> Plain {
+/// The first tab's document, as its session holds it now (`text`).
+pub fn text_of<P: AppKernel>(sessions: &Sessions<P>, h: &AppUi<P>) -> String {
     let id = h.state().tabs()[0].id;
-    let text = sessions.text(&id, None).wait().result.unwrap().text;
-    let member = |plain: &Plain, name: &str| match plain {
-        Plain::Object(members) => members
+    sessions.text(&id, None).wait().result.unwrap().text
+}
+
+/// The fields of the feature named `name` in `text`, but its `id`, `v`, and `fingerprint`,
+/// each as JSON writes it: none if no feature has that name.
+pub fn fields_of(text: &str, name: &str) -> Option<Vec<(String, Plain)>> {
+    let root = json::read(text.as_bytes()).unwrap();
+    let Plain::Object(members) = Plain::of(&root) else {
+        panic!("not an object");
+    };
+    let (_, Plain::Array(features)) = members.into_iter().find(|(key, _)| key == "features")?
+    else {
+        panic!("no features");
+    };
+    features.into_iter().find_map(|feature| {
+        let Plain::Object(fields) = feature else {
+            return None;
+        };
+        fields
             .iter()
-            .find(|(key, _)| key == name)
-            .map(|(_, value)| value.clone()),
-        _ => None,
-    };
-    let Some(Plain::Array(features)) = member(
-        &Plain::of(&json::read(text.as_bytes()).unwrap()),
-        "features",
-    ) else {
-        panic!("no features: {text}");
-    };
-    let pad = features
-        .iter()
-        .find(|feature| member(feature, "type") == Some(Plain::String("pad".to_owned())))
-        .unwrap();
-    member(pad, "extent").unwrap()
+            .any(|(key, value)| key == "name" && *value == Plain::String(name.to_owned()))
+            .then(|| sorted_fields(fields))
+    })
+}
+
+/// `fields`, but `id`, `v`, and `fingerprint`, sorted by key.
+pub fn sorted_fields(fields: Vec<(String, Plain)>) -> Vec<(String, Plain)> {
+    let mut fields: Vec<(String, Plain)> = fields
+        .into_iter()
+        .filter(|(key, _)| !["id", "v", "fingerprint"].contains(&key.as_str()))
+        .collect();
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    fields
+}
+
+/// The extent of the feature named Pad in the first tab's document, as its session holds it
+/// now ([`fields_of`]).
+pub fn pads_extent<P: AppKernel>(sessions: &Sessions<P>, h: &AppUi<P>) -> Plain {
+    fields_of(&text_of(sessions, h), "Pad")
+        .unwrap()
+        .into_iter()
+        .find(|(key, _)| key == "extent")
+        .unwrap()
+        .1
 }
 
 /// Whether the open dialog's Reversed is ticked.

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use eframe::egui::{self, Event, Modifiers, PointerButton, vec2};
 use egui_kittest::Harness;
-use egui_kittest::kittest::{NodeT, Queryable};
+use egui_kittest::kittest::Queryable;
 use silico_app::App;
 use silico_app::navigate;
 use silico_app::renderer::{Change, FrameData, Picking, Present, ViewRenderer};
@@ -32,10 +32,10 @@ use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
 use ui::{
     ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, In, PLATE, PLATE_END, TRIAD_DOT,
-    advance, arrow_dots, arrow_shafts, button_event, dialog, dialog_open, drag, edit_plates_pad,
-    field, from_the_front, hand_clock, image_centre, left_down_at, left_up_at, looks_from,
-    meshes_settled, meshes_settled_in, move_to, near_point, pad_extent, pads_extent,
-    plates_pad_from_the_front, repaint_delay, settled, step, step_until, tessellated, the_viewport,
+    advance, arrow_dots, arrow_shafts, button_event, dialog_open, drag, edit_plates_pad, field,
+    from_the_front, hand_clock, image_centre, left_down_at, left_up_at, looks_from, meshes_settled,
+    meshes_settled_in, move_to, near_point, pad_extent, pads_extent, plates_pad_from_the_front,
+    repaint_delay, reversed_ticked, settled, step, step_until, tessellated, the_viewport,
     triad_origin, up, view, view_label, view_mut,
 };
 
@@ -2403,14 +2403,7 @@ fn a_drag_past_the_profile_stops_at_half_a_millimetre() {
     assert_eq!(length_field(&h).as_deref(), Some("0.5"));
     settled(&mut h);
     pad_is(&f, &h, "0.5");
-    assert!(
-        !dialog(&h)
-            .query_by_role_and_label(egui::accesskit::Role::CheckBox, "Reversed")
-            .unwrap()
-            .accesskit_node()
-            .toggled()
-            .is_some_and(|t| t == egui::accesskit::Toggled::True)
-    );
+    assert!(!reversed_ticked(&h));
     assert_eq!(never_waits::waits(), 0);
 }
 

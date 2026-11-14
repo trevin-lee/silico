@@ -40,13 +40,14 @@ use ui::{
     PLATE_END, TRIAD_DOT, added, advance, answer_question, anywhere, arrow_dots, arrow_shafts,
     begin_sketch_on, boxed, button_event, choose, chosen, click_at, click_canvas, close_window,
     create, create_sketch, cursor, dialog, dialog_open, double_click, drag, everything, f2_typed,
-    field, from_the_front, hand_clock, image_centre, in_status_bar, lavapipe_render_state,
-    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
-    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
-    open_export, pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away,
-    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
-    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, step, step_until,
-    tab_named, tessellated, the_viewport, tooltip_title, triad_origin, type_name, undo_by_key, up,
+    field, fields_of, from_the_front, hand_clock, image_centre, in_status_bar,
+    lavapipe_render_state, leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at,
+    looks_from, meshes_settled, modify, modify_field, move_to, name_field, near_point, new_part,
+    ok_enabled, on_lavapipe, open_export, pad_extent, pads_extent, plain_read,
+    plates_pad_from_the_front, pointer_away, press, prompt, redo_by_key, rename_field,
+    repaint_delay, retype, reversed_ticked, save_as_of, select, selected_names, settled,
+    shapes_painted, sketch_mode, sketch_read, sorted_fields, step, step_until, tab_named,
+    tessellated, text_of, the_viewport, tooltip_title, triad_origin, type_name, undo_by_key, up,
     view, view_direction, view_label, view_label_node, view_mut, wheel, window_told,
 };
 
@@ -1813,7 +1814,7 @@ fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_w
     });
     // The text the reload replaced, byte for byte, as an edit inside a transaction begun
     // for it: unsaved, the banner gone, the file still the agent's.
-    assert_eq!(text_of(&f, &h), BLOCK_10);
+    assert_eq!(text_of(&f.sessions, &h), BLOCK_10);
     assert!(changed(&f, &h));
     let sent = &h.state().tabs()[0].sent;
     assert_eq!(&sent[sent.len() - 2..], [Sent::Begin, Sent::Replace]);
@@ -1829,7 +1830,7 @@ fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_w
     assert_eq!(std::fs::read_to_string(&path).unwrap(), BLOCK_11);
     // Ctrl+Z: the reloaded text back, nothing changed from it.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
-    step_until(&mut h, "undone", |h| text_of(&f, h) == BLOCK_11);
+    step_until(&mut h, "undone", |h| text_of(&f.sessions, h) == BLOCK_11);
     step_until(&mut h, "unchanged", |h| !changed(&f, h));
     settled(&mut h);
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Restore revision 1");
@@ -1840,7 +1841,7 @@ fn restore_puts_the_replaced_revision_back_as_an_edit_that_undo_takes_and_save_w
             .is_disabled()
     });
     h.get_by_role_and_label(Role::Button, "Redo").click();
-    step_until(&mut h, "redone", |h| text_of(&f, h) == BLOCK_10);
+    step_until(&mut h, "redone", |h| text_of(&f.sessions, h) == BLOCK_10);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "saved", |h| !anywhere(h, "block.silico *"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), BLOCK_10);
@@ -1879,7 +1880,7 @@ fn restore_is_off_in_sketch_mode_and_on_again_once_it_is_left() {
     assert_eq!(h.state().tabs()[0].sent.len(), sent);
     leave_sketch(&mut h, false);
     step_until(&mut h, "Restore on again", |h| restore_on(h));
-    assert_eq!(text_of(&f, &h), BLOCK_11);
+    assert_eq!(text_of(&f.sessions, &h), BLOCK_11);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -1926,7 +1927,7 @@ fn restore_of_a_revision_no_longer_held_says_the_cores_refusal_and_its_candidate
     assert_eq!(row_feature(&h, "11 → 12"), "Block");
     assert!(!seen(&h, "10 → 11"));
     // Nothing restored: the third text, no transaction; the banner offers revision 2 now.
-    assert_eq!(text_of(&f, &h), third);
+    assert_eq!(text_of(&f.sessions, &h), third);
     assert!(!h.state().tabs()[0].transaction);
     assert!(
         h.query_by_role_and_label(Role::Button, "Restore revision 1")
@@ -2071,7 +2072,7 @@ fn restore_refused_by_a_reload_before_its_begin(read: StatusRead) {
         f.sessions.status(&id).result.unwrap().transaction.is_none(),
         "{at}"
     );
-    assert_eq!(text_of(&f, &h), third, "{at}");
+    assert_eq!(text_of(&f.sessions, &h), third, "{at}");
     assert!(!anywhere(&h, "block.silico *"), "{at}");
     // Another program's next write: reloaded, and announced, from the rollback's revision,
     // 4, to 5.
@@ -2079,7 +2080,7 @@ fn restore_refused_by_a_reload_before_its_begin(read: StatusRead) {
     std::fs::write(&path, &fourth).unwrap();
     step_until(&mut h, "the third reload listed", |h| seen(h, "12 → 13"));
     assert!(anywhere(&h, &reloaded_sub(4, 5)), "{at}");
-    assert_eq!(text_of(&f, &h), fourth, "{at}");
+    assert_eq!(text_of(&f.sessions, &h), fourth, "{at}");
     assert_eq!(never_waits::waits(), 0, "{at}");
 }
 
@@ -2183,7 +2184,7 @@ fn a_reloads_diff_names_both_revisions_so_a_write_after_the_reload_never_refuses
     step_until(&mut h, "the second reload listed", |h| seen(h, "11 → 12"));
     assert!(anywhere(&h, &reloaded_sub(2, 3)));
     assert!(h.query_by_label_contains("couldn't be listed").is_none());
-    assert_eq!(text_of(&f, &h), block_high(12));
+    assert_eq!(text_of(&f.sessions, &h), block_high(12));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -4687,7 +4688,7 @@ fn an_undo_refused_after_another_clients_step_names_no_step_it_doesnt_know() {
     // document, nothing to undo, the pin's rename to redo (the session's redo states, Pinx
     // then Holey).
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Rename Pin");
     step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
@@ -5375,7 +5376,7 @@ fn a_typed_save_as_adds_silico_to_a_name_without_it_and_keeps_one_in_any_case() 
         });
         assert_eq!(
             std::fs::read_to_string(&want).unwrap(),
-            text_of(&f, &h),
+            text_of(&f.sessions, &h),
             "{typed}"
         );
         name = written.to_owned();
@@ -6006,44 +6007,6 @@ fn type_into(h: &mut AppHarness, label: &str, text: &str) {
     }
 }
 
-/// The session's document text, as `text` gives it.
-fn text_of(f: &Fixture, h: &AppHarness) -> String {
-    let id = h.state().tabs()[0].id;
-    f.sessions.text(&id, None).wait().result.unwrap().text
-}
-
-/// The fields of the feature named `name` in `text`, but its `id`, `v`, and `fingerprint`,
-/// each as JSON writes it: none if no feature has that name.
-fn fields_of(text: &str, name: &str) -> Option<Vec<(String, Plain)>> {
-    let root = json::read(text.as_bytes()).unwrap();
-    let Plain::Object(members) = Plain::of(&root) else {
-        panic!("not an object");
-    };
-    let (_, Plain::Array(features)) = members.into_iter().find(|(key, _)| key == "features")?
-    else {
-        panic!("no features");
-    };
-    features.into_iter().find_map(|feature| {
-        let Plain::Object(fields) = feature else {
-            return None;
-        };
-        fields
-            .iter()
-            .any(|(key, value)| key == "name" && *value == Plain::String(name.to_owned()))
-            .then(|| sorted_fields(fields))
-    })
-}
-
-/// `fields`, but `id`, `v`, and `fingerprint`, sorted by key.
-fn sorted_fields(fields: Vec<(String, Plain)>) -> Vec<(String, Plain)> {
-    let mut fields: Vec<(String, Plain)> = fields
-        .into_iter()
-        .filter(|(key, _)| !["id", "v", "fingerprint"].contains(&key.as_str()))
-        .collect();
-    fields.sort_by(|a, b| a.0.cmp(&b.0));
-    fields
-}
-
 /// The fields `json` writes, as [`fields_of`] gives them.
 fn expected(json_text: &str) -> Vec<(String, Plain)> {
     let Plain::Object(fields) = Plain::of(&json::read(json_text.as_bytes()).unwrap()) else {
@@ -6106,7 +6069,7 @@ fn each_kinds_dialog_adds_its_feature_with_its_defaults_on_ok() {
         dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
         step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
         settled(&mut h);
-        let text = text_of(&f, &h);
+        let text = text_of(&f.sessions, &h);
         assert_eq!(fields_of(&text, kind), Some(expected(want)), "{kind}");
         // The earlier features as they were.
         assert_eq!(
@@ -6160,7 +6123,7 @@ fn a_sweeps_ok_waits_for_a_sketch_chosen_in_the_browser_and_adds_nothing_before(
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pad"),
+        fields_of(&text_of(&f.sessions, &h), "Pad"),
         Some(expected(
             r#"{"type": "pad", "name": "Pad", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}"#
         ))
@@ -6216,7 +6179,7 @@ fn ok_clicked_in_the_frame_an_input_turns_invalid_leaves_the_dialog_open() {
     assert!(dialog_open(&h));
     assert!(!ok_enabled(&h));
     settled(&mut h);
-    let fields = fields_of(&text_of(&f, &h), "Pocket").unwrap();
+    let fields = fields_of(&text_of(&f.sessions, &h), "Pocket").unwrap();
     assert!(
         fields
             .iter()
@@ -6327,7 +6290,7 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
     assert!(dialog(&h).query_by_label("Reversed").is_none());
     type_into(&mut h, "Length 2", "1");
     settled(&mut h);
-    let pocket = fields_of(&text_of(&f, &h), "Pocket").unwrap();
+    let pocket = fields_of(&text_of(&f.sessions, &h), "Pocket").unwrap();
     let extent = pocket.iter().find(|(key, _)| key == "extent").unwrap();
     assert_eq!(
         extent.1,
@@ -6341,7 +6304,7 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
     });
     assert!(dialog(&h).query_by_label("Reversed").is_some());
     settled(&mut h);
-    let pocket = fields_of(&text_of(&f, &h), "Pocket").unwrap();
+    let pocket = fields_of(&text_of(&f.sessions, &h), "Pocket").unwrap();
     let extent = pocket.iter().find(|(key, _)| key == "extent").unwrap();
     assert_eq!(
         extent.1,
@@ -6383,7 +6346,7 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
     // The field's text, the 10 and the three digits after it, is the document's.
     let typed = field(&h, In::Dialog, "Length").value().unwrap();
     assert_eq!(typed, "10123");
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     let fields = fields_of(&text, "Pad").unwrap();
     assert!(
         fields.contains(&("extent".to_owned(), one_side("10123"))),
@@ -6483,7 +6446,7 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     assert!(before.contains(r#""name": "PinK""#));
     let opened_at = h.state().tabs()[0].revision;
     open_pad_on_triangle(&mut h);
@@ -6496,7 +6459,7 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
     type_into(&mut h, "Length", "2");
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pad")
+        fields_of(&text_of(&f.sessions, &h), "Pad")
             .unwrap()
             .into_iter()
             .find(|(key, _)| key == "extent"),
@@ -6507,7 +6470,7 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
         .click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     let tab = &h.state().tabs()[0];
     assert!(tab.transaction);
     assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
@@ -6534,7 +6497,7 @@ fn a_failed_preview_shows_the_cores_error_in_the_dialog_and_ok_keeps_the_feature
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     // On the tip, the hole; the triangle; the defaults' 10 up.
     assert_eq!(
         fields_of(&text, "Pad"),
@@ -6556,7 +6519,7 @@ fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     // The new pad's prism held: its preview's rebuild runs until released.
     let hold = f.kernel.hold(is_prism);
     open_pad_on_triangle(&mut h);
@@ -6581,7 +6544,7 @@ fn esc_stops_a_dialogs_preview_rebuild_first_and_cancels_the_dialog_second() {
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // Its own add began the transaction: rolled back, nothing before it to keep.
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
     hold.release();
@@ -6611,7 +6574,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queu
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let id = h.state().tabs()[0].id;
     let prism_hold = f.kernel.hold(is_prism);
     // The queue held behind a fresh check whose pin the fake holds: the dialog's begin and
@@ -6678,7 +6641,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_its_read_still_waits_in_the_queu
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(new_prisms(), 1);
     prism_hold.release();
     assert_eq!(never_waits::waits(), 0);
@@ -6695,7 +6658,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let id = h.state().tabs()[0].id;
     let hold = f.kernel.hold(is_prism);
     open_pad_on_triangle(&mut h);
@@ -6767,7 +6730,7 @@ fn esc_stops_a_previews_rebuild_for_good_though_a_check_of_the_current_model_wai
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(new_prisms(), 1);
     hold.release();
     assert_eq!(never_waits::waits(), 0);
@@ -6788,7 +6751,7 @@ fn an_edit_and_an_esc_in_one_frame_supersede_the_preview_then_cancel_the_dialog(
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let id = h.state().tabs()[0].id;
     let hold = f.kernel.hold(is_prism);
     open_pad_on_triangle(&mut h);
@@ -6827,7 +6790,7 @@ fn an_edit_and_an_esc_in_one_frame_supersede_the_preview_then_cancel_the_dialog(
     tab.close_dialog(&f.sessions, false);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
     hold.release();
     assert_eq!(never_waits::waits(), 0);
@@ -6929,7 +6892,7 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
         prisms_asked(&f) == 2 && f.kernel.wait_running(1, Duration::ZERO)
     });
     hold.release();
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     let pad = fields_of(&text, "Pad").unwrap();
     assert!(
         pad.contains(&("extent".to_owned(), one_side("103"))),
@@ -6943,7 +6906,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
@@ -6978,7 +6941,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
         h.state().tabs()[0]
@@ -6989,7 +6952,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert!(fields_of(&text_of(&f, &h), "Pad").is_some());
+    assert!(fields_of(&text_of(&f.sessions, &h), "Pad").is_some());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7001,7 +6964,7 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let opened_at = h.state().tabs()[0].revision;
     open_pad_on_triangle(&mut h);
     step_until(&mut h, "its add answered", |h| {
@@ -7023,7 +6986,7 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let after = text_of(&f, &h);
+    let after = text_of(&f.sessions, &h);
     let ok_at = h.state().tabs()[0].revision;
     assert_eq!(
         fields_of(&after, "Pad")
@@ -7041,7 +7004,7 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(
         h.state().tabs()[0].sent.last(),
         Some(&Sent::Undo(Some(opened_at)))
@@ -7050,7 +7013,7 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Y);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), after);
+    assert_eq!(text_of(&f.sessions, &h), after);
     assert_eq!(
         h.state().tabs()[0].sent.last(),
         Some(&Sent::Redo(Some(ok_at)))
@@ -7060,7 +7023,7 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // PinK, made before the dialog, stays: one more undo takes it back alone.
     assert!(before.contains(r#""name": "PinK""#));
     assert_eq!(never_waits::waits(), 0);
@@ -7101,7 +7064,7 @@ fn edit_feature_from_a_double_click_loads_the_features_values_and_ok_applies_a_c
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pin"),
+        fields_of(&text_of(&f.sessions, &h), "Pin"),
         Some(expected(
             r#"{"type": "cylinder", "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 123}"#
         ))
@@ -7216,7 +7179,7 @@ fn edited(
     dialog(h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(h, "the dialog closed", |h| !dialog_open(h));
     settled(h);
-    fields_of(&text_of(f, h), name)
+    fields_of(&text_of(&f.sessions, h), name)
 }
 
 #[test]
@@ -7272,7 +7235,7 @@ fn each_primitive_of_the_m2_1_example_edits_from_its_dialog_and_ok_writes_the_va
             r#"{"type": "cylinder", "name": "Pin", "position": [20, 10, -1], "radius": 2.55, "height": 12}"#
         ))
     );
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     assert_eq!(fields_of(&text, "Hole"), fields_of(EXAMPLE, "Hole"));
     // One transaction, an edit of each, and no add.
     assert_eq!(
@@ -7496,7 +7459,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
     });
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
     hold.release();
-    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED_EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7620,7 +7583,7 @@ fn edit_feature_of_a_revolve_about_a_sketch_line_keeps_that_axis() {
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Turned"),
+        fields_of(&text_of(&f.sessions, &h), "Turned"),
         Some(expected(
             r#"{"type": "revolve", "name": "Turned", "sketch": "s0000001", "axis": "nc000000", "extent": {"type": "symmetric", "angle": 90.5}}"#
         ))
@@ -7673,7 +7636,7 @@ fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
     h.get_by_label("Revert").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED_EXAMPLE);
     assert!(h.state().tabs()[0].dialog.is_none());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -7683,7 +7646,7 @@ fn a_cancel_before_the_add_answers_waits_for_it_and_rolls_it_back() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     // The add, sent once its body is read beside the queue, waits in the session's queue:
     // the Cancel waits behind it in the tab's.
     let (hold, check) = hold_queue(&f, &h, 0);
@@ -7694,7 +7657,7 @@ fn a_cancel_before_the_add_answers_waits_for_it_and_rolls_it_back() {
     hold.release();
     check.wait();
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(
         h.state().tabs()[0].sent,
         [Sent::Begin, Sent::Add, Sent::Rollback]
@@ -7748,14 +7711,14 @@ fn a_name_typed_after_a_dialog_opened_is_its_cancels_to_undo_never_before_it() {
         h.query_by_role_and_label(Role::Dialog, "Cylinder")
             .is_some()
     });
-    let typed = text_of(&f, &h);
+    let typed = text_of(&f.sessions, &h);
     let name = names_of(&typed)[1].clone();
     assert_eq!(name, "Pinabc");
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     // Undone back to the two letters typed before the dialog.
-    let kept = names_of(&text_of(&f, &h))[1].clone();
+    let kept = names_of(&text_of(&f.sessions, &h))[1].clone();
     assert_eq!(kept, "Pinab");
     assert_eq!(never_waits::waits(), 0);
 }
@@ -7857,7 +7820,7 @@ fn a_sweeps_body_is_the_documents_tip_even_where_the_model_has_none_there() {
     added(&mut h);
     answered_while_held(&mut h);
     hold.release();
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     let pocket = fields_of(&text, "Pocket").unwrap();
     assert!(
         pocket.contains(&("base".to_owned(), Plain::String("c0000001".to_owned()))),
@@ -7887,7 +7850,7 @@ fn typing_while_the_add_is_unanswered_makes_one_feature_and_edits_it() {
     hold.release();
     check.wait();
     settled(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     assert_eq!(text.matches(r#""type": "pad""#).count(), 1, "{text}");
     let fields = fields_of(&text, "Pad").unwrap();
     assert!(
@@ -7923,11 +7886,11 @@ fn a_reload_under_edit_feature_reads_the_feature_again_and_cancel_undoes_from_th
     });
     type_into(&mut h, "Height", "1");
     settled(&mut h);
-    assert!(text_of(&f, &h).contains(r#""height": 121"#));
+    assert!(text_of(&f.sessions, &h).contains(r#""height": 121"#));
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), theirs);
+    assert_eq!(text_of(&f.sessions, &h), theirs);
     assert_eq!(h.state().tabs()[0].message, None);
     assert!(!h.state().tabs()[0].transaction);
     assert_eq!(never_waits::waits(), 0);
@@ -7938,7 +7901,7 @@ fn a_reload_under_a_new_sweeps_dialog_opens_it_at_the_reloaded_revision() {
     let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
-    let sketched = text_of(&f, &h);
+    let sketched = text_of(&f.sessions, &h);
     // A PlateK typed first, saved: a transaction with something before the dialog is
     // then the reload's to make, not the dialog's.
     select(&mut h, "Plate");
@@ -7946,7 +7909,7 @@ fn a_reload_under_a_new_sweeps_dialog_opens_it_at_the_reloaded_revision() {
     settled(&mut h);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
     step_until(&mut h, "saved", |h| !h.state().tabs()[0].unsaved());
-    assert_ne!(text_of(&f, &h), sketched);
+    assert_ne!(text_of(&f.sessions, &h), sketched);
     // The Pad's dialog, with nothing to add yet (no sketch chosen).
     create(&mut h, "Pad");
     let theirs = std::fs::read_to_string(&path)
@@ -7967,7 +7930,7 @@ fn a_reload_under_a_new_sweeps_dialog_opens_it_at_the_reloaded_revision() {
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), theirs);
+    assert_eq!(text_of(&f.sessions, &h), theirs);
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -7986,7 +7949,7 @@ fn a_suppressed_feature_is_never_a_sweeps_body() {
     create(&mut h, "Pad");
     added(&mut h);
     settled(&mut h);
-    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    let pad = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
     assert!(
         pad.contains(&("base".to_owned(), Plain::String("b0000001".to_owned()))),
         "{pad:?}"
@@ -7999,7 +7962,7 @@ fn two_dialogs_okd_are_undone_and_redone_each_whole() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let mut texts = vec![before.clone()];
     for (kind, label) in [("Pad", "Length"), ("Pocket", "Length")] {
         open_sweep_on_triangle(&mut h, kind);
@@ -8009,7 +7972,7 @@ fn two_dialogs_okd_are_undone_and_redone_each_whole() {
         dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
         step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
         settled(&mut h);
-        texts.push(text_of(&f, &h));
+        texts.push(text_of(&f.sessions, &h));
     }
     let key = |h: &mut AppHarness, undo: bool| {
         let (key, able): (_, fn(&AppHarness) -> bool) = if undo {
@@ -8024,19 +7987,19 @@ fn two_dialogs_okd_are_undone_and_redone_each_whole() {
     };
     // Z, Z: each dialog's edits whole.
     key(&mut h, true);
-    assert_eq!(text_of(&f, &h), texts[1]);
+    assert_eq!(text_of(&f.sessions, &h), texts[1]);
     key(&mut h, true);
-    assert_eq!(text_of(&f, &h), texts[0]);
+    assert_eq!(text_of(&f.sessions, &h), texts[0]);
     // Y, Y: each whole again.
     key(&mut h, false);
-    assert_eq!(text_of(&f, &h), texts[1]);
+    assert_eq!(text_of(&f.sessions, &h), texts[1]);
     key(&mut h, false);
-    assert_eq!(text_of(&f, &h), texts[2]);
+    assert_eq!(text_of(&f.sessions, &h), texts[2]);
     // And Z, Z once more.
     key(&mut h, true);
-    assert_eq!(text_of(&f, &h), texts[1]);
+    assert_eq!(text_of(&f.sessions, &h), texts[1]);
     key(&mut h, true);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -8118,7 +8081,7 @@ fn cancel_of_a_dialog_that_began_the_transaction_leaves_none_open_so_outside_wri
     let theirs = SKETCHED_EXAMPLE.replace(r#""name": "Hole""#, r#""name": "Theirs""#);
     std::fs::write(&path, &theirs).unwrap();
     step_until(&mut h, "the reload", |h| shows(h, "Timeline", "Theirs"));
-    assert_eq!(text_of(&f, &h), theirs);
+    assert_eq!(text_of(&f.sessions, &h), theirs);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -8127,7 +8090,7 @@ fn an_add_answered_after_its_dialog_was_cancelled_never_becomes_the_next_dialogs
     let f = fixture();
     let (mut h, _) = f.opened("sketched.silico", SKETCHED);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let (hold, check) = hold_queue(&f, &h, 0);
     // A Pad of the triangle, its add sent and held, then cancelled.
     pad_until_add_sent(&mut h);
@@ -8147,7 +8110,7 @@ fn an_add_answered_after_its_dialog_was_cancelled_never_becomes_the_next_dialogs
         step(&mut h);
     }
     assert_eq!(h.state().tabs()[0].dialog.as_ref().unwrap().feature, None);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -8176,7 +8139,7 @@ fn a_digit_typed_in_the_frame_enter_is_pressed_is_in_what_ok_keeps() {
     step(&mut h);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let fields = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    let fields = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
     assert!(
         fields.contains(&("extent".to_owned(), one_side("107"))),
         "{fields:?}"
@@ -8198,7 +8161,7 @@ fn pads_base(text: &str) -> Plain {
     create(&mut h, "Pad");
     added(&mut h);
     settled(&mut h);
-    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    let pad = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
     assert_eq!(never_waits::waits(), 0);
     pad.into_iter()
         .find(|(key, _)| key == "base")
@@ -8247,18 +8210,18 @@ fn a_dialog_undone_then_another_made_lets_the_other_be_redone_whole() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     made(&mut h, "Pad", "Length");
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // The pad's edits are the redo branch the pocket's add drops.
     made(&mut h, "Pocket", "Length");
-    let pocket = text_of(&f, &h);
+    let pocket = text_of(&f.sessions, &h);
     assert!(fields_of(&pocket, "Pocket").is_some() && fields_of(&pocket, "Pad").is_none());
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     redo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), pocket);
+    assert_eq!(text_of(&f.sessions, &h), pocket);
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -8268,20 +8231,20 @@ fn a_dialog_undone_then_a_name_typed_lets_the_name_be_redone() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     made(&mut h, "Pad", "Length");
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // A name typed in the property panel drops the pad's edits.
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
-    let named = text_of(&f, &h);
+    let named = text_of(&f.sessions, &h);
     assert!(named.contains(r#""name": "PinK""#));
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     redo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), named);
+    assert_eq!(text_of(&f.sessions, &h), named);
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Redo(None)));
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
@@ -8311,7 +8274,7 @@ fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let fields = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    let fields = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
     assert!(
         fields.contains(&("extent".to_owned(), one_side(&typed))),
         "{typed}: {fields:?}"
@@ -8349,7 +8312,7 @@ fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_unde
         Some("15")
     );
     settled(&mut h);
-    let moved = text_of(&f, &h);
+    let moved = text_of(&f.sessions, &h);
     // A change, OK, then one undo: back to what the read found, not refused.
     type_into(&mut h, "Radius", "1");
     settled(&mut h);
@@ -8357,7 +8320,7 @@ fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_unde
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), moved);
+    assert_eq!(text_of(&f.sessions, &h), moved);
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -8415,9 +8378,9 @@ fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
     let (mut h, _) = f.opened("example.silico", &one_letter);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "P"));
     made(&mut h, "Pad", "Length");
-    let padded = text_of(&f, &h);
+    let padded = text_of(&f.sessions, &h);
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), one_letter);
+    assert_eq!(text_of(&f.sessions, &h), one_letter);
     // The one-letter name emptied: refused, so the pad's edits stay the redo branch.
     select(&mut h, "P");
     name_field(&h).focus();
@@ -8430,7 +8393,7 @@ fn a_refused_edit_after_an_undone_dialog_leaves_its_redo_whole() {
     });
     settled(&mut h);
     redo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), padded);
+    assert_eq!(text_of(&f.sessions, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -8476,7 +8439,7 @@ fn a_sweeps_body_read_before_the_session_moved_is_read_again() {
     let theirs = theirs.wait().result.unwrap().feature.id;
     added(&mut h);
     settled(&mut h);
-    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    let pad = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
     assert!(
         pad.contains(&("base".to_owned(), Plain::String(theirs.as_str().to_owned()))),
         "{pad:?}"
@@ -8491,9 +8454,9 @@ fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     made(&mut h, "Pad", "Length");
-    let padded = text_of(&f, &h);
+    let padded = text_of(&f.sessions, &h);
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED_EXAMPLE);
     // The Pin's radius made "-2.5" (refused), then "2.5" again: a set_field of the value
     // the document holds, which changes nothing.
     double_click(&mut h, "Timeline", "Pin");
@@ -8523,9 +8486,9 @@ fn an_edit_that_changes_nothing_after_an_undone_dialog_leaves_its_redo_whole() {
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED_EXAMPLE);
     redo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), padded);
+    assert_eq!(text_of(&f.sessions, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -8538,7 +8501,7 @@ fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_re
     type_name(&mut h, "K");
     settled(&mut h);
     made(&mut h, "Pad", "Length");
-    let padded = text_of(&f, &h);
+    let padded = text_of(&f.sessions, &h);
     undo_by_key(&mut h);
     select(&mut h, "PinK");
     // The queue held: another client's undo (of PinK), then a name typed here against the
@@ -8555,11 +8518,11 @@ fn an_edit_refused_because_another_client_undid_first_keeps_an_undone_dialogs_re
         h.state().tabs()[0].message.is_some() && !h.state().tabs()[0].unsettled()
     });
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED_EXAMPLE);
     // Redo: PinK, then the pad's edits whole.
     redo_by_key(&mut h);
     redo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), padded);
+    assert_eq!(text_of(&f.sessions, &h), padded);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -8617,7 +8580,7 @@ fn a_refused_body_read_is_read_again_and_no_add_goes_until_it_answers() {
     }
     added(&mut h);
     settled(&mut h);
-    let pad = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    let pad = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
     assert!(
         pad.contains(&("base".to_owned(), Plain::String("b0000001".to_owned()))),
         "{pad:?}"
@@ -10069,7 +10032,7 @@ fn enter_on_a_feature_dialogs_focused_cancel_cancels() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     open_pad_on_triangle(&mut h);
     added(&mut h);
     settled(&mut h);
@@ -10080,7 +10043,7 @@ fn enter_on_a_feature_dialogs_focused_cancel_cancels() {
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -14180,7 +14143,10 @@ fn a_save_panels_name_without_silico_is_saved_with_it_and_a_file_by_that_name_as
     step_until(&mut h, "the tab of part.silico", |h| {
         h.state().tabs()[0].path.as_deref() == part.to_str() && h.state().tabs()[0].edits.idle()
     });
-    assert_eq!(std::fs::read_to_string(&part).unwrap(), text_of(&f, &h));
+    assert_eq!(
+        std::fs::read_to_string(&part).unwrap(),
+        text_of(&f.sessions, &h)
+    );
     assert!(!dir.join("part").exists());
     // `there` picked, `there.silico` there: the panel asked only about `there`, so the app
     // asks about `there.silico`; Cancel writes nothing.
@@ -14208,7 +14174,10 @@ fn a_save_panels_name_without_silico_is_saved_with_it_and_a_file_by_that_name_as
     step_until(&mut h, "the tab of the file replaced", |h| {
         h.state().tabs()[0].path.as_deref() == there.to_str() && h.state().tabs()[0].edits.idle()
     });
-    assert_eq!(std::fs::read_to_string(&there).unwrap(), text_of(&f, &h));
+    assert_eq!(
+        std::fs::read_to_string(&there).unwrap(),
+        text_of(&f.sessions, &h)
+    );
     assert!(!dir.join("there").exists());
     // `upper.SILICO` picked, a file there: kept as it is, so replaced with no question of
     // the app's, the panel having asked.
@@ -14223,7 +14192,10 @@ fn a_save_panels_name_without_silico_is_saved_with_it_and_a_file_by_that_name_as
         &h,
         &format!("{} already exists. Replace it?", upper.to_str().unwrap())
     ));
-    assert_eq!(std::fs::read_to_string(&upper).unwrap(), text_of(&f, &h));
+    assert_eq!(
+        std::fs::read_to_string(&upper).unwrap(),
+        text_of(&f.sessions, &h)
+    );
     assert!(!dir.join("upper.SILICO.silico").exists());
     assert_eq!(std::fs::read_to_string(&old).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
@@ -16997,13 +16969,13 @@ fn the_drop_downs_hold_the_prototypes_entries_and_creates_open_their_dialogs() {
                 && status.rebuild.state == silico_core::command::RebuildState::Done
         })
     });
-    assert!(fields_of(&text_of(&f, &h), "Pad").is_some());
+    assert!(fields_of(&text_of(&f.sessions, &h), "Pad").is_some());
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| {
         h.query_by_role(Role::Dialog).is_none()
     });
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), SKETCHED_EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED_EXAMPLE);
     // interact.js's `modifyMenu`: the edge tools, and the booleans under a heading, the edge tools
     // built.
     open(&mut h, "MODIFY");
@@ -20341,7 +20313,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
                 step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
                 let ok = command == Command::Ok;
-                let pads = |h: &AppHarness| text_of(&f, h).matches("\"pad\"").count();
+                let pads = |h: &AppHarness| text_of(&f.sessions, h).matches("\"pad\"").count();
                 let mut kept = pads(&h);
                 for chord in keys_of(command) {
                     for by_keys in [true, false] {
@@ -20455,7 +20427,10 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     menu_click(&mut h, "PEG", entry.label);
                     renamed_in_field(&mut h, "Peg", "Pin");
                 }
-                assert_eq!(names_of(&text_of(&f, &h)), ["Block", "Pin", "Hole"]);
+                assert_eq!(
+                    names_of(&text_of(&f.sessions, &h)),
+                    ["Block", "Pin", "Hole"]
+                );
             }
             Command::Delete => {
                 // Each of its keys, then the menu's item: the hole deleted, then undone.
@@ -20468,7 +20443,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     step_until(&mut h, "deleted by its keys", |h| {
                         !shows(h, "Timeline", "Hole")
                     });
-                    assert_eq!(names_of(&text_of(&f, &h)), ["Block", "Pin"]);
+                    assert_eq!(names_of(&text_of(&f.sessions, &h)), ["Block", "Pin"]);
                     h.get_by_role_and_label(Role::Button, "Undo").click();
                     step_until(&mut h, "undone", |h| shows(h, "Timeline", "Hole"));
                     settled(&mut h);
@@ -20478,7 +20453,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 step_until(&mut h, "deleted by its menu", |h| {
                     !shows(h, "Timeline", "Hole")
                 });
-                assert_eq!(names_of(&text_of(&f, &h)), ["Block", "Pin"]);
+                assert_eq!(names_of(&text_of(&f.sessions, &h)), ["Block", "Pin"]);
             }
             Command::Suppress | Command::FindInBrowser | Command::FindInTimeline => {
                 // No keys, as the prototype gives none: each the menus' item, labelled as
@@ -20496,7 +20471,7 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 menu_click(&mut h, "HOLE", entry.label);
                 match command {
                     Command::Suppress => step_until(&mut h, "suppressed", |h| {
-                        text_of(&f, h).contains(r#""name": "Hole", "suppressed": true,"#)
+                        text_of(&f.sessions, h).contains(r#""name": "Hole", "suppressed": true,"#)
                     }),
                     // Found: the hole selected, as the right-click left it, and from then
                     // on selected in the other pane (where F2 renames it), which the
@@ -20856,7 +20831,7 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
     create_sketch(&mut h, "XY plane");
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Sketch1"),
+        fields_of(&text_of(&f.sessions, &h), "Sketch1"),
         Some(empty_sketch("Sketch1", r#""xy""#))
     );
     // The sketch bar in the canvas, naming it and its plane; the palette's status the
@@ -20883,7 +20858,7 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
             .is_disabled()
     );
     leave_sketch(&mut h, true);
-    assert!(fields_of(&text_of(&f, &h), "Sketch1").is_some());
+    assert!(fields_of(&text_of(&f.sessions, &h), "Sketch1").is_some());
     assert!(
         h.query_by_role_and_label(Role::Toolbar, "Sketch bar")
             .is_none()
@@ -20892,7 +20867,7 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
     h.get_by_role_and_label(Role::Button, "Undo").click();
     step(&mut h);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     let undos = h.state().tabs()[0]
         .sent
         .iter()
@@ -20910,11 +20885,11 @@ fn cancel_of_a_sketch_that_began_the_transaction_rolls_it_back_byte_for_byte() {
     create_sketch(&mut h, "XZ plane");
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Sketch1"),
+        fields_of(&text_of(&f.sessions, &h), "Sketch1"),
         Some(empty_sketch("Sketch1", r#""xz""#))
     );
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     let tab = &h.state().tabs()[0];
     assert!(!tab.transaction);
     assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
@@ -20929,15 +20904,15 @@ fn cancel_of_a_sketch_after_earlier_edits_undoes_to_where_it_opened_byte_for_byt
     select(&mut h, "Pin");
     type_name(&mut h, "K");
     settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     assert!(before.contains(r#""name": "PinK""#));
     let opened_at = h.state().tabs()[0].revision;
     create_sketch(&mut h, "YZ plane");
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sketch_opened_at(), Some(opened_at));
-    assert!(fields_of(&text_of(&f, &h), "Sketch1").is_some());
+    assert!(fields_of(&text_of(&f.sessions, &h), "Sketch1").is_some());
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     let tab = &h.state().tabs()[0];
     assert!(tab.transaction);
     assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
@@ -20982,10 +20957,10 @@ fn edit_sketch_from_the_browser_opens_it_at_the_revision_its_asked_at_and_reads_
     }
     assert_eq!(sketch_mode(&h).unwrap().reads, reads);
     // Its own Cancel, nothing of its own sent, undoes nothing.
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let sent = h.state().tabs()[0].sent.len();
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(h.state().tabs()[0].sent.len(), sent);
     // And from its context menu, the feature's menu (#398), its Edit Sketch on.
     menu_on(&mut h, "Browser", "Triangle");
@@ -21013,7 +20988,7 @@ fn delete_removes_the_selection_and_the_sketch_loses_those_members() {
     h.key_press(eframe::egui::Key::Delete);
     step(&mut h);
     settled(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     // The line goes; both its ends stay, each the end of another side.
     assert!(!text.contains("na000000"), "{text}");
     for kept in ["nb000000", "nc000000", "pa000000", "pb000000", "pc000000"] {
@@ -21061,7 +21036,10 @@ fn delete_of_a_split_point_joins_its_pieces() {
     // One line from pa000001 to pa000002 again; the point, the other piece, and the
     // tangency joining them gone (the design's `sketch_join`).
     let joined = r#"{"type": "sketch", "name": "Split", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 60, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}"#;
-    assert_eq!(fields_of(&text_of(&f, &h), "Split"), Some(expected(joined)));
+    assert_eq!(
+        fields_of(&text_of(&f.sessions, &h), "Split"),
+        Some(expected(joined))
+    );
     assert!(
         h.state().tabs()[0]
             .sent
@@ -21086,7 +21064,7 @@ fn delete_of_a_corner_no_tangency_holds_says_why_the_join_is_refused() {
     h.key_press(eframe::egui::Key::Delete);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     let tab = &h.state().tabs()[0];
     assert!(tab.sent.contains(&Sent::SketchEdit("sketch_join")));
     let said = tab.message.clone().unwrap_or_default();
@@ -21147,7 +21125,7 @@ fn another_clients_edit_inside_sketch_mode_is_no_reload_and_cancel_undoes_it_wit
     select(&mut h, "Plate");
     type_name(&mut h, "K");
     settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     double_click(&mut h, "Browser", "Triangle");
     sketch_read(&mut h);
     settled(&mut h);
@@ -21169,7 +21147,7 @@ fn another_clients_edit_inside_sketch_mode_is_no_reload_and_cancel_undoes_it_wit
     // Cancel undoes back to where it opened: the delete and the other client's edit go,
     // the rename before it stays.
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(
         h.state().tabs()[0].sent.last(),
         Some(&Sent::Undo(Some(opened_at)))
@@ -21364,7 +21342,7 @@ fn delete_and_backspace_in_one_frame_delete_the_selection_once() {
         .filter(|sent| **sent == Sent::SketchEdit("sketch_remove"))
         .count();
     assert_eq!(removes, 1);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     assert!(!text.contains("na000000"), "{text}");
     assert!(
         text.contains("nb000000") && text.contains("nc000000"),
@@ -21427,7 +21405,7 @@ fn del_and_backspace_delete_the_sketchs_selection_in_sketch_mode_and_the_feature
         assert_eq!(sketch_removes(&h), at + 1, "{key:?}");
         assert!(features_removed(&h).is_empty(), "{key:?}");
         assert_eq!(h.state().tabs()[0].told, None, "{key:?}");
-        let text = text_of(&f, &h);
+        let text = text_of(&f.sessions, &h);
         assert!(!text.contains(member), "{key:?}: {text}");
         assert!(text.contains("s0000001"), "{key:?}: {text}");
         assert!(sketch_mode(&h).is_some(), "{key:?}");
@@ -21445,7 +21423,7 @@ fn del_and_backspace_delete_the_sketchs_selection_in_sketch_mode_and_the_feature
         h.key_press(key);
         step_until(&mut h, "deleted", |h| !shows(h, "Timeline", name));
         settled(&mut h);
-        assert!(!text_of(&f, &h).contains(id), "{key:?}");
+        assert!(!text_of(&f.sessions, &h).contains(id), "{key:?}");
     }
     assert_eq!(
         features_removed(&h),
@@ -21580,7 +21558,7 @@ fn f2_and_the_feature_menus_items_but_find_are_off_in_sketch_mode_and_on_outside
             "{item} of {of}"
         );
     }
-    assert!(text_of(&f, &h).contains("s0000001"));
+    assert!(text_of(&f.sessions, &h).contains("s0000001"));
     // Esc with no menu open: the sketch's selection let go first, sketch mode kept.
     assert!(!sketch_mode(&h).unwrap().selection.is_empty());
     h.key_press(Key::Escape);
@@ -21665,11 +21643,11 @@ fn a_name_being_typed_as_sketch_mode_opens_is_sent_first_its_field_closed_and_ca
             sent.contains(&Sent::Edit("name".to_owned())),
             "by the menu {by_menu}: {sent:?}"
         );
-        assert!(names_of(&text_of(&f, &h)).contains(&"Dowel".to_owned()));
+        assert!(names_of(&text_of(&f.sessions, &h)).contains(&"Dowel".to_owned()));
         // Cancel undoes to where sketch mode opened, after the rename: the name kept.
         leave_sketch(&mut h, false);
         assert_eq!(
-            names_of(&text_of(&f, &h)),
+            names_of(&text_of(&f.sessions, &h)),
             ["Dowel", "Plate", "Triangle"],
             "by the menu {by_menu}"
         );
@@ -21914,7 +21892,7 @@ fn create_sketch_on_a_face_writes_the_face_and_the_core_fills_in_its_x() {
     settled(&mut h);
     // Face6 faces +Z: its x is +x, the attacher's default for a normal along z.
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Sketch1"),
+        fields_of(&text_of(&f.sessions, &h), "Sketch1"),
         Some(empty_sketch(
             "Sketch1",
             r#"{"face": "b0000001.box.Face6", "x": "+x", "reversed": false}"#
@@ -21923,7 +21901,7 @@ fn create_sketch_on_a_face_writes_the_face_and_the_core_fills_in_its_x() {
     sketch_read(&mut h);
     assert!(sketch_mode(&h).unwrap().plane_problem().is_none());
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), BLOCK);
+    assert_eq!(text_of(&f.sessions, &h), BLOCK);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21941,7 +21919,7 @@ fn create_sketch_on_a_face_the_core_refuses_says_why_and_leaves_sketch_mode_and_
     let tab = &h.state().tabs()[0];
     assert!(tab.message.is_some());
     assert!(!tab.transaction);
-    assert_eq!(text_of(&f, &h), BLOCK);
+    assert_eq!(text_of(&f.sessions, &h), BLOCK);
     // Hostile names: quotes and backslashes reach the core as the string they are.
     let sessions = Arc::clone(h.state().sessions());
     h.state_mut().tabs_mut()[0].create_sketch_on_face(&sessions, "a\"b\\c");
@@ -21950,7 +21928,7 @@ fn create_sketch_on_a_face_the_core_refuses_says_why_and_leaves_sketch_mode_and_
     });
     settled(&mut h);
     assert!(h.state().tabs()[0].message.is_some());
-    assert_eq!(text_of(&f, &h), BLOCK);
+    assert_eq!(text_of(&f.sessions, &h), BLOCK);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21990,7 +21968,7 @@ fn a_refused_read_is_kept_and_said_and_delete_still_goes_to_the_core() {
         h.state().tabs()[0].sent.last(),
         Some(&Sent::SketchEdit("sketch_remove"))
     );
-    assert!(!text_of(&f, &h).contains("na000000"));
+    assert!(!text_of(&f.sessions, &h).contains("na000000"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22012,7 +21990,7 @@ fn triangle_open(f: &Fixture, edited: bool) -> (AppHarness, String) {
         type_name(&mut h, "K");
         settled(&mut h);
     }
-    let before = text_of(f, &h);
+    let before = text_of(&f.sessions, &h);
     double_click(&mut h, "Browser", "Triangle");
     sketch_read(&mut h);
     settled(&mut h);
@@ -22026,7 +22004,7 @@ fn finish_after_two_deletes_inside_a_transaction_is_one_undo_step_back_to_before
     assert!(before.contains(r#""name": "PlateK""#));
     delete_line(&mut h, "na000000");
     delete_line(&mut h, "nb000000");
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     assert!(!text.contains("na000000") && !text.contains("nb000000"));
     leave_sketch(&mut h, true);
     let undos = |h: &AppHarness| {
@@ -22041,7 +22019,7 @@ fn finish_after_two_deletes_inside_a_transaction_is_one_undo_step_back_to_before
     step(&mut h);
     settled(&mut h);
     // One undo, of both deletes at once: the text before sketch mode opened, the rename kept.
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(undos(&h), 1);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -22052,9 +22030,9 @@ fn cancel_after_a_delete_that_began_the_transaction_rolls_it_back_and_leaves_non
     let (mut h, before) = triangle_open(&f, false);
     assert_eq!(before, SKETCHED);
     delete_line(&mut h, "na000000");
-    assert!(!text_of(&f, &h).contains("na000000"));
+    assert!(!text_of(&f.sessions, &h).contains("na000000"));
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     let tab = &h.state().tabs()[0];
     assert!(!tab.transaction);
     assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
@@ -22068,7 +22046,7 @@ fn cancel_after_a_delete_following_an_earlier_edit_undoes_to_where_it_opened() {
     let opened_at = h.state().tabs()[0].sketch_opened_at().unwrap();
     delete_line(&mut h, "na000000");
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     let tab = &h.state().tabs()[0];
     assert!(tab.transaction);
     assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
@@ -22086,7 +22064,7 @@ fn undo_and_redo_step_inside_sketch_mode_never_past_where_it_opened() {
     delete_line(&mut h, "na000000");
     delete_line(&mut h, "nb000000");
     let lines = |f: &Fixture, h: &AppHarness| {
-        let text = text_of(f, h);
+        let text = text_of(&f.sessions, h);
         ["na000000", "nb000000", "nc000000"]
             .into_iter()
             .filter(|line| text.contains(line))
@@ -22109,12 +22087,12 @@ fn undo_and_redo_step_inside_sketch_mode_never_past_where_it_opened() {
     // Twice more: both back, at where it opened; a third does nothing.
     press(&mut h, Key::Z);
     press(&mut h, Key::Z);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert!(sketch_mode(&h).is_some());
     let sent = h.state().tabs()[0].sent.len();
     press(&mut h, Key::Z);
     assert_eq!(h.state().tabs()[0].sent.len(), sent);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert!(!undo_on(&h));
     // Redo gives back only what it undid: twice, then nothing.
     press(&mut h, Key::Y);
@@ -22598,15 +22576,15 @@ fn a_sketch_opened_while_the_last_ones_finish_waits_and_its_undo_never_passes_wh
     double_click(&mut h, "Browser", "Bar");
     sketch_read(&mut h);
     settled(&mut h);
-    let opened = text_of(&f, &h);
+    let opened = text_of(&f.sessions, &h);
     assert!(!opened.contains("na000000") && !opened.contains("nb000000"));
     // Its undo is off: nothing of its own to undo, the Triangle's Finish behind it.
     let sent = undos(&h);
     chord(&mut h, eframe::egui::Key::Z);
     assert_eq!(undos(&h), sent);
-    assert_eq!(text_of(&f, &h), opened);
+    assert_eq!(text_of(&f.sessions, &h), opened);
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), opened);
+    assert_eq!(text_of(&f.sessions, &h), opened);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22622,7 +22600,7 @@ fn a_second_undo_queued_inside_sketch_mode_is_dropped_at_where_it_opened() {
     tab.step(&sessions, true);
     tab.step(&sessions, true);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(undos(&h), 1);
     // The one undo that ran is the one counted: one for Redo to give back.
     assert_eq!(sketch_mode(&h).unwrap().undone, 1);
@@ -22636,7 +22614,7 @@ fn finish_after_an_undo_inside_keeps_what_was_undone_undone() {
     delete_line(&mut h, "na000000");
     delete_line(&mut h, "nb000000");
     chord(&mut h, eframe::egui::Key::Z);
-    let finished = text_of(&f, &h);
+    let finished = text_of(&f.sessions, &h);
     assert!(finished.contains("nb000000") && !finished.contains("na000000"));
     leave_sketch(&mut h, true);
     // Redo off at Finish's end: the undone delete isn't redone past it.
@@ -22644,12 +22622,12 @@ fn finish_after_an_undo_inside_keeps_what_was_undone_undone() {
     let sent = h.state().tabs()[0].sent.len();
     chord(&mut h, eframe::egui::Key::Y);
     assert_eq!(h.state().tabs()[0].sent.len(), sent);
-    assert_eq!(text_of(&f, &h), finished);
+    assert_eq!(text_of(&f.sessions, &h), finished);
     // One Undo takes sketch mode's edits back, the rename kept; Redo gives them back.
     chord(&mut h, eframe::egui::Key::Z);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     chord(&mut h, eframe::egui::Key::Y);
-    assert_eq!(text_of(&f, &h), finished);
+    assert_eq!(text_of(&f.sessions, &h), finished);
     assert!(!h.state().tabs()[0].redoable());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -22660,12 +22638,12 @@ fn finish_undone_back_to_where_a_sketch_began_the_transaction_leaves_none_open()
     let (mut h, before) = triangle_open(&f, false);
     delete_line(&mut h, "na000000");
     chord(&mut h, eframe::egui::Key::Z);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     leave_sketch(&mut h, true);
     let tab = &h.state().tabs()[0];
     assert!(!tab.transaction);
     assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22678,7 +22656,7 @@ fn redo_inside_sketch_mode_never_gives_back_what_was_undone_before_it_opened() {
     type_name(&mut h, "K");
     settled(&mut h);
     chord(&mut h, eframe::egui::Key::Z);
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     assert!(h.state().tabs()[0].redoable());
     double_click(&mut h, "Browser", "Triangle");
     sketch_read(&mut h);
@@ -22687,12 +22665,12 @@ fn redo_inside_sketch_mode_never_gives_back_what_was_undone_before_it_opened() {
     let sent = h.state().tabs()[0].sent.len();
     chord(&mut h, eframe::egui::Key::Y);
     assert_eq!(h.state().tabs()[0].sent.len(), sent);
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     // Finished, having changed nothing: the rename's redo is the person's again.
     leave_sketch(&mut h, true);
     assert!(h.state().tabs()[0].redoable());
     chord(&mut h, eframe::egui::Key::Y);
-    assert!(text_of(&f, &h).contains(r#""name": "PlateK""#));
+    assert!(text_of(&f.sessions, &h).contains(r#""name": "PlateK""#));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22713,7 +22691,7 @@ fn an_edit_after_a_finish_that_fenced_redo_lets_its_own_undo_be_redone() {
     chord(&mut h, eframe::egui::Key::Z);
     assert!(h.state().tabs()[0].redoable());
     chord(&mut h, eframe::egui::Key::Y);
-    assert!(text_of(&f, &h).contains(r#""name": "PlateKQ""#));
+    assert!(text_of(&f.sessions, &h).contains(r#""name": "PlateKQ""#));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22723,14 +22701,14 @@ fn what_cancel_discarded_isnt_redoable_after_it() {
     let (mut h, before) = triangle_open(&f, true);
     delete_line(&mut h, "na000000");
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // Cancel undid the delete; Redo would give it back, so it's off, and Ctrl+Y sends
     // nothing.
     assert!(!h.state().tabs()[0].redoable());
     let sent = h.state().tabs()[0].sent.len();
     chord(&mut h, eframe::egui::Key::Y);
     assert_eq!(h.state().tabs()[0].sent.len(), sent);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22741,15 +22719,15 @@ fn finish_or_cancel_back_at_where_it_opened_by_an_undo_changes_nothing_of_the_un
         let (mut h, before) = triangle_open(&f, true);
         delete_line(&mut h, "na000000");
         chord(&mut h, eframe::egui::Key::Z);
-        assert_eq!(text_of(&f, &h), before);
+        assert_eq!(text_of(&f.sessions, &h), before);
         let sent = undos(&h);
         leave_sketch(&mut h, finish);
         // Nothing grouped, nothing undone: the state is where it opened.
         assert_eq!(undos(&h), sent, "finish: {finish}");
-        assert_eq!(text_of(&f, &h), before);
+        assert_eq!(text_of(&f.sessions, &h), before);
         // The next Undo is the rename's.
         chord(&mut h, eframe::egui::Key::Z);
-        assert_eq!(text_of(&f, &h), SKETCHED, "finish: {finish}");
+        assert_eq!(text_of(&f.sessions, &h), SKETCHED, "finish: {finish}");
         assert_eq!(never_waits::waits(), 0);
     }
 }
@@ -22874,7 +22852,7 @@ fn hand_camera_at(h: &mut AppHarness, at: usize) {
 
 /// The sketch `id` as the session's document holds it.
 fn sketch_of_text(f: &Fixture, h: &AppHarness, id: &str) -> silico_core::document::Sketch {
-    let document = silico_core::document::read(text_of(f, h).as_bytes()).unwrap();
+    let document = silico_core::document::read(text_of(&f.sessions, h).as_bytes()).unwrap();
     document
         .features
         .into_iter()
@@ -23155,7 +23133,7 @@ fn a_refused_add_is_said_and_forgotten_so_its_chain_ends() {
     let said = h.state().tabs()[0].message.clone().unwrap_or_default();
     assert!(said.contains("1024"), "{said}");
     assert!(anywhere(&h, &said));
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     // The chain's last point was the refused add's: forgotten, so the chain ended there,
     // and the next click begins one, sending nothing.
     sketch_events(&f, &mut h, &clicked(50.0, 15.0));
@@ -23181,7 +23159,7 @@ fn an_add_another_client_undoes_is_forgotten_once_a_read_without_it_arrives() {
     let id = h.state().tabs()[0].id;
     let revision = h.state().tabs()[0].revision;
     assert!(f.sessions.undo(&id, revision, None).wait().result.is_ok());
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     read_with_lines(&mut h, 3);
     // The chain's last point, (40, 35), is gone: the next click begins a chain, sending
     // nothing; the one after draws from it, a line from (50, 35) to (60, 45).
@@ -23297,10 +23275,10 @@ fn trim_to_closest_and_split_send_their_commands_and_their_results_read_back() {
         }));
     read_with_lines(&mut h, 3);
     // A split at na000001's end, pa000001, is the core's to refuse: said, nothing changed.
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     sketch_events(&f, &mut h, &clicked(0.0, 0.0));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     let said = h.state().tabs()[0].message.clone().unwrap_or_default();
     assert!(said.contains("end"), "{said}");
     assert!(anywhere(&h, &said));
@@ -23351,7 +23329,7 @@ fn a_tools_add_undone_inside_sketch_mode_is_forgotten_once_a_read_without_it_arr
     // Its own Undo, the chain still under way: the add answered at the revision it made, so
     // the read of the undo's revision, without it, ends the chain there.
     chord(&mut h, eframe::egui::Key::Z);
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     read_with_lines(&mut h, 3);
     sketch_events(&f, &mut h, &clicked(50.0, 35.0));
     settled(&mut h);
@@ -23368,7 +23346,7 @@ fn a_rectangle_then_another_clients_edit_are_both_undone_by_cancel() {
     select(&mut h, "Plate");
     type_name(&mut h, "K");
     settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     double_click(&mut h, "Browser", "Triangle");
     sketch_read(&mut h);
     h.key_press(eframe::egui::Key::R);
@@ -23380,11 +23358,11 @@ fn a_rectangle_then_another_clients_edit_are_both_undone_by_cancel() {
     step_until(&mut h, "the other client's revision", |h| {
         h.state().tabs()[0].revision == moved
     });
-    assert!(text_of(&f, &h).contains(r#""name": "Spacer""#));
+    assert!(text_of(&f.sessions, &h).contains(r#""name": "Spacer""#));
     // Cancel: the rectangle gone, and the other client's edit with it; the rename before
     // sketch mode kept.
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -23501,7 +23479,7 @@ fn a_tools_adds_with_no_sketch_to_send_them_to_are_refused_to_it() {
     sketch_events(&f, &mut h, &clicked(50.0, 30.0));
     settled(&mut h);
     assert_eq!(adds_sent(&h), 0);
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -23824,7 +23802,7 @@ fn a_conflicting_dimension_is_placed_reads_over_defined_naming_them_and_driven_c
     counting(&f);
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     let (id, right, _) = fully_defined(&f, &mut h);
-    let before_any = text_of(&f, &h);
+    let before_any = text_of(&f.sessions, &h);
     // A second length of the right side, 30 where the first holds 20: placed, not refused.
     let third = over_define(&f, &mut h, 60.0, "30", 9);
     let sketch = sketch_of_text(&f, &h, &id);
@@ -23874,14 +23852,14 @@ fn a_conflicting_dimension_is_placed_reads_over_defined_naming_them_and_driven_c
         sketch_state(h) == Some((SketchState::FullyDefined, 0)) && prompt(h).is_none()
     });
     // Cancel (Esc, the prompt's key): `undo`, the text as it was before the add, byte for byte.
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     over_define(&f, &mut h, 65.0, "35", 10);
     step_until(&mut h, "the prompt", |h| prompt(h).is_some());
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     step_until(&mut h, "the prompt closed", |h| prompt(h).is_none());
     // Leave: nothing sent; the sketch over defined, the dimension kept, driving.
     read_with_constraints(&mut h, 9);
@@ -23998,7 +23976,7 @@ fn a_conflicting_dimension_is_placed_reads_over_defined_naming_them_and_driven_c
             .iter()
             .any(|c| c.id.as_str() == cancelled)
     );
-    assert_ne!(text_of(&f, &h), before_any);
+    assert_ne!(text_of(&f.sessions, &h), before_any);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -24622,7 +24600,7 @@ fn a_dragged_corner_follows_the_newest_cursor_one_move_in_flight_the_ui_never_wa
     let f = fixture();
     counting(&f);
     let mut h = boxed_sketch(&f);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     // Pressed on the corner pa000003, (50, 30), and moved to (52, 32): a drag, begun.
     sketch_events(
         &f,
@@ -24710,7 +24688,7 @@ fn a_dragged_corner_follows_the_newest_cursor_one_move_in_flight_the_ui_never_wa
     // Its one undo gives the text back, byte for byte.
     h.state_mut().tabs_mut()[0].step(&Arc::clone(&f.sessions), true);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -24721,7 +24699,7 @@ fn esc_and_a_cancel_end_a_drag_from_its_begin_leaving_the_text_and_a_fully_defin
     let f = fixture();
     counting(&f);
     let mut h = boxed_sketch(&f);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     for (k, end) in [(1, "esc"), (2, "cancel")] {
         sketch_events(
             &f,
@@ -24740,7 +24718,7 @@ fn esc_and_a_cancel_end_a_drag_from_its_begin_leaving_the_text_and_a_fully_defin
         settled(&mut h);
         step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
         assert_eq!(drag_sends(&h, "drag_end"), k, "{end}");
-        assert_eq!(text_of(&f, &h), text, "{end}");
+        assert_eq!(text_of(&f.sessions, &h), text, "{end}");
     }
     // Every member fully defined (the fake's own answer: all fixed): pressed and moved, the
     // corner starts no drag, and its release selects it.
@@ -25034,7 +25012,7 @@ fn finish_while_a_released_drags_end_is_held_keeps_its_edit_and_one_undo_takes_i
     let f = fixture();
     counting(&f);
     let mut h = boxed_sketch(&f);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     sketch_events(
         &f,
         &mut h,
@@ -25076,7 +25054,7 @@ fn finish_while_a_released_drags_end_is_held_keeps_its_edit_and_one_undo_takes_i
     assert!(h.state().tabs()[0].undoable());
     h.state_mut().tabs_mut()[0].step(&Arc::clone(&f.sessions), true);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -25086,7 +25064,7 @@ fn finish_by_its_key_mid_drag_ends_the_drag_from_its_begin_and_leaves_no_drag_op
     let f = fixture();
     counting(&f);
     let mut h = boxed_sketch(&f);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     sketch_events(
         &f,
         &mut h,
@@ -25102,7 +25080,7 @@ fn finish_by_its_key_mid_drag_ends_the_drag_from_its_begin_and_leaves_no_drag_op
     assert_eq!(drag_sends(&h, "drag_end"), 1);
     assert!(the_drag(&h).is_none());
     assert_eq!(status_drag(&f, &h), None);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -25124,7 +25102,7 @@ fn cancel_after_a_released_drag_whose_end_is_held_undoes_it_with_no_conflict() {
     settled(&mut h);
     step_until(&mut h, "the drag's read", |h| the_drag(h).is_none());
     leave_sketch(&mut h, true);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     double_click(&mut h, "Browser", "Box");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     sketch_read(&mut h);
@@ -25151,7 +25129,7 @@ fn cancel_after_a_released_drag_whose_end_is_held_undoes_it_with_no_conflict() {
     settled(&mut h);
     // Undone to where it opened, the first drag's edit kept, no conflict said.
     assert_eq!(h.state().tabs()[0].message, None);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert!(h.state().tabs()[0].transaction);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -25312,7 +25290,7 @@ fn esc_takes_a_held_drag_then_the_prompts_cancel(tool: Option<silico_app::viewpo
     settled(&mut h);
     assert!(sketch_mode(&h).unwrap().offer().is_none());
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(view(&h).tool, tool);
     if tool.is_some() {
         // The Modify box, the sketch read again, 33 typed into it: Esc closes it, its value
@@ -25336,7 +25314,7 @@ fn esc_takes_a_held_drag_then_the_prompts_cancel(tool: Option<silico_app::viewpo
         settled(&mut h);
         assert!(sketch_mode(&h).unwrap().edit_box.is_none());
         assert_eq!(h.state().tabs()[0].sent, sent);
-        assert_eq!(text_of(&f, &h), text);
+        assert_eq!(text_of(&f.sessions, &h), text);
         assert_eq!(view(&h).tool, tool);
         // Then the bar's tool.
         h.key_press(Key::Escape);
@@ -25431,7 +25409,7 @@ fn esc_while_the_begin_is_unanswered_ends_the_drag_once_it_answers() {
     let f = fixture();
     counting(&f);
     let mut h = boxed_sketch(&f);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     // Another client's fresh check, its rebuild's solve held, ahead in the session's queue.
     f.sketches.hold();
     let session = h.state().tabs()[0].id;
@@ -25458,7 +25436,7 @@ fn esc_while_the_begin_is_unanswered_ends_the_drag_once_it_answers() {
     step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
     assert_eq!(drag_sends(&h, "drag_end"), 1);
     assert_eq!(status_drag(&f, &h), None);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -25581,7 +25559,7 @@ fn over_define_offered(
 ) -> (AppHarness, String) {
     counting_redundant_99(f);
     let mut h = boxed_length(f);
-    let text = text_of(f, &h);
+    let text = text_of(&f.sessions, &h);
     if let Some(tool) = tool {
         click_on_bar(&mut h, &format!("{tool:?}"));
     }
@@ -25598,7 +25576,7 @@ fn a_dimension_edited_to_0_is_sent_and_the_gates_refusal_said_in_its_box() {
     let f = fixture();
     counting(&f);
     let mut h = boxed_length(&f);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     edit_length(&f, &mut h, "0");
     // Sent, as the core reads the text (a number it holds); refused by the gate, its words
     // in the box, which stays open, and the text as it was.
@@ -25611,7 +25589,7 @@ fn a_dimension_edited_to_0_is_sent_and_the_gates_refusal_said_in_its_box() {
     let said = edit.said.unwrap();
     assert_eq!(Some(said.clone()), h.state().tabs()[0].message);
     assert!(!edit.sent);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert!(prompt(&h).is_none());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -25702,7 +25680,7 @@ fn a_right_click_in_sketch_mode_opens_its_menu_whose_cancel_sketch_leaves_it() {
     let f = fixture();
     counting(&f);
     let mut h = boxed_sketch(&f);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     let at = to_screen([20.0, 20.0]).unwrap();
     sketch_events(
         &f,
@@ -25747,7 +25725,7 @@ fn a_right_click_in_sketch_mode_opens_its_menu_whose_cancel_sketch_leaves_it() {
         h.query_by_role_and_label(Role::Menu, "Sketch menu")
             .is_none()
     );
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -26291,7 +26269,7 @@ fn a_corner_dragged_through_the_pane_follows_the_cursor_and_ends_in_one_edit_the
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     sketch_read(&mut h);
     top_view(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     // The free corner pa000003, (50, 30), pressed and moved to (52, 32): a drag, begun, its
     // first frame as the fake answers (the cursor plus a thousandth of where it began).
     pane_press(&mut h, [50.0, 30.0]);
@@ -26326,7 +26304,7 @@ fn a_corner_dragged_through_the_pane_follows_the_cursor_and_ends_in_one_edit_the
     let sketch = sketch_of_text(&f, &h, "s0000001");
     point_near(&sketch, 52.05, 32.03, THROUGH_THE_PANE);
     point_near(&sketch, 10.0, 10.0, 0.0);
-    assert_ne!(text_of(&f, &h), text);
+    assert_ne!(text_of(&f.sessions, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -26341,7 +26319,7 @@ fn a_drag_held_when_its_tab_is_hidden_ends_from_its_begin_and_its_corner_is_wher
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     sketch_read(&mut h);
     top_view(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     let first = h.state().tabs()[0].id;
     // The corner pressed and dragged to (60, 40), begun and drawn there, still held.
     pane_press(&mut h, [50.0, 30.0]);
@@ -26373,7 +26351,7 @@ fn a_drag_held_when_its_tab_is_hidden_ends_from_its_begin_and_its_corner_is_wher
     pane_release(&mut h, [62.0, 42.0]);
     pane_move(&mut h, [64.0, 44.0]);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     // Back on the first: the corner where it was, read and drawn, with no drag.
     h.get_by_role_and_label(Role::Button, "example.silico")
         .click();
@@ -26398,7 +26376,7 @@ fn a_drag_held_when_its_tab_is_hidden_ends_from_its_begin_and_its_corner_is_wher
     assert_eq!(drawn.len(), 1, "{drawn:?}");
     assert!((drawn[0] - top_screen(&h, [50.0, 30.0])).length() < 1e-2);
     assert_eq!(drag_sends(&h, "drag_begin"), 1);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -27143,7 +27121,7 @@ fn after_the_over_define_prompts_cancel_redo_is_off_and_its_key_sends_nothing_bu
     counting(&f);
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     let (id, _, top) = fully_defined(&f, &mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     // A third length, over defining it, then the prompt's Cancel (Esc): its `undo`.
     over_define(&f, &mut h, 65.0, "35", 9);
     step_until(&mut h, "the prompt", |h| prompt(h).is_some());
@@ -27151,7 +27129,7 @@ fn after_the_over_define_prompts_cancel_redo_is_off_and_its_key_sends_nothing_bu
     step(&mut h);
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     step_until(&mut h, "the prompt closed", |h| prompt(h).is_none());
     // The session holds the dimension to redo, as a status of the undo's revision counts
     // it; Redo stays off all the same, as SolidWorks' Cancel leaves nothing to redo.
@@ -27169,7 +27147,7 @@ fn after_the_over_define_prompts_cancel_redo_is_off_and_its_key_sends_nothing_bu
     step(&mut h);
     settled(&mut h);
     assert_eq!(steps_sent(&h), sent);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // An ordinary undo (the top's length) offers Redo, which gives it back, and no further:
     // the conflicting dimension never comes back.
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
@@ -27186,7 +27164,7 @@ fn after_the_over_define_prompts_cancel_redo_is_off_and_its_key_sends_nothing_bu
     step(&mut h);
     settled(&mut h);
     assert_eq!(steps_sent(&h), sent + 2);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     step_until(&mut h, "a status of the redo", |h| {
         h.state().tabs()[0]
             .transaction()
@@ -27221,7 +27199,7 @@ fn a_released_drags_edit_is_undone_though_the_rebuild_after_it_is_stopped_before
     double_click(&mut h, "Browser", "Box");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     sketch_read(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     sketch_events(
         &f,
         &mut h,
@@ -27235,7 +27213,7 @@ fn a_released_drags_edit_is_undone_though_the_rebuild_after_it_is_stopped_before
     step_until(&mut h, "the drag's end answered", |h| {
         the_drag(h).is_some_and(|d| d.ended() && !d.in_flight())
     });
-    assert_ne!(text_of(&f, &h), text);
+    assert_ne!(text_of(&f.sessions, &h), text);
     // Stop, before the rebuild publishes: the read of the drag's edit never comes.
     let stop_on = |h: &AppHarness| {
         h.query_all_by_role_and_label(Role::Button, "Stop")
@@ -27267,7 +27245,7 @@ fn a_released_drags_edit_is_undone_though_the_rebuild_after_it_is_stopped_before
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
     hold.release();
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -27376,7 +27354,7 @@ fn command_enter_alone_in_sketch_mode_finishes_it_and_asks_for_the_next_frame_at
     assert!(asks_at_once_after(&mut h, Modifiers::COMMAND, Key::Enter));
     assert!(sketch_mode(&h).is_none());
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -27428,7 +27406,7 @@ fn sketch_end_chain_ends_the_chain_under_way_and_keeps_the_tool() {
     sketch_events(&f, &mut h, &clicked(70.0, 30.0));
     settled(&mut h);
     assert_eq!(adds_sent(&h), 0);
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -27452,7 +27430,7 @@ fn a_tools_add_lets_go_of_what_was_said_and_of_what_sketch_mode_undid() {
     settled(&mut h);
     read_with_lines(&mut h, 3);
     assert_eq!(sketch_mode(&h).unwrap().undone, 1);
-    assert_eq!(text_of(&f, &h), SKETCHED);
+    assert_eq!(text_of(&f.sessions, &h), SKETCHED);
     // Something said meanwhile; then a segment from (50, 30) to (60, 35), its one add a new
     // edit: what was said let go, and what sketch mode undid dropped (section 9, as
     // Delete's edit drops it).
@@ -27548,7 +27526,7 @@ fn a_drag_ended_from_its_begin_after_an_undo_in_sketch_mode_keeps_what_was_undon
     let f = fixture();
     counting(&f);
     let mut h = boxed_sketch(&f);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     let pressed_on_newest = |f: &Fixture, h: &mut AppHarness, to: [f64; 2]| {
         // Pressed on a read of the session's state, as a drag begins only from one.
         step_until(h, "the read of the session's revision", |h| {
@@ -27573,14 +27551,14 @@ fn a_drag_ended_from_its_begin_after_an_undo_in_sketch_mode_keeps_what_was_undon
     sketch_events(&f, &mut h, &[pointer(Release, 52.0, 32.0)]);
     settled(&mut h);
     step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
-    let dragged = text_of(&f, &h);
+    let dragged = text_of(&f.sessions, &h);
     assert_ne!(dragged, text);
     step(&mut h);
     h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
     step(&mut h);
     settled(&mut h);
     assert_eq!(undone(&h), 1);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     // A second drag, ended by Esc from its begin state: it changed nothing, so it's no new
     // edit, and what was undone stays sketch mode's to redo.
     pressed_on_newest(&f, &mut h, [56.0, 36.0]);
@@ -27589,14 +27567,14 @@ fn a_drag_ended_from_its_begin_after_an_undo_in_sketch_mode_keeps_what_was_undon
     settled(&mut h);
     step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
     assert_eq!(drag_sends(&h, "drag_end"), 2);
-    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(undone(&h), 1);
     // Ctrl+Y gives the first drag's edit back.
     step(&mut h);
     h.key_press_modifiers(Modifiers::COMMAND, Key::Y);
     step(&mut h);
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), dragged);
+    assert_eq!(text_of(&f.sessions, &h), dragged);
     assert_eq!(undone(&h), 0);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -27737,7 +27715,7 @@ fn an_undo_refused_as_a_conflict_says_the_cores_refusal_not_the_prompts_overtake
         h.state().tabs()[0].edits.idle() && offered(h, "Undo")
     });
     let mine = h.state().tabs()[0].revision;
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     // The session's queue held; another client's edit queued first, then Ctrl+Z, made
     // against the revision the tab is at, which the other's moves the session past.
     let (hold, check) = hold_queue(&f, &h, 0);
@@ -30145,7 +30123,7 @@ fn sketch_on_this_face_creates_a_sketch_on_the_picked_face() {
     });
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Sketch1"),
+        fields_of(&text_of(&f.sessions, &h), "Sketch1"),
         Some(empty_sketch(
             "Sketch1",
             r#"{"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}"#
@@ -30154,7 +30132,7 @@ fn sketch_on_this_face_creates_a_sketch_on_the_picked_face() {
     sketch_read(&mut h);
     assert!(sketch_mode(&h).unwrap().plane_problem().is_none());
     leave_sketch(&mut h, false);
-    assert_eq!(text_of(&f, &h), A_BOX);
+    assert_eq!(text_of(&f.sessions, &h), A_BOX);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -30254,7 +30232,7 @@ fn a_sketch_on_a_face_consumes_nothing_so_a_pocket_or_pad_from_it_takes_that_bod
         let (mut h, sketch) = a_rectangle_on_the_blocks_top(&f, "box.silico", A_BOX, "Sketch1");
         a_sweep_from(&mut h, "Sketch1", kind);
         assert_eq!(
-            fields_of(&text_of(&f, &h), kind),
+            fields_of(&text_of(&f.sessions, &h), kind),
             Some(sweep_fields(kind, "k7f2qx3m", sketch.as_str())),
             "{kind}"
         );
@@ -30288,7 +30266,7 @@ fn a_pocket_or_pad_from_a_sketch_on_the_first_bodys_face_builds_on_that_body_not
             a_rectangle_on_the_blocks_top(&f, "block-and-pin.silico", BLOCK_AND_PIN, "Sketch1");
         a_sweep_from(&mut h, "Sketch1", kind);
         assert_eq!(
-            fields_of(&text_of(&f, &h), kind),
+            fields_of(&text_of(&f.sessions, &h), kind),
             Some(sweep_fields(kind, "k7f2qx3m", sketch.as_str())),
             "{kind}"
         );
@@ -30327,7 +30305,7 @@ fn sketches_picked_after_the_add(first: &str, first_base: &str, then: &[(&str, &
     };
     a_sweep_from(&mut h, first, "Pocket");
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pocket"),
+        fields_of(&text_of(&f.sessions, &h), "Pocket"),
         Some(sweep_fields("Pocket", first_base, &id(first)))
     );
     let mut want = None;
@@ -30337,7 +30315,7 @@ fn sketches_picked_after_the_add(first: &str, first_base: &str, then: &[(&str, &
             .click();
         let picked = id(sketch);
         step_until(&mut h, "the sketch picked sent", |h| {
-            fields_of(&text_of(&f, h), "Pocket").is_some_and(|fields| {
+            fields_of(&text_of(&f.sessions, h), "Pocket").is_some_and(|fields| {
                 fields
                     .iter()
                     .any(|(key, value)| key == "sketch" && *value == Plain::String(picked.clone()))
@@ -30345,12 +30323,16 @@ fn sketches_picked_after_the_add(first: &str, first_base: &str, then: &[(&str, &
         });
         settled(&mut h);
         want = Some(sweep_fields("Pocket", base, &picked));
-        assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), want, "{sketch}");
+        assert_eq!(
+            fields_of(&text_of(&f.sessions, &h), "Pocket"),
+            want,
+            "{sketch}"
+        );
     }
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), want);
+    assert_eq!(fields_of(&text_of(&f.sessions, &h), "Pocket"), want);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -30409,7 +30391,7 @@ fn edit_feature_on_a_sweep_keeps_its_base_when_another_bodys_face_sketch_is_pick
         .get_by_label("Sketch2")
         .click();
     step_until(&mut h, "the sketch picked sent", |h| {
-        fields_of(&text_of(&f, h), "Cut").is_some_and(|fields| {
+        fields_of(&text_of(&f.sessions, h), "Cut").is_some_and(|fields| {
             fields.iter().any(|(key, value)| {
                 key == "sketch" && *value == Plain::String("s0000002".to_owned())
             })
@@ -30419,11 +30401,11 @@ fn edit_feature_on_a_sweep_keeps_its_base_when_another_bodys_face_sketch_is_pick
     let want = Some(expected(
         r#"{"type": "pocket", "name": "Cut", "base": "a91cw0de", "sketch": "s0000002", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#,
     ));
-    assert_eq!(fields_of(&text_of(&f, &h), "Cut"), want);
+    assert_eq!(fields_of(&text_of(&f.sessions, &h), "Cut"), want);
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(fields_of(&text_of(&f, &h), "Cut"), want);
+    assert_eq!(fields_of(&text_of(&f.sessions, &h), "Cut"), want);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -30518,7 +30500,7 @@ fn a_refusal_from_the_adds_own_read_is_said_and_stands_while_the_tabs_timeline_i
         "{:?}",
         tab.sent
     );
-    assert_eq!(fields_of(&text_of(&f, &h), "Pocket"), None);
+    assert_eq!(fields_of(&text_of(&f.sessions, &h), "Pocket"), None);
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Loose")
         .click();
@@ -30531,12 +30513,12 @@ fn a_refusal_from_the_adds_own_read_is_said_and_stands_while_the_tabs_timeline_i
     settled(&mut h);
     assert!(dialog(&h).query_by_label(BLOCK_HELD_BY_JOINED).is_none());
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pocket"),
+        fields_of(&text_of(&f.sessions, &h), "Pocket"),
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
     );
     assert!(ok_enabled(&h));
     let sketch_of = |h: &AppHarness| {
-        fields_of(&text_of(&f, h), "Pocket")
+        fields_of(&text_of(&f.sessions, h), "Pocket")
             .unwrap()
             .into_iter()
             .find(|(key, _)| key == "sketch")
@@ -30591,7 +30573,7 @@ fn pocket_from_loose(f: &Fixture) -> AppHarness {
     });
     a_sweep_from(&mut h, "Loose", "Pocket");
     assert_eq!(
-        fields_of(&text_of(f, &h), "Pocket"),
+        fields_of(&text_of(&f.sessions, &h), "Pocket"),
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
     );
     assert!(ok_enabled(&h));
@@ -30629,14 +30611,14 @@ fn a_sketch_picked_back_after_a_refused_one_lifts_the_refusal_and_ok_commits_it(
         "an edit sent for Loose"
     );
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pocket"),
+        fields_of(&text_of(&f.sessions, &h), "Pocket"),
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
     );
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pocket"),
+        fields_of(&text_of(&f.sessions, &h), "Pocket"),
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
     );
     assert_eq!(never_waits::waits(), 0);
@@ -30676,7 +30658,7 @@ fn ok_clicked_in_the_frame_a_refused_sketch_is_picked_leaves_the_dialog_open() {
     settled(&mut h);
     assert!(dialog_open(&h));
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pocket"),
+        fields_of(&text_of(&f.sessions, &h), "Pocket"),
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
     );
     assert_eq!(never_waits::waits(), 0);
@@ -30728,7 +30710,7 @@ fn a_new_features_add_refused_as_stale_is_sent_again_and_lands() {
     theirs.wait().result.unwrap();
     added(&mut h);
     settled(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     assert!(fields_of(&text, "Theirs").is_some(), "{text}");
     assert!(fields_of(&text, "Pad").is_some(), "{text}");
     assert!(ok_enabled(&h));
@@ -30803,7 +30785,7 @@ fn an_old_dialogs_add_sent_while_a_new_dialog_is_open_leaves_the_new_ones_base_a
     });
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pocket"),
+        fields_of(&text_of(&f.sessions, &h), "Pocket"),
         Some(sweep_fields("Pocket", "a91cw0de", "s0000009"))
     );
     assert_eq!(never_waits::waits(), 0);
@@ -30827,7 +30809,7 @@ fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
     step_until(&mut h, "its sketches listed", |h| {
         shows(h, "Browser", "Sketch2") && shows(h, "Browser", "Loose")
     });
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Sketch2")
         .click();
@@ -30848,7 +30830,7 @@ fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
             .feature
             .is_none()
     );
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // Enter, OK's key, is off too: the dialog stays.
     h.key_press(eframe::egui::Key::Enter);
     step(&mut h);
@@ -30860,7 +30842,7 @@ fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
     // From Loose: added on Joined, the tip.
     a_sweep_from(&mut h, "Loose", "Pocket");
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pocket"),
+        fields_of(&text_of(&f.sessions, &h), "Pocket"),
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
     );
     assert!(ok_enabled(&h));
@@ -30874,7 +30856,7 @@ fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
     assert!(!ok_enabled(&h));
     // Nothing sent for Sketch2: the pocket is Loose's on Joined still; and Enter is off.
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Pocket"),
+        fields_of(&text_of(&f.sessions, &h), "Pocket"),
         Some(sweep_fields("Pocket", "j0000001", "s0000009"))
     );
     h.key_press(eframe::egui::Key::Enter);
@@ -30884,7 +30866,7 @@ fn a_pocket_whose_new_body_is_refused_cant_be_okd_with_its_new_sketch() {
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -32823,7 +32805,7 @@ fn plain(text: &str) -> Plain {
 
 /// The field `field` of the feature named `name`, as the session's document holds it.
 fn written(f: &Fixture, h: &AppHarness, name: &str, field: &str) -> Option<Plain> {
-    fields_of(&text_of(f, h), name)?
+    fields_of(&text_of(&f.sessions, h), name)?
         .into_iter()
         .find(|(key, _)| key == field)
         .map(|(_, value)| value)
@@ -32849,7 +32831,7 @@ fn a_fillet_dialog_fed_the_selection_of_two_edges_writes_a_fillet_naming_them() 
     meshes_a_real_box(&f);
     let (mut h, record) = f.drawn("box.silico", A_BOX);
     meshes_settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     click_edge(&mut h, &record, 1, 3, false);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
     click_edge(&mut h, &record, 1, 5, true);
@@ -32882,7 +32864,7 @@ fn a_fillet_dialog_fed_the_selection_of_two_edges_writes_a_fillet_naming_them() 
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     // The feature as its JSON line, written by hand, but its ID and version, the core's.
     assert_eq!(
         fields_of(&text, "Fillet"),
@@ -33080,7 +33062,7 @@ fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothi
     let (mut h, record) = f.drawn("fused.silico", FUSED);
     meshes_settled(&mut h);
     let body = body_of(&h, "rrrrrrrr");
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     // The fuse's Edge1, which the fuse's history doesn't report (the base's first edge
     // isn't kept, the tool's none): named by its number, unstable, and selectable.
     click_edge(&mut h, &record, body, 1, false);
@@ -33114,7 +33096,7 @@ fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothi
     );
     assert!(h.state().tabs()[0].selection().is_empty());
     assert_eq!(h.state().tabs()[0].sent, []);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // Clicked again with the dialog open: refused the same way, at its place in the pick,
     // and let go from the selection again.
     click_edge(&mut h, &record, body, 1, true);
@@ -33127,7 +33109,7 @@ fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothi
     assert!(boxed(&h).is_empty());
     assert!(h.state().tabs()[0].selection().is_empty());
     assert_eq!(h.state().tabs()[0].sent, []);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // A stable edge, the base's Edge2, kept by the fuse: taken, the refusal gone.
     click_edge(&mut h, &record, body, 2, true);
     boxed_until(&mut h, &["aaaaaaaa.box.Edge2"]);
@@ -33208,7 +33190,7 @@ fn a_fillet_dialogs_cancel_after_earlier_unsaved_edits_leaves_the_text_as_before
     select(&mut h, "Block");
     type_name(&mut h, "K");
     settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     assert!(before.contains(r#""name": "BlockK""#));
     let opened_at = h.state().tabs()[0].revision;
     click_edge(&mut h, &record, 1, 3, false);
@@ -33236,7 +33218,7 @@ fn a_fillet_dialogs_cancel_after_earlier_unsaved_edits_leaves_the_text_as_before
         .click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     let tab = &h.state().tabs()[0];
     assert!(tab.transaction);
     assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
@@ -33611,7 +33593,7 @@ fn edit_feature_on_a_fillet_a_later_feature_builds_on_takes_its_bases_edges_from
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Round"),
+        fields_of(&text_of(&f.sessions, &h), "Round"),
         Some(expected(
             r#"{"type": "fillet", "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge7"], "radius": 1}"#
         ))
@@ -33739,7 +33721,7 @@ fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distanc
         Some("1")
     );
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Chamfer"),
+        fields_of(&text_of(&f.sessions, &h), "Chamfer"),
         Some(expected(
             r#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 1}}"#
         ))
@@ -33750,7 +33732,7 @@ fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distanc
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     assert_eq!(
         fields_of(&text, "Chamfer"),
         Some(expected(
@@ -33885,7 +33867,7 @@ fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them()
     meshes_a_real_box(&f);
     let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
     meshes_settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let (block, other) = (body_of(&h, "k7f2qx3m"), body_of(&h, "a91cw0de"));
     // Nothing selected: both boxes empty, in Fusion's words, the target's active (lit) and
     // OK off.
@@ -33935,7 +33917,7 @@ fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them()
     assert!(dialog(&h).query_by_label("Other").is_some());
     assert_eq!(selected_features(&h), ["k7f2qx3m", "a91cw0de"]);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Union"),
+        fields_of(&text_of(&f.sessions, &h), "Union"),
         Some(expected(
             r#"{"type": "fuse", "name": "Union", "base": "k7f2qx3m", "tool": "a91cw0de"}"#
         ))
@@ -33947,7 +33929,7 @@ fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them()
     settled(&mut h);
     // The document as the canonical writer lays it out: the blocks as they were, and the
     // fuse after them, its ID and version the core's.
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     let want = format!(
         r#"{{
   "silico": 1,
@@ -34103,7 +34085,7 @@ fn a_union_opens_on_the_body_selected_and_a_second_pick_in_a_box_replaces_its_bo
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Union"),
+        fields_of(&text_of(&f.sessions, &h), "Union"),
         Some(expected(
             r#"{"type": "fuse", "name": "Union", "base": "a0000001", "tool": "b0000001"}"#
         ))
@@ -34129,7 +34111,7 @@ fn an_intersection_opened_on_a_selected_face_takes_no_body_and_esc_puts_the_face
     meshes_a_real_box(&f);
     let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
     meshes_settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let block = body_of(&h, "k7f2qx3m");
     click_face(&mut h, &record, block, 3);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
@@ -34153,7 +34135,7 @@ fn an_intersection_opened_on_a_selected_face_takes_no_body_and_esc_puts_the_face
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     assert!(selected_features(&h).is_empty());
     assert_eq!(h.state().tabs()[0].sent, []);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     // Closed, the canvas picks as before: a click on a face selects that face.
     let body = body_of(&h, "a91cw0de");
     click_face(&mut h, &record, body, 2);
@@ -34169,7 +34151,7 @@ fn a_subtraction_whose_tool_misses_its_target_shows_the_cores_refusal_and_cancel
     meshes_a_real_box(&f);
     let (mut h, _record) = f.drawn("blocks.silico", TWO_BLOCKS);
     meshes_settled(&mut h);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     step_until(&mut h, "the browser's bodies", |h| {
         shows(h, "Browser", "Other")
     });
@@ -34193,7 +34175,7 @@ fn a_subtraction_whose_tool_misses_its_target_shows_the_cores_refusal_and_cancel
     settled(&mut h);
     let id = dialog_feature(&h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Subtract"),
+        fields_of(&text_of(&f.sessions, &h), "Subtract"),
         Some(expected(
             r#"{"type": "cut", "name": "Subtract", "base": "k7f2qx3m", "tool": "a91cw0de"}"#
         ))
@@ -34223,7 +34205,7 @@ fn a_subtraction_whose_tool_misses_its_target_shows_the_cores_refusal_and_cancel
         .click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     let tab = &h.state().tabs()[0];
     assert_eq!(tab.sent.first(), Some(&Sent::Begin));
     assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
@@ -34276,7 +34258,7 @@ fn a_target_picked_as_the_tools_body_while_the_add_waits_is_sent_after_the_tool(
     }
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Union"),
+        fields_of(&text_of(&f.sessions, &h), "Union"),
         Some(expected(
             r#"{"type": "fuse", "name": "Union", "base": "a0000001", "tool": "b0000001"}"#
         ))
@@ -34331,7 +34313,7 @@ fn a_swap_made_while_the_add_waits_is_refused_and_the_boxes_follow_the_document(
     });
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Union"),
+        fields_of(&text_of(&f.sessions, &h), "Union"),
         Some(expected(
             r#"{"type": "fuse", "name": "Union", "base": "c0000001", "tool": "a0000001"}"#
         ))
@@ -34418,7 +34400,7 @@ fn ok_stays_off_while_a_box_holds_a_body_unsent_behind_an_edit_and_comes_on_once
     step_until(&mut h, "OK on again", ok_enabled);
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Union"),
+        fields_of(&text_of(&f.sessions, &h), "Union"),
         Some(expected(
             r#"{"type": "fuse", "name": "Union", "base": "d0000001", "tool": "b0000001"}"#
         ))
@@ -34648,7 +34630,7 @@ fn the_bodies_selected_as_a_union_opens_fill_target_then_tool_and_the_rest_is_no
     added(&mut h);
     settled(&mut h);
     assert_eq!(
-        fields_of(&text_of(&f, &h), "Union"),
+        fields_of(&text_of(&f.sessions, &h), "Union"),
         Some(expected(
             r#"{"type": "fuse", "name": "Union", "base": "b0000001", "tool": "b0000002"}"#
         ))
@@ -35565,7 +35547,7 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     // The pin suppressed: the hole, which cuts with it and has nothing else up its tool's
     // chain, goes with it (SolidWorks' children, docs/ux/solidworks.md, §5).
     menu_on(&mut h, "Timeline", "Pin");
@@ -35575,7 +35557,7 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
             == Some("Suppressed Pin, and Hole, which depends on it")
     });
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE_PIN_SUPPRESSED);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE_PIN_SUPPRESSED);
     // The block stands, as it was (warned of only for the fingerprint EXAMPLE doesn't store),
     // once the rebuild the timeline's read starts in the transaction reaches it: until then
     // it's queued.
@@ -35596,7 +35578,7 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
             == Some("Unsuppressed Hole, and Pin, which it needs")
     });
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     assert_eq!(
         h.state().tabs()[0]
             .sent
@@ -35621,7 +35603,7 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
         h.state().tabs()[0].edits.idle() && !h.state().tabs()[0].unsettled()
     });
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE_PIN_SUPPRESSED);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE_PIN_SUPPRESSED);
     // The next action lets the last one's words go.
     assert_eq!(said_done(&h, "Unsuppressed"), None);
     h.get_by_role_and_label(Role::Button, "Undo").click();
@@ -35629,7 +35611,7 @@ fn suppress_then_unsuppress_writes_and_drops_suppressed_and_undo_restores_each_t
         !h.state().tabs()[0].unsettled()
     });
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -35638,7 +35620,7 @@ fn delete_of_a_mid_chain_feature_rewires_its_consumer_and_undo_puts_it_back() {
     let f = fixture();
     let (mut h, path) = f.opened("chain.silico", CHAIN);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Bore"));
-    assert_eq!(text_of(&f, &h), CHAIN);
+    assert_eq!(text_of(&f.sessions, &h), CHAIN);
     // Del, the hole selected, no field focused: deleted at once, asking nothing (the
     // prototype's `del`), the bore built on the block in its place.
     select(&mut h, "Hole");
@@ -35647,7 +35629,7 @@ fn delete_of_a_mid_chain_feature_rewires_its_consumer_and_undo_puts_it_back() {
         said_done(h, "Deleted").as_deref() == Some("Deleted Hole · Bore now builds on Block")
     });
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), CHAIN_WITHOUT_HOLE);
+    assert_eq!(text_of(&f.sessions, &h), CHAIN_WITHOUT_HOLE);
     assert!(!shows(&h, "Timeline", "Hole"));
     // Nothing left selected of it; the file is as it was until a save.
     assert!(h.state().tabs()[0].selection().is_empty());
@@ -35655,7 +35637,7 @@ fn delete_of_a_mid_chain_feature_rewires_its_consumer_and_undo_puts_it_back() {
     h.get_by_role_and_label(Role::Button, "Undo").click();
     step_until(&mut h, "undone", |h| shows(h, "Timeline", "Hole"));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), CHAIN);
+    assert_eq!(text_of(&f.sessions, &h), CHAIN);
     // The block deleted from its menu: nothing can stand in for the root of the bore's
     // chain, so the core refuses, naming both, and that's said; nothing changes.
     menu_on(&mut h, "Timeline", "Block");
@@ -35669,7 +35651,7 @@ fn delete_of_a_mid_chain_feature_rewires_its_consumer_and_undo_puts_it_back() {
         "{said}"
     );
     assert_eq!(said_done(&h, "Deleted"), None);
-    assert_eq!(text_of(&f, &h), CHAIN);
+    assert_eq!(text_of(&f.sessions, &h), CHAIN);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -35687,7 +35669,7 @@ fn f2_types_a_name_over_in_the_selected_items_field_enter_writes_it_and_esc_drop
     h.key_press(Key::F2);
     renamed_in_field(&mut h, "Pin", "Dowel");
     assert_eq!(
-        text_of(&f, &h),
+        text_of(&f.sessions, &h),
         EXAMPLE.replace(r#""name": "Pin""#, r#""name": "Dowel""#)
     );
     let sent = h.state().tabs()[0].sent.len();
@@ -35725,7 +35707,7 @@ fn f2_types_a_name_over_in_the_selected_items_field_enter_writes_it_and_esc_drop
     h.key_press(Key::Escape);
     step(&mut h);
     assert_eq!(
-        text_of(&f, &h),
+        text_of(&f.sessions, &h),
         EXAMPLE.replace(r#""name": "Pin""#, r#""name": "Dowel""#)
     );
     assert_eq!(never_waits::waits(), 0);
@@ -35767,7 +35749,7 @@ fn del_and_backspace_in_a_text_field_never_delete_the_feature() {
             .iter()
             .any(|sent| matches!(sent, Sent::Remove(_)))
     );
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     assert!(shows(&h, "Timeline", "Hole"));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -36004,7 +35986,10 @@ fn a_rename_clicked_away_to_a_toolbar_dialog_comes_before_it_so_its_cancel_keeps
     assert!(edit.is_some(), "{:?}", h.state().tabs()[0].sent);
     cancel_dialog(&mut h);
     // The name kept (the document written in canonical form by the edit), no pad added.
-    assert_eq!(names_of(&text_of(&f, &h)), ["Dowel", "Plate", "Triangle"]);
+    assert_eq!(
+        names_of(&text_of(&f.sessions, &h)),
+        ["Dowel", "Plate", "Triangle"]
+    );
     assert!(shows(&h, "Timeline", "Dowel"));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -36106,7 +36091,7 @@ fn a_name_composed_in_an_input_method_is_typed_over_once_and_kept() {
     });
     settled(&mut h);
     assert_eq!(
-        text_of(&f, &h),
+        text_of(&f.sessions, &h),
         EXAMPLE.replace(r#""name": "Pin""#, r#""name": "東京大""#)
     );
     assert_eq!(never_waits::waits(), 0);
@@ -36127,7 +36112,7 @@ fn a_blank_name_is_dropped_as_esc_drops_it_and_a_name_is_sent_trimmed() {
         step(&mut h);
     }
     assert!(h.state().tabs()[0].sent.is_empty());
-    assert_eq!(text_of(&f, &h), EXAMPLE);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     // Spaces round a name are let go.
     f2_typed(&mut h, "Pin", "  Dowel  ");
     h.key_press(Key::Enter);
@@ -36136,7 +36121,7 @@ fn a_blank_name_is_dropped_as_esc_drops_it_and_a_name_is_sent_trimmed() {
     });
     settled(&mut h);
     assert_eq!(
-        text_of(&f, &h),
+        text_of(&f.sessions, &h),
         EXAMPLE.replace(r#""name": "Pin""#, r#""name": "Dowel""#)
     );
     assert_eq!(never_waits::waits(), 0);
@@ -36232,7 +36217,7 @@ fn on_a_document_the_gate_refused_f2_del_and_the_menus_items_say_why_and_do_noth
         step(&mut h);
     }
     assert!(h.state().tabs()[0].sent.is_empty());
-    assert_eq!(text_of(&f, &h), refused);
+    assert_eq!(text_of(&f.sessions, &h), refused);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -36556,7 +36541,7 @@ fn a_browser_rename_scrolled_out_of_view_then_clicked_away_to_a_dialog_comes_bef
     assert!(rename_field(&h, "Block 1").is_none(), "the field closed");
     settled(&mut h);
     cancel_dialog(&mut h);
-    let names = names_of(&text_of(&f, &h));
+    let names = names_of(&text_of(&f.sessions, &h));
     assert_eq!(names.len(), 42, "{names:?}");
     assert_eq!(names[..3], ["Front", "Dowel", "Block 2"]);
     assert!(shows(&h, "Browser", "Dowel"));
@@ -36784,7 +36769,7 @@ fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_o
         Some("Numbered 1 from k7f2qx3m.box.Edge5")
     );
     assert_eq!(said.parameter(), Some("edges.1"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     assert_eq!(before.matches(r#""k7f2qx3m.box.Edge5""#).count(), 1);
     h.get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(Role::Button, &format!("Use {EDGE4}"))
@@ -36792,7 +36777,7 @@ fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_o
     step(&mut h);
     settled(&mut h);
     // Edge4's name at Edge5's place, nothing else changed: by hand.
-    let used = text_of(&f, &h);
+    let used = text_of(&f.sessions, &h);
     assert_eq!(
         used,
         before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#))
@@ -36817,7 +36802,7 @@ fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_o
         "Undo: Inside corner: use the edge you picked"
     );
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     step_until(&mut h, "broken again", |h| {
         h.state().tabs()[0].errors() == 1
     });
@@ -36828,7 +36813,7 @@ fn a_broken_edges_card_lists_the_cores_candidates_closest_first_and_use_writes_o
 fn remove_the_edge_drops_the_broken_name_alone_and_undo_puts_it_back() {
     let f = fixture();
     let (mut h, _record) = corner_broken(&f, CORNER);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let remove = h
         .get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(Role::Button, "Remove the edge");
@@ -36837,7 +36822,7 @@ fn remove_the_edge_drops_the_broken_name_alone_and_undo_puts_it_back() {
     step(&mut h);
     settled(&mut h);
     // `edges` without Edge5, as the document writes a name to a line: by hand.
-    let removed = text_of(&f, &h);
+    let removed = text_of(&f.sessions, &h);
     assert_eq!(
         removed,
         before.replace(",\n        \"k7f2qx3m.box.Edge5\"", "")
@@ -36864,7 +36849,7 @@ fn remove_the_edge_drops_the_broken_name_alone_and_undo_puts_it_back() {
         "Undo: Inside corner: remove its edge"
     );
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -36879,7 +36864,7 @@ fn remove_the_edge_is_off_for_a_fillets_last_edge_saying_why_and_writes_nothing(
         candidate_rows(&h, "Properties"),
         [format!("Closest · {EDGE4}"), EDGE6.to_owned()]
     );
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     let sent = h.state().tabs()[0].sent.clone();
     let why = "Inside corner names no other edge, and a fillet names at least one: use a \
                candidate in its place, or suppress or delete Inside corner";
@@ -36893,7 +36878,7 @@ fn remove_the_edge_is_off_for_a_fillets_last_edge_saying_why_and_writes_nothing(
     for _ in 0..4 {
         step(&mut h);
     }
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(h.state().tabs()[0].sent, sent);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -36980,7 +36965,7 @@ fn the_fillets_own_dialog_shows_its_candidates_and_use_puts_one_in_its_box_in_th
  {
     let f = fixture();
     let (mut h, _record) = corner_broken(&f, CORNER);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     edit_from_the_timeline(&mut h, "Inside corner");
     boxed_until(&mut h, &["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
     step_until(&mut h, "the candidates in the dialog", |h| {
@@ -37009,12 +36994,12 @@ fn the_fillets_own_dialog_shows_its_candidates_and_use_puts_one_in_its_box_in_th
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(
-        text_of(&f, &h),
+        text_of(&f.sessions, &h),
         before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#))
     );
     // One undo takes the dialog's edits back, the broken name with them.
     undo_by_key(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -37024,7 +37009,7 @@ fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edg
     // picking edges again: the box may empty, OK off until it holds one.
     let f = fixture();
     let (mut h, _record) = corner_broken(&f, &corner_alone());
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     edit_from_the_timeline(&mut h, "Inside corner");
     boxed_until(&mut h, &["k7f2qx3m.box.Edge5"]);
     step_until(&mut h, "Remove the edge in the dialog", |h| {
@@ -37081,7 +37066,7 @@ fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edg
     assert_eq!(h.state().tabs()[0].told, None);
     assert_eq!(status_said(&h, "Inside corner no longer"), None);
     cancel_dialog(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -37089,7 +37074,7 @@ fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edg
 fn whats_wrong_lists_the_candidates_and_use_there_writes_one_and_leaves_it_open() {
     let f = fixture();
     let (mut h, _record) = corner_broken(&f, CORNER);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     h.get_by_role_and_label(Role::Button, "Rebuilt with 1 error")
         .click();
     step_until(&mut h, "its candidates in What's Wrong", |h| {
@@ -37111,7 +37096,7 @@ fn whats_wrong_lists_the_candidates_and_use_there_writes_one_and_leaves_it_open(
     step(&mut h);
     settled(&mut h);
     assert_eq!(
-        text_of(&f, &h),
+        text_of(&f.sessions, &h),
         before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE6}""#))
     );
     // Open still, as `useCand` leaves it, listing the block's warning alone now.
@@ -37130,7 +37115,7 @@ const IN_THE_DIALOG_USED: &str = "Inside corner now rounds the edge you picked. 
 fn use_in_the_fillets_dialog_then_cancel_puts_the_text_back_byte_for_byte() {
     let f = fixture();
     let (mut h, _record) = corner_broken(&f, CORNER);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     edit_from_the_timeline(&mut h, "Inside corner");
     boxed_until(&mut h, &["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5"]);
     step_until(&mut h, "the candidates in the dialog", |h| {
@@ -37153,7 +37138,7 @@ fn use_in_the_fillets_dialog_then_cancel_puts_the_text_back_byte_for_byte() {
         Some(IN_THE_DIALOG_USED)
     );
     cancel_dialog(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     step_until(&mut h, "broken again", |h| {
         h.state().tabs()[0].errors() == 1
     });
@@ -37172,7 +37157,7 @@ fn two_broken_edges_each_take_the_candidate_used_at_their_own_place() {
         r#""edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge5", "k7f2qx3m.box.Edge7"]"#,
     );
     let (mut h, _record) = corner_broken_swallowing(&f, &three, &[5, 7]);
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     assert_eq!(
         h.state().tabs()[0]
             .said
@@ -37191,7 +37176,7 @@ fn two_broken_edges_each_take_the_candidate_used_at_their_own_place() {
     settled(&mut h);
     let first = before.replace(r#""k7f2qx3m.box.Edge5""#, &format!(r#""{EDGE4}""#));
     assert_ne!(first, before);
-    assert_eq!(text_of(&f, &h), first);
+    assert_eq!(text_of(&f.sessions, &h), first);
     assert_eq!(
         h.state().tabs()[0].sent.last(),
         Some(&Sent::Edit("edges.1".to_owned()))
@@ -37213,7 +37198,7 @@ fn two_broken_edges_each_take_the_candidate_used_at_their_own_place() {
     settled(&mut h);
     let second = first.replace(r#""k7f2qx3m.box.Edge7""#, &format!(r#""{EDGE8}""#));
     assert_ne!(second, first);
-    assert_eq!(text_of(&f, &h), second);
+    assert_eq!(text_of(&f.sessions, &h), second);
     assert_eq!(
         written(&f, &h, "Inside corner", "edges"),
         Some(plain(&format!(
@@ -37265,7 +37250,7 @@ fn use_on_a_card_read_before_an_undo_mended_its_name_writes_nothing_and_says_why
         );
         std::thread::sleep(Duration::from_millis(5));
     }
-    let mended = text_of(&f, &h);
+    let mended = text_of(&f.sessions, &h);
     assert_eq!(mended.matches(r#""k7f2qx3m.box.Edge5""#).count(), 1);
     // The tab's card is the one read before the undo.
     assert_eq!(
@@ -37301,7 +37286,7 @@ fn use_on_a_card_read_before_an_undo_mended_its_name_writes_nothing_and_says_why
     assert_eq!(h.state().tabs()[0].told, None);
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sent, sent);
-    assert_eq!(text_of(&f, &h), mended);
+    assert_eq!(text_of(&f.sessions, &h), mended);
     step_until(&mut h, "Inside corner built", |h| {
         h.state().tabs()[0].errors() == 0 && !h.state().tabs()[0].applying()
     });
@@ -38371,7 +38356,7 @@ fn sketch_added(f: &Fixture, h: &mut AppHarness) -> Created {
         sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
     });
     settled(h);
-    let text = text_of(f, h);
+    let text = text_of(&f.sessions, h);
     let features = ["Block", "Sketch1"]
         .into_iter()
         .map(|name| fields_of(&text, name))
@@ -40022,7 +40007,7 @@ fn command_r_reads_a_file_changed_on_disk_that_no_watch_has_found_and_rebuilds_e
         &h,
         "Reloaded example.silico: another program changed it on disk"
     ));
-    assert_eq!(text_of(&f, &h), theirs);
+    assert_eq!(text_of(&f.sessions, &h), theirs);
     // With nothing changed, a Reload reads the file and rebuilds all the same.
     command_r(&mut h);
     step_until(&mut h, "rebuilt again", |h| {
@@ -40078,7 +40063,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
     let theirs = example_theirs();
     std::fs::write(&path, &theirs).unwrap();
     // Inside the transaction, `text` reads the session's document, never the file.
-    let mine = text_of(&f, &h);
+    let mine = text_of(&f.sessions, &h);
     assert!(mine.contains(r#""name": "Pins""#), "{mine}");
     let asked = "Reload example.silico from disk?";
     command_r(&mut h);
@@ -40096,7 +40081,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
     }
     assert!(h.state().tabs()[0].unsaved());
     assert!(shows(&h, "Timeline", "Pins"));
-    assert_eq!(text_of(&f, &h), mine);
+    assert_eq!(text_of(&f.sessions, &h), mine);
     assert_eq!(h.state().tabs()[0].rebuilds_all, 0);
     // Asked again, Reload: the edits dropped, the file read again, every feature rebuilt.
     command_r(&mut h);
@@ -40114,7 +40099,7 @@ fn command_r_with_unsaved_edits_asks_naming_them_and_cancel_keeps_them_and_reloa
     assert!(!anywhere(&h, asked));
     settled(&mut h);
     assert!(h.state().tabs()[0].reloaded.is_none());
-    assert_eq!(text_of(&f, &h), theirs);
+    assert_eq!(text_of(&f.sessions, &h), theirs);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -40131,7 +40116,7 @@ fn command_r_on_a_file_gone_from_disk_says_so_and_drops_none_of_the_edits() {
         let tab = &h.state().tabs()[0];
         tab.transaction && tab.edits.idle() && shows(h, "Timeline", "PinG")
     });
-    let mine = text_of(&f, &h);
+    let mine = text_of(&f.sessions, &h);
     std::fs::remove_file(&path).unwrap();
     step_until(&mut h, "found gone", |h| h.state().tabs()[0].file_gone());
     command_r(&mut h);
@@ -40147,7 +40132,7 @@ fn command_r_on_a_file_gone_from_disk_says_so_and_drops_none_of_the_edits() {
     assert!(tab.unsaved() && tab.transaction);
     assert_eq!(tab.rebuilds_all, 0);
     assert!(shows(&h, "Timeline", "PinG"));
-    assert_eq!(text_of(&f, &h), mine);
+    assert_eq!(text_of(&f.sessions, &h), mine);
     assert!(!path.exists());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -40338,7 +40323,7 @@ fn command_r_on_an_untitled_part_with_edits_asks_nothing_and_only_rebuilds_keepi
         let tab = &h.state().tabs()[0];
         tab.unsaved() && tab.edits.idle() && !tab.in_dialog()
     });
-    let mine = text_of(&f, &h);
+    let mine = text_of(&f.sessions, &h);
     let built = prisms_asked(&f);
     assert!(built > 0, "the pad never built");
     command_r(&mut h);
@@ -40350,7 +40335,7 @@ fn command_r_on_an_untitled_part_with_edits_asks_nothing_and_only_rebuilds_keepi
     assert!(prisms_asked(&f) > built, "the pad built anew");
     let tab = &h.state().tabs()[0];
     assert!(tab.unsaved());
-    assert_eq!(text_of(&f, &h), mine);
+    assert_eq!(text_of(&f.sessions, &h), mine);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -40475,8 +40460,8 @@ fn an_edit_after_a_reload_waits_for_its_read_of_the_file_never_for_its_rebuild()
     assert!(h.state().tabs()[0].message.is_none());
     hold.release();
     settled(&mut h);
-    assert!(text_of(&f, &h).contains(r#""name": "Pins""#));
-    assert!(text_of(&f, &h).contains(r#""name": "Drill""#));
+    assert!(text_of(&f.sessions, &h).contains(r#""name": "Pins""#));
+    assert!(text_of(&f.sessions, &h).contains(r#""name": "Drill""#));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -40509,7 +40494,7 @@ fn an_edit_asked_after_reload_while_a_rebuild_is_held_lands_at_once_on_the_file_
     assert_eq!(h.state().tabs()[0].message, None);
     hold.release();
     settled(&mut h);
-    let text = text_of(&f, &h);
+    let text = text_of(&f.sessions, &h);
     assert!(text.contains(r#""name": "Pins""#), "{text}");
     assert!(text.contains(r#""name": "Drill""#), "{text}");
     assert_eq!(never_waits::waits(), 0);
@@ -43483,7 +43468,7 @@ fn esc_with_a_dialog_open_lets_the_bars_tool_go_first_and_cancels_the_dialog_sec
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let before = text_of(&f, &h);
+    let before = text_of(&f.sessions, &h);
     open_pad_on_triangle(&mut h);
     settled(&mut h);
     step_until(&mut h, "the preview built", |h| {
@@ -43502,7 +43487,7 @@ fn esc_with_a_dialog_open_lets_the_bars_tool_go_first_and_cancels_the_dialog_sec
     h.key_press(eframe::egui::Key::Escape);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
-    assert_eq!(text_of(&f, &h), before);
+    assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Rollback));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -43989,12 +43974,12 @@ fn a_click_on_the_flip_arrow_reverses_the_pad_and_changes_no_other_field() {
     let f = fixture();
     let (mut h, _) = f.opened("plate.silico", PLATE);
     let c = plates_pad_from_the_front(&mut h);
-    let before = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    let before = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
     // On the flip arrow's shaft, 30 below the end: 30 from the distance arrow's base.
     click_canvas(&mut h, up(c, -30.0), false);
     step_until(&mut h, "Reversed ticked", reversed_ticked);
     settled(&mut h);
-    let after = fields_of(&text_of(&f, &h), "Pad").unwrap();
+    let after = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
     assert_eq!(after.len(), before.len());
     for ((key, was), (key_after, now)) in before.iter().zip(&after) {
         assert_eq!(key, key_after);
@@ -44164,7 +44149,7 @@ fn a_new_pads_arrow_drags_its_length_before_and_after_its_add_and_ok_adds_it_so(
 
 #[test]
 fn a_steady_drag_keeps_one_preview_rebuilding_and_sends_the_newest_value_once_it_answers() {
-    // A1: a drag making a new value every frame mustn't stop and start a rebuild each.
+    // #480's review, A1: a drag making a new value every frame mustn't stop and start a rebuild each.
     let f = fixture();
     let (mut h, _) = f.opened("plate.silico", PLATE);
     let c = plates_pad_from_the_front(&mut h);
@@ -44206,6 +44191,8 @@ fn a_steady_drag_keeps_one_preview_rebuilding_and_sends_the_newest_value_once_it
     // One preview rebuilding all along, the first move's: one edit sent, one prism started.
     // (The document isn't read here: a read queues behind that preview's, held.)
     assert_eq!(h.state().tabs()[0].edits.sent, sent + 1);
+    // Its prism started (held, so running), whatever the clock did meanwhile.
+    assert!(f.kernel.wait_running(1, WAIT), "12's preview rebuilding");
     assert_eq!(prisms(&f), prisms_before + 1);
     // Its preview answers: the newest value, 15, goes out at once, the button still held.
     hold.release();
@@ -44243,7 +44230,7 @@ fn a_steady_drag_keeps_one_preview_rebuilding_and_sends_the_newest_value_once_it
 
 #[test]
 fn an_arrows_drag_stops_editing_once_its_tab_begins_to_close() {
-    // RL1: the dialog's inputs go off while the tab closes; a drag under way goes with them.
+    // #480's review, RL1: the dialog's inputs go off while the tab closes; a drag under way goes with them.
     let f = fixture();
     let (mut h, path) = f.opened("plate.silico", PLATE);
     let c = plates_pad_from_the_front(&mut h);
@@ -44291,7 +44278,7 @@ fn an_arrows_drag_stops_editing_once_its_tab_begins_to_close() {
 
 #[test]
 fn while_an_arrow_is_dragged_the_hover_and_the_cursor_stay_as_they_were_at_its_press() {
-    // TL2: the prototype's hover waits out a drag (`onHover`'s `if (dragArrow) return`).
+    // #480's review, TL2: the prototype's hover waits out a drag (`onHover`'s `if (dragArrow) return`).
     use silico_app::renderer::Element::Face;
     let f = fixture();
     meshes_a_real_box(&f);
@@ -44326,5 +44313,144 @@ fn while_an_arrow_is_dragged_the_hover_and_the_cursor_stay_as_they_were_at_its_p
         h.state().tabs()[0].selection().hovered().is_some()
     });
     assert_ne!(cursor(&h), eframe::egui::CursorIcon::Grab);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The plate's pad's dialog open from the front, a first drag to 15 answered; then every
+/// prism held, 16 sent with its preview held, and 17 held back behind it, the button still
+/// held at the arrow's place for 17. The harness, its centre, the place pressed, the hold,
+/// and the edits sent before 16.
+fn held_back_at_17(f: &Fixture) -> (AppHarness, eframe::egui::Pos2, Hold, u64) {
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 20.0));
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("15", false));
+    let sent = h.state().tabs()[0].edits.sent;
+    let hold = f.kernel.hold(is_prism);
+    move_to(&mut h, up(tip, 24.0));
+    step_until(&mut h, "16 sent and answered", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.sent == sent + 1 && tab.edits.idle()
+    });
+    assert!(f.kernel.wait_running(1, WAIT), "16's preview rebuilding");
+    move_to(&mut h, up(tip, 28.0));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("17")
+    );
+    assert_eq!(h.state().tabs()[0].edits.sent, sent + 1, "17 held back");
+    (h, c, hold, sent)
+}
+
+#[test]
+fn a_value_held_back_when_the_tab_begins_to_close_is_saved_as_its_field_shows() {
+    // #480's review, R2-1: Close, then Save, with 17 held back behind 16's preview.
+    let f = fixture();
+    let (mut h, c, hold, _) = held_back_at_17(&f);
+    let path = f.dir.path().join("plate.silico");
+    h.get_by_label("Close plate.silico").click_accesskit();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to plate.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "closing", |h| h.state().tabs()[0].closing());
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let shown = field(&h, In::Dialog, "Length").value();
+    assert_eq!(shown.as_deref(), Some("17"));
+    hold.release();
+    left_up_at(&mut h, up(c, 84.0));
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#""length": 17,"#), "saved: {saved}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ok_mid_drag_keeps_the_value_its_field_shows_when_it_was_held_back() {
+    // #480's review, T2-1: Enter with 17 held back behind 16's preview.
+    let f = fixture();
+    let (mut h, c, hold, _) = held_back_at_17(&f);
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    hold.release();
+    left_up_at(&mut h, up(c, 84.0));
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_mid_drag_with_a_value_held_back_sends_the_presss_value_at_once() {
+    // #480's review, T2-1's twin: Esc with 17 held back behind 16's preview gives the field
+    // back 10, the press's (the stream was pressed at 10 and dragged through 15), and sends it
+    // then, the button still held and the preview still rebuilding: the drag no longer holds
+    // anything back.
+    let f = fixture();
+    let (mut h, c, hold, sent) = held_back_at_17(&f);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(dialog_open(&h));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("10")
+    );
+    step_until(&mut h, "10 sent", |h| {
+        h.state().tabs()[0].edits.sent == sent + 2
+    });
+    hold.release();
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
+    left_up_at(&mut h, up(c, 84.0));
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_after_its_preview_was_stopped_sends_its_first_value_at_once() {
+    // #480's review, TL2-3: a preview stopped never answers; the drag doesn't wait for it.
+    let f = fixture();
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    let hold = f.kernel.hold(is_prism);
+    // A drag to 11, its preview held, then stopped with Esc, the dialog left open.
+    drag(
+        &mut h,
+        eframe::egui::PointerButton::Primary,
+        up(c, 56.0),
+        up(c, 60.0),
+        1,
+    );
+    step_until(&mut h, "the preview rebuilding", |h| {
+        h.state().tabs()[0].preview_rebuilding()
+    });
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the preview stopped", |h| {
+        h.state().tabs()[0].rebuild_stopped()
+    });
+    assert!(dialog_open(&h));
+    let sent = h.state().tabs()[0].edits.sent;
+    // Pressed again and moved a millimetre: 12, sent with the button held.
+    let tip = up(c, 60.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 4.0));
+    step_until(&mut h, "12 sent", |h| {
+        h.state().tabs()[0].edits.sent == sent + 1
+    });
+    hold.release();
+    left_up_at(&mut h, up(tip, 4.0));
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("12", false));
     assert_eq!(never_waits::waits(), 0);
 }

@@ -1276,35 +1276,28 @@ fn walk(
     Some(polygon)
 }
 
-/// A curve as a loop's walk runs it: as drawn, or `backwards`, from its end to its start.
+/// A curve as a loop's walk runs it: as drawn, or `backwards`, from its end to its start;
+/// with its kind and its end points as the read stores them.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Walked {
     pub(crate) curve: Curve,
+    pub(crate) kind: ElementKind,
+    /// A line's or an arc's end points as stored, from and to as drawn; none for a circle.
+    pub(crate) points: Option<([f64; 2], [f64; 2])>,
     pub(crate) backwards: bool,
 }
 
 impl Walked {
-    /// Where the walk enters it and where it leaves it: a line's ends, an arc's (from its
-    /// angles), each the other way round when it's run backwards; a circle's whole turn
-    /// enters and leaves at its point at its start angle.
-    pub(crate) fn ends(&self) -> ([f64; 2], [f64; 2]) {
-        let (from, to) = match self.curve {
-            Curve::Line { from, to } => (from, to),
-            Curve::Round {
-                centre,
-                radius,
-                start,
-                sweep,
-            } => (
-                add(centre, mul(direction(start), radius)),
-                add(centre, mul(direction(start + sweep), radius)),
-            ),
-        };
-        if self.backwards {
-            (to, from)
-        } else {
-            (from, to)
-        }
+    /// Where the walk enters it and where it leaves it: its stored end points, the other way
+    /// round when it's run backwards; none for a circle.
+    pub(crate) fn ends(&self) -> Option<([f64; 2], [f64; 2])> {
+        self.points.map(|(from, to)| {
+            if self.backwards {
+                (to, from)
+            } else {
+                (from, to)
+            }
+        })
     }
 }
 
@@ -1313,25 +1306,30 @@ impl Walked {
 /// curve, a circle's whole turn, as drawn. None for a curve the read hasn't, or a loop whose
 /// curves don't meet end to end.
 pub(crate) fn oriented(curves: &[ElementId], geometry: &Geometry) -> Option<Vec<Walked>> {
-    let curve = |id: &ElementId| geometry.curves.get(id).map(|(curve, _)| *curve);
+    let walked = |id: &ElementId, backwards: bool| {
+        let &(curve, kind) = geometry.curves.get(id)?;
+        let points = geometry.ends.get(id).and_then(|(from, to)| {
+            Some((*geometry.points.get(*from)?, *geometry.points.get(*to)?))
+        });
+        Some(Walked {
+            curve,
+            kind,
+            points,
+            backwards,
+        })
+    };
     let [first, rest @ ..] = curves else {
         return None;
     };
     if rest.is_empty() {
-        return Some(vec![Walked {
-            curve: curve(first)?,
-            backwards: false,
-        }]);
+        return Some(vec![walked(first, false)?]);
     }
     let ends = |id: &ElementId| geometry.ends.get(id).copied();
     let (start, end) = ends(first)?;
     let (next_start, next_end) = ends(&rest[0])?;
     let forward = end == next_start || end == next_end;
     let mut at = if forward { end } else { start };
-    let mut walked = vec![Walked {
-        curve: curve(first)?,
-        backwards: !forward,
-    }];
+    let mut walk = vec![walked(first, !forward)?];
     for id in rest {
         let (start, end) = ends(id)?;
         let backwards = if start == at {
@@ -1343,12 +1341,9 @@ pub(crate) fn oriented(curves: &[ElementId], geometry: &Geometry) -> Option<Vec<
         } else {
             return None;
         };
-        walked.push(Walked {
-            curve: curve(id)?,
-            backwards,
-        });
+        walk.push(walked(id, backwards)?);
     }
-    Some(walked)
+    Some(walk)
 }
 
 /// What's drawn of a tool's preview (the core's `sketch_tools::Preview`), seen through
