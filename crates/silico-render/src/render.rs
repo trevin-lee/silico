@@ -270,9 +270,9 @@ pub struct Frame<'a> {
     /// The colours the highlights and the hover are outlined in: the caller's values (the
     /// app's theme), never read from it here.
     pub outlines: Outlines,
-    /// The faces tinted (the app's feature hovered in its timeline: the faces it made), as
-    /// `highlights` are given and checked as they are, each a face: an edge or a vertex is
-    /// refused. Each is drawn in [`tint`](Self::tint), its instance's own, so a tint, which
+    /// The faces the app tints (the faces of a feature hovered in its timeline, or of the
+    /// features selected), as `highlights` are given and checked as they are, each a face:
+    /// an edge or a vertex is refused. Each is drawn in [`tint`](Self::tint), its instance's own, so a tint, which
     /// moves with the pointer, uploads nothing, outlines nothing, and changes no picking ID.
     /// A face tinted and highlighted or hovered too is drawn both: which look wins is the
     /// caller's to say, by what it lists.
@@ -338,6 +338,15 @@ impl Frame<'_> {
         &self,
         held: impl Fn(u32) -> Option<&'m Mesh>,
     ) -> Result<(), InvalidParameter> {
+        self.checked(held).map(|_| ())
+    }
+
+    /// [`check`](Self::check)'s, and what each body has highlighted, hovered, and tinted,
+    /// as a renderer draws it.
+    fn checked<'m>(
+        &self,
+        held: impl Fn(u32) -> Option<&'m Mesh>,
+    ) -> Result<BTreeMap<u32, Lit>, InvalidParameter> {
         let ppp = self.pixels_per_point;
         if !(ppp.is_finite() && ppp > 0.0 && ppp <= MAX_PIXELS_PER_POINT) {
             return Err(InvalidParameter {
@@ -366,6 +375,7 @@ impl Frame<'_> {
             last = body;
         }
         self.tint.check()?;
+        let mut lit: BTreeMap<u32, Lit> = BTreeMap::new();
         let lists = [
             ("highlights", self.highlights, Listed::Highlighted),
             ("hovered", self.hovered, Listed::Hovered),
@@ -397,14 +407,37 @@ impl Frame<'_> {
                         ),
                     });
                 }
-                if matches!(listed, Listed::Tinted) && !matches!(element, Element::Face(_)) {
-                    return Err(InvalidParameter {
-                        parameter,
-                        message: format!(
-                            "{parameter}[{i}], {element:?} of body {body}, isn't a face: only faces are tinted"
-                        ),
-                    });
+                let entry = lit.entry(body).or_default();
+                match (listed, element) {
+                    (Listed::Highlighted, Element::Face(n)) => entry.faces.push(n),
+                    (Listed::Highlighted, Element::Edge(n)) => entry.edges.push(n),
+                    (Listed::Hovered, Element::Face(n)) => entry.hovered_faces.push(n),
+                    (Listed::Hovered, Element::Edge(n)) => entry.hovered_edges.push(n),
+                    (Listed::Tinted, Element::Face(n)) => entry.tinted_faces.push(n),
+                    (Listed::Tinted, _) => {
+                        return Err(InvalidParameter {
+                            parameter,
+                            message: format!(
+                                "{parameter}[{i}], {element:?} of body {body}, isn't a face: only faces are tinted"
+                            ),
+                        });
+                    }
+                    // A vertex is drawn over the frame by its caller (the app's dot), so
+                    // it's checked, and outlined by nothing here.
+                    (_, Element::Vertex(_)) => {}
                 }
+            }
+        }
+        for entry in lit.values_mut() {
+            for numbers in [
+                &mut entry.faces,
+                &mut entry.edges,
+                &mut entry.hovered_faces,
+                &mut entry.hovered_edges,
+                &mut entry.tinted_faces,
+            ] {
+                numbers.sort_unstable();
+                numbers.dedup();
             }
         }
         if let Some(radius) = self.vertices
@@ -456,7 +489,7 @@ impl Frame<'_> {
                 });
             }
         }
-        Ok(())
+        Ok(lit)
     }
 }
 
@@ -1105,41 +1138,7 @@ impl Renderer {
                 ),
             });
         }
-        frame.check(|body| self.bodies.get(&body).map(|uploaded| &*uploaded.mesh))?;
-        let mut lit: BTreeMap<u32, Lit> = BTreeMap::new();
-        let lists = [
-            (frame.highlights, Listed::Highlighted),
-            (frame.hovered, Listed::Hovered),
-            (frame.tinted, Listed::Tinted),
-        ];
-        for (list, listed) in lists {
-            for &(body, element) in list {
-                let entry = lit.entry(body).or_default();
-                match (listed, element) {
-                    (Listed::Highlighted, Element::Face(n)) => entry.faces.push(n),
-                    (Listed::Highlighted, Element::Edge(n)) => entry.edges.push(n),
-                    (Listed::Hovered, Element::Face(n)) => entry.hovered_faces.push(n),
-                    (Listed::Hovered, Element::Edge(n)) => entry.hovered_edges.push(n),
-                    (Listed::Tinted, Element::Face(n)) => entry.tinted_faces.push(n),
-                    // A vertex is drawn over the frame by its caller (the app's dot), so
-                    // it's checked, and outlined by nothing here; the check takes no tinted
-                    // edge or vertex.
-                    (_, Element::Vertex(_)) | (Listed::Tinted, Element::Edge(_)) => {}
-                }
-            }
-        }
-        for entry in lit.values_mut() {
-            for numbers in [
-                &mut entry.faces,
-                &mut entry.edges,
-                &mut entry.hovered_faces,
-                &mut entry.hovered_edges,
-                &mut entry.tinted_faces,
-            ] {
-                numbers.sort_unstable();
-                numbers.dedup();
-            }
-        }
+        let lit = frame.checked(|body| self.bodies.get(&body).map(|uploaded| &*uploaded.mesh))?;
         // The camera at this size, and the bodies and lines in its view, by the rules a
         // scene's check takes (`RenderScene::check`).
         let [_, height] = frame.size_px;
@@ -1560,11 +1559,12 @@ fn rect_int(rect: PixelRect) -> RectInt {
 
 /// How highlights are drawn. The worker's renders bake the highlight's blue into a
 /// highlighted face's mesh (uploaded mixed with it) and outline it, and draw a highlighted
-/// edge wider and blue: the agents' PNG look (docs/design/m4.6-render.md). The app's frames outline each highlighted
-/// face's and edge's instance alone, with `re_renderer`'s per-instance outline masks, as
-/// Rerun's viewer draws hover and selection, and leave its mesh and colour as uploaded: so a
-/// highlight, which moves with the pointer, never uploads anything, and changes no pixel of
-/// the picking layer (docs/design/m5.0-app.md section 10, "outlines by instance").
+/// edge wider and blue: the agents' PNG look (docs/design/m4.6-render.md). The app's frames
+/// outline each highlighted face's and edge's instance alone, with `re_renderer`'s
+/// per-instance outline masks, as Rerun's viewer draws hover and selection, and leave its
+/// mesh and colour as uploaded: so a highlight, which moves with the pointer, never uploads
+/// anything, and changes no pixel of the picking layer (docs/design/m5.0-app.md section 10,
+/// "outlines by instance").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Highlight {
     Baked,

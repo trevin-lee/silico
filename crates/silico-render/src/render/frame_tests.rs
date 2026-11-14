@@ -1546,7 +1546,7 @@ fn a_hover_moving_across_every_face_and_edge_uploads_nothing() {
             draw(r, &frame(&camera, &[1], &[], None));
             assert_eq!(r.uploads(), 6);
             // Each of the six faces and twelve edges highlighted in turn, then several at
-            // once, then none: an outline, never a tinted mesh.
+            // once, then none: an outline, never a baked mesh.
             let mut hovers: Vec<Vec<(u32, Element)>> = (1..=6)
                 .map(|n| vec![(1, Element::Face(n))])
                 .chain((1..=12).map(|n| vec![(1, Element::Edge(n))]))
@@ -2847,9 +2847,10 @@ fn faces_tinted_in_any_order_or_twice_and_of_two_bodies_are_each_tinted() {
     // The box (body 1) and a second one 12 mm below it (body 2, z = -12 to -2), each seen
     // from the front by its front face (Face3): body 1's from row 20.73 to 31.64, body 2's
     // from 24 + 9 × 12/11 = 33.82 to 24 + 19 × 12/11 = 44.73, both from column 9.09 to
-    // 52.73. Tinted as given out of order and one face twice, body 1's faces 3, 6, 2, and 2
+    // 52.73. Tinted as given out of order and one face twice, body 1's faces 6, 3, 2, and 2
     // again (6 and 2 are edge on from the front), body 2's 3 between them: each front face's
-    // centre row is the tint's mix by hand, as one tinted alone is.
+    // centre row is the tint's mix by hand, as one tinted alone is. Body 1's visible face
+    // comes after a higher one, so a search of its list as given, unsorted, misses it.
     on_lavapipe(
         "render::frame_tests::faces_tinted_in_any_order_or_twice_and_of_two_bodies_are_each_tinted",
         |r| {
@@ -2863,9 +2864,9 @@ fn faces_tinted_in_any_order_or_twice_and_of_two_bodies_are_each_tinted() {
             let both = frame(&camera, &[1, 2], &[], None);
             let plain = tinted_image(r, &both, &[], FEATURE_TINT);
             let tinted = [
-                (1, Element::Face(3)),
-                (2, Element::Face(3)),
                 (1, Element::Face(6)),
+                (2, Element::Face(3)),
+                (1, Element::Face(3)),
                 (1, Element::Face(2)),
                 (1, Element::Face(2)),
             ];
