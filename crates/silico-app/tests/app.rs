@@ -2676,6 +2676,9 @@ fn frames_climb_and_the_panels_answer_while_a_rebuild_and_its_timeline_read_are_
 struct HeldReader {
     held: Mutex<bool>,
     opened: Condvar,
+    /// Whether a read waits on the hold: set by the read as it waits, and cleared as reads
+    /// are held, each under `held`'s lock, so a read that comes to the hold between the two
+    /// is never missed.
     reading: AtomicBool,
 }
 
@@ -2683,14 +2686,21 @@ impl HeldReader {
     fn reader(self: &Arc<Self>) -> Reader {
         let me = Arc::clone(self);
         Arc::new(move |path: &Path| {
-            me.reading.store(true, Ordering::SeqCst);
             let mut held = me.held.lock().unwrap();
             while *held {
+                me.reading.store(true, Ordering::SeqCst);
                 held = me.opened.wait(held).unwrap();
             }
             drop(held);
             plain_read(path)
         })
+    }
+
+    /// Reads held from now, none yet waiting on the hold.
+    fn hold_reads(&self) {
+        let mut held = self.held.lock().unwrap();
+        *held = true;
+        self.reading.store(false, Ordering::SeqCst);
     }
 }
 
@@ -2700,8 +2710,7 @@ fn frames_climb_and_status_answers_while_a_disk_comparison_is_held() {
     let f = fixture_reading(Some(reader.reader()));
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    *reader.held.lock().unwrap() = true;
-    reader.reading.store(false, Ordering::SeqCst);
+    reader.hold_reads();
     step_until(&mut h, "a comparison held", |_| {
         reader.reading.load(Ordering::SeqCst)
     });
@@ -2730,8 +2739,7 @@ impl HeldReader {
     /// and the session's finding stands, until [`open`](Self::open). A few frames more, so
     /// the comparison before it, which ended as it began, has told what it found.
     fn hold(&self, h: &mut AppHarness) {
-        *self.held.lock().unwrap() = true;
-        self.reading.store(false, Ordering::SeqCst);
+        self.hold_reads();
         step_until(h, "a comparison held", |_| {
             self.reading.load(Ordering::SeqCst)
         });
