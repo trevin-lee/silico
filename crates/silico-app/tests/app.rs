@@ -36,15 +36,16 @@ use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
 use tempfile::TempDir;
 use ui::{
-    FAKE_WAIT as WAIT, FakeBrowser, In, added, advance, answer_question, anywhere, begin_sketch_on,
-    boxed, button_event, choose, chosen, click_at, click_canvas, close_window, create,
-    create_sketch, dialog, dialog_open, drag, everything, f2_typed, field, hand_clock,
-    in_status_bar, lavapipe_render_state, leave_sketch, leave_sketch_unsettled, meshes_settled,
-    modify, modify_field, name_field, new_part, ok_enabled, on_lavapipe, open_export, plain_read,
-    pointer_away, press, prompt, redo_by_key, rename_field, repaint_delay, retype, save_as_of,
-    select, selected_names, settled, sketch_mode, sketch_read, step, step_until, tab_named,
-    tessellated, the_viewport, tooltip_title, type_name, undo_by_key, view, view_label,
-    view_label_node, view_mut, wheel, window_told,
+    AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, FakeBrowser, In, TRIAD_DOT, added, advance,
+    answer_question, anywhere, begin_sketch_on, boxed, button_event, choose, chosen, click_at,
+    click_canvas, close_window, create, create_sketch, dialog, dialog_open, drag, everything,
+    f2_typed, field, hand_clock, in_status_bar, lavapipe_render_state, leave_sketch,
+    leave_sketch_unsettled, looks_from, meshes_settled, modify, modify_field, name_field, new_part,
+    ok_enabled, on_lavapipe, open_export, plain_read, pointer_away, press, prompt, redo_by_key,
+    rename_field, repaint_delay, retype, save_as_of, select, selected_names, settled, sketch_mode,
+    sketch_read, step, step_until, tab_named, tessellated, the_viewport, tooltip_title,
+    triad_origin, type_name, undo_by_key, view, view_direction, view_label, view_label_node,
+    view_mut, wheel, window_told,
 };
 
 /// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
@@ -10897,23 +10898,6 @@ fn the_navigation_bars_tools_orbit_pan_and_zoom_a_left_drag_and_fit_fits() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// A unit vector's parts within 1e-9 of `expected`, as `camera` looks from its target.
-#[track_caller]
-fn looks_from(camera: &silico_protocol::Camera, expected: [f64; 3]) {
-    let way = [
-        camera.eye[0] - camera.target[0],
-        camera.eye[1] - camera.target[1],
-        camera.eye[2] - camera.target[2],
-    ];
-    let length = (way[0] * way[0] + way[1] * way[1] + way[2] * way[2]).sqrt();
-    for k in 0..3 {
-        assert!(
-            (way[k] / length - expected[k]).abs() < 1e-9,
-            "{camera:?} against {expected:?}"
-        );
-    }
-}
-
 #[test]
 fn the_view_cubes_corner_home_drag_and_projection_menu() {
     let f = fixture();
@@ -10930,7 +10914,7 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
     cube(&h, "Top front left");
     step(&mut h);
     let corner = view(&h).camera().clone();
-    looks_from(&corner, [-third, -third, third]);
+    assert!(looks_from(&corner, [-third, -third, third]), "{corner:?}");
     assert_eq!(corner.target, [20.0, 10.0, 5.0]);
     let six = 6f64.sqrt();
     for (k, expected) in [1.0 / six, 1.0 / six, 2.0 / six].into_iter().enumerate() {
@@ -10942,7 +10926,7 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
         .click();
     step(&mut h);
     let home = view(&h).camera().clone();
-    looks_from(&home, [third, -third, third]);
+    assert!(looks_from(&home, [third, -third, third]), "{home:?}");
     // A left drag of the cube, 60 points right in one move: a turn of 30° about z, so the
     // way (1, −1, 1)/√3 turns to (cos 30° − sin 30°, −sin 30° − cos 30°, 1)/√3.
     let centre = silico_app::viewport::view_cube_rect(the_viewport(&h)).center();
@@ -10955,9 +10939,11 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
         1,
     );
     let (sin, cos) = (0.5, 3f64.sqrt() / 2.0);
-    looks_from(
-        view(&h).camera(),
-        [(cos - sin) * third, (-sin - cos) * third, third],
+    let way = [(cos - sin) * third, (-sin - cos) * third, third];
+    assert!(
+        looks_from(view(&h).camera(), way),
+        "{:?}",
+        view(&h).camera()
     );
     // Its menu: Perspective, at 30°, the eye as far back as shows Home's height at the
     // target; Home then keeps the perspective.
@@ -10991,7 +10977,11 @@ fn the_view_cubes_corner_home_drag_and_projection_menu() {
         view(&h).camera().projection,
         silico_protocol::Projection::Perspective { .. }
     ));
-    looks_from(view(&h).camera(), [0.0, -1.0, 0.0]);
+    assert!(
+        looks_from(view(&h).camera(), [0.0, -1.0, 0.0]),
+        "{:?}",
+        view(&h).camera()
+    );
     // Orthographic again.
     h.get_by_label("Orbit the view").click_secondary();
     step(&mut h);
@@ -11059,10 +11049,6 @@ const CUBE_TOP: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x36, 0x
 const CUBE_BOTTOM: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x21, 0x21, 0x21);
 const CUBE_BORDER: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x52, 0x51, 0x51);
 const CUBE_EDGE: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x82, 0x7f, 0x7f);
-/// The axis stubs' colours (viewport.js's `buildCube`, `ax`: `#ff6981`, `#00b266`, `#7a95ff`).
-const CUBE_AXIS_X: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0xff, 0x69, 0x81);
-const CUBE_AXIS_Y: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x00, 0xb2, 0x66);
-const CUBE_AXIS_Z: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x7a, 0x95, 0xff);
 
 /// `got` holds the points `corners`, in any order, each within 1e-3.
 #[track_caller]
@@ -11258,9 +11244,9 @@ fn the_view_cubes_faces_edges_corners_and_buttons_are_where_the_home_view_sees_t
     let place = |[x, y, z]: [f32; 3]| at((x + y) / r2, -(-x + y + 2.0 * z) / r6);
     let from = [-1.02, -1.02, -1.02];
     let expected_stubs = [
-        (CUBE_AXIS_X, place(from), place([0.38, -1.02, -1.02])),
-        (CUBE_AXIS_Y, place(from), place([-1.02, -0.98, -1.02])),
-        (CUBE_AXIS_Z, place(from), place([-1.02, -1.02, 0.38])),
+        (AXIS_X, place(from), place([0.38, -1.02, -1.02])),
+        (AXIS_Y, place(from), place([-1.02, -0.98, -1.02])),
+        (AXIS_Z, place(from), place([-1.02, -1.02, 0.38])),
     ];
     assert_eq!(stubs.len(), expected_stubs.len(), "{stubs:?}");
     for (([p, q], stroke), (colour, a, b)) in stubs.iter().zip(expected_stubs) {
@@ -12139,7 +12125,7 @@ fn a_model_whose_body_cant_be_measured_opens_at_the_cube_home_and_still_reads() 
     let camera = view(&h).camera().clone();
     assert_eq!(camera.target, [0.0; 3]);
     let third = 1.0 / 3f64.sqrt();
-    looks_from(&camera, [third, -third, third]);
+    assert!(looks_from(&camera, [third, -third, third]), "{camera:?}");
     assert_eq!(view(&h).bodies()[&1].bounds, None);
     assert_eq!(uploads(&record), [1]);
     assert_eq!(never_waits::waits(), 0);
@@ -19540,12 +19526,6 @@ fn under_the_sheet_no_shortcut_acts() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// The unit vector of `v`.
-fn unit(v: [f64; 3]) -> [f64; 3] {
-    let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
-    [v[0] / n, v[1] / n, v[2] / n]
-}
-
 /// The view moved off where `camera` looks, as a pan does: its eye and target 7 along x.
 fn panned(h: &mut AppHarness) {
     let mut camera = view(h).camera().clone();
@@ -19576,7 +19556,7 @@ fn ctrl_1_to_7_are_solidworks_standard_views_and_each_is_the_view_cubes() {
         h.key_press_modifiers(Modifiers::COMMAND, digit);
         step(&mut h);
         let keyed = view(&h).camera().clone();
-        near(unit(minus(keyed.eye, keyed.target)), toward, 1e-12);
+        near(view_direction(&keyed), toward, 1e-12);
         // The cut's box's centre, as every named view fits it.
         near(keyed.target, [20.0, 10.0, 5.0], 1e-12);
         // Moved off, then the ViewCube's own: the same camera.
@@ -19605,11 +19585,7 @@ fn f6_is_the_navigation_bars_fit_and_home_the_view_cubes_home() {
     let keyed = view(&h).camera().clone();
     assert_ne!(keyed, moved);
     // Fit looks as it looked: from the front still, onto the box's centre.
-    near(
-        unit(minus(keyed.eye, keyed.target)),
-        [0.0, -1.0, 0.0],
-        1e-12,
-    );
+    near(view_direction(&keyed), [0.0, -1.0, 0.0], 1e-12);
     near(keyed.target, [20.0, 10.0, 5.0], 1e-12);
     view_mut(&mut h).set_camera(moved);
     step(&mut h);
@@ -19623,7 +19599,7 @@ fn f6_is_the_navigation_bars_fit_and_home_the_view_cubes_home() {
     step(&mut h);
     let home = view(&h).camera().clone();
     let d = 1.0 / 3f64.sqrt();
-    near(unit(minus(home.eye, home.target)), [d, -d, d], 1e-12);
+    near(view_direction(&home), [d, -d, d], 1e-12);
     panned(&mut h);
     h.get_by_role_and_label(Role::Group, "ViewCube")
         .get_by_label("Home view")
@@ -42944,16 +42920,7 @@ fn a_click_on_a_view_cube_edge_looks_from_between_its_two_faces() {
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     let r = std::f64::consts::FRAC_1_SQRT_2;
-    // Two frames a click: the one that takes it (the cube laid out for the view before it),
-    // and one laid out for the view it gives, so the next click finds its part there.
-    let cube = |h: &mut AppHarness, label: &str| {
-        h.get_by_role_and_label(Role::Group, "ViewCube")
-            .get_by_label(label)
-            .click();
-        step(h);
-        step(h);
-    };
-    cube(&mut h, "Top front");
+    cube_clicked(&mut h, "Top front");
     assert!(
         looks(&h, [0.0, -r, r], [0.0, r, r]),
         "{:?}",
@@ -42967,7 +42934,7 @@ fn a_click_on_a_view_cube_edge_looks_from_between_its_two_faces() {
         (ortho_height(&camera) - want).abs() < 1e-9,
         "{camera:?}, not {want} high"
     );
-    cube(&mut h, "Front right");
+    cube_clicked(&mut h, "Front right");
     assert!(
         looks(&h, [r, -r, 0.0], [0.0, 0.0, 1.0]),
         "{:?}",
@@ -42991,18 +42958,6 @@ fn a_click_on_a_view_cube_edge_looks_from_between_its_two_faces() {
 // ---- The triad and the view label at the canvas's bottom left (viewport.js's `drawOverlay`,
 // styles.css's `.view-label`; the prototype audit's item 10) ----
 
-/// The axes' colours (`#ff6981`, `#00b266`, `#7a95ff`) and the origin's dot's (`#cfcfcf`).
-const AXIS_X: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0xff, 0x69, 0x81);
-const AXIS_Y: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x00, 0xb2, 0x66);
-const AXIS_Z: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0x7a, 0x95, 0xff);
-const TRIAD_DOT: eframe::egui::Color32 = eframe::egui::Color32::from_rgb(0xcf, 0xcf, 0xcf);
-
-/// The triad's origin over the canvas last drawn: 44 in from its left, 44 up from its bottom.
-fn triad_origin(h: &AppHarness) -> eframe::egui::Pos2 {
-    let rect = the_viewport(h);
-    eframe::egui::pos2(rect.left() + 44.0, rect.bottom() - 44.0)
-}
-
 /// The triad as last painted: each stroke from its origin, by its colour, with its place
 /// among [`painted`]'s shapes and its end; and the place of the dot over its origin.
 fn triad_painted(
@@ -43012,7 +42967,7 @@ fn triad_painted(
     Option<usize>,
 ) {
     use eframe::egui::Shape;
-    let origin = triad_origin(h);
+    let origin = triad_origin(the_viewport(h));
     let shapes = painted(h);
     let strokes = shapes
         .iter()
@@ -43050,7 +43005,7 @@ fn the_triad_and_the_view_label_stand_at_the_canvass_bottom_left_over_the_bodies
     step(&mut h);
     assert_eq!(view_label(&h), "Orthographic · Iso");
     let rect = the_viewport(&h);
-    let o = triad_origin(&h);
+    let o = triad_origin(the_viewport(&h));
     let (r2, r6) = (2f32.sqrt(), 6f32.sqrt());
     let (strokes, dot) = triad_painted(&h);
     let ends: Vec<(eframe::egui::Color32, eframe::egui::Pos2)> = strokes
@@ -43351,7 +43306,7 @@ fn a_press_on_the_view_label_or_the_triads_origin_is_the_canvass_as_neither_take
     step(&mut h);
     let rect = the_viewport(&h);
     let label = view_label_node(&h).rect().center();
-    let origin = triad_origin(&h);
+    let origin = triad_origin(the_viewport(&h));
     assert!(rect.contains(label) && rect.contains(origin));
     for at in [label, origin] {
         ui::pause(&mut h);
@@ -43424,7 +43379,7 @@ fn sketch_mode_keeps_the_triad_and_the_view_label_and_its_look_at_names_the_top(
     step(&mut h);
     step(&mut h);
     assert_eq!(view_label(&h), "Orthographic · Top");
-    let o = triad_origin(&h);
+    let o = triad_origin(the_viewport(&h));
     let (strokes, dot) = triad_painted(&h);
     // Z seen end on: no stroke; X right, Y up.
     let ends: Vec<_> = strokes

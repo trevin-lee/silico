@@ -31,8 +31,9 @@ use silico_core::{Error, ErrorCode};
 use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
 use ui::{
-    FAKE_WAIT as WAIT, advance, button_event, hand_clock, meshes_settled, meshes_settled_in,
-    repaint_delay, step, step_until, tessellated, the_viewport, view, view_label, view_mut,
+    AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, TRIAD_DOT, advance, button_event, hand_clock,
+    looks_from, meshes_settled, meshes_settled_in, repaint_delay, step, step_until, tessellated,
+    the_viewport, triad_origin, view, view_label, view_mut,
 };
 
 const EXAMPLE: &str = r#"{
@@ -2097,14 +2098,6 @@ fn a_menu_open_over_the_canvas_as_its_tab_closes_goes_with_it() {
 
 // ---- The triad and the view label at the canvas's bottom left ----
 
-/// The axes' colours (`#ff6981`, `#00b266`, `#7a95ff`) and the triad's dot's (`#cfcfcf`).
-const AXES: [egui::Color32; 3] = [
-    egui::Color32::from_rgb(0xff, 0x69, 0x81),
-    egui::Color32::from_rgb(0x00, 0xb2, 0x66),
-    egui::Color32::from_rgb(0x7a, 0x95, 0xff),
-];
-const TRIAD_DOT: egui::Color32 = egui::Color32::from_rgb(0xcf, 0xcf, 0xcf);
-
 #[test]
 fn a_window_too_small_for_a_viewport_clips_the_triad_and_its_label_to_what_is_left() {
     // 60 by 40 points, the viewport a few points or none: the triad's origin, 44 in and up
@@ -2117,18 +2110,18 @@ fn a_window_too_small_for_a_viewport_clips_the_triad_and_its_label_to_what_is_le
     step(&mut h);
     let viewport = the_viewport(&h);
     assert_eq!(view_label(&h), "Orthographic · Iso");
-    let origin = egui::pos2(viewport.left() + 44.0, viewport.bottom() - 44.0);
+    let origin = triad_origin(viewport);
     let mut seen = 0;
     for clipped in &h.output().shapes {
         let of_the_triad = match &clipped.shape {
             egui::Shape::Circle(c) => c.center == origin && c.fill == TRIAD_DOT,
             egui::Shape::LineSegment { points, stroke } => {
-                points[0] == origin && AXES.contains(&stroke.color)
+                points[0] == origin && [AXIS_X, AXIS_Y, AXIS_Z].contains(&stroke.color)
             }
             egui::Shape::Text(t) => {
                 t.galley.text() == "Orthographic · Iso"
                     || (["X", "Y", "Z"].contains(&t.galley.text())
-                        && AXES.contains(&t.fallback_color))
+                        && [AXIS_X, AXIS_Y, AXIS_Z].contains(&t.fallback_color))
             }
             _ => false,
         };
@@ -2147,12 +2140,6 @@ fn a_window_too_small_for_a_viewport_clips_the_triad_and_its_label_to_what_is_le
     // Three strokes, three letters, the dot, and the label.
     assert_eq!(seen, 8);
     assert_eq!(never_waits::waits(), 0);
-}
-
-/// The way the eye looks from the target, made a unit.
-fn toward(camera: &Camera) -> [f64; 3] {
-    let n = distance(camera);
-    std::array::from_fn(|k| (camera.eye[k] - camera.target[k]) / n)
 }
 
 #[test]
@@ -2179,23 +2166,19 @@ fn a_view_changed_every_frame_is_named_by_the_label_of_the_frame_that_draws_it()
         (Modifiers::NONE, Home, "Iso", [d, -d, d]),
     ];
     let drawn = |record: &Record| record.lock().unwrap().frames.last().unwrap().camera.clone();
-    let from = |camera: &Camera, way: [f64; 3]| {
-        let at = toward(camera);
-        (0..3).all(|k| (at[k] - way[k]).abs() < 1e-9)
-    };
     for _ in 0..3 {
         for (held, key, name, way) in keys {
             h.key_press_modifiers(held, key);
             step(&mut h);
             let camera = drawn(&record);
-            assert!(from(&camera, way), "{name}: {camera:?}");
+            assert!(looks_from(&camera, way), "{name}: {camera:?}");
             assert_eq!(view_label(&h), format!("Orthographic · {name}"));
         }
     }
     h.key_press_modifiers(ctrl, Num1);
     h.key_press_modifiers(ctrl, Num5);
     step(&mut h);
-    assert!(from(&drawn(&record), [0.0, 0.0, 1.0]));
+    assert!(looks_from(&drawn(&record), [0.0, 0.0, 1.0]));
     assert_eq!(view_label(&h), "Orthographic · Top");
     // The cube's top front edge, clickable from the top: its view, between the top's and
     // the front's, is unnamed.
@@ -2203,11 +2186,11 @@ fn a_view_changed_every_frame_is_named_by_the_label_of_the_frame_that_draws_it()
         .get_by_label("Top front")
         .click();
     step(&mut h);
-    assert!(from(&drawn(&record), [0.0, 0.0, 1.0]));
+    assert!(looks_from(&drawn(&record), [0.0, 0.0, 1.0]));
     assert_eq!(view_label(&h), "Orthographic · Top");
     step(&mut h);
     let r = std::f64::consts::FRAC_1_SQRT_2;
-    assert!(from(&drawn(&record), [0.0, -r, r]));
+    assert!(looks_from(&drawn(&record), [0.0, -r, r]));
     assert_eq!(view_label(&h), "Orthographic");
     assert_eq!(never_waits::waits(), 0);
 }
@@ -2261,7 +2244,7 @@ fn from_straight_above_the_z_axis_is_its_letter_alone_at_the_dot_and_drawn_last(
     step(&mut h);
     step(&mut h);
     let viewport = the_viewport(&h);
-    let origin = egui::pos2(viewport.left() + 44.0, viewport.bottom() - 44.0);
+    let origin = triad_origin(viewport);
     let shapes: Vec<egui::Shape> = h
         .output()
         .shapes
@@ -2273,7 +2256,7 @@ fn from_straight_above_the_z_axis_is_its_letter_alone_at_the_dot_and_drawn_last(
         .enumerate()
         .filter_map(|(k, shape)| match shape {
             egui::Shape::LineSegment { points, stroke }
-                if points[0] == origin && AXES.contains(&stroke.color) =>
+                if points[0] == origin && [AXIS_X, AXIS_Y, AXIS_Z].contains(&stroke.color) =>
             {
                 Some((k, stroke.color))
             }
@@ -2282,12 +2265,12 @@ fn from_straight_above_the_z_axis_is_its_letter_alone_at_the_dot_and_drawn_last(
         .collect();
     assert_eq!(
         strokes.iter().map(|(_, c)| *c).collect::<Vec<_>>(),
-        AXES[..2]
+        [AXIS_X, AXIS_Y]
     );
     let z = shapes
         .iter()
         .position(|shape| {
-            matches!(shape, egui::Shape::Text(t) if t.galley.text() == "Z" && t.fallback_color == AXES[2])
+            matches!(shape, egui::Shape::Text(t) if t.galley.text() == "Z" && t.fallback_color == AXIS_Z)
         })
         .unwrap();
     let dot = shapes
@@ -2359,7 +2342,7 @@ fn a_camera_that_makes_no_frame_draws_no_triad_and_the_label_says_the_projection
         step(&mut h);
         step(&mut h);
         let viewport = the_viewport(&h);
-        let origin = egui::pos2(viewport.left() + 44.0, viewport.bottom() - 44.0);
+        let origin = triad_origin(viewport);
         let dots = h
             .output()
             .shapes
