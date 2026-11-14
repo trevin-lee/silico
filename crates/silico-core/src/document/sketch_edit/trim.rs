@@ -13,7 +13,7 @@ use silico_protocol::{LENGTH_TOLERANCE, arc_from_points, distance};
 use super::split::{
     coordinate, line_parameter, next, point_at, project_on_line, reference_at, starts_at,
 };
-use super::{Edited, NewIds, kinds_of, new_ids, no_member, ordered, own_curve, remove};
+use super::{Edited, NewIds, drawn, kinds_of, new_ids, no_member, ordered, own_curve, remove};
 use crate::document::sketch::{
     Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchArc, SketchConstraint,
     SketchLine, SketchPoint, TangentSide,
@@ -512,52 +512,6 @@ fn mapped(
         }
         _ => direction,
     }
-}
-
-/// The `direction` of a `tangent_on` of `piece`'s end `at` on `cutter`, as the stored drawing
-/// shows it (decision 8): `same` when the piece, leaving `at`, runs as the cutter's own
-/// direction there.
-fn drawn(
-    sketch: &Sketch,
-    edited: &Sketch,
-    piece: &Reference,
-    at: &Reference,
-    cutter: &Reference,
-) -> Direction {
-    let (Some(xy), Some(starts)) = (reference_at(edited, at), starts_at(edited, piece, at)) else {
-        return Direction::Same;
-    };
-    let (Some(along_piece), Some(along_cutter)) = (
-        own_direction(edited, piece, xy),
-        own_direction(sketch, cutter, xy),
-    ) else {
-        return Direction::Same;
-    };
-    let leaving = if starts {
-        along_piece
-    } else {
-        [-along_piece[0], -along_piece[1]]
-    };
-    if leaving[0] * along_cutter[0] + leaving[1] * along_cutter[1] >= 0.0 {
-        Direction::Same
-    } else {
-        Direction::Opposite
-    }
-}
-
-/// A curve's own direction at `xy`: a line's from `from` to `to`, a round's
-/// counter-clockwise.
-fn own_direction(sketch: &Sketch, curve: &Reference, xy: [f64; 2]) -> Option<[f64; 2]> {
-    let id = curve.element()?;
-    if let Some(line) = sketch.lines.iter().find(|l| &l.id == id) {
-        let (from, to) = (point_at(sketch, &line.from)?, point_at(sketch, &line.to)?);
-        return Some([to[0] - from[0], to[1] - from[1]]);
-    }
-    let center = match sketch.arcs.iter().find(|a| &a.id == id) {
-        Some(arc) => point_at(sketch, &arc.center)?,
-        None => point_at(sketch, &sketch.circles.iter().find(|c| &c.id == id)?.center)?,
-    };
-    Some([-(xy[1] - center[1]), xy[0] - center[0]])
 }
 
 /// `constraint`, not a join's, carried to the pieces; none if it's dropped.

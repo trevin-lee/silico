@@ -273,6 +273,22 @@ impl<'s> View<'s> {
     }
 }
 
+/// A point held at the origin (#278's A): level with it and above it, `point` first in
+/// each, as the drawing tools write a point placed there, and Coincident a point and the
+/// origin picked together, in either order (the constraint tools' C1).
+pub(super) fn at_origin(point: Reference) -> [Form; 2] {
+    [
+        Form::HorizontalPoints {
+            a: point.clone(),
+            b: Reference::Origin,
+        },
+        Form::VerticalPoints {
+            a: point,
+            b: Reference::Origin,
+        },
+    ]
+}
+
 /// What kind of curve ends at a point ([`View::ends_at`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EndOf {
@@ -370,16 +386,7 @@ impl Placed {
         };
         let mut forms = match &self.target {
             Target::Shared(_) | Target::Free => Vec::new(),
-            Target::Origin => vec![
-                Form::HorizontalPoints {
-                    a: p(),
-                    b: Reference::Origin,
-                },
-                Form::VerticalPoints {
-                    a: p(),
-                    b: Reference::Origin,
-                },
-            ],
+            Target::Origin => at_origin(p()).into(),
             Target::Midpoint(line, ons) => {
                 let mut forms = vec![Form::Midpoint {
                     point: p(),

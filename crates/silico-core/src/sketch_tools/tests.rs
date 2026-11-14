@@ -12,6 +12,7 @@ use crate::command::Revision;
 mod dimension;
 mod edges;
 mod implied;
+mod relate;
 use crate::document::json::{self, Plain};
 use crate::document::sketch_edit::{self, Members};
 use crate::document::{

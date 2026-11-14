@@ -7,7 +7,8 @@
 //! `sketch` read; it draws the tool's [`Preview`], says its [`Message`], and sends its
 //! [`Outcome::add`] as a `sketch_add` (`NewMembers::of`). Smart Dimension
 //! ([`SmartDimension`]) sits beside them, from picks, a right-click, and the Modify box to the
-//! `sketch_add` of one dimension, and the offer SD7 makes when it over-defines ([`offer`]).
+//! `sketch_add` of one dimension, and the offer SD7 makes when it over-defines ([`offer`]);
+//! and the ten constraint tools ([`relate`]), from a selection in pick order to one edit.
 //! Behaviour is SolidWorks', as the design takes it (docs/ux/solidworks.md, §4):
 //!
 //! - **Modes.** The first press decides: a press, a drag, and a release draws one entity;
@@ -83,6 +84,7 @@ mod infer;
 mod line;
 mod point;
 mod rectangle;
+mod relate;
 #[cfg(test)]
 mod tests;
 
@@ -99,6 +101,7 @@ pub use dimension::{
 };
 pub use implied::implied_by;
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
+pub use relate::{NOTHING_SELECTED, RelateEdit, Related, RelationTool, relate};
 
 /// A point or a vector in the sketch's plane, `[x, y]`, in millimetres.
 pub type Xy = [f64; 2];

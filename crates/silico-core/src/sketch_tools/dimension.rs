@@ -1049,32 +1049,9 @@ fn points(
         _ if within(at[1], 1) && !within(at[0], 0) => Measure::DistanceY,
         _ => Measure::Distance,
     };
-    let ordered = |i: usize| {
-        if q[i] < p[i] {
-            (b.clone(), a.clone(), p[i] - q[i])
-        } else {
-            (a.clone(), b.clone(), q[i] - p[i])
-        }
-    };
     let form = match measure {
-        Measure::DistanceX => {
-            let (a, b, value) = ordered(0);
-            Form::DistanceX {
-                a,
-                b,
-                value: rounded(value)?,
-                driving: true,
-            }
-        }
-        Measure::DistanceY => {
-            let (a, b, value) = ordered(1);
-            Form::DistanceY {
-                a,
-                b,
-                value: rounded(value)?,
-                driving: true,
-            }
-        }
+        Measure::DistanceX => along(Axis::X, (a, *p), (b, *q)).map_err(Some)?,
+        Measure::DistanceY => along(Axis::Y, (a, *p), (b, *q)).map_err(Some)?,
         _ => {
             let value = rounded(distance(*p, *q))?;
             if value.nm() == 0 {
@@ -1089,6 +1066,53 @@ fn points(
         }
     };
     Ok(Offered { measure, form })
+}
+
+/// Which of the sketch's axes a dimension of two points runs along ([`along`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Axis {
+    /// `distance_x`.
+    X,
+    /// `distance_y`.
+    Y,
+}
+
+/// The driving dimension of two points along `axis`, `first` and `second` each a point and
+/// where it is, as Smart Dimension writes `distance_x` and `distance_y`, and Fix each
+/// point's two from the origin (the constraint tools' C2): `a` the point to the left
+/// (below), so the value is never negative, `first` where the two are level (plumb); the
+/// value rounded to the nanometre (SD2). One writer, so the two tools can't spell one
+/// dimension two ways.
+pub(super) fn along(
+    axis: Axis,
+    first: (&Reference, Xy),
+    second: (&Reference, Xy),
+) -> Result<Form, Message> {
+    let ((a, p), (b, q)) = (first, second);
+    let i = match axis {
+        Axis::X => 0,
+        Axis::Y => 1,
+    };
+    let (a, b, value) = if q[i] < p[i] {
+        (b.clone(), a.clone(), p[i] - q[i])
+    } else {
+        (a.clone(), b.clone(), q[i] - p[i])
+    };
+    let value = Length::rounded(value).ok_or(Message::TooFar)?;
+    Ok(match axis {
+        Axis::X => Form::DistanceX {
+            a,
+            b,
+            value,
+            driving: true,
+        },
+        Axis::Y => Form::DistanceY {
+            a,
+            b,
+            value,
+            driving: true,
+        },
+    })
 }
 
 /// Whether the pointer `at` is across `line` from `off`, a signed distance from it (to its
