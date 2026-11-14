@@ -10272,6 +10272,7 @@ mod tests {
         // then the first removed, then the timeline of the revision that made, all answered
         // before the frame takes them, the timeline first. That timeline marks only the
         // second: the first's warning, the check's, isn't brought back.
+        use std::sync::atomic::{AtomicBool, Ordering};
         let dir = tempfile::tempdir().unwrap();
         let document = dir.path().join("part.silico");
         std::fs::write(
@@ -10306,16 +10307,36 @@ mod tests {
         };
         assert_eq!(warned(&first), ["a0000001", "b0000001"]);
         tab.took_timeline(first);
+        // The check is of the published model: a read on a thread of its own
+        // (`session-sN-read`), beside the session's queue, so nothing queued answering says
+        // it has. That thread wakes the client once its answer is sent, and none of the
+        // session's queued commands answers from it: that wake is waited on before the
+        // remove is queued, so the check reads the opened revision's model, and its answer
+        // is in when the frame takes it.
+        let check_answered = Arc::new(AtomicBool::new(false));
+        sessions.on_change({
+            let check_answered = Arc::clone(&check_answered);
+            let read_thread = format!("session-{id}-read");
+            move || {
+                if std::thread::current().name() == Some(read_thread.as_str()) {
+                    check_answered.store(true, Ordering::SeqCst);
+                }
+            }
+        });
         tab.selection_mut()
             .select_feature(FeatureId::new("a0000001").unwrap());
         tab.read_check(&sessions);
         assert!(tab.check_read.is_some());
-        // Queued behind the check, in turn on the session's thread.
+        until("the check answered", &|| {
+            check_answered.load(Ordering::SeqCst)
+        });
+        // In turn on the session's thread.
         let removed =
             sessions.remove_feature(&id, Revision::OPENED, FeatureId::new("a0000001").unwrap());
         tab.timeline_read = Some(sessions.timeline(&id, ModelChoice::Current));
         assert!(removed.wait().result.unwrap().changed);
-        // Queued after both reads: once it answers, so have they.
+        // Queued after the timeline read, on the same thread: once it answers, so has the
+        // timeline read.
         sessions.text(&id, None).wait().result.unwrap();
         tab.selection_mut().clear();
         tab.take_answers(&sessions);
