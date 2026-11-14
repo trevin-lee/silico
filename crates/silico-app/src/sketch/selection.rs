@@ -27,11 +27,6 @@ impl Selection {
         self.picked.is_empty()
     }
 
-    /// What's selected, in pick order.
-    pub fn iter(&self) -> std::slice::Iter<'_, Picked> {
-        self.picked.iter()
-    }
-
     /// Whether `picked` is selected.
     pub fn contains(&self, picked: &Picked) -> bool {
         self.picked.contains(picked)
@@ -63,7 +58,7 @@ impl Selection {
         }
     }
 
-    /// Several joining together, as a box's do (C9): each not already selected added after
+    /// Several joining together, as a box's would (C9): each not already selected added after
     /// what is, in ID order ([`Picked`]'s: the members by ID, then the origin and the axes),
     /// each once. What's already selected keeps its place.
     pub fn add_together(&mut self, picked: impl IntoIterator<Item = Picked>) {
