@@ -26119,6 +26119,127 @@ fn a_click_after_a_failed_recompute_of_the_tabs_revision_is_refused_at_the_press
 }
 
 #[test]
+fn a_revert_that_drops_a_click_says_so() {
+    use silico_core::document::ElementKind;
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Vertical);
+        tab.revert(&sessions, false);
+    }
+    assert_eq!(
+        h.state().tabs()[0].message.as_deref(),
+        Some("Vertical wasn't added: the part was reverted first")
+    );
+    settled(&mut h);
+    assert_eq!(text_of(&f, &h), RELATING);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_whose_read_is_refused_is_let_go_in_the_reads_words() {
+    // Horizontal and Vertical, then another client removes the sketch before the next read:
+    // the Vertical, stale, is planned again on a read the session refuses, and let go in its
+    // words.
+    use silico_core::command::ModelChoice;
+    use silico_core::document::ElementKind;
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    let id = h.state().tabs()[0].id;
+    let removed = {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Vertical);
+        // Another client's, after the Horizontal's add.
+        let after_add = tab.revision.next().unwrap();
+        f.sessions
+            .remove_feature(&id, after_add, sketch_id("s0000001"))
+    };
+    removed.wait().result.unwrap();
+    step_until(&mut h, "the Vertical let go", |h| {
+        h.state().tabs()[0]
+            .message
+            .as_deref()
+            .is_some_and(|said| said.starts_with("Vertical wasn't added: "))
+    });
+    let refused = f
+        .sessions
+        .sketch(&id, ModelChoice::Published, sketch_id("s0000001"))
+        .wait()
+        .result
+        .unwrap_err();
+    let words = refused.errors()[0].message().to_owned();
+    let said = h.state().tabs()[0].message.clone().unwrap_or_default();
+    assert!(said.contains(&words), "{said} says {words}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_while_a_clicks_edit_is_under_way_keeps_it_and_lets_its_sketch_mode_go_after() {
+    // Horizontal and Vertical; the Vertical's edit sent, and held unanswered behind another
+    // command; then Finish. The Vertical, refused as stale, is planned again on the closed
+    // sketch mode's next read, and kept; that sketch mode is then let go.
+    use silico_core::command::CheckModel;
+    use silico_core::document::{ElementKind, Form};
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    let id = h.state().tabs()[0].id;
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Vertical);
+    }
+    // A check queued in the session after the Horizontal's add, held on its rebuild's solve:
+    // what's sent after it waits.
+    f.sketches.hold();
+    let check = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    assert!(f.sketches.wait_held(WAIT));
+    step_until(&mut h, "the Vertical sent", |h| sketch_sends(h).len() == 2);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, true);
+    }
+    f.sketches.release();
+    check.wait();
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    let forms: Vec<Form> = sketch_of_text(&f, &h, "s0000001")
+        .constraints
+        .into_iter()
+        .map(|c| c.form)
+        .collect();
+    for kept in [
+        Form::Horizontal {
+            line: element_ref("na000001"),
+        },
+        Form::Vertical {
+            line: element_ref("na000002"),
+        },
+    ] {
+        assert!(forms.contains(&kept), "{kept:?} in {forms:?}");
+    }
+    assert_eq!(h.state().tabs()[0].leaving(), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn delete_during_a_drag_waits_for_its_end_then_goes_against_its_revision_and_both_land() {
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
