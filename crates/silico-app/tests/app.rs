@@ -26159,6 +26159,8 @@ fn finish_while_a_clicks_edit_is_under_way_keeps_it_and_lets_its_sketch_mode_go_
         let _marked = never_waits::marked();
         h.state_mut().tabs_mut()[0].finish_sketch(&sessions, true);
     }
+    // Kept for the Vertical's edit under way.
+    assert_eq!(h.state().tabs()[0].leaving(), 1);
     f.sketches.release();
     check.wait();
     settled(&mut h);
@@ -26382,6 +26384,193 @@ fn cancel_while_a_clicks_edit_is_under_way_lets_it_go_when_it_comes_back_stale()
     assert_eq!(text_of(&f.sessions, &h), RELATING);
     let said = h.state().tabs()[0].message.clone().unwrap_or_default();
     assert!(said.starts_with("Vertical wasn't added: "), "{said}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_step_over_a_tangent_pair_and_a_relation_after_it_one_click_at_a_time() {
+    // Tangent over the `on` (its add and its remove, one step, C5), then Horizontal on the
+    // bottom: each Undo takes back one click, the pair whole, and each Redo gives one back.
+    use silico_core::document::{Direction, Form};
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    tangent_over_the_on(&f, &mut h);
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    relate_button(&mut h, "Horizontal");
+    settled(&mut h);
+    let forms = |h: &AppHarness| -> Vec<Form> {
+        sketch_of_text(&f, h, "s0000001")
+            .constraints
+            .into_iter()
+            .map(|c| c.form)
+            .collect()
+    };
+    let tangent = Form::TangentOn {
+        a: element_ref("nd000001"),
+        at: element_ref("pd000002"),
+        b: element_ref("cc000001"),
+        direction: Direction::Same,
+    };
+    let replaced = Form::On {
+        point: element_ref("pd000002"),
+        curve: element_ref("cc000001"),
+    };
+    let horizontal = Form::Horizontal {
+        line: element_ref("na000001"),
+    };
+    let holds = |h: &AppHarness, expected: [(&Form, bool); 3]| {
+        let now = forms(h);
+        for (form, there) in expected {
+            assert_eq!(now.contains(form), there, "{form:?} in {now:?}");
+        }
+    };
+    holds(
+        &h,
+        [(&tangent, true), (&replaced, false), (&horizontal, true)],
+    );
+    // Undo: the Horizontal alone.
+    undo_by_key(&mut h);
+    holds(
+        &h,
+        [(&tangent, true), (&replaced, false), (&horizontal, false)],
+    );
+    // Undo: the pair, whole.
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), RELATING);
+    // Redo: the pair, whole.
+    redo_by_key(&mut h);
+    holds(
+        &h,
+        [(&tangent, true), (&replaced, false), (&horizontal, false)],
+    );
+    // Redo: the Horizontal.
+    redo_by_key(&mut h);
+    holds(
+        &h,
+        [(&tangent, true), (&replaced, false), (&horizontal, true)],
+    );
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn no_other_sketch_mode_opens_while_a_finished_ones_click_waits_and_its_cancel_keeps_that_edit() {
+    // Sketch mode A: Horizontal and Vertical, the Horizontal's edit held unanswered behind
+    // another command, so the Vertical is still a click to plan; then Finish, A kept for it.
+    // Edit Sketch doesn't open another sketch mode while A's close waits behind that click,
+    // so a Cancel never meets another mode's click. Once A has settled, sketch mode B opens
+    // after A's edits, and its Cancel, back to where B opened, keeps them.
+    use silico_core::command::CheckModel;
+    use silico_core::document::{ElementKind, Form};
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    let id = h.state().tabs()[0].id;
+    f.sketches.hold();
+    let check = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    assert!(f.sketches.wait_held(WAIT));
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Vertical);
+        tab.finish_sketch(&sessions, true);
+    }
+    assert_eq!(h.state().tabs()[0].leaving(), 1);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        assert!(!tab.can_sketch(), "a sketch mode's close waits");
+        tab.edit_sketch(&sessions, &sketch_id("s0000001"));
+        assert!(tab.sketch.is_none(), "no sketch mode B");
+    }
+    f.sketches.release();
+    check.wait();
+    settled(&mut h);
+    let forms = |h: &AppHarness| -> Vec<Form> {
+        sketch_of_text(&f, h, "s0000001")
+            .constraints
+            .into_iter()
+            .map(|c| c.form)
+            .collect()
+    };
+    let kept = [
+        Form::Horizontal {
+            line: element_ref("na000001"),
+        },
+        Form::Vertical {
+            line: element_ref("na000002"),
+        },
+    ];
+    for form in &kept {
+        assert!(forms(&h).contains(form), "{form:?} in {:?}", forms(&h));
+    }
+    assert_eq!(h.state().tabs()[0].leaving(), 0);
+    // B, opened now, and Cancelled: A's edits stay.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.edit_sketch(&sessions, &sketch_id("s0000001"));
+        assert!(tab.sketch.is_some(), "sketch mode B open");
+        tab.finish_sketch(&sessions, false);
+    }
+    settled(&mut h);
+    for form in &kept {
+        assert!(forms(&h).contains(form), "{form:?} in {:?}", forms(&h));
+    }
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_while_the_read_is_an_older_models_refusal_waits_for_the_next_read() {
+    // Create Sketch, its revision's rebuild held at the new sketch's solve: sketch mode's
+    // read, of the published model from before the sketch was added, refuses it. Fix pressed
+    // then, with nothing selected, waits (the rebuild runs, so a read is coming); once the
+    // sketch is read, Fix says the prototype's words, and no "wasn't added".
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let (mut h, _) = f.opened("relating.silico", RELATING);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Relate"));
+    settled(&mut h);
+    f.sketches.hold();
+    create_sketch(&mut h, "XY plane");
+    step_until(
+        &mut h,
+        "the older model's refusal read, the new revision rebuilding",
+        |h| {
+            let tab = &h.state().tabs()[0];
+            f.sketches.wait_held(Duration::ZERO)
+                && tab
+                    .sketch
+                    .as_ref()
+                    .and_then(|mode| mode.read.as_ref())
+                    .is_some_and(|read| {
+                        read.result.is_err() && read.model.is_some_and(|model| model < tab.revision)
+                    })
+        },
+    );
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Fix);
+    }
+    let tab = &h.state().tabs()[0];
+    assert_eq!(tab.message, None, "let go");
+    assert!(tab.unsettled(), "the click waits");
+    f.sketches.release();
+    step_until(&mut h, "Fix planned on the sketch's read", |h| {
+        toast_said(h).is_some_and(|(text, _)| {
+            text == "Select the curves or points first; the relation applies to them."
+        })
+    });
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
 
