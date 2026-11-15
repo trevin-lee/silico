@@ -1130,6 +1130,47 @@ fn settled_bytes_refused_by_another_sessions_path_are_reloaded_by_a_name_no_sess
 }
 
 #[test]
+fn settled_bytes_refused_by_a_save_as_reservation_are_reloaded_once_the_save_gives_it_back() {
+    // Another session's Save As claims its path before it writes. A file put there
+    // meanwhile, linked in, is refused for that claim; the save, which never writes over a
+    // file put there meanwhile, gives the path back unwritten, and the refusal is tried
+    // again: no session holds the file now, so it's reloaded.
+    let w = watching_box();
+    let other = w.f.path.with_file_name("b.silico");
+    std::fs::write(&other, BOX.replace("Block", "Brick")).unwrap();
+    let second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+    // A Save As saves a transaction.
+    w.f.sessions.begin(&second).wait().result.unwrap();
+    let target = w.f.path.with_file_name("t.silico");
+    let (writing, write_through) = shut(&w.f.sessions.find(&second).unwrap().writing);
+    let saving = w.f.sessions.save_as(&second, &target, false);
+    writing.recv_timeout(WAIT).unwrap();
+    std::fs::write(&target, SPHERE).unwrap();
+    w.link_to(&target);
+    w.compare_with_shared_reader();
+    w.compare_with_shared_reader();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision::OPENED);
+    assert!(
+        lock(&w.f.session().reloads).refused.is_some(),
+        "the reload of the path the Save As claimed wasn't refused"
+    );
+    open_gate(&w.f.sessions.find(&second).unwrap().writing);
+    write_through.send(()).unwrap();
+    let refused = saving.wait().result.unwrap_err();
+    assert_eq!(refused.errors()[0].parameter(), Some("path"), "{refused:?}");
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), SPHERE);
+    w.compare_with_shared_reader();
+    w.reload_ends();
+    assert_eq!(
+        w.f.at(),
+        Revision(2),
+        "the path the Save As gave back was never tried again"
+    );
+    assert_eq!(w.text_of(Revision(2)), SPHERE);
+}
+
+#[test]
 fn a_settled_reload_inside_a_transaction_finding_another_sessions_file_claims_and_keeps_nothing() {
     // Queued behind a `begin`, the reload runs inside its transaction, and finds another
     // session's file linked at the path: neither the bytes the watch found settled nor the

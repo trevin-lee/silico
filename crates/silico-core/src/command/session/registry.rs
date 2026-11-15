@@ -127,8 +127,9 @@ pub(super) struct Book<C: Kernel + 'static> {
     /// The sessions are being dropped: an open that finishes now doesn't open.
     pub(super) stopping: bool,
     /// How many times the files sessions claim have changed hands (a session released, a
-    /// file claimed anew), never for a claim made again of what's held: a reload a claim
-    /// refused may be taken after a change, and only then.
+    /// file claimed anew, a path a Save As claimed given back unwritten), never for a claim
+    /// made again of what's held: a reload a claim refused may be taken after a change, and
+    /// only then.
     pub(super) claims: u64,
 }
 
@@ -841,7 +842,8 @@ fn held_in<C: Kernel + 'static>(
 }
 
 /// The claim [`reserve`] made on `target` for session `id` taken back: its Save As wrote
-/// nothing there.
+/// nothing there. A change of hands: a reload the claim refused meanwhile (of a session
+/// whose path was made a link to `target`) is tried again.
 pub(super) fn unreserve<P: Clients + 'static>(
     registry: &Registry<P>,
     id: SessionId,
@@ -850,6 +852,7 @@ pub(super) fn unreserve<P: Clients + 'static>(
     let mut book = lock(&registry.book);
     if book.paths.get(target) == Some(&id) {
         book.paths.remove(target);
+        book.claims = book.claims.wrapping_add(1);
     }
 }
 
