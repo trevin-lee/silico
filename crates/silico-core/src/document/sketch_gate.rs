@@ -467,23 +467,30 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     }
 
     // The tangent rule below ("a curve ending on another is tangent where it ends") judges
-    // pairs of an edge `tangent` and an `on` or a `tangent_on`, which holds its a's end on its
-    // b as an `on` does (#258), and refuses each pair at whichever of the two comes later in
-    // the constraint list: a file's order (sorted by ID, as written), or an edit's, which
-    // appends what it adds, so the refusal names the member the edit gave. Every constraint
-    // holding a point on a curve, by its curve and point, its places in the list in order,
-    // each with the tangent_on's a, the curve it makes tangent there (none for an `on`).
-    let mut ons: BTreeMap<(&Reference, &ElementId), Vec<Hold>> = BTreeMap::new();
+    // pairs of an edge `tangent` and a constraint holding a point on a curve, read from
+    // `Form::hold` as the constraint tools' Tangent reads its places (C3 as amended, #478: a
+    // hold is a hold): an `on`, a `tangent_on`, which holds its a's end on its b as an `on`
+    // does (#258), or a `midpoint`, which holds its point on its line. It refuses each pair at
+    // whichever of the two comes later in the constraint list: a file's order (sorted by ID,
+    // as written), or an edit's, which appends what it adds, so the refusal names the member
+    // the edit gave. Every hold, by its curve and point, its places in the list in order, each
+    // with its kind.
+    let mut holds: BTreeMap<(&Reference, &ElementId), Vec<Hold>> = BTreeMap::new();
     for (i, c) in sketch.constraints.iter().enumerate() {
-        let (point, curve, tangent) = match &c.form {
-            Form::On { point, curve } => (point, curve, None),
-            Form::TangentOn { a, at, b, .. } => (at, b, Some(a)),
-            _ => continue,
+        let Some((point, curve)) = c.form.hold() else {
+            continue;
+        };
+        let kind = match &c.form {
+            Form::TangentOn { a, .. } => HoldKind::TangentOn(a),
+            Form::Midpoint { .. } => HoldKind::Midpoint(&c.id),
+            // An `on`, the third.
+            _ => HoldKind::On,
         };
         if let Some(point) = point.element() {
-            ons.entry((curve, point))
+            holds
+                .entry((curve, point))
                 .or_default()
-                .push((i, &c.id, tangent));
+                .push((i, &c.id, kind));
         }
     }
     // Each edge `tangent` the rule applies to, as it's passed, by the curve one of its
@@ -616,10 +623,10 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         ),
                         format!("make it a tangent_at, at point {point}"),
                     ));
-                } else if let Some((point, ending, other, on, tangent)) = {
+                } else if let Some((point, ending, other, holder, kind)) = {
                     // Either curve may be the one ending on the other: each way round, the
-                    // tangent kept for an `on` after it, and the first `on` before it that
-                    // holds an end of x on y (one way round, then the other).
+                    // tangent kept for a hold after it, and the first hold before it of an
+                    // end of x on y (one way round, then the other).
                     let mut found = None;
                     for (x, y) in [(a, b), (b, a)] {
                         let Some(curve) = x.element() else {
@@ -638,11 +645,11 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             found = ends
                                 .into_iter()
                                 .filter_map(|end| {
-                                    let &(place, id, tangent) = ons.get(&(y, end))?.first()?;
-                                    (place < i).then_some((place, end, id, tangent))
+                                    let &(place, id, kind) = holds.get(&(y, end))?.first()?;
+                                    (place < i).then_some((place, end, id, kind))
                                 })
                                 .min_by_key(|&(place, ..)| place)
-                                .map(|(_, end, id, tangent)| (end, x, y, id, tangent));
+                                .map(|(_, end, id, kind)| (end, x, y, id, kind));
                         }
                     }
                     found
@@ -653,9 +660,9 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     add(refuse(
                         &format!("{at}.b"),
                         format!(
-                            "a tangent's {ending} ends at point {point}, which constraint {on} puts on {other}: a curve ending on another is tangent where it ends"
+                            "a tangent's {ending} ends at point {point}, which constraint {holder} puts on {other}: a curve ending on another is tangent where it ends"
                         ),
-                        one_tangency(ending, point, other, tangent),
+                        one_tangency(ending, point, other, kind),
                     ));
                 }
                 let (line_a, line_b) = (is_line(0), is_line(1));
@@ -700,7 +707,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         format!(
                             "a tangent_on puts point {point}, where {ending} ends, on {b}, which constraint {tangent} makes {ending} edge tangent to: a curve ending on another is tangent where it ends"
                         ),
-                        one_tangency(ending, point, b, Some(a)),
+                        one_tangency(ending, point, b, HoldKind::TangentOn(a)),
                     ));
                 }
                 if let Some(point) = end.element() {
@@ -763,17 +770,22 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     }
                 }
             }
-            // The tangent rule's pair, refused here when the `on` comes after the tangent.
-            Form::On { point, curve } => {
+            // The tangent rule's pair, refused here when the `on` or the `midpoint` comes after
+            // the tangent.
+            Form::On { point, curve } | Form::Midpoint { point, line: curve } => {
                 if let Some(end) = point.element()
                     && let Some(&(tangent, ending)) = tangents.get(&(curve, end))
                 {
+                    let (holder, kind) = match form {
+                        Form::Midpoint { .. } => ("a midpoint", HoldKind::Midpoint(&constraint.id)),
+                        _ => ("an on", HoldKind::On),
+                    };
                     add(refuse(
                         &format!("{at}.point"),
                         format!(
-                            "an on puts point {end}, where {ending} ends, on {curve}, which constraint {tangent} makes {ending} edge tangent to: a curve ending on another is tangent where it ends"
+                            "{holder} puts point {end}, where {ending} ends, on {curve}, which constraint {tangent} makes {ending} edge tangent to: a curve ending on another is tangent where it ends"
                         ),
-                        one_tangency(ending, end, curve, None),
+                        one_tangency(ending, end, curve, kind),
                     ));
                 }
             }
@@ -1036,30 +1048,48 @@ fn own_points<'a>(
 }
 
 /// A constraint holding a point on a curve, for the tangent rule: its place in the constraint
-/// list, its ID, and a `tangent_on`'s a, the curve it makes tangent there (none for an `on`).
-type Hold<'a> = (usize, &'a ElementId, Option<&'a Reference>);
+/// list, its ID, and its kind.
+type Hold<'a> = (usize, &'a ElementId, HoldKind<'a>);
+
+/// Which of the three forms holding a point on a curve ([`Form::hold`]) a hold is, with what
+/// the tangent rule's suggestion names of it.
+#[derive(Clone, Copy)]
+enum HoldKind<'a> {
+    /// An `on`.
+    On,
+    /// A `tangent_on`, with its a, the curve it makes tangent at the point it holds.
+    TangentOn(&'a Reference),
+    /// A `midpoint`, by its ID.
+    Midpoint(&'a ElementId),
+}
 
 /// What makes one tangency of an edge `tangent` of `ending` and `other` and the constraint
-/// holding `ending`'s end, `point`, on `other`: an `on` (`tangent` none) and the edge tangent
-/// become one `tangent_on`; a `tangent_on` that makes `ending` tangent there already says
-/// what the edge tangent does, so the edge tangent goes; one that makes another curve tangent
-/// there (ending at the same point) stays, holding the point, and the edge tangent becomes a
-/// `tangent_on` of its own.
+/// holding `ending`'s end, `point`, on `other`: an `on` and the edge tangent become one
+/// `tangent_on`; a `tangent_on` that makes `ending` tangent there already says what the edge
+/// tangent does, so the edge tangent goes; one that makes another curve tangent there (ending
+/// at the same point) stays, holding the point, and the edge tangent becomes a `tangent_on` of
+/// its own, as it does beside a `midpoint`, which stays too, holding the point at the line's
+/// middle.
 fn one_tangency(
     ending: &Reference,
     point: &ElementId,
     other: &Reference,
-    tangent: Option<&Reference>,
+    hold: HoldKind<'_>,
 ) -> String {
-    match tangent {
-        None => format!("make the two one tangent_on, with a {ending}, at {point}, and b {other}"),
-        Some(a) if a == ending => {
+    match hold {
+        HoldKind::On => {
+            format!("make the two one tangent_on, with a {ending}, at {point}, and b {other}")
+        }
+        HoldKind::TangentOn(a) if a == ending => {
             format!(
                 "remove the tangent: the tangent_on already makes them tangent at point {point}"
             )
         }
-        Some(a) => format!(
+        HoldKind::TangentOn(a) => format!(
             "make the tangent a tangent_on, with a {ending}, at {point}, and b {other}, keeping {a}'s"
+        ),
+        HoldKind::Midpoint(midpoint) => format!(
+            "make the tangent a tangent_on, with a {ending}, at {point}, and b {other}, keeping midpoint {midpoint}"
         ),
     }
 }
