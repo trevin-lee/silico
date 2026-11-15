@@ -273,6 +273,7 @@ Refused:
 - a point and an axis: "an axis has no middle: Midpoint takes a point and a line";
 - two lines: "Midpoint takes a point and a line: select the end you mean and the other line" (§1: SolidWorks' "two lines" is an end and a line);
 - the line's own end: "point pe000001 is an end of line ne000001 itself" (the gate's rule);
+- a point that's an end of a curve an edge `tangent` makes tangent to the line: the gate refuses the `midpoint` ("a curve ending on another is tangent where it ends"), as it refuses Coincident's `on` there (C5), suggesting the tangent be made a `tangent_on`, keeping the midpoint (#498);
 - more than one point or line: "Midpoint takes one point and one line".
 
 A point already held `on` the line gets the `midpoint`, and the `on` stays, reading `redundant` (C5).
