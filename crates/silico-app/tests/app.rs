@@ -25995,6 +25995,15 @@ fn an_undo_behind_a_click_waiting_on_a_stopped_rebuild_runs_once_the_stop_is_see
         tab.step(&sessions, true);
     }
     stop_the_held_rebuild(&f, &mut h);
+    // Let go in a later poll, not in its press's call: said in the status bar, not toasted
+    // (the app takes a tab's toast in the frame that sets it).
+    step_until(&mut h, "the Vertical let go", |h| {
+        h.state().tabs()[0]
+            .message
+            .as_deref()
+            .is_some_and(|said| said.starts_with("Vertical wasn't added: "))
+    });
+    assert_eq!(toast_said(&h), None);
     settled(&mut h);
     let tab = &h.state().tabs()[0];
     let said = tab.message.clone().unwrap_or_default();
