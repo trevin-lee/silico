@@ -460,6 +460,9 @@ fn wrapped(widths: &[f32], width: f32, gap: f32) -> (Vec<Rect>, f32) {
     (places, y + theme::BUTTON_HEIGHT)
 }
 
+/// A length's nanometres in a millimetre, the steps the core gives a length in.
+pub(crate) const NM_PER_MM: i128 = 10_i128.pow(silico_core::document::LENGTH_DECIMALS);
+
 /// `steps` of a quantity a unit of which is `per` steps (a length's nanometres a mm, an
 /// area's millionths a mm², an angle's nanodegrees a degree), as the prototype's `fmtF`
 /// writes a measure (app.js: `toLocaleString('en-US', {minimumFractionDigits: 2,

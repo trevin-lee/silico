@@ -8,6 +8,7 @@
 
 pub mod app;
 mod app_data;
+pub mod arrow;
 mod banner;
 pub mod bar;
 pub mod box_select;

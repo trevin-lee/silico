@@ -26,8 +26,9 @@ use silico_core::sketch_tools::{
     Preview, SketchTool, SmartDimension, SystemIds, ToolKind,
 };
 
-use super::draw::{Curve, Geometry, add, angle, direction, dot, foot, length, mul, sub};
-use super::hit::segment_distance;
+use super::draw::{
+    Curve, Geometry, add, angle, direction, dot, foot, length, mul, segment_distance, sub,
+};
 
 /// The tool chosen: a drawing tool of the core's, Smart Dimension, trim, or split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

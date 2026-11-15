@@ -332,9 +332,10 @@ impl ProfileCurve<'_> {
 }
 
 /// A profile curve as the sketch draws it, where the solve put it. The gate measures a
-/// sketch's curves by the same conversion ([`sent`]), drawn where the file stores them.
+/// sketch's curves by the same conversion ([`sent`]), drawn where the file stores them, and
+/// so does the app's display of a sketch's read (its arrows' place on the profile).
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Drawn {
+pub enum Drawn {
     Line {
         from: Xy,
         to: Xy,
@@ -353,7 +354,7 @@ pub(crate) enum Drawn {
 
 /// `p` with a zero of either sign as +0, so a point is one point, and an arc one angle,
 /// whatever the sign of its zeros (a solve can leave −0, and atan2(±0, −1) is ±π).
-pub(crate) fn unsigned([x, y]: Xy) -> Xy {
+pub fn unsigned([x, y]: Xy) -> Xy {
     [x + 0.0, y + 0.0]
 }
 
@@ -363,9 +364,9 @@ pub(crate) fn unsigned([x, y]: Xy) -> Xy {
 /// (`arc_from_points`, the libm crate's), and one walked against its drawing is sent end
 /// first with its angles swapped, so it turns clockwise; a circle has its radius, and no
 /// direction (the request runs it with its loop's). Its points' zeros are +0 already, as
-/// [`gather`] puts them. None for an arc whose points make none (its ends at one angle from
-/// its centre).
-pub(crate) fn sent(drawn: Drawn, reversed: bool) -> Option<silico_protocol::Curve> {
+/// `gather` puts them, and a caller from outside puts them by [`unsigned`]. None for an arc
+/// whose points make none (its ends at one angle from its centre).
+pub fn sent(drawn: Drawn, reversed: bool) -> Option<silico_protocol::Curve> {
     use silico_protocol::Curve;
     Some(match drawn {
         Drawn::Line { from, to } => {

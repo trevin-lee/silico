@@ -119,6 +119,33 @@ fn watched(text: &str) -> Watched {
     }
 }
 
+impl Watched {
+    /// How many of the watch's comparisons have ended, each with its telling done.
+    fn compared(&self) -> usize {
+        self.f.session().disk.get().unwrap().compared()
+    }
+
+    /// One comparison, which reads the file as it is now: every comparison started before
+    /// it waited for until it has ended, then the clock moved a whole interval and `status`
+    /// asked, which starts one, waited for until it has ended and told what it tells.
+    #[track_caller]
+    fn compare(&self) {
+        let deadline = Instant::now() + WAIT;
+        while self.compared() != self.reader.started() {
+            assert!(Instant::now() < deadline, "a comparison never ended");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let before = self.compared();
+        self.clock.advance(DISK_CHECK_INTERVAL);
+        self.f.status();
+        while self.compared() == before {
+            assert!(Instant::now() < deadline, "no comparison ran");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(self.compared(), before + 1, "more than one comparison ran");
+    }
+}
+
 impl Fixture {
     fn status(&self) -> Status {
         self.sessions.status(&self.id).result.unwrap()
@@ -189,12 +216,29 @@ fn open_gate(gate: &Gate) {
 
 /// Waits until a comparison that found the file changed has told the session (and so
 /// queued its reload, if one was wanted): it does so after its finding is kept, so a
-/// finding of `changed` alone doesn't say it has.
+/// finding of `changed` alone doesn't say it has, and only once a second comparison has
+/// found the same bytes (#479), so `status` is asked meanwhile, each asking starting a
+/// comparison in these sessions (with no interval; a session with a test's clock compares
+/// only as the test moves it).
 #[track_caller]
-fn told(f: &Fixture) {
+fn wait_told(f: &Fixture) {
     let deadline = Instant::now() + WAIT;
     while f.session().disk.get().unwrap().changed_told() == 0 {
+        f.status();
         assert!(Instant::now() < deadline, "no comparison told the session");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Waits until the session's own reload, its gate shut, has reached the gate, asking `status`
+/// meanwhile, each asking starting a comparison (these sessions compare with no interval): a
+/// change is reloaded only once a second comparison finds the same bytes (#479).
+#[track_caller]
+fn reload_reaches_its_gate(f: &Fixture, started: &Receiver<()>) {
+    let deadline = Instant::now() + WAIT;
+    while started.try_recv().is_err() {
+        f.status();
+        assert!(Instant::now() < deadline, "the reload never started");
         std::thread::sleep(Duration::from_millis(1));
     }
 }
@@ -348,9 +392,10 @@ fn an_agents_commit_is_reloaded_with_no_command_named_reload_while_it_runs() {
     f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
     let (was_started, through) = shut(&f.session().reloading);
     std::fs::write(&f.path, SPHERE).unwrap();
-    // Found by status's comparison, and reloaded by the session: no command sent.
+    // Found by status's comparison, and reloaded by the session once the next finds it
+    // again: no command sent.
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
-    was_started.recv_timeout(WAIT).unwrap();
+    reload_reaches_its_gate(&f, &was_started);
     let (status, revision) = f.status_reaches(|status, _| reloading(status));
     assert_eq!(revision, Revision::OPENED);
     assert_eq!(status.running.map(RunningCommand::as_str), Some("reload"));
@@ -385,7 +430,7 @@ fn changes_found_while_the_reload_waits_queue_no_second_and_make_one_revision() 
         std::thread::sleep(Duration::from_millis(1));
     }
     // The reload queued before the command ahead runs (and reads the file itself).
-    told(&f);
+    wait_told(&f);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     // The command ahead reloads it itself (decision 2): revision 2.
@@ -451,7 +496,8 @@ fn an_edit_queued_as_the_change_is_found_meets_a_conflict_and_the_agents_commit_
         std::thread::sleep(Duration::from_millis(1));
     }
     std::fs::write(&f.path, SPHERE).unwrap();
-    // The edit waits behind a command held, so the reload is found while it's queued.
+    // The edit waits behind a command held, so the change is found, settles at the next
+    // comparison, and its reload is queued (behind the edit) while the edit is queued.
     let (started, through) = shut(&f.session().gate);
     let held = f.sessions.text(&f.id, None);
     started.recv_timeout(WAIT).unwrap();
@@ -464,6 +510,9 @@ fn an_edit_queued_as_the_change_is_found_meets_a_conflict_and_the_agents_commit_
     );
     w.reader.release();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    w.compare();
+    assert_eq!(f.session().disk.get().unwrap().changed_told(), 1);
+    assert!(lock(&f.session().reloads).queued);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     held.wait().result.unwrap();
@@ -477,8 +526,9 @@ fn an_edit_queued_as_the_change_is_found_meets_a_conflict_and_the_agents_commit_
             .is_some_and(|cause| cause.contains("was reloaded")),
         "{conflict:?}"
     );
-    // One new revision, the agent's text, never written over.
-    f.status_reaches(|status, _| status.running.is_none());
+    // One new revision, the agent's text, never written over: the watch's reload, queued
+    // behind the edit, found the file as the held command had reloaded it.
+    f.status_reaches(|status, _| status.running.is_none() && !lock(&f.session().reloads).queued);
     assert_eq!(f.at(), Revision(2));
     assert_eq!(f.held_text(), SPHERE);
     assert_eq!(f.file(), SPHERE);
@@ -528,7 +578,7 @@ fn a_reload_queued_behind_a_begin_that_reloaded_the_file_makes_no_revision() {
     std::fs::write(&f.path, SPHERE).unwrap();
     // Found, its reload queued behind the begin.
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
-    told(&f);
+    wait_told(&f);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     // The begin reloads the file itself, at revision 2, then opens its transaction.
@@ -558,7 +608,7 @@ fn a_file_changed_again_after_that_begin_stays_changed() {
     // Its reload queued (behind the begin) before the begin runs: the comparison tells the
     // session after its finding is kept, and once the begin has read the file the
     // comparison is the session's no longer, and queues nothing.
-    told(&f);
+    wait_told(&f);
     open_gate(&f.session().gate);
     through.send(()).unwrap();
     assert_eq!(begin.wait().result.unwrap().base, Revision(2));
@@ -580,7 +630,7 @@ fn a_reload_that_finds_the_file_as_the_session_holds_it_makes_none() {
     let (started, through) = shut(&f.session().reloading);
     std::fs::write(&f.path, SPHERE).unwrap();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
-    started.recv_timeout(WAIT).unwrap();
+    reload_reaches_its_gate(&f, &started);
     // Put back before it reads.
     std::fs::write(&f.path, BOX).unwrap();
     open_gate(&f.session().reloading);
@@ -596,7 +646,7 @@ fn a_cancel_naming_reload_is_refused_and_reload_is_never_a_candidate() {
     let (started, through) = shut(&f.session().reloading);
     std::fs::write(&f.path, SPHERE).unwrap();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
-    started.recv_timeout(WAIT).unwrap();
+    reload_reaches_its_gate(&f, &started);
     f.status_reaches(|status, _| reloading(status));
     // By name, as a client sends it: the reader refuses it, naming `command`.
     let crate::command::Call::Running(calling) = f
@@ -640,7 +690,7 @@ fn a_reload_its_file_refused_is_queued_again_only_for_other_bytes() {
     std::fs::remove_file(&f.path).unwrap();
     std::os::unix::fs::symlink(&other, &f.path).unwrap();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
-    started.recv_timeout(WAIT).unwrap();
+    reload_reaches_its_gate(&f, &started);
     through.send(()).unwrap();
     // Refused (it's s2's), and the same bytes, found again and again, queue no other.
     f.status_reaches(|status, _| status.running.is_none());
@@ -722,18 +772,21 @@ fn settled(f: &Fixture, count: &AtomicUsize) -> usize {
 /// [`settled`], of the session `id` of `sessions`.
 #[track_caller]
 fn settled_in(sessions: &Sessions<Arc<FakeKernel>>, id: &SessionId, count: &AtomicUsize) -> usize {
+    settled_by(sessions, id, count, || sessions.text(id, None))
+}
+
+/// [`settled_in`], the read held being `read`'s, a read queued on the session `id`.
+#[track_caller]
+fn settled_by<T>(
+    sessions: &Sessions<Arc<FakeKernel>>,
+    id: &SessionId,
+    count: &AtomicUsize,
+    read: impl FnOnce() -> Running<T>,
+) -> usize {
     let session = sessions.find(id).unwrap();
-    let watchers = std::mem::replace(&mut lock(&session.rebuilds).watchers, Threads::new());
-    watchers.join();
-    let reads = lock(&session.reads)
-        .threads
-        .as_mut()
-        .map(|threads| std::mem::replace(threads, Threads::new()));
-    if let Some(reads) = reads {
-        reads.join();
-    }
+    wakers_joined(&session);
     let (started, through) = shut(&session.gate);
-    let text = sessions.text(id, None);
+    let text = read();
     started.recv_timeout(WAIT).unwrap();
     let before = count.load(Ordering::SeqCst);
     through.send(()).unwrap();
@@ -743,6 +796,20 @@ fn settled_in(sessions: &Sessions<Arc<FakeKernel>>, id: &SessionId, count: &Atom
     text.wait().result.unwrap();
     woken(count, before + 1);
     before + 1
+}
+
+/// The session's rebuilds' watchers and its published reads' threads joined: each wakes the
+/// client before it ends.
+fn wakers_joined(session: &Session<FakeClient>) {
+    let watchers = std::mem::replace(&mut lock(&session.rebuilds).watchers, Threads::new());
+    watchers.join();
+    let reads = lock(&session.reads)
+        .threads
+        .as_mut()
+        .map(|threads| std::mem::replace(threads, Threads::new()));
+    if let Some(reads) = reads {
+        reads.join();
+    }
 }
 
 #[test]
@@ -933,10 +1000,10 @@ fn a_finding_wakes_only_as_it_changes_and_the_sessions_own_reload_once() {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
     }
-    // An agent's commit: the finding changed, then the session's reload. Asked, a full
-    // interval later each time, until the comparison starts: the one before may still be
-    // ending as the reader says it ended, and then stamps its end at the clock's time
-    // after this advance, so a next is due only an interval after that.
+    // An agent's commit: the finding changed, then, once it settles, the session's reload.
+    // Asked, a full interval later each time, until the comparison starts: the one before
+    // may still be ending as the reader says it ended, and then stamps its end at the
+    // clock's time after this advance, so a next is due only an interval after that.
     std::fs::write(&w.f.path, SPHERE).unwrap();
     let before = w.reader.started();
     let deadline = std::time::Instant::now() + WAIT;
@@ -949,10 +1016,14 @@ fn a_finding_wakes_only_as_it_changes_and_the_sessions_own_reload_once() {
         );
         std::thread::sleep(Duration::from_millis(2));
     }
+    woken(&count, base + 2);
+    // The next comparison finds the same bytes: the change settled, and the session's
+    // reload queued (#479), the finding as it was.
+    w.compare();
     woken(&count, base + 3);
     assert_eq!(w.f.at(), Revision(2));
-    // Three, and none besides (the second comparison, unchanged, told nothing); then
-    // `settled`'s own.
+    // Three, and none besides (the second comparison, unchanged, and the fourth, changed
+    // still, told nothing); then `settled`'s own.
     assert_eq!(settled(&w.f, &count), base + 4);
 }
 
@@ -1101,15 +1172,17 @@ fn a_read_sent_while_its_session_opens_is_answered_before_the_wake_that_tells_of
 
 #[test]
 fn a_reload_that_finds_the_file_as_held_moves_the_finding_itself() {
-    // With the clock held, no comparison runs after the one that found the change: only the
-    // reload, finding the file put back, can say it's unchanged.
+    // With the clock held, no comparison runs after the two that found the change (the
+    // second settling it, #479): only the reload, finding the file put back, can say it's
+    // unchanged.
     let w = watched(BOX);
     let f = &w.f;
     f.status_reaches(|status, _| status.disk == Some(Disk::Unchanged));
     let (started, through) = shut(&f.session().reloading);
     std::fs::write(&f.path, SPHERE).unwrap();
-    w.clock.advance(DISK_CHECK_INTERVAL);
-    f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
+    w.compare();
+    assert_eq!(f.status().disk, Some(Disk::Changed));
+    w.compare();
     started.recv_timeout(WAIT).unwrap();
     let reads = w.reader.started();
     std::fs::write(&f.path, BOX).unwrap();
@@ -1248,7 +1321,7 @@ fn a_refused_reload_isnt_tried_again_while_the_session_holding_its_file_only_rea
     std::fs::remove_file(&f.path).unwrap();
     std::os::unix::fs::symlink(&other, &f.path).unwrap();
     f.status_reaches(|status, _| status.disk == Some(Disk::Changed));
-    started.recv_timeout(WAIT).unwrap();
+    reload_reaches_its_gate(&f, &started);
     through.send(()).unwrap();
     f.status_reaches(|status, _| status.running.is_none());
     for _ in 0..20 {
@@ -1390,3 +1463,5 @@ fn a_change_with_neither_queues_the_sessions_own_reload() {
     });
     assert_eq!(f.held_text(), SPHERE);
 }
+
+mod in_place;
