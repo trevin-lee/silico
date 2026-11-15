@@ -2130,10 +2130,7 @@ impl Tab {
     /// the selection is the bodies its boxes hold, so the menu opens over it as it is, as a
     /// right-click never fills a box). Both panes' menus take this one rule.
     pub(crate) fn menu_selects(&self, id: &FeatureId, how: crate::selection::SelectedAs) -> bool {
-        let boxes_hold = self
-            .dialog
-            .as_ref()
-            .is_some_and(crate::dialog::Dialog::boxes_hold_bodies);
+        let boxes_hold = self.dialog.as_ref().is_some_and(Dialog::boxes_hold_bodies);
         !boxes_hold && !self.selection.selected_as(id, how)
     }
 
