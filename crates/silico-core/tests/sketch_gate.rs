@@ -756,21 +756,24 @@ fn an_edge_tangent_beside_a_tangent_on_of_the_pair_is_refused_at_the_later_of_th
     }
 }
 
+/// Lines nz from pz (-20, 5) and ny to pw (20, 5) both ending at pt (0, 5) on the top of
+/// circle ca, radius 5 about pa; and these constraints.
+fn lines_on_the_circle(constraints: &str) -> String {
+    document(&fields(
+        r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pt000000", "x": 0, "y": 5, "construction": false}, {"id": "pz000000", "x": -20, "y": 5, "construction": false}, {"id": "pw000000", "x": 20, "y": 5, "construction": false}"#,
+        r#"{"id": "nz000000", "from": "pz000000", "to": "pt000000", "construction": false}, {"id": "ny000000", "from": "pt000000", "to": "pw000000", "construction": false}"#,
+        CIRCLE,
+        "",
+        constraints,
+    ))
+}
+
 #[test]
 fn a_tangent_on_holds_its_point_for_another_curve_ending_there_as_an_on_does() {
     // Lines nz and ny both end at pt, on the circle; the tangent_on makes nz tangent there,
     // and the edge tangent is ny's. pt is on the circle all the same, so ny ends on it and is
     // tangent where it ends: the tangent becomes a tangent_on of ny, and nz's stays (both
     // ways round, after the tangent_on and before it).
-    let lines_on_the_circle = |constraints: &str| {
-        document(&fields(
-            r#"{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pt000000", "x": 0, "y": 5, "construction": false}, {"id": "pz000000", "x": -20, "y": 5, "construction": false}, {"id": "pw000000", "x": 20, "y": 5, "construction": false}"#,
-            r#"{"id": "nz000000", "from": "pz000000", "to": "pt000000", "construction": false}, {"id": "ny000000", "from": "pt000000", "to": "pw000000", "construction": false}"#,
-            CIRCLE,
-            "",
-            constraints,
-        ))
-    };
     let keep = "make the tangent a tangent_on, with a ny000000, at pt000000, and b ca000000, keeping nz000000's";
     let text = lines_on_the_circle(
         r#"{"id": "k0000000", "type": "tangent_on", "a": "nz000000", "at": "pt000000", "b": "ca000000", "direction": "same"}, {"id": "k0000001", "type": "tangent", "a": "ny000000", "b": "ca000000", "side": "left"}"#,
@@ -1159,12 +1162,18 @@ fn the_hold_refused(noun: &str, hold: &str, field: &str, tangent: &str) -> Refus
     )
 }
 
-/// Each order of Fable's P1 sketch's constraints refused as `expected` says, none of its
-/// refusals asking for a tangent_on: every order that isn't, numbered from 1, so a failure
-/// names each.
-#[track_caller]
-fn each_as_said<const N: usize>(orders: impl IntoIterator<Item = ([String; N], Vec<Refusal>)>) {
-    let wrong: Vec<String> = orders
+/// The tangent's two spellings, its arc first and its line first: the pair's search runs one
+/// way round, then the other, so each order is checked both ways.
+const BOTH_WAYS: [(&str, &str); 2] = [("ae000003", "ne000010"), ("ne000010", "ae000003")];
+
+/// Each order of Fable's P1 sketch's constraints that the gate doesn't refuse as `expected`
+/// says, or whose refusals ask for a tangent_on: each named by `tangent`, the tangent's
+/// spelling, and its number from 1, so a failure names every one.
+fn wrong_orders<const N: usize>(
+    tangent: (&str, &str),
+    orders: impl IntoIterator<Item = ([String; N], Vec<Refusal>)>,
+) -> Vec<String> {
+    orders
         .into_iter()
         .enumerate()
         .filter_map(|(n, (constraints, expected))| {
@@ -1172,13 +1181,12 @@ fn each_as_said<const N: usize>(orders: impl IntoIterator<Item = ([String; N], V
             let asks = said.iter().any(|(.., advice)| advice.starts_with("make"));
             (said != expected || asks).then(|| {
                 format!(
-                    "order {}: {constraints:#?}\nsaid {said:#?}\nnot {expected:#?}",
+                    "tangent {tangent:?}, order {}: {constraints:#?}\nsaid {said:#?}\nnot {expected:#?}",
                     n + 1
                 )
             })
         })
-        .collect();
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+        .collect()
 }
 
 #[test]
@@ -1191,51 +1199,59 @@ fn beside_the_arcs_own_tangent_on_every_refusal_of_a_midpoints_pair_says_to_remo
     // listed. The tangent is refused at its b, naming the tangent_on if it comes before the
     // tangent, else the first hold before it; each hold after the tangent is refused at its
     // own member, naming the tangent. The midpoint and the tangent_on never pair.
+    // The tangent either way round (#498's round 2).
     let m = |id: &str| midpoint(id, "pe000021", "ne000010");
-    let t = |id: &str| edge_tangent(id, "ae000003", "ne000010");
     let o = arc_tangent_on;
     let midpoint_refused =
         |hold: &str, tangent: &str| the_hold_refused("a midpoint", hold, "point", tangent);
     let tangent_on_refused =
         |hold: &str, tangent: &str| the_hold_refused("a tangent_on", hold, "at", tangent);
-    each_as_said([
-        (
-            [m("kt000004"), o("kt000005"), t("kt000101")],
-            vec![the_tangent_refused("kt000101", "kt000005")],
-        ),
-        (
-            [o("kt000004"), m("kt000005"), t("kt000101")],
-            vec![the_tangent_refused("kt000101", "kt000004")],
-        ),
-        (
-            [t("kt000004"), m("kt000005"), o("kt000101")],
-            vec![
-                midpoint_refused("kt000005", "kt000004"),
-                tangent_on_refused("kt000101", "kt000004"),
+    let mut wrong = Vec::new();
+    for (a, b) in BOTH_WAYS {
+        let t = |id: &str| edge_tangent(id, a, b);
+        wrong.extend(wrong_orders(
+            (a, b),
+            [
+                (
+                    [m("kt000004"), o("kt000005"), t("kt000101")],
+                    vec![the_tangent_refused("kt000101", "kt000005")],
+                ),
+                (
+                    [o("kt000004"), m("kt000005"), t("kt000101")],
+                    vec![the_tangent_refused("kt000101", "kt000004")],
+                ),
+                (
+                    [t("kt000004"), m("kt000005"), o("kt000101")],
+                    vec![
+                        midpoint_refused("kt000005", "kt000004"),
+                        tangent_on_refused("kt000101", "kt000004"),
+                    ],
+                ),
+                (
+                    [t("kt000004"), o("kt000005"), m("kt000101")],
+                    vec![
+                        tangent_on_refused("kt000005", "kt000004"),
+                        midpoint_refused("kt000101", "kt000004"),
+                    ],
+                ),
+                (
+                    [m("kt000004"), t("kt000005"), o("kt000101")],
+                    vec![
+                        the_tangent_refused("kt000005", "kt000004"),
+                        tangent_on_refused("kt000101", "kt000005"),
+                    ],
+                ),
+                (
+                    [o("kt000004"), t("kt000005"), m("kt000101")],
+                    vec![
+                        the_tangent_refused("kt000005", "kt000004"),
+                        midpoint_refused("kt000101", "kt000005"),
+                    ],
+                ),
             ],
-        ),
-        (
-            [t("kt000004"), o("kt000005"), m("kt000101")],
-            vec![
-                tangent_on_refused("kt000005", "kt000004"),
-                midpoint_refused("kt000101", "kt000004"),
-            ],
-        ),
-        (
-            [m("kt000004"), t("kt000005"), o("kt000101")],
-            vec![
-                the_tangent_refused("kt000005", "kt000004"),
-                tangent_on_refused("kt000101", "kt000005"),
-            ],
-        ),
-        (
-            [o("kt000004"), t("kt000005"), m("kt000101")],
-            vec![
-                the_tangent_refused("kt000005", "kt000004"),
-                midpoint_refused("kt000101", "kt000005"),
-            ],
-        ),
-    ]);
+        ));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 #[test]
@@ -1244,24 +1260,55 @@ fn beside_the_arcs_own_tangent_on_an_ons_refusal_says_to_remove_the_tangent_too(
     // tangent_on and an edge tangent. After the tangent, the `on` is refused at its point
     // saying to remove the tangent, not "make the two one tangent_on", which would ask for a
     // second copy of the tangent_on; before it, the tangent names the tangent_on, though the
-    // `on` comes first.
+    // `on` comes first. The tangent either way round.
     let on = |id: &str| {
         format!(r#"{{"id": "{id}", "type": "on", "point": "pe000021", "curve": "ne000010"}}"#)
     };
-    let t = |id: &str| edge_tangent(id, "ae000003", "ne000010");
-    each_as_said([
-        (
-            [t("kt000004"), on("kt000005"), arc_tangent_on("kt000101")],
-            vec![
-                the_hold_refused("an on", "kt000005", "point", "kt000004"),
-                the_hold_refused("a tangent_on", "kt000101", "at", "kt000004"),
+    let mut wrong = Vec::new();
+    for (a, b) in BOTH_WAYS {
+        let t = |id: &str| edge_tangent(id, a, b);
+        wrong.extend(wrong_orders(
+            (a, b),
+            [
+                (
+                    [t("kt000004"), on("kt000005"), arc_tangent_on("kt000101")],
+                    vec![
+                        the_hold_refused("an on", "kt000005", "point", "kt000004"),
+                        the_hold_refused("a tangent_on", "kt000101", "at", "kt000004"),
+                    ],
+                ),
+                (
+                    [on("kt000004"), arc_tangent_on("kt000005"), t("kt000101")],
+                    vec![the_tangent_refused("kt000101", "kt000005")],
+                ),
             ],
-        ),
-        (
-            [on("kt000004"), arc_tangent_on("kt000005"), t("kt000101")],
-            vec![the_tangent_refused("kt000101", "kt000005")],
-        ),
-    ]);
+        ));
+    }
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+#[test]
+fn a_tangent_names_the_on_before_another_curves_tangent_on_of_its_end_in_the_ons_words() {
+    // Lines nz and ny both end at pt on the circle: k0000004 holds pt on ca, k0000005 makes
+    // nz tangent there, and k0000101 is ny's edge tangent, either way round. The tangent_on
+    // is nz's, not the ending ny's, so it settles nothing for ny and isn't preferred: the
+    // refusal names the first hold before the tangent, the `on`, and the on's suggestion, a
+    // tangent_on of ny (#498's round 2).
+    for (a, b) in [("ny000000", "ca000000"), ("ca000000", "ny000000")] {
+        let said = refusals(&lines_on_the_circle(&format!(
+            r#"{{"id": "k0000004", "type": "on", "point": "pt000000", "curve": "ca000000"}}, {{"id": "k0000005", "type": "tangent_on", "a": "nz000000", "at": "pt000000", "b": "ca000000", "direction": "same"}}, {{"id": "k0000101", "type": "tangent", "a": "{a}", "b": "{b}", "side": "left"}}"#
+        )));
+        assert_eq!(
+            said,
+            [(
+                "constraints.k0000101.b".to_owned(),
+                vec!["k0000101".to_owned()],
+                "a tangent's ny000000 ends at point pt000000, which constraint k0000004 puts on ca000000: a curve ending on another is tangent where it ends".to_owned(),
+                "make the two one tangent_on, with a ny000000, at pt000000, and b ca000000".to_owned(),
+            )],
+            "{a} {b}"
+        );
+    }
 }
 
 #[test]
