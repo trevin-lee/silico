@@ -1258,6 +1258,9 @@ pub struct Tab {
     /// Each sketch mode closed (Finish, Cancel) while a constraint tool's click of it was
     /// unsettled: its reads polled still, so the click is planned, and let go once none is.
     leaving: Vec<SketchMode>,
+    /// The constraint tool's click being pressed, while its press's call runs: let go in it,
+    /// it's toasted as well as said.
+    pressed: Option<Click>,
     /// Each state the tab's changes made in this transaction, by its first revision
     /// ([`state_of`](Self::state_of)), with the step that made it: what the Undo and Redo
     /// tooltips name, and the status bar counts. In order, those up to the session's state its
@@ -1523,6 +1526,7 @@ impl Tab {
             groups: Vec::new(),
             sketch_pairs: Vec::new(),
             leaving: Vec::new(),
+            pressed: None,
             steps: BTreeMap::new(),
             names: BTreeMap::new(),
             held_count: 0,
@@ -3852,7 +3856,12 @@ impl Tab {
                         });
                     }
                     Planned::Said => {}
-                    Planned::Gone(said) => self.message = Some(said),
+                    Planned::Gone(said) => {
+                        if self.pressed.as_ref() == Some(&click) {
+                            self.toast = Some(said.clone());
+                        }
+                        self.message = Some(said);
+                    }
                 },
                 Queued::Relate {
                     click,
@@ -6925,30 +6934,17 @@ impl Tab {
             relation,
             picks: mode.selection.references(),
         };
-        // A read it can't be planned on, and none newer to come: refused now, said in the
-        // toast and the status bar, nothing sent, the selection kept.
-        let read = mode.read.as_ref();
-        let why = self
-            .unreadable(read.and_then(|read| read.model))
-            .map(str::to_owned)
-            .or_else(|| match read {
-                Some(sketch::Read {
-                    result: Err(problems),
-                    model,
-                }) if model.is_none_or(|model| model >= self.revision) => Some(said(problems)),
-                _ => None,
-            });
         self.hush();
-        if let Some(why) = why {
-            let said = format!("{} wasn't added: {why}", relation.name());
-            self.toast = Some(said.clone());
-            self.message = Some(said);
-            return;
-        }
+        // With nothing ahead of it, it's planned now, and a read it can't be planned on (none
+        // newer to come) lets it go in this call: said in the toast as well as the status
+        // bar, as a refusal at the press is, nothing sent, the selection kept. Behind an
+        // edit still going out, it's planned once that has answered.
+        self.pressed = Some(click.clone());
         self.edits
             .queue
             .push_back(Queued::Click { click, after: None });
         self.advance(sessions);
+        self.pressed = None;
     }
 
     /// Why a sketch read of the revision `read` (none: no read yet) can't be followed by a

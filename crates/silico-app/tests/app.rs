@@ -26015,6 +26015,10 @@ fn a_click_after_an_edit_whose_rebuild_was_stopped_is_refused_at_the_press() {
         said.starts_with("Horizontal wasn't added: the rebuild was stopped"),
         "{said}"
     );
+    // Said in the toast too, as a refusal at the press is: shown from the next frame.
+    step(&mut h);
+    let toast = toast_said(&h).map(|(text, _)| text).unwrap_or_default();
+    assert_eq!(toast, said);
     for _ in 0..20 {
         step(&mut h);
     }
@@ -26236,6 +26240,45 @@ fn finish_while_a_clicks_edit_is_under_way_keeps_it_and_lets_its_sketch_mode_go_
         assert!(forms.contains(&kept), "{kept:?} in {forms:?}");
     }
     assert_eq!(h.state().tabs()[0].leaving(), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_pressed_while_an_edit_goes_out_after_a_stop_waits_for_its_read_and_lands() {
+    // A lone point deleted and its rebuild stopped; then, in one frame, another deleted (its
+    // `sketch_remove` going out, unanswered) and Horizontal pressed. The click waits behind
+    // the delete; the delete's revision is rebuilt and read, and the click lands there.
+    use silico_core::document::{ElementKind, Form};
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    f.sketches.hold();
+    select_member(&mut h, "pb000001", ElementKind::Point);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].sketch_delete(&sessions);
+    }
+    stop_the_held_rebuild(&f, &mut h);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "pb000002", ElementKind::Point);
+        h.state_mut().tabs_mut()[0].sketch_delete(&sessions);
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+    }
+    settled_and_read(&mut h);
+    let forms: Vec<Form> = sketch_of_text(&f, &h, "s0000001")
+        .constraints
+        .into_iter()
+        .map(|c| c.form)
+        .collect();
+    let horizontal = Form::Horizontal {
+        line: element_ref("na000001"),
+    };
+    assert!(forms.contains(&horizontal), "{forms:?}");
+    assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(never_waits::waits(), 0);
 }
 
