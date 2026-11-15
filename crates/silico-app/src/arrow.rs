@@ -54,11 +54,12 @@
 //! never queue. And while a drag is under way, its newest value waits in the field (which still
 //! follows the pointer) until the last edit's preview has answered, so a steady drag keeps one
 //! preview rebuilding, as the sketch's drag keeps one solve in flight, rather than stopping and
-//! starting a rebuild each frame (`Tab::arrow_held_back`); the drag's end (in its own frame, the
-//! property panel being drawn after the canvas), OK, and a save that closes the tab send the
-//! value it held back at once. Esc ends a drag where it began (section
-//! 3's chain, an open drag first: `Tab::escape_first`), as the stream's cancel does; a dialog
-//! closed, or its tab beginning to close, mid-drag leaves the rest of its stream doing nothing.
+//! starting a rebuild each frame (`Tab::arrow_held_back`). The drag's end sends the value it
+//! held back in the release's frame, its tab shown or not (`Tab::arrows_frame`); OK, and a save
+//! that closes the tab, end a drag still under way by sending it first (`Tab::close_dialog`,
+//! `Tab::flush_arrow`). Esc ends a drag where it began (section 3's chain, an open drag first:
+//! `Tab::escape_first`), as the stream's cancel does; a dialog closed, or its tab beginning to
+//! close, mid-drag leaves the rest of its stream doing nothing.
 //!
 //! Each arrow is data first, in model space ([`handles`], from the dialog, the sketch's plane,
 //! and its profile's centroid, [`profile_centroid`]) and then on the screen ([`arrows`], through

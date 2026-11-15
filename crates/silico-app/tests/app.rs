@@ -44503,6 +44503,60 @@ fn a_value_held_back_when_the_tab_begins_to_close_is_saved_as_its_field_shows() 
 }
 
 #[test]
+fn a_drags_release_in_the_frame_another_tab_is_shown_is_saved_as_its_field_shows() {
+    // #480's post-approval review: with 17 held back behind 16's preview, another file's
+    // open is answered and the button let go in the same frame, so the plate's tab is hidden
+    // when the release lands (the viewport's `end_unshown`) and the property panel, drawn for
+    // the shown tab alone, never sends 17. Closing the plate's tab with Save then writes 17,
+    // as its field shows.
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let f = fixture();
+    let (mut h, c, hold, sent) = held_back_at_17(&f);
+    let path = f.dir.path().join("plate.silico");
+    let woken = h.state().wakes();
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    let deadline = Instant::now() + WAIT;
+    while h.state().wakes() == woken {
+        assert!(Instant::now() < deadline, "the open never answered");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    h.input_mut().events.push(Event::PointerButton {
+        pos: up(c, 84.0),
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs().len(),
+        2,
+        "the open wasn't taken in that frame"
+    );
+    let sent_now = h.state().tabs()[0].edits.sent;
+    let field_now = dialog_length(&h.state().tabs()[0]);
+    hold.release();
+    h.get_by_label("Close plate.silico").click_accesskit();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to plate.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "the plate's tab closed", |h| {
+        h.state().tabs().len() == 1
+    });
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains(r#""length": 17,"#),
+        "field {field_now:?}, {} sent past 15 by the release; saved: {saved}",
+        sent_now - sent
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn ok_mid_drag_keeps_the_value_its_field_shows_when_it_was_held_back() {
     // #480's review, T2-1: Enter with 17 held back behind 16's preview.
     let f = fixture();

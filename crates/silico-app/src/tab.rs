@@ -1693,6 +1693,13 @@ impl Tab {
             // The dialog's field, maybe drawn already this frame, shows it in the next.
             painter.ctx().request_repaint();
         }
+        if holding && !self.grip.holding() && !closing {
+            // A drag's end sends the value it held back (`arrow_held_back`). The property
+            // panel asks the same each frame, but only of the tab shown: a release that lands
+            // in the frame another tab is shown comes here through `viewport::end_unshown`,
+            // the tab hidden, and nothing else would send it.
+            self.dialog_changed(sessions);
+        }
         left
     }
 
@@ -1702,9 +1709,10 @@ impl Tab {
     /// drag keeps one preview rebuilding with the newest value waiting, as the sketch's drag
     /// keeps one solve in flight, rather than starting and stopping a rebuild each frame
     /// (docs/design/m4.1-command-api.md, *Rebuilds and the models*). None once the drag
-    /// ends, so the release's own frame sends its value: the property panel, drawn after the
-    /// canvas, asks [`dialog_changed`](Self::dialog_changed) each frame (`panes::layout`).
-    /// None too while it isn't held; typed values are never held back.
+    /// ends, when [`arrows_frame`](Self::arrows_frame) sends its value in the release's own
+    /// frame, the tab shown or not (the property panel, `Panes::dialog`, asks
+    /// [`dialog_changed`](Self::dialog_changed) each frame, but only of the tab shown). None
+    /// too while it isn't held; typed values are never held back.
     ///
     /// [`preview_pending`]: Self::preview_pending
     fn arrow_held_back(&self) -> Option<&'static str> {
@@ -8948,6 +8956,64 @@ mod tests {
             assert_eq!(tab.base_held(), held, "{feature}'s {field}");
             assert_eq!(tab.can_ok(), !held, "{feature}'s {field}");
         }
+    }
+
+    #[test]
+    fn the_canvas_sends_none_of_a_dialogs_changes_but_the_arrows_own() {
+        // #480's mutants (`arrows_frame`'s `holding && !self.grip.holding() && !closing`, its
+        // `&&`s as `||`): frames of the canvas in which no arrow's drag ends send nothing the
+        // arrows didn't ask, a Pocket's Length typed to 7 among it. That's the property
+        // panel's to send, for the tab shown alone (`Panes::dialog`), so a tab hidden as a
+        // click on its canvas ends there (`viewport::end_unshown`) sends none of it.
+        use crate::viewport::{LeftEvent, LeftKind, ViewFrame};
+        use eframe::egui;
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let (_dir, sessions, mut tab) = session_tab();
+        let mut dialog = Dialog::new(Kind::Pocket, Some(fid("s0000002")), 1);
+        dialog.add().unwrap();
+        dialog.added(fid("q0000001"));
+        let length = dialog
+            .inputs
+            .iter_mut()
+            .find(|input| input.label == "Length")
+            .unwrap();
+        length.value = crate::dialog::Value::Length("7".to_owned());
+        tab.dialog = Some(dialog);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
+        let painter =
+            egui::Painter::new(egui::Context::default(), egui::LayerId::background(), rect);
+        let session = tab.id;
+        let frame = |left: Vec<LeftEvent>| ViewFrame {
+            session,
+            rect,
+            camera: crate::navigate::HOME.camera(crate::navigate::NO_BOX, 100, 100),
+            size_px: [100, 100],
+            pixels_per_point: 1.0,
+            pointer_px: None,
+            left,
+            secondary: Vec::new(),
+            drawn: Vec::new(),
+            now: std::time::Instant::now(),
+        };
+        let event = |kind| LeftEvent {
+            kind,
+            at_px: [50.0, 50.0],
+            shift: false,
+            ctrl: false,
+            frame: 0,
+            time: 0.0,
+            seq: 0,
+        };
+        let sent = |tab: &Tab| tab.edits.in_flight.is_some() || !tab.edits.queue.is_empty();
+        // A frame with no events, then a click's press and its release, which take no arrow.
+        for kinds in [vec![], vec![LeftKind::Press], vec![LeftKind::Release]] {
+            let left: Vec<LeftEvent> = kinds.iter().copied().map(event).collect();
+            let given = tab.arrows_frame(&sessions, &painter, &frame(left.clone()), left);
+            assert_eq!(given.len(), kinds.len(), "{kinds:?} given back");
+            assert!(!sent(&tab), "{kinds:?}");
+        }
+        tab.dialog_changed(&sessions);
+        assert!(sent(&tab), "the Length was there to send");
     }
 
     #[test]
