@@ -248,7 +248,9 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
         if !ui.is_rect_visible(rect) {
             return response;
         }
-        let lit = enabled && (item.lit || response.hovered() || response.has_focus());
+        // Behind a modal, drawn as its own flag has it (#487).
+        let on = crate::modal::looks_on(ui, item.off.is_none());
+        let lit = on && (item.lit || response.hovered() || response.has_focus());
         // `.menu .mi:hover:not(:disabled)` outweighs `.danger` (a class and two
         // pseudo-classes to two classes), so a hovered red item is lit as the others are;
         // `.danger` comes after `.menu .mi:disabled`, of the same weight, so an off one is
@@ -257,7 +259,7 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
             theme::MENU_ITEM_HOVER_TEXT
         } else if item.danger {
             theme::ERROR_TEXT
-        } else if !enabled {
+        } else if !on {
             theme::TEXT_DISABLED
         } else {
             theme::MENU_ITEM_TEXT
@@ -392,6 +394,18 @@ pub fn lines<A: Copy>(ui: &mut Ui, label: &str, lines: &[Line<'_, A>]) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_item_behind_a_modal_keeps_its_own_look_on_or_off() {
+        crate::modal::tests::drawn_alike_behind(|ui, on| {
+            let item = Item {
+                off: (!on).then_some("Off for now"),
+                checked: Some(Checked::Toggle(true)),
+                ..marked("Grid", None)
+            };
+            super::item(ui, &item, 200.0);
+        });
+    }
 
     fn marked(label: &str, checked: Option<Checked>) -> Item<'_> {
         Item {

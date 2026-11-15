@@ -45862,3 +45862,579 @@ fn behind_the_over_define_prompt_sketch_modes_bar_and_keys_take_nothing_until_it
     assert!(is_on(&finish(&h)));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- #497's review: what comes while a modal is open, and every inert path tried ----
+
+/// The boxed rectangle in sketch mode, the solve counting a length of 99 as repeating the
+/// others, its bottom's Modify box open with 99 typed and accepted while the sketch worker
+/// is held: the over-define offer still to come. The document's text on disk.
+fn offer_on_its_way(f: &Fixture) -> (AppHarness, String) {
+    use silico_app::sketch::dimension::ModifyAction;
+    counting_redundant_99(f);
+    let mut h = boxed_length(f);
+    let on_disk = std::fs::read_to_string(f.dir.path().join("boxed.silico")).unwrap();
+    open_modify_box(f, &mut h);
+    modify_dimension(f, &mut h, ModifyAction::Typed("99".to_owned()));
+    f.sketches.hold();
+    modify_dimension(f, &mut h, ModifyAction::Accept);
+    (h, on_disk)
+}
+
+/// The sketch worker let go, and frames stepped until the offer [`offer_on_its_way`] waited
+/// for is the sketch mode's, and ten more.
+fn offer_come(f: &Fixture, h: &mut AppHarness) {
+    f.sketches.release();
+    step_until(h, "the offer", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.offer().is_some())
+    });
+    for _ in 0..10 {
+        step(h);
+    }
+}
+
+/// A click of the pointer, pressed and let go, at `at`.
+fn pointer_click(h: &mut AppHarness, at: eframe::egui::Pos2) {
+    h.hover_at(at);
+    step(h);
+    for pressed in [true, false] {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        });
+    }
+    step(h);
+}
+
+#[test]
+fn an_over_define_offer_that_comes_while_the_close_question_is_open_waits_until_it_has_gone() {
+    // #497's review, finding 1: egui raises an area first shown to the top of its order, so
+    // an offer drawn while the question was up stood over it, inert, and a click on its
+    // "Leave it driving" fell through to the question's "Don't save". Held back, it shows
+    // once the question has gone, on top, and takes the pointer.
+    let f = fixture();
+    let (mut h, on_disk) = offer_on_its_way(&f);
+    h.get_by_label("Close boxed.silico").click_accesskit();
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    offer_come(&f, &mut h);
+    assert!(
+        prompt(&h).is_none(),
+        "the offer drawn while the question is up"
+    );
+    assert!(anywhere(&h, question));
+    assert_ne!(text_of(&f.sessions, &h), on_disk);
+    // Its key, 1, does nothing under the question.
+    let sent = h.state().tabs()[0].sent.clone();
+    h.key_press(Key::Num1);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert!(sketch_mode(&h).unwrap().offer().is_some());
+    // The question's Cancel, by the pointer, the question on top: the offer shows.
+    let cancel = on_button(&h, "Cancel").rect().center();
+    pointer_click(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    // Its "Leave it driving", by the pointer: chosen, the tab open, the edit kept.
+    choose_in_prompt(&mut h, "Leave it driving");
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(prompt(&h).is_none());
+    assert!(sketch_mode(&h).unwrap().offer().is_none());
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_ne!(text_of(&f.sessions, &h), on_disk);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_over_define_offer_that_comes_while_the_shortcut_sheet_is_open_waits_until_it_closes() {
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    h.get_by_role_and_label(Role::Button, "Shortcuts")
+        .click_accesskit();
+    step_until(&mut h, "the sheet", sheet_open);
+    offer_come(&f, &mut h);
+    assert!(
+        prompt(&h).is_none(),
+        "the offer drawn while the sheet is open"
+    );
+    // The sheet's ×, by the pointer, the sheet on top: the offer shows; Esc is its Cancel.
+    let close = the_sheet(&h)
+        .get_by_role_and_label(Role::Button, "Close")
+        .rect()
+        .center();
+    pointer_click(&mut h, close);
+    step_until(&mut h, "the offer shown", |h| {
+        !sheet_open(h) && prompt(h).is_some()
+    });
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_under_the_over_define_prompt_is_its_cancel_though_the_canvas_menu_was_open_as_it_came() {
+    // #497's review, finding 6: the canvas's menu, open as the offer comes, closes with it
+    // coming, so Esc goes to the prompt, not to the menu behind it.
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    let at = to_screen([20.0, 20.0]).unwrap();
+    h.state_mut().tabs_mut()[0].sketch.as_mut().unwrap().menu_at = Some(at);
+    step_until(&mut h, "the menu", |h| {
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_some()
+    });
+    offer_come(&f, &mut h);
+    assert!(prompt(&h).is_some());
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_none()
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_egui_menu_open_as_a_question_comes_closes_with_none_of_its_items_left() {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(h.query_by_role_and_label(Role::Button, "Revert").is_some());
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    step(&mut h);
+    assert!(h.query_by_role_and_label(Role::Button, "Revert").is_none());
+    assert!(h.query_by_role_and_label(Role::Button, "Export…").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_a_question_over_whats_wrong_its_buttons_are_off_and_take_no_click() {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    select(&mut h, "Second");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.unsaved() && tab.edits.idle() && shows(h, "Timeline", "Secondx")
+    });
+    step_until(&mut h, "rebuilt", |h| {
+        h.query_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click_accesskit();
+    step_until(&mut h, "three listed", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 3
+    });
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    step(&mut h);
+    let buttons = |h: &AppHarness| -> Vec<bool> {
+        whats_wrong(h)
+            .unwrap()
+            .query_all_by_role(Role::Button)
+            .map(|node| is_on(&node))
+            .collect()
+    };
+    assert!(!buttons(&h).is_empty());
+    assert!(buttons(&h).iter().all(|on| !on), "{:?}", buttons(&h));
+    // Its Show in timeline and its ×, clicked through the tree: nothing.
+    let selected = selected_features(&h);
+    whats_wrong(&h)
+        .unwrap()
+        .query_all_by_role_and_label(Role::Button, "Show in timeline")
+        .next()
+        .unwrap()
+        .click_accesskit();
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Close")
+        .click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(whats_wrong(&h).is_some());
+    assert_eq!(selected_features(&h), selected);
+    // The question's Cancel: What's Wrong on again.
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains(asked).is_none()
+    });
+    step(&mut h);
+    assert!(buttons(&h).iter().all(|on| *on), "{:?}", buttons(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The boxed rectangle in sketch mode, its bottom's length set to 50 (repeating nothing):
+/// an edit held, so Close asks.
+fn boxed_edited(f: &Fixture) -> AppHarness {
+    counting(f);
+    let mut h = boxed_length(f);
+    edit_length(f, &mut h, "50");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.unsaved() && tab.edits.idle()
+    });
+    h
+}
+
+/// The tab's Close clicked through the tree, and stepped until its question is up.
+fn close_asked(h: &mut AppHarness) -> &'static str {
+    h.get_by_label("Close boxed.silico").click_accesskit();
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(h, "the question", |h| anywhere(h, question));
+    step(h);
+    question
+}
+
+#[test]
+fn behind_the_close_question_the_sketch_palette_is_off_and_takes_no_click() {
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    let profile = |h: &AppHarness| sketch_mode(h).unwrap().settings.show_profile;
+    let before = profile(&h);
+    let question = close_asked(&mut h);
+    let checkbox = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .get_by_label("Profile")
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(checkbox(&h));
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_label("Profile")
+        .click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(profile(&h), before);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(!checkbox(&h));
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_label("Profile")
+        .click_accesskit();
+    step_until(&mut h, "toggled", |h| profile(h) != before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_close_question_the_modify_boxs_accept_is_off_and_sends_nothing() {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    open_modify_box(&f, &mut h);
+    modify_dimension(&f, &mut h, ModifyAction::Typed("33".to_owned()));
+    step(&mut h);
+    let question = close_asked(&mut h);
+    fn accept(h: &AppHarness) -> egui_kittest::Node<'_> {
+        h.get_by_role_and_label(Role::Dialog, "Modify dimension")
+            .get_by_role_and_label(Role::Button, "Accept")
+    }
+    assert!(!is_on(&accept(&h)));
+    let sent = h.state().tabs()[0].sent.clone();
+    accept(&h).click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert!(sketch_mode(&h).unwrap().edit_box.is_some());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(is_on(&accept(&h)));
+    accept(&h).click_accesskit();
+    step_until(&mut h, "33 sent", |h| {
+        h.state().tabs()[0].sent.len() > sent.len()
+    });
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("constraints.ka000005.value".to_owned()))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_canvas_menu_open_as_the_close_question_comes_closes_and_stays_closed() {
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    let at = to_screen([20.0, 20.0]).unwrap();
+    sketch_events(
+        &f,
+        &mut h,
+        &[silico_app::sketch::PointerEvent {
+            action: silico_app::sketch::PointerAction::RightClick,
+            at,
+            shift: false,
+            ctrl: false,
+        }],
+    );
+    let menu = |h: &AppHarness| {
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_some()
+    };
+    step_until(&mut h, "the menu", menu);
+    let question = close_asked(&mut h);
+    assert!(!menu(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!menu(&h));
+    assert!(sketch_mode(&h).unwrap().menu_at.is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_name_typed_in_the_timeline_takes_no_key_once_a_question_comes_and_goes_as_typed() {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    f2_typed(&mut h, "Block", "Base");
+    // The quit asked; then, in the first frame drawn under it, a key typed.
+    close_window(&mut h);
+    h.event(eframe::egui::Event::Text("Z".to_owned()));
+    step(&mut h);
+    // The field, drawn once more under it as its name is sent, is off.
+    assert!(
+        rename_field(&h, "Block").is_some_and(|field| field.accesskit_node().is_disabled()),
+        "the rename field on under the question"
+    );
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    // The name sent as it was typed, before the key.
+    step_until(&mut h, "renamed", |h| {
+        shows(h, "Timeline", "Base") || shows(h, "Timeline", "BaseZ")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(rename_field(&h, "Block").is_none());
+    assert!(!shows(&h, "Timeline", "BaseZ"));
+    assert!(text_of(&f.sessions, &h).contains(r#""name": "Base""#));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_middle_drag_held_as_a_modal_opens_ends_and_pans_no_further() {
+    // #497's review, finding 5: as SolidWorks ends a drag when a dialog takes the focus.
+    let f = fixture();
+    let (mut h, _seen) = f.overlaid(EXAMPLE);
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
+    let middle = eframe::egui::PointerButton::Middle;
+    h.hover_at(at);
+    button_event(&h, at, middle, true, Modifiers::NONE);
+    step(&mut h);
+    h.hover_at(at + eframe::egui::vec2(20.0, 0.0));
+    step(&mut h);
+    let panned = view(&h).camera().clone();
+    // The shortcut sheet, by its key, the button still held: no further move pans.
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for i in 1..=4u8 {
+        h.hover_at(at + eframe::egui::vec2(20.0 + 10.0 * f32::from(i), 0.0));
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &panned);
+    button_event(
+        &h,
+        at + eframe::egui::vec2(60.0, 0.0),
+        middle,
+        false,
+        Modifiers::NONE,
+    );
+    step(&mut h);
+    // Closed, the pointer moved: still none.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    h.hover_at(at + eframe::egui::vec2(80.0, 0.0));
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &panned);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_left_press_held_as_a_modal_opens_is_let_go_where_it_was_and_its_moves_and_release_go_nowhere()
+{
+    // #497's review, finding 5: what was held is let go where it was as the modal comes, what
+    // it did standing (a dialog's arrow keeps its value, #480's RL1), and nothing after it is
+    // handed on.
+    use silico_app::viewport::LeftKind::{Press, Release};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
+    let left = eframe::egui::PointerButton::Primary;
+    h.hover_at(at);
+    step(&mut h);
+    left_taken(&seen);
+    button_event(&h, at, left, true, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let pressed = left_taken(&seen);
+    assert_eq!(kinds(&pressed), [Press]);
+    let pressed_at = pressed[0].event.at_px;
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let let_go = left_taken(&seen);
+    assert_eq!(kinds(&let_go), [Release]);
+    assert_eq!(let_go[0].event.at_px, pressed_at);
+    h.hover_at(at + eframe::egui::vec2(30.0, 0.0));
+    step(&mut h);
+    button_event(
+        &h,
+        at + eframe::egui::vec2(30.0, 0.0),
+        left,
+        false,
+        Modifiers::NONE,
+    );
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(left_taken(&seen).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A shape as it looks: a text by what it says, in which font and colours, and where (not
+/// where in the font atlas its glyphs are, which the atlas moves as it grows with new text,
+/// the sheet's); a mesh by its corners, their colours, and its texture, not where in the
+/// texture it reads, for the same reason; a line coloured by a function (the canvas's grid
+/// fading out) by its points and width, the function being made again each frame; any other
+/// shape whole.
+#[derive(Debug, PartialEq)]
+enum Looks {
+    Text {
+        pos: eframe::egui::Pos2,
+        job: Arc<eframe::egui::text::LayoutJob>,
+        underline: eframe::egui::Stroke,
+        fallback: eframe::egui::Color32,
+        over: Option<eframe::egui::Color32>,
+        opacity: f32,
+        angle: f32,
+    },
+    Shape(eframe::egui::Shape),
+}
+
+/// What the frame painted under any modal, each shape as it looks ([`Looks`]): its shapes up
+/// to the first modal's backdrop (a rectangle over the whole window in
+/// [`silico_app::theme::MODAL_BACKDROP`]).
+fn window_painted(h: &AppHarness) -> Vec<Looks> {
+    use eframe::egui::Shape;
+    use eframe::egui::epaint::ColorMode;
+    fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+        match shape {
+            Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+            shape => out.push(shape.clone()),
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in &h.output().shapes {
+        flatten(&clipped.shape, &mut out);
+    }
+    let window = h.ctx.content_rect();
+    let backdrop = out.iter().position(|shape| {
+        matches!(shape, Shape::Rect(rect)
+            if rect.fill == silico_app::theme::MODAL_BACKDROP && rect.rect.contains_rect(window))
+    });
+    out.truncate(backdrop.unwrap_or(out.len()));
+    out.into_iter()
+        .map(|shape| match shape {
+            Shape::Text(text) => Looks::Text {
+                pos: text.pos,
+                job: Arc::clone(&text.galley.job),
+                underline: text.underline,
+                fallback: text.fallback_color,
+                over: text.override_text_color,
+                opacity: text.opacity_factor,
+                angle: text.angle,
+            },
+            Shape::Path(mut path) if matches!(path.stroke.color, ColorMode::UV(_)) => {
+                path.stroke.color = ColorMode::Solid(eframe::egui::Color32::TRANSPARENT);
+                Looks::Shape(Shape::Path(path))
+            }
+            Shape::Mesh(mut mesh) => {
+                for vertex in &mut Arc::make_mut(&mut mesh).vertices {
+                    vertex.uv = eframe::egui::Pos2::ZERO;
+                }
+                Looks::Shape(Shape::Mesh(mesh))
+            }
+            shape => Looks::Shape(shape),
+        })
+        .collect()
+}
+
+#[test]
+fn behind_the_shortcut_sheet_the_window_is_painted_as_it_is_with_none_open() {
+    // #497's review, finding 2: the prototype's backdrop only dims (styles.css `.backdrop`);
+    // nothing behind it is drawn off. Every shape of the window's, the bars', the panes'
+    // (egui_tiles draws each in a `Ui` of its own), and the timeline's, the same under the
+    // sheet as with no modal.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    pointer_away(&mut h);
+    settled(&mut h);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let open = window_painted(&h);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!is_on(&timeline_item(&h, "Block")));
+    let under = window_painted(&h);
+    assert_eq!(under.len(), open.len(), "the window's shapes, counted");
+    for (at, (under, open)) in under.iter().zip(&open).enumerate() {
+        assert_eq!(under, open, "shape {at}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_shortcut_sheet_opened_by_its_button_keeps_the_keyboard_in_its_filter() {
+    // The focus taken from behind a modal is only what's behind it: the sheet, opened by a
+    // click partway through a frame, keeps its filter's.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.get_by_role_and_label(Role::Button, "Shortcuts")
+        .click_accesskit();
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(the_sheet(&h).get_by_role(Role::TextInput).is_focused());
+    assert_eq!(never_waits::waits(), 0);
+}

@@ -41,14 +41,18 @@ pub(crate) enum Asked {
     Card(CardAct),
 }
 
+/// What's Wrong's modal, by its name: what it's drawn on.
+pub(crate) fn id() -> egui::Id {
+    egui::Id::new("whats-wrong")
+}
+
 /// What's Wrong over the window, of `tab`, inert if `behind` a question asked over it: what
 /// was asked of it, and the broken reference's candidate whose row the pointer is over, if
 /// it's over one.
 pub(crate) fn show(ctx: &egui::Context, tab: &Tab, behind: bool) -> (Asked, Option<String>) {
     let window = ctx.content_rect().width();
     let width = theme::WHATS_WRONG_WIDTH.min(window - theme::WHATS_WRONG_WINDOW_MARGIN);
-    let id = egui::Id::new("whats-wrong");
-    let (asked, backdrop) = modal::show_sized(ctx, id, width, behind, |ui| {
+    let (asked, backdrop) = modal::show_sized(ctx, id(), width, behind, |ui| {
         ui.scope_builder(UiBuilder::new().id_salt("whats-wrong"), |ui| {
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Dialog);

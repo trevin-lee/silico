@@ -243,7 +243,8 @@ pub enum LeftKind {
     Press,
     /// Moved while held, from a press on the canvas.
     Move,
-    /// Let go, after a press on the canvas.
+    /// Let go, after a press on the canvas; or let go of where it was held as a modal came
+    /// over the window, what it did standing.
     Release,
     /// Held no longer, with no release: the window lost the focus, a navigation tool took
     /// the drag, another press came with no release before it (the window lost one), or
@@ -1278,7 +1279,8 @@ impl View {
     /// press on the canvas (where the ViewCube and the bar, on top, aren't, and not while
     /// the pane drags: the middle button's pan or orbit, or the cube's), the moves while it's
     /// held, its release or its cancel, and a double-click straight after the release that
-    /// made it; none while a navigation tool makes a left drag navigate. `held` is the
+    /// made it; none while a navigation tool makes a left drag navigate, or a modal is over
+    /// the window (what was held let go where it was as it comes). `held` is the
     /// pane's, which [`end_unshown`] has already ended if another tab's. Each is placed by
     /// the egui event that made it ([`Placed`]), its `seq` given by [`sequenced`].
     fn left_events(
@@ -1295,9 +1297,13 @@ impl View {
         let options = ui.ctx().options(|options| options.input_options);
         // A navigation tool's drag: the pane's, which ends what was held. (The cube's can't
         // begin while the button is held from the canvas: egui gives a drag to the widget
-        // pressed, and takes no other press until its release.)
+        // pressed, and takes no other press until its release.) A modal over the window
+        // lets go of what was held where it was (#487: nothing behind a modal takes input),
+        // what it did standing, as a dialog's arrow keeps its value when its tab is closed
+        // mid-drag (#480's RL1); and takes no press.
+        let behind = crate::modal::behind(ui);
         let taken = self.tool.is_some();
-        let pressable = response.hovered() && self.drag.is_none() && !taken;
+        let pressable = response.hovered() && self.drag.is_none() && !taken && !behind;
         let mut left = Vec::new();
         let LeftButton { held, clicks } = button;
         // Read where the events are, not cloned out each frame.
@@ -1317,6 +1323,9 @@ impl View {
             };
             if taken && let Some(was) = held.take() {
                 left.push(event(0, LeftKind::Cancel, was.at_px, input.modifiers));
+            }
+            if behind && let Some(was) = held.take() {
+                left.push(event(0, LeftKind::Release, was.at_px, input.modifiers));
             }
             // The canvas's own left clicks are counted, those whose press it takes, as egui
             // counts clicks but for none off it (`crate::clicks`); a stream's are handed on.
@@ -1398,6 +1407,10 @@ impl View {
         let px = |at: Pos2| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp];
         let options = ui.ctx().options(|options| options.input_options);
         let pressable = response.hovered() && self.drag.is_none();
+        // A right press held as a modal comes over the window is no click once let go.
+        if crate::modal::behind(ui) {
+            *held = None;
+        }
         ui.input(|input| {
             let time = input.time;
             let mut clicks = Vec::new();
@@ -1458,6 +1471,11 @@ impl View {
     /// or a named view's) is given. A drag ends when its button is let go, the pointer leaves the
     /// window, or the window loses the focus (whose release may never come).
     fn navigate(&mut self, ui: &mut Ui, response: &egui::Response, size_px: [u32; 2]) {
+        // A modal over the window ends a pan or an orbit held (the canvas inert under it
+        // takes no new one), as SolidWorks ends a drag when a dialog takes the focus.
+        if crate::modal::behind(ui) {
+            self.drag = None;
+        }
         let rect = response.rect;
         let height = f64::from(rect.height());
         let (pressed, origin, latest, shift, down, lost) = ui.input(|input| {

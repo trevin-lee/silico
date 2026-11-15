@@ -119,18 +119,79 @@ pub(crate) fn frame() -> Frame {
         .shadow(theme::MODAL_SHADOW)
 }
 
+/// The layers made inert in a pass of egui's ([`inert`]): the window's, a floating panel's,
+/// a modal's under another. What [`behind`] looks for: a `Ui` egui_tiles makes afresh for a
+/// pane has no parent `Ui`, but draws on its parent's layer.
+#[derive(Debug, Clone, Default)]
+struct Inert {
+    pass: u64,
+    layers: Vec<egui::LayerId>,
+}
+
+/// Where [`Inert`] is kept, in egui's data.
+fn inert_key() -> egui::Id {
+    egui::Id::new("modal-inert")
+}
+
 /// `ui` made inert, as everything behind the modal on top is (#487; SolidWorks' and
 /// Fusion's modals leave the window behind them taking no input): disabled, so none of its
 /// widgets takes a click, a drag, a key, or the focus, from the pointer or through the
-/// accessibility tree, which has each of them off. Each is drawn as it's drawn when off, but
-/// with none of egui's fade of a disabled `Ui` (which would fade the panels and not the
-/// 3D view under them): the modal's backdrop dims them. Its children inherit both.
+/// accessibility tree, which has each of them off. Its children inherit it. It's drawn as
+/// it is with no modal open, the backdrop alone dimming it (the prototype's `.backdrop`;
+/// nothing behind is `:disabled`): with none of egui's fade of a disabled `Ui`, and the
+/// app's own widgets drawn as their own flags have them ([`looks_on`]).
 pub(crate) fn inert(ui: &mut Ui) {
     let fade = ui.visuals().disabled_alpha;
     ui.visuals_mut().disabled_alpha = 1.0;
     ui.disable();
     // A child disabled of its own fades as it does with no modal open.
     ui.visuals_mut().disabled_alpha = fade;
+    let (pass, layer) = (ui.ctx().cumulative_pass_nr(), ui.layer_id());
+    ui.ctx().data_mut(|data| {
+        let inert = data.get_temp_mut_or_default::<Inert>(inert_key());
+        if inert.pass != pass {
+            *inert = Inert {
+                pass,
+                layers: Vec::new(),
+            };
+        }
+        inert.layers.push(layer);
+    });
+}
+
+/// `draw` run with egui's fade of a disabled `Ui` off for each `Ui` it makes afresh (egui_tiles
+/// makes each pane's so, off as its parent is), if `behind` the modal on top, as [`inert`]
+/// has none of it: given the fade the style has, for what's off of its own inside to take.
+pub(crate) fn unfaded<R>(ctx: &egui::Context, behind: bool, draw: impl FnOnce(f32) -> R) -> R {
+    let style = ctx.global_style();
+    if !behind {
+        return draw(style.visuals.disabled_alpha);
+    }
+    ctx.global_style_mut(|style| style.visuals.disabled_alpha = 1.0);
+    let drawn = draw(style.visuals.disabled_alpha);
+    ctx.set_global_style(style);
+    drawn
+}
+
+/// Whether `ui` is behind the modal on top: on a layer made inert this pass.
+pub(crate) fn behind(ui: &Ui) -> bool {
+    let pass = ui.ctx().cumulative_pass_nr();
+    let Some(inert) = ui
+        .ctx()
+        .data(|data| data.get_temp::<Inert>(inert_key()))
+        .filter(|inert| inert.pass == pass)
+    else {
+        return false;
+    };
+    inert.layers.contains(&ui.layer_id())
+}
+
+/// Whether a widget of `ui`'s whose own flag is `own` (its own, and any scope's between it
+/// and what was made inert) is drawn on: as egui has it with no modal open; behind one
+/// ([`behind`]), as `own` has it, so the window keeps its look under the backdrop. Its
+/// state in the accessibility tree stays egui's: off behind a modal.
+pub(crate) fn looks_on(ui: &Ui, own: bool) -> bool {
+    ui.is_enabled() || (own && behind(ui))
 }
 
 /// `area` shown with `content`, inert ([`inert`]) if `behind` the modal on top: its own
@@ -422,7 +483,8 @@ pub(crate) fn paint(ui: &mut Ui, rect: Rect, button: &Button<'_>) -> Response {
             let (rect, response) = ui.allocate_exact_size(rect.size(), Sense::click());
             let enabled = ui.is_enabled();
             response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, button.text));
-            let (fill, ink) = colours(button.kind, enabled, response.hovered());
+            let on = looks_on(ui, button.enabled);
+            let (fill, ink) = colours(button.kind, on, response.hovered());
             ui.painter()
                 .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
             theme::focus_ring(
@@ -639,6 +701,42 @@ pub(crate) mod tests {
         assert!(close, "{what}: {got:?}, not {want:?}");
     }
 
+    /// What `draw` paints in a window of its own, each shape flattened: the whole window
+    /// inert first ([`inert`], as behind a modal) if `behind`.
+    pub(crate) fn drawn_behind(behind: bool, draw: impl Fn(&mut Ui)) -> Vec<Shape> {
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(400.0, 200.0))
+            .build_ui(|ui| {
+                if behind {
+                    inert(ui);
+                }
+                draw(ui);
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        painted(&h)
+    }
+
+    /// #487: a widget `draw` paints, on or off as its argument says, is drawn behind a modal
+    /// as it's drawn with none, on or off (the backdrop alone dims it, as the prototype's
+    /// `.backdrop`; nothing behind is `:disabled`); and its off look isn't its on look, so
+    /// the comparison says something.
+    #[track_caller]
+    pub(crate) fn drawn_alike_behind(draw: impl Fn(&mut Ui, bool) + Copy) {
+        for on in [true, false] {
+            assert_eq!(
+                drawn_behind(true, |ui| draw(ui, on)),
+                drawn_behind(false, |ui| draw(ui, on)),
+                "behind a modal, on: {on}"
+            );
+        }
+        assert_ne!(
+            drawn_behind(false, |ui| draw(ui, true)),
+            drawn_behind(false, |ui| draw(ui, false)),
+            "its off look is its on look"
+        );
+    }
+
     pub(crate) fn painted<S>(h: &Harness<'_, S>) -> Vec<Shape> {
         fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
             match shape {
@@ -651,6 +749,44 @@ pub(crate) mod tests {
             flatten(&clipped.shape, &mut out);
         }
         out
+    }
+
+    #[test]
+    fn a_modals_button_behind_another_modal_keeps_its_own_look_on_or_off() {
+        // The kinds the prototype gives an off look (`.btn-secondary` and `.btn-danger` have
+        // none of their own).
+        let banner = Kind::Banner(Color32::from_rgb(0xff, 0xd2, 0x8a));
+        for kind in [Kind::Primary, Kind::Ghost, banner] {
+            drawn_alike_behind(|ui, on| {
+                let rect = Rect::from_min_size(Pos2::new(10.0, 10.0), Vec2::new(100.0, 22.0));
+                paint(ui, rect, &Button::new("Save", kind).enabled(on));
+            });
+        }
+    }
+
+    #[test]
+    fn a_widget_looks_on_behind_a_modal_by_its_own_flag_and_off_in_a_scope_off_of_its_own() {
+        let looked = |behind: bool, scope: bool, own: bool| {
+            let seen = std::cell::Cell::new(None);
+            let mut h = Harness::builder().build_ui(|ui| {
+                if behind {
+                    inert(ui);
+                }
+                ui.add_enabled_ui(scope, |ui| {
+                    ui.add_enabled_ui(own, |ui| seen.set(Some(looks_on(ui, own))));
+                });
+            });
+            h.run_steps(1);
+            drop(h);
+            seen.get()
+        };
+        // With no modal: as egui has it.
+        assert_eq!(looked(false, true, true), Some(true));
+        assert_eq!(looked(false, true, false), Some(false));
+        assert_eq!(looked(false, false, true), Some(false));
+        // Behind one: as its own flag has it.
+        assert_eq!(looked(true, true, true), Some(true));
+        assert_eq!(looked(true, true, false), Some(false));
     }
 
     pub(crate) fn rects<S>(h: &Harness<'_, S>) -> Vec<RectShape> {

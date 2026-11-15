@@ -304,10 +304,9 @@ pub fn modify_box(
                     });
                     // A new box takes the keyboard, once, its cursor after its value.
                     // (Not selected, as SolidWorks' and the prototype's is: egui 0.36's
-                    // field collapses a selection made outside its own events.) Behind a
-                    // modal, once it has gone.
+                    // field collapses a selection made outside its own events.)
                     let taken = area.with("taken");
-                    if ui.is_enabled() && !ui.data(|d| d.get_temp::<bool>(taken).unwrap_or(false)) {
+                    if !ui.data(|d| d.get_temp::<bool>(taken).unwrap_or(false)) {
                         field.request_focus();
                         ui.data_mut(|d| d.insert_temp(taken, true));
                     }
@@ -382,16 +381,18 @@ pub struct OfferView {
     pub flagged: Vec<String>,
 }
 
+/// The over-define prompt's modal, by its name: what it's drawn on.
+pub fn offer_id() -> egui::Id {
+    egui::Id::new("sketch_offer")
+}
+
 /// The over-define prompt (SD7; the prototype's modal "This dimension over-defines …"): a
 /// word on what the dimension repeats, the constraints flagged, and SolidWorks' three
 /// choices, each with its key (1, 2, and Esc, which the tab's Esc takes). The choice made,
-/// if one was. `behind` a modal asked over it (a quit's question), it's drawn as it is, but
-/// inert (`crate::modal::area`), its keys not taken: no choice made.
-pub fn offer_prompt(ctx: &egui::Context, view: &OfferView, behind: bool) -> Option<OfferChoice> {
+/// if one was.
+pub fn offer_prompt(ctx: &egui::Context, view: &OfferView) -> Option<OfferChoice> {
     let mut chose = None;
-    let id = egui::Id::new("sketch_offer");
-    egui::Modal::new(id)
-        .area(egui::Modal::default_area(id).interactable(!behind))
+    egui::Modal::new(offer_id())
         .backdrop_color(Color32::from_black_alpha(153))
         .frame(
             egui::Frame::new()
@@ -401,9 +402,6 @@ pub fn offer_prompt(ctx: &egui::Context, view: &OfferView, behind: bool) -> Opti
                 .inner_margin(SKETCH_PROMPT_MARGIN),
         )
         .show(ctx, |ui| {
-            if behind {
-                crate::modal::inert(ui);
-            }
             *ui.visuals_mut() = super::bar::panel_visuals();
             // The prototype's 440 wide, its border and its sides' padding inside it.
             let margin = SKETCH_PROMPT_MARGIN.left + SKETCH_PROMPT_MARGIN.right;
@@ -462,12 +460,10 @@ pub fn offer_prompt(ctx: &egui::Context, view: &OfferView, behind: bool) -> Opti
                 }
             }
             let key = |key| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
-            if !behind {
-                if key(egui::Key::Num1) {
-                    chose = Some(OfferChoice::Driven);
-                } else if key(egui::Key::Num2) {
-                    chose = Some(OfferChoice::Leave);
-                }
+            if key(egui::Key::Num1) {
+                chose = Some(OfferChoice::Driven);
+            } else if key(egui::Key::Num2) {
+                chose = Some(OfferChoice::Leave);
             }
         });
     chose
