@@ -346,7 +346,9 @@ fn a_commit_over_a_changed_file_that_writes_nothing_leaves_it_for_the_sessions_o
 
 #[test]
 fn a_reload_of_text_the_gate_refuses_is_unchanged_at_once() {
-    for text in ["", "not json", "{\"silico\": 1}", "\u{feff}{}", "\0\0\0"] {
+    // The empty file is never the session's own reload (#479): the test after this one.
+    // One byte, the least that settles, as few as a broken file may hold.
+    for text in ["{", "not json", "{\"silico\": 1}", "\u{feff}{}", "\0\0\0"] {
         let f = opened(BLOCK);
         f.reaches(Disk::Unchanged);
         std::fs::write(&f.path, text).unwrap();
@@ -361,6 +363,34 @@ fn a_reload_of_text_the_gate_refuses_is_unchanged_at_once() {
         assert_eq!(f.disk(), Some(Disk::Unchanged), "{text:?}");
         f.stays(TWO_COMPARISONS, unchanged);
     }
+}
+
+#[test]
+fn an_empty_file_is_changed_never_reloaded_by_the_session_and_a_command_reads_it() {
+    // Never a document, and what a write in place leaves until it writes (#479): the
+    // session's own reload never takes it, however many comparisons find it, and `disk`
+    // says changed all the while; the next command reads it as it is, its problems with it
+    // (decision 21), and the session then holds it as the file does.
+    let f = opened(BLOCK);
+    f.reaches(Disk::Unchanged);
+    std::fs::write(&f.path, "").unwrap();
+    f.reaches(Disk::Changed);
+    let deadline = Instant::now() + TWO_COMPARISONS;
+    while Instant::now() < deadline {
+        let status = f.sessions.status(&f.id);
+        assert_eq!(status.session.unwrap().revision, Revision::OPENED);
+        assert_eq!(status.result.unwrap().disk, Some(Disk::Changed));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let read = answer(f.sessions.text(&f.id, None));
+    let session = read.session.unwrap();
+    assert!(session.reloaded);
+    assert!(session.revision > Revision::OPENED);
+    assert_eq!(read.result.unwrap().text, "");
+    let status = f.sessions.status(&f.id).result.unwrap();
+    assert!(!status.gated);
+    assert_eq!(f.disk(), Some(Disk::Unchanged));
+    f.stays(TWO_COMPARISONS, unchanged);
 }
 
 #[test]
