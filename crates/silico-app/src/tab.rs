@@ -920,6 +920,11 @@ impl Browser {
         &self.bodies
     }
 
+    /// Whether `id` has a body's row (its Bodies group), not a sketch's.
+    pub fn has_body(&self, id: &FeatureId) -> bool {
+        self.bodies.iter().any(|row| &row.id == id)
+    }
+
     /// Its sketches' rows, in the timeline's order.
     pub fn sketches(&self) -> &[Row] {
         &self.sketches
@@ -1161,7 +1166,7 @@ pub struct Tab {
     /// The selection as it was before the open dialog's box of names took it, put back if
     /// the dialog is cancelled, as SolidWorks returns to the selection its command started
     /// with.
-    before_dialog: Option<Vec<crate::selection::Item>>,
+    before_dialog: Option<crate::selection::SavedSelection>,
     /// The last dialog OK'd, for the window to remember its values ([`take_oked`]
     /// (Self::take_oked), [`crate::dialog::Remembered`]).
     oked: Option<Dialog>,
@@ -1934,7 +1939,7 @@ impl Tab {
             .and_then(|timeline| timeline.features.as_deref())
             .unwrap_or_default();
         let own = dialog.feature.clone();
-        if dialog.takes_bodies() {
+        if dialog.boxes_hold_bodies() {
             // A box of one body: each body picked once, in the order picked (a box drawn over
             // a body's edges picks it once), and the selection the bodies the boxes hold.
             let mut seen: Vec<&FeatureId> = Vec::new();
@@ -1953,7 +1958,7 @@ impl Tab {
                 dialog.took_body(toggled, standing, &holds);
             }
             if !toggled.is_empty() {
-                self.selection.select_features(dialog.bodies());
+                self.selection.select_bodies(dialog.bodies());
             }
             return !toggled.is_empty();
         }
@@ -2003,6 +2008,37 @@ impl Tab {
     /// The selection, to change: a pick by name, a feature, a clear, its filter.
     pub fn selection_mut(&mut self) -> &mut crate::selection::Selection {
         &mut self.selection
+    }
+
+    /// The selection's highlights and tints set on the view for its bodies table as it is
+    /// now, a new table dropping the hover drawn and a lit candidate, by the old numbers
+    /// ([`Selection::light`](crate::selection::Selection::light)): the canvas's, as it takes
+    /// a new table, before it hands its frame on.
+    pub(crate) fn light_selection(&mut self) {
+        self.selection.light(&mut self.view);
+    }
+
+    /// Whether a right-click on feature `id`'s timeline item or browser row selects it,
+    /// `how` that item or row selects it (the prototype's `contextmenu` calls `selectFeature`
+    /// for both): unless it's selected so already, or a boolean's dialog is open (section 9:
+    /// the selection is the bodies its boxes hold, so the menu opens over it as it is, as a
+    /// right-click never fills a box). Both panes' menus take this one rule.
+    pub(crate) fn menu_selects(&self, id: &FeatureId, how: crate::selection::SelectedAs) -> bool {
+        let boxes_hold = self
+            .dialog
+            .as_ref()
+            .is_some_and(crate::dialog::Dialog::boxes_hold_bodies);
+        !boxes_hold && !self.selection.selected_as(id, how)
+    }
+
+    /// The tab not shown: its canvas's hover let go, the selection's and the view's (the
+    /// outline its last frame drew), unless a menu holds it, so shown again it neither
+    /// outlines, rings, nor says a hover of before.
+    pub(crate) fn canvas_unshown(&mut self) {
+        if !self.selection.hover_held() {
+            self.selection.pointer_gone();
+            self.view.hovered.clear();
+        }
     }
 
     /// What the core says of the selection's elements (M5.7's measures), as last answered.
@@ -3413,8 +3449,8 @@ impl Tab {
                                     self.before_dialog = Some(self.selection.saved());
                                     // A boolean's boxes hold its bodies: selected, so the
                                     // canvas lights what of them it shows.
-                                    if dialog.takes_bodies() {
-                                        self.selection.select_features(dialog.bodies());
+                                    if dialog.boxes_hold_bodies() {
+                                        self.selection.select_bodies(dialog.bodies());
                                     } else {
                                         self.selection.clear();
                                     }
@@ -5592,7 +5628,7 @@ impl Tab {
         remembered.apply(&mut dialog);
         if let Some(kinds) = dialog.takes() {
             self.before_dialog = Some(self.selection.saved());
-            if dialog.takes_bodies() {
+            if dialog.boxes_hold_bodies() {
                 self.take_bodies(&mut dialog, kinds);
             } else {
                 self.take_selection(&mut dialog, kinds);
@@ -5644,7 +5680,7 @@ impl Tab {
             if let crate::selection::Item::Feature(id) = item
                 && bodies.len() < 2
                 && !bodies.contains(id)
-                && self.browser.bodies().iter().any(|row| &row.id == id)
+                && self.browser.has_body(id)
             {
                 bodies.push(id.clone());
             }
@@ -5665,7 +5701,7 @@ impl Tab {
             )
         });
         dialog.take_bodies(&bodies, left_out);
-        self.selection.select_features(dialog.bodies());
+        self.selection.select_bodies(dialog.bodies());
         self.selection.take_into(Some(kinds));
     }
 
@@ -6327,8 +6363,8 @@ impl Tab {
             self.rebrowse();
         } else {
             self.dropped(closed.as_ref());
-            if let Some(items) = before {
-                self.selection.restore(items);
+            if let Some(saved) = before {
+                self.selection.restore(saved);
             }
         }
         self.edits.queue.push_back(Queued::Closed {
@@ -6835,19 +6871,19 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// The browser's row of the feature `id` chosen while the dialog's active box takes a
-    /// body: taken into it, if it's a body's row (one the dialog's own feature isn't built
-    /// into), or refused, said under it; and the selection the bodies the boxes hold. Whether
-    /// the box took the row (taken or refused), so it isn't selected as itself: false if no
-    /// box of one body is active.
+    /// The browser's row of the feature `id` chosen while the open dialog's boxes hold the
+    /// selection as bodies (`Dialog::boxes_hold_bodies`): taken into its active box, if it's a
+    /// body's row (one the dialog's own feature isn't built into), or refused, said under it;
+    /// and the selection the bodies the boxes hold. Whether the row went to the box (taken or
+    /// refused), so it isn't selected as itself: false with no such dialog open.
     pub fn pick_body(&mut self, id: &FeatureId) -> bool {
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
-        if !dialog.takes_bodies() {
+        if !dialog.boxes_hold_bodies() {
             return false;
         }
-        let is_body = self.browser.bodies().iter().any(|row| &row.id == id);
+        let is_body = self.browser.has_body(id);
         let entries = self
             .timeline
             .as_ref()
@@ -6855,7 +6891,7 @@ impl Tab {
             .unwrap_or_default();
         let standing = standing(entries, id, dialog.feature.as_ref());
         dialog.took_row(id, is_body, standing);
-        self.selection.select_features(dialog.bodies());
+        self.selection.select_bodies(dialog.bodies());
         true
     }
 
@@ -11116,6 +11152,26 @@ mod tests {
         holding.store(false, Ordering::SeqCst);
         hold.release();
         published_quietly(&mut tab, &sessions);
+        // What the last two cases read, each after its model is published, so later under
+        // load, waited for: the block's elements named (a card's name, and a candidate, are
+        // read among them: till then each is "not answered yet"), and the timeline's read
+        // answered (the sentence names the feature as the timeline lists it, `Tab::named`,
+        // by its ID till then).
+        let block = FeatureId::new("k7f2qx3m").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !(matches!(
+            tab.selection.read_on("k7f2qx3m.box.Edge1", &block),
+            crate::selection::OnBase::Found(Ok(_))
+        ) && tab.entry("f0000001").map(|entry| entry.name.as_str()) == Some("Round"))
+        {
+            tab.poll(&sessions);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the block's elements never named, or the timeline never listed Round"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(tab.quiet());
         // A name the model finds (Edge1, at its own place): never written over.
         let now = tab.revision;
         refused_as_stale(

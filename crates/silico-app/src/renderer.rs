@@ -21,7 +21,7 @@ use eframe::egui_wgpu;
 use eframe::wgpu;
 use silico_protocol::{Camera, Mesh};
 pub use silico_render::render::{
-    Element, Frame, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer,
+    Element, Frame, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer, Tint,
 };
 
 /// A [`Frame`] whose values it holds: what the pane hands on, to be drawn once the paint
@@ -36,6 +36,10 @@ pub struct FrameData {
     pub highlights: Vec<(u32, Element)>,
     pub hovered: Vec<(u32, Element)>,
     pub outlines: Outlines,
+    /// The faces tinted: the feature hovered in the timeline's, but those selected or
+    /// hovered (`crate::viewport`'s `tinted_faces`).
+    pub tinted: Vec<(u32, Element)>,
+    pub tint: Tint,
     pub picking: Option<PixelRect>,
     pub edges: bool,
     pub vertices: Option<f32>,
@@ -57,6 +61,8 @@ impl FrameData {
             highlights: &self.highlights,
             hovered: &self.hovered,
             outlines: self.outlines,
+            tinted: &self.tinted,
+            tint: self.tint,
             picking: self.picking,
             edges: self.edges,
             vertices: self.vertices,
@@ -303,10 +309,11 @@ struct Callback<R> {
 }
 
 /// A frame's preparation, its GPU's half aside: the changes waiting made; the frame drawn
-/// without the bodies whose uploads were refused, and without highlights of a body it
-/// doesn't draw (the renderer refuses a whole frame for one); a refusal said once until a
-/// frame is drawn again; and a picking answer kept for the pane. With no renderer installed,
-/// the changes are taken, every upload among them refused, so none waits for ever.
+/// without the bodies whose uploads were refused, and without highlights, hovers, or tints
+/// of a body it doesn't draw (the renderer refuses a whole frame for one); a refusal said
+/// once until a frame is drawn again; and a picking answer kept for the pane. With no
+/// renderer installed, the changes are taken, every upload among them refused, so none
+/// waits for ever.
 fn prepared<R: ViewRenderer>(
     renderer: Option<&mut R>,
     shared: &Mutex<Shared>,
@@ -338,6 +345,7 @@ fn prepared<R: ViewRenderer>(
     };
     let highlights = drawn(&data.highlights);
     let hovered = drawn(&data.hovered);
+    let tinted = drawn(&data.tinted);
     locked(shared).refused.extend(refused);
     let lines: Vec<silico_render::render::Lines<'_>> = data
         .lines
@@ -352,6 +360,7 @@ fn prepared<R: ViewRenderer>(
         bodies: &bodies,
         highlights: &highlights,
         hovered: &hovered,
+        tinted: &tinted,
         lines: &lines,
         ..data.frame()
     };
@@ -428,8 +437,13 @@ impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
 mod tests {
     use super::*;
 
-    /// A frame as the renderer was given it: its bodies, highlights, and hover.
-    type Drawn = (Vec<u32>, Vec<(u32, Element)>, Vec<(u32, Element)>);
+    /// A frame as the renderer was given it: its bodies, highlights, hover, and tinted faces.
+    type Drawn = (
+        Vec<u32>,
+        Vec<(u32, Element)>,
+        Vec<(u32, Element)>,
+        Vec<(u32, Element)>,
+    );
 
     #[derive(Default)]
     struct Counting {
@@ -458,6 +472,7 @@ mod tests {
                 frame.bodies.to_vec(),
                 frame.highlights.to_vec(),
                 frame.hovered.to_vec(),
+                frame.tinted.to_vec(),
             ));
             if self.backing_off {
                 return Err(format!("backing off, {} frame(s)", self.frames.len()));
@@ -553,6 +568,8 @@ mod tests {
             highlights: highlights.to_vec(),
             hovered: Vec::new(),
             outlines: Outlines::DEFAULT,
+            tinted: Vec::new(),
+            tint: Tint::NONE,
             picking: None,
             edges: true,
             vertices: None,
@@ -647,13 +664,32 @@ mod tests {
         };
         let made = prepared(Some(&mut renderer), &shared, &frame);
         assert!(made.is_empty());
-        assert_eq!(renderer.frames, [(vec![1], vec![face], vec![face])]);
+        assert_eq!(renderer.frames, [(vec![1], vec![face], vec![face], vec![])]);
         assert_eq!(
             locked(&shared).refused.iter().copied().collect::<Vec<_>>(),
             [2]
         );
         assert_eq!(locked(&shared).picked, Some(pick));
         assert!(locked(&shared).changes.is_empty());
+    }
+
+    #[test]
+    fn a_frame_leaves_out_the_tint_of_a_body_refused_now() {
+        // Body 2's mesh is refused as it's uploaded: the frame draws body 1 alone, and tints
+        // only body 1's face, not body 2's, which would have the renderer refuse it whole.
+        let shared = Mutex::new(Shared::default());
+        locked(&shared).queue(vec![
+            Change::Upload(1, mesh(3)),
+            Change::Upload(2, mesh(11)),
+        ]);
+        let face = |body: u32| (body, Element::Face(1));
+        let frame = FrameData {
+            tinted: vec![face(1), face(2)],
+            ..data(&[1, 2], &[])
+        };
+        let mut renderer = Counting::default();
+        prepared(Some(&mut renderer), &shared, &frame);
+        assert_eq!(renderer.frames, [(vec![1], vec![], vec![], vec![face(1)])]);
     }
 
     #[test]

@@ -38,17 +38,18 @@ use tempfile::TempDir;
 use ui::{
     ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, FakeBrowser, In, PLATE,
     PLATE_END, TRIAD_DOT, added, advance, answer_question, anywhere, arrow_dots, arrow_shafts,
-    begin_sketch_on, boxed, button_event, choose, chosen, click_at, click_canvas, close_window,
-    create, create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag,
-    everything, f2_typed, field, fields_of, from_the_front, hand_clock, image_centre,
-    in_status_bar, lavapipe_render_state, leave_sketch, leave_sketch_unsettled, left_down_at,
-    left_up_at, looks_from, meshes_settled, modify, modify_field, move_to, name_field, near_point,
-    new_part, ok_enabled, on_lavapipe, open_export, pad_extent, pads_extent, plain_read,
-    plates_pad_from_the_front, pointer_away, press, prompt, redo_by_key, rename_field,
-    repaint_delay, retype, reversed_ticked, save_as_of, select, selected_names, settled,
-    shapes_painted, sketch_mode, sketch_read, sorted_fields, step, step_until, tab_named,
-    tessellated, text_of, the_viewport, tooltip_title, triad_origin, type_name, undo_by_key, up,
-    view, view_direction, view_label, view_label_node, view_mut, wheel, window_told, written,
+    begin_sketch_on, body_of, boxed, button_event, choose, chosen, click_at, click_canvas,
+    close_window, create, create_sketch, cursor, dialog, dialog_length, dialog_open, double_click,
+    drag, every_face, everything, f2_typed, faces_made_by, field, fields_of, from_the_front,
+    hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state, leave_sketch,
+    leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
+    modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
+    pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away, press, prompt,
+    redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of, select,
+    selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields, step,
+    step_until, tab_named, tessellated, text_of, the_viewport, tooltip_title, triad_origin,
+    type_name, undo_by_key, up, view, view_direction, view_label, view_label_node, view_mut, wheel,
+    window_told, written,
 };
 
 /// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
@@ -12463,6 +12464,8 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     highlights: Vec::new(),
                     hovered: Vec::new(),
                     outlines: silico_app::renderer::Outlines::DEFAULT,
+                    tinted: Vec::new(),
+                    tint: silico_app::renderer::Tint::NONE,
                     picking: None,
                     edges: true,
                     vertices: None,
@@ -18442,34 +18445,30 @@ fn a_move_asked_in_sketch_mode_is_refused_and_said_and_sends_nothing() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The prototype's tint for the faces a feature made, typed from its own sources, not the
+/// app's theme: viewport.js's `MAKER`, `#d4dbff`, at `uTintAmt = 0.4`; DESIGN.md's "a
+/// feature's faces on hover: Blue.800 tint 40%", re_ui 0.38.1's Blue.800 being `#d4dbff`.
+const FEATURE_TINT: silico_app::renderer::Tint = silico_app::renderer::Tint {
+    colour: [0xd4, 0xdb, 0xff],
+    amount: 0.4,
+};
+
+/// The last frame's tinted faces.
+fn tinted(record: &Record) -> Vec<(u32, silico_app::renderer::Element)> {
+    record.lock().unwrap().frames.last().unwrap().tinted.clone()
+}
+
 #[test]
-fn hovering_a_timeline_item_highlights_the_faces_its_feature_made() {
+fn hovering_a_timeline_item_tints_the_faces_its_feature_made() {
     let f = fixture();
     let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
     meshes_settled(&mut h);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Large"));
-    let number = |feature: &str| {
-        view(&h)
-            .bodies()
-            .iter()
-            .find(|(_, body)| body.feature.as_str() == feature)
-            .map(|(number, _)| *number)
-            .unwrap()
-    };
-    let large = number("a91cw0de");
-    let last = |record: &Record| {
-        record
-            .lock()
-            .unwrap()
-            .frames
-            .last()
-            .unwrap()
-            .highlights
-            .clone()
-    };
-    assert!(last(&record).is_empty());
+    let large = body_of(&h, "a91cw0de");
+    assert!(tinted(&record).is_empty());
     // Hovered: each of the large box's six faces (a box makes six, every one its own), and
-    // none of the small box's.
+    // none of the small box's, tinted in the prototype's Blue.800 at 0.4; none highlighted
+    // or hovered (the tint is a style of its own, not the selection's).
     let item = timeline(&h).get_by_label("Large").rect().center();
     h.hover_at(item);
     step(&mut h);
@@ -18477,19 +18476,25 @@ fn hovering_a_timeline_item_highlights_the_faces_its_feature_made() {
     let faces: Vec<_> = (1..=6)
         .map(|n| (large, silico_app::renderer::Element::Face(n)))
         .collect();
-    assert_eq!(last(&record), faces);
-    // The pointer off it: nothing highlighted.
+    {
+        let told = record.lock().unwrap();
+        let last = told.frames.last().unwrap();
+        assert_eq!(last.tinted, faces);
+        assert_eq!(last.tint, FEATURE_TINT);
+        assert!(last.highlights.is_empty() && last.hovered.is_empty());
+    }
+    // The pointer off it: nothing tinted.
     h.hover_at(item + eframe::egui::vec2(0.0, -200.0));
     step(&mut h);
     step(&mut h);
-    assert!(last(&record).is_empty());
-    // A hidden body's faces aren't highlighted: it isn't drawn.
+    assert!(tinted(&record).is_empty());
+    // A hidden body's faces aren't tinted: it isn't drawn.
     browser(&h).get_by_label("Hide Large").click();
     step(&mut h);
     h.hover_at(item);
     step(&mut h);
     step(&mut h);
-    assert!(last(&record).is_empty());
+    assert!(tinted(&record).is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -18654,10 +18659,10 @@ fn after_a_move_nothing_is_shown_built_that_the_rebuild_running_may_not_have_bui
 }
 
 #[test]
-fn hovering_a_timeline_item_highlights_the_faces_named_as_its_features_not_its_bodys() {
-    // One body, the pocket's, made by the chain: hovering the plate highlights the faces
-    // named from the plate's (`b0000001.…`), the pad's those named from the pad's
-    // (`r0000002.…`), each by its name's text, never the body's other faces.
+fn hovering_a_timeline_item_tints_the_faces_named_as_its_features_not_its_bodys() {
+    // One body, the pocket's, made by the chain: hovering the plate tints the faces named
+    // from the plate's (`b0000001.…`), the pad's those named from the pad's (`r0000002.…`),
+    // each by its name's text, never the body's other faces, and highlights none.
     let f = fixture();
     let (mut h, record) = f.drawn("ladder.silico", LADDER);
     meshes_settled(&mut h);
@@ -18675,35 +18680,742 @@ fn hovering_a_timeline_item_highlights_the_faces_named_as_its_features_not_its_b
                 .collect(),
         )
     };
-    let named = |prefix: &str| -> Vec<(u32, silico_app::renderer::Element)> {
-        names
-            .iter()
-            .zip(1u32..)
-            .filter(|(name, _)| name.starts_with(prefix))
-            .map(|(_, n)| (number, silico_app::renderer::Element::Face(n)))
-            .collect()
-    };
-    let plates = named("b0000001.");
-    let pads = named("r0000002.");
+    let plates = faces_made_by(&h, number, "b0000001");
+    let pads = faces_made_by(&h, number, "r0000002");
     assert!(!plates.is_empty() && !pads.is_empty(), "{names:?}");
     assert!(plates.len() + pads.len() < names.len(), "{names:?}");
-    let last = |record: &Record| {
-        record
-            .lock()
-            .unwrap()
-            .frames
-            .last()
-            .unwrap()
-            .highlights
-            .clone()
-    };
     for (name, want) in [("Plate", &plates), ("Raised", &pads)] {
-        h.hover_at(timeline(&h).get_by_label(name).rect().center());
-        step(&mut h);
-        step(&mut h);
-        assert_eq!(&last(&record), want, "{name}: {names:?}");
+        hover_item(&mut h, name);
+        assert_eq!(&tinted(&record), want, "{name}: {names:?}");
+        assert!(highlighted(&record).is_empty(), "{name}");
     }
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_or_a_failed_feature_hovered_in_the_timeline_tints_nothing() {
+    // LADDER with its cut refused: the pocket fails, and the model shown is the pad's on the
+    // plate. The sketch made no face, and the failed pocket none the model holds: hovering
+    // either tints nothing, as the prototype's maker tint finds no face whose maker it is.
+    // The plate and the pad, hovered first, tint theirs: the hover does reach the canvas.
+    let f = fixture();
+    refuses_the_cut(&f);
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the pocket's failure", |h| {
+        item_state(h, "Cut").as_deref() == Some("Pocket · Error")
+    });
+    meshes_settled(&mut h);
+    assert!(!view(&h).bodies().is_empty(), "no body to tint");
+    for name in ["Plate", "Raised"] {
+        hover_item(&mut h, name);
+        assert!(!tinted(&record).is_empty(), "{name}");
+    }
+    for name in ["Triangle", "Cut"] {
+        hover_item(&mut h, name);
+        assert!(tinted(&record).is_empty(), "{name}: {:?}", tinted(&record));
+        assert!(highlighted(&record).is_empty(), "{name}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_suppressed_feature_hovered_in_the_timeline_tints_nothing() {
+    // The large box suppressed (its menu's Suppress): its body isn't built, so its item,
+    // hovered, tints nothing, where before it tinted its six faces.
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Large"));
+    hover_item(&mut h, "Large");
+    assert_eq!(tinted(&record).len(), 6);
+    menu_on(&mut h, "Timeline", "Large");
+    menu_click(&mut h, "LARGE", "Suppress");
+    settled(&mut h);
+    step_until(&mut h, "it suppressed", |h| {
+        item_state(h, "Large").as_deref() == Some("Box · Suppressed")
+    });
+    meshes_settled(&mut h);
+    assert_eq!(view(&h).bodies().len(), 1);
+    hover_item(&mut h, "Large");
+    assert!(tinted(&record).is_empty(), "{:?}", tinted(&record));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_selected_keeps_its_own_look_while_its_feature_is_hovered_in_the_timeline() {
+    use silico_app::renderer::Element::Face;
+    // The prototype's `applyHighlight` gives each face one look: the selection's if it's
+    // selected, else the hover's, else its maker's tint. The block's front face (Face3)
+    // picked in the canvas, then the block hovered in the timeline: the face stays
+    // highlighted and untinted, the block's other five faces tinted.
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
+    click_canvas(&mut h, at, false);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    hover_item(&mut h, "Block");
+    {
+        let told = record.lock().unwrap();
+        let last = told.frames.last().unwrap();
+        assert_eq!(last.highlights, [(1, Face(3))]);
+        assert!(last.hovered.is_empty());
+        assert_eq!(
+            last.tinted,
+            [
+                (1, Face(1)),
+                (1, Face(2)),
+                (1, Face(4)),
+                (1, Face(5)),
+                (1, Face(6))
+            ]
+        );
+    }
+    // The block selected as a feature (its timeline item clicked): the prototype's
+    // `selectFeature` empties `S.sel`, and `syncHighlight` makes it the maker, so each of
+    // its six faces is tinted, none highlighted; hovered too, the maker is the same.
+    select(&mut h, "Block");
+    hover_item(&mut h, "Block");
+    let faces: Vec<_> = (1..=6).map(|n| (1, Face(n))).collect();
+    assert!(highlighted(&record).is_empty());
+    assert_eq!(tinted(&record), faces);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_feature_selected_is_tinted_until_another_is_hovered_in_the_timeline() {
+    // The prototype's one maker, `syncHighlight`'s `S.hoverFeature || S.selFeature`, each
+    // face whose maker it is tinted by `applyHighlight`: the small box selected, its six
+    // faces tinted; the large one hovered in the timeline, its six alone (the selected
+    // one's left); the pointer off the timeline, the small box's again. Nothing is
+    // highlighted throughout: a feature selected is no element selected (`selectFeature`
+    // empties `S.sel`).
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Large"));
+    let (small, large) = (body_of(&h, "k7f2qx3m"), body_of(&h, "a91cw0de"));
+    let of = |body: u32| -> Vec<_> { (1..=6).map(|n| (body, Face(n))).collect() };
+    select(&mut h, "Small");
+    hover_item(&mut h, "Small");
+    assert_eq!(tinted(&record), of(small));
+    hover_item(&mut h, "Large");
+    assert_eq!(tinted(&record), of(large));
+    assert!(highlighted(&record).is_empty());
+    let away = timeline(&h).get_by_label("Large").rect().center() + eframe::egui::vec2(0.0, -200.0);
+    h.hover_at(away);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tinted(&record), of(small));
+    assert!(highlighted(&record).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_timeline_item_selected_tints_its_own_faces_as_hovered_and_its_body_row_the_whole_body() {
+    // LADDER's one body is the pocket's (q0000003, Cut), its faces named from the plate's,
+    // the pad's, and its own. Cut selected by its timeline item tints the faces named as its
+    // own alone, the prototype's `selectFeature` making it the maker, as hovering its item
+    // does; its body selected by its browser row tints the body's every face, as `bodyRow`'s
+    // `maker: '*'`; the item hovered then, its own again (`hoverFeature` first).
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    let (number, names): (u32, Vec<String>) = {
+        let bodies = view(&h).bodies();
+        assert_eq!(bodies.len(), 1, "one body");
+        let (number, body) = bodies.iter().next().unwrap();
+        assert_eq!(body.feature.as_str(), "q0000003");
+        (
+            *number,
+            body.faces
+                .iter()
+                .map(|face| face.name.to_string())
+                .collect(),
+        )
+    };
+    let own = faces_made_by(&h, number, "q0000003");
+    let every = every_face(&h, number);
+    assert_eq!(every.len(), names.len());
+    assert!(!own.is_empty() && own.len() < every.len(), "{names:?}");
+    let away = timeline(&h).get_by_label("Cut").rect().center() + eframe::egui::vec2(0.0, -200.0);
+    let off = |h: &mut AppHarness| {
+        h.hover_at(away);
+        step(h);
+        step(h);
+    };
+    // Each click a person's own, never a double-click's second (which opens a dialog).
+    select(&mut h, "Cut");
+    off(&mut h);
+    assert_eq!(tinted(&record), own, "selected by its item: {names:?}");
+    hover_item(&mut h, "Cut");
+    assert_eq!(tinted(&record), own, "hovered: {names:?}");
+    ui::pause(&mut h);
+    browser(&h).get_by_label("Cut").click();
+    off(&mut h);
+    assert_eq!(tinted(&record), every, "its body's row");
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .map(|id| id.as_str()),
+        Some("q0000003")
+    );
+    hover_item(&mut h, "Cut");
+    assert_eq!(tinted(&record), own, "hovered over its body's row");
+    // Its item clicked: itself again, its own faces.
+    ui::pause(&mut h);
+    timeline(&h).get_by_label("Cut").click();
+    off(&mut h);
+    assert_eq!(tinted(&record), own, "its item again");
+    // Another feature selected, then the body's row clicked: the body, whole, from a
+    // selection of something else too.
+    ui::pause(&mut h);
+    select(&mut h, "Plate");
+    ui::pause(&mut h);
+    browser(&h).get_by_label("Cut").click();
+    off(&mut h);
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .map(|id| id.as_str()),
+        Some("q0000003")
+    );
+    assert_eq!(tinted(&record), every, "its body's row, from the plate");
+    assert!(highlighted(&record).is_empty());
+    assert!(!dialog_open(&h), "a click taken as a double-click");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_body_rows_right_click_selects_the_body_whole_whatever_was_selected_before() {
+    // The pocket's body's row right-clicked, nothing selected: the body, whole (16 faces,
+    // not the pocket's own 5), as a left click selects it. Then the pocket selected by its
+    // timeline item (its own faces) and the row right-clicked again: the body, whole.
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    let every = every_face(&h, body_of(&h, "q0000003"));
+    menu_on(&mut h, "Browser", "Cut");
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0]
+            .selection()
+            .feature()
+            .map(|id| id.as_str()),
+        Some("q0000003")
+    );
+    assert_eq!(tinted(&record), every, "its body's row, right-clicked");
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    ui::pause(&mut h);
+    select(&mut h, "Cut");
+    let away = timeline(&h).get_by_label("Cut").rect().center() + eframe::egui::vec2(0.0, -200.0);
+    h.hover_at(away);
+    step(&mut h);
+    step(&mut h);
+    let own = faces_made_by(&h, body_of(&h, "q0000003"), "q0000003");
+    assert!(!own.is_empty() && own.len() < every.len());
+    assert_eq!(tinted(&record), own, "its own faces first");
+    ui::pause(&mut h);
+    menu_on(&mut h, "Browser", "Cut");
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        tinted(&record),
+        every,
+        "right-clicked after its timeline item"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_timeline_items_right_click_after_its_body_row_selects_it_as_itself_as_its_left_click_does() {
+    // The prototype's `contextmenu` calls `selectFeature(id)` for a timeline item as its
+    // click does: the pocket selected by its body's row (every face), then its timeline
+    // item right-clicked selects it as itself, from the timeline (its own five faces).
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    let every = every_face(&h, body_of(&h, "q0000003"));
+    let cut = silico_core::document::FeatureId::new("q0000003").unwrap();
+    let away = timeline(&h).get_by_label("Cut").rect().center() + eframe::egui::vec2(0.0, -200.0);
+    let off = |h: &mut AppHarness| {
+        h.hover_at(away);
+        step(h);
+        step(h);
+    };
+    select(&mut h, "Cut");
+    off(&mut h);
+    let own = tinted(&record);
+    assert!(own.len() < every.len());
+    ui::pause(&mut h);
+    browser(&h).get_by_label("Cut").click();
+    off(&mut h);
+    assert_eq!(tinted(&record), every);
+    ui::pause(&mut h);
+    menu_on(&mut h, "Timeline", "Cut");
+    step(&mut h);
+    step(&mut h);
+    let tab = &h.state().tabs()[0];
+    assert!(
+        tab.selection()
+            .selected_as(&cut, silico_app::selection::SelectedAs::Itself)
+    );
+    assert_eq!(tab.selected_in, silico_app::feature_menu::Place::Timeline);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    off(&mut h);
+    assert_eq!(
+        tinted(&record),
+        own,
+        "its own faces, as its left click selects"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_on_a_feature_selected_so_already_leaves_where_it_was_selected() {
+    // `Tab::menu_selects`: a right-click selects only what isn't selected so already. The
+    // triangle sketch selected by its timeline item, then its browser row right-clicked: a
+    // sketch's row selects it as itself, as it is, so it stays selected from the timeline.
+    // The other way, selected by its browser row, then its timeline item right-clicked:
+    // selected from the browser still.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Triangle"));
+    let tab = |h: &AppHarness| (h.state().tabs()[0].selected_in, selected_features(h));
+    select(&mut h, "Triangle");
+    assert_eq!(
+        tab(&h),
+        (
+            silico_app::feature_menu::Place::Timeline,
+            vec!["s0000001".to_owned()]
+        )
+    );
+    ui::pause(&mut h);
+    menu_on(&mut h, "Browser", "Triangle");
+    step(&mut h);
+    assert_eq!(
+        tab(&h),
+        (
+            silico_app::feature_menu::Place::Timeline,
+            vec!["s0000001".to_owned()]
+        ),
+        "its browser row right-clicked"
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    ui::pause(&mut h);
+    browser(&h).get_by_label("Triangle").click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        tab(&h),
+        (
+            silico_app::feature_menu::Place::Browser,
+            vec!["s0000001".to_owned()]
+        )
+    );
+    ui::pause(&mut h);
+    menu_on(&mut h, "Timeline", "Triangle");
+    step(&mut h);
+    assert_eq!(
+        tab(&h),
+        (
+            silico_app::feature_menu::Place::Browser,
+            vec!["s0000001".to_owned()]
+        ),
+        "its timeline item right-clicked"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_body_rows_right_click_makes_the_browser_where_the_selection_was_made() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    select(&mut h, "Cut");
+    assert_eq!(
+        h.state().tabs()[0].selected_in,
+        silico_app::feature_menu::Place::Timeline
+    );
+    ui::pause(&mut h);
+    menu_on(&mut h, "Browser", "Cut");
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].selected_in,
+        silico_app::feature_menu::Place::Browser
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_a_union_open_a_right_click_on_a_row_or_an_item_leaves_its_boxes_and_the_selection() {
+    // Section 9: while a boolean's boxes are open, the selection is the bodies they hold. A
+    // right-click on another body's browser row, or its timeline item, opens its menu over
+    // the selection as it is (the coordinator's decision, #485's round 4): it neither
+    // fills a box, as a click would, nor selects the body in the boxes' place.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("sketched.silico", SKETCHED);
+    meshes_settled(&mut h);
+    step_until(&mut h, "the browser's rows", |h| {
+        shows(h, "Browser", "Washer")
+    });
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .select_bodies(vec![
+            silico_core::document::FeatureId::new("b0000001").unwrap(),
+        ]);
+    modify(&mut h, "Union");
+    settled(&mut h);
+    assert_eq!(boxed_bodies(&h), held(&[Some("b0000001"), None]));
+    assert_eq!(selected_features(&h), ["b0000001"]);
+    for pane in ["Browser", "Timeline"] {
+        menu_on(&mut h, pane, "Washer");
+        for _ in 0..5 {
+            step(&mut h);
+        }
+        assert_eq!(boxed_bodies(&h), held(&[Some("b0000001"), None]), "{pane}");
+        assert_eq!(selected_features(&h), ["b0000001"], "{pane}");
+        h.key_press(eframe::egui::Key::Escape);
+        step(&mut h);
+        step(&mut h);
+        assert!(dialog_open(&h), "{pane}: the dialog closed");
+        ui::pause(&mut h);
+    }
+    // Its target, the plate, right-clicked in the timeline: still selected as its body, the
+    // box's, not as itself.
+    menu_on(&mut h, "Timeline", "Plate");
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let plate = silico_core::document::FeatureId::new("b0000001").unwrap();
+    assert!(
+        h.state().tabs()[0]
+            .selection()
+            .selected_as(&plate, silico_app::selection::SelectedAs::Body)
+    );
+    assert_eq!(boxed_bodies(&h), held(&[Some("b0000001"), None]));
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn f2_after_a_body_rows_click_renames_on_the_row_whatever_selected_its_feature_first() {
+    // The pocket selected by its timeline item (F2 would rename it there), then its body's
+    // row clicked: the selection made in the browser now, so F2 opens the field over the
+    // row.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    select(&mut h, "Cut");
+    assert_eq!(
+        h.state().tabs()[0].selected_in,
+        silico_app::feature_menu::Place::Timeline
+    );
+    ui::pause(&mut h);
+    browser(&h).get_by_label("Cut").click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].selected_in,
+        silico_app::feature_menu::Place::Browser
+    );
+    h.key_press(eframe::egui::Key::F2);
+    step_until(&mut h, "the rename field", |h| {
+        rename_field(h, "Cut").is_some()
+    });
+    assert_eq!(
+        h.state().tabs()[0]
+            .renaming
+            .as_ref()
+            .map(|renaming| renaming.place),
+        Some(silico_app::feature_menu::Place::Browser)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_unions_target_body_clicked_in_the_canvas_tints_its_every_face_not_its_features_own() {
+    // LADDER's body is the pocket's, most of its faces named from the plate's and the pad's:
+    // a union's target box takes it whole (Fusion's body), so every face but the one the
+    // pointer hovers is tinted, not only the pocket's own (`select_bodies`: the prototype's
+    // `maker: '*'` for a body).
+    // A box beside it, so a union has a second body to take.
+    let text = LADDER.replace(
+        "\n  ]\n}",
+        ",\n    {\"id\": \"t0000004\", \"type\": \"box\", \"v\": 1, \"name\": \"Spare\", \"position\": [100, 0, 0], \"length\": 10, \"width\": 10, \"height\": 10}\n  ]\n}",
+    );
+    assert!(text.contains("Spare"));
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", &text);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Spare"));
+    let body = body_of(&h, "q0000003");
+    let every = every_face(&h, body);
+    modify(&mut h, "Union");
+    click_face(&mut h, &record, body, 1);
+    bodies_boxed_until(&mut h, &[Some("q0000003"), None]);
+    step(&mut h);
+    step(&mut h);
+    let told = record.lock().unwrap();
+    let last = told.frames.last().unwrap();
+    let face = (body, silico_app::renderer::Element::Face(1));
+    assert_eq!(last.hovered, [face]);
+    let others: Vec<_> = every.iter().copied().filter(|f| *f != face).collect();
+    assert_eq!(last.tinted, others);
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_feature_selected_is_untinted_while_a_sketch_that_made_no_face_is_hovered() {
+    // LADDER: the plate selected, its faces tinted; the triangle sketch hovered, the maker
+    // the sketch's (`hoverFeature` first, whatever it made), so none is tinted; off it,
+    // the plate's again.
+    let f = fixture();
+    let (mut h, record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Triangle"));
+    select(&mut h, "Plate");
+    let away = timeline(&h).get_by_label("Plate").rect().center() + eframe::egui::vec2(0.0, -200.0);
+    h.hover_at(away);
+    step(&mut h);
+    step(&mut h);
+    let plates = tinted(&record);
+    assert!(!plates.is_empty());
+    hover_item(&mut h, "Triangle");
+    assert!(tinted(&record).is_empty(), "{:?}", tinted(&record));
+    h.hover_at(away);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tinted(&record), plates);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_hovered_in_the_canvas_rings_its_features_item_from_the_next_frame_asked_at_once() {
+    use silico_app::renderer::Element::Face;
+    // The timeline draws before the canvas, whose hover is answered as the canvas draws: it
+    // rings the hover's feature from the next frame, which the frame that changed it asks
+    // for at once (a frame is asked for while the timeline's ring is behind the hover; none
+    // once it has caught up, the app at rest). Off the canvas, the same: the hover let go
+    // as the canvas draws, the ring gone in the next frame.
+    let f = fixture();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Large"));
+    let large = body_of(&h, "a91cw0de");
+    let ringed = |h: &AppHarness| {
+        view(h)
+            .ringed_feature
+            .as_ref()
+            .map(|id| id.as_str().to_owned())
+    };
+    let at_rest = |h: &mut AppHarness| {
+        for _ in 0..5 {
+            step(h);
+        }
+        assert_ne!(repaint_delay(h), Some(Duration::ZERO), "not at rest");
+    };
+    at_rest(&mut h);
+    let at = the_viewport(&h).center();
+    answering(&record, Some((large, Face(1), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    assert_eq!(ringed(&h), None, "drawn before the hover was taken");
+    assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
+    step(&mut h);
+    assert_eq!(ringed(&h).as_deref(), Some("a91cw0de"));
+    at_rest(&mut h);
+    assert_eq!(ringed(&h).as_deref(), Some("a91cw0de"));
+    // Off the canvas, over the properties' empty foot.
+    let properties = h.get_by_role_and_label(Role::Pane, "Properties").rect();
+    h.hover_at(properties.left_bottom() + eframe::egui::vec2(20.0, -20.0));
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().hovered().is_none());
+    assert_eq!(ringed(&h).as_deref(), Some("a91cw0de"));
+    assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
+    step(&mut h);
+    assert_eq!(ringed(&h), None);
+    at_rest(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_item() {
+    on_lavapipe(
+        "on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_item",
+        || {
+            let f = fixture();
+            meshes_a_real_box(&f);
+            let state = lavapipe_render_state();
+            let present = silico_app::renderer::on_eframe(&state).expect("no renderer");
+            let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+            let mut h = {
+                let _marked = never_waits::marked();
+                Harness::builder()
+                    .with_size((1280.0, 800.0))
+                    .with_pixels_per_point(2.0)
+                    .with_step_dt(1.0 / 60.0)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        state.clone(),
+                    ))
+                    .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+            };
+            silico_app::theme::apply(&h.ctx);
+            h.set_render_every_step(true);
+            // Two features, each healthy, with no warning's line along its bottom, which
+            // would take the ring's place (`.warn`'s `box-shadow`, after
+            // `.hovered-from-canvas`'s). The fake meshes both as the same box, so the plate is
+            // hidden: the block alone is drawn and picked, and the plate's item is the one
+            // the ring mustn't reach.
+            let path = f.file("blocks.silico", BLOCK_AND_PLATE);
+            h.state_mut().open(path.to_str().unwrap(), false);
+            meshes_settled(&mut h);
+            step_until(&mut h, "its items healthy", |h| {
+                ["Block", "Plate"]
+                    .iter()
+                    .all(|name| item_state(h, name).as_deref() == Some("Box · Healthy"))
+            });
+            h.get_by_role_and_label(Role::Pane, "Browser")
+                .get_by_label("Hide Plate")
+                .click();
+            step(&mut h);
+            // From the front onto the box's centre, 20 mm high: its front face (Face3) fills
+            // the view's middle, lit straight on (re_renderer's light, 0.2 + 3/√14, clamped
+            // at 1), so it shows the body's colour as it is.
+            view_mut(&mut h).set_camera(silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 20.0 },
+                eye: [20.0, -100.0, 5.0],
+                target: [20.0, 10.0, 5.0],
+                up: [0.0, 0.0, 1.0],
+            });
+            meshes_settled(&mut h);
+            let quiet = {
+                let properties = h.get_by_role_and_label(Role::Pane, "Properties").rect();
+                properties.left_bottom() + eframe::egui::vec2(20.0, -20.0)
+            };
+            let settle = |h: &mut AppHarness| {
+                for _ in 0..5 {
+                    step(h);
+                }
+            };
+            h.hover_at(quiet);
+            settle(&mut h);
+            let rect = the_viewport(&h);
+            let ppp = h.ctx.pixels_per_point();
+            // 2.5 mm above the view's centre: on the face, clear of its edges; the pixel
+            // read 150 points left of it, clear of the pointer, which the harness draws.
+            let on_face = rect.center() - eframe::egui::vec2(0.0, 2.5 * rect.height() / 20.0);
+            let read_at = on_face - eframe::egui::vec2(150.0, 0.0);
+            let item = timeline(&h).get_by_label("Block").rect();
+            let plate = timeline(&h).get_by_label("Plate").rect();
+            // An item's left side at its middle: its ring's two pixels (1 point, inside its
+            // border), and 3 points in, clear of its ring and its icon.
+            let ring_of = |item: eframe::egui::Rect| {
+                [item.left() * ppp, item.left() * ppp + 1.0].map(|x| x as u32)
+            };
+            let ring = ring_of(item);
+            let plates_ring = ring_of(plate);
+            assert_eq!(plate.center().y, item.center().y);
+            let row = (item.center().y * ppp) as u32;
+            let inside = ((item.left() + 3.0) * ppp) as u32;
+            let face = ((read_at.x * ppp) as u32, (read_at.y * ppp) as u32);
+            let near = |got: [u8; 4], want: [f64; 3], within: f64| {
+                (0..3).all(|k| (f64::from(got[k]) - want[k]).abs() <= within) && got[3] == 255
+            };
+            let body = silico_render::render::BODY.map(f64::from);
+            // The bar's Gray.150 (`#timeline`) under the item at rest.
+            let bar = [0x17, 0x17, 0x17].map(f64::from);
+            // `.hovered-from-canvas`: `--g600`, `#9f9f9f`.
+            let g600 = [0x9f, 0x9f, 0x9f].map(f64::from);
+            // Blue.800 at 0.4, mixed with the body's (170, 175, 182) in linear light, by hand:
+            // (0.4020, 0.4287, 0.4678) and (0.6584, 0.7084, 1) give (0.5045, 0.5406, 0.6807),
+            // in sRGB (188.3, 194.2, 215.2).
+            let tinted = [188.3, 194.2, 215.2];
+            let image = h.render().unwrap();
+            let got = image.get_pixel(face.0, face.1).0;
+            assert!(near(got, body, 2.0), "the face {got:?}");
+            for x in ring.into_iter().chain(plates_ring) {
+                let got = image.get_pixel(x, row).0;
+                assert!(near(got, bar, 2.0), "({x}, {row}) {got:?} at rest");
+            }
+            // The block hovered in the timeline: its front face tinted.
+            h.hover_at(item.center());
+            settle(&mut h);
+            let image = h.render().unwrap();
+            let got = image.get_pixel(face.0, face.1).0;
+            assert!(near(got, tinted, 2.0), "the face {got:?} tinted");
+            // The face hovered in the canvas (lavapipe's ID buffer finds it): untinted, and
+            // the block's item ringed, its inside the bar's.
+            h.hover_at(on_face);
+            step_until(&mut h, "the face hovered", |h| {
+                h.state().tabs()[0]
+                    .selection()
+                    .hovered_feature()
+                    .is_some_and(|id| id.as_str() == "k7f2qx3m")
+            });
+            settle(&mut h);
+            let image = h.render().unwrap();
+            let got = image.get_pixel(face.0, face.1).0;
+            assert!(near(got, body, 2.0), "the face {got:?}");
+            for x in ring {
+                let got = image.get_pixel(x, row).0;
+                assert!(near(got, g600, 3.0), "({x}, {row}) {got:?} ringed");
+            }
+            // The plate's item, its feature not what the hover is over: no ring.
+            for x in plates_ring {
+                let got = image.get_pixel(x, row).0;
+                assert!(
+                    near(got, bar, 2.0),
+                    "({x}, {row}) {got:?} the plate's, unringed"
+                );
+            }
+            let got = image.get_pixel(inside, row).0;
+            assert!(
+                near(got, bar, 2.0),
+                "({inside}, {row}) {got:?} inside the ring"
+            );
+            // Off the canvas: the ring gone.
+            h.hover_at(quiet);
+            settle(&mut h);
+            let image = h.render().unwrap();
+            for x in ring.into_iter().chain(plates_ring) {
+                let got = image.get_pixel(x, row).0;
+                assert!(near(got, bar, 2.0), "({x}, {row}) {got:?} let go");
+            }
+            // The face selected, then the block hovered in the timeline: the face keeps the
+            // selection's look, its colour its own, not the tint.
+            click_canvas(&mut h, on_face, false);
+            step_until(&mut h, "the face selected", |h| {
+                selected_names(h) == ["k7f2qx3m.box.Face3"]
+            });
+            h.hover_at(item.center());
+            settle(&mut h);
+            let image = h.render().unwrap();
+            let got = image.get_pixel(face.0, face.1).0;
+            assert!(near(got, body, 2.0), "the face {got:?}");
+            assert_eq!(never_waits::waits(), 0);
+        },
+    );
 }
 
 #[test]
@@ -29252,16 +29964,6 @@ fn found_as_faces_until(h: &mut AppHarness, want: &[&str]) {
     });
 }
 
-/// The body whose feature is `id`, by its number.
-fn body_of(h: &AppHarness, id: &str) -> u32 {
-    view(h)
-        .bodies()
-        .iter()
-        .find(|(_, body)| body.feature.as_str() == id)
-        .map(|(number, _)| *number)
-        .unwrap()
-}
-
 /// What the last frame given to the renderer highlighted.
 fn highlighted(record: &Record) -> Vec<(u32, silico_app::renderer::Element)> {
     record
@@ -29423,7 +30125,7 @@ fn the_hovered_element_is_named_drawn_and_said_and_let_go_off_the_canvas() {
 }
 
 #[test]
-fn a_face_picked_marks_and_opens_its_bodys_row_and_a_row_selected_lights_its_bodys_faces() {
+fn a_face_picked_marks_and_opens_its_bodys_row_and_a_row_selected_tints_its_bodys_faces() {
     use silico_app::renderer::Element::Face;
     let f = fixture();
     meshes_a_real_box(&f);
@@ -29457,8 +30159,9 @@ fn a_face_picked_marks_and_opens_its_bodys_row_and_a_row_selected_lights_its_bod
         toggled(h, "Browser") == Some(true)
     });
     assert_eq!(toggled(&h, "Timeline"), Some(false));
-    // Its row clicked: the body selected, the face let go, and the canvas lights each of
-    // its six faces.
+    // Its row clicked: the body selected, the face let go, and the canvas tints each of its
+    // six faces as their maker's, none highlighted (the prototype's `bodyRow`:
+    // `setHighlight({ maker: '*', sel: [] })`, every face its body's).
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Block")
         .click();
@@ -29472,7 +30175,8 @@ fn a_face_picked_marks_and_opens_its_bodys_row_and_a_row_selected_lights_its_bod
     step(&mut h);
     step(&mut h);
     let faces: Vec<_> = (1..=6).map(|n| (1, Face(n))).collect();
-    assert_eq!(highlighted(&record), faces);
+    assert_eq!(tinted(&record), faces);
+    assert!(highlighted(&record).is_empty());
     assert_eq!(toggled(&h, "Timeline"), Some(true));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -34007,7 +34711,9 @@ fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them()
     );
     assert!(!ok_enabled(&h));
     // A click on the block's face takes the block, whole: the target, by its name in the
-    // box; the block selected, every face of it lit; the tool's box active; nothing sent.
+    // box; the block selected, every face of it tinted as its maker's but the one the pointer
+    // hovers, which keeps the hover's look (`applyHighlight`: the hover, else the maker),
+    // none highlighted; the tool's box active; nothing sent.
     click_face(&mut h, &record, block, 3);
     bodies_boxed_until(&mut h, &[Some("k7f2qx3m"), None]);
     assert_eq!(selected_features(&h), ["k7f2qx3m"]);
@@ -34015,7 +34721,18 @@ fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them()
     assert!(dialog(&h).query_by_label("Block").is_some());
     assert_eq!(active_box(&h), Some("Tool Body"));
     step(&mut h);
-    assert_eq!(highlighted(&record), whole_box(block));
+    {
+        use silico_app::renderer::Element::Face;
+        let told = record.lock().unwrap();
+        let last = told.frames.last().unwrap();
+        assert!(last.highlights.is_empty());
+        assert_eq!(last.hovered, [(block, Face(3))]);
+        let others: Vec<_> = whole_box(block)
+            .into_iter()
+            .filter(|face| *face != (block, Face(3)))
+            .collect();
+        assert_eq!(last.tinted, others);
+    }
     assert!(!ok_enabled(&h));
     assert_eq!(h.state().tabs()[0].sent, []);
     // A click on the other block's edge takes it, the tool: the union is added and previewed.
@@ -34762,7 +35479,7 @@ fn the_bodies_selected_as_a_union_opens_fill_target_then_tool_and_the_rest_is_no
     });
     h.state_mut().tabs_mut()[0]
         .selection_mut()
-        .select_features(ids(&["b0000002", "b0000001"]));
+        .select_bodies(ids(&["b0000002", "b0000001"]));
     modify(&mut h, "Subtract");
     assert_eq!(
         boxed_bodies(&h),
@@ -34787,7 +35504,7 @@ fn a_third_body_selected_as_a_union_opens_is_left_out_and_said() {
         .map(|id| silico_core::document::FeatureId::new(id).unwrap());
     h.state_mut().tabs_mut()[0]
         .selection_mut()
-        .select_features(ids.to_vec());
+        .select_bodies(ids.to_vec());
     modify(&mut h, "Intersect");
     assert_eq!(
         boxed_bodies(&h),
@@ -40505,7 +41222,7 @@ fn with_a_union_open_a_cmd_click_on_a_boxed_body_goes_to_its_box_and_the_selecti
     // waits, and nothing is added yet, so both rows are there.
     h.state_mut().tabs_mut()[0]
         .selection_mut()
-        .select_features(vec![
+        .select_bodies(vec![
             silico_core::document::FeatureId::new("b0000001").unwrap(),
         ]);
     modify(&mut h, "Union");
