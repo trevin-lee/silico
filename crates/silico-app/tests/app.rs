@@ -25723,6 +25723,133 @@ fn a_refused_add_sends_no_remove() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// Stepped until nothing of the first tab's is under way and sketch mode's newest read is of
+/// the tab's revision, then settled again: every click planned again has been.
+fn settled_and_read(h: &mut AppHarness) {
+    settled(h);
+    step_until(h, "a read of the tab's revision", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.sketch
+            .as_ref()
+            .and_then(|mode| mode.read.as_ref())
+            .is_none_or(|read| read.model == Some(tab.revision))
+    });
+    settled(h);
+}
+
+#[test]
+fn an_undo_asked_after_two_clicks_waits_for_both_though_the_second_was_stale() {
+    // Horizontal on the bottom, na000001, then Vertical on the right, na000002, then Undo,
+    // in one frame, before any read: the Vertical, planned on the first's read, is refused as
+    // stale and planned again, in its place, before the Undo, which then takes it back. The
+    // bottom stays horizontal, and Redo gives the Vertical back.
+    use silico_core::document::{ElementKind, Form};
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Vertical);
+        tab.step(&sessions, true);
+    }
+    settled_and_read(&mut h);
+    let forms: Vec<Form> = sketch_of_text(&f, &h, "s0000001")
+        .constraints
+        .into_iter()
+        .map(|c| c.form)
+        .collect();
+    let horizontal = Form::Horizontal {
+        line: element_ref("na000001"),
+    };
+    let vertical = Form::Vertical {
+        line: element_ref("na000002"),
+    };
+    assert!(forms.contains(&horizontal), "{forms:?}");
+    assert!(!forms.contains(&vertical), "{forms:?}");
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Vertical");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_asked_after_two_clicks_keeps_both_relations() {
+    // Horizontal on na000001, Vertical on na000002, then Finish, in one frame: the Vertical,
+    // refused as stale, is planned again before Finish closes the sketch, so both are kept.
+    use silico_core::document::{ElementKind, Form};
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Vertical);
+        tab.finish_sketch(&sessions, true);
+    }
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    let forms: Vec<Form> = sketch_of_text(&f, &h, "s0000001")
+        .constraints
+        .into_iter()
+        .map(|c| c.form)
+        .collect();
+    for kept in [
+        Form::Horizontal {
+            line: element_ref("na000001"),
+        },
+        Form::Vertical {
+            line: element_ref("na000002"),
+        },
+    ] {
+        assert!(forms.contains(&kept), "{kept:?} in {forms:?}");
+    }
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_before_sketch_modes_first_read_then_finish_keeps_the_relation() {
+    // Edit Sketch, na000001 selected, Horizontal, and Finish, in one frame: the click waits
+    // for sketch mode's first read, before Finish, and its relation is kept.
+    use silico_core::document::{ElementKind, Form};
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let (mut h, _) = f.opened("relating.silico", RELATING);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Relate"));
+    settled(&mut h);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &sketch_id("s0000001"));
+        assert!(sketch_mode(&h).is_some_and(|mode| mode.read.is_none()));
+        select_member(&mut h, "na000001", ElementKind::Line);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Horizontal);
+        tab.finish_sketch(&sessions, true);
+    }
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    let forms: Vec<Form> = sketch_of_text(&f, &h, "s0000001")
+        .constraints
+        .into_iter()
+        .map(|c| c.form)
+        .collect();
+    let kept = Form::Horizontal {
+        line: element_ref("na000001"),
+    };
+    assert!(forms.contains(&kept), "{forms:?}");
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn delete_during_a_drag_waits_for_its_end_then_goes_against_its_revision_and_both_land() {
     use silico_app::sketch::PointerAction::{Move, Press, Release};
