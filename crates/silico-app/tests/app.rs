@@ -26283,6 +26283,170 @@ fn a_click_pressed_while_an_edit_goes_out_after_a_stop_waits_for_its_read_and_la
 }
 
 #[test]
+fn a_click_waiting_through_a_kept_fault_whose_model_is_published_lands() {
+    // A box feeding a pad whose every prism faults its worker: each revision's model keeps
+    // the fault as its outcome, and is published (decision 32). Horizontal and Vertical,
+    // the rebuild held at its solve: the Vertical, stale, waits; the Horizontal's revision
+    // faults and is published, so the Vertical is planned on its read and lands, unsaid.
+    // Then a press in the frame that revision's faulted model is published, before sketch
+    // mode has read it: queued, never refused, and it lands too.
+    use silico_core::document::{ElementKind, Form};
+    use silico_core::sketch_tools::RelationTool;
+    let text = BOXED_PADDED.replace(
+        r#""constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]"#,
+        r#""constraints": []"#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        is_prism(op).then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let (mut h, _) = f.opened("faulted.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    f.sketches.hold();
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Vertical);
+    }
+    step_until(&mut h, "the Vertical sent", |h| sketch_sends(h).len() == 2);
+    f.sketches.release();
+    settled_and_read(&mut h);
+    let faulted = |h: &AppHarness| {
+        h.state().tabs()[0].status.as_ref().is_some_and(|status| {
+            status.rebuild.revision == h.state().tabs()[0].revision
+                && status.rebuild.state == silico_core::command::RebuildState::Faulted
+        })
+    };
+    assert!(faulted(&h), "the revision's model keeps its fault");
+    let forms = |h: &AppHarness| -> Vec<Form> {
+        sketch_of_text(&f, h, "s0000001")
+            .constraints
+            .into_iter()
+            .map(|c| c.form)
+            .collect()
+    };
+    let vertical = Form::Vertical {
+        line: element_ref("na000002"),
+    };
+    assert!(forms(&h).contains(&vertical), "{:?}", forms(&h));
+    assert_eq!(h.state().tabs()[0].message, None);
+    // Another edit, its rebuild held till its answer is taken; then, in the frame its
+    // faulted model is published, sketch mode's read of it still to come, a press: queued,
+    // not refused.
+    f.sketches.hold();
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000003", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+    }
+    step_until(&mut h, "the top's Horizontal answered", |h| {
+        sketch_sends(h).len() == 4 && !h.state().tabs()[0].unsettled()
+    });
+    f.sketches.release();
+    step_until(&mut h, "its model published, unread", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.published == Some(tab.revision) && read_revision(h) < Some(tab.revision)
+    });
+    let id = h.state().tabs()[0].id;
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        // Status as of now, so the frame's published model and status agree.
+        tab.status = Some(sessions.status(&id).result.unwrap());
+    }
+    assert!(faulted(&h), "the newest revision faulted too");
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000004", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Vertical);
+    }
+    assert_eq!(h.state().tabs()[0].message, None, "refused at the press");
+    settled_and_read(&mut h);
+    let left = Form::Vertical {
+        line: element_ref("na000004"),
+    };
+    assert!(forms(&h).contains(&left), "{:?}", forms(&h));
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_lets_a_click_still_to_plan_go_and_says_so() {
+    // Horizontal and Vertical, then Cancel, in one frame: the Vertical, waiting behind the
+    // Horizontal's edit, is let go, said; Cancel takes back the Horizontal.
+    use silico_core::document::ElementKind;
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Vertical);
+        tab.finish_sketch(&sessions, false);
+    }
+    assert_eq!(
+        h.state().tabs()[0].message.as_deref(),
+        Some("Vertical wasn't added: the sketch was cancelled first")
+    );
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(text_of(&f, &h), RELATING);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_while_a_clicks_edit_is_under_way_lets_it_go_when_it_comes_back_stale() {
+    // As Finish's case, but Cancel: its sketch mode isn't kept, so the Vertical, refused as
+    // stale after it, is let go, said, and Cancel's undo, queued behind it, runs.
+    use silico_core::command::CheckModel;
+    use silico_core::document::ElementKind;
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    let id = h.state().tabs()[0].id;
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Vertical);
+    }
+    f.sketches.hold();
+    let check = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    assert!(f.sketches.wait_held(WAIT));
+    step_until(&mut h, "the Vertical sent", |h| sketch_sends(h).len() == 2);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    }
+    f.sketches.release();
+    check.wait();
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(text_of(&f, &h), RELATING);
+    let said = h.state().tabs()[0].message.clone().unwrap_or_default();
+    assert!(said.starts_with("Vertical wasn't added: "), "{said}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn delete_during_a_drag_waits_for_its_end_then_goes_against_its_revision_and_both_land() {
     use silico_app::sketch::PointerAction::{Move, Press, Release};
     let f = fixture();
