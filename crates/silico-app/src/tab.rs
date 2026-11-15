@@ -1235,6 +1235,9 @@ pub struct Tab {
     /// edit is told against.
     pub drag: Option<Drag>,
     drag_sending: Option<Sending>,
+    /// The open dialog's arrows in the canvas (`crate::arrow`): the left button's stream one
+    /// took, if one did, and its sketch's profile's centroid, kept by the sketch's read.
+    grip: crate::arrow::Grip,
     /// A test's watch on what [`overlay`](Self::overlay) is given: called after it each
     /// frame with the same painter and frame. For the crate's tests only; None otherwise.
     #[doc(hidden)]
@@ -1441,6 +1444,7 @@ impl Tab {
             view: crate::viewport::View::default(),
             drag: None,
             drag_sending: None,
+            grip: crate::arrow::Grip::default(),
             watch: None,
             after_status: None,
         }
@@ -1473,7 +1477,10 @@ impl Tab {
     /// it reads the hover this frame's answer gave. A right click opens the canvas's context
     /// menu (`crate::canvas_menu`, through `crate::select_other`), first of them: while it's
     /// open it holds the hover and the wheel, and a left press that closes it is given to
-    /// neither; an item chosen in it is done here, as its command is elsewhere.
+    /// neither; an item chosen in it is done here, as its command is elsewhere. Then the open
+    /// dialog's arrows (`crate::arrow`, a pad's or a pocket's distance and flip arrows): a
+    /// press on one takes its stream from the selection and the box, its drag sets the
+    /// dialog's input and sends it as the dialog's edit, and they're painted over the rest.
     pub fn overlay<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -1568,12 +1575,19 @@ impl Tab {
             &facts,
         );
         self.menu_face_read(sessions, painter.ctx());
+        // The open dialog's arrows next (`crate::arrow`): a press on one takes its stream,
+        // given to neither the selection nor the box; while it's held, the hover stays where
+        // it was pressed, as the prototype's waits out a drag.
+        let shown = frame;
+        let left = self.arrows_frame(sessions, painter, frame, left);
+        let pointer_px = self.grip.press_px().or(frame.pointer_px);
         let passed;
-        let frame = if left.len() == frame.left.len() {
+        let frame = if left.len() == frame.left.len() && pointer_px == frame.pointer_px {
             frame
         } else {
             passed = crate::viewport::ViewFrame {
                 left,
+                pointer_px,
                 ..frame.clone()
             };
             &passed
@@ -1620,6 +1634,172 @@ impl Tab {
             self.canvas_act(sessions, asked);
             painter.ctx().request_repaint();
         }
+        self.paint_arrows(painter, shown);
+    }
+
+    /// The open dialog's arrows on the screen through `frame`, as its inputs are now
+    /// (`crate::arrow`): none with no dialog, while the tab closes (its dialog's inputs are
+    /// off), before its sketch's read has come, for a sketch whose plane or profile its read
+    /// says nothing of, or for a dialog with none.
+    fn dialog_arrows(
+        &mut self,
+        frame: &crate::viewport::ViewFrame,
+    ) -> Option<crate::arrow::Arrows> {
+        if self.closing() {
+            return None;
+        }
+        let dialog = self.dialog.as_ref()?;
+        let read = Arc::clone(&self.sketch_reads.held(dialog.sketch()?)?.read);
+        let plane = *read.plane.as_ref().ok()?;
+        let centroid = self.grip.centroid(&read)?;
+        let handles = crate::arrow::handles(dialog, plane, centroid)?;
+        let arrows = crate::arrow::arrows(
+            &handles,
+            &frame.camera,
+            frame.size_px,
+            frame.pixels_per_point,
+            frame.rect.left_top(),
+        );
+        (!arrows.is_empty()).then_some(arrows)
+    }
+
+    /// The arrows' share of the frame's left events, `left` (those Select Other left): taken
+    /// ([`crate::arrow::Grip::frame`]), and what they ask done to the dialog's inputs and sent
+    /// as its edits; the rest given back, in order.
+    fn arrows_frame<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        painter: &eframe::egui::Painter,
+        frame: &crate::viewport::ViewFrame,
+        left: Vec<crate::viewport::LeftEvent>,
+    ) -> Vec<crate::viewport::LeftEvent> {
+        let holding = self.grip.holding();
+        if self.dialog.is_none() && !holding {
+            return left;
+        }
+        let arrows = self.dialog_arrows(frame);
+        // While the tab closes its dialog's inputs are off: a stream held goes as it would
+        // with the dialog gone, asking nothing more, and a press takes no arrow.
+        let closing = self.closing();
+        let dialog = self.dialog.as_ref().filter(|_| !closing);
+        let (left, asked) = self.grip.frame(
+            &left,
+            arrows.as_ref(),
+            dialog,
+            frame.pixels_per_point,
+            frame.rect.left_top(),
+        );
+        if self.arrows_asked(sessions, asked) {
+            // The dialog's field, maybe drawn already this frame, shows it in the next.
+            painter.ctx().request_repaint();
+        }
+        if holding && !self.grip.holding() && !closing {
+            // A drag's end sends the value it held back (`arrow_held_back`). The property
+            // panel asks the same each frame, but only of the tab shown: a release that lands
+            // in the frame another tab is shown comes here through `viewport::end_unshown`,
+            // the tab hidden, and nothing else would send it.
+            self.dialog_changed(sessions);
+        }
+        left
+    }
+
+    /// The field an arrow's drag holds back (`crate::arrow`; #480's review, A1): while the
+    /// open dialog's last edit's preview hasn't answered ([`preview_pending`]), the drag's
+    /// newest value waits in the dialog's field, which still follows the pointer, so a steady
+    /// drag keeps one preview rebuilding with the newest value waiting, as the sketch's drag
+    /// keeps one solve in flight, rather than starting and stopping a rebuild each frame
+    /// (docs/design/m4.1-command-api.md, *Rebuilds and the models*). None once the drag
+    /// ends, when [`arrows_frame`](Self::arrows_frame) sends its value in the release's own
+    /// frame, the tab shown or not (the property panel, `Panes::dialog`, asks
+    /// [`dialog_changed`](Self::dialog_changed) each frame, but only of the tab shown). None
+    /// too while it isn't held; typed values are never held back.
+    ///
+    /// [`preview_pending`]: Self::preview_pending
+    fn arrow_held_back(&self) -> Option<&'static str> {
+        let dialog = self.dialog.as_ref()?;
+        let part = self.grip.dragging(Some(dialog.serial))?;
+        self.preview_pending(dialog).then(|| part.field())
+    }
+
+    /// Whether `dialog`'s last edit's preview hasn't answered: an edit of its feature in
+    /// flight or waiting, or, while its revision's rebuild isn't stopped, neither the model
+    /// the newest timeline read nor the model published yet of the session's revision.
+    fn preview_pending(&self, dialog: &Dialog) -> bool {
+        let Some(feature) = dialog.feature.as_ref() else {
+            return false;
+        };
+        if self.edits.pending_for(feature) {
+            return true;
+        }
+        if self.rebuild_stopped() {
+            return false;
+        }
+        let caught_up = |model: Option<Revision>| model.is_some_and(|model| model >= self.revision);
+        !(caught_up(self.timeline.as_ref().and_then(|timeline| timeline.model))
+            || caught_up(self.published))
+    }
+
+    /// What the arrows asked, done to the open dialog's inputs ([`crate::arrow::apply`]), and
+    /// what changed sent as the dialog's edits, as typing's is
+    /// ([`dialog_changed`](Self::dialog_changed): one edit in flight, the newest waiting).
+    /// Whether an input changed.
+    fn arrows_asked<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        asked: Vec<crate::arrow::Asked>,
+    ) -> bool {
+        let Some(dialog) = self.dialog.as_mut() else {
+            return false;
+        };
+        let changed = crate::arrow::apply(dialog, asked);
+        if changed {
+            self.dialog_changed(sessions);
+        }
+        changed
+    }
+
+    /// The open dialog's arrows painted over the canvas, as its inputs are now, so a drag's
+    /// value moves its arrow in the frame it's set; the one held white; and the pointer's
+    /// cursor over one, or through the drag of one ([`crate::arrow::cursor`]).
+    fn paint_arrows(
+        &mut self,
+        painter: &eframe::egui::Painter,
+        frame: &crate::viewport::ViewFrame,
+    ) {
+        let Some(arrows) = self.dialog_arrows(frame) else {
+            return;
+        };
+        let held = self.grip.held();
+        painter.extend(arrows.shapes(painter, held));
+        let pointer = frame
+            .pointer_px
+            .map(|at_px| sketch::at_points(at_px, frame.pixels_per_point, frame.rect.left_top()));
+        if let Some(hit) = held.or_else(|| pointer.and_then(|at| arrows.hit(at))) {
+            painter.ctx().set_cursor_icon(crate::arrow::cursor(hit));
+        }
+    }
+
+    /// An arrow's drag under way let go of and what it held back sent, before a save or a
+    /// Save As that closes the tab is queued (#480's review, R2-1): so what the save writes
+    /// is what the field shows, which then stays as it is while the tab closes, the rest of
+    /// the stream asking nothing.
+    fn flush_arrow<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        if self.grip.holding() {
+            self.grip.let_go();
+            self.dialog_changed(sessions);
+        }
+    }
+
+    /// Esc given to an arrow's stream held, if one is and still acts in the open dialog: a
+    /// drag ends where it began, its input given back the text it held at its press and that
+    /// sent; a press on the flip arrow does nothing more. Whether it took the Esc.
+    fn cancel_arrow<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        let serial = self.dialog.as_ref().map(|dialog| dialog.serial);
+        let Some(asked) = self.grip.escape(serial) else {
+            return false;
+        };
+        self.arrows_asked(sessions, asked);
+        true
     }
 
     /// What the canvas's context menu asked, done as its command is elsewhere: Edit as the
@@ -2274,6 +2454,9 @@ impl Tab {
         then_close: bool,
     ) {
         self.hush();
+        if then_close {
+            self.flush_arrow(sessions);
+        }
         self.edits.queue.push_back(Queued::SaveAs {
             path,
             replace,
@@ -4311,6 +4494,9 @@ impl Tab {
     /// `then_close` too. A save that comes up with nothing to save does nothing (or closes).
     pub fn save<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
         self.hush();
+        if then_close {
+            self.flush_arrow(sessions);
+        }
         match self.edits.queue.back_mut() {
             Some(Queued::Save { then_close: last }) => *last |= then_close,
             _ => self.edits.queue.push_back(Queued::Save { then_close }),
@@ -4337,7 +4523,8 @@ impl Tab {
             self.reload_asked = true;
         }
         // The document goes back to the file's: a dialog or a sketch open on it has nothing
-        // to edit.
+        // to edit, and an arrow's drag held in one nothing to send.
+        self.grip.let_go();
         let dropped = self.dialog.take();
         self.dropped(dropped.as_ref());
         self.loading = None;
@@ -4707,13 +4894,16 @@ impl Tab {
     /// Gives Esc to what takes it before the prototype's `escChain` (its `keydown` gives it
     /// to an open menu, a modal, and the Modify box first), if one is open, and acts on it:
     /// a sketch drag held ends from its begin state (section 3's first, before anything
-    /// else); sketch mode's canvas menu closes; the over-define prompt is cancelled (its
-    /// Cancel, the prototype's key), the edit undone; a placed dimension's Modify box
-    /// closes, its value as it was. Whether one took it. The one list of them:
-    /// [`escape`](Self::escape) begins with it, and the app gives Esc to it before it lets
-    /// the navigation bar's tool, the chain's first, go.
+    /// else), and so does an arrow's press held in the open dialog, a drag ending where it
+    /// began and a flip's doing nothing more, the dialog left open
+    /// ([`cancel_arrow`](Self::cancel_arrow)); sketch mode's canvas menu closes; the
+    /// over-define prompt is cancelled (its Cancel, the prototype's key), the edit undone; a
+    /// placed dimension's Modify box closes, its value as it was. Whether one took it. The
+    /// one list of them: [`escape`](Self::escape) and, with a dialog open,
+    /// [`dialog_escape`](Self::dialog_escape) begin with it, and the app gives Esc to it
+    /// before it lets the navigation bar's tool, the chain's first, go.
     pub fn escape_first<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
-        if self.cancel_drag(sessions) {
+        if self.cancel_drag(sessions) || self.cancel_arrow(sessions) {
             return true;
         }
         if self
@@ -4779,8 +4969,10 @@ impl Tab {
         stopped
     }
 
-    /// Esc with a dialog open (section 3's order):
-    /// the preview's rebuild, if it's rebuilding, stopped, the dialog left open, as
+    /// Esc with a dialog open (section 3's order): what takes it before the chain
+    /// ([`escape_first`](Self::escape_first): an arrow's press held, a drag ending where it
+    /// began, the dialog left open); or else the preview's rebuild, if it's rebuilding,
+    /// stopped, the dialog left open, as
     /// SolidWorks stops a slow preview (docs/ux/solidworks.md, §5); or else the dialog's
     /// Cancel, as Esc is in SolidWorks' PropertyManager. `status`, read at the frame's start,
     /// may say the preview rebuilds when its rebuild has ended since: the stop then finds
@@ -4789,6 +4981,9 @@ impl Tab {
     /// stops that rebuild, of a revision it makes old, and the next revision's preview
     /// hasn't begun, so there's no preview of the Esc's to stop. Whether it's the Cancel.
     pub fn dialog_escape<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        if self.escape_first(sessions) {
+            return false;
+        }
         !(self.preview_rebuilding() && !self.timeline_superseded && self.stop_quietly(sessions))
     }
 
@@ -5955,6 +6150,7 @@ impl Tab {
             .as_ref()
             .and_then(|dialog| dialog.feature.as_ref())
             .is_some_and(|feature| self.edits.pending_for(feature));
+        let held_back = self.arrow_held_back();
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
         };
@@ -6001,7 +6197,17 @@ impl Tab {
         }
         let sketch_field = crate::dialog::Part::Sketch.field();
         let sketch_sent = dialog.sent(sketch_field).cloned();
-        let changes = dialog.changes(waiting);
+        let held_sent = held_back.and_then(|field| dialog.sent(field).cloned());
+        let mut changes = dialog.changes(waiting);
+        // An arrow's drag's newest value waits for the preview in flight
+        // ([`arrow_held_back`](Self::arrow_held_back)): taken as unsent, so it's offered again
+        // each frame, and sent once that preview answers or the drag ends.
+        if let Some(field) = held_back
+            && let Some(at) = changes.iter().position(|(changed, _)| *changed == field)
+        {
+            changes.remove(at);
+            dialog.unsend(field, held_sent);
+        }
         // A new sweep's sketch picked after its add: its base follows, to where an add from
         // that sketch would build (#443's review, H1), worked out from the newest timeline as
         // the add's was. A sweep's own dialog (Edit Feature) keeps the base it has.
@@ -6017,7 +6223,6 @@ impl Tab {
                 .map(|entries| (sketch.clone(), rebased(entries, &feature, sketch))),
             _ => None,
         };
-        let mut changes = changes;
         let moved_to = match moved {
             // A body no feature may take: the sketch isn't sent (nothing builds on another
             // body for it), OK is off, and the dialog says why.
@@ -6084,6 +6289,12 @@ impl Tab {
     pub fn close_dialog<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
         if self.closing() {
             return;
+        }
+        // An arrow's drag under way goes with the dialog, what's left of its stream asking
+        // nothing; OK first sends the value it held back, which its field shows and OK keeps.
+        self.grip.let_go();
+        if ok {
+            self.dialog_changed(sessions);
         }
         let closed = self.dialog.take();
         if closed.is_none() && self.loading.take().is_none() {
@@ -8748,6 +8959,64 @@ mod tests {
     }
 
     #[test]
+    fn the_canvas_sends_none_of_a_dialogs_changes_but_the_arrows_own() {
+        // #480's mutants (`arrows_frame`'s `holding && !self.grip.holding() && !closing`, its
+        // `&&`s as `||`): frames of the canvas in which no arrow's drag ends send nothing the
+        // arrows didn't ask, a Pocket's Length typed to 7 among it. That's the property
+        // panel's to send, for the tab shown alone (`Panes::dialog`), so a tab hidden as a
+        // click on its canvas ends there (`viewport::end_unshown`) sends none of it.
+        use crate::viewport::{LeftEvent, LeftKind, ViewFrame};
+        use eframe::egui;
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let (_dir, sessions, mut tab) = session_tab();
+        let mut dialog = Dialog::new(Kind::Pocket, Some(fid("s0000002")), 1);
+        dialog.add().unwrap();
+        dialog.added(fid("q0000001"));
+        let length = dialog
+            .inputs
+            .iter_mut()
+            .find(|input| input.label == "Length")
+            .unwrap();
+        length.value = crate::dialog::Value::Length("7".to_owned());
+        tab.dialog = Some(dialog);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
+        let painter =
+            egui::Painter::new(egui::Context::default(), egui::LayerId::background(), rect);
+        let session = tab.id;
+        let frame = |left: Vec<LeftEvent>| ViewFrame {
+            session,
+            rect,
+            camera: crate::navigate::HOME.camera(crate::navigate::NO_BOX, 100, 100),
+            size_px: [100, 100],
+            pixels_per_point: 1.0,
+            pointer_px: None,
+            left,
+            secondary: Vec::new(),
+            drawn: Vec::new(),
+            now: std::time::Instant::now(),
+        };
+        let event = |kind| LeftEvent {
+            kind,
+            at_px: [50.0, 50.0],
+            shift: false,
+            ctrl: false,
+            frame: 0,
+            time: 0.0,
+            seq: 0,
+        };
+        let sent = |tab: &Tab| tab.edits.in_flight.is_some() || !tab.edits.queue.is_empty();
+        // A frame with no events, then a click's press and its release, which take no arrow.
+        for kinds in [vec![], vec![LeftKind::Press], vec![LeftKind::Release]] {
+            let left: Vec<LeftEvent> = kinds.iter().copied().map(event).collect();
+            let given = tab.arrows_frame(&sessions, &painter, &frame(left.clone()), left);
+            assert_eq!(given.len(), kinds.len(), "{kinds:?} given back");
+            assert!(!sent(&tab), "{kinds:?}");
+        }
+        tab.dialog_changed(&sessions);
+        assert!(sent(&tab), "the Length was there to send");
+    }
+
+    #[test]
     fn a_new_sweeps_check_before_its_add_isnt_asked_once_its_added() {
         // #443's mutants (tab.rs:4842, `made && sweeps && feature.is_none()`): a Pocket from
         // Sketch2, added; the tab's timeline then one whose Block no feature may take (Joined
@@ -9993,6 +10262,51 @@ mod tests {
             assert!(at(state, None), "{state:?}");
         }
         assert!(at(RebuildState::Stopped, Some(Revision::OPENED)));
+    }
+
+    #[test]
+    fn a_dialogs_preview_has_answered_once_either_model_is_of_the_sessions_revision() {
+        // #480's mutants: an arrow's drag holds its value back only while neither the model
+        // the newest timeline read nor the model published is of the session's revision
+        // (`preview_pending`); either one there, whichever the tab sees first, answers the
+        // preview. A stopped rebuild, or a dialog with no feature yet, has none pending.
+        let revision = |n: u64| Revision::from_number(n).unwrap();
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let pending = |dialog: &Dialog, models: (Option<u64>, Option<u64>), state| {
+            let mut tab = tab();
+            tab.revision = revision(5);
+            let mut status = status(revision(5), true);
+            status.rebuild.state = state;
+            tab.status = Some(status);
+            tab.timeline = Some(timeline(0, models.0.map(revision), Vec::new()));
+            tab.published = models.1.map(revision);
+            tab.preview_pending(dialog)
+        };
+        let mut editing = Dialog::new(Kind::Pad, Some(fid("s0000001")), 1);
+        editing.feature = Some(fid("p0000001"));
+        let running = RebuildState::Running;
+        assert!(pending(&editing, (None, None), running));
+        assert!(pending(&editing, (Some(4), Some(4)), running));
+        assert!(pending(&editing, (Some(4), None), running));
+        assert!(pending(&editing, (None, Some(4)), running));
+        assert!(
+            !pending(&editing, (Some(5), Some(4)), running),
+            "the timeline's model there first"
+        );
+        assert!(
+            !pending(&editing, (Some(4), Some(5)), running),
+            "the published model there first"
+        );
+        assert!(!pending(&editing, (Some(5), None), running));
+        assert!(!pending(&editing, (None, Some(5)), running));
+        assert!(!pending(&editing, (Some(5), Some(5)), running));
+        assert!(!pending(
+            &editing,
+            (Some(4), Some(4)),
+            RebuildState::Stopped
+        ));
+        let making = Dialog::new(Kind::Pad, Some(fid("s0000001")), 2);
+        assert!(!pending(&making, (Some(4), Some(4)), running));
     }
 
     #[test]

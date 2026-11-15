@@ -31,9 +31,12 @@ use silico_core::{Error, ErrorCode};
 use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
 use ui::{
-    AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, TRIAD_DOT, advance, button_event, hand_clock,
-    looks_from, meshes_settled, meshes_settled_in, repaint_delay, step, step_until, tessellated,
-    the_viewport, triad_origin, view, view_label, view_mut,
+    ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, In, PLATE, PLATE_END, TRIAD_DOT,
+    advance, arrow_dots, arrow_shafts, button_event, dialog_open, drag, edit_plates_pad, field,
+    from_the_front, hand_clock, image_centre, left_down_at, left_up_at, looks_from, meshes_settled,
+    meshes_settled_in, move_to, near_point, pad_extent, pads_extent, plates_pad_from_the_front,
+    repaint_delay, reversed_ticked, settled, step, step_until, tessellated, the_viewport,
+    triad_origin, up, view, view_label, view_mut,
 };
 
 const EXAMPLE: &str = r#"{
@@ -2363,5 +2366,211 @@ fn a_camera_that_makes_no_frame_draws_no_triad_and_the_label_says_the_projection
         assert_eq!(view_label(&h), "Orthographic · Front");
         assert!(view(&h).camera().frame().is_ok());
     }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- A dialog's arrows in the canvas: hostile drags and views ----
+//
+// The plate's pad's dialog open, the view from the front onto its end at 4 points a
+// millimetre (ui's `from_the_front`): the end at the image's centre C, the distance arrow's
+// tip 56 above it, each 4 points along it a millimetre (the app's tests work these by hand).
+
+/// The plate open in a window 1280 by 800, its pad's dialog open, and the view from the front
+/// onto its end at 4 points a millimetre: the image's centre.
+fn plates_pad(f: &Fixture) -> (AppHarness, egui::Pos2) {
+    let (mut h, _) = f.drawn("plate.silico", PLATE, (1280.0, 800.0));
+    let centre = plates_pad_from_the_front(&mut h);
+    (h, centre)
+}
+
+/// The pad's extent as the session holds it is one side of `length`, not reversed.
+#[track_caller]
+fn pad_is(f: &Fixture, h: &AppHarness, length: &str) {
+    assert_eq!(pads_extent(&f.sessions, h), pad_extent(length, false));
+}
+
+fn length_field(h: &AppHarness) -> Option<String> {
+    field(h, In::Dialog, "Length").value()
+}
+
+#[test]
+fn a_drag_past_the_profile_stops_at_half_a_millimetre() {
+    // 200 points down, 50 mm: 10 − 50 is under the profile, so 0.5, never reversed.
+    let f = fixture();
+    let (mut h, c) = plates_pad(&f);
+    let tip = up(c, 56.0);
+    drag(&mut h, PointerButton::Primary, tip, up(tip, -200.0), 5);
+    assert_eq!(length_field(&h).as_deref(), Some("0.5"));
+    settled(&mut h);
+    pad_is(&f, &h, "0.5");
+    assert!(!reversed_ticked(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_huge_drag_past_what_a_sweep_takes_is_refused_as_a_typed_value_and_back_within_it_taken() {
+    // 1e7 points up: 2.5e6 mm, 2,500,010 mm long, past the kilometre a sweep takes. The field
+    // takes it, as a typed value; the core refuses the edit, so the document keeps 10 and OK
+    // goes off; the drag goes on, back to 40 points up, 20 mm, which the core takes.
+    let f = fixture();
+    let (mut h, c) = plates_pad(&f);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 1e7));
+    assert_eq!(length_field(&h).as_deref(), Some("2500010"));
+    settled(&mut h);
+    pad_is(&f, &h, "10");
+    step_until(&mut h, "OK off", |h| !ui::ok_enabled(h));
+    // The stream still the arrow's, its way and scale its press's.
+    move_to(&mut h, up(tip, 40.0));
+    assert_eq!(length_field(&h).as_deref(), Some("20"));
+    left_up_at(&mut h, up(tip, 40.0));
+    settled(&mut h);
+    pad_is(&f, &h, "20");
+    step_until(&mut h, "OK on", ui::ok_enabled);
+    assert!(ui::selected_names(&h).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_kernel_refusing_the_pad_mid_drag_leaves_the_arrow_dragging_and_its_values_sent() {
+    let f = fixture();
+    let (mut h, c) = plates_pad(&f);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 8.0));
+    settled(&mut h);
+    pad_is(&f, &h, "12");
+    // From here the kernel refuses every prism: each new length's rebuild fails.
+    let refusing = Arc::new(AtomicBool::new(true));
+    let on = Arc::clone(&refusing);
+    f.kernel.refuse(move |op| {
+        (on.load(Ordering::SeqCst) && matches!(op, Op::Prism { .. }))
+            .then(|| Error::new(ErrorCode::KernelFailed, "the pad came apart"))
+    });
+    move_to(&mut h, up(tip, 16.0));
+    assert_eq!(length_field(&h).as_deref(), Some("14"));
+    settled(&mut h);
+    pad_is(&f, &h, "14");
+    step_until(&mut h, "the pad's rebuild failed", |h| {
+        h.state().tabs()[0].errors() > 0
+    });
+    // Still dragging, still drawn where its field says: 6 mm above the end, 24 points.
+    move_to(&mut h, up(tip, 24.0));
+    assert_eq!(length_field(&h).as_deref(), Some("16"));
+    let dots = arrow_dots(&h);
+    assert_eq!(dots.len(), 1);
+    assert!(near_point(dots[0].0, up(c, 24.0)), "{dots:?}");
+    assert_eq!(dots[0].1, ARROW_WHITE);
+    refusing.store(false, Ordering::SeqCst);
+    move_to(&mut h, up(tip, 28.0));
+    left_up_at(&mut h, up(tip, 28.0));
+    settled(&mut h);
+    pad_is(&f, &h, "17");
+    step_until(&mut h, "the pad built again", |h| {
+        h.state().tabs()[0].errors() == 0
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ok_mid_drag_keeps_the_value_so_far_and_the_rest_of_the_stream_does_nothing() {
+    let f = fixture();
+    let (mut h, c) = plates_pad(&f);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 20.0));
+    assert_eq!(length_field(&h).as_deref(), Some("15"));
+    // Enter, the button still held: OK.
+    h.key_press(egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    // The rest of the stream: neither the dialog's (gone) nor the selection's (no box, no
+    // pick), and nothing drawn of the arrows.
+    move_to(&mut h, up(tip, 60.0));
+    move_to(&mut h, egui::pos2(c.x + 200.0, c.y + 100.0));
+    assert!(arrow_dots(&h).is_empty());
+    left_up_at(&mut h, egui::pos2(c.x + 200.0, c.y + 100.0));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    pad_is(&f, &h, "15");
+    assert!(ui::selected_names(&h).is_empty());
+    // No box selection said (its toast, "Window selection: …").
+    assert!(
+        !ui::everything(&h)
+            .iter()
+            .any(|said| said.contains("selection:")),
+        "{:?}",
+        ui::everything(&h)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn seen_end_on_no_arrow_is_drawn_and_a_drag_where_it_would_be_changes_nothing() {
+    // From the top, straight down the pad's sweep: the arrow is a point, `flat`.
+    let f = fixture();
+    let (mut h, _) = plates_pad(&f);
+    let at = ui::frame(&h).unwrap().clone();
+    view_mut(&mut h).set_camera(Camera {
+        projection: Projection::Orthographic {
+            view_height: f64::from(at.size_px[1]) / 4.0,
+        },
+        eye: [20.0, 10.0, 510.0],
+        target: PLATE_END,
+        up: [0.0, 1.0, 0.0],
+    });
+    step(&mut h);
+    step(&mut h);
+    assert!(arrow_dots(&h).is_empty());
+    assert!(arrow_shafts(&h).is_empty());
+    let c = image_centre(&h);
+    move_to(&mut h, c);
+    assert_ne!(ui::cursor(&h), egui::CursorIcon::Grab);
+    drag(&mut h, PointerButton::Primary, c, up(c, 40.0), 4);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(length_field(&h).as_deref(), Some("10"));
+    settled(&mut h);
+    pad_is(&f, &h, "10");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A pad of a sketch whose lines don't close: no profile, so no centroid and no arrow.
+const OPEN_PROFILE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Plate", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}
+  ]
+}
+"#;
+
+#[test]
+fn a_sketch_that_makes_no_profile_shows_no_arrow_and_its_dialog_still_works() {
+    let f = fixture();
+    let (mut h, _) = f.drawn("open.silico", OPEN_PROFILE, (1280.0, 800.0));
+    edit_plates_pad(&mut h);
+    settled(&mut h);
+    let read = &h.state().tabs()[0]
+        .sketch_reads
+        .held(&ui::plate_sketch())
+        .unwrap()
+        .read;
+    assert!(read.regions.is_empty() && read.profile_problems_total > 0);
+    from_the_front(&mut h, PLATE_END, 4.0);
+    assert!(arrow_dots(&h).is_empty());
+    assert!(arrow_shafts(&h).is_empty());
+    let c = image_centre(&h);
+    drag(&mut h, PointerButton::Primary, up(c, 56.0), up(c, 96.0), 4);
+    assert_eq!(length_field(&h).as_deref(), Some("10"));
+    // Typed, as ever.
+    ui::type_over(&mut h, In::Dialog, "Length", "12");
+    settled(&mut h);
+    pad_is(&f, &h, "12");
     assert_eq!(never_waits::waits(), 0);
 }

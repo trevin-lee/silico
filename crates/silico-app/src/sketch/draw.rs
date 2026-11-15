@@ -18,6 +18,7 @@ use eframe::egui::{self, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Sha
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind, Form, Reference};
 use silico_core::kernel::SketchPlane;
+use silico_core::profile;
 use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
 use silico_core::sketch_tools::{DimensionPreview, MeasureKind, Preview, Relation};
 
@@ -387,6 +388,46 @@ impl<'a> Geometry<'a> {
             }),
             Reference::Element(id) => self.curves.get(id).map(|(curve, _)| *curve),
             Reference::Origin => None,
+        }
+    }
+
+    /// The curve `id` as the core's profile takes it ([`silico_core::profile::Drawn`]), from
+    /// the read's stored points, each zero +0 (`unsigned`): a line by its ends; an arc by its
+    /// centre and ends; a circle by its centre and radius. None for a curve the read hasn't.
+    pub(crate) fn profile_curve(&self, id: &ElementId) -> Option<profile::Drawn> {
+        use profile::unsigned;
+        let &(curve, kind) = self.curves.get(id)?;
+        let ends = || {
+            let (from, to) = self.ends.get(id)?;
+            Some((
+                unsigned(*self.points.get(*from)?),
+                unsigned(*self.points.get(*to)?),
+            ))
+        };
+        match (kind, curve) {
+            (ElementKind::Line, Curve::Line { .. }) => {
+                let (from, to) = ends()?;
+                Some(profile::Drawn::Line { from, to })
+            }
+            (ElementKind::Arc, Curve::Round { centre, .. }) => {
+                let (start, end) = ends()?;
+                Some(profile::Drawn::Arc {
+                    center: unsigned(centre),
+                    start,
+                    end,
+                })
+            }
+            (ElementKind::Circle, Curve::Round { centre, radius, .. }) => {
+                Some(profile::Drawn::Circle {
+                    center: unsigned(centre),
+                    radius,
+                })
+            }
+            // Each kind is put in with its own curve ([`Geometry::of`]): a line's a line, an
+            // arc's and a circle's a round; and no point or constraint is a curve.
+            (ElementKind::Line, Curve::Round { .. })
+            | (ElementKind::Arc | ElementKind::Circle, Curve::Line { .. })
+            | (ElementKind::Point | ElementKind::Constraint, _) => None,
         }
     }
 
@@ -1379,52 +1420,69 @@ pub(crate) fn polyline(curve: Curve, scale: Scale, tolerance: f32) -> Vec<[f64; 
 
 /// The polygon a loop of `curves` walks, in order, in the sketch's millimetres, its arcs and
 /// circles at `scale`'s and `tolerance`'s segments ([`curve_segments`]), its vertices on them
-/// as its outline's: each curve run from the end the last one ended at (the first, toward
-/// the one after it). None for a curve the read hasn't, or a loop whose curves don't meet
-/// end to end.
+/// as its outline's: each curve run as [`oriented`] runs it. None for a curve the read
+/// hasn't, or a loop whose curves don't meet end to end.
 fn walk(
     curves: &[ElementId],
     geometry: &Geometry,
     scale: Scale,
     tolerance: f32,
 ) -> Option<Vec<[f64; 2]>> {
-    let curve_points = |id: &ElementId| -> Option<Vec<[f64; 2]>> {
-        Some(polyline(geometry.curves.get(id)?.0, scale, tolerance))
+    let mut polygon = Vec::new();
+    // A lone curve, a circle's whole turn, too: its ring closed by its last point let go.
+    for walked in oriented(curves, geometry)? {
+        let mut piece = polyline(walked.curve, scale, tolerance);
+        if walked.backwards {
+            piece.reverse();
+        }
+        piece.pop();
+        polygon.extend(piece);
+    }
+    Some(polygon)
+}
+
+/// A curve as a loop's walk runs it: as drawn, or `backwards`, from its end to its start.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Walked {
+    pub(crate) curve: Curve,
+    pub(crate) backwards: bool,
+}
+
+/// The curves a loop of `curves` walks, in `curves`' order, each as the walk runs it ([`Walked`]):
+/// each from the end the last one ended at (the first, toward the one after it); a lone
+/// curve, a circle's whole turn, as drawn. None for a curve the read hasn't, or a loop whose
+/// curves don't meet end to end.
+pub(crate) fn oriented(curves: &[ElementId], geometry: &Geometry) -> Option<Vec<Walked>> {
+    let walked = |id: &ElementId, backwards: bool| {
+        let &(curve, _) = geometry.curves.get(id)?;
+        Some(Walked { curve, backwards })
     };
     let [first, rest @ ..] = curves else {
         return None;
     };
-    // A lone curve: a circle's whole turn, its ring closed.
     if rest.is_empty() {
-        let mut ring = curve_points(first)?;
-        ring.pop();
-        return Some(ring);
+        return Some(vec![walked(first, false)?]);
     }
     let ends = |id: &ElementId| geometry.ends.get(id).copied();
     let (start, end) = ends(first)?;
     let (next_start, next_end) = ends(&rest[0])?;
     let forward = end == next_start || end == next_end;
     let mut at = if forward { end } else { start };
-    let mut polygon = curve_points(first)?;
-    if !forward {
-        polygon.reverse();
-    }
-    polygon.pop();
+    let mut walk = vec![walked(first, !forward)?];
     for id in rest {
         let (start, end) = ends(id)?;
-        let mut piece = curve_points(id)?;
-        if start == at {
+        let backwards = if start == at {
             at = end;
+            false
         } else if end == at {
             at = start;
-            piece.reverse();
+            true
         } else {
             return None;
-        }
-        piece.pop();
-        polygon.extend(piece);
+        };
+        walk.push(walked(id, backwards)?);
     }
-    Some(polygon)
+    Some(walk)
 }
 
 /// What's drawn of a tool's preview (the core's `sketch_tools::Preview`), seen through
@@ -2335,6 +2393,24 @@ pub(crate) fn foot(p: [f64; 2], from: [f64; 2], to: [f64; 2]) -> [f64; 2] {
         return from;
     }
     add(from, mul(d, dot(sub(p, from), d) / dd))
+}
+
+/// How far `at` is from the segment from `a` to `b`: from its nearest point on it, an end
+/// past either end (from `a` for a segment of no length).
+pub(crate) fn segment_distance(at: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let d = sub(b, a);
+    let dd = dot(d, d);
+    if dd <= 0.0 {
+        return length(sub(at, a));
+    }
+    let t = dot(sub(at, a), d) / dd;
+    if t <= 0.0 {
+        length(sub(at, a))
+    } else if t >= 1.0 {
+        length(sub(at, b))
+    } else {
+        length(sub(at, foot(at, a, b)))
+    }
 }
 
 /// Where the line through `a` along `da` meets the one through `b` along `db`: none if

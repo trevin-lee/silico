@@ -11,7 +11,7 @@ use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind, Reference};
 use silico_core::sketch_tools::{self, Axes};
 
-use super::draw::{Geometry, Scale, dot, foot, length, placed, sub};
+use super::draw::{Geometry, Scale, placed, segment_distance};
 use super::style::{CANVAS_TEXT_SIZE, SKETCH_DIMENSION_LABEL_PADDING, SKETCH_GLYPH_SIZE};
 
 /// A dimension's value's box's height, as it's drawn.
@@ -185,21 +185,4 @@ fn box_distance(at: [f64; 2], centre: [f64; 2], half: [f64; 2]) -> f64 {
     let dx = ((at[0] - centre[0]).abs() - half[0]).max(0.0);
     let dy = ((at[1] - centre[1]).abs() - half[1]).max(0.0);
     libm::hypot(dx, dy)
-}
-
-/// How far `at` is from the segment from `a` to `b`.
-pub(crate) fn segment_distance(at: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
-    let d = sub(b, a);
-    let dd = dot(d, d);
-    if dd <= 0.0 {
-        return length(sub(at, a));
-    }
-    let t = dot(sub(at, a), d) / dd;
-    if t <= 0.0 {
-        length(sub(at, a))
-    } else if t >= 1.0 {
-        length(sub(at, b))
-    } else {
-        length(sub(at, foot(at, a, b)))
-    }
 }
