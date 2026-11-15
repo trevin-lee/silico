@@ -24,6 +24,9 @@ struct Dim {
     made: Vec<Members>,
     messages: Vec<Message>,
     left: bool,
+    /// Which axes the pointer may take: both, as in a view square to the plane, unless a
+    /// test says otherwise.
+    axes: Axes,
 }
 
 impl Dim {
@@ -42,6 +45,7 @@ impl Dim {
             made: Vec::new(),
             messages: Vec::new(),
             left: false,
+            axes: Axes::BOTH,
         }
     }
 
@@ -55,6 +59,7 @@ impl Dim {
             automatic_relations: true,
             construction: false,
             states: &self.states,
+            axes: self.axes,
         };
         let outcome = self.tool.handle(&context, &mut self.ids, event);
         if let Some(members) = &outcome.add {
@@ -1838,6 +1843,7 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Lowest;
@@ -1868,6 +1874,7 @@ fn another_sketch_starts_the_tool_afresh() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     d.tool
         .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
@@ -1926,6 +1933,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter::after(0);
@@ -2919,6 +2927,7 @@ fn another_sketch_forgets_the_placement() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     d.tool
         .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
@@ -3012,6 +3021,7 @@ fn settle_takes_a_read_with_no_event() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let out = d.tool.settle(&context);
     assert_eq!(out, Outcome::default());
@@ -3027,6 +3037,7 @@ fn settle_takes_a_read_with_no_event() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let out = d.tool.settle(&context);
     assert_eq!(out.message, Some(Message::DimensionChanged));
@@ -3257,6 +3268,7 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter::after(0);
@@ -3362,6 +3374,7 @@ fn a_placement_not_yet_answered_holds_the_next() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter::after(0);
@@ -3460,6 +3473,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             automatic_relations: true,
             construction: false,
             states: &under(),
+            axes: Axes::BOTH,
         };
         let mut tool = SmartDimension::new();
         let mut ids = Counter::after(0);
@@ -3482,6 +3496,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             automatic_relations: true,
             construction: false,
             states: &states,
+            axes: Axes::BOTH,
         };
         tool.settle(&context);
         let placement = tool.placement().unwrap();
@@ -3691,6 +3706,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {

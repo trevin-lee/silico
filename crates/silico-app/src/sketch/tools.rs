@@ -22,8 +22,8 @@ use silico_core::document::sketch_edit::Members;
 use silico_core::document::{Coordinate, ElementId, ElementKind, FeatureId};
 use silico_core::extend::End;
 use silico_core::sketch_tools::{
-    AddToken, Context, DimensionEvent, DimensionPreview, Event, Modifiers, NewIds, Offer, Outcome,
-    Preview, SketchTool, SmartDimension, SystemIds, ToolKind,
+    AddToken, Axes, Context, DimensionEvent, DimensionPreview, Event, Modifiers, NewIds, Offer,
+    Outcome, Preview, SketchTool, SmartDimension, SystemIds, ToolKind,
 };
 
 use super::draw::{
@@ -75,14 +75,16 @@ pub enum Request {
 }
 
 /// What a tool works against for one event: the newest read, of the sketch `sketch`, of the
-/// model at `revision`; the pick tolerance there, in millimetres; and the palette's
-/// settings it takes.
+/// model at `revision`; the pick tolerance there, in millimetres, and which axes the pointer
+/// may take there (the core's [`Axes`], as sketch mode's selection works them out for the
+/// same pointer); and the palette's settings it takes.
 #[derive(Clone, Copy)]
 pub struct Input<'a> {
     pub read: &'a SketchRead,
     pub sketch: &'a FeatureId,
     pub revision: Revision,
     pub tolerance: f64,
+    pub axes: Axes,
     pub automatic_relations: bool,
     pub construction: bool,
     pub trim: TrimMode,
@@ -99,6 +101,7 @@ impl Input<'_> {
             automatic_relations: self.automatic_relations,
             construction: self.construction,
             states: &self.read.states,
+            axes: self.axes,
         }
     }
 

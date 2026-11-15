@@ -220,6 +220,7 @@ fn a_refused_add_mid_chain_is_forgotten_with_the_chain() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut tool = SketchTool::new(ToolKind::Line);
     let mut ids = Counter::after(0);
@@ -291,6 +292,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
             automatic_relations: true,
             construction: false,
             states: no_states(),
+            axes: Axes::BOTH,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -307,6 +309,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut ids = Counter::after(0);
     line.handle(&context(&sid), &mut ids, Event::Press([1.0, 2.0]), keys);
@@ -375,6 +378,7 @@ fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings()
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let mut ids = Counter::after(0);
@@ -1550,6 +1554,7 @@ fn an_id_source_that_gives_a_taken_id_is_caught() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let keys = Modifiers::default();
@@ -1969,6 +1974,7 @@ fn each_add_is_answered_by_its_token_whatever_the_order() {
             automatic_relations: true,
             construction: false,
             states: no_states(),
+            axes: Axes::BOTH,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -2200,6 +2206,7 @@ fn another_tools_token_answers_nothing() {
             automatic_relations: true,
             construction: false,
             states: no_states(),
+            axes: Axes::BOTH,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -2680,6 +2687,7 @@ fn what_a_tool_added_keeps_its_ids_taken_before_a_read_shows_them() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let keys = Modifiers::default();
     for (kind, clicks) in [
