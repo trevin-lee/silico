@@ -1328,10 +1328,11 @@ impl Selection {
         let mut found: BTreeSet<(FeatureId, ElementRef)> = BTreeSet::new();
         let mut items = Vec::with_capacity(self.items.len());
         let mut place = 0usize;
-        for item in std::mem::take(&mut self.items) {
+        // Read in place, so what's made is compared with what was there, below.
+        for item in &self.items {
             let picked = match item {
                 Item::Feature(id) => {
-                    items.push(Item::Feature(id));
+                    items.push(Item::Feature(id.clone()));
                     continue;
                 }
                 Item::Element(picked) => picked,
@@ -1357,20 +1358,22 @@ impl Selection {
                 count();
                 self.again = true;
                 items.push(Item::Element(Picked {
-                    name: picked.name,
+                    name: picked.name.clone(),
                     state: State::Waiting { why: None, last },
-                    ..picked
+                    carry: picked.carry,
+                    found_in: picked.found_in,
                 }));
             } else if let Some(gone) = gone.remove(&at) {
                 count();
                 if gone.failed.is_some() {
                     items.push(Item::Element(Picked {
-                        name: picked.name,
+                        name: picked.name.clone(),
                         state: State::Waiting {
                             why: Some(words(&gone.why)),
                             last,
                         },
-                        ..picked
+                        carry: picked.carry,
+                        found_in: picked.found_in,
                     }));
                 } else {
                     dropped.push((kind, gone));
@@ -2292,6 +2295,136 @@ pub(crate) mod tests {
         );
         assert!(!selection.again);
         assert_eq!(selection.said(), None);
+    }
+
+    #[test]
+    fn a_read_that_changes_nothing_keeps_the_version_and_one_that_drops_every_element_moves_it() {
+        // Issue #489. The version moves once for each change of the items, and only then:
+        // each count below is by hand, from the version the items were set at.
+        let mut selection = Selection::default();
+        let names = ["k7f2qx3m.box.Face1", "k7f2qx3m.box.Face2"];
+        selection.set(vec![picked(names[0]), picked(names[1])]);
+        let start = selection.version;
+        let both = || {
+            resolved(
+                vec![found("k7f2qx3m", face(1), 0), found("k7f2qx3m", face(2), 1)],
+                vec![],
+                &[],
+            )
+        };
+        // Both found: a change (waiting, now found).
+        took(&mut selection, both());
+        assert_eq!(selection.version, start + 1);
+        // Read again, the same answer: the items as they were, the version too.
+        let items = selection.items().to_vec();
+        for _ in 0..3 {
+            took(&mut selection, both());
+        }
+        assert_eq!(selection.items(), items.as_slice());
+        assert_eq!(selection.version, start + 1);
+        // Face2 pending: a change (found, now waiting), then the same each frame it's asked.
+        let waiting = || {
+            resolved(
+                vec![found("k7f2qx3m", face(1), 0)],
+                vec![],
+                &[(1, names[1])],
+            )
+        };
+        took(&mut selection, waiting());
+        assert_eq!(selection.version, start + 2);
+        for _ in 0..3 {
+            took(&mut selection, waiting());
+            assert!(selection.again);
+        }
+        assert_eq!(selection.version, start + 2);
+        // Both gone: nothing selected, and one change.
+        took(
+            &mut selection,
+            resolved(
+                vec![],
+                vec![gone(names[0], 0, None), gone(names[1], 1, None)],
+                &[],
+            ),
+        );
+        assert!(selection.is_empty());
+        assert_eq!(selection.version, start + 3);
+    }
+
+    #[test]
+    fn a_name_waiting_on_the_published_model_is_asked_each_frame_and_the_version_stays_put() {
+        // Issue #489. The box's model published before its names are (as the core publishes
+        // a model, its names named in the background), the box and two of its edges
+        // selected, the edges waiting: each frame asks them again of the same model, and
+        // while the answer is the same nothing changes, the version neither. Once the
+        // model's names are named, the edges are found: one change.
+        let model = box_model();
+        let revision = Revision::from_number(1).unwrap();
+        let unnamed = Arc::new(model.unnamed());
+        let mut selection = Selection::default();
+        selection.published(Some((Arc::clone(&unnamed), revision)), 1);
+        selection.select_feature(fid("aaaaaaaa"));
+        selection.pick_all(&edges(&[1, 2]), How::Add);
+        assert_eq!(
+            states(&selection),
+            [
+                ("aaaaaaaa.box.Edge1".to_owned(), "pending"),
+                ("aaaaaaaa.box.Edge2".to_owned(), "pending")
+            ]
+        );
+        let version = selection.version;
+        let items = selection.items().to_vec();
+        for frame in 0..5 {
+            selection.published(Some((Arc::clone(&unnamed), revision)), 1);
+            assert!(selection.again, "frame {frame}: not asked again");
+            assert_eq!(selection.version, version, "frame {frame}");
+        }
+        assert_eq!(selection.items(), items.as_slice());
+        // The same model, its names named.
+        selection.published(Some((Arc::clone(&model), revision)), 1);
+        assert_eq!(
+            states(&selection),
+            [
+                ("aaaaaaaa.box.Edge1".to_owned(), "found"),
+                ("aaaaaaaa.box.Edge2".to_owned(), "found")
+            ]
+        );
+        assert_eq!(selection.version, version + 1);
+        selection.published(Some((model, revision)), 1);
+        assert_eq!(selection.version, version + 1);
+    }
+
+    #[test]
+    fn a_rebuild_that_drops_every_element_moves_the_version_and_its_highlight_goes() {
+        // Issue #489. `rrrrrrrr.fuse.Face1`, picked on the fuses of a tool 1 mm long and a
+        // 2 mm cube, names the second fuse's Face1 (the first fuse's Face1, by its number,
+        // kept whole by a plain fuse), lit on its body. Carried to the fuses of a tool 3 mm
+        // long and a 4 mm cube, its text names another face, so it's gone (as
+        // `while_a_box_takes_the_canvas_what_a_rebuild_leaves_gone_is_dropped_unsaid` has it):
+        // nothing selected, one change, and the highlights, worked out again by it on the
+        // bodies table they were lit on, light nothing.
+        let revision = |n| Revision::from_number(n).unwrap();
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), revision(1))), 1);
+        selection.pick("rrrrrrrr.fuse.Face1", How::Replace);
+        let mut view = View::holding(BTreeMap::from([(
+            1,
+            view_body("ssssssss", &[named("ssssssss", face(1))]),
+        )]));
+        let none = Picking {
+            frame: 1,
+            rect: square([50.0, 50.0], [100, 100], 3),
+            hit: None,
+            edge: None,
+        };
+        view.answered_as((1, revision(1)), none);
+        selection.light(&mut view);
+        assert_eq!(view.highlights, BTreeSet::from([(1, Element::Face(1))]));
+        let version = selection.version();
+        selection.published(Some((fused(3, 4), revision(2))), 2);
+        assert!(selection.is_empty());
+        selection.light(&mut view);
+        assert_eq!(view.highlights, BTreeSet::new(), "the gone face still lit");
+        assert_eq!(selection.version(), version + 1);
     }
 
     #[test]
