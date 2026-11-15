@@ -1693,10 +1693,6 @@ impl Tab {
             // The dialog's field, maybe drawn already this frame, shows it in the next.
             painter.ctx().request_repaint();
         }
-        if holding && !self.grip.holding() && !closing {
-            // A drag's end sends the value it held back at once (`arrow_held_back`).
-            self.dialog_changed(sessions);
-        }
         left
     }
 
@@ -1706,8 +1702,9 @@ impl Tab {
     /// drag keeps one preview rebuilding with the newest value waiting, as the sketch's drag
     /// keeps one solve in flight, rather than starting and stopping a rebuild each frame
     /// (docs/design/m4.1-command-api.md, *Rebuilds and the models*). None once the drag
-    /// ends, which sends its value at once, or while it isn't held; typed values are never
-    /// held back.
+    /// ends, so the release's own frame sends its value: the property panel, drawn after the
+    /// canvas, asks [`dialog_changed`](Self::dialog_changed) each frame (`panes::layout`).
+    /// None too while it isn't held; typed values are never held back.
     ///
     /// [`preview_pending`]: Self::preview_pending
     fn arrow_held_back(&self) -> Option<&'static str> {

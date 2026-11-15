@@ -731,6 +731,3 @@ crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | arrows | replace > with >= | #480
 crates/silico-app/src/arrow.rs | Grip::centroid | replace match guard Arc::ptr_eq(kept, read) with false | #480
-crates/silico-app/src/tab.rs | Tab::arrows_frame | replace && with || | #480
-crates/silico-app/src/tab.rs | Tab::arrows_frame | replace && with || | #480
-crates/silico-app/src/tab.rs | Tab::arrows_frame | delete ! | #480
