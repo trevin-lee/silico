@@ -2777,6 +2777,105 @@ fn tinted_image(
 }
 
 #[test]
+fn a_frames_values_are_checked_without_a_gpu_each_one_refused_named() {
+    // `Frame::check`, the rules `prepare` refuses a frame by, on no GPU: body 1 held, the
+    // bench's box (6 faces, 12 edges, 8 vertices), body 2 not. Each refusal's parameter and
+    // message by hand.
+    let mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+    let held = |body: u32| (body == 1).then_some(&mesh);
+    let camera = front();
+    let good = Frame {
+        tinted: &[(1, Element::Face(3))],
+        tint: FEATURE_TINT,
+        ..frame(&camera, &[1], &[(1, Element::Edge(3))], Some(ON_THE_FACE))
+    };
+    assert_eq!(good.check(held), Ok(()));
+    let refused = |frame: Frame<'_>| {
+        let invalid = frame.check(held).unwrap_err();
+        (invalid.parameter, invalid.message)
+    };
+    let said = |parameter: &'static str, message: &str| (parameter, message.to_owned());
+    assert_eq!(
+        refused(Frame {
+            pixels_per_point: 0.0,
+            ..good
+        }),
+        said(
+            "pixels_per_point",
+            "pixels_per_point 0.0 must be above 0 and at most 32"
+        )
+    );
+    assert_eq!(
+        refused(Frame {
+            bodies: &[1, 1],
+            ..good
+        }),
+        said(
+            "bodies",
+            "bodies[1], 1, must be above the one before it (1): ascending, each once, from 1"
+        )
+    );
+    assert_eq!(
+        refused(Frame {
+            bodies: &[1, 2],
+            ..good
+        }),
+        said("bodies", "bodies[1], 2, isn't uploaded")
+    );
+    assert_eq!(
+        refused(Frame {
+            tint: Tint {
+                colour: [255; 3],
+                amount: 1.5
+            },
+            ..good
+        }),
+        said("tint", "tint's amount 1.5 must be finite, from 0 to 1")
+    );
+    assert_eq!(
+        refused(Frame {
+            highlights: &[(1, Element::Face(7))],
+            ..good
+        }),
+        said(
+            "highlights",
+            "highlights[0], Face(7) of body 1, isn't one of its 6 faces (numbered from 1)"
+        )
+    );
+    assert_eq!(
+        refused(Frame {
+            tinted: &[(1, Element::Face(3)), (1, Element::Edge(3))],
+            ..good
+        }),
+        said(
+            "tinted",
+            "tinted[1], Edge(3) of body 1, isn't a face: only faces are tinted"
+        )
+    );
+    assert_eq!(
+        refused(Frame {
+            vertices: Some(0.0),
+            ..good
+        }),
+        said(
+            "vertices",
+            "vertices 0.0, a radius in points, must be finite and above 0"
+        )
+    );
+    assert_eq!(
+        refused(Frame {
+            picking: Some(rect([0, 0], [0, 1])),
+            ..good
+        }),
+        said(
+            "picking",
+            "picking PixelRect { min: [0, 0], size: [0, 1] } must be from 1 to 256 pixels on each \
+             side, its corner within 16777216 of the frame's"
+        )
+    );
+}
+
+#[test]
 fn a_tinted_face_is_the_bodys_colour_mixed_with_the_tint_and_nothing_else_changes() {
     // From the front, the box's front face (Face3, y = 0) faces the eye: its normal (0, 0, 1)
     // in the camera's frame, lit 0.2 + 3/√14 = 1.0018, clamped at 1, so it shows its colour
