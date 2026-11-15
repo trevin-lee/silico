@@ -915,6 +915,220 @@ fn settled_bytes_put_back_after_a_link_to_another_sessions_copy_of_the_held_text
     w.settled_put_back_is_reloaded();
 }
 
+impl Watched {
+    /// The session's path made a link to `to`, in place of what was there.
+    fn link_to(&self, to: &Path) {
+        std::fs::remove_file(&self.f.path).unwrap();
+        std::os::unix::fs::symlink(to, &self.f.path).unwrap();
+    }
+
+    /// Whether the session's own reload is queued now (set by the comparison that told, as
+    /// it's told, so read at once after one).
+    fn queued(&self) -> bool {
+        lock(&self.f.session().reloads).queued
+    }
+}
+
+/// The other sessions [`refused_through_a_link`] opens: each one's ID and file.
+type Others = Vec<(SessionId, PathBuf)>;
+
+/// A [`Watched`] session on [`BOX`], and a session on each of `others`, files beside its own
+/// each holding [`SPHERE`], all opened first (so no claim changes after); then its path made
+/// a link to the first of them: found at two comparisons, settled, and its reload, let
+/// through its gate (shut, and left shut, so each reload after says it started at
+/// `reload_started` and waits for `through`), refused (that session holds the file), kept.
+fn refused_through_a_link(others: &[&str]) -> (Watched, Others, Receiver<()>, Sender<()>) {
+    let w = watching_box();
+    let others: Others = others
+        .iter()
+        .map(|name| {
+            let other = w.f.path.with_file_name(name);
+            std::fs::write(&other, SPHERE).unwrap();
+            let id = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+            (id, other)
+        })
+        .collect();
+    let (reload_started, through) = shut(&w.f.session().reloading);
+    w.link_to(&others[0].1);
+    w.compare_with_shared_reader();
+    w.compare_with_shared_reader();
+    assert!(w.queued(), "the link's bytes queued no reload");
+    reload_started.recv_timeout(WAIT).unwrap();
+    through.send(()).unwrap();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision::OPENED);
+    assert!(
+        lock(&w.f.session().reloads).refused.is_some(),
+        "the reload of the other session's file wasn't refused"
+    );
+    (w, others, reload_started, through)
+}
+
+#[test]
+fn settled_bytes_refused_through_a_link_are_reloaded_once_put_back_as_the_sessions_own_file() {
+    // #490: another session's file, the sphere, linked in at the path, settles, and its
+    // reload is refused (the other session holds it), the refusal kept. The same bytes put
+    // back as a regular file are the session's own: the file the refusal was of is no
+    // longer at the path, so they're reloaded, once, though the bytes and the claims are
+    // as they were refused.
+    let w = watching_box();
+    let other = w.f.path.with_file_name("b.silico");
+    std::fs::write(&other, SPHERE).unwrap();
+    let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+    w.link_to(&other);
+    w.compare_with_shared_reader();
+    w.compare_with_shared_reader();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision::OPENED);
+    assert!(
+        lock(&w.f.session().reloads).refused.is_some(),
+        "the reload of the other session's file wasn't refused"
+    );
+    w.settled_put_back_is_reloaded();
+    // Once: the file as the session holds it at the comparisons after, nothing more told.
+    let told = w.told_count();
+    for _ in 0..2 {
+        w.compare_with_shared_reader();
+        w.holds(Revision(2), told, Disk::Unchanged);
+    }
+}
+
+#[test]
+fn settled_bytes_refused_through_a_link_and_linked_again_queue_no_reload() {
+    // The refused file linked in again, by a new link: the same bytes, where the path leads,
+    // the file there, and the claims, all as refused, which the claim would refuse again.
+    // Each comparison tells the session, and none queues a reload: no loop of refusals.
+    let (w, others, reload_started, through) = refused_through_a_link(&["b.silico"]);
+    w.link_to(&others[0].1);
+    let told = w.told_count();
+    for _ in 0..4 {
+        w.compare_with_shared_reader();
+        assert!(!w.queued(), "the refused reload was queued again");
+    }
+    assert_eq!(w.told_count(), told + 4);
+    assert!(
+        reload_started.try_recv().is_err(),
+        "the refused reload ran again"
+    );
+    w.holds(Revision::OPENED, told + 4, Disk::Changed);
+    assert!(lock(&w.f.session().reloads).refused.is_some());
+    open_gate(&w.f.session().reloading);
+    drop(through);
+}
+
+#[test]
+fn settled_bytes_refused_through_a_link_then_found_in_a_third_sessions_file_are_refused_for_it() {
+    // Then the path linked to a third session's file with the same bytes, no claim changed
+    // since: another file, so it's tried, and refused for its own holder, once. That
+    // refusal is the third session's: the second session closed, the file is tried again (a
+    // claim changed) and still refused; the third closed, it's reloaded.
+    let (w, others, reload_started, through) = refused_through_a_link(&["b.silico", "c.silico"]);
+    let ((second, _), (third, third_file)) = (&others[0], &others[1]);
+    w.link_to(third_file);
+    w.compare_with_shared_reader();
+    assert!(
+        w.queued(),
+        "the third session's file, with the bytes refused before, was never tried"
+    );
+    reload_started.recv_timeout(WAIT).unwrap();
+    through.send(()).unwrap();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision::OPENED);
+    for _ in 0..2 {
+        w.compare_with_shared_reader();
+        assert!(!w.queued(), "the third session's file was tried again");
+    }
+    assert!(reload_started.try_recv().is_err());
+    // Its own holder's: the second session closed, it's still refused.
+    w.f.sessions.close(second).wait().result.unwrap();
+    w.compare_with_shared_reader();
+    assert!(
+        w.queued(),
+        "a claim let go, and the refusal wasn't tried again"
+    );
+    reload_started.recv_timeout(WAIT).unwrap();
+    through.send(()).unwrap();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision::OPENED);
+    w.f.sessions.close(third).wait().result.unwrap();
+    w.compare_with_shared_reader();
+    assert!(
+        w.queued(),
+        "the third session closed, and nothing was tried"
+    );
+    reload_started.recv_timeout(WAIT).unwrap();
+    open_gate(&w.f.session().reloading);
+    through.send(()).unwrap();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision(2));
+    assert_eq!(w.text_of(Revision(2)), SPHERE);
+}
+
+#[test]
+fn settled_bytes_refused_in_another_sessions_file_hard_linked_at_the_path_are_reloaded_put_back() {
+    // A claim decides by the file at the path as well as by where the path leads: another
+    // session's file hard linked at the path (no symbolic link: the path leads to itself) is
+    // refused as that session's file. The same bytes put back as a new file at the path are
+    // the session's own, another file reached the same way: reloaded, once.
+    let w = watching_box();
+    let other = w.f.path.with_file_name("b.silico");
+    std::fs::write(&other, SPHERE).unwrap();
+    let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+    std::fs::remove_file(&w.f.path).unwrap();
+    std::fs::hard_link(&other, &w.f.path).unwrap();
+    w.compare_with_shared_reader();
+    w.compare_with_shared_reader();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision::OPENED);
+    assert!(
+        lock(&w.f.session().reloads).refused.is_some(),
+        "the reload of the other session's file wasn't refused"
+    );
+    w.settled_put_back_is_reloaded();
+    let told = w.told_count();
+    for _ in 0..2 {
+        w.compare_with_shared_reader();
+        w.holds(Revision(2), told, Disk::Unchanged);
+    }
+}
+
+#[test]
+fn settled_bytes_refused_by_another_sessions_path_are_reloaded_by_a_name_no_session_holds() {
+    // A claim decides by where the path leads as well as by the file there. Another
+    // session's file replaced at its path by another program (a new file renamed over it,
+    // with the bytes that session holds, so it reads nothing: it holds the path, not the new
+    // file), linked in, is refused for that session's path. The same file linked in by
+    // another name, a hard link no session holds, is no session's: reloaded, though the
+    // bytes, the file, and the claims are as refused.
+    let w = watching_box();
+    let other = w.f.path.with_file_name("b.silico");
+    std::fs::write(&other, SPHERE).unwrap();
+    let _second = w.f.sessions.open(&other, false).wait().session.unwrap().id;
+    let renamed = w.f.path.with_file_name("b.new");
+    std::fs::write(&renamed, SPHERE).unwrap();
+    std::fs::rename(&renamed, &other).unwrap();
+    let alias = w.f.path.with_file_name("c.silico");
+    std::fs::hard_link(&other, &alias).unwrap();
+    w.link_to(&other);
+    w.compare_with_shared_reader();
+    w.compare_with_shared_reader();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision::OPENED);
+    assert!(
+        lock(&w.f.session().reloads).refused.is_some(),
+        "the reload through the other session's path wasn't refused"
+    );
+    w.link_to(&alias);
+    w.compare_with_shared_reader();
+    w.reload_ends();
+    assert_eq!(
+        w.f.at(),
+        Revision(2),
+        "the file by a name no session holds was never reloaded"
+    );
+    assert_eq!(w.text_of(Revision(2)), SPHERE);
+}
+
 #[test]
 fn a_settled_reload_inside_a_transaction_finding_another_sessions_file_claims_and_keeps_nothing() {
     // Queued behind a `begin`, the reload runs inside its transaction, and finds another

@@ -141,7 +141,8 @@ pub use revisions::DiffAnswer;
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
 use transaction::{
-    Claim, Held, Open, Reload, Rereads, SaveTo, SettledReload, transaction_open, untitled_cache,
+    Claim, FoundFile, Held, Open, Reload, Rereads, SaveTo, SettledReload, transaction_open,
+    untitled_cache,
 };
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
@@ -212,7 +213,7 @@ struct Session<C: Kernel + 'static> {
     /// ([`registry::watch_saved`]).
     disk: OnceLock<DiskWatch>,
     /// Its own reload of its file, found changed on disk (A3): whether one is queued, and
-    /// the bytes a reload last refused, so the same refusal isn't queued at each comparison.
+    /// what a reload last refused, so the same refusal isn't queued at each comparison.
     /// Taken before the disk watch's lock (whether a comparison is still current is asked
     /// under it), and under none of the others.
     reloads: Mutex<Reloads>,
@@ -246,13 +247,25 @@ struct Session<C: Kernel + 'static> {
 }
 
 /// A session's own reloads (A3): one queued, and what the last refused, if it was refused
-/// and none has been taken since: the digest of the bytes it was queued for, and the
-/// registry's count of claims then (`Book::claims`), since a file another session claimed
-/// may be taken once its claim changes.
+/// and none has been taken since.
 #[derive(Default)]
 struct Reloads {
     queued: bool,
-    refused: Option<([u8; 32], u64)>,
+    refused: Option<Refused>,
+}
+
+/// The session's own reload, refused (a file another session holds, say), kept so the same
+/// reload isn't queued at each comparison only to be refused again: the digest of the bytes
+/// it was queued for; what its claim was given of the file that held them, where the
+/// session's path led and the file there ([`FoundFile`]); and the registry's count of claims
+/// then (`Book::claims`). It stands while each of those does, since those are all a claim
+/// decides by: a file another session claimed may be taken once its claim changes, and the
+/// same bytes in another file put at the path (the session's own, in place of a link to
+/// another session's) may be taken at once (#490).
+struct Refused {
+    digest: [u8; 32],
+    found: FoundFile,
+    claims: u64,
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).
@@ -428,11 +441,12 @@ impl<C: Kernel + 'static> Session<C> {
     /// Whether a comparison that found the file changed and settled, to bytes of digest
     /// `found`, should queue the session's own reload (A3): not inside a transaction (only
     /// `commit` reads the file there), nor while its own save has left the file part written
-    /// (the next save says where its old text is), nor while one is queued, nor for the
-    /// bytes a reload refused last (a file another session holds, say), which would be
-    /// refused again; nor for a comparison made against `counter`, a count of the session's
-    /// reads and writes no longer its own (it read or wrote since: dropped, never reported).
-    /// If it should, it's marked queued.
+    /// (the next save says where its old text is), nor while one is queued, nor for what a
+    /// reload refused last ([`Refused`]: a file another session holds, say), the same bytes
+    /// in the same file at the same path, at the same `claims`, which would be refused
+    /// again; nor for a comparison made against `counter`, a count of the session's reads
+    /// and writes no longer its own (it read or wrote since: dropped, never reported). If
+    /// it should, it's marked queued.
     fn reload_wanted(&self, found: &[u8; 32], claims: u64, counter: u64) -> bool {
         {
             let held = self.held.read();
@@ -444,6 +458,9 @@ impl<C: Kernel + 'static> Session<C> {
                 return false;
             }
         }
+        // Where the path leads now and the file there, as a reload's claim would be given
+        // them: looked up with no lock held, since it opens the file.
+        let now = self.found_now();
         let mut reloads = lock(&self.reloads);
         // A comparison the session has read or written since (its own reload, taking these
         // bytes) is dropped, never reported (the design's section 4): checked under the
@@ -451,9 +468,11 @@ impl<C: Kernel + 'static> Session<C> {
         // a comparison found current here either finds `queued` still set or is current.
         if !self.disk.get().is_some_and(|disk| disk.current(counter))
             || reloads.queued
-            || reloads
-                .refused
-                .is_some_and(|refused| refused == (*found, claims))
+            || reloads.refused.as_ref().is_some_and(|refused| {
+                refused.digest == *found
+                    && refused.claims == claims
+                    && now.as_ref() == Some(&refused.found)
+            })
         {
             return false;
         }
@@ -465,9 +484,9 @@ impl<C: Kernel + 'static> Session<C> {
     /// ([`Session::reload_settled`]): reloaded at a new revision; the file found as the
     /// session holds it (a `begin` or another command ahead of it reloaded it first), the
     /// finding then `unchanged`; nothing, the finding as the last comparison left it; or
-    /// the settled bytes refused, `found` kept with `claims` so the same bytes aren't queued
-    /// again until a claim changes. Any other answer forgets a refusal. Whether the client
-    /// should be woken.
+    /// the settled bytes refused, kept ([`Refused`]: `found`, the file that held them, and
+    /// `claims`) so the same bytes in the same file aren't queued again until a claim
+    /// changes. Any other answer forgets a refusal. Whether the client should be woken.
     fn reloaded_itself(&self, reloaded: SettledReload, found: [u8; 32], claims: u64) -> bool {
         let (woken, refused) = match reloaded {
             SettledReload::Reloaded => (true, None),
@@ -483,13 +502,18 @@ impl<C: Kernel + 'static> Session<C> {
                 (true, None)
             }
             SettledReload::Nothing => (false, None),
-            SettledReload::Refused(problems) => {
+            SettledReload::Refused(problems, file) => {
                 tracing::warn!(
                     session = %self.id,
                     "the file changed on disk, and the session couldn't reload it: {:?}",
                     problems.errors()
                 );
-                (false, Some((found, claims)))
+                let refused = Refused {
+                    digest: found,
+                    found: file,
+                    claims,
+                };
+                (false, Some(refused))
             }
         };
         let mut reloads = lock(&self.reloads);

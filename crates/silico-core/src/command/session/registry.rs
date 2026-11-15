@@ -84,7 +84,7 @@ pub(super) struct FileId {
 
 impl FileId {
     /// The file `opened` is.
-    fn of(opened: &std::fs::File) -> Result<Self, Error> {
+    pub(super) fn of(opened: &std::fs::File) -> Result<Self, Error> {
         let metadata = opened.metadata().map_err(file::unreadable)?;
         Ok(FileId {
             device: metadata.dev(),
@@ -816,7 +816,7 @@ pub(super) fn holder<P: Clients + 'static>(
 
 /// The file at `target`, if one can be opened there, opened without waiting, as a read is:
 /// a pipe put at the path wouldn't block it.
-fn file_at(target: &Path) -> Option<FileId> {
+pub(super) fn file_at(target: &Path) -> Option<FileId> {
     std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK)
