@@ -479,7 +479,8 @@ fn compare_once(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
 
 /// The SHA-256 digest of a file's bytes: what the disk watch keeps of a change until it
 /// settles, what the session's own reload checks the file still holds before it loads it,
-/// and what a reload the session refused keeps, so the same bytes aren't queued again.
+/// and what a reload the session refused keeps, with the file that held them, so the same
+/// bytes in the same file aren't queued again.
 pub(crate) fn digest(bytes: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(bytes).into()
 }

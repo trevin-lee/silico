@@ -12,9 +12,9 @@ use std::sync::{Arc, OnceLock};
 
 use super::cancel::Ticket;
 use super::rebuilds::{Kept, Rebuilds};
-use super::registry::Unclaimed;
 #[cfg(doc)]
 use super::registry::claim;
+use super::registry::{FileId, Unclaimed, file_at};
 use super::{
     Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
     RolledBack, Session, SessionId, Transaction, shown_path,
@@ -1554,7 +1554,8 @@ impl<C: Kernel + 'static> Session<C> {
     /// (other bytes, changed again since it settled, perhaps mid-write; the file gone or
     /// unreadable; a path leading out of the workspace) isn't claimed, and nothing of it is
     /// kept: the watch reads it again, and its reload is queued once it has settled again.
-    /// A refusal is kept only of the settled bytes themselves.
+    /// A refusal is kept only of the settled bytes themselves, with what its claim was given
+    /// of the file that held them ([`FoundFile`], #490).
     pub(super) fn reload_settled(
         &self,
         settled: &[u8; 32],
@@ -1575,13 +1576,21 @@ impl<C: Kernel + 'static> Session<C> {
             tracing::info!(session = %self.id, "the file changed again before its reload read it: not reloaded until it settles");
             return SettledReload::Nothing;
         }
+        // What the claim is given of the file, kept with a refusal of the settled bytes.
+        let found = FoundFile {
+            found_at: reread.found_at.clone(),
+            file: match &reread.found {
+                Ok((opened, _)) => FileId::of(opened).ok(),
+                Err(_) => None,
+            },
+        };
         match self.take(reread, claim) {
             Ok(Reload::Reloaded) => SettledReload::Reloaded,
             Ok(Reload::AsHeld) => SettledReload::AsHeld,
             // Inside a transaction: nothing reloaded.
             Ok(Reload::Outside(_)) => SettledReload::Nothing,
             // The settled bytes refused (another session's file, no revision left to give).
-            Err(problems) if read_settled => SettledReload::Refused(problems),
+            Err(problems) if read_settled => SettledReload::Refused(problems, found),
             // The session's own bytes refused (another session's copy of them, through a
             // link): not what settled, so nothing is kept.
             Err(problems) => {
@@ -1616,15 +1625,10 @@ impl<C: Kernel + 'static> Session<C> {
             return Ok(None);
         }
         let span = tracing::info_span!("reload").entered();
-        // Where the path leads now, as `open` found where it led: through a link put there
-        // since, to another session's path, say; refused if that's out of the workspace,
-        // before the file's read (decision 26).
-        let found_at = match file::resolve(self.workspace.as_ref(), &resolved) {
-            Ok(found_at) => found_at,
-            Err(file::Unresolved::Outside) => {
-                return Err(Problems::from(Workspace::outside_now(Path::new(&path))));
-            }
-            Err(file::Unresolved::Unreachable(_)) => resolved.clone(),
+        // Refused if the path leads out of the workspace now, before the file's read
+        // (decision 26).
+        let Some(found_at) = leads_to(self.workspace.as_ref(), &resolved) else {
+            return Err(Problems::from(Workspace::outside_now(Path::new(&path))));
         };
         let found = file::opened_and_read(&resolved);
         Ok(Some(Reread {
@@ -1637,6 +1641,20 @@ impl<C: Kernel + 'static> Session<C> {
             transaction,
             found,
         }))
+    }
+
+    /// What a reload's claim would be given of the session's file now, as
+    /// [`reread`](Self::reread) finds it, the file opened but not read: what a refusal kept
+    /// of it is matched against ([`Session::reload_wanted`], #490). None for a session with
+    /// no file, or whose path leads out of the workspace now, which a reload refuses before
+    /// it reads anything, keeping nothing.
+    pub(super) fn found_now(&self) -> Option<FoundFile> {
+        let resolved = self.held.read().file.as_ref()?.resolved.clone();
+        let found_at = leads_to(self.workspace.as_ref(), &resolved)?;
+        Some(FoundFile {
+            found_at,
+            file: file_at(&resolved),
+        })
     }
 
     /// What [`reread`](Self::reread) found, taken: compared with what the session held,
@@ -2102,6 +2120,28 @@ fn messages(problems: &Problems) -> String {
     messages.join("; ")
 }
 
+/// Where the session's file at `resolved` (its path through links, as `open` found it) leads
+/// now, through links put there since (to another session's path, say), as a reload's claim
+/// is given it: `resolved` itself if it leads nowhere the system can follow; none if it
+/// leads out of the workspace.
+fn leads_to(workspace: Option<&Workspace>, resolved: &Path) -> Option<PathBuf> {
+    match file::resolve(workspace, resolved) {
+        Ok(found_at) => Some(found_at),
+        Err(file::Unresolved::Outside) => None,
+        Err(file::Unresolved::Unreachable(_)) => Some(resolved.to_owned()),
+    }
+}
+
+/// What a reload's claim is given of the session's file besides its path as `open` resolved
+/// it (fixed while the session holds the file): where that path leads now ([`leads_to`]),
+/// and the file there, by device and inode, none if that couldn't be told. With the
+/// registry's claims, all a claim decides by ([`claim`]).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct FoundFile {
+    pub(super) found_at: PathBuf,
+    pub(super) file: Option<FileId>,
+}
+
 /// What the disk watch's own reload came to ([`Session::reload_settled`]; A3, #479).
 pub(super) enum SettledReload {
     /// Found changed, the settled bytes, and reloaded at a new revision.
@@ -2118,8 +2158,9 @@ pub(super) enum SettledReload {
     /// left it.
     Nothing,
     /// The settled bytes, refused (a file another session holds, no revision left to
-    /// give): kept, so the same bytes aren't queued again until a claim changes.
-    Refused(Problems),
+    /// give), with what the claim was given of the file that held them: kept, so the same
+    /// bytes aren't queued again while that file stays at the path and no claim changes.
+    Refused(Problems, FoundFile),
 }
 
 /// The session's file as [`Session::reread`] read it, for [`Session::take`]: its path as

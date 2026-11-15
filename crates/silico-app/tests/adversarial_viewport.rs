@@ -1,7 +1,10 @@
 //! Hostile input for the viewport (M5.6): the camera controls given non-finite, degenerate,
 //! and extreme numbers; the `meshes` read cycle at the edges of `serves`, refused, and
 //! interrupted (a tab switched, a session closed, a body renumbered, a revision changed,
-//! all mid-read); a display past 4,096 pixels; and pointer events out of order. Driven as
+//! all mid-read); a display past 4,096 pixels; pointer events out of order; and the hover
+//! linking between the timeline and the canvas (a feature tinted, an item ringed) through a
+//! feature removed or renumbered on disk mid-hover, a hover in another tab, a stale or
+//! nameless pick, and many features, each frame held to the renderer's rules. Driven as
 //! the app's own tests drive it, through `egui_kittest` on the fake kernel, every frame on
 //! a thread marked so that a wait on a command fails. Expected values by hand.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -32,11 +35,11 @@ use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
 use ui::{
     ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, In, PLATE, PLATE_END, TRIAD_DOT,
-    advance, arrow_dots, arrow_shafts, button_event, dialog_open, drag, edit_plates_pad, field,
-    from_the_front, hand_clock, image_centre, left_down_at, left_up_at, looks_from, meshes_settled,
-    meshes_settled_in, move_to, near_point, pad_extent, pads_extent, plates_pad_from_the_front,
-    repaint_delay, reversed_ticked, settled, step, step_until, tessellated, the_viewport,
-    triad_origin, up, view, view_label, view_mut,
+    advance, arrow_dots, arrow_shafts, body_of, button_event, dialog_open, drag, edit_plates_pad,
+    field, from_the_front, hand_clock, hover_item, image_centre, left_down_at, left_up_at,
+    looks_from, meshes_settled, meshes_settled_in, move_to, near_point, pad_extent, pads_extent,
+    plates_pad_from_the_front, repaint_delay, reversed_ticked, settled, step, step_until,
+    tessellated, the_viewport, triad_origin, up, view, view_label, view_mut,
 };
 
 const EXAMPLE: &str = r#"{
@@ -73,6 +76,16 @@ struct Fixture {
 }
 
 fn fixture() -> Fixture {
+    fixture_with(false)
+}
+
+/// [`fixture`], each file compared on disk with no interval, so one written under a
+/// session with nothing unsaved is reloaded by it on its own (as an agent's commit is).
+fn watching() -> Fixture {
+    fixture_with(true)
+}
+
+fn fixture_with(watch: bool) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let secret = dir.path().join("secret");
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
@@ -82,6 +95,14 @@ fn fixture() -> Fixture {
         move |cache| Cache::with_secret(cache, &secret),
         move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
     );
+    let sessions = if watch {
+        let now: silico_core::disk::Clock = Arc::new(std::time::Instant::now);
+        sessions
+            .watching_disk(Duration::ZERO, Arc::new(ui::plain_read), now)
+            .unwrap()
+    } else {
+        sessions
+    };
     Fixture {
         dir,
         kernel,
@@ -97,9 +118,16 @@ struct Told {
     frames: Vec<FrameData>,
     /// Frames presented with no tab shown.
     empty: usize,
-    /// The last frame's picking, answered the frame after as a renderer answers it: the
-    /// background's (the hover the selection asks as the pointer moves, M5.7).
+    /// The last frame's picking, answered the frame after as a renderer answers it: `hit`,
+    /// or with none, the background's (the hover the selection asks as the pointer moves,
+    /// M5.7).
     picking: Option<Picking>,
+    /// What every pick finds from now on, if anything.
+    hit: Option<silico_app::renderer::Pick>,
+    /// The meshes the renderer holds, by body, as it was told.
+    held: std::collections::BTreeMap<u32, Arc<Mesh>>,
+    /// Why silico-render would have refused each frame it would have (`Frame::check`).
+    refused: Vec<String>,
 }
 
 type Record = Arc<Mutex<Told>>;
@@ -121,15 +149,15 @@ struct FakeRenderer(Record);
 impl ViewRenderer for FakeRenderer {
     type Failure = String;
     fn upload(&mut self, body: u32, mesh: &Arc<Mesh>) -> Result<(), String> {
-        self.0
-            .lock()
-            .unwrap()
-            .uploads
-            .push((body, Arc::clone(mesh)));
+        let mut told = self.0.lock().unwrap();
+        told.uploads.push((body, Arc::clone(mesh)));
+        told.held.insert(body, Arc::clone(mesh));
         Ok(())
     }
     fn forget(&mut self, body: u32) {
-        self.0.lock().unwrap().forgets.push(body);
+        let mut told = self.0.lock().unwrap();
+        told.forgets.push(body);
+        told.held.remove(&body);
     }
     fn prepare(
         &mut self,
@@ -159,12 +187,31 @@ impl Present for Recorder {
             Some(frame) => {
                 assert!(frame.bodies.windows(2).all(|pair| pair[0] < pair[1]));
                 if let Some(rect) = frame.picking {
+                    // What it finds at the square's centre, as a renderer answers the pixel
+                    // nearest it.
+                    let at = |min: i32, side: u32| {
+                        u32::try_from(i64::from(min) + i64::from(side / 2)).unwrap()
+                    };
+                    let centre = [at(rect.min[0], rect.size[0]), at(rect.min[1], rect.size[1])];
                     told.picking = Some(Picking {
                         frame: frame.serial,
                         rect,
-                        hit: None,
+                        hit: told.hit.map(|hit| silico_app::renderer::Pick {
+                            pixel: centre,
+                            ..hit
+                        }),
                         edge: None,
                     });
+                }
+                // silico-render's own check of the frame's values against the meshes held,
+                // the one its `prepare` refuses by.
+                let refused = frame
+                    .frame()
+                    .check(|body| told.held.get(&body).map(|mesh| &**mesh))
+                    .err();
+                if let Some(why) = refused {
+                    told.refused
+                        .push(format!("{}: {}", why.parameter, why.message));
                 }
                 told.frames.push(frame);
             }
@@ -2366,6 +2413,619 @@ fn a_camera_that_makes_no_frame_draws_no_triad_and_the_label_says_the_projection
         assert_eq!(view_label(&h), "Orthographic · Front");
         assert!(view(&h).camera().frame().is_ok());
     }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Hover linking: a feature hovered in the timeline tints its faces, a face hovered in
+// the canvas rings its feature's item ----
+
+/// TWO_BOXES with the large cube taken out: the small one alone, body 1.
+const SMALL_ALONE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Small", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50}
+  ]
+}
+"#;
+
+/// TWO_BOXES with the small cube taken out: the large one alone, body 1 now.
+const LARGE_ALONE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "a91cw0de", "type": "box", "v": 1, "name": "Large", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
+  ]
+}
+"#;
+
+/// The timeline's item `name`, if it shows.
+fn item<'a>(h: &'a AppHarness, name: &'a str) -> Option<egui_kittest::Node<'a>> {
+    h.get_by_role_and_label(egui::accesskit::Role::Pane, "Timeline")
+        .query_by_label(name)
+}
+
+/// Body `body`'s faces 1 to 6, a box's.
+fn box_faces(body: u32) -> Vec<(u32, silico_app::renderer::Element)> {
+    (1..=6)
+        .map(|n| (body, silico_app::renderer::Element::Face(n)))
+        .collect()
+}
+
+/// The last frame's tinted faces.
+fn tinted(record: &Record) -> Vec<(u32, silico_app::renderer::Element)> {
+    record.lock().unwrap().frames.last().unwrap().tinted.clone()
+}
+
+/// Every pick from now on finds `hit`, a body and its element, at its square's centre.
+fn finding(record: &Record, hit: Option<(u32, silico_app::renderer::Element)>) {
+    record.lock().unwrap().hit = hit.map(|(body, hit)| silico_app::renderer::Pick {
+        body,
+        hit,
+        pixel: [0, 0],
+        point: None,
+    });
+}
+
+/// The feature whose item tab `at`'s timeline rings, as it last drew.
+fn ringed(h: &AppHarness, at: usize) -> Option<String> {
+    h.state().tabs()[at]
+        .view
+        .ringed_feature
+        .as_ref()
+        .map(|id| id.as_str().to_owned())
+}
+
+#[test]
+fn a_feature_removed_on_disk_while_hovered_is_tinted_in_no_frame_after_and_none_is_refused() {
+    // The large cube hovered in the timeline, then taken out of the file by another program
+    // (as an agent's commit is): the session reloads it, the pointer still where the item
+    // was. Body 2 is the large cube's while both are drawn; once the small one is drawn
+    // alone, as body 1, nothing may be tinted (its faces aren't the large cube's), and no
+    // frame lists a body it doesn't draw (the renderer would refuse it whole).
+    let f = watching();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    assert_eq!((body_of(&h, "k7f2qx3m"), body_of(&h, "a91cw0de")), (1, 2));
+    hover_item(&mut h, "Large");
+    assert_eq!(tinted(&record), box_faces(2));
+    let from = record.lock().unwrap().frames.len();
+    f.file("boxes.silico", SMALL_ALONE);
+    step_until(&mut h, "the large cube gone", |h| {
+        item(h, "Large").is_none() && view(h).bodies().len() == 1
+    });
+    meshes_settled(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let told = record.lock().unwrap();
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    for frame in &told.frames[from..] {
+        match frame.bodies.as_slice() {
+            [1, 2] => assert!(
+                frame.tinted.is_empty() || frame.tinted == box_faces(2),
+                "{:?}",
+                frame.tinted
+            ),
+            _ => assert!(frame.tinted.is_empty(), "{:?}", frame.tinted),
+        }
+    }
+    assert_eq!(told.frames.last().unwrap().bodies, [1]);
+    assert!(told.frames.last().unwrap().tinted.is_empty());
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_feature_renumbered_by_a_reload_mid_hover_is_tinted_under_its_new_number_alone() {
+    // The small cube taken out under the large one's hover: the large one is body 1 now. A
+    // frame drawing both tints body 2's faces or none; one drawing it alone, body 1's or
+    // none, never body 2's (not drawn: refused) nor, under the old table, body 1's (the small
+    // cube's). Hovered again where its item is now: its six faces, as body 1.
+    let f = watching();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    hover_item(&mut h, "Large");
+    assert_eq!(tinted(&record), box_faces(2));
+    let from = record.lock().unwrap().frames.len();
+    f.file("boxes.silico", LARGE_ALONE);
+    step_until(&mut h, "the small cube gone", |h| {
+        item(h, "Small").is_none() && view(h).bodies().len() == 1
+    });
+    meshes_settled(&mut h);
+    assert_eq!(body_of(&h, "a91cw0de"), 1);
+    hover_item(&mut h, "Large");
+    let told = record.lock().unwrap();
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    for frame in &told.frames[from..] {
+        let want = match frame.bodies.as_slice() {
+            [1, 2] => box_faces(2),
+            [1] => box_faces(1),
+            other => panic!("bodies {other:?}"),
+        };
+        assert!(
+            frame.tinted.is_empty() || frame.tinted == want,
+            "{:?} of {:?}",
+            frame.tinted,
+            frame.bodies
+        );
+    }
+    assert_eq!(told.frames.last().unwrap().tinted, box_faces(1));
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_hover_left_in_a_tab_tints_nothing_in_another_or_in_it_when_shown_again() {
+    // a's large cube hovered, then b opened over it with the pointer left on the timeline:
+    // a is hidden with its feature hovered. The item under the pointer in b is its pin,
+    // a91cw0de, the large cube's ID in a: no face of b is the pin's (its cut keeps the hole's
+    // walls as its own), so nothing is tinted. b's block hovered: the faces b's block made,
+    // in b's body. a shown again by its tab, the pointer on the tab: no frame of it tints
+    // anything, its hover of before let go.
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    hover_item(&mut h, "Large");
+    assert_eq!(tinted(&record), box_faces(2));
+    let path = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(&path, false);
+    step_until(&mut h, "b shown", |h| {
+        h.state().tabs().len() == 2 && item(h, "Hole").is_some()
+    });
+    meshes_settled_in(&mut h, 1);
+    step(&mut h);
+    assert!(
+        h.state().tabs()[0].view.linked.is_some(),
+        "a is hidden with its feature hovered"
+    );
+    assert!(tinted(&record).is_empty(), "{:?}", tinted(&record));
+    hover_item(&mut h, "Block");
+    let blocks = ui::faces_made_by(&h, 1, "k7f2qx3m");
+    assert!(!blocks.is_empty());
+    assert_eq!(tinted(&record), blocks);
+    let from = record.lock().unwrap().frames.len();
+    h.get_by_label("a.silico").click();
+    step_until(&mut h, "a shown", |h| item(h, "Large").is_some());
+    meshes_settled(&mut h);
+    step(&mut h);
+    let told = record.lock().unwrap();
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    for frame in &told.frames[from..] {
+        assert!(frame.tinted.is_empty(), "{:?}", frame.tinted);
+    }
+    drop(told);
+    assert_eq!(h.state().tabs()[0].view.linked, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_canvas_hover_in_one_tab_rings_no_item_of_another_with_the_same_id() {
+    // a's large cube (a91cw0de) hovered in a's canvas: its item ringed. b opened over it,
+    // the pointer left on the canvas, every pick still finding body 2's first face: b has
+    // no body 2, so b hovers nothing and rings no item, its pin (a91cw0de too) least of
+    // all, in any frame. The picks then finding b's body's first face: the feature that
+    // made it ringed, b's own.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    finding(&record, Some((2, Face(1))));
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step_until(&mut h, "a's hover", |h| ringed(h, 0).is_some());
+    assert_eq!(ringed(&h, 0).as_deref(), Some("a91cw0de"));
+    let path = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(&path, false);
+    let deadline = std::time::Instant::now() + WAIT;
+    let mut frames = 0;
+    while !(h.state().tabs().len() == 2 && item(&h, "Hole").is_some()) || frames < 30 {
+        step(&mut h);
+        frames += 1;
+        if h.state().tabs().len() == 2 {
+            assert_eq!(ringed(&h, 1), None, "frame {frames}");
+            assert!(h.state().tabs()[1].selection().hovered().is_none());
+        }
+        assert!(std::time::Instant::now() < deadline, "b never shown");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    meshes_settled_in(&mut h, 1);
+    let made = view(&h).bodies()[&1].faces[0]
+        .name
+        .feature()
+        .as_str()
+        .to_owned();
+    finding(&record, Some((1, Face(1))));
+    // A pixel away, so the hover is asked again.
+    h.hover_at(at + vec2(1.0, 0.0));
+    step_until(&mut h, "b's hover", |h| ringed(h, 1).is_some());
+    assert_eq!(ringed(&h, 1), Some(made));
+    assert!(record.lock().unwrap().refused.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_stale_or_nameless_pick_rings_nothing_and_a_feature_gone_on_disk_lets_its_ring_go() {
+    // Picks finding a face its mesh hasn't (the 99th of a box's six), or a body that isn't
+    // there, name nothing: no hover, no ring, no frame refused. Then the large cube's face
+    // hovered and ringed, and the cube taken out of the file under the pointer, the picks
+    // still finding body 2: the ring goes with the hover, and nothing is listed of a body
+    // not drawn.
+    use silico_app::renderer::Element::{Edge, Face};
+    let f = watching();
+    let (mut h, record) = f.drawn("boxes.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    let at = the_viewport(&h).center();
+    for (k, hit) in [(1, Face(99)), (3, Face(1)), (1, Edge(99)), (0, Face(1))]
+        .into_iter()
+        .enumerate()
+    {
+        finding(&record, Some(hit));
+        h.hover_at(at + vec2(k as f32, 0.0));
+        for _ in 0..6 {
+            step(&mut h);
+            assert_eq!(ringed(&h, 0), None, "{hit:?}");
+            assert!(
+                h.state().tabs()[0].selection().hovered().is_none(),
+                "{hit:?}"
+            );
+        }
+    }
+    finding(&record, Some((2, Face(1))));
+    h.hover_at(at + vec2(10.0, 0.0));
+    step_until(&mut h, "the large cube ringed", |h| {
+        ringed(h, 0).as_deref() == Some("a91cw0de")
+    });
+    f.file("boxes.silico", SMALL_ALONE);
+    step_until(&mut h, "the large cube gone and its ring", |h| {
+        item(h, "Large").is_none() && view(h).bodies().len() == 1 && ringed(h, 0).is_none()
+    });
+    for _ in 0..6 {
+        step(&mut h);
+        assert_eq!(ringed(&h, 0), None);
+    }
+    let told = record.lock().unwrap();
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    assert!(told.frames.last().unwrap().hovered.is_empty());
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// `n` boxes, `b0000001` on, named `Box001` on, each a body of its own.
+fn many_boxes(n: usize) -> String {
+    let features: Vec<String> = (1..=n)
+        .map(|k| {
+            format!(
+                r#"{{"id": "b{k:07}", "type": "box", "v": 1, "name": "Box{k:03}", "position": [{x}, 0, 0], "length": 10, "width": 10, "height": 10}}"#,
+                x = 20 * k
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 5, "features": [{}]}}"#,
+        features.join(", ")
+    )
+}
+
+#[test]
+fn across_many_features_each_frame_tints_the_one_under_the_pointer_in_that_frame() {
+    // 150 boxes, more than the track shows: each item the track shows hovered one frame
+    // after another, left to right and back, every frame tinting exactly the faces of the
+    // box under the pointer in it (the timeline draws before the canvas), none refused.
+    let f = fixture();
+    let text = many_boxes(150);
+    let (mut h, record) = f.drawn("many.silico", &text, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Box001").is_some());
+    // Clear of the summary at the track's right ("150 features", under 150 points).
+    let right = h
+        .get_by_role_and_label(egui::accesskit::Role::Pane, "Timeline")
+        .rect()
+        .right()
+        - 150.0;
+    let shown: Vec<(String, egui::Pos2)> = (1..=150)
+        .filter_map(|k| {
+            let name = format!("Box{k:03}");
+            let rect = item(&h, &name)?.rect();
+            (rect.right() <= right).then(|| (name, rect.center()))
+        })
+        .collect();
+    assert!(shown.len() > 20, "{} shown", shown.len());
+    let bodies: std::collections::BTreeMap<String, u32> = shown
+        .iter()
+        .map(|(name, _)| {
+            let k: usize = name[3..].parse().unwrap();
+            (name.clone(), body_of(&h, &format!("b{k:07}")))
+        })
+        .collect();
+    for (name, at) in shown.iter().chain(shown.iter().rev()) {
+        h.hover_at(*at);
+        step(&mut h);
+        assert_eq!(tinted(&record), box_faces(bodies[name]), "{name}");
+    }
+    assert!(record.lock().unwrap().refused.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tab_shown_again_rings_no_item_for_a_hover_it_had_before_it_was_hidden() {
+    // a's large cube hovered in its canvas and ringed; b opened over it with the pointer
+    // still on the canvas, so a is hidden hovering, its canvas never drawn to let the hover
+    // go. The pointer then onto the app bar, and a's tab clicked: a's canvas isn't under
+    // the pointer, so from the frame a is shown again no item of its is ringed, nor its
+    // hover of before said.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    finding(&record, Some((2, Face(1))));
+    h.hover_at(the_viewport(&h).center());
+    step_until(&mut h, "a's hover", |h| ringed(h, 0).is_some());
+    let path = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(&path, false);
+    step_until(&mut h, "b shown", |h| {
+        h.state().tabs().len() == 2 && item(h, "Hole").is_some()
+    });
+    meshes_settled_in(&mut h, 1);
+    finding(&record, None);
+    let tab = h.get_by_label("a.silico").rect().center();
+    h.hover_at(tab);
+    step(&mut h);
+    step(&mut h);
+    h.get_by_label("a.silico").click();
+    for frame in 0..10 {
+        step(&mut h);
+        let shown = item(&h, "Large").is_some();
+        if shown {
+            assert_eq!(ringed(&h, 0), None, "frame {frame} of a shown again");
+            assert!(
+                h.state().tabs()[0].selection().hovered().is_none(),
+                "frame {frame}"
+            );
+        }
+    }
+    assert!(item(&h, "Large").is_some(), "a not shown");
+    assert!(record.lock().unwrap().refused.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tab_shown_again_under_a_still_pointer_asks_its_hover_again() {
+    // a's large cube hovered in its canvas and ringed; b opened over it, the pointer left
+    // there, so a, hidden, lets its hover go, and the pixel it last asked with it. b closed
+    // (Ctrl+W), a is shown again under the same still pointer: its hover is asked again and
+    // found, its item ringed, though the pointer never moved.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    finding(&record, Some((2, Face(1))));
+    h.hover_at(the_viewport(&h).center());
+    step_until(&mut h, "a's hover", |h| ringed(h, 0).is_some());
+    let path = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(&path, false);
+    step_until(&mut h, "b shown", |h| {
+        h.state().tabs().len() == 2 && item(h, "Hole").is_some()
+    });
+    meshes_settled_in(&mut h, 1);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].selection().hovered().is_none());
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::W);
+    step_until(&mut h, "b closed", |h| h.state().tabs().len() == 1);
+    meshes_settled(&mut h);
+    step_until(
+        &mut h,
+        "a's hover asked again under the still pointer",
+        |h| ringed(h, 0).as_deref() == Some("a91cw0de"),
+    );
+    assert!(record.lock().unwrap().refused.is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_tab_shown_again_outlines_no_hover_it_had_before_it_was_hidden() {
+    // As the ring's case above: a's large cube hovered in its canvas, outlined (its face in
+    // the frame's hovered list); b opened over it, the pointer left on the canvas; then the
+    // pointer onto a's tab and a click there. No frame drawing a's bodies again (both
+    // cubes, bodies 1 and 2; b's is one body) outlines the hover it had before it was
+    // hidden.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    finding(&record, Some((2, Face(1))));
+    h.hover_at(the_viewport(&h).center());
+    step_until(&mut h, "a's hover outlined", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    step(&mut h);
+    assert_eq!(
+        record.lock().unwrap().frames.last().unwrap().hovered,
+        [(2, Face(1))]
+    );
+    let path = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(&path, false);
+    step_until(&mut h, "b shown", |h| {
+        h.state().tabs().len() == 2 && item(h, "Hole").is_some()
+    });
+    meshes_settled_in(&mut h, 1);
+    finding(&record, None);
+    let tab = h.get_by_label("a.silico").rect().center();
+    h.hover_at(tab);
+    step(&mut h);
+    step(&mut h);
+    let from = record.lock().unwrap().frames.len();
+    h.get_by_label("a.silico").click();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(item(&h, "Large").is_some(), "a not shown");
+    let told = record.lock().unwrap();
+    let shown: Vec<_> = told.frames[from..]
+        .iter()
+        .filter(|frame| frame.bodies == [1, 2])
+        .collect();
+    assert!(!shown.is_empty());
+    for frame in shown {
+        assert!(frame.hovered.is_empty(), "{:?}", frame.hovered);
+    }
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_feature_deselected_lets_its_tint_go() {
+    // The large cube selected by its timeline item, the pointer then on the app bar's tab:
+    // its six faces tinted. The selection cleared: none, the very next frames.
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    let large = body_of(&h, "a91cw0de");
+    ui::select(&mut h, "Large");
+    let tab = h.get_by_label("a.silico").rect().center();
+    h.hover_at(tab);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tinted(&record), box_faces(large));
+    h.state_mut().tabs_mut()[0].selection_mut().clear();
+    step(&mut h);
+    step(&mut h);
+    assert!(h.state().tabs()[0].selection().is_empty());
+    assert!(tinted(&record).is_empty(), "{:?}", tinted(&record));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_empty_canvas_after_a_feature_selected_lets_its_tint_go() {
+    // The large cube selected by its timeline item, tinted; a click on the canvas where a
+    // pick finds nothing lets the selection go (SolidWorks' click on empty space), and the
+    // tint with it.
+    let f = fixture();
+    let (mut h, record) = f.drawn("a.silico", TWO_BOXES, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its items", |h| item(h, "Large").is_some());
+    let large = body_of(&h, "a91cw0de");
+    ui::select(&mut h, "Large");
+    let tab = h.get_by_label("a.silico").rect().center();
+    h.hover_at(tab);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tinted(&record), box_faces(large));
+    finding(&record, None);
+    let centre = the_viewport(&h).center();
+    ui::click_canvas(&mut h, centre, false);
+    step_until(&mut h, "the selection let go", |h| {
+        h.state().tabs()[0].selection().is_empty()
+    });
+    step(&mut h);
+    step(&mut h);
+    assert!(tinted(&record).is_empty(), "{:?}", tinted(&record));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_feature_selected_across_a_reload_that_renumbers_its_body_is_tinted_by_each_frames_table() {
+    // The large cube alone (body 1) selected by its timeline item, the pointer on the tab;
+    // then the small cube written back before it on disk, so the large one is body 2. Every
+    // frame drawing the new table (bodies 1 and 2) tints body 2's faces, the very first too:
+    // never body 1's, the small cube's, by the numbers of the table before it.
+    let f = watching();
+    let (mut h, record) = f.drawn("boxes.silico", LARGE_ALONE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its item", |h| item(h, "Large").is_some());
+    assert_eq!(body_of(&h, "a91cw0de"), 1);
+    ui::select(&mut h, "Large");
+    let tab = h.get_by_label("boxes.silico").rect().center();
+    h.hover_at(tab);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tinted(&record), box_faces(1));
+    let from = record.lock().unwrap().frames.len();
+    f.file("boxes.silico", TWO_BOXES);
+    step_until(&mut h, "the small cube back", |h| {
+        item(h, "Small").is_some() && view(h).bodies().len() == 2
+    });
+    meshes_settled(&mut h);
+    step(&mut h);
+    assert_eq!(body_of(&h, "a91cw0de"), 2);
+    let told = record.lock().unwrap();
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    let mut renumbered = 0;
+    for frame in &told.frames[from..] {
+        let want = match frame.bodies.as_slice() {
+            [] => Vec::new(),
+            [1] => box_faces(1),
+            [1, 2] => {
+                renumbered += 1;
+                box_faces(2)
+            }
+            other => panic!("bodies {other:?}"),
+        };
+        assert_eq!(frame.tinted, want, "of {:?}", frame.bodies);
+    }
+    assert!(renumbered > 0);
+    drop(told);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_hover_across_a_reload_that_renumbers_its_body_is_never_drawn_by_the_old_numbers() {
+    // The large cube alone (body 1), its first face hovered in the canvas and outlined;
+    // then the small cube written back before it on disk, so body 1 is the small cube. The
+    // pointer still and every pick from then finding nothing: no frame drawing the new
+    // table (bodies 1 and 2) outlines body 1's first face, the small cube's, by the number
+    // the hover had in the table before, the very first such frame too. An end-to-end
+    // regression test: here the hover is let go as the new model is published, before its
+    // meshes come, so it passes without the selection's light dropping a hover by an old
+    // table's numbers, which the viewport's unit test
+    // `a_new_bodies_table_lets_a_hover_and_a_candidate_by_its_old_numbers_go` pins.
+    use silico_app::renderer::Element::Face;
+    let f = watching();
+    let (mut h, record) = f.drawn("boxes.silico", LARGE_ALONE, (1280.0, 800.0));
+    meshes_settled(&mut h);
+    step_until(&mut h, "its item", |h| item(h, "Large").is_some());
+    finding(&record, Some((1, Face(1))));
+    h.hover_at(the_viewport(&h).center());
+    step_until(&mut h, "the hover", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    step(&mut h);
+    assert_eq!(
+        record.lock().unwrap().frames.last().unwrap().hovered,
+        [(1, Face(1))]
+    );
+    finding(&record, None);
+    let from = record.lock().unwrap().frames.len();
+    f.file("boxes.silico", TWO_BOXES);
+    step_until(&mut h, "the small cube back", |h| {
+        item(h, "Small").is_some() && view(h).bodies().len() == 2
+    });
+    meshes_settled(&mut h);
+    let told = record.lock().unwrap();
+    let renumbered: Vec<_> = told.frames[from..]
+        .iter()
+        .filter(|frame| frame.bodies == [1, 2])
+        .collect();
+    assert!(!renumbered.is_empty());
+    for frame in renumbered {
+        assert!(frame.hovered.is_empty(), "{:?}", frame.hovered);
+    }
+    assert!(told.refused.is_empty(), "{:?}", told.refused);
+    drop(told);
     assert_eq!(never_waits::waits(), 0);
 }
 

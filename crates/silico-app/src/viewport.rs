@@ -43,7 +43,7 @@ use crate::bar;
 use crate::icons::Icon;
 use crate::menu::{self, Checked};
 use crate::navigate::{self, HOME, NO_BOX};
-use crate::renderer::{Change, Element, FrameData, Picking, PixelRect, Present};
+use crate::renderer::{Change, Element, FrameData, Picking, PixelRect, Present, Tint};
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::theme;
@@ -493,6 +493,10 @@ pub struct View {
     /// The elements drawn hovered (M5.7's pre-selection), set from outside, passed through
     /// as `highlights` are.
     pub hovered: BTreeSet<(u32, Element)>,
+    /// The faces of the features selected (a timeline item: the faces it made; a body by
+    /// its browser row: its every face), set from outside (M5.7's selection): tinted as a
+    /// feature hovered in the timeline is, while none is ([`maker_faces`](Self::maker_faces)).
+    pub selected_feature_faces: BTreeSet<(u32, Element)>,
     /// The radius, in points, within which a pick takes a vertex, if it takes vertices,
     /// set from outside (the selection's filter, M5.7): the renderer's
     /// [`crate::renderer::Frame::vertices`]. None picks none.
@@ -512,16 +516,20 @@ pub struct View {
     /// (the selection's and the hover's) of one width, so the one hovered is lit alone, on
     /// the hover's layer, until it has a third.
     pub candidate: Option<(u32, Element)>,
-    /// The feature hovered in the timeline (DESIGN.md, *Hover linking*): the faces it made,
-    /// as each face's name says ([`Name::feature`]), are highlighted with the selection's
-    /// while it's hovered.
+    /// The feature hovered in the timeline (DESIGN.md, *Hover a feature, see its geometry*;
+    /// the prototype's `hoverFeature`): the faces it made, as each face's name says
+    /// ([`Name::feature`]), are tinted while it's hovered, in place of the features
+    /// selected's, in [`theme::VIEWPORT_FEATURE_HOVER_TINT`] at
+    /// [`theme::VIEWPORT_FEATURE_HOVER_TINT_AMOUNT`] ([`feature_tint`]), but any selected
+    /// or hovered ([`tinted_faces`]).
     ///
     /// [`Name::feature`]: silico_core::naming::Name::feature
-    ///
-    /// SEAM: the prototype tints them with the maker's colour,
-    /// [`theme::VIEWPORT_FEATURE_HOVER_TINT`] (`#d4dbff` at 0.4), not the selection's; that
-    /// comes once the renderer has a second highlight style.
     pub linked: Option<FeatureId>,
+    /// The feature that made what the canvas's hover is over, as the timeline read it when
+    /// it last drew (it rings that feature's item, `.hovered-from-canvas`): set by the
+    /// timeline, drawn before the canvas, each frame. Once the canvas's hover names another
+    /// feature, the viewport asks for the next frame at once, so the timeline catches up.
+    pub ringed_feature: Option<FeatureId>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
     /// The serial of the newest frame that carried a pick of this view's: an answer to a
@@ -604,10 +612,12 @@ impl Default for View {
             grid: true,
             highlights: BTreeSet::new(),
             hovered: BTreeSet::new(),
+            selected_feature_faces: BTreeSet::new(),
             vertices: None,
             edges: true,
             candidate: None,
             linked: None,
+            ringed_feature: None,
             picking: None,
             picked: None,
             last_asked: None,
@@ -723,19 +733,20 @@ impl View {
     /// The faces the feature hovered in the timeline made ([`linked`](Self::linked)), in
     /// every body that holds one, as each face's name says: none with none hovered.
     pub fn linked_faces(&self) -> Vec<(u32, Element)> {
-        let Some(feature) = &self.linked else {
-            return Vec::new();
-        };
-        self.bodies
-            .iter()
-            .flat_map(|(number, body)| {
-                body.faces
-                    .iter()
-                    .zip(1u32..)
-                    .filter(|(face, _)| face.name.feature() == feature)
-                    .map(|(_, n)| (*number, Element::Face(n)))
-            })
-            .collect()
+        match &self.linked {
+            Some(feature) => faces_of(feature, &self.bodies, false),
+            None => Vec::new(),
+        }
+    }
+
+    /// The faces tinted as their maker's (the prototype's `maker`, `hoverFeature ||
+    /// selFeature`): the feature hovered in the timeline's, if one is, even if it made none;
+    /// else the features selected's.
+    pub fn maker_faces(&self) -> Vec<(u32, Element)> {
+        match self.linked {
+            Some(_) => self.linked_faces(),
+            None => self.selected_feature_faces.iter().copied().collect(),
+        }
     }
 
     /// The published revision the bodies were read from, once a read has answered.
@@ -1878,6 +1889,11 @@ pub fn show<P: Clients + 'static>(
         }
         _ => {}
     }
+    // A table taken just now numbers the bodies afresh: the selection's highlights and
+    // tints worked out for it before this frame is handed on, never drawn by the numbers of
+    // the table before it.
+    tab.light_selection();
+    let view = &mut tab.view;
     // An answer to a pick of another tab, or of a table since made again, isn't this one's.
     if let Some((picking, session, generation)) = drawing.answered()
         && session == tab.id
@@ -1955,7 +1971,7 @@ pub fn show<P: Clients + 'static>(
     });
     // A highlight of a body not drawn, or of an element its mesh hasn't, would have the
     // renderer refuse the whole frame.
-    let linked = view.linked_faces();
+    let makers = view.maker_faces();
     let drawn = |(number, element): &(u32, Element)| {
         bodies.binary_search(number).is_ok()
             && view
@@ -1963,15 +1979,7 @@ pub fn show<P: Clients + 'static>(
                 .get(number)
                 .is_some_and(|body| body.has(*element))
     };
-    let highlights: Vec<(u32, Element)> = view
-        .highlights
-        .iter()
-        .copied()
-        .chain(linked)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .filter(drawn)
-        .collect();
+    let highlights: Vec<(u32, Element)> = view.highlights.iter().copied().filter(drawn).collect();
     // A candidate lit takes the hover's layer, in its own colour: the pointer is over its
     // card's row, not the canvas.
     let candidate = view.candidate.filter(drawn);
@@ -1984,6 +1992,7 @@ pub fn show<P: Clients + 'static>(
         .into_iter()
         .filter(drawn)
         .collect();
+    let tinted = tinted_faces(makers, &highlights, &hovered, drawn);
     // The vertices among them, drawn over the bodies by the pane (the renderer draws none).
     let dots = vertex_dots(&view.bodies, &highlights, &hovered);
     let mut outlines = crate::selection::outlines();
@@ -2009,6 +2018,8 @@ pub fn show<P: Clients + 'static>(
         highlights,
         hovered,
         outlines,
+        tinted,
+        tint: feature_tint(),
         picking,
         edges: view.edges,
         vertices: view.vertices,
@@ -2049,6 +2060,12 @@ pub fn show<P: Clients + 'static>(
         frame.secondary.clear();
         tab.view.frame = Some(frame);
     }
+    // The canvas's hover now over what another feature made than the timeline rang (or over
+    // nothing now, or something now): the timeline, drawn before the canvas, rings it in
+    // the next frame, asked for at once.
+    if tab.selection().hovered_feature() != tab.view.ringed_feature.as_ref() {
+        ui.ctx().request_repaint();
+    }
     let (shape, line) = label.shape(&painter);
     painter.add(shape);
     // In the accessibility tree as a label, taking no click or drag of the canvas's.
@@ -2059,6 +2076,59 @@ pub fn show<P: Clients + 'static>(
     if navigation_bar(ui, rect, &mut tab.view, size_px) {
         tab.look_at();
     }
+}
+
+/// The faces `feature` made in `bodies`, as each face's name says ([`Name::feature`]), in
+/// every body that holds one, ascending; or, `whole`, a body's every face where it's the
+/// body `feature` made (a body selected by its browser row, the prototype's `maker: '*'`).
+/// One rule for a feature hovered in the timeline and one selected.
+///
+/// [`Name::feature`]: silico_core::naming::Name::feature
+pub fn faces_of(
+    feature: &FeatureId,
+    bodies: &BTreeMap<u32, ViewBody>,
+    whole: bool,
+) -> Vec<(u32, Element)> {
+    bodies
+        .iter()
+        .flat_map(|(number, body)| {
+            let whole = whole && &body.feature == feature;
+            body.faces
+                .iter()
+                .zip(1u32..)
+                .filter(move |(face, _)| whole || face.name.feature() == feature)
+                .map(|(_, n)| (*number, Element::Face(n)))
+        })
+        .collect()
+}
+
+/// The tint of the faces a feature hovered in the timeline made, from the theme, as plain
+/// values for the renderer: the prototype's `MAKER` (DESIGN.md's Blue.800) at 0.4.
+pub fn feature_tint() -> Tint {
+    let [r, g, b, _] = theme::VIEWPORT_FEATURE_HOVER_TINT;
+    Tint {
+        colour: [r, g, b],
+        amount: theme::VIEWPORT_FEATURE_HOVER_TINT_AMOUNT,
+    }
+}
+
+/// Which of `makers`, the faces tinted as their maker's ([`View::maker_faces`]), are tinted:
+/// those `drawn`, but any in `highlights` or `hovered` (the selection's, and the hover's or a
+/// candidate's), which keep their own look, as the prototype's `applyHighlight` gives a face
+/// the selection's look, else the hover's, else the maker's tint. Ascending, each once.
+pub fn tinted_faces(
+    makers: Vec<(u32, Element)>,
+    highlights: &[(u32, Element)],
+    hovered: &[(u32, Element)],
+    drawn: impl Fn(&(u32, Element)) -> bool,
+) -> Vec<(u32, Element)> {
+    let kept: BTreeSet<&(u32, Element)> = highlights.iter().chain(hovered).collect();
+    makers
+        .into_iter()
+        .filter(|face| drawn(face) && !kept.contains(face))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// The tab's overlay given `frame`, and a test's watch after it, if one is set.
@@ -3783,10 +3853,11 @@ mod tests {
     }
 
     #[test]
-    fn a_new_bodies_table_has_the_selections_highlights_worked_out_again() {
-        // Body m3tq8v0z, two faces, selected by its row: both its faces lit, as body 1. A
-        // read's answer then numbers it 2 (a body before it, new): the table is made again,
-        // and the same selection lights body 2's faces, not body 1's.
+    fn a_new_bodies_table_has_the_selections_tinted_faces_worked_out_again() {
+        // Body m3tq8v0z, two faces, selected by its row: both its faces tinted as its
+        // maker's, as body 1, none highlighted. A read's answer then numbers it 2 (a body
+        // before it, new): the table is made again, and the same selection tints body 2's
+        // faces, not body 1's.
         use silico_core::naming::{Name, PrimitiveKind, TypeWord};
         use silico_protocol::{ElementKind, ElementRef};
         let id = FeatureId::new("m3tq8v0z").unwrap();
@@ -3824,14 +3895,198 @@ mod tests {
         let ctx = egui::Context::default();
         selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
         let lit = |body: u32| BTreeSet::from([(body, Element::Face(1)), (body, Element::Face(2))]);
-        assert_eq!(view.highlights, lit(1));
+        assert_eq!(view.selected_feature_faces, lit(1));
+        assert_eq!(view.maker_faces(), Vec::from_iter(lit(1)));
+        assert!(view.highlights.is_empty());
         let mesh = Arc::clone(&view.bodies[&1].mesh);
         view.take_bodies(vec![MeshedBody {
             faces,
             ..meshed(2, 1, 0.03125, Some(mesh))
         }]);
         selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
-        assert_eq!(view.highlights, lit(2));
+        assert_eq!(view.selected_feature_faces, lit(2));
+    }
+
+    #[test]
+    fn one_feature_tints_the_same_faces_hovered_in_the_timeline_or_selected_and_its_body_all() {
+        // Body m3tq8v0z, the feature's own: its Face1 named as aaaaaaaa's, its Face2 as its
+        // own. Selected by its timeline item (`select_feature`, the prototype's
+        // `selectFeature`: the maker is the feature), it tints its Face2 alone, as hovered in
+        // the timeline it does; selected by its browser row (`select_body`, `bodyRow`'s
+        // `maker: '*'`), the body's both.
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let named = |id: &str, index: u32| MeshElement {
+            name: Arc::new(Name::Element {
+                feature: FeatureId::new(id).unwrap(),
+                made: TypeWord::Primitive(PrimitiveKind::Box),
+                element: ElementRef {
+                    kind: ElementKind::Face,
+                    index,
+                },
+            }),
+            stable: true,
+            count: None,
+        };
+        let mut held = body(0.03125, [0.03125, 0.0625], CUT);
+        held.faces = vec![named("aaaaaaaa", 1), named("m3tq8v0z", 2)];
+        let mut view = view_with(&[(1, held)], 3);
+        let id = FeatureId::new("m3tq8v0z").unwrap();
+        let frame = ViewFrame {
+            session: SessionId::parse("s1").unwrap(),
+            rect: Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 100.0)),
+            camera: front(80.0),
+            size_px: [100, 100],
+            pixels_per_point: 1.0,
+            pointer_px: None,
+            left: Vec::new(),
+            secondary: Vec::new(),
+            drawn: Vec::new(),
+            now: now(),
+        };
+        let ctx = egui::Context::default();
+        let mut selection = crate::selection::Selection::default();
+        selection.select_feature(id.clone());
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        let selected = view.maker_faces();
+        assert_eq!(selected, [(1, Element::Face(2))]);
+        view.linked = Some(id.clone());
+        assert_eq!(view.maker_faces(), selected, "selected against hovered");
+        view.linked = None;
+        selection.select_bodies(vec![id.clone()]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(
+            view.maker_faces(),
+            [(1, Element::Face(1)), (1, Element::Face(2))]
+        );
+        // Its timeline item clicked again: itself, its own face.
+        selection.select_feature(id.clone());
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), [(1, Element::Face(2))]);
+        // A dialog's body box (Union's) takes it as its body: whole.
+        let whole = [(1, Element::Face(1)), (1, Element::Face(2))];
+        selection.select_bodies(vec![id.clone()]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole, "a dialog's body box");
+        // Selected by its row, then a dialog taking edges alone, then its Cancel: whole.
+        selection.select_bodies(vec![id.clone()]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole);
+        let saved = selection.saved();
+        selection.keep_only(crate::selection::Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        });
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert!(view.maker_faces().is_empty());
+        selection.restore(saved);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole, "after the dialog's Cancel");
+        // Selected by its timeline item, then a dialog's body box, then its Cancel: its own
+        // face again.
+        selection.select_feature(id.clone());
+        let saved = selection.saved();
+        selection.select_bodies(vec![id]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole);
+        selection.restore(saved);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(
+            view.maker_faces(),
+            [(1, Element::Face(2))],
+            "after the body box's Cancel"
+        );
+    }
+
+    #[test]
+    fn a_new_bodies_table_lets_a_hover_and_a_candidate_by_its_old_numbers_go() {
+        // Body 1 lit for the table it came in, Face1 drawn hovered and Face2 a candidate.
+        // A read's answer then numbers it 2: before the frame goes out, the selection's
+        // light lets both go (they're by the old numbers, body 1 being another body now).
+        // A menu holding the hover keeps its own row; the candidate goes either way.
+        let mut first = body(0.03125, [0.03125, 0.0625], CUT);
+        first.faces = Vec::new();
+        for held in [false, true] {
+            let mut view = view_with(&[(1, first.clone())], 3);
+            let mut selection = crate::selection::Selection::default();
+            selection.light(&mut view);
+            if held {
+                selection.hold_hover(None);
+            }
+            view.hovered = BTreeSet::from([(1, Element::Face(1))]);
+            view.candidate = Some((1, Element::Face(2)));
+            // The same table: nothing let go.
+            selection.light(&mut view);
+            assert_eq!(view.hovered, BTreeSet::from([(1, Element::Face(1))]));
+            assert_eq!(view.candidate, Some((1, Element::Face(2))));
+            let mesh = Arc::clone(&view.bodies[&1].mesh);
+            view.take_bodies(vec![meshed(2, 1, 0.03125, Some(mesh))]);
+            selection.light(&mut view);
+            assert_eq!(view.candidate, None, "held {held}");
+            if held {
+                assert_eq!(view.hovered, BTreeSet::from([(1, Element::Face(1))]));
+            } else {
+                assert!(view.hovered.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_selection_change_on_the_same_table_keeps_the_hover_and_the_candidate() {
+        // The table unchanged and the selection changed between two lights (a feature
+        // selected): its highlights and tints are worked out again, but the hover drawn and a
+        // lit candidate are of this table's numbers still, and stay.
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let mut selection = crate::selection::Selection::default();
+        selection.light(&mut view);
+        view.hovered = BTreeSet::from([(1, Element::Face(1))]);
+        view.candidate = Some((1, Element::Face(2)));
+        let before = selection.version();
+        selection.select_feature(FeatureId::new("m3tq8v0z").unwrap());
+        assert_ne!(selection.version(), before);
+        selection.light(&mut view);
+        assert_eq!(view.hovered, BTreeSet::from([(1, Element::Face(1))]));
+        assert_eq!(view.candidate, Some((1, Element::Face(2))));
+    }
+
+    #[test]
+    fn the_maker_tinted_is_the_feature_hovered_in_the_timeline_else_those_selected() {
+        // viewport.js's `syncHighlight`: `maker = S.hoverFeature || S.selFeature`. Body 1's
+        // faces 1 and 2 made by aaaaaaaa, its face 3 by bbbbbbbb; aaaaaaaa selected. Nothing
+        // hovered in the timeline: aaaaaaaa's two. bbbbbbbb hovered: its face alone, the
+        // selected one's left. cccccccc hovered, which made none: none, not the selected's.
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let named = |id: &str, index: u32| MeshElement {
+            name: Arc::new(Name::Element {
+                feature: FeatureId::new(id).unwrap(),
+                made: TypeWord::Primitive(PrimitiveKind::Box),
+                element: ElementRef {
+                    kind: ElementKind::Face,
+                    index,
+                },
+            }),
+            stable: true,
+            count: None,
+        };
+        let mut held = body(0.03125, [0.03125, 0.0625], CUT);
+        held.faces = vec![
+            named("aaaaaaaa", 1),
+            named("aaaaaaaa", 2),
+            named("bbbbbbbb", 3),
+        ];
+        let mut view = view_with(&[(1, held)], 3);
+        view.selected_feature_faces =
+            BTreeSet::from([(1, Element::Face(1)), (1, Element::Face(2))]);
+        assert_eq!(
+            view.maker_faces(),
+            [(1, Element::Face(1)), (1, Element::Face(2))]
+        );
+        view.linked = Some(FeatureId::new("bbbbbbbb").unwrap());
+        assert_eq!(view.maker_faces(), [(1, Element::Face(3))]);
+        view.linked = Some(FeatureId::new("cccccccc").unwrap());
+        assert!(view.maker_faces().is_empty());
     }
 
     #[test]
@@ -4033,6 +4288,60 @@ mod tests {
             assert_eq!((circle.radius, circle.fill), (4.5, fill));
             assert_eq!(circle.stroke, Stroke::new(1.0, egui::Color32::BLACK));
         }
+    }
+
+    #[test]
+    fn a_hovered_features_faces_are_tinted_but_those_selected_or_hovered_and_those_not_drawn() {
+        use Element::{Edge, Face};
+        // The feature's faces as found, out of order and one twice: body 1's 1 to 4 and body
+        // 2's 1 and 2. Body 1's Face2 selected and its Face3 hovered keep their looks (the
+        // prototype's `applyHighlight`: the selection's, else the hover's, else the maker's
+        // tint); body 2's Face2 a candidate on the hover's layer, the same. An edge selected or
+        // hovered takes no face of the tint. Body 3 isn't drawn.
+        let linked = vec![
+            (2, Face(2)),
+            (1, Face(4)),
+            (1, Face(1)),
+            (1, Face(2)),
+            (3, Face(1)),
+            (1, Face(3)),
+            (2, Face(1)),
+            (1, Face(1)),
+        ];
+        let highlights = [(1, Edge(1)), (1, Face(2))];
+        let hovered = [(1, Face(3)), (2, Face(2)), (1, Edge(4))];
+        let drawn = |(body, _): &(u32, Element)| *body != 3;
+        assert_eq!(
+            tinted_faces(linked.clone(), &highlights, &hovered, drawn),
+            [(1, Face(1)), (1, Face(4)), (2, Face(1))]
+        );
+        // Nothing selected or hovered: every face drawn, ascending, each once.
+        assert_eq!(
+            tinted_faces(linked, &[], &[], drawn),
+            [
+                (1, Face(1)),
+                (1, Face(2)),
+                (1, Face(3)),
+                (1, Face(4)),
+                (2, Face(1)),
+                (2, Face(2))
+            ]
+        );
+        // No feature hovered: none.
+        assert!(tinted_faces(Vec::new(), &highlights, &hovered, drawn).is_empty());
+    }
+
+    #[test]
+    fn the_feature_tint_is_the_prototypes_blue_800_at_0_4() {
+        // viewport.js's `MAKER`, `#d4dbff`, at `uTintAmt.value = 0.4` (DESIGN.md's "a
+        // feature's faces on hover: Blue.800 tint 40%").
+        assert_eq!(
+            feature_tint(),
+            Tint {
+                colour: [0xd4, 0xdb, 0xff],
+                amount: 0.4,
+            }
+        );
     }
 
     #[test]

@@ -732,6 +732,14 @@ impl<P: Clients + 'static> App<P> {
         next_frame |= renamed;
         next_frame |= self.take_browsed();
         self.app_bar(ui, &mut next_frame);
+        // The canvas's hover is the pointer's over the tab shown: each tab not shown (one
+        // the app bar just left too) lets its hover go before anything says or draws it.
+        let shown = self.active_place();
+        for (at, tab) in self.tabs.iter_mut().enumerate() {
+            if Some(at) != shown {
+                tab.canvas_unshown();
+            }
+        }
         if self.start_shown() {
             // The start page alone between the bars: no toolbar, panes, or dialog.
             self.status_bar(ui, &mut next_frame);
