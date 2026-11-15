@@ -268,7 +268,7 @@ fn merging_an_arcs_end_with_a_point_held_at_the_middle_of_the_line_its_tangent_t
         refused_as(
             merged.clone(),
             &format!(
-                "merging them would make constraint kt000005 an edge tangency of {a} and {b} where kt000004 holds an end of one at the other's middle: make the tangent a tangent_on, keeping the midpoint"
+                "merging them would make constraint kt000005 an edge tangency of {a} and {b} where kt000004 holds an end of one at the other's middle: that's a tangent_on beside the midpoint"
             ),
             &["kt000005", "kt000004", a, b],
         );

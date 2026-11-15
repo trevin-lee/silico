@@ -794,7 +794,7 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
                         Form::Midpoint { point, line } => (
                             point,
                             line,
-                            "at the other's middle: make the tangent a tangent_on, keeping the midpoint",
+                            "at the other's middle: that's a tangent_on beside the midpoint",
                         ),
                         _ => continue,
                     };
