@@ -273,7 +273,7 @@ Refused:
 - a point and an axis: "an axis has no middle: Midpoint takes a point and a line";
 - two lines: "Midpoint takes a point and a line: select the end you mean and the other line" (§1: SolidWorks' "two lines" is an end and a line);
 - the line's own end: "point pe000001 is an end of line ne000001 itself" (the gate's rule);
-- a point that's an end of a curve an edge `tangent` makes tangent to the line: the gate refuses the `midpoint` ("a curve ending on another is tangent where it ends"), as it refuses Coincident's `on` there (C5), suggesting the tangent be made a `tangent_on`, keeping the midpoint (#498);
+- a point that's an end of a curve an edge `tangent` makes tangent to the line: the gate refuses the `midpoint` ("a curve ending on another is tangent where it ends"), as it refuses Coincident's `on` there (C5), suggesting the tangent be made a `tangent_on`, keeping the midpoint (#498), or removed where a `tangent_on` of the two curves, either way round, already makes them tangent;
 - more than one point or line: "Midpoint takes one point and one line".
 
 A point already held `on` the line gets the `midpoint`, and the `on` stays, reading `redundant` (C5).
@@ -370,7 +370,7 @@ What the tool must add is the choice each form stores, read from the drawing:
 
 **C5. A relation that meets an `on` the sketch has.** Three cases:
 
-- **Tangent at an end held `on` the other curve.** A `tangent` there is refused by the gate's tangent rule, whose advice is "make the two one tangent_on". Adding the `tangent_on` beside the `on` leaves the `on` implied, and it reads `redundant`.
+- **Tangent at an end held `on` the other curve.** A `tangent` there is refused by the gate's tangent rule, whose advice is "make the two one tangent_on" (or "remove the tangent" where a `tangent_on` of the two curves, either way round, already makes them tangent). Adding the `tangent_on` beside the `on` leaves the `on` implied, and it reads `redundant`.
 - **Coincident onto a curve that an edge `tangent` already makes tangent to the point's curve.** The gate refuses the `on`, with the same advice.
 - **Midpoint of a point already `on` the line.** The `on` is implied by the `midpoint`, and reads `redundant`. The gate allows both.
 
@@ -816,7 +816,7 @@ The study's separate Fix step, with its form, schema, and oracle case, is gone.
 - **I read the gate as taking a `tangent_on` beside an `on` of the same point and curve** (its tangent rule pairs an edge `tangent` with either). I didn't run it; test 7 proves it. If it's refused, the order becomes remove, then add, with an undo to the revision when the add is refused.
 - **Which member moves** when a relation is added is the solver's choice, and isn't promised.
 - **A pin on an unsolved sketch** is taken at the coordinates the read shows. The same is true of Smart Dimension.
-- **A `tangent_on` beside a `midpoint`** of the same point and line reads redundant. Loud and harmless, and the same whichever was added first. The gate's tangent rule counts a `midpoint` hold as it counts an `on`'s, by the same list (`Form::hold`), since #498: an edge `tangent` beside the midpoint is refused at whichever of the two comes later, and its suggestion is this `tangent_on`, keeping the midpoint.
+- **A `tangent_on` beside a `midpoint`** of the same point and line reads redundant. Loud and harmless, and the same whichever was added first. The gate's tangent rule counts a `midpoint` hold as it counts an `on`'s, by the same list (`Form::hold`), since #498: an edge `tangent` beside the midpoint is refused at whichever of the two comes later, and its suggestion is this `tangent_on`, keeping the midpoint, unless a `tangent_on` of the two curves, either way round, already makes them tangent, when it says to remove the tangent.
 
 ## Method
 
