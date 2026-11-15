@@ -17386,8 +17386,8 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
     );
     assert!(h.query_by_label("Finish Sketch").is_none());
     // A sketch open (#351's `tab.in_sketch()`): SKETCH after SOLID, and shown; its panels
-    // (app.js's `renderToolbar`, in a sketch), sketch mode's tools and Construction on, the
-    // rest not built yet; Finish Sketch, on.
+    // (app.js's `renderToolbar`, in a sketch), sketch mode's tools, Construction, and the
+    // constraint tools on, the rest not built yet; Finish Sketch, on.
     h.state_mut().in_sketch = true;
     h.step();
     h.step();
@@ -17448,7 +17448,23 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
         ]
     );
     assert_eq!(on(&h, "MODIFY"), ["Trim", "Split", "MODIFY"]);
-    assert_eq!(on(&h, "CONSTRAINTS"), ["Smart Dimension", "CONSTRAINTS"]);
+    assert_eq!(
+        on(&h, "CONSTRAINTS"),
+        [
+            "Smart Dimension",
+            "Horizontal",
+            "Vertical",
+            "Coincident",
+            "Tangent",
+            "Equal",
+            "Parallel",
+            "Perpendicular",
+            "Midpoint",
+            "Symmetric",
+            "Fix",
+            "CONSTRAINTS"
+        ]
+    );
     assert_eq!(on(&h, "INSPECT"), ["INSPECT"]);
     // `.tb-finish`: at the panels' right end, inside `.tb-panels`' 6 and its own 8; 30
     // high, centred in the 52 of panels under the 24 of tabs.
@@ -25315,6 +25331,395 @@ fn sketch_modes_selection_keeps_pick_order_takes_the_origin_and_the_axes_and_del
     for kept in ["na000001", "na000002", "na000004"] {
         assert!(text.contains(kept), "{kept}: {text}");
     }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The constraint tools (open item 34; docs/study/constraint-tools.md, section 9) ----
+
+/// A 40 × 20 box from (10, 10) to (50, 30), unconstrained: its sides na000001 (bottom),
+/// na000002 (right), na000003 (top), and na000004 (left). Lone points pb000001 (70, 10),
+/// pb000002 (80, 10), and pb000003 (70, 40). A circle cc000001 about pc000001 (100, 20),
+/// radius 5, and a line nd000001 from pd000001 (80, 25) to pd000002 (100, 25), which kd000001
+/// holds on the circle: (100, 25) is 5 from (100, 20). And pe000001 at (30, 0), which
+/// ke000001 holds on the x axis.
+const RELATING: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Relate", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}, {"id": "pb000001", "x": 70, "y": 10, "construction": false}, {"id": "pb000002", "x": 80, "y": 10, "construction": false}, {"id": "pb000003", "x": 70, "y": 40, "construction": false}, {"id": "pc000001", "x": 100, "y": 20, "construction": false}, {"id": "pd000001", "x": 80, "y": 25, "construction": false}, {"id": "pd000002", "x": 100, "y": 25, "construction": false}, {"id": "pe000001", "x": 30, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}, {"id": "nd000001", "from": "pd000001", "to": "pd000002", "construction": false}], "circles": [{"id": "cc000001", "center": "pc000001", "radius": 5, "construction": false}], "arcs": [], "constraints": [{"id": "kd000001", "type": "on", "point": "pd000002", "curve": "cc000001"}, {"id": "ke000001", "type": "on", "point": "pe000001", "curve": "x_axis"}]}
+  ]
+}
+"#;
+
+/// [`RELATING`] opened in sketch mode (Edit Sketch from the browser), and read.
+fn relating_sketch(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("relating.silico", RELATING);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Relate"));
+    double_click(&mut h, "Browser", "Relate");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    h
+}
+
+/// The constraint tool `label` pressed through the accessibility tree, in SKETCH's
+/// CONSTRAINTS panel.
+fn relate_button(h: &mut AppHarness, label: &str) {
+    sketch_button(h, label).click_accesskit();
+    step(h);
+    step(h);
+}
+
+/// The constraints of sketch mode's newest read, as written there.
+fn read_forms(h: &AppHarness) -> Vec<silico_core::document::Form> {
+    sketch_mode(h)
+        .and_then(|mode| mode.drawable())
+        .map_or_else(Vec::new, |read| {
+            read.members
+                .constraints
+                .iter()
+                .map(|c| c.form.clone())
+                .collect()
+        })
+}
+
+/// The sketch edits the first tab sent, in order, by name.
+fn sketch_sends(h: &AppHarness) -> Vec<&'static str> {
+    h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter_map(|sent| match sent {
+            Sent::SketchEdit(name) => Some(*name),
+            _ => None,
+        })
+        .collect()
+}
+
+fn element_ref(id: &str) -> silico_core::document::Reference {
+    silico_core::document::Reference::Element(silico_core::document::ElementId::new(id).unwrap())
+}
+
+#[test]
+fn parallel_on_two_lines_picked_adds_one_parallel_of_both_and_both_stay_selected() {
+    // The study's §7: ne000001 then ne000003 with Ctrl, Parallel pressed. Here the box's
+    // bottom (30, 10) then its top (30, 30): one `parallel`, a the first picked (C8).
+    use silico_core::document::Form;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    relate_button(&mut h, "Parallel");
+    step_until(&mut h, "the read with a parallel", |h| {
+        read_forms(h)
+            .iter()
+            .any(|form| matches!(form, Form::Parallel { .. }))
+    });
+    let parallels: Vec<Form> = read_forms(&h)
+        .into_iter()
+        .filter(|form| matches!(form, Form::Parallel { .. }))
+        .collect();
+    assert_eq!(
+        parallels,
+        [Form::Parallel {
+            a: element_ref("na000001"),
+            b: element_ref("na000003"),
+        }]
+    );
+    assert_eq!(sketch_sends(&h), ["sketch_add"]);
+    // Both still selected, in the order picked.
+    assert_eq!(
+        sketch_picks(&h),
+        [element_ref("na000001"), element_ref("na000003")]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn equal_with_nothing_selected_toasts_the_prototypes_words_and_sends_nothing() {
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    relate_button(&mut h, "Equal");
+    step_until(&mut h, "the toast", |h| toast_said(h).is_some());
+    // The prototype's toast (app.js), word for word.
+    assert_eq!(
+        toast_said(&h).map(|(text, _)| text),
+        Some("Select the curves or points first; the relation applies to them.".to_owned())
+    );
+    settled(&mut h);
+    assert!(h.state().tabs()[0].sent.is_empty());
+    assert_eq!(text_of(&f, &h), RELATING);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn coincident_on_two_points_merges_them_and_the_removed_point_leaves_the_selection() {
+    // pb000001 (70, 10) then pb000002 (80, 10): one `sketch_merge`, the first picked
+    // surviving where it is (C1); the second gone from the selection once the read comes.
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(70.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(80.0, 10.0));
+    assert_eq!(
+        sketch_picks(&h),
+        [element_ref("pb000001"), element_ref("pb000002")]
+    );
+    relate_button(&mut h, "Coincident");
+    step_until(&mut h, "the read without pb000002", |h| {
+        sketch_mode(h)
+            .and_then(|mode| mode.drawable())
+            .is_some_and(|read| {
+                read.members
+                    .points
+                    .iter()
+                    .all(|p| p.id.as_str() != "pb000002")
+            })
+    });
+    settled(&mut h);
+    assert_eq!(sketch_sends(&h), ["sketch_merge"]);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert!(sketch.points.iter().all(|p| p.id.as_str() != "pb000002"));
+    assert_eq!(point_at(&sketch, 70.0, 10.0), "pb000001");
+    assert_eq!(sketch_picks(&h), [element_ref("pb000001")]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_after_a_relation_takes_it_back_in_one_step_named_by_the_relation() {
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    relate_button(&mut h, "Parallel");
+    settled(&mut h);
+    assert_ne!(text_of(&f, &h), RELATING);
+    // The step reads the relation's name, as its button does.
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Parallel");
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f, &h), RELATING);
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Parallel");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn equal_of_three_lines_picked_out_of_id_order_pairs_each_with_the_first_picked() {
+    // The top (na000003), then the bottom (na000001) and the right (na000002) with Ctrl: a
+    // star from the top, the first picked (C8), never from the lowest ID.
+    use silico_core::document::Form;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(50.0, 20.0));
+    relate_button(&mut h, "Equal");
+    settled(&mut h);
+    let equals: Vec<Form> = sketch_of_text(&f, &h, "s0000001")
+        .constraints
+        .into_iter()
+        .map(|c| c.form)
+        .filter(|form| matches!(form, Form::Equal { .. }))
+        .collect();
+    assert_eq!(equals.len(), 2, "{equals:?}");
+    for b in ["na000001", "na000002"] {
+        let pair = Form::Equal {
+            a: element_ref("na000003"),
+            b: element_ref(b),
+        };
+        assert!(equals.contains(&pair), "{pair:?} in {equals:?}");
+    }
+    assert_eq!(sketch_sends(&h), ["sketch_add"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn coincident_of_the_origin_clicked_and_a_point_sends_the_pair_the_drawing_tools_write() {
+    // A click at the origin selects it; pb000003 (70, 40) with Ctrl. Coincident writes #278's
+    // A pair, the point a and the origin b whichever was picked first (C1): one `sketch_add`.
+    use silico_core::document::{Form, Reference};
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(0.0, 0.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(70.0, 40.0));
+    assert_eq!(
+        sketch_picks(&h),
+        [Reference::Origin, element_ref("pb000003")]
+    );
+    relate_button(&mut h, "Coincident");
+    settled(&mut h);
+    assert_eq!(sketch_sends(&h), ["sketch_add"]);
+    let forms: Vec<Form> = sketch_of_text(&f, &h, "s0000001")
+        .constraints
+        .into_iter()
+        .map(|c| c.form)
+        .collect();
+    assert_eq!(forms.len(), 4, "{forms:?}");
+    for pair in [
+        Form::HorizontalPoints {
+            a: element_ref("pb000003"),
+            b: Reference::Origin,
+        },
+        Form::VerticalPoints {
+            a: element_ref("pb000003"),
+            b: Reference::Origin,
+        },
+    ] {
+        assert!(forms.contains(&pair), "{pair:?} in {forms:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`RELATING`]'s line nd000001, ended on the circle by kd000001, and the circle, picked,
+/// and Tangent pressed: the constraints written after it.
+fn tangent_over_the_on(f: &Fixture, h: &mut AppHarness) -> Vec<silico_core::document::Form> {
+    // The line at (90, 25); the circle at (105, 20), on its rim.
+    sketch_events(f, h, &clicked(90.0, 25.0));
+    sketch_events(f, h, &ctrl_clicked(105.0, 20.0));
+    relate_button(h, "Tangent");
+    settled(h);
+    sketch_of_text(f, h, "s0000001")
+        .constraints
+        .into_iter()
+        .map(|c| c.form)
+        .collect()
+}
+
+#[test]
+fn tangent_over_an_on_adds_a_tangent_on_then_removes_the_on_and_one_undo_takes_back_both() {
+    // One place, pd000002, nd000001's end held on the circle (C3). Leaving it along the line
+    // is (80 − 100, 0) = (−20, 0); the circle's own direction there, at (100, 25) about
+    // (100, 20), is (−5, 0): a dot product of 100, so `same` (trim's rule). The `tangent_on`
+    // replaces the `on` (C5): a `sketch_add`, then a `sketch_remove`, one step.
+    use silico_core::document::{Direction, Form};
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    let forms = tangent_over_the_on(&f, &mut h);
+    let tangent = Form::TangentOn {
+        a: element_ref("nd000001"),
+        at: element_ref("pd000002"),
+        b: element_ref("cc000001"),
+        direction: Direction::Same,
+    };
+    let replaced = Form::On {
+        point: element_ref("pd000002"),
+        curve: element_ref("cc000001"),
+    };
+    assert!(forms.contains(&tangent), "{forms:?}");
+    assert!(!forms.contains(&replaced), "{forms:?}");
+    assert_eq!(forms.len(), 2, "{forms:?}");
+    assert_eq!(sketch_sends(&h), ["sketch_add", "sketch_remove"]);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Tangent");
+    // One Undo: both, the `on` back and the `tangent_on` gone, byte for byte.
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f, &h), RELATING);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn tangent_over_an_on_sends_its_remove_at_the_revision_the_add_made() {
+    // The remove goes against the revision the add made, not the read's the click was
+    // planned on: so neither is refused as stale and planned again. Two commands, the
+    // session two revisions on.
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    let read_at = h.state().tabs()[0].revision;
+    tangent_over_the_on(&f, &mut h);
+    assert_eq!(sketch_sends(&h), ["sketch_add", "sketch_remove"]);
+    let two_on = read_at.next().and_then(Revision::next);
+    assert_eq!(Some(h.state().tabs()[0].revision), two_on);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_refused_click_leaves_the_selection_as_it_was_and_sends_nothing_more() {
+    // A Parallel first, then the bottom and a lone point: Perpendicular takes two lines, so
+    // the tool refuses it in its sentence, and nothing more is sent.
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    relate_button(&mut h, "Parallel");
+    settled(&mut h);
+    let text = text_of(&f, &h);
+    let sent = h.state().tabs()[0].sent.clone();
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(70.0, 10.0));
+    let picked = sketch_picks(&h);
+    assert_eq!(picked, [element_ref("na000001"), element_ref("pb000001")]);
+    relate_button(&mut h, "Perpendicular");
+    step_until(&mut h, "the refusal", |h| {
+        toast_said(h).is_some_and(|(text, _)| text == "Perpendicular takes two lines")
+    });
+    settled(&mut h);
+    assert_eq!(sketch_picks(&h), picked);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_second_click_before_the_firsts_read_is_refused_as_stale_and_planned_again_on_the_next() {
+    // Parallel twice, the second planned on the same read as the first (its read not in
+    // yet): sent against that read's revision after the first has moved the session on, so
+    // refused as stale; planned again on the next read, where the parallel is there (C6).
+    // One parallel written, the conflict never said.
+    use silico_core::document::Form;
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Parallel);
+        tab.sketch_relate(&sessions, RelationTool::Parallel);
+    }
+    step_until(&mut h, "the second planned again", |h| {
+        toast_said(h).is_some_and(|(text, _)| {
+            text == "lines na000001 and na000003 are already parallel: nothing was added"
+        })
+    });
+    settled(&mut h);
+    let parallels = sketch_of_text(&f, &h, "s0000001")
+        .constraints
+        .into_iter()
+        .filter(|c| matches!(c.form, Form::Parallel { .. }))
+        .count();
+    assert_eq!(parallels, 1);
+    // Both sent; the second refused, and not sent again.
+    assert_eq!(sketch_sends(&h), ["sketch_add", "sketch_add"]);
+    assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_refused_add_sends_no_remove() {
+    // pe000001, held on the x axis by ke000001, and the x axis, far along it at (130, 0.3):
+    // Midpoint plans a `midpoint` replacing the `on` (C5); the gate refuses the add (a
+    // midpoint's line is a line of the sketch), so the remove is never sent.
+    use silico_core::document::Reference;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(30.0, 0.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(130.0, 0.3));
+    assert_eq!(
+        sketch_picks(&h),
+        [element_ref("pe000001"), Reference::XAxis]
+    );
+    relate_button(&mut h, "Midpoint");
+    step_until(&mut h, "the refusal", |h| {
+        h.state().tabs()[0].message.is_some()
+    });
+    settled(&mut h);
+    let said = h.state().tabs()[0].message.clone().unwrap_or_default();
+    assert!(
+        said.contains("but a midpoint's line is a line of this sketch"),
+        "{said}"
+    );
+    assert_eq!(sketch_sends(&h), ["sketch_add"]);
+    assert_eq!(text_of(&f, &h), RELATING);
     assert_eq!(never_waits::waits(), 0);
 }
 
