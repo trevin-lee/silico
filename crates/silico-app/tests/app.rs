@@ -44704,3 +44704,50 @@ fn an_arrows_press_held_as_its_unedited_tab_closes_edits_nothing() {
     assert_eq!(std::fs::read_to_string(&path).unwrap(), PLATE);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn after_ok_cuts_a_drag_short_its_release_lets_the_hover_follow_the_pointer_again() {
+    // #480's mutants: the arrows still take a stream whose dialog OK closed, to its release,
+    // and then let it go; so the hover, held where the press was through the drag, is the
+    // pointer's again.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    meshes_settled(&mut h);
+    let tip = up(c, 56.0);
+    answering(&record, None, None);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 20.0));
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    left_up_at(&mut h, up(tip, 20.0));
+    assert!(h.state().tabs()[0].selection().hovered().is_none());
+    // From here every pick finds the pad's front face; the pointer goes over it.
+    let over = up(c, -20.0) + eframe::egui::vec2(30.0, 0.0);
+    answering(&record, Some((1, Face(3), pixel_at(&h, over))), None);
+    move_to(&mut h, over);
+    step_until(&mut h, "the face hovered", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drags_release_sends_the_value_it_held_back_in_the_releases_own_frame() {
+    // #480's review (A1): a release sends at once. The release's own frame sends 17, held
+    // back behind 16's preview, not the frame after.
+    let f = fixture();
+    let (mut h, c, hold, sent) = held_back_at_17(&f);
+    left_up_at(&mut h, up(c, 84.0));
+    assert_eq!(
+        h.state().tabs()[0].edits.sent,
+        sent + 2,
+        "17 sent at the release"
+    );
+    hold.release();
+    settled(&mut h);
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
+    assert_eq!(never_waits::waits(), 0);
+}

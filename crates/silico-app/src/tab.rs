@@ -10202,6 +10202,51 @@ mod tests {
     }
 
     #[test]
+    fn a_dialogs_preview_has_answered_once_either_model_is_of_the_sessions_revision() {
+        // #480's mutants: an arrow's drag holds its value back only while neither the model
+        // the newest timeline read nor the model published is of the session's revision
+        // (`preview_pending`); either one there, whichever the tab sees first, answers the
+        // preview. A stopped rebuild, or a dialog with no feature yet, has none pending.
+        let revision = |n: u64| Revision::from_number(n).unwrap();
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let pending = |dialog: &Dialog, models: (Option<u64>, Option<u64>), state| {
+            let mut tab = tab();
+            tab.revision = revision(5);
+            let mut status = status(revision(5), true);
+            status.rebuild.state = state;
+            tab.status = Some(status);
+            tab.timeline = Some(timeline(0, models.0.map(revision), Vec::new()));
+            tab.published = models.1.map(revision);
+            tab.preview_pending(dialog)
+        };
+        let mut editing = Dialog::new(Kind::Pad, Some(fid("s0000001")), 1);
+        editing.feature = Some(fid("p0000001"));
+        let running = RebuildState::Running;
+        assert!(pending(&editing, (None, None), running));
+        assert!(pending(&editing, (Some(4), Some(4)), running));
+        assert!(pending(&editing, (Some(4), None), running));
+        assert!(pending(&editing, (None, Some(4)), running));
+        assert!(
+            !pending(&editing, (Some(5), Some(4)), running),
+            "the timeline's model there first"
+        );
+        assert!(
+            !pending(&editing, (Some(4), Some(5)), running),
+            "the published model there first"
+        );
+        assert!(!pending(&editing, (Some(5), None), running));
+        assert!(!pending(&editing, (None, Some(5)), running));
+        assert!(!pending(&editing, (Some(5), Some(5)), running));
+        assert!(!pending(
+            &editing,
+            (Some(4), Some(4)),
+            RebuildState::Stopped
+        ));
+        let making = Dialog::new(Kind::Pad, Some(fid("s0000001")), 2);
+        assert!(!pending(&making, (Some(4), Some(4)), running));
+    }
+
+    #[test]
     fn a_check_the_stop_cancels_is_asked_again_of_the_same_timeline() {
         // A check out when the stop comes, cancelled through its handle so it never starts a
         // stopped rebuild again: once it has answered `cancelled`, the same timeline asks it

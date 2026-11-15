@@ -725,3 +725,12 @@ crates/silico-app/src/tab.rs | Tab::reloaded_under_dialog | replace && with || |
 crates/silico-app/src/navigate.rs | at_view | replace % with + | #476
 crates/silico-app/src/navigate.rs | at_view | replace < with <= | #476
 crates/silico-app/src/navigate.rs | at_view | replace > with >= | #476
+crates/silico-app/src/arrow.rs | profile_centroid | replace * with / | #480
+crates/silico-app/src/arrow.rs | profile_centroid | replace > with >= | #480
+crates/silico-app/src/arrow.rs | handles | replace * with / | #480
+crates/silico-app/src/arrow.rs | handles | replace * with / | #480
+crates/silico-app/src/arrow.rs | arrows | replace > with >= | #480
+crates/silico-app/src/arrow.rs | Grip::centroid | replace match guard Arc::ptr_eq(kept, read) with false | #480
+crates/silico-app/src/tab.rs | Tab::arrows_frame | replace && with || | #480
+crates/silico-app/src/tab.rs | Tab::arrows_frame | replace && with || | #480
+crates/silico-app/src/tab.rs | Tab::arrows_frame | delete ! | #480

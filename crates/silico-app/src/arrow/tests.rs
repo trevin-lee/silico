@@ -476,6 +476,22 @@ fn a_sketch_with_no_profile_or_none_with_area_has_no_centroid() {
     // Three points on a line: a loop of no area.
     let flat = polygon(&[(0.0, 0.0), (10.0, 0.0), (20.0, 0.0)]);
     assert_eq!(profile_centroid(&flat), None);
+    // A region whose hole outweighs it, which no solve makes: the 40 × 20 rectangle (800 mm²)
+    // less a circle of radius 20 (400π mm²) has an area below 0, and so no centroid, though
+    // its moments make a finite place.
+    let mut read = rectangle_read();
+    read.members.points.push(point("pc000001", 20.0, 10.0));
+    read.members.circles.push(SketchCircle {
+        id: id("ca000001"),
+        center: id("pc000001"),
+        radius: Coordinate::new(20.0).unwrap(),
+        construction: false,
+    });
+    read.regions = vec![region(
+        &["na000001", "na000002", "na000003", "na000004"],
+        &[&["ca000001"]],
+    )];
+    assert_eq!(profile_centroid(&read), None);
 }
 
 // ---- Model space ----
@@ -1490,6 +1506,26 @@ fn its_shapes_are_the_prototypes_in_its_order_and_the_held_one_white() {
             assert_eq!(text.fallback_color, white);
         });
     }
+}
+
+#[test]
+fn arrows_are_empty_only_with_no_distance_arrow_and_no_flip() {
+    // From the front: a distance arrow and the flip. Either alone is something to draw; only
+    // neither is nothing (a through-all pocket has the flip alone, a symmetric pad a
+    // distance arrow alone).
+    let both = front_arrows(&dialog_of(Kind::Pad));
+    assert!(!both.is_empty());
+    let flip_alone = Arrows {
+        distances: Vec::new(),
+        ..both.clone()
+    };
+    assert!(!flip_alone.is_empty());
+    let distance_alone = Arrows {
+        flip: None,
+        ..both.clone()
+    };
+    assert!(!distance_alone.is_empty());
+    assert!(Arrows::default().is_empty());
 }
 
 #[test]
