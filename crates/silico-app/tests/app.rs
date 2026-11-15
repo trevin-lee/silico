@@ -46547,15 +46547,294 @@ fn a_box_dragged_as_the_sheet_comes_selects_nothing() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn a_toast_asked_while_a_modal_is_open_waits_under_it_and_shows_once_it_has_gone() {
-    // #497's review, round 2: egui raises an area first shown over every other of its order;
-    // the prototype's `#toasts` sit under `.backdrop`. F5 (its toast) and ⌘R (its question,
-    // the edits held) in one frame, as a window gets two keys between frames: the question
-    // comes before the toast is drawn. The toast isn't drawn over it, and shows once it has
-    // gone.
+/// A key event pressed, with `modifiers`: one of a frame's events.
+fn key_event(key: Key, modifiers: eframe::egui::Modifiers) -> eframe::egui::Event {
+    eframe::egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// The modifiers ⌘ (Ctrl elsewhere) puts on a key event, as the platform's window gives them.
+fn command_modifiers(h: &AppHarness) -> eframe::egui::Modifiers {
+    use eframe::egui::Modifiers;
     use eframe::egui::os::OperatingSystem;
-    use eframe::egui::{Event, Modifiers};
+    if h.ctx.os() == OperatingSystem::Mac {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    }
+}
+
+/// What the last frame painted, in the order painted (the lowest first): each text's words,
+/// and `None` for each modal's backdrop (a rectangle over the whole window, black at any
+/// opacity: [`silico_app::theme::MODAL_BACKDROP`], or less as egui fades a new modal in);
+/// nothing else.
+fn painted_stack(h: &AppHarness) -> Vec<Option<String>> {
+    use eframe::egui::Shape;
+    fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+        match shape {
+            Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+            shape => out.push(shape.clone()),
+        }
+    }
+    let mut shapes = Vec::new();
+    for clipped in &h.output().shapes {
+        flatten(&clipped.shape, &mut shapes);
+    }
+    let window = h.ctx.content_rect();
+    shapes
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Text(text) => Some(Some(text.galley.text().to_owned())),
+            Shape::Rect(rect)
+                if matches!(rect.fill.to_array(), [0, 0, 0, alpha] if alpha > 0)
+                    && rect.rect.contains_rect(window) =>
+            {
+                Some(None)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Where the last frame painted `words`, in [`painted_stack`]'s order, and where it painted
+/// the first modal's backdrop, if it did.
+fn painted_with_the_modal(h: &AppHarness, words: &str) -> (Vec<usize>, Option<usize>) {
+    let stack = painted_stack(h);
+    let at = (0..stack.len())
+        .filter(|&i| stack[i].as_deref() == Some(words))
+        .collect();
+    (at, stack.iter().position(Option::is_none))
+}
+
+/// Whether the last frame painted `words`, every time under the first modal's backdrop.
+fn painted_under_the_modal(h: &AppHarness, words: &str) -> bool {
+    let (at, backdrop) = painted_with_the_modal(h, words);
+    !at.is_empty() && backdrop.is_some_and(|backdrop| at.iter().all(|&i| i < backdrop))
+}
+
+/// Whether the last frame painted `words` over the first modal's backdrop, any time.
+fn painted_over_the_modal(h: &AppHarness, words: &str) -> bool {
+    let (at, backdrop) = painted_with_the_modal(h, words);
+    backdrop.is_some_and(|backdrop| at.iter().any(|&i| i > backdrop))
+}
+
+/// The boxed sketch open in sketch mode, seen from the top, the Line tool chosen.
+fn boxed_line_tool(f: &Fixture) -> AppHarness {
+    counting(f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(Key::L);
+    step(&mut h);
+    h
+}
+
+/// A click-drag line pressed at the top view's (10, 50) and moved to (30, 60), its button
+/// still down: the edits sent before it.
+fn line_held(h: &mut AppHarness) -> Vec<Sent> {
+    let sent = h.state().tabs()[0].sent.clone();
+    pane_press(h, [10.0, 50.0]);
+    pane_move(h, [20.0, 55.0]);
+    pane_move(h, [30.0, 60.0]);
+    sent
+}
+
+/// The left button let go at the top view's (30, 60), then `key`, in one frame, as a window
+/// gets two events between frames; the frame.
+fn let_go_then(h: &mut AppHarness, key: eframe::egui::Event) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let at = top_screen(h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key);
+    step(h);
+}
+
+#[test]
+fn a_line_let_go_before_the_sheets_key_in_one_frame_is_added() {
+    // #497's review, round 3: the release came before the key that opened the sheet, so the
+    // gesture was finished before any modal came; only what's still held after the frame's
+    // events is cancelled (as a release in the frame the tab changes is a release).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    let sent = line_held(&mut h);
+    let_go_then(
+        &mut h,
+        key_event(Key::Questionmark, eframe::egui::Modifiers::NONE),
+    );
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert!(
+        added.contains(&Sent::SketchEdit("sketch_add")),
+        "a line let go before the sheet's key, in one frame, was dropped: {added:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_close_in_one_frame_is_in_the_file_the_questions_save_writes() {
+    // #497's review, round 3: the release, then ⌘W, in one frame: the line is added, and the
+    // close question's Save writes it. A line drawn first, from (40, 50) to (45, 60), so
+    // there's an edit to ask about as ⌘W comes (before the canvas has the release).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    pane_press(&mut h, [40.0, 50.0]);
+    pane_move(&mut h, [42.0, 55.0]);
+    pane_move(&mut h, [45.0, 60.0]);
+    pane_release(&mut h, [45.0, 60.0]);
+    settled(&mut h);
+    assert!(h.state().tabs()[0].unsaved());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::W, command));
+    let asked = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    // The question's Save, not the application bar's (off behind it).
+    on_button(&h, "Save").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    let saved = std::fs::read(f.dir.path().join("example.silico")).unwrap();
+    let document = silico_core::document::read(&saved).unwrap();
+    let sketch = document
+        .features
+        .into_iter()
+        .find_map(|feature| match feature.operation {
+            silico_core::document::Operation::Sketch(sketch) => Some(sketch),
+            _ => None,
+        })
+        .unwrap();
+    // The box's four sides, the first line, and the line from (10, 50) to (30, 60) as it
+    // was let go.
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    let (from, to) = (
+        point_near(&sketch, 10.0, 50.0, 0.5),
+        point_near(&sketch, 30.0, 60.0, 0.5),
+    );
+    assert!(
+        sketch.lines.iter().any(|line| {
+            let ends = [line.from.as_str(), line.to.as_str()];
+            ends == [from.as_str(), to.as_str()] || ends == [to.as_str(), from.as_str()]
+        }),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dimension_let_go_before_the_sheets_key_in_one_frame_is_placed_under_the_sheet() {
+    // #497's review, round 3: Smart Dimension's release, then `?`, in one frame: the
+    // dimension is placed (its gesture was finished), and its Modify box drawn under the
+    // sheet, never over it (egui raises an area first shown over every other of its order,
+    // and never over a higher order), taking no keyboard there; once the sheet has gone, the
+    // box takes the keyboard, and what's typed reaches it.
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    // The sheet shown once, before any box: a box first shown in the frame the sheet is
+    // again, egui would keep above it, were they of one order.
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    h.key_press(Key::D);
+    step(&mut h);
+    pane_click(&mut h, [50.0, 20.0]);
+    pane_press(&mut h, [60.0, 20.0]);
+    let at = top_screen(&h, [60.0, 20.0]);
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    // Each frame: the box, once it's there, never over the sheet, and without the keyboard.
+    let under = |h: &AppHarness| {
+        let Some(view) = sketch_mode(h).unwrap().modify_view() else {
+            return;
+        };
+        if let Some(field) = modify_field(h) {
+            assert!(
+                !field.is_focused(),
+                "the box took the keyboard behind the sheet"
+            );
+            assert!(field.accesskit_node().is_disabled());
+        }
+        assert!(
+            !painted_over_the_modal(h, &view.text),
+            "the box's {:?} painted over the sheet: {:?}",
+            view.text,
+            painted_stack(h)
+        );
+    };
+    step(&mut h);
+    let mut frames = 0;
+    while !(sheet_open(&h) && modify_field(&h).is_some()) {
+        assert!(
+            frames < 600,
+            "the sheet and the box: {:?}",
+            painted_stack(&h)
+        );
+        step(&mut h);
+        under(&h);
+        frames += 1;
+    }
+    for _ in 0..5 {
+        step(&mut h);
+        under(&h);
+    }
+    // Drawn, dimmed, under the sheet drawn whole.
+    let measured = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    assert!(
+        painted_under_the_modal(&h, &measured),
+        "the box's {measured:?} not painted under the sheet: {:?}",
+        painted_stack(&h)
+    );
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    step(&mut h);
+    assert!(
+        modify_field(&h).is_some_and(|field| field.is_focused()),
+        "the box without the keyboard once the sheet has gone"
+    );
+    h.event(Event::Text("7".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{measured}7")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_toast_asked_while_a_modal_is_open_is_drawn_at_once_under_it() {
+    // #497's review, round 3: as the prototype's `#toasts` (z 650) sit under `.backdrop`
+    // (700), dimmed, their time running. F5 (its toast) and ⌘R (its question, the edits
+    // held) in one frame, as a window gets two keys between frames: the question comes
+    // before the toast is drawn, and the toast is drawn at once, under it.
     let f = fixture();
     let (mut h, _) = pins_held(&f);
     // The keyboard off the name field: F5 is no field's key.
@@ -46564,32 +46843,182 @@ fn a_toast_asked_while_a_modal_is_open_waits_under_it_and_shows_once_it_has_gone
         selected_features(h) == ["k7f2qx3m"]
     });
     assert!(!h.ctx.text_edit_focused());
-    let command = if h.ctx.os() == OperatingSystem::Mac {
-        Modifiers::MAC_CMD | Modifiers::COMMAND
-    } else {
-        Modifiers::CTRL | Modifiers::COMMAND
-    };
-    let key = |key, modifiers| Event::Key {
-        key,
-        physical_key: None,
-        pressed: true,
-        repeat: false,
-        modifiers,
-    };
-    let events = &mut h.input_mut().events;
-    events.push(key(Key::F5, Modifiers::NONE));
-    events.push(key(Key::R, command));
-    step(&mut h);
     let said = silico_app::app::FILTERS_SAID;
     let asked = "Reload example.silico from disk?";
+    let command = command_modifiers(&h);
+    // The question shown once, then a toast after it, gone: in one frame each first shown
+    // again, egui keeps the toast above the question, were they of one order.
+    h.event(key_event(Key::R, command));
     step_until(&mut h, "the question", |h| anywhere(h, asked));
-    for _ in 0..5 {
-        step(&mut h);
-    }
-    assert_eq!(h.state().toast().map(|(text, _)| text), Some(said));
-    assert!(!anywhere(&h, said), "the toast drawn over the question");
+    step(&mut h);
     h.key_press(Key::Escape);
     step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    h.key_press(Key::F5);
     step_until(&mut h, "the toast", |h| anywhere(h, said));
+    step_until(&mut h, "the toast gone", |h| !anywhere(h, said));
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::F5, eframe::egui::Modifiers::NONE));
+    events.push(key_event(Key::R, command));
+    step(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(anywhere(&h, said), "the toast not drawn under the question");
+        assert!(
+            painted_under_the_modal(&h, said),
+            "the toast drawn over the question: {:?}",
+            painted_stack(&h)
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_modify_box_takes_the_keyboard_back_once_the_close_question_has_gone() {
+    // #497's review, round 3: as SolidWorks' and Windows' dialogs give the focus back to the
+    // control that held it.
+    use eframe::egui::Event;
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    assert!(modify_field(&h).is_some_and(|field| field.is_focused()));
+    let before = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    h.event(Event::Text("3".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{before}3")
+    );
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    assert!(modify_field(&h).is_some_and(|field| !field.is_focused()));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    // Given back as the first frame drawn without the question ends; a frame more, typed in.
+    step(&mut h);
+    assert!(
+        modify_field(&h).is_some_and(|field| field.is_focused()),
+        "the box's field without the keyboard once the question has gone"
+    );
+    h.event(Event::Text("4".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{before}34")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_name_field_takes_the_keyboard_back_once_the_close_question_has_gone() {
+    // #497's review, round 3: a text field in a pane, the properties' Name.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    assert!(!name_field(&h).is_focused());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(
+        name_field(&h).is_focused(),
+        "the name field without the keyboard once the question has gone"
+    );
+    h.event(Event::Text("x".to_owned()));
+    step(&mut h);
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pinsx"));
+    step_until(&mut h, "renamed", |h| shows(h, "Timeline", "Pinsx"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_rename_field_opened_in_the_frame_a_question_comes_is_drawn_under_it() {
+    // #497's review, round 3: F2 and ⌘R in one frame open the timeline's rename field and
+    // the reload question over it; the field, of the order under the modals', is never drawn
+    // over the question, though its layer is newer.
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    let asked = "Reload example.silico from disk?";
+    let command = command_modifiers(&h);
+    timeline_item(&h, "Block").click();
+    step_until(&mut h, "Block selected", |h| {
+        selected_features(h) == ["k7f2qx3m"]
+    });
+    // The question shown once first.
+    h.event(key_event(Key::R, command));
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    step(&mut h);
+    assert!(!h.ctx.text_edit_focused());
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::F2, eframe::egui::Modifiers::NONE));
+    events.push(key_event(Key::R, command));
+    step(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    let mut drawn = false;
+    for _ in 0..5 {
+        step(&mut h);
+        if let Some(field) = rename_field(&h, "Block") {
+            assert!(field.accesskit_node().is_disabled());
+            drawn = true;
+        }
+        assert!(
+            !painted_over_the_modal(&h, "Block"),
+            "the rename field painted over the question: {:?}",
+            painted_stack(&h)
+        );
+    }
+    assert!(drawn, "no rename field under the question");
+    assert!(painted_under_the_modal(&h, "Block"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_modify_box_stays_over_the_sketch_bar_after_a_press_on_the_bar() {
+    // #497's review, round 3: the box is of the order under the modals', the sketch bar's
+    // and the palette's; a press on the bar raises the bar among them, and the box, raised
+    // each frame, stays over it, as the prototype's `.modify-box` (z 40) is over
+    // `.sketch-bar` (26).
+    use eframe::egui::{Modifiers, PointerButton, Pos2};
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    let text = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    let bar = sketch_mode(&h).unwrap().panels.as_ref().unwrap().bar;
+    // On the bar's own padding, at its left: no button of its.
+    let at = Pos2::new(bar.left() + 3.0, bar.center().y);
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().map(|view| view.text),
+        Some(text.clone())
+    );
+    let stack = painted_stack(&h);
+    let last = |words: &str| {
+        stack
+            .iter()
+            .rposition(|painted| painted.as_deref() == Some(words))
+    };
+    assert!(
+        last(&text) > last("Finish Sketch"),
+        "the bar painted over the box: {stack:?}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }

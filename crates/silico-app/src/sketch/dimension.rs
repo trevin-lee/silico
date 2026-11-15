@@ -239,8 +239,8 @@ pub fn palette_area(session: &SessionId) -> egui::Id {
 /// mode takes the keyboard once as it opens, a later sketch's as the first's, though each
 /// sketch mode numbers its boxes from the start again.
 ///
-/// `behind` a modal (the over-define prompt, a question), it's drawn as it is, but inert
-/// (`crate::modal::area`): nothing asked of it.
+/// `behind` a modal (the over-define prompt, a question, the sheet), it's drawn as it is,
+/// under it, but inert (`crate::modal::area`): nothing asked of it.
 pub fn modify_box(
     ctx: &egui::Context,
     owner: egui::Id,
@@ -257,9 +257,14 @@ pub fn modify_box(
     let at = size.map_or(wanted, |size| {
         clear_of_palette(wanted, size, viewport, palette)
     });
-    let shown = egui::Area::new(area)
-        .fixed_pos(at)
-        .order(egui::Order::Foreground);
+    // Under any modal, as the prototype's `.modify-box` (z 40) is under `.backdrop`: one
+    // placed in the frame a modal comes (its release, then `?`) is drawn under it, never over
+    // it (`crate::modal::UNDER_MODALS`). And over the sketch bar and the palette (z 26 and
+    // 22), of that order too: raised each frame, so a click that raises the bar never stands
+    // it over the box.
+    let order = crate::modal::UNDER_MODALS;
+    let shown = egui::Area::new(area).fixed_pos(at).order(order);
+    ctx.move_to_top(egui::LayerId::new(order, area));
     crate::modal::area(ctx, shown, behind, |ui| {
         *ui.visuals_mut() = super::bar::panel_visuals();
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
@@ -305,8 +310,9 @@ pub fn modify_box(
                     // A new box takes the keyboard, once, its cursor after its value.
                     // (Not selected, as SolidWorks' and the prototype's is: egui 0.36's
                     // field collapses a selection made outside its own events.) Behind a
-                    // modal (`behind`), once it has gone: a focus asked for there would be
-                    // taken back at the next frame's top (`App::frame`), and never asked again.
+                    // modal (`behind`: one placed in the frame a key opened it), once it has
+                    // gone: nothing behind a modal holds the keyboard (`App::frame` takes it
+                    // from what did, to give it back after).
                     let taken = area.with("taken");
                     if ui.is_enabled() && !ui.data(|d| d.get_temp::<bool>(taken).unwrap_or(false)) {
                         field.request_focus();

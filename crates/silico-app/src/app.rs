@@ -73,13 +73,15 @@ pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
 }
 
 /// A toast saying `text` over `canvas`'s bottom right (the prototype's `.toast`): drawn in
-/// its own area, above the panes, taking no input. SEAM: the prototype's info icon and its
-/// fade, which the UI port adds.
+/// its own area, above the panes and under any modal ([`modal::UNDER_MODALS`]; the
+/// prototype's `#toasts`, z 650, under `.backdrop`, 700), so one asked while a modal is open
+/// is drawn at once under it, dimmed, its time running; taking no input. SEAM: the
+/// prototype's info icon and its fade, which the UI port adds.
 fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
     let corner =
         canvas.right_bottom() - egui::vec2(theme::TOAST_MARGIN_RIGHT, theme::TOAST_MARGIN_BOTTOM);
-    egui::Area::new(toast_layer().id)
-        .order(egui::Order::Foreground)
+    egui::Area::new(egui::Id::new("toast"))
+        .order(modal::UNDER_MODALS)
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .fixed_pos(corner)
         .interactable(false)
@@ -95,11 +97,6 @@ fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
                     ui.label(egui::RichText::new(text).color(theme::TOAST_TEXT));
                 });
         });
-}
-
-/// The layer the toast is drawn on.
-fn toast_layer() -> egui::LayerId {
-    egui::LayerId::new(egui::Order::Foreground, egui::Id::new("toast"))
 }
 
 /// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
@@ -390,6 +387,10 @@ pub struct App<P: Clients + 'static> {
     /// Enter or Esc pressed this frame with a modal already open at its start: the modal's
     /// OK or Cancel, taken before anything else could read it.
     modal_key: Option<Key>,
+    /// Each widget a modal took the keyboard's focus from (`App::frame`), and the modal on
+    /// top as it did, the earliest first: given it back once that modal has gone, as
+    /// SolidWorks' and Windows' dialogs give the focus back to the control that held it.
+    focus_behind: Vec<(egui::Id, OnTop)>,
     /// The canvas's place in the window, as the panes last laid it out: where sketch mode's
     /// palette floats.
     canvas: Option<egui::Rect>,
@@ -514,6 +515,7 @@ impl<P: Clients + 'static> App<P> {
             wakes: Arc::new(AtomicU64::new(0)),
             waker_set: false,
             modal_key: None,
+            focus_behind: Vec::new(),
             canvas: None,
             drawing: crate::viewport::Drawing::default(),
             browser: None,
@@ -816,6 +818,7 @@ impl<P: Clients + 'static> App<P> {
             // The keyboard's focus taken from what holds it behind the modal (a field the
             // modal came over), before anything is drawn: egui gives a focused field the
             // frame's typing before it finds the field off. The modal's own fields keep it.
+            // It's given back once the modal has gone (`give_focus_back`, in `after_drawing`).
             let ctx = ui.ctx().clone();
             if let Some(id) = ctx.memory(|memory| memory.focused())
                 && ctx
@@ -823,6 +826,8 @@ impl<P: Clients + 'static> App<P> {
                     .is_some_and(|focused| focused.layer_id != modal)
             {
                 ctx.memory_mut(|memory| memory.surrender_focus(id));
+                self.focus_behind.retain(|(taken, _)| *taken != id);
+                self.focus_behind.push((id, top));
             }
             let sessions = Arc::clone(&self.sessions);
             if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
@@ -965,6 +970,27 @@ impl<P: Clients + 'static> App<P> {
         self.after_drawing(ui, next_frame, top);
     }
 
+    /// The keyboard's focus given back to each widget a modal took it from, the frame drawn
+    /// with the modal it was taken under gone (`top`, the modal the frame was drawn under, is
+    /// below it): as SolidWorks' and Windows' dialogs give it back to the control that held
+    /// it, so what's typed after the modal reaches the field it went to before. Only to one
+    /// drawn this frame, and on: drawn inert under the modal, it's off in what egui read of it
+    /// last frame, so one not drawn now (its tab closed, or not shown) is let go; egui would
+    /// otherwise hold the focus on a widget that isn't there. At the frame's end, after the
+    /// widgets are drawn: egui keeps the focus off what's under the modal it drew the frame
+    /// before, so a focus asked for at the frame's top would be given up as its widget is
+    /// drawn; asked for now, the widget has it from the next frame.
+    fn give_focus_back(&mut self, ctx: &egui::Context, top: OnTop) {
+        while let Some(&(id, under)) = self.focus_behind.last()
+            && top < under
+        {
+            self.focus_behind.pop();
+            if ctx.read_response(id).is_some_and(|drawn| drawn.enabled()) {
+                ctx.memory_mut(|memory| memory.request_focus(id));
+            }
+        }
+    }
+
     /// The active tab's rename field, if a press of the pointer this frame lands away from
     /// it: its name finished there and then, before the window's controls are drawn, so
     /// what the click does (a dialog opened, a save, an undo) comes after it. Whether the
@@ -1098,6 +1124,7 @@ impl<P: Clients + 'static> App<P> {
         // A modal opened or closed after the window was drawn (a click's, a quit's): the
         // window drawn again at once, inert under it or taking input again.
         next_frame |= self.on_top() != top;
+        self.give_focus_back(ui.ctx(), top);
         if next_frame {
             // A command started is polled next frame, even if it answered at once; a key
             // taken has its change drawn there.
@@ -1720,24 +1747,10 @@ impl<P: Clients + 'static> App<P> {
     /// [`theme::TOAST_SECONDS`] have passed since it was shown; a frame asked for then, to
     /// take it down.
     fn show_toast(&mut self, ui: &Ui, canvas: egui::Rect) {
-        let now = ui.input(|input| input.time);
-        // One not shown yet waits while a modal is open, its time not begun: egui raises an
-        // area first shown over every other of its order, which would stand it over the modal,
-        // undimmed, where the prototype's `#toasts` sit under `.backdrop`. One shown already
-        // stays, under the modal raised over it.
-        if self.on_top() > OnTop::Window
-            && !ui
-                .ctx()
-                .memory(|memory| memory.areas().visible_last_frame(&toast_layer()))
-        {
-            if let Some((_, at)) = self.toast.as_mut() {
-                *at = now;
-            }
-            return;
-        }
         let Some((text, at)) = &self.toast else {
             return;
         };
+        let now = ui.input(|input| input.time);
         let left = theme::TOAST_SECONDS - (now - at);
         if left.is_nan() || left <= 0.0 {
             self.toast = None;

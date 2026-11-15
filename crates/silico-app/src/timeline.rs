@@ -724,7 +724,8 @@ fn items(
             renaming.place == feature_menu::Place::Timeline && renaming.feature == entry.id
         }) {
             asked.renaming = true;
-            // Over the item, at its left, on a layer of its own above the panels.
+            // Over the item, at its left, on a layer of its own above the panels and under
+            // any modal (F2 and ⌘R in one frame open it with the question over it).
             let at = pos2(
                 rect.left(),
                 rect.top() - theme::FIELD_HEIGHT - theme::TIMELINE_RENAME_GAP,
@@ -732,7 +733,7 @@ fn items(
             let size = vec2(theme::TIMELINE_RENAME_WIDTH, theme::FIELD_HEIGHT);
             // Inert, as the timeline is, behind a modal.
             let area = egui::Area::new(id.with("rename"))
-                .order(egui::Order::Foreground)
+                .order(crate::modal::UNDER_MODALS)
                 .fixed_pos(at);
             let done = crate::modal::area(ui.ctx(), area, !ui.is_enabled(), |ui| {
                 let place = Rect::from_min_size(ui.max_rect().min, size);

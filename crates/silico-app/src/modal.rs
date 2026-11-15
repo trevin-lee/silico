@@ -194,6 +194,14 @@ pub(crate) fn looks_on(ui: &Ui, own: bool) -> bool {
     ui.is_enabled() || (own && behind(ui))
 }
 
+/// The order of what floats over the window but under every modal (the modals are egui's
+/// `Foreground`): the toast, the Modify box, the timeline's rename field. egui raises an
+/// area first shown over every other of its order, but never over a higher order, so one
+/// first shown while a modal is open (asked in the frame a key opens the modal, or answered
+/// under it) is drawn under it, as the prototype draws them under `.backdrop`, never over it
+/// where its inert widgets would let a click through to the modal's hidden ones.
+pub(crate) const UNDER_MODALS: egui::Order = egui::Order::Middle;
+
 /// `area` shown with `content`, inert ([`inert`]) if `behind` the modal on top: its own
 /// click (which would raise it) and its content's widgets taking no input, and the pointer
 /// passing through it.
