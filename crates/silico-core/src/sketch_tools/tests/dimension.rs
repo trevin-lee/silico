@@ -465,6 +465,64 @@ fn an_axis_a_pick_doesnt_allow_drops_out_and_the_nearest_of_the_rest_is_taken() 
 }
 
 #[test]
+fn smart_dimension_takes_no_axis_its_context_disallows_and_its_hover_agrees() {
+    // #484. A line 0.3 off the y axis, (0.3, 10) to (0.3, 50), and the pointer at (0.1, 20):
+    // the axis 0.1 off, the line 0.2, both within the pick's 0.5. With both axes allowed
+    // (the control), the hover and the pick are the axis, the nearer; with the y axis not,
+    // the line. And mirrored onto the x axis: (10, 0.3) to (50, 0.3), the pointer at
+    // (20, 0.1), the x axis 0.1 off and the line 0.2.
+    for y_axis in [true, false] {
+        let flip = |xy: Xy| if y_axis { xy } else { [xy[1], xy[0]] };
+        let (from, to, at) = (flip([0.3, 10.0]), flip([0.3, 50.0]), flip([0.1, 20.0]));
+        let (axis, without) = if y_axis {
+            (Reference::YAxis, Axes { x: true, y: false })
+        } else {
+            (Reference::XAxis, Axes { x: false, y: true })
+        };
+        for (axes, want) in [(Axes::BOTH, axis.clone()), (without, el("zz000001"))] {
+            let mut d = Dim::new(with_line(empty(), "zz000001", from, to));
+            d.axes = axes;
+            d.to(at[0], at[1]);
+            assert_eq!(
+                d.tool.preview().hover,
+                Some(want.clone()),
+                "hover, {axes:?}"
+            );
+            d.click(at[0], at[1]);
+            assert_eq!(d.tool.preview().picks, vec![want], "pick, {axes:?}");
+        }
+    }
+}
+
+#[test]
+fn smart_dimensions_hover_on_a_read_takes_the_axes_its_context_allows() {
+    // A read with no pointer event (`settle`) works the hover out again at the last place,
+    // (0.1, 20), beside (0.3, 10) to (0.3, 50): with the y axis not allowed, the line; with
+    // both, the axis, the nearer. What the context says decides it, not the last event's.
+    let sketch = with_line(empty(), "zz000001", [0.3, 10.0], [0.3, 50.0]);
+    let mut d = Dim::new(sketch.clone());
+    d.axes = Axes { x: true, y: false };
+    d.to(0.1, 20.0);
+    assert_eq!(d.tool.preview().hover, Some(el("zz000001")));
+    let sketch_id = sketch_id();
+    let states = under();
+    let context = |axes| Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+        construction: false,
+        states: &states,
+        axes,
+    };
+    d.tool.settle(&context(Axes { x: true, y: false }));
+    assert_eq!(d.tool.preview().hover, Some(el("zz000001")));
+    d.tool.settle(&context(Axes::BOTH));
+    assert_eq!(d.tool.preview().hover, Some(Reference::YAxis));
+}
+
+#[test]
 fn a_point_at_the_origins_place_is_picked_over_the_origin_from_any_side() {
     // A point solved to (1e-15, 0), one place with the origin to the kernel (1e-7), clicked
     // at (−0.2, 0): the origin is 0.2 off and the point 0.2 + 1e-15, yet the point stands
