@@ -1298,6 +1298,16 @@ mod tests {
     }
 
     #[test]
+    fn a_curves_moment_is_taken_about_the_point_it_is_given() {
+        // A circle's share about (1, 2): its disc, 4π, times its centre's offset from there,
+        // (3 − 1, −4 − 2). (In a loop a circle is alone, about the origin; the share is
+        // about whatever point it's asked of.)
+        let [x, y] = moment_of(&circle([3.0, -4.0], 2.0), [1.0, 2.0]);
+        assert!((x - 8.0 * PI).abs() <= 1e-12, "{x}");
+        assert!((y + 24.0 * PI).abs() <= 1e-12, "{y}");
+    }
+
+    #[test]
     fn a_lone_circles_moment_is_its_disc_about_its_centre() {
         let disc = [circle([3.0, -4.0], 2.0)];
         let m = area_moments(&disc);
