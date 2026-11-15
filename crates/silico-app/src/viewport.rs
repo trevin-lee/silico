@@ -243,12 +243,11 @@ pub enum LeftKind {
     Press,
     /// Moved while held, from a press on the canvas.
     Move,
-    /// Let go, after a press on the canvas; or let go of where it was held as a modal came
-    /// over the window, what it did standing.
+    /// Let go, after a press on the canvas.
     Release,
     /// Held no longer, with no release: the window lost the focus, a navigation tool took
-    /// the drag, another press came with no release before it (the window lost one), or
-    /// the tab stopped being shown. What the stream did is undone, not done; it's at where
+    /// the drag, a modal came over the window, another press came with no release before it
+    /// (the window lost one), or the tab stopped being shown. What the stream did is undone, not done; it's at where
     /// the stream was last (its press, or its last move). The pointer leaving the window
     /// cancels nothing: the drag goes on past its edge, and its release, wherever it
     /// comes, ends it.
@@ -1280,7 +1279,7 @@ impl View {
     /// the pane drags: the middle button's pan or orbit, or the cube's), the moves while it's
     /// held, its release or its cancel, and a double-click straight after the release that
     /// made it; none while a navigation tool makes a left drag navigate, or a modal is over
-    /// the window (what was held let go where it was as it comes). `held` is the
+    /// the window (what was held cancelled as it comes). `held` is the
     /// pane's, which [`end_unshown`] has already ended if another tab's. Each is placed by
     /// the egui event that made it ([`Placed`]), its `seq` given by [`sequenced`].
     fn left_events(
@@ -1298,12 +1297,10 @@ impl View {
         // A navigation tool's drag: the pane's, which ends what was held. (The cube's can't
         // begin while the button is held from the canvas: egui gives a drag to the widget
         // pressed, and takes no other press until its release.) A modal over the window
-        // lets go of what was held where it was (#487: nothing behind a modal takes input),
-        // what it did standing, as a dialog's arrow keeps its value when its tab is closed
-        // mid-drag (#480's RL1); and takes no press.
-        let behind = crate::modal::behind(ui);
-        let taken = self.tool.is_some();
-        let pressable = response.hovered() && self.drag.is_none() && !taken && !behind;
+        // cancels what was held, as the focus going does, and takes no press (#487: nothing
+        // behind a modal takes input).
+        let taken = self.tool.is_some() || crate::modal::behind(ui);
+        let pressable = response.hovered() && self.drag.is_none() && !taken;
         let mut left = Vec::new();
         let LeftButton { held, clicks } = button;
         // Read where the events are, not cloned out each frame.
@@ -1323,9 +1320,6 @@ impl View {
             };
             if taken && let Some(was) = held.take() {
                 left.push(event(0, LeftKind::Cancel, was.at_px, input.modifiers));
-            }
-            if behind && let Some(was) = held.take() {
-                left.push(event(0, LeftKind::Release, was.at_px, input.modifiers));
             }
             // The canvas's own left clicks are counted, those whose press it takes, as egui
             // counts clicks but for none off it (`crate::clicks`); a stream's are handed on.

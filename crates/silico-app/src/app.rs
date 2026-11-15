@@ -78,7 +78,7 @@ pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
 fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
     let corner =
         canvas.right_bottom() - egui::vec2(theme::TOAST_MARGIN_RIGHT, theme::TOAST_MARGIN_BOTTOM);
-    egui::Area::new(egui::Id::new("toast"))
+    egui::Area::new(toast_layer().id)
         .order(egui::Order::Foreground)
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .fixed_pos(corner)
@@ -95,6 +95,11 @@ fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
                     ui.label(egui::RichText::new(text).color(theme::TOAST_TEXT));
                 });
         });
+}
+
+/// The layer the toast is drawn on.
+fn toast_layer() -> egui::LayerId {
+    egui::LayerId::new(egui::Order::Foreground, egui::Id::new("toast"))
 }
 
 /// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
@@ -819,7 +824,13 @@ impl<P: Clients + 'static> App<P> {
             {
                 ctx.memory_mut(|memory| memory.surrender_focus(id));
             }
+            let sessions = Arc::clone(&self.sessions);
             if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+                // A dialog's arrow dragged keeps the value it was dragged to, the rest of its
+                // stream doing nothing, before the canvas cancels what the pointer holds
+                // (`crate::viewport`): a sketch drag ends from its begin state, a box selects
+                // nothing, a tool's gesture adds nothing.
+                tab.flush_arrow(&sessions);
                 tab.close_select_other(ui.ctx());
                 // And sketch mode's canvas menu, so the next Esc is the modal's, never the
                 // menu's behind it (`Tab::escape_first` closes a menu first).
@@ -1709,10 +1720,24 @@ impl<P: Clients + 'static> App<P> {
     /// [`theme::TOAST_SECONDS`] have passed since it was shown; a frame asked for then, to
     /// take it down.
     fn show_toast(&mut self, ui: &Ui, canvas: egui::Rect) {
+        let now = ui.input(|input| input.time);
+        // One not shown yet waits while a modal is open, its time not begun: egui raises an
+        // area first shown over every other of its order, which would stand it over the modal,
+        // undimmed, where the prototype's `#toasts` sit under `.backdrop`. One shown already
+        // stays, under the modal raised over it.
+        if self.on_top() > OnTop::Window
+            && !ui
+                .ctx()
+                .memory(|memory| memory.areas().visible_last_frame(&toast_layer()))
+        {
+            if let Some((_, at)) = self.toast.as_mut() {
+                *at = now;
+            }
+            return;
+        }
         let Some((text, at)) = &self.toast else {
             return;
         };
-        let now = ui.input(|input| input.time);
         let left = theme::TOAST_SECONDS - (now - at);
         if left.is_nan() || left <= 0.0 {
             self.toast = None;

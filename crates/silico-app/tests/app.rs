@@ -46249,12 +46249,14 @@ fn a_middle_drag_held_as_a_modal_opens_ends_and_pans_no_further() {
     let (mut h, _seen) = f.overlaid(EXAMPLE);
     let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
     let middle = eframe::egui::PointerButton::Middle;
+    let before = view(&h).camera().clone();
     h.hover_at(at);
     button_event(&h, at, middle, true, Modifiers::NONE);
     step(&mut h);
     h.hover_at(at + eframe::egui::vec2(20.0, 0.0));
     step(&mut h);
     let panned = view(&h).camera().clone();
+    assert_ne!(panned, before, "the middle button panned nothing");
     // The shortcut sheet, by its key, the button still held: no further move pans.
     h.key_press(Key::Questionmark);
     step_until(&mut h, "the sheet", sheet_open);
@@ -46281,12 +46283,10 @@ fn a_middle_drag_held_as_a_modal_opens_ends_and_pans_no_further() {
 }
 
 #[test]
-fn a_left_press_held_as_a_modal_opens_is_let_go_where_it_was_and_its_moves_and_release_go_nowhere()
-{
-    // #497's review, finding 5: what was held is let go where it was as the modal comes, what
-    // it did standing (a dialog's arrow keeps its value, #480's RL1), and nothing after it is
-    // handed on.
-    use silico_app::viewport::LeftKind::{Press, Release};
+fn a_left_press_held_as_a_modal_opens_is_cancelled_and_its_moves_and_release_go_nowhere() {
+    // #497's reviews: what was held is cancelled as the modal comes, as the focus going
+    // cancels it (m5.0-app.md, a drag cut short), and nothing after it is handed on.
+    use silico_app::viewport::LeftKind::{Cancel, Press};
     let f = fixture();
     let (mut h, seen) = f.overlaid(EXAMPLE);
     let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
@@ -46306,9 +46306,9 @@ fn a_left_press_held_as_a_modal_opens_is_let_go_where_it_was_and_its_moves_and_r
     for _ in 0..3 {
         step(&mut h);
     }
-    let let_go = left_taken(&seen);
-    assert_eq!(kinds(&let_go), [Release]);
-    assert_eq!(let_go[0].event.at_px, pressed_at);
+    let cut = left_taken(&seen);
+    assert_eq!(kinds(&cut), [Cancel]);
+    assert_eq!(cut[0].event.at_px, pressed_at);
     h.hover_at(at + eframe::egui::vec2(30.0, 0.0));
     step(&mut h);
     button_event(
@@ -46436,5 +46436,160 @@ fn the_shortcut_sheet_opened_by_its_button_keeps_the_keyboard_in_its_filter() {
         step(&mut h);
     }
     assert!(the_sheet(&h).get_by_role(Role::TextInput).is_focused());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_dragged_as_the_sheet_comes_adds_nothing_behind_it() {
+    // #497's review, round 2: a click-drag line's press and moves add nothing, its release
+    // does; the sheet coming with the button down cancels the gesture, as the focus going
+    // does, so nothing is added behind the sheet.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(Key::L);
+    step(&mut h);
+    let sent = h.state().tabs()[0].sent.clone();
+    pane_press(&mut h, [10.0, 50.0]);
+    pane_move(&mut h, [20.0, 55.0]);
+    pane_move(&mut h, [30.0, 60.0]);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        sent,
+        "an edit sent behind the sheet, the button never let go"
+    );
+    // Let go under the sheet, then the sheet closed: still nothing.
+    pane_release(&mut h, [30.0, 60.0]);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dimension_pressed_as_the_sheet_comes_places_nothing_and_opens_no_modify_box() {
+    // #497's review, round 2: Smart Dimension's press, the sheet coming before its release,
+    // places nothing and opens no Modify box, which, first shown then, egui would raise over
+    // the sheet, inert, its ✓ and ✕ letting a click fall through to the sheet.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(Key::D);
+    step(&mut h);
+    let sent = h.state().tabs()[0].sent.clone();
+    pane_click(&mut h, [50.0, 20.0]);
+    pane_press(&mut h, [60.0, 20.0]);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).unwrap().modify_view().is_none());
+    assert!(modify_field(&h).is_none());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    pane_release(&mut h, [60.0, 20.0]);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert!(sketch_mode(&h).unwrap().modify_view().is_none());
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_box_dragged_as_the_sheet_comes_selects_nothing() {
+    // #497's review, round 2: as the focus going cancels a box, so does a modal coming.
+    use eframe::egui::Modifiers;
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 2.0));
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    let before = selected_names(&h);
+    assert_eq!(before, box_edges(&[1, 5, 9, 10]));
+    // A crossing dragged, then the sheet comes, the button still down: nothing changes.
+    let (right_low, left_high) = (on_canvas(&h, 42.0, -2.0), on_canvas(&h, -2.0, 12.0));
+    box_press(&mut h, right_low, left_high, Modifiers::NONE);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(selected_names(&h), before);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    box_release(&mut h, left_high, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(selected_names(&h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_toast_asked_while_a_modal_is_open_waits_under_it_and_shows_once_it_has_gone() {
+    // #497's review, round 2: egui raises an area first shown over every other of its order;
+    // the prototype's `#toasts` sit under `.backdrop`. F5 (its toast) and ⌘R (its question,
+    // the edits held) in one frame, as a window gets two keys between frames: the question
+    // comes before the toast is drawn. The toast isn't drawn over it, and shows once it has
+    // gone.
+    use eframe::egui::os::OperatingSystem;
+    use eframe::egui::{Event, Modifiers};
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    // The keyboard off the name field: F5 is no field's key.
+    timeline_item(&h, "Block").click();
+    step_until(&mut h, "Block selected", |h| {
+        selected_features(h) == ["k7f2qx3m"]
+    });
+    assert!(!h.ctx.text_edit_focused());
+    let command = if h.ctx.os() == OperatingSystem::Mac {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    };
+    let key = |key, modifiers| Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    };
+    let events = &mut h.input_mut().events;
+    events.push(key(Key::F5, Modifiers::NONE));
+    events.push(key(Key::R, command));
+    step(&mut h);
+    let said = silico_app::app::FILTERS_SAID;
+    let asked = "Reload example.silico from disk?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().toast().map(|(text, _)| text), Some(said));
+    assert!(!anywhere(&h, said), "the toast drawn over the question");
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    step_until(&mut h, "the toast", |h| anywhere(h, said));
     assert_eq!(never_waits::waits(), 0);
 }

@@ -304,9 +304,11 @@ pub fn modify_box(
                     });
                     // A new box takes the keyboard, once, its cursor after its value.
                     // (Not selected, as SolidWorks' and the prototype's is: egui 0.36's
-                    // field collapses a selection made outside its own events.)
+                    // field collapses a selection made outside its own events.) Behind a
+                    // modal (`behind`), once it has gone: a focus asked for there would be
+                    // taken back at the next frame's top (`App::frame`), and never asked again.
                     let taken = area.with("taken");
-                    if !ui.data(|d| d.get_temp::<bool>(taken).unwrap_or(false)) {
+                    if ui.is_enabled() && !ui.data(|d| d.get_temp::<bool>(taken).unwrap_or(false)) {
                         field.request_focus();
                         ui.data_mut(|d| d.insert_temp(taken, true));
                     }

@@ -765,7 +765,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_widget_looks_on_behind_a_modal_by_its_own_flag_and_off_in_a_scope_off_of_its_own() {
+    fn a_widget_looks_on_as_egui_has_it_with_no_modal_and_by_its_own_flag_behind_one() {
         let looked = |behind: bool, scope: bool, own: bool| {
             let seen = std::cell::Cell::new(None);
             let mut h = Harness::builder().build_ui(|ui| {
