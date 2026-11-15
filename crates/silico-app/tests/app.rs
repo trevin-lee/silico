@@ -45522,3 +45522,343 @@ fn a_drags_release_sends_the_value_it_held_back_in_the_releases_own_frame() {
     assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- #487: while a modal asks, nothing behind it takes input ----
+
+/// Whether `node` is on: not disabled in the accessibility tree.
+fn is_on(node: &egui_kittest::Node<'_>) -> bool {
+    !node.accesskit_node().is_disabled()
+}
+
+/// The one button labelled `label` that's on: behind a modal, any other is off.
+fn on_button<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
+    let mut on = h
+        .query_all_by_role_and_label(Role::Button, label)
+        .filter(is_on);
+    let node = on.next().unwrap_or_else(|| panic!("no {label} on"));
+    assert!(on.next().is_none(), "two {label}s on");
+    node
+}
+
+/// The timeline's item `name`.
+fn timeline_item<'a>(h: &'a AppHarness, name: &'a str) -> egui_kittest::Node<'a> {
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label(name)
+}
+
+/// [`EXAMPLE`] open, its Pin renamed Pins, selected, and the edit held unsaved: the file's
+/// path.
+fn pins_held(f: &Fixture) -> (AppHarness, PathBuf) {
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
+    });
+    (h, path)
+}
+
+/// Behind a modal: the timeline's item `name` off, and a click on it through the
+/// accessibility tree (an agent's) selecting nothing; with `pointer`, a click of the pointer
+/// on it too (not where the modal's backdrop takes the click as its close, as the sheet's
+/// and What's Wrong's do).
+fn item_takes_no_click(h: &mut AppHarness, name: &str, pointer: bool) {
+    step(h);
+    assert!(
+        !is_on(&timeline_item(h, name)),
+        "{name} on behind the modal"
+    );
+    let selected = selected_features(h);
+    timeline_item(h, name).click_accesskit();
+    step(h);
+    if pointer {
+        timeline_item(h, name).click();
+        step(h);
+    }
+    step(h);
+    assert_eq!(
+        selected_features(h),
+        selected,
+        "{name} selected behind the modal"
+    );
+}
+
+/// With no modal open: the timeline's item `name` on, and a click on it through the
+/// accessibility tree selecting it, the feature `id`.
+fn item_takes_a_click(h: &mut AppHarness, name: &str, id: &str) {
+    step(h);
+    assert!(is_on(&timeline_item(h, name)), "{name} off with no modal");
+    timeline_item(h, name).click_accesskit();
+    step_until(h, "selected", |h| selected_features(h) == [id]);
+}
+
+#[test]
+fn behind_command_rs_question_the_banners_reload_is_off_and_a_click_on_it_drops_nothing() {
+    // #487: the amber banner's "Reload, discard my edits" (a revert) and ⌘R's question's (a
+    // reload, every feature rebuilt) on screen at once. Only the question's is on; the
+    // banner's, clicked through the accessibility tree or by the pointer, does nothing, and
+    // is on again once the question has gone.
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    let mine = text_of(&f.sessions, &h);
+    std::fs::write(&path, example_theirs()).unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, changed));
+    let reload = "Reload, discard my edits";
+    // The banner's, the only one yet: where it stands.
+    let banners = h.get_by_role_and_label(Role::Button, reload).rect();
+    command_r(&mut h);
+    let asked = "Reload example.silico from disk?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    // Each button of the name: whether it's the banner's, and whether it's on.
+    let buttons = |h: &AppHarness| -> Vec<(bool, bool)> {
+        let mut found: Vec<(bool, bool)> = h
+            .query_all_by_role_and_label(Role::Button, reload)
+            .map(|node| (node.rect() == banners, is_on(&node)))
+            .collect();
+        found.sort_unstable();
+        found
+    };
+    assert_eq!(buttons(&h), [(false, true), (true, false)]);
+    // The banner's clicked through the tree, then by the pointer: nothing dropped.
+    fn banner(h: &AppHarness, at: eframe::egui::Rect) -> egui_kittest::Node<'_> {
+        h.query_all_by_role_and_label(Role::Button, "Reload, discard my edits")
+            .find(|node| node.rect() == at)
+            .unwrap()
+    }
+    banner(&h, banners).click_accesskit();
+    step(&mut h);
+    banner(&h, banners).click();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, asked));
+    let tab = &h.state().tabs()[0];
+    assert!(tab.unsaved() && tab.transaction);
+    assert!(!tab.sent.contains(&Sent::Rollback), "{:?}", tab.sent);
+    assert_eq!(tab.rebuilds_all, 0);
+    assert_eq!(text_of(&f.sessions, &h), mine);
+    // Esc, the question's Cancel: the banner's on again, the edits kept.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    step(&mut h);
+    assert_eq!(buttons(&h), [(true, true)]);
+    assert!(h.state().tabs()[0].unsaved());
+    // Asked again, the question's own Reload, the one on: the edits dropped, the file read
+    // again, and every feature rebuilt, which the banner's revert doesn't do.
+    command_r(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    on_button(&h, reload).click();
+    step_until(&mut h, "reloaded and rebuilt", |h| {
+        let tab = &h.state().tabs()[0];
+        shows(h, "Timeline", "Drill") && !tab.unsaved() && tab.rebuilds_all == 1 && !tab.checking()
+    });
+    assert!(!anywhere(&h, asked));
+    assert_eq!(text_of(&f.sessions, &h), example_theirs());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_close_question_the_window_takes_no_click_and_esc_gives_it_back() {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    press_chord(&mut h, keys_of(Command::Close)[0]);
+    let asked = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    item_takes_no_click(&mut h, "Block", true);
+    // The app bar's Save off, the question's own on.
+    let saves: Vec<bool> = h
+        .query_all_by_role_and_label(Role::Button, "Save")
+        .map(|node| is_on(&node))
+        .collect();
+    assert_eq!(saves, [false, true]);
+    // Esc, its Cancel: the window takes clicks again, the edits kept.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_quit_question_the_window_takes_no_click_while_the_disk_watch_goes_on() {
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    item_takes_no_click(&mut h, "Block", true);
+    // The file changed on disk under it: found, and announced behind it, the banner off.
+    std::fs::write(&path, example_theirs()).unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, changed));
+    step(&mut h);
+    let keep = "Keep my edits…";
+    assert!(!is_on(&h.get_by_role_and_label(Role::Button, keep)));
+    // Its own Cancel, the one on: the window takes clicks again, the banner's too.
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains(asked).is_none()
+    });
+    step(&mut h);
+    assert!(is_on(&h.get_by_role_and_label(Role::Button, keep)));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_show_changes_the_banners_buttons_are_off_until_its_close() {
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    std::fs::write(&path, example_theirs()).unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, changed));
+    on_button(&h, "Show changes").click_accesskit();
+    let asked = "What changed on disk";
+    step_until(&mut h, "Show changes", |h| anywhere(h, asked));
+    step(&mut h);
+    let banners = ["Show changes", "Reload, discard my edits", "Keep my edits…"];
+    for label in banners {
+        assert!(
+            !is_on(&h.get_by_role_and_label(Role::Button, label)),
+            "{label}"
+        );
+    }
+    item_takes_no_click(&mut h, "Block", true);
+    // Keep my edits…, clicked through the tree: nothing kept, the banner still offering it.
+    h.get_by_role_and_label(Role::Button, "Keep my edits…")
+        .click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, changed));
+    // Its own Close: the banner's on again.
+    on_button(&h, "Close").click_accesskit();
+    step_until(&mut h, "Show changes gone", |h| !anywhere(h, asked));
+    step(&mut h);
+    for label in banners {
+        assert!(
+            is_on(&h.get_by_role_and_label(Role::Button, label)),
+            "{label}"
+        );
+    }
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_export_dialog_the_window_takes_no_click_until_its_cancel() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    let title = "Export example.silico";
+    open_export(&mut h, title);
+    item_takes_no_click(&mut h, "Block", true);
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, title));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_shortcut_sheet_the_window_takes_no_click_and_behind_a_question_over_it_neither_does_the_sheet()
+ {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+    step_until(&mut h, "the sheet", sheet_open);
+    // A pointer's click on the window lands on the sheet's backdrop, its close.
+    item_takes_no_click(&mut h, "Block", false);
+    // A quit's question over it: the sheet's × and filter off, a click on its × closing
+    // nothing.
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    step(&mut h);
+    fn sheets_close(h: &AppHarness) -> egui_kittest::Node<'_> {
+        the_sheet(h).get_by_role_and_label(Role::Button, "Close")
+    }
+    assert!(!is_on(&sheets_close(&h)));
+    assert!(!is_on(&the_sheet(&h).get_by_role(Role::TextInput)));
+    sheets_close(&h).click_accesskit();
+    step(&mut h);
+    step(&mut h);
+    assert!(sheet_open(&h));
+    // The question's Cancel: the sheet on again, the window still off under it.
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains(asked).is_none()
+    });
+    step(&mut h);
+    assert!(is_on(&sheets_close(&h)));
+    item_takes_no_click(&mut h, "Block", false);
+    // The sheet's ×: the window takes clicks again.
+    sheets_close(&h).click_accesskit();
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_whats_wrong_the_window_takes_no_click_until_esc_closes_it() {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click();
+    step_until(&mut h, "What's Wrong open", |h| whats_wrong(h).is_some());
+    item_takes_no_click(&mut h, "Second", false);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "What's Wrong closed", |h| whats_wrong(h).is_none());
+    item_takes_a_click(&mut h, "Second", "a0000001");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_over_define_prompt_sketch_modes_bar_and_keys_take_nothing_until_its_cancel() {
+    let f = fixture();
+    let (mut h, text) = over_define_offered(&f, None);
+    step_until(&mut h, "the prompt", |h| prompt(h).is_some());
+    step(&mut h);
+    fn finish(h: &AppHarness) -> egui_kittest::Node<'_> {
+        h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+            .get_by_role_and_label(Role::Button, "Finish Sketch")
+    }
+    assert!(!is_on(&finish(&h)));
+    // The bar's Finish Sketch clicked through the tree, L (the Line tool's key), and Ctrl+Z:
+    // none acts under it.
+    let choice = sketch_mode(&h).unwrap().tools.choice();
+    let sent = h.state().tabs()[0].sent.clone();
+    finish(&h).click_accesskit();
+    step(&mut h);
+    h.key_press(Key::L);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert!(prompt(&h).is_some());
+    assert!(sketch_mode(&h).is_some());
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), choice);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    // Esc, its Cancel: the edit undone, the bar on again.
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    assert_eq!(text_of(&f.sessions, &h), text);
+    step_until(&mut h, "the prompt closed", |h| prompt(h).is_none());
+    step(&mut h);
+    assert!(is_on(&finish(&h)));
+    assert_eq!(never_waits::waits(), 0);
+}

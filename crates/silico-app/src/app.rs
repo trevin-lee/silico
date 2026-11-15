@@ -224,6 +224,24 @@ enum Asking {
     Reload(SessionId),
 }
 
+/// What's on top of the window (#487): nothing, or the modal open there. In the order they
+/// stack, the lowest first, each drawn under any after it: what's drawn at a level takes
+/// input only while nothing after it is open, and everything under the one on top is inert
+/// (`modal::inert`), as SolidWorks' and Fusion's modals leave the window behind them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum OnTop {
+    /// No modal: the window takes input.
+    Window,
+    /// The over-define prompt (SD7), drawn with sketch mode's canvas.
+    Offer,
+    /// The shortcut sheet.
+    Sheet,
+    /// What's Wrong.
+    WhatsWrong,
+    /// What the app is asking ([`Asking`]), drawn last, over everything.
+    Asking,
+}
+
 /// What a native dialog's answer goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Browsed {
@@ -565,6 +583,44 @@ impl<P: Clients + 'static> App<P> {
         self.tabs.get_mut(at).filter(|tab| tab.whats_wrong)
     }
 
+    /// The tab shown, if its sketch mode's over-define prompt is open over it (not under
+    /// the start page, where sketch mode's canvas isn't drawn).
+    fn offer_shown(&mut self) -> Option<&mut Tab> {
+        if self.start_shown() {
+            return None;
+        }
+        let at = self.active_place()?;
+        self.tabs.get_mut(at).filter(|tab| {
+            tab.sketch
+                .as_ref()
+                .is_some_and(|mode| mode.offer().is_some())
+        })
+    }
+
+    /// The modal on top of the window, if one is open: what's drawn under it is inert.
+    fn on_top(&self) -> OnTop {
+        if self.asking.is_some() {
+            return OnTop::Asking;
+        }
+        let shown = if self.start_shown() {
+            None
+        } else {
+            self.active_place().and_then(|at| self.tabs.get(at))
+        };
+        if shown.is_some_and(|tab| tab.whats_wrong) {
+            OnTop::WhatsWrong
+        } else if self.sheet.is_some() {
+            OnTop::Sheet
+        } else if shown
+            .and_then(|tab| tab.sketch.as_ref())
+            .is_some_and(|mode| mode.offer().is_some())
+        {
+            OnTop::Offer
+        } else {
+            OnTop::Window
+        }
+    }
+
     /// The documents opened lately, if the app keeps a list.
     pub fn recents(&self) -> Option<&Recents> {
         self.recents.as_ref()
@@ -722,12 +778,22 @@ impl<P: Clients + 'static> App<P> {
         // acts, so it comes first in the tab's queue.
         let renamed = self.rename_clicked_away(ui.ctx());
         let (mut next_frame, dialog_key) = self.keys(ui);
-        // The canvas's Select Other closed under a modal, the shortcut sheet, or What's
-        // Wrong (one its keys just opened, `?`, too): the focus and the keys are theirs.
-        let over =
-            self.asking.is_some() || self.sheet.is_some() || self.whats_wrong_shown().is_some();
-        if over && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
-            tab.close_select_other(ui.ctx());
+        // Under a modal (the shortcut sheet, What's Wrong, and the over-define prompt too; one
+        // its keys just opened, `?`, as well), the window takes no input (#487): drawn inert,
+        // so no button behind it is clicked, by the pointer or through the accessibility tree,
+        // where each is off; the keys are the modal's (`keys`). What it holds goes on: its
+        // tabs polled, rebuilt, and watched on disk as ever. The canvas's Select Other closes,
+        // and so does any egui menu open (the File menu, a feature's), whose items would stand
+        // over the window on a layer of their own; sketch mode's floating panels are drawn
+        // inert (`sketch_canvas`). A modal that opens or closes later in the frame (a click's)
+        // has the window drawn so from the next, asked for at once (`after_drawing`).
+        let top = self.on_top();
+        if top > OnTop::Window {
+            if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+                tab.close_select_other(ui.ctx());
+            }
+            egui::Popup::close_all(ui.ctx());
+            modal::inert(ui);
         }
         next_frame |= renamed;
         next_frame |= self.take_browsed();
@@ -758,7 +824,7 @@ impl<P: Clients + 'static> App<P> {
                 })
                 .inner;
             self.start_act(ui, act, &mut next_frame);
-            self.after_drawing(ui, next_frame);
+            self.after_drawing(ui, next_frame, top);
             return;
         }
         self.toolbar(ui, &mut next_frame);
@@ -844,7 +910,7 @@ impl<P: Clients + 'static> App<P> {
             self.toast = Some((text, ui.input(|input| input.time)));
             ui.ctx().request_repaint();
         }
-        self.after_drawing(ui, next_frame);
+        self.after_drawing(ui, next_frame, top);
     }
 
     /// The active tab's rename field, if a press of the pointer this frame lands away from
@@ -914,8 +980,9 @@ impl<P: Clients + 'static> App<P> {
 
     /// The frame's end, the window drawn: what's asked, as a modal; the window closed once
     /// a quit has closed every tab, or kept open while one holds edits; and the next frame
-    /// asked for, if `next_frame` (or what's done here) says it's to be.
-    fn after_drawing(&mut self, ui: &mut Ui, mut next_frame: bool) {
+    /// asked for, if `next_frame` (or what's done here) says it's to be, or if the modal on
+    /// top is no longer `top`, the one the window was drawn under.
+    fn after_drawing(&mut self, ui: &mut Ui, mut next_frame: bool, top: OnTop) {
         // A border's drag whose release the panes didn't see (they're gone) ended.
         self.columns.settle(ui.ctx());
         // The dialog OK'd this frame, if one was (one tab's panes draw a frame), remembered.
@@ -924,16 +991,18 @@ impl<P: Clients + 'static> App<P> {
                 self.remembered.keep(&oked);
             }
         }
-        // The sheet under a question asked over it meanwhile (a quit, a replace).
+        // The sheet under a question asked over it meanwhile (a quit, a replace), inert.
+        let behind = self.on_top() > OnTop::Sheet;
         if let Some(open) = self.sheet.as_mut()
-            && sheet::show(ui.ctx(), open)
+            && sheet::show(ui.ctx(), open, behind)
         {
             self.sheet = None;
         }
         // What's Wrong, the shown tab's, the same.
+        let behind = self.on_top() > OnTop::WhatsWrong;
         let sessions = Arc::clone(&self.sessions);
         if let Some(tab) = self.whats_wrong_shown() {
-            let (asked, hovered) = crate::whats_wrong::show(ui.ctx(), tab);
+            let (asked, hovered) = crate::whats_wrong::show(ui.ctx(), tab, behind);
             tab.hover_candidate(hovered);
             match asked {
                 crate::whats_wrong::Asked::None => {}
@@ -974,6 +1043,9 @@ impl<P: Clients + 'static> App<P> {
                 self.asking = Some(Asking::Quit);
             }
         }
+        // A modal opened or closed after the window was drawn (a click's, a quit's): the
+        // window drawn again at once, inert under it or taking input again.
+        next_frame |= self.on_top() != top;
         if next_frame {
             // A command started is polled next frame, even if it answered at once; a key
             // taken has its change drawn there.
@@ -1210,12 +1282,14 @@ impl<P: Clients + 'static> App<P> {
     /// In sketch mode, Del (or ⌫) deletes the sketch's selection instead, never a feature,
     /// F2 says why it renames nothing (as its menu item is off), and Ctrl+Enter finishes
     /// the sketch.
-    /// With a modal open (the sheet too), none acts: Esc is the modal's Cancel (the sheet's
-    /// close), and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
+    /// With a modal open (the sheet, What's Wrong, and the over-define prompt too), none
+    /// acts: Esc is the modal's Cancel (the sheet's close; the prompt's after a drag held),
+    /// and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
     /// here and given to it once its inputs have taken this frame's typing (`Panes::dialog`,
     /// in `crate::panes`). Whether the frame after is to be asked for (a command started, a
-    /// modal's key taken, or an Esc [`command_keys`](Self::command_keys) takes; not the
-    /// sheet's or What's Wrong's Esc, which closes it and asks nothing), and the dialog's key.
+    /// modal's key taken, the prompt's Esc, or an Esc [`command_keys`](Self::command_keys)
+    /// takes; not the sheet's or What's Wrong's Esc, which closes it and asks nothing), and
+    /// the dialog's key.
     fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         self.modal_key = None;
         if self.asking.is_some() {
@@ -1245,6 +1319,18 @@ impl<P: Clients + 'static> App<P> {
                 tab.whats_wrong = false;
             }
             return (false, None);
+        }
+        let sessions = Arc::clone(&self.sessions);
+        if let Some(tab) = self.offer_shown() {
+            // The over-define prompt too (SD7): Esc goes first to what takes it before the
+            // prompt (a sketch drag held, ended from its begin state), then is its Cancel
+            // (`Tab::escape_first`), the frame after asked for; 1 and 2 are its choices, which
+            // it takes as it's drawn; no other command acts under it.
+            let esc = shortcuts::take(ui, Command::Stop);
+            if esc {
+                tab.escape_first(&sessions);
+            }
+            return (esc, None);
         }
         let renamed = self.rename_before_command(ui.ctx());
         let (next_frame, dialog_key) = self.command_keys(ui);
@@ -2293,6 +2379,10 @@ impl<P: Clients + 'static> App<P> {
                 mode.menu_at = None;
             }
         }
+        // Inert under a modal: the bar, the palette, the Modify box, and the canvas's menu
+        // under any, the over-define prompt under one asked over it.
+        let top = self.on_top();
+        let (behind, offer_behind) = (top > OnTop::Window, top > OnTop::Offer);
         let sessions = &self.sessions;
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return;
@@ -2314,22 +2404,23 @@ impl<P: Clients + 'static> App<P> {
         let offer = mode.offer_view(&name);
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
-        let bar_drawn = egui::Area::new(sketch::dimension::bar_area(&id))
+        let area = egui::Area::new(sketch::dimension::bar_area(&id))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
-            .pivot(egui::Align2::CENTER_TOP)
-            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar))
-            .response
-            .rect;
+            .pivot(egui::Align2::CENTER_TOP);
+        let bar_drawn = modal::area(ui.ctx(), area, behind, |ui| {
+            action = sketch::bar::sketch_bar(ui, &bar);
+        })
+        .response
+        .rect;
         // Pinned at the canvas's top right, under the ViewCube, as the prototype's is, and
         // kept above the canvas's bottom by the prototype's margin: its body scrolls if it
         // doesn't fit.
         let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
         let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
-        let shown = egui::Area::new(sketch::dimension::palette_area(&id))
-            .fixed_pos(palette_at)
-            .show(ui.ctx(), |ui| {
-                sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
-            });
+        let area = egui::Area::new(sketch::dimension::palette_area(&id)).fixed_pos(palette_at);
+        let shown = modal::area(ui.ctx(), area, behind, |ui| {
+            sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
+        });
         let (look_at, palette) = (shown.inner, shown.response.rect);
         mode.panels = Some(sketch::Panels {
             bar: bar_drawn,
@@ -2346,9 +2437,9 @@ impl<P: Clients + 'static> App<P> {
         }
         *next_frame |= action != BarAction::None;
         // Whole in the canvas, and clear of the palette.
-        if let Some(asked) = modify
-            .and_then(|view| sketch::dimension::modify_box(ui.ctx(), owner, &view, canvas, palette))
-        {
+        if let Some(asked) = modify.and_then(|view| {
+            sketch::dimension::modify_box(ui.ctx(), owner, &view, canvas, palette, behind)
+        }) {
             tab.sketch_modify(sessions, asked);
             *next_frame = true;
         }
@@ -2361,19 +2452,19 @@ impl<P: Clients + 'static> App<P> {
             let area = egui::Id::new(("sketch_menu", id.to_string()));
             let layer = egui::LayerId::new(egui::Order::Foreground, area);
             let opening = !ui.ctx().memory(|m| m.areas().visible_last_frame(&layer));
-            let shown = egui::Area::new(area)
+            let menu_area = egui::Area::new(area)
                 .fixed_pos(sketch::bar::menu_corner(at, ppp))
-                .order(egui::Order::Foreground)
-                .show(ui.ctx(), |ui| {
-                    ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                        node.set_role(egui::accesskit::Role::Menu);
-                        node.set_label("Sketch menu");
-                    });
-                    // Framed as every menu is (`.menu`, the theme's), as the canvas's.
-                    crate::menu::frame(ui).show(ui, |ui| {
-                        asked = sketch::bar::canvas_menu(ui, busy);
-                    });
+                .order(egui::Order::Foreground);
+            let shown = modal::area(ui.ctx(), menu_area, behind, |ui| {
+                ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                    node.set_role(egui::accesskit::Role::Menu);
+                    node.set_label("Sketch menu");
                 });
+                // Framed as every menu is (`.menu`, the theme's), as the canvas's.
+                crate::menu::frame(ui).show(ui, |ui| {
+                    asked = sketch::bar::canvas_menu(ui, busy);
+                });
+            });
             match asked {
                 sketch::bar::MenuAction::None => {}
                 sketch::bar::MenuAction::EndChain => tab.sketch_end_chain(sessions),
@@ -2395,7 +2486,7 @@ impl<P: Clients + 'static> App<P> {
             *next_frame |= asked != sketch::bar::MenuAction::None;
         }
         if let Some(choice) =
-            offer.and_then(|view| sketch::dimension::offer_prompt(ui.ctx(), &view))
+            offer.and_then(|view| sketch::dimension::offer_prompt(ui.ctx(), &view, offer_behind))
         {
             tab.sketch_offer(sessions, choice);
             *next_frame = true;

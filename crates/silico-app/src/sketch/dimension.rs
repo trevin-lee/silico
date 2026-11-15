@@ -238,12 +238,16 @@ pub fn palette_area(session: &SessionId) -> egui::Id {
 /// app gives it): a box is known by `owner` and its number, so each box of every sketch
 /// mode takes the keyboard once as it opens, a later sketch's as the first's, though each
 /// sketch mode numbers its boxes from the start again.
+///
+/// `behind` a modal (the over-define prompt, a question), it's drawn as it is, but inert
+/// (`crate::modal::area`): nothing asked of it.
 pub fn modify_box(
     ctx: &egui::Context,
     owner: egui::Id,
     view: &ModifyView,
     viewport: Rect,
     palette: Rect,
+    behind: bool,
 ) -> Option<ModifyAction> {
     let mut asked = None;
     let area = modify_area(owner, view.opened);
@@ -253,94 +257,94 @@ pub fn modify_box(
     let at = size.map_or(wanted, |size| {
         clear_of_palette(wanted, size, viewport, palette)
     });
-    egui::Area::new(area)
+    let shown = egui::Area::new(area)
         .fixed_pos(at)
-        .order(egui::Order::Foreground)
-        .show(ctx, |ui| {
-            *ui.visuals_mut() = super::bar::panel_visuals();
-            ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                node.set_role(egui::accesskit::Role::Dialog);
-                node.set_label("Modify dimension");
-            });
-            egui::Frame::new()
-                .fill(SKETCH_MODIFY_BG)
-                .stroke(Stroke::new(1.0, SKETCH_MODIFY_STROKE))
-                .corner_radius(CornerRadius::same(6))
-                .inner_margin(Margin::same(3))
-                .shadow(egui::Shadow {
-                    offset: [0, 6],
-                    blur: 20,
-                    spread: 0,
-                    color: Color32::from_black_alpha(153),
-                })
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        let id = field_of(area);
-                        let focused = ui.memory(|m| m.has_focus(id));
-                        let mut text = view.text.clone();
-                        let field =
-                            field_frame(FieldKind::Modify, false, focused, view.said.is_some())
-                                .show(ui, |ui| {
-                                    ui.add(
-                                        egui::TextEdit::singleline(&mut text)
-                                            .id(id)
-                                            .char_limit(MODIFY_CHAR_LIMIT)
-                                            .frame(egui::Frame::NONE)
-                                            .desired_width(SKETCH_MODIFY_FIELD_WIDTH)
-                                            .text_color(if view.said.is_some() {
-                                                ERROR_TEXT
-                                            } else {
-                                                TEXT_STRONG
-                                            }),
-                                    )
-                                    .on_hover_text(format!("Value in {}", unit_words(view.unit)))
-                                })
-                                .inner;
-                        ui.ctx().accesskit_node_builder(field.id, |node| {
-                            node.set_label(format!("Value in {}", unit_words(view.unit)));
-                        });
-                        // A new box takes the keyboard, once, its cursor after its value.
-                        // (Not selected, as SolidWorks' and the prototype's is: egui 0.36's
-                        // field collapses a selection made outside its own events.)
-                        let taken = area.with("taken");
-                        if !ui.data(|d| d.get_temp::<bool>(taken).unwrap_or(false)) {
-                            field.request_focus();
-                            ui.data_mut(|d| d.insert_temp(taken, true));
-                        }
-                        if text != view.text {
-                            asked = Some(ModifyAction::Typed(text));
-                        }
-                        if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            asked = Some(ModifyAction::Accept);
-                        }
-                        ui.label(RichText::new(view.unit).color(TEXT_SUBDUED));
-                        if icon_button(ui, Icon::Check, "Accept", !view.waiting)
-                            .on_hover_text("Accept (Enter)")
-                            .clicked()
-                        {
-                            asked = Some(ModifyAction::Accept);
-                        }
-                        let skip = if view.placing {
-                            "Skip: the measured value is placed (Esc)"
-                        } else {
-                            "Cancel: the value stays (Esc)"
-                        };
-                        if icon_button(ui, Icon::Close, "Cancel", true)
-                            .on_hover_text(skip)
-                            .clicked()
-                        {
-                            asked = Some(ModifyAction::Skip);
-                        }
-                    });
-                });
-            let hint = match &view.said {
-                Some(said) => RichText::new(said).color(ERROR_TEXT),
-                None if view.waiting => RichText::new("Applying…").color(TEXT_SUBDUED),
-                None => RichText::new(format!("A plain number in {} · Enter accepts", view.unit))
-                    .color(TEXT_SUBDUED),
-            };
-            ui.label(hint.size(SKETCH_MODIFY_HINT_SIZE));
+        .order(egui::Order::Foreground);
+    crate::modal::area(ctx, shown, behind, |ui| {
+        *ui.visuals_mut() = super::bar::panel_visuals();
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::Dialog);
+            node.set_label("Modify dimension");
         });
+        egui::Frame::new()
+            .fill(SKETCH_MODIFY_BG)
+            .stroke(Stroke::new(1.0, SKETCH_MODIFY_STROKE))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(Margin::same(3))
+            .shadow(egui::Shadow {
+                offset: [0, 6],
+                blur: 20,
+                spread: 0,
+                color: Color32::from_black_alpha(153),
+            })
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let id = field_of(area);
+                    let focused = ui.memory(|m| m.has_focus(id));
+                    let mut text = view.text.clone();
+                    let field = field_frame(FieldKind::Modify, false, focused, view.said.is_some())
+                        .show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut text)
+                                    .id(id)
+                                    .char_limit(MODIFY_CHAR_LIMIT)
+                                    .frame(egui::Frame::NONE)
+                                    .desired_width(SKETCH_MODIFY_FIELD_WIDTH)
+                                    .text_color(if view.said.is_some() {
+                                        ERROR_TEXT
+                                    } else {
+                                        TEXT_STRONG
+                                    }),
+                            )
+                            .on_hover_text(format!("Value in {}", unit_words(view.unit)))
+                        })
+                        .inner;
+                    ui.ctx().accesskit_node_builder(field.id, |node| {
+                        node.set_label(format!("Value in {}", unit_words(view.unit)));
+                    });
+                    // A new box takes the keyboard, once, its cursor after its value.
+                    // (Not selected, as SolidWorks' and the prototype's is: egui 0.36's
+                    // field collapses a selection made outside its own events.) Behind a
+                    // modal, once it has gone.
+                    let taken = area.with("taken");
+                    if ui.is_enabled() && !ui.data(|d| d.get_temp::<bool>(taken).unwrap_or(false)) {
+                        field.request_focus();
+                        ui.data_mut(|d| d.insert_temp(taken, true));
+                    }
+                    if text != view.text {
+                        asked = Some(ModifyAction::Typed(text));
+                    }
+                    if field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        asked = Some(ModifyAction::Accept);
+                    }
+                    ui.label(RichText::new(view.unit).color(TEXT_SUBDUED));
+                    if icon_button(ui, Icon::Check, "Accept", !view.waiting)
+                        .on_hover_text("Accept (Enter)")
+                        .clicked()
+                    {
+                        asked = Some(ModifyAction::Accept);
+                    }
+                    let skip = if view.placing {
+                        "Skip: the measured value is placed (Esc)"
+                    } else {
+                        "Cancel: the value stays (Esc)"
+                    };
+                    if icon_button(ui, Icon::Close, "Cancel", true)
+                        .on_hover_text(skip)
+                        .clicked()
+                    {
+                        asked = Some(ModifyAction::Skip);
+                    }
+                });
+            });
+        let hint = match &view.said {
+            Some(said) => RichText::new(said).color(ERROR_TEXT),
+            None if view.waiting => RichText::new("Applying…").color(TEXT_SUBDUED),
+            None => RichText::new(format!("A plain number in {} · Enter accepts", view.unit))
+                .color(TEXT_SUBDUED),
+        };
+        ui.label(hint.size(SKETCH_MODIFY_HINT_SIZE));
+    });
     // Placed by a size it no longer has (its hint grew, say): placed again next frame.
     if size.is_some() && egui::AreaState::load(ctx, area).and_then(|state| state.size) != size {
         ctx.request_repaint();
@@ -381,10 +385,13 @@ pub struct OfferView {
 /// The over-define prompt (SD7; the prototype's modal "This dimension over-defines …"): a
 /// word on what the dimension repeats, the constraints flagged, and SolidWorks' three
 /// choices, each with its key (1, 2, and Esc, which the tab's Esc takes). The choice made,
-/// if one was.
-pub fn offer_prompt(ctx: &egui::Context, view: &OfferView) -> Option<OfferChoice> {
+/// if one was. `behind` a modal asked over it (a quit's question), it's drawn as it is, but
+/// inert (`crate::modal::area`), its keys not taken: no choice made.
+pub fn offer_prompt(ctx: &egui::Context, view: &OfferView, behind: bool) -> Option<OfferChoice> {
     let mut chose = None;
-    egui::Modal::new(egui::Id::new("sketch_offer"))
+    let id = egui::Id::new("sketch_offer");
+    egui::Modal::new(id)
+        .area(egui::Modal::default_area(id).interactable(!behind))
         .backdrop_color(Color32::from_black_alpha(153))
         .frame(
             egui::Frame::new()
@@ -394,6 +401,9 @@ pub fn offer_prompt(ctx: &egui::Context, view: &OfferView) -> Option<OfferChoice
                 .inner_margin(SKETCH_PROMPT_MARGIN),
         )
         .show(ctx, |ui| {
+            if behind {
+                crate::modal::inert(ui);
+            }
             *ui.visuals_mut() = super::bar::panel_visuals();
             // The prototype's 440 wide, its border and its sides' padding inside it.
             let margin = SKETCH_PROMPT_MARGIN.left + SKETCH_PROMPT_MARGIN.right;
@@ -452,10 +462,12 @@ pub fn offer_prompt(ctx: &egui::Context, view: &OfferView) -> Option<OfferChoice
                 }
             }
             let key = |key| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
-            if key(egui::Key::Num1) {
-                chose = Some(OfferChoice::Driven);
-            } else if key(egui::Key::Num2) {
-                chose = Some(OfferChoice::Leave);
+            if !behind {
+                if key(egui::Key::Num1) {
+                    chose = Some(OfferChoice::Driven);
+                } else if key(egui::Key::Num2) {
+                    chose = Some(OfferChoice::Leave);
+                }
             }
         });
     chose

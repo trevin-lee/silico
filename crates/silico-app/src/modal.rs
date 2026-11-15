@@ -119,35 +119,74 @@ pub(crate) fn frame() -> Frame {
         .shadow(theme::MODAL_SHADOW)
 }
 
+/// `ui` made inert, as everything behind the modal on top is (#487; SolidWorks' and
+/// Fusion's modals leave the window behind them taking no input): disabled, so none of its
+/// widgets takes a click, a drag, a key, or the focus, from the pointer or through the
+/// accessibility tree, which has each of them off. Each is drawn as it's drawn when off, but
+/// with none of egui's fade of a disabled `Ui` (which would fade the panels and not the
+/// 3D view under them): the modal's backdrop dims them. Its children inherit both.
+pub(crate) fn inert(ui: &mut Ui) {
+    let fade = ui.visuals().disabled_alpha;
+    ui.visuals_mut().disabled_alpha = 1.0;
+    ui.disable();
+    // A child disabled of its own fades as it does with no modal open.
+    ui.visuals_mut().disabled_alpha = fade;
+}
+
+/// `area` shown with `content`, inert ([`inert`]) if `behind` the modal on top: its own
+/// click (which would raise it) and its content's widgets taking no input, and the pointer
+/// passing through it.
+pub(crate) fn area<R>(
+    ctx: &egui::Context,
+    area: egui::Area,
+    behind: bool,
+    content: impl FnOnce(&mut Ui) -> R,
+) -> egui::InnerResponse<R> {
+    area.interactable(!behind).show(ctx, |ui| {
+        if behind {
+            inert(ui);
+        }
+        content(ui)
+    })
+}
+
 /// A modal named `id`, over the backdrop (`.backdrop`, black at 60%), centred in the
 /// window, [`theme::MODAL_WIDTH`] wide and no taller than the window but
 /// [`theme::MODAL_WINDOW_MARGIN`], its border in that: `content` draws its head, body, and
-/// foot ([`head`], [`body`], [`foot`]). What `content` gives.
+/// foot ([`head`], [`body`], [`foot`]). Always the modal on top: drawn after any other. What
+/// `content` gives.
 pub(crate) fn show<R>(ctx: &egui::Context, id: egui::Id, content: impl FnOnce(&mut Ui) -> R) -> R {
-    show_sized(ctx, id, theme::MODAL_WIDTH, content).0
+    show_sized(ctx, id, theme::MODAL_WIDTH, false, content).0
 }
 
 /// [`show`], `width` wide, its border in that, and as tall at most: what `content` gives,
 /// and whether the backdrop was clicked (`.backdrop`'s `closeModal`), which a modal with
-/// nothing to lose takes as its close.
+/// nothing to lose takes as its close. `behind` another modal (the shortcut sheet under a
+/// quit's question), it's drawn as it is, but inert ([`area`]): its backdrop's click no
+/// close.
 pub(crate) fn show_sized<R>(
     ctx: &egui::Context,
     id: egui::Id,
     width: f32,
+    behind: bool,
     content: impl FnOnce(&mut Ui) -> R,
 ) -> (R, bool) {
     let tallest =
         ctx.content_rect().height() - theme::MODAL_WINDOW_MARGIN - 2.0 * theme::BORDER_WIDTH;
     let shown = egui::Modal::new(id)
+        .area(egui::Modal::default_area(id).interactable(!behind))
         .backdrop_color(theme::MODAL_BACKDROP)
         .frame(frame())
         .show(ctx, |ui| {
+            if behind {
+                inert(ui);
+            }
             ui.set_width(width - 2.0 * theme::BORDER_WIDTH);
             ui.set_max_height(tallest.max(0.0));
             ui.spacing_mut().item_spacing = Vec2::ZERO;
             content(ui)
         });
-    (shown.inner, shown.backdrop_response.clicked())
+    (shown.inner, !behind && shown.backdrop_response.clicked())
 }
 
 /// The modal's head (`.m-head`): `icon`, if it has one, and `title`, 14 high in Gray.1000,

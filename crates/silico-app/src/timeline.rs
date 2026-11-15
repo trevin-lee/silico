@@ -730,14 +730,15 @@ fn items(
                 rect.top() - theme::FIELD_HEIGHT - theme::TIMELINE_RENAME_GAP,
             );
             let size = vec2(theme::TIMELINE_RENAME_WIDTH, theme::FIELD_HEIGHT);
-            let done = egui::Area::new(id.with("rename"))
+            // Inert, as the timeline is, behind a modal.
+            let area = egui::Area::new(id.with("rename"))
                 .order(egui::Order::Foreground)
-                .fixed_pos(at)
-                .show(ui.ctx(), |ui| {
-                    let place = Rect::from_min_size(ui.max_rect().min, size);
-                    feature_menu::field(ui, field, place, &entry.name)
-                })
-                .inner;
+                .fixed_pos(at);
+            let done = crate::modal::area(ui.ctx(), area, !ui.is_enabled(), |ui| {
+                let place = Rect::from_min_size(ui.max_rect().min, size);
+                feature_menu::field(ui, field, place, &entry.name)
+            })
+            .inner;
             if let feature_menu::Field::Done(name) = done {
                 asked.renamed = Some((entry.id.clone(), name));
             }

@@ -4904,7 +4904,7 @@ fn draw_box(
 ) -> Option<dimension::ModifyAction> {
     let viewport = egui::Rect::from_min_max(pos2(-1.0e4, -1.0e4), pos2(1.0e4, 1.0e4));
     let palette = egui::Rect::from_min_size(pos2(9.0e3, 9.0e3), vec2(10.0, 10.0));
-    dimension::modify_box(ui.ctx(), owner, view, viewport, palette)
+    dimension::modify_box(ui.ctx(), owner, view, viewport, palette, false)
 }
 
 /// A placed dimension's Modify box, `waiting` or not, opened as number 7 at (300, 200).
@@ -5854,7 +5854,7 @@ fn offer_prompt_shapes(view: &dimension::OfferView) -> Vec<egui::Shape> {
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            dimension::offer_prompt(ui.ctx(), view);
+            dimension::offer_prompt(ui.ctx(), view, false);
         });
         output.textures_delta.clear();
         shapes.clear();
