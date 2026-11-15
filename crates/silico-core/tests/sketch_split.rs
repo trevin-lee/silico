@@ -1018,6 +1018,57 @@ fn a_constraint_the_shared_point_would_make_a_pieces_own_is_refused_naming_it() 
     );
 }
 
+#[test]
+fn a_split_at_a_point_held_at_the_middle_of_the_line_its_curve_is_tangent_to_is_refused_naming_it()
+{
+    // The format reviewer's sketch (#498): arc aa about pc (100, 10), counter-clockwise from
+    // ps (90, 10) to pe (110, 10) through (100, 0); line na from pf (90, 0) to pr (110, 0);
+    // pq (100, 0) held on aa (k0), at na's middle (k1), and aa edge tangent to na, its centre
+    // on na's left (k2). The gate takes it: pq is no end of aa. Split aa at pq: the pieces
+    // share pq, its `on` goes, and the tangent stays with aa, the start-side piece, whose
+    // span holds the contact, pc's foot on na, (100, 0), where the pieces meet (the start
+    // side's when the contact is the cut). The midpoint would then hold an end of aa at na's
+    // middle beside their edge tangent: refused in the split's words, naming the tangent,
+    // the midpoint, the piece, and the line.
+    let before = doc(
+        &[
+            point("pc000000", 100.0, 10.0),
+            point("ps000000", 90.0, 10.0),
+            point("pe000000", 110.0, 10.0),
+            point("pf000000", 90.0, 0.0),
+            point("pr000000", 110.0, 0.0),
+            point("pq000000", 100.0, 0.0),
+        ]
+        .join(", "),
+        &line("na000000", "pf000000", "pr000000"),
+        "",
+        &arc("aa000000", "pc000000", "ps000000", "pe000000"),
+        r#"{"id": "k0000000", "type": "on", "point": "pq000000", "curve": "aa000000"}, {"id": "k0000001", "type": "midpoint", "point": "pq000000", "line": "na000000"}, {"id": "k0000002", "type": "tangent", "a": "aa000000", "b": "na000000", "side": "left"}"#,
+    );
+    if let Err(invalid) = validate(&before) {
+        panic!("the gate refused the sketch: {:?}", invalid.errors());
+    }
+    let error = split(
+        sketch_of(&before),
+        &id("aa000000"),
+        &[[100.0, 0.0]],
+        &ids(&["ab000000"]),
+    )
+    .unwrap_err();
+    assert_eq!(
+        said(&error),
+        (
+            "the split would make constraint k0000002 an edge tangency of aa000000 and na000000 where k0000001 holds an end of one at the other's middle: that's a tangent_on beside the midpoint",
+            Some("at.0"),
+            vec!["k0000002", "k0000001", "aa000000", "na000000"]
+        )
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some("remove the constraint first, or split elsewhere")
+    );
+}
+
 // ---- the tests review's: rounds' pieces, contacts, and floors
 
 /// Arc a0000000 about z0 (0, 0), radius 25, counter-clockwise from e0 (25, 0), at 0, to e1

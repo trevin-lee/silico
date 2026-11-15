@@ -1046,8 +1046,8 @@ impl Form {
     /// The point the form holds on a curve, and the curve, where it holds one (C3 as
     /// amended, #478: a hold is a hold): an `on`'s `point` on its `curve`, a
     /// `tangent_on`'s `at` on its `b`, a `midpoint`'s `point` on its `line`. The constraint
-    /// tools' Tangent reads its places from these (C3). The gate's tangent rule still reads
-    /// an `on`'s and a `tangent_on`'s only, until a change of its own adds the midpoint's.
+    /// tools' Tangent reads its places from these (C3), and the gate's tangent rule reads the
+    /// holds it pairs with an edge `tangent` from them too, so the two lists are one.
     pub(crate) fn hold(&self) -> Option<(&Reference, &Reference)> {
         match self {
             Form::On { point, curve } => Some((point, curve)),

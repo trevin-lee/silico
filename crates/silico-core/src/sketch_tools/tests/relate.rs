@@ -234,8 +234,9 @@ fn constraint_of(sketch: &Sketch, name: &str) -> Option<Form> {
 #[test]
 fn the_gate_takes_a_tangent_on_beside_the_on_of_its_point_and_curve_then_the_ons_removal() {
     // kt000002 holds pe000013, ne000008's end, on ce000001. A tangent_on of that end on that
-    // curve beside it is taken: the gate's tangent rule pairs an edge `tangent` with an `on`
-    // or a `tangent_on`, never a `tangent_on` with an `on`. Then the `on`'s removal, by ID.
+    // curve beside it is taken: the gate's tangent rule pairs an edge `tangent` with a hold
+    // (an `on`, a `tangent_on`, or a `midpoint`), never two holds. Then the `on`'s removal, by
+    // ID.
     let s = s5();
     let add = Members {
         constraints: vec![kt(
@@ -2611,6 +2612,61 @@ fn p1_a_midpoint_and_an_on_holding_the_end_the_on_is_replaced() {
         }
     );
     taken(&s, &made);
+}
+
+#[test]
+fn p1_the_tangent_tool_and_the_gate_read_one_list_of_holds() {
+    // The gate's tangent rule reads its holds from `Form::hold` as Tangent reads its places
+    // (C3 as amended, and the gate's change after #478). Where the midpoint kt000004 holds the
+    // arc's start pe000021 at ne000010's middle, Tangent writes test 1's tangent_on, which the
+    // gate takes beside the midpoint; the edge tangent it doesn't write there is the gate's
+    // pair, refused at the tangent. Where the midpoint holds another point, or holds it on
+    // another line (test 3), Tangent writes that edge tangent, (1, 0) × (10, 10) = 10, left,
+    // and the gate takes it. A refusal of the tool's own output would mean the lists drifted.
+    let edge = RelateEdit::Add(Members {
+        constraints: vec![kt(
+            "kt000101",
+            Form::Tangent {
+                a: el("ae000003"),
+                b: el("ne000010"),
+                side: TangentSide::Left,
+            },
+        )],
+        ..Members::default()
+    });
+    let s = held_at_a_midpoint();
+    let made = edit(&s, Tangent, &["ae000003", "ne000010"]);
+    assert_eq!(
+        made,
+        RelateEdit::Add(Members {
+            constraints: vec![on_the_midpoint("kt000101")],
+            ..Members::default()
+        })
+    );
+    taken(&s, &made);
+    assert_eq!(
+        gated(&s, &edge),
+        Err(vec![
+            "a tangent's ae000003 ends at point pe000021, which constraint kt000004 puts on ne000010: a curve ending on another is tangent where it ends"
+                .to_owned()
+        ])
+    );
+    for held in [
+        Form::Midpoint {
+            point: el("pe000021"),
+            line: el("ne000001"),
+        },
+        Form::Midpoint {
+            point: el("pe000020"),
+            line: el("ne000010"),
+        },
+    ] {
+        let mut s = held_at_a_midpoint();
+        s.constraints[3].form = held;
+        let made = edit(&s, Tangent, &["ae000003", "ne000010"]);
+        assert_eq!(made, edge, "{:?}", s.constraints[3]);
+        taken(&s, &made);
+    }
 }
 
 #[test]
