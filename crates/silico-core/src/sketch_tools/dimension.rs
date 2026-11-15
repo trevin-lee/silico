@@ -80,9 +80,8 @@
 use super::adds::Adds;
 use super::build::Builder;
 use super::geometry::{cross, distance, dot, length, scale, sub, unit};
-use super::implied::ViewClasses;
-use super::infer::{Pointer, View};
-use super::{AddToken, Context, Message, NewIds, Outcome, Xy, geometry};
+use super::infer::{View, pick_in};
+use super::{AddToken, Axes, Context, Message, NewIds, Outcome, Xy, geometry};
 use crate::command::Revision;
 use crate::command::sketch::SketchRead;
 use crate::document::json::{self, At, Node, Value};
@@ -630,22 +629,8 @@ impl SmartDimension {
         }
         let pending = self.adds.members();
         let view = View::of(context.sketch, &pending);
-        // Smart Dimension picks, inferring no relation, so it judges none: its pointer's
-        // classes are never built.
-        let classes = ViewClasses::default();
         let closed = self.revalidate(&view);
-        let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
-            context.tolerance
-        } else {
-            0.0
-        };
-        let pointer = Pointer {
-            view: &view,
-            tolerance,
-            infer: true,
-            woken: &[],
-            classes: &classes,
-        };
+        let tolerance = context.tolerance;
         let event = match event {
             Some(DimensionEvent::Cancel) => {
                 if let Some(before) = self.before_press.take() {
@@ -686,7 +671,7 @@ impl SmartDimension {
             self.pointer = Some(at);
         }
         let Some(event) = event else {
-            self.preview = self.drawn(&view, &pointer);
+            self.preview = self.drawn(&view, tolerance);
             return Outcome {
                 message: closed,
                 ..Outcome::default()
@@ -735,7 +720,7 @@ impl SmartDimension {
             DimensionEvent::Move(_) => Outcome::default(),
             DimensionEvent::Release(at) if self.pressed => {
                 self.pressed = false;
-                self.click(&view, &pointer, at)
+                self.click(&view, tolerance, at)
             }
             DimensionEvent::Release(_) => Outcome::default(),
             DimensionEvent::RightClick(at) => {
@@ -748,7 +733,7 @@ impl SmartDimension {
         if outcome.message.is_none() {
             outcome.message = closed;
         }
-        self.preview = self.drawn(&view, &pointer);
+        self.preview = self.drawn(&view, tolerance);
         outcome
     }
 
@@ -797,12 +782,12 @@ impl SmartDimension {
         }
     }
 
-    /// A click at `at`: a pick, while fewer than two are picked and it's on something not
-    /// picked; else the dimension placed, its Modify box opened, unless the last placement's
-    /// offer isn't settled (the offer is modal).
-    fn click(&mut self, view: &View<'_>, pointer: &Pointer<'_, '_>, at: Xy) -> Outcome {
+    /// A click at `at`: a pick within `tolerance` ([`pick_in`]), while fewer than two are
+    /// picked and it's on something not picked; else the dimension placed, its Modify box
+    /// opened, unless the last placement's offer isn't settled (the offer is modal).
+    fn click(&mut self, view: &View<'_>, tolerance: f64, at: Xy) -> Outcome {
         if self.picks.len() < 2
-            && let Some(hit) = pointer.pick(at)
+            && let Some(hit) = pick_in(view, tolerance, at, Axes::BOTH)
             && !self.picks.contains(&hit)
         {
             self.picks.push(hit);
@@ -901,8 +886,8 @@ impl SmartDimension {
         })
     }
 
-    /// The preview, at the pointer.
-    fn drawn(&self, view: &View<'_>, pointer: &Pointer<'_, '_>) -> DimensionPreview {
+    /// The preview, at the pointer, what it would pick within `tolerance` ([`pick_in`]).
+    fn drawn(&self, view: &View<'_>, tolerance: f64) -> DimensionPreview {
         let mut preview = DimensionPreview {
             pointer: self.pointer,
             picks: self.picks.clone(),
@@ -918,7 +903,8 @@ impl SmartDimension {
             return preview;
         };
         if self.picks.len() < 2 {
-            preview.hover = pointer.pick(at).filter(|r| !self.picks.contains(r));
+            preview.hover =
+                pick_in(view, tolerance, at, Axes::BOTH).filter(|r| !self.picks.contains(r));
         }
         let locked = self.lock == Some(Measure::PointLine);
         match offered(view, &self.picks, at, self.lock, locked) {

@@ -2282,3 +2282,20 @@ fn a_pointer_half_a_number_is_off_the_plane_and_reaches_no_tool() {
     }
     assert!(desk.adds.is_empty());
 }
+
+#[test]
+fn an_arcs_distance_is_its_rims_on_its_sweep_and_its_nearer_ends_past_it() {
+    // About (0, 0), radius 10, from 90° through 90°: from (0, 10) to (−10, 0).
+    let quarter = crate::sketch::draw::Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 10.0,
+        start: std::f64::consts::FRAC_PI_2,
+        sweep: std::f64::consts::FRAC_PI_2,
+    };
+    let distance = |at| super::distance(quarter, at);
+    // At 135°, 1 outside the rim: 1.
+    let out = 11.0 * std::f64::consts::FRAC_1_SQRT_2;
+    assert!((distance([-out, out]) - 1.0).abs() < 1e-9);
+    // (−10, −1), just past its end: 1 from (−10, 0).
+    assert!((distance([-10.0, -1.0]) - 1.0).abs() < 1e-9);
+}

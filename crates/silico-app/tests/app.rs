@@ -20835,7 +20835,8 @@ fn select_member(h: &mut AppHarness, member: &str, kind: silico_core::document::
         .sketch
         .as_mut()
         .unwrap()
-        .click(Some(hit), false);
+        .selection
+        .click(Some(hit.into()), false);
 }
 
 fn sketch_id(text: &str) -> silico_core::document::FeatureId {
@@ -25157,6 +25158,93 @@ fn cancel_after_a_released_drag_whose_end_is_held_undoes_it_with_no_conflict() {
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(text_of(&f.sessions, &h), text);
     assert!(h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`clicked`], with Ctrl held.
+fn ctrl_clicked(x: f64, y: f64) -> Vec<silico_app::sketch::PointerEvent> {
+    clicked(x, y)
+        .into_iter()
+        .map(|event| silico_app::sketch::PointerEvent {
+            ctrl: true,
+            ..event
+        })
+        .collect()
+}
+
+/// Sketch mode's selection as the constraint tools take it, in pick order.
+fn sketch_picks(h: &AppHarness) -> Vec<silico_core::document::Reference> {
+    sketch_mode(h).map_or_else(Vec::new, |mode| mode.selection.references())
+}
+
+#[test]
+fn sketch_modes_selection_keeps_pick_order_takes_the_origin_and_the_axes_and_delete_ignores_them() {
+    use silico_core::document::Reference;
+    let element = |id: &str| Reference::Element(silico_core::document::ElementId::new(id).unwrap());
+    let f = fixture();
+    let mut h = boxed_sketch(&f);
+    // The box, (10, 10) to (50, 30): its sides na000001 (bottom), na000002 (right), na000003
+    // (top), and na000004 (left); the pick 7 points, 0.7 mm here. A click at the origin, 14
+    // from the box's nearest corner: the origin.
+    sketch_events(&f, &mut h, &clicked(0.0, 0.0));
+    assert_eq!(sketch_picks(&h), [Reference::Origin]);
+    // Ctrl on the top at (30, 30); on the x axis at (80, 0.3), 80 along it and 30 past the
+    // box; and on the left side at (10, 20): each after the last, not in ID order.
+    for (x, y) in [(30.0, 30.0), (80.0, 0.3), (10.0, 20.0)] {
+        sketch_events(&f, &mut h, &ctrl_clicked(x, y));
+    }
+    assert_eq!(
+        sketch_picks(&h),
+        [
+            Reference::Origin,
+            element("na000003"),
+            Reference::XAxis,
+            element("na000004")
+        ]
+    );
+    // The top Ctrl-clicked off, then on again: at the end.
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    assert_eq!(
+        sketch_picks(&h),
+        [
+            Reference::Origin,
+            Reference::XAxis,
+            element("na000004"),
+            element("na000003")
+        ]
+    );
+    // Esc clears it, the origin and the axis with the rest.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert!(sketch_picks(&h).is_empty());
+    // The y axis far below the origin, at (0.3, −60); then a plain click on the bottom, at
+    // (30, 10), replaces it; then a click on nothing, mid-box at (30, 20), clears it.
+    sketch_events(&f, &mut h, &clicked(0.3, -60.0));
+    assert_eq!(sketch_picks(&h), [Reference::YAxis]);
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    assert_eq!(sketch_picks(&h), [element("na000001")]);
+    sketch_events(&f, &mut h, &clicked(30.0, 20.0));
+    assert!(sketch_picks(&h).is_empty());
+    // The origin and the top, then Delete: the top alone is removed. (The gate refuses a
+    // `sketch_remove` naming the origin, so had it been sent, nothing would go.)
+    sketch_events(&f, &mut h, &clicked(0.0, 0.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    assert_eq!(sketch_picks(&h), [Reference::Origin, element("na000003")]);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    let removes = h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter(|sent| **sent == Sent::SketchEdit("sketch_remove"))
+        .count();
+    assert_eq!(removes, 1);
+    let text = text_of(&f.sessions, &h);
+    assert!(!text.contains("na000003"), "{text}");
+    for kept in ["na000001", "na000002", "na000004"] {
+        assert!(text.contains(kept), "{kept}: {text}");
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
