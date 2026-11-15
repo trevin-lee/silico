@@ -396,6 +396,20 @@ enum Planned {
 /// Why a constraint tool's click is let go once its sketch mode has gone unread.
 const SKETCH_CLOSED: &str = "the sketch closed before it was read";
 
+/// Why a constraint tool's click can't be planned while the tab's revision's rebuild is
+/// stopped and nothing of it is published: the read it needs won't come unasked, and a click
+/// never starts the rebuild again (the stop is the person's).
+const REBUILD_STOPPED: &str =
+    "the rebuild was stopped before the sketch was read; Rebuild, then try again";
+
+/// Why, while the tab's revision's recompute has failed and nothing of it is published.
+const REBUILD_FAILED: &str =
+    "the rebuild failed before the sketch was read; Rebuild, then try again";
+
+/// Why a constraint tool's click waiting to be planned is let go at its sketch mode's Cancel,
+/// which takes back its edits anyway.
+const SKETCH_CANCELLED: &str = "the sketch was cancelled first";
+
 /// A new sweep's body: not yet read, or read from the document at a revision (its base,
 /// [`base_of`]: its sketch's face's body, or the tip; none if it has none), which the add is
 /// sent with only if the session is still at that revision, and read again otherwise.
@@ -6560,11 +6574,29 @@ impl Tab {
         }
         // Its close waits for a drag's end (the queue waits while one is under way).
         self.leave_drag();
-        // And for a constraint tool's click of it still to plan: its reads go on.
-        if let Some(mode) = self.sketch.take()
-            && self.relating(mode.serial)
-        {
-            self.leaving.push(mode);
+        // And, for Finish, for a constraint tool's click of it still to plan: its reads go
+        // on. Cancel takes back what it adds anyway: a click still waiting to be planned is let
+        // go, said, and an edit already planned is sent and taken back with the rest.
+        if let Some(mode) = self.sketch.take() {
+            if !ok {
+                let serial = mode.serial;
+                let mut dropped = None;
+                self.edits.queue.retain(|queued| match queued {
+                    Queued::Click { click, .. } if click.serial == serial => {
+                        dropped.get_or_insert(click.relation);
+                        false
+                    }
+                    _ => true,
+                });
+                if let Some(relation) = dropped {
+                    self.message = Some(format!(
+                        "{} wasn't added: {SKETCH_CANCELLED}",
+                        relation.name()
+                    ));
+                }
+            } else if self.relating(mode.serial) {
+                self.leaving.push(mode);
+            }
         }
         self.drive_drag(sessions);
         self.edits.queue.push_back(Queued::Closed {
@@ -6893,11 +6925,50 @@ impl Tab {
             relation,
             picks: mode.selection.references(),
         };
+        // A read it can't be planned on, and none newer to come: refused now, said in the
+        // toast and the status bar, nothing sent, the selection kept.
+        let read = mode.read.as_ref();
+        let why = self
+            .unreadable(read.and_then(|read| read.model))
+            .map(str::to_owned)
+            .or_else(|| match read {
+                Some(sketch::Read {
+                    result: Err(problems),
+                    model,
+                }) if model.is_none_or(|model| model >= self.revision) => Some(said(problems)),
+                _ => None,
+            });
         self.hush();
+        if let Some(why) = why {
+            let said = format!("{} wasn't added: {why}", relation.name());
+            self.toast = Some(said.clone());
+            self.message = Some(said);
+            return;
+        }
         self.edits
             .queue
             .push_back(Queued::Click { click, after: None });
         self.advance(sessions);
+    }
+
+    /// Why a sketch read of the revision `read` (none: no read yet) can't be followed by a
+    /// newer one unasked, if it can't: it's older than the tab's revision, whose rebuild, as
+    /// `status` gives it for that revision, was stopped or its recompute failed, with nothing
+    /// of that revision or newer published. A click never starts that rebuild again.
+    fn unreadable(&self, read: Option<Revision>) -> Option<&'static str> {
+        let current = |revision: Revision| revision >= self.revision;
+        if read.is_some_and(current) || self.published.is_some_and(current) {
+            return None;
+        }
+        let status = self
+            .status
+            .as_ref()
+            .filter(|status| status.rebuild.revision == self.revision)?;
+        match status.rebuild.state {
+            RebuildState::Stopped => Some(REBUILD_STOPPED),
+            RebuildState::Faulted => Some(REBUILD_FAILED),
+            RebuildState::Idle | RebuildState::Running | RebuildState::Done => None,
+        }
     }
 
     /// `click`, come up in the queue, planned on the newest read of the sketch mode it was
@@ -6910,6 +6981,20 @@ impl Tab {
     fn plan(&mut self, click: &Click, after: Option<Revision>) -> Planned {
         let gone =
             |why: &str| Planned::Gone(format!("{} wasn't added: {why}", click.relation.name()));
+        let read = self
+            .sketch
+            .iter()
+            .chain(self.leaving.iter())
+            .find(|mode| mode.serial == click.serial)
+            .map(|mode| mode.read.as_ref().and_then(|read| read.model));
+        let Some(read) = read else {
+            return gone(SKETCH_CLOSED);
+        };
+        // The read it needs won't come unasked: let go now, in the frame the stop or the
+        // failure is seen, so nothing queued after it waits on it.
+        if let Some(why) = self.unreadable(read) {
+            return gone(why);
+        }
         let Some(mode) = self
             .sketch
             .iter_mut()
@@ -6926,6 +7011,9 @@ impl Tab {
             .is_some_and(|model| after.is_some_and(|after| model <= after));
         let (revision, drawn) = match (&read.result, read.model) {
             _ if older => return Planned::Wait,
+            // A refusal of an older model (from before the sketch was added) waits for the
+            // next, as the palette does.
+            (Err(_), Some(model)) if model < self.revision => return Planned::Wait,
             (Err(problems), _) => return gone(&said(problems)),
             (Ok(drawn), Some(model)) if drawn.sketch == click.sketch => (model, drawn),
             _ => return Planned::Wait,
@@ -6977,6 +7065,12 @@ impl Tab {
                 Planned::Said
             }
         }
+    }
+
+    /// How many sketch modes closed with a constraint tool's click still unsettled are kept
+    /// for it: what a test counts.
+    pub fn leaving(&self) -> usize {
+        self.leaving.len()
     }
 
     /// Whether a constraint tool's click of sketch mode numbered `serial` is unsettled:

@@ -25921,6 +25921,203 @@ fn tangent_already_there_beside_its_on_removes_the_on_alone() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// The first tab's sketch mode, its newest read's revision.
+fn read_revision(h: &AppHarness) -> Option<Revision> {
+    sketch_mode(h)
+        .and_then(|mode| mode.read.as_ref())
+        .and_then(|read| read.model)
+}
+
+/// Frames stepped until the sketch solver holds a solve: a transaction's rebuild starts
+/// when a frame's read needs its model.
+fn until_a_solve_is_held(f: &Fixture, h: &mut AppHarness) {
+    step_until(h, "the rebuild's solve held", |_| {
+        f.sketches.wait_held(Duration::ZERO)
+    });
+}
+
+/// The first tab's rebuild of its revision stopped, as Stop stops it, once the held sketch
+/// solve shows it running; then the solver let go.
+fn stop_the_held_rebuild(f: &Fixture, h: &mut AppHarness) {
+    until_a_solve_is_held(f, h);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].stop(&sessions);
+    }
+    step_until(h, "the rebuild stopped", |h| {
+        h.state().tabs()[0].rebuild_stopped()
+    });
+    f.sketches.release();
+}
+
+#[test]
+fn a_click_after_a_stopped_rebuild_is_refused_and_finish_still_closes() {
+    // Horizontal, its rebuild stopped while its solve is held; then Vertical and Finish:
+    // the read Vertical needs can't come unasked, so it's refused, said, and Finish closes.
+    use silico_core::document::ElementKind;
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    f.sketches.hold();
+    select_member(&mut h, "na000001", ElementKind::Line);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+    }
+    stop_the_held_rebuild(&f, &mut h);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000002", ElementKind::Line);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Vertical);
+        tab.finish_sketch(&sessions, true);
+    }
+    for _ in 0..200 {
+        step(&mut h);
+    }
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.unsettled(), "the tab stalled");
+    assert!(tab.sketch.is_none());
+    let said = tab.message.clone().unwrap_or_default();
+    assert!(said.starts_with("Vertical wasn't added: "), "{said}");
+    assert_eq!(sketch_sends(&h), ["sketch_add"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_after_an_edit_whose_rebuild_was_stopped_is_refused_at_the_press() {
+    // A lone point deleted, its rebuild stopped while its solve is held; then Horizontal:
+    // refused at once, said, and nothing sent.
+    use silico_core::document::ElementKind;
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    f.sketches.hold();
+    select_member(&mut h, "pb000001", ElementKind::Point);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].sketch_delete(&sessions);
+    }
+    stop_the_held_rebuild(&f, &mut h);
+    assert!(read_revision(&h) < Some(h.state().tabs()[0].revision));
+    select_member(&mut h, "na000001", ElementKind::Line);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+    }
+    let said = h.state().tabs()[0].message.clone().unwrap_or_default();
+    assert!(
+        said.starts_with("Horizontal wasn't added: the rebuild was stopped"),
+        "{said}"
+    );
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(sketch_sends(&h), ["sketch_remove"]);
+    assert!(!h.state().tabs()[0].unsettled());
+    assert_eq!(
+        sketch_picks(&h),
+        [element_ref("na000001")],
+        "the selection stays"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_undo_behind_a_click_waiting_on_a_stopped_rebuild_runs_once_the_stop_is_seen() {
+    // A box feeding a pad, the rebuild held at its sketch's solve (a prism held would hold
+    // nothing: a relation moves no point here, so the pad's step comes from the cache).
+    // Horizontal, Vertical, and Undo in one frame: the Vertical, stale, waits for a read of
+    // the Horizontal's revision; its rebuild stopped, that read can't come, so the Vertical
+    // is let go, said, and the Undo runs.
+    use silico_core::document::ElementKind;
+    use silico_core::sketch_tools::RelationTool;
+    let text = BOXED_PADDED.replace(
+        r#""constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]"#,
+        r#""constraints": []"#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    let f = fixture();
+    let (mut h, _) = f.opened("padded.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    f.sketches.hold();
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        select_member(&mut h, "na000001", ElementKind::Line);
+        h.state_mut().tabs_mut()[0].sketch_relate(&sessions, RelationTool::Horizontal);
+        select_member(&mut h, "na000002", ElementKind::Line);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Vertical);
+        tab.step(&sessions, true);
+    }
+    stop_the_held_rebuild(&f, &mut h);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let said = tab.message.clone().unwrap_or_default();
+    assert!(said.starts_with("Vertical wasn't added: "), "{said}");
+    assert!(tab.sent.iter().any(|sent| matches!(sent, Sent::Undo(_))));
+    assert_eq!(text_of(&f, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_after_a_failed_recompute_of_the_tabs_revision_is_refused_at_the_press() {
+    // A lone point deleted, its rebuild held unpublished; status then says its recompute
+    // failed (`faulted`, nothing published: a bug's path, set here as status would give
+    // it). Horizontal is refused at once, in the rebuild's words, and nothing is sent.
+    use silico_core::command::{Rebuild, RebuildState};
+    use silico_core::document::ElementKind;
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    f.sketches.hold();
+    select_member(&mut h, "pb000001", ElementKind::Point);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].sketch_delete(&sessions);
+    }
+    until_a_solve_is_held(&f, &mut h);
+    step_until(&mut h, "the delete answered", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.published < Some(tab.revision) && sketch_sends(h) == ["sketch_remove"]
+    });
+    select_member(&mut h, "na000001", ElementKind::Line);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        let revision = tab.revision;
+        if let Some(status) = tab.status.as_mut() {
+            status.rebuild = Rebuild {
+                revision,
+                state: RebuildState::Faulted,
+                progress: None,
+            };
+        }
+        tab.sketch_relate(&sessions, RelationTool::Horizontal);
+    }
+    let said = h.state().tabs()[0].message.clone().unwrap_or_default();
+    assert!(
+        said.starts_with("Horizontal wasn't added: the rebuild failed"),
+        "{said}"
+    );
+    f.sketches.release();
+    settled(&mut h);
+    assert_eq!(sketch_sends(&h), ["sketch_remove"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn delete_during_a_drag_waits_for_its_end_then_goes_against_its_revision_and_both_land() {
     use silico_app::sketch::PointerAction::{Move, Press, Release};
