@@ -2175,7 +2175,8 @@ impl<P: Clients + 'static> App<P> {
     /// sketch's profile (those that cut, only with a body to cut), solids being made
     /// sketch-first (Trevin's decision of 2026-11-09), never as primitives; and
     /// SELECT's Clear selection. In a sketch, SKETCH's: a tool chosen, or left if it's on,
-    /// Construction turned on or off, as their keys do, and Finish Sketch.
+    /// Construction turned on or off, as their keys do, a relation made of the selection, and
+    /// Finish Sketch.
     fn toolbar(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let mut tab = self
             .active
@@ -2231,6 +2232,10 @@ impl<P: Clients + 'static> App<P> {
             }
             Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
             Some(toolbar::Act::Construction) => tab.sketch_toggle_construction(),
+            Some(toolbar::Act::Relate(relation)) => {
+                tab.sketch_relate(&self.sessions, relation);
+                *next_frame = true;
+            }
             None => {}
         }
     }

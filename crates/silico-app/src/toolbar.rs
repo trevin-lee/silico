@@ -7,14 +7,15 @@
 //!
 //! Only what the app can do is on: the feature dialogs (M5.8), SELECT's filters and
 //! clearing the selection (M5.7), and, in SKETCH, sketch mode's tools (the drawing tools,
-//! trim, split, and Smart Dimension, the one on drawn on, `.tb-btn.on`) and Construction
-//! (drawn pressed while on, `.toggle-on`, as the filters are). A dialog's command that's off
-//! for want of what the part has says why in its tooltip (a boolean's "Needs two bodies").
-//! The prototype's other commands keep their places, drawn off, their tooltips saying they
-//! aren't built yet. What the toolbar shows comes in a [`Shown`], and what was clicked goes
-//! back as an [`Act`], so a test drives it with a stub, and sketch mode's state (whether a
-//! sketch is open, whether Create Sketch can open, the tool on, Construction) and its actions
-//! (Create Sketch on a plane, a tool, Construction, Finish Sketch) are the caller's to wire.
+//! trim, split, and Smart Dimension, the one on drawn on, `.tb-btn.on`), Construction
+//! (drawn pressed while on, `.toggle-on`, as the filters are), and the ten constraint tools,
+//! each a relation made of the selection. A dialog's command that's off for want of what the
+//! part has says why in its tooltip (a boolean's "Needs two bodies"). The prototype's other
+//! commands keep their places, drawn off, their tooltips saying they aren't built yet. What
+//! the toolbar shows comes in a [`Shown`], and what was clicked goes back as an [`Act`], so a
+//! test drives it with a stub, and sketch mode's state (whether a sketch is open, whether
+//! Create Sketch can open, the tool on, Construction) and its actions (Create Sketch on a
+//! plane, a tool, Construction, a relation, Finish Sketch) are the caller's to wire.
 //! A button the registry (`crate::shortcuts`) gives keys names them in its tooltip.
 
 use std::sync::Arc;
@@ -24,7 +25,7 @@ use eframe::egui::{
     StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, accesskit::Role, text::LayoutJob,
 };
 use silico_core::document::OriginPlane;
-use silico_core::sketch_tools::ToolKind;
+use silico_core::sketch_tools::{RelationTool, ToolKind};
 
 use crate::bar;
 use crate::dialog::Kind;
@@ -98,6 +99,8 @@ pub enum Act {
     SketchTool(Choice),
     /// Construction's button: Construction turned on or off.
     Construction,
+    /// A constraint tool's button: the relation made of the selection.
+    Relate(RelationTool),
     /// SELECT's Clear selection.
     ClearSelection,
     /// One of SELECT's filters, toggled.
@@ -151,6 +154,9 @@ enum Does {
     Construction,
     /// Toggles a kind in the selection's filter, shown pressed while it's taken.
     Filter(FilterKind),
+    /// Makes a relation of sketch mode's selection: on whenever a sketch is open, as the
+    /// prototype draws the constraint tools.
+    Constraint(RelationTool),
     /// Nothing yet: drawn off.
     NotBuilt,
 }
@@ -362,14 +368,14 @@ const DIMENSION: Command = keyed(
     shortcuts::Command::Dimension,
 );
 
-/// A constraint's button (app.js's `renderToolbar`, CONSTRAINTS): its name, and the
-/// prototype's line on them all.
-const fn constraint(label: &'static str, icon: Icon) -> Command {
+/// A constraint's button (app.js's `renderToolbar`, CONSTRAINTS): its name, the prototype's
+/// line on them all, and the relation it makes.
+const fn constraint(label: &'static str, icon: Icon, relation: RelationTool) -> Command {
     command(
         label,
         icon,
         Some("Select the curves or points first"),
-        Does::NotBuilt,
+        Does::Constraint(relation),
     )
 }
 
@@ -472,16 +478,20 @@ const SKETCH: &[Panel] = &[
 /// `renderToolbar` gives them.
 const CONSTRAINTS: [Command; 11] = [
     DIMENSION,
-    constraint("Horizontal", Icon::CHorizontal),
-    constraint("Vertical", Icon::CVertical),
-    constraint("Coincident", Icon::CCoincident),
-    constraint("Tangent", Icon::CTangent),
-    constraint("Equal", Icon::CEqual),
-    constraint("Parallel", Icon::CParallel),
-    constraint("Perpendicular", Icon::CPerpendicular),
-    constraint("Midpoint", Icon::CMidpoint),
-    constraint("Symmetric", Icon::CSymmetric),
-    constraint("Fix", Icon::CFix),
+    constraint("Horizontal", Icon::CHorizontal, RelationTool::Horizontal),
+    constraint("Vertical", Icon::CVertical, RelationTool::Vertical),
+    constraint("Coincident", Icon::CCoincident, RelationTool::Coincident),
+    constraint("Tangent", Icon::CTangent, RelationTool::Tangent),
+    constraint("Equal", Icon::CEqual, RelationTool::Equal),
+    constraint("Parallel", Icon::CParallel, RelationTool::Parallel),
+    constraint(
+        "Perpendicular",
+        Icon::CPerpendicular,
+        RelationTool::Perpendicular,
+    ),
+    constraint("Midpoint", Icon::CMidpoint, RelationTool::Midpoint),
+    constraint("Symmetric", Icon::CSymmetric, RelationTool::Symmetric),
+    constraint("Fix", Icon::CFix, RelationTool::Fix),
 ];
 
 /// Create Sketch's planes, as sketch mode names them.
@@ -497,7 +507,7 @@ impl Command {
         match self.does {
             Does::Dialog(kind) => (shown.can_open)(kind),
             Does::CreateSketch => shown.create_sketch == Some(true),
-            Does::Tool(_) | Does::Construction => shown.in_sketch,
+            Does::Tool(_) | Does::Construction | Does::Constraint(_) => shown.in_sketch,
             Does::Filter(_) => true,
             Does::NotBuilt => false,
         }
@@ -509,7 +519,7 @@ impl Command {
             Does::Tool(choice) => Some((Pressed::Tool, shown.tool == Some(choice))),
             Does::Construction => Some((Pressed::Toggle, shown.construction)),
             Does::Filter(kind) => Some((Pressed::Toggle, kind.on(shown.filter))),
-            Does::Dialog(_) | Does::CreateSketch | Does::NotBuilt => None,
+            Does::Dialog(_) | Does::CreateSketch | Does::Constraint(_) | Does::NotBuilt => None,
         }
     }
 
@@ -520,6 +530,7 @@ impl Command {
             Does::Tool(choice) => Some(Act::SketchTool(choice)),
             Does::Construction => Some(Act::Construction),
             Does::Filter(kind) => Some(Act::Filter(kind)),
+            Does::Constraint(relation) => Some(Act::Relate(relation)),
             Does::CreateSketch | Does::NotBuilt => None,
         }
     }
@@ -527,7 +538,7 @@ impl Command {
     /// Whether the app has it.
     fn built(&self, shown: &Shown<'_>) -> bool {
         match self.does {
-            Does::Dialog(_) | Does::Tool(_) | Does::Construction => true,
+            Does::Dialog(_) | Does::Tool(_) | Does::Construction | Does::Constraint(_) => true,
             Does::CreateSketch => shown.create_sketch.is_some(),
             Does::Filter(_) => true,
             Does::NotBuilt => false,
@@ -997,7 +1008,7 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                         button.on_disabled_hover_text(said);
                     }
                 }
-                Does::Dialog(_) => {
+                Does::Dialog(_) | Does::Constraint(_) => {
                     let item = ui.add_enabled(enabled, item);
                     let item = match command.why_off(shown) {
                         Some(why) => item.on_disabled_hover_text(why),
@@ -1963,7 +1974,7 @@ mod tests {
 
     /// SKETCH's buttons and what each does: a tool chosen (the rectangle the corner one,
     /// the arc the 3-point one, as their keys choose them), Construction turned on or off,
-    /// or nothing yet.
+    /// a relation made of the selection, or nothing yet.
     const SKETCH_DOES: [(&str, Option<Act>); 21] = [
         ("Line", Some(Act::SketchTool(Choice::Draw(ToolKind::Line)))),
         (
@@ -1987,21 +1998,24 @@ mod tests {
         ("Extend", None),
         ("Split", Some(Act::SketchTool(Choice::Split))),
         ("Smart Dimension", Some(Act::SketchTool(Choice::Dimension))),
-        ("Horizontal", None),
-        ("Vertical", None),
-        ("Coincident", None),
-        ("Tangent", None),
-        ("Equal", None),
-        ("Parallel", None),
-        ("Perpendicular", None),
-        ("Midpoint", None),
-        ("Symmetric", None),
-        ("Fix", None),
+        ("Horizontal", Some(Act::Relate(RelationTool::Horizontal))),
+        ("Vertical", Some(Act::Relate(RelationTool::Vertical))),
+        ("Coincident", Some(Act::Relate(RelationTool::Coincident))),
+        ("Tangent", Some(Act::Relate(RelationTool::Tangent))),
+        ("Equal", Some(Act::Relate(RelationTool::Equal))),
+        ("Parallel", Some(Act::Relate(RelationTool::Parallel))),
+        (
+            "Perpendicular",
+            Some(Act::Relate(RelationTool::Perpendicular)),
+        ),
+        ("Midpoint", Some(Act::Relate(RelationTool::Midpoint))),
+        ("Symmetric", Some(Act::Relate(RelationTool::Symmetric))),
+        ("Fix", Some(Act::Relate(RelationTool::Fix))),
         ("Measure", None),
     ];
 
     #[test]
-    fn each_sketch_button_asks_its_tool_or_construction_and_what_isnt_built_is_off() {
+    fn each_sketch_button_asks_its_tool_construction_or_relation_and_what_isnt_built_is_off() {
         let sketching = Sketching::default();
         let mut h = drawn_with(true, &sketching);
         let laid = laid(&h, &SKETCH_PANELS, true);
@@ -2014,7 +2028,8 @@ mod tests {
         for ((label, rect), (named, does)) in buttons.iter().zip(SKETCH_DOES) {
             assert_eq!(*label, named);
             // Gray.750 on, Gray.400 off (`:disabled`); none drawn pressed with no tool on
-            // and Construction off, each that can be pressed saying it isn't.
+            // and Construction off, each that can be pressed (a tool, Construction; never a
+            // relation, a click of which is one edit) saying it isn't.
             let ink = if does.is_some() { css::G750 } else { css::G400 };
             assert_eq!(icon_at(&h, icon(*rect)), Some(ink), "{label}'s icon");
             assert_eq!(fill_at(&h, *rect), None, "{label}'s fill");
@@ -2025,7 +2040,8 @@ mod tests {
                 "{label}"
             );
             let pressed = node.accesskit_node().toggled();
-            assert_eq!(pressed.is_some(), does.is_some(), "{label} pressable");
+            let pressable = matches!(does, Some(Act::SketchTool(_) | Act::Construction));
+            assert_eq!(pressed.is_some(), pressable, "{label} pressable");
         }
         for (label, does) in SKETCH_DOES {
             sketching.asked.set(None);

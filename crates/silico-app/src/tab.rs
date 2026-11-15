@@ -20,7 +20,7 @@ use silico_core::document::json::{Node, Plain};
 use silico_core::document::{ElementId, FeatureId, Reference};
 use silico_core::extend::End;
 use silico_core::kernel::Clients;
-use silico_core::sketch_tools::{AddToken, OfferChoice, OfferRequest};
+use silico_core::sketch_tools::{AddToken, OfferChoice, OfferRequest, RelateEdit, RelationTool};
 use silico_core::timeline::{Entry, Health};
 
 use crate::changes::{self, Changes};
@@ -209,7 +209,8 @@ enum Queued {
     /// asked after it is sent after the read, and a later revert drops it.
     Reload,
     /// An undo or a redo; one asked in sketch mode carries the state it goes no further back
-    /// than (`floor`), and takes one step, never a dialog's group.
+    /// than (`floor`), and takes one step, never a dialog's group (a constraint tool's add
+    /// and the remove after it are one).
     Step {
         undo: bool,
         floor: Option<Revision>,
@@ -304,6 +305,24 @@ enum Queued {
         serial: u64,
         request: OfferRequest,
     },
+    /// A constraint tool's click, to plan when it comes up ([`Tab::plan`]): what's queued
+    /// after it waits till it's planned and its edit sent, or it's let go. Planned on a read
+    /// newer than `after`, the revision a plan of it refused as stale was made on, if one
+    /// was; on any read otherwise.
+    Click {
+        click: Click,
+        after: Option<Revision>,
+    },
+    /// A constraint tool's edit, of `click`, sent against the revision of the read it was
+    /// planned on, never the tab's (`sketch_tools::relate`); for the remove that follows an
+    /// add, the revision the add made, and the state the add was made from (`pair`), so the
+    /// two are one step.
+    Relate {
+        click: Click,
+        revision: Revision,
+        relating: Relating,
+        pair: Option<Revision>,
+    },
     /// Edit Feature's read of the feature `feature`, of `kind`, for the dialog numbered
     /// `serial`: sent once everything asked before it has answered, so the values it loads
     /// are those the edits before it left.
@@ -338,6 +357,58 @@ enum Queued {
         text: String,
     },
 }
+
+/// A constraint tool's click in sketch mode numbered `serial`, on the sketch `sketch`: the
+/// relation, and the selection it was made on, in pick order. Kept to be planned again on a
+/// newer read if its plan was stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Click {
+    serial: u64,
+    sketch: FeatureId,
+    relation: RelationTool,
+    picks: Vec<Reference>,
+}
+
+/// What a constraint tool's click sends, one command at a time: a `sketch_add`, and after
+/// it, once it's taken, the `sketch_remove` of the `on`s it implies (C5), if any; a
+/// `sketch_merge`; or a `sketch_remove` alone.
+#[derive(Debug, Clone, PartialEq)]
+enum Relating {
+    Add {
+        members: NewMembers,
+        then_remove: Vec<Reference>,
+    },
+    Merge(Vec<ElementId>),
+    Remove(Vec<Reference>),
+}
+
+/// What a constraint tool's click come up in the queue does ([`Tab::plan`]): waits for the
+/// read it's planned on; sends its edit, against that read's revision; has said why it sends
+/// nothing (toasted); or is let go, its sketch mode gone or its read refused, saying so.
+#[derive(Debug, Clone, PartialEq)]
+enum Planned {
+    Wait,
+    Send(Revision, Box<Relating>),
+    Said,
+    Gone(String),
+}
+
+/// Why a constraint tool's click is let go once its sketch mode has gone unread.
+const SKETCH_CLOSED: &str = "the sketch closed before it was read";
+
+/// Why a constraint tool's click can't be planned while the tab's revision's rebuild is
+/// stopped and nothing of it is published: the read it needs won't come unasked, and a click
+/// never starts the rebuild again (the stop is the person's).
+const REBUILD_STOPPED: &str =
+    "the rebuild was stopped before the sketch was read; Rebuild, then try again";
+
+/// Why, while the tab's revision's recompute has failed and nothing of it is published.
+const REBUILD_FAILED: &str =
+    "the rebuild failed before the sketch was read; Rebuild, then try again";
+
+/// Why a constraint tool's click waiting to be planned is let go at its sketch mode's Cancel,
+/// which takes back its edits anyway.
+const SKETCH_CANCELLED: &str = "the sketch was cancelled first";
 
 /// A new sweep's body: not yet read, or read from the document at a revision (its base,
 /// [`base_of`]: its sketch's face's body, or the tip; none if it has none), which the add is
@@ -474,8 +545,8 @@ pub enum Sent {
     Commit,
     Rollback,
     /// A sketch edit, by its command's name (`sketch_remove`, `sketch_join`, `sketch_add`,
-    /// `sketch_trim`, `sketch_split`, `sketch_extend`), or a drag's (`drag_begin`,
-    /// `drag_end`).
+    /// `sketch_merge`, `sketch_trim`, `sketch_split`, `sketch_extend`), or a drag's
+    /// (`drag_begin`, `drag_end`).
     SketchEdit(&'static str),
 }
 
@@ -585,6 +656,8 @@ impl Edits {
                 | Queued::SketchExtend { .. }
                 | Queued::DimensionValue { .. }
                 | Queued::Offer { .. }
+                | Queued::Click { .. }
+                | Queued::Relate { .. }
                 | Queued::Load { .. }
                 | Queued::Closed { .. }
                 | Queued::Restore { .. }
@@ -690,6 +763,16 @@ enum Under {
         sending: Sending,
         running: Running<SketchEdited>,
     },
+    /// A constraint tool's edit, of `click`, as it was sent: the remove to send once it's
+    /// taken, if it's an add that has one, and, if it's that remove, the state the add was
+    /// made from.
+    Relate {
+        click: Click,
+        then_remove: Vec<Reference>,
+        pair: Option<Revision>,
+        sending: Sending,
+        running: Running<SketchEdited>,
+    },
     /// Trim's or split's edit, as it was sent.
     SketchCut {
         sending: Sending,
@@ -752,6 +835,7 @@ impl Under {
             | Under::SketchEdit { sending, .. }
             | Under::SketchJoin { sending, .. }
             | Under::SketchAdd { sending, .. }
+            | Under::Relate { sending, .. }
             | Under::SketchCut { sending, .. }
             | Under::DimensionValue { sending, .. }
             | Under::OfferField { sending, .. } => Some(sending.state),
@@ -1172,6 +1256,16 @@ pub struct Tab {
     oked: Option<Dialog>,
     /// The dialogs' edits OK'd in this transaction, each one step for undo and redo.
     groups: Vec<Group>,
+    /// A constraint tool's add and the remove after it (C5), one step for sketch mode's undo
+    /// and redo: the sketch mode's number, and the state the add was made from and the state
+    /// the remove made.
+    sketch_pairs: Vec<(u64, Revision, Revision)>,
+    /// Each sketch mode closed (Finish, Cancel) while a constraint tool's click of it was
+    /// unsettled: its reads polled still, so the click is planned, and let go once none is.
+    leaving: Vec<SketchMode>,
+    /// The constraint tool's click being pressed, while its press's call runs: let go in it,
+    /// it's toasted as well as said.
+    pressed: Option<Click>,
     /// Each state the tab's changes made in this transaction, by its first revision
     /// ([`state_of`](Self::state_of)), with the step that made it: what the Undo and Redo
     /// tooltips name, and the status bar counts. In order, those up to the session's state its
@@ -1252,6 +1346,15 @@ pub struct Tab {
     /// as they may in any frame. For the crate's tests only; None otherwise.
     #[doc(hidden)]
     pub after_status: Option<AfterStatus>,
+}
+
+/// Whether `problems` refuse a change as stale: made against a revision the session has
+/// moved on from (a `conflict` on the revision).
+fn stale(problems: &Problems) -> bool {
+    problems
+        .errors()
+        .iter()
+        .any(|error| error.code() == ErrorCode::Conflict && error.parameter() == Some("revision"))
 }
 
 /// What an over-defining dimension's refused choice says: [`OVERTAKEN`] for a `conflict`,
@@ -1429,6 +1532,9 @@ impl Tab {
             before_dialog: None,
             oked: None,
             groups: Vec::new(),
+            sketch_pairs: Vec::new(),
+            leaving: Vec::new(),
+            pressed: None,
             steps: BTreeMap::new(),
             names: BTreeMap::new(),
             held_count: 0,
@@ -2433,7 +2539,9 @@ impl Tab {
             | Queued::SketchSplit { .. }
             | Queued::SketchExtend { .. }
             | Queued::DimensionValue { .. }
-            | Queued::Offer { .. } => true,
+            | Queued::Offer { .. }
+            | Queued::Click { .. }
+            | Queued::Relate { .. } => true,
             // An edit is `edits.idle`'s; a save, a revert, Reload's rebuild, a step, a load, a
             // dialog's or sketch mode's opening or closing, and Restore's read change nothing
             // of their own.
@@ -2459,6 +2567,7 @@ impl Tab {
             | Under::SketchEdit { .. }
             | Under::SketchJoin { .. }
             | Under::SketchAdd { .. }
+            | Under::Relate { .. }
             | Under::SketchCut { .. }
             | Under::DimensionValue { .. }
             | Under::OfferField { .. } => true,
@@ -2607,6 +2716,7 @@ impl Tab {
         self.sketch_requests(sessions);
         self.drive_drag(sessions);
         self.read_sketches(sessions);
+        self.relate_waiting(sessions);
         self.measure(sessions);
         // The unsaved edits, counted while every answer of the tab's is taken: what the bar
         // holds while the next is under way.
@@ -2626,6 +2736,9 @@ impl Tab {
             if let Some(drag) = self.drag.as_mut() {
                 drag.read(mode.read.as_ref().and_then(|read| read.model));
             }
+        }
+        for mode in &mut self.leaving {
+            mode.poll(sessions, &self.id, self.published);
         }
         let (overrides, browser) = (&self.overrides, &self.browser);
         self.sketch_reads.poll(
@@ -3352,6 +3465,61 @@ impl Tab {
                     running,
                 }),
             },
+            Under::Relate {
+                click,
+                then_remove,
+                pair,
+                sending,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(&sending, &response);
+                    // The revision the edit made, as the session gave it.
+                    let made = response
+                        .session
+                        .as_ref()
+                        .map_or(self.revision, |session| session.revision);
+                    match &response.result {
+                        // An add taken: the remove of the `on`s it implies next, before
+                        // anything asked after it, against the revision the add made.
+                        Ok(_) if !then_remove.is_empty() => {
+                            self.edits.queue.push_front(Queued::Relate {
+                                click,
+                                revision: made,
+                                relating: Relating::Remove(then_remove),
+                                pair: Some(sending.state),
+                            });
+                        }
+                        // The remove after an add taken: the two one step.
+                        Ok(_) => {
+                            if let Some(start) = pair.filter(|_| made != sending.against) {
+                                let end = self.state_of(made);
+                                self.sketch_pairs.push((click.serial, start, end));
+                            }
+                        }
+                        // Planned on a read the session has moved on from (the click before
+                        // it, its read not in yet): planned again on a newer read, in its
+                        // place, before anything asked after it, the conflict never said. A
+                        // refused add sends no remove.
+                        Err(problems) if stale(problems) => {
+                            self.edits.queue.push_front(Queued::Click {
+                                click,
+                                after: Some(sending.against),
+                            });
+                        }
+                        Err(problems) => self.message = Some(said(problems)),
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Relate {
+                    click,
+                    then_remove,
+                    pair,
+                    sending,
+                    running,
+                }),
+            },
             Under::SketchCut { sending, running } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
@@ -3596,6 +3764,7 @@ impl Tab {
     /// counted.
     fn stack_gone(&mut self) {
         self.groups.clear();
+        self.sketch_pairs.clear();
         self.steps.clear();
         self.restored.clear();
         // Names are never carried across it: the state it came to has none till a timeline
@@ -3891,6 +4060,70 @@ impl Tab {
                         running,
                     });
                 }
+                Queued::Click { click, after } => match self.plan(&click, after) {
+                    // Its read not there yet: it keeps its place, and what's after it waits.
+                    Planned::Wait => {
+                        self.edits.queue.push_front(Queued::Click { click, after });
+                        return;
+                    }
+                    Planned::Send(revision, relating) => {
+                        self.edits.queue.push_front(Queued::Relate {
+                            click,
+                            revision,
+                            relating: *relating,
+                            pair: None,
+                        });
+                    }
+                    Planned::Said => {}
+                    Planned::Gone(said) => {
+                        if self.pressed.as_ref() == Some(&click) {
+                            self.toast = Some(said.clone());
+                        }
+                        self.message = Some(said);
+                    }
+                },
+                Queued::Relate {
+                    click,
+                    revision,
+                    relating,
+                    pair,
+                } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    let sending = Sending {
+                        against: revision,
+                        state: self.state_of(revision),
+                        step,
+                    };
+                    let (id, sketch) = (self.id, click.sketch.clone());
+                    let (running, then_remove) = match relating {
+                        Relating::Add {
+                            members,
+                            then_remove,
+                        } => {
+                            self.record(Sent::SketchEdit("sketch_add"));
+                            let running = sessions.sketch_add(&id, revision, sketch, members);
+                            (running, then_remove)
+                        }
+                        Relating::Merge(points) => {
+                            self.record(Sent::SketchEdit("sketch_merge"));
+                            let running = sessions.sketch_merge(&id, revision, sketch, points);
+                            (running, Vec::new())
+                        }
+                        Relating::Remove(members) => {
+                            self.record(Sent::SketchEdit("sketch_remove"));
+                            let running = sessions.sketch_remove(&id, revision, sketch, members);
+                            (running, Vec::new())
+                        }
+                    };
+                    self.under.push(Under::Relate {
+                        click,
+                        then_remove,
+                        pair,
+                        sending,
+                        running,
+                    });
+                }
                 Queued::SketchTrim {
                     sketch,
                     curve,
@@ -4144,9 +4377,17 @@ impl Tab {
                     }
                     // At a dialog's OK'd edits' end (undo) or start (redo): all of them at
                     // once, to its other side (section 9). Never in sketch mode, whose steps
-                    // are its own edits', one at a time.
+                    // are its own edits', one at a time, but for a constraint tool's add and
+                    // the remove after it, one step (C5).
                     let to = match sketch {
-                        Some(_) => None,
+                        Some(serial) => {
+                            self.sketch_pairs
+                                .iter()
+                                .find_map(|&(of, start, end)| match undo {
+                                    true => (of == serial && end == state).then_some(start),
+                                    false => (of == serial && start == state).then_some(end),
+                                })
+                        }
                         None => self.groups.iter().find_map(|group| match undo {
                             true => (group.end == state).then_some(group.start),
                             false => (group.start == state).then_some(group.end),
@@ -4213,6 +4454,7 @@ impl Tab {
                         | Under::SketchEdit { .. }
                         | Under::SketchJoin { .. }
                         | Under::SketchAdd { .. }
+                        | Under::Relate { .. }
                         | Under::SketchCut { .. }
                         | Under::DimensionValue { .. }
                         | Under::OfferField { .. }
@@ -4580,6 +4822,21 @@ impl Tab {
                 .queue
                 .range(kept..)
                 .any(|queued| matches!(queued, Queued::Revert { then_close: true }));
+        // A constraint tool's click it drops, unplanned or unsent, said.
+        if let Some(relation) = self
+            .edits
+            .queue
+            .range(kept..)
+            .find_map(|queued| match queued {
+                Queued::Click { click, .. } | Queued::Relate { click, .. } => Some(click.relation),
+                _ => None,
+            })
+        {
+            self.message = Some(format!(
+                "{} wasn't added: the part was reverted first",
+                relation.name()
+            ));
+        }
         self.edits.queue.truncate(kept);
         self.edits.queue.push_back(Queued::Revert { then_close });
         self.advance(sessions);
@@ -5220,6 +5477,7 @@ impl Tab {
         {
             let from = sending.state;
             self.groups.retain(|group| group.end <= from);
+            self.sketch_pairs.retain(|&(_, _, end)| end <= from);
             self.steps.retain(|state, _| *state <= from);
             self.steps.insert(
                 made,
@@ -5332,6 +5590,9 @@ impl Tab {
                     },
                 ..
             } => Some(Words::Of("Edit", sketch.clone())),
+            // By the relation, as its button names it ("Horizontal"): an add and the remove
+            // after it one step of that name.
+            Queued::Relate { click, .. } => Some(Words::Text(click.relation.name().to_owned())),
             // As its banner's button names it (Fable's decision of 2026-11-04: by the revision
             // it puts back, never the prototype's "my version").
             Queued::Replace { revision, .. } => Some(Words::Text(format!(
@@ -5354,6 +5615,8 @@ impl Tab {
             | Queued::Load { .. }
             | Queued::Closed { .. }
             | Queued::Restore { .. } => None,
+            // Its edit, once planned, says it.
+            Queued::Click { .. } => None,
         }
     }
 
@@ -6567,7 +6830,30 @@ impl Tab {
         }
         // Its close waits for a drag's end (the queue waits while one is under way).
         self.leave_drag();
-        self.sketch = None;
+        // And, for Finish, for a constraint tool's click of it still to plan: its reads go
+        // on. Cancel takes back what it adds anyway: a click still waiting to be planned is let
+        // go, said, and an edit already planned is sent and taken back with the rest.
+        if let Some(mode) = self.sketch.take() {
+            if !ok {
+                let serial = mode.serial;
+                let mut dropped = None;
+                self.edits.queue.retain(|queued| match queued {
+                    Queued::Click { click, .. } if click.serial == serial => {
+                        dropped.get_or_insert(click.relation);
+                        false
+                    }
+                    _ => true,
+                });
+                if let Some(relation) = dropped {
+                    self.message = Some(format!(
+                        "{} wasn't added: {SKETCH_CANCELLED}",
+                        relation.name()
+                    ));
+                }
+            } else if self.relating(mode.serial) {
+                self.leaving.push(mode);
+            }
+        }
         self.drive_drag(sessions);
         self.edits.queue.push_back(Queued::Closed {
             ok,
@@ -6871,6 +7157,188 @@ impl Tab {
         self.advance(sessions);
     }
 
+    /// A constraint tool's button in sketch mode (C7): `relation` made of the selection, in
+    /// pick order, queued as a click, planned when it comes up ([`plan`](Self::plan)), so
+    /// nothing asked after it goes first. The selection stays. Nothing while the tab closes,
+    /// before the sketch is known, or outside sketch mode.
+    pub fn sketch_relate<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        relation: RelationTool,
+    ) {
+        if self.closing() {
+            return;
+        }
+        let Some(mode) = self.sketch.as_ref() else {
+            return;
+        };
+        let Some(sketch) = mode.sketch.clone() else {
+            return;
+        };
+        let click = Click {
+            serial: mode.serial,
+            sketch,
+            relation,
+            picks: mode.selection.references(),
+        };
+        self.hush();
+        // With nothing ahead of it, it's planned now, and a read it can't be planned on (none
+        // newer to come) lets it go in this call: said in the toast as well as the status
+        // bar, as a refusal at the press is, nothing sent, the selection kept. Behind an
+        // edit still going out, it's planned once that has answered.
+        self.pressed = Some(click.clone());
+        self.edits
+            .queue
+            .push_back(Queued::Click { click, after: None });
+        self.advance(sessions);
+        self.pressed = None;
+    }
+
+    /// Why a sketch read of the revision `read` (none: no read yet) can't be followed by a
+    /// newer one unasked, if it can't: it's older than the tab's revision, whose rebuild, as
+    /// `status` gives it for that revision, was stopped or its recompute failed, with nothing
+    /// of that revision or newer published. A click never starts that rebuild again.
+    fn unreadable(&self, read: Option<Revision>) -> Option<&'static str> {
+        let current = |revision: Revision| revision >= self.revision;
+        if read.is_some_and(current) || self.published.is_some_and(current) {
+            return None;
+        }
+        let status = self
+            .status
+            .as_ref()
+            .filter(|status| status.rebuild.revision == self.revision)?;
+        match status.rebuild.state {
+            RebuildState::Stopped => Some(REBUILD_STOPPED),
+            RebuildState::Faulted => Some(REBUILD_FAILED),
+            RebuildState::Idle | RebuildState::Running | RebuildState::Done => None,
+        }
+    }
+
+    /// `click`, come up in the queue, planned on the newest read of the sketch mode it was
+    /// made in (open, or closed with it still to plan), of its sketch, if that read is newer
+    /// than `after`, the revision a stale plan of it was made on (any read, if none was), at
+    /// that read's revision, with the IDs as its tools take them (`sketch_tools::relate`):
+    /// its refusal or its message toasted; its edit, if it has one, to send now, against that
+    /// revision. Waits, if the read isn't there yet. Let go, said in the status bar, if its
+    /// sketch mode has gone, or the read the plan needs is refused.
+    fn plan(&mut self, click: &Click, after: Option<Revision>) -> Planned {
+        let gone =
+            |why: &str| Planned::Gone(format!("{} wasn't added: {why}", click.relation.name()));
+        let read = self
+            .sketch
+            .iter()
+            .chain(self.leaving.iter())
+            .find(|mode| mode.serial == click.serial)
+            .map(|mode| mode.read.as_ref().and_then(|read| read.model));
+        let Some(read) = read else {
+            return gone(SKETCH_CLOSED);
+        };
+        // The read it needs won't come unasked: let go now, in the frame the stop or the
+        // failure is seen, so nothing queued after it waits on it.
+        if let Some(why) = self.unreadable(read) {
+            return gone(why);
+        }
+        let Some(mode) = self
+            .sketch
+            .iter_mut()
+            .chain(self.leaving.iter_mut())
+            .find(|mode| mode.serial == click.serial)
+        else {
+            return gone(SKETCH_CLOSED);
+        };
+        let Some(read) = mode.read.as_ref() else {
+            return Planned::Wait;
+        };
+        let older = read
+            .model
+            .is_some_and(|model| after.is_some_and(|after| model <= after));
+        let (revision, drawn) = match (&read.result, read.model) {
+            _ if older => return Planned::Wait,
+            // A refusal of an older model (from before the sketch was added) waits for the
+            // next, as the palette does.
+            (Err(_), Some(model)) if model < self.revision => return Planned::Wait,
+            (Err(problems), _) => return gone(&said(problems)),
+            (Ok(drawn), Some(model)) if drawn.sketch == click.sketch => (model, drawn),
+            _ => return Planned::Wait,
+        };
+        let planned = silico_core::sketch_tools::relate(
+            &drawn.members,
+            revision,
+            click.relation,
+            &click.picks,
+            &mut *mode.tools.ids,
+        );
+        let related = match planned {
+            Ok(related) => related,
+            Err(error) => {
+                self.toast = Some(said(&Problems::from(error)));
+                return Planned::Said;
+            }
+        };
+        if let Some(message) = related.message() {
+            self.toast = Some(message.text());
+        }
+        let elements = |ids: &[ElementId]| -> Vec<Reference> {
+            ids.iter().cloned().map(Reference::Element).collect()
+        };
+        let relating = match related.edit() {
+            None => return Planned::Said,
+            Some(RelateEdit::Add(add)) => NewMembers::of(add).map(|members| Relating::Add {
+                members,
+                then_remove: Vec::new(),
+            }),
+            Some(RelateEdit::AddThenRemove { add, remove }) => {
+                NewMembers::of(add).map(|members| Relating::Add {
+                    members,
+                    then_remove: elements(remove),
+                })
+            }
+            Some(RelateEdit::Merge(points)) => Ok(Relating::Merge(points.clone())),
+            Some(RelateEdit::Remove(ons)) => Ok(Relating::Remove(elements(ons))),
+        };
+        match relating {
+            Ok(relating) => {
+                // A new edit drops what was undone: Redo has nothing of sketch mode's to give
+                // back.
+                mode.undone = 0;
+                Planned::Send(related.revision(), Box::new(relating))
+            }
+            Err(error) => {
+                self.toast = Some(said(&Problems::from(error)));
+                Planned::Said
+            }
+        }
+    }
+
+    /// How many sketch modes closed with a constraint tool's click still unsettled are kept
+    /// for it: what a test counts.
+    pub fn leaving(&self) -> usize {
+        self.leaving.len()
+    }
+
+    /// Whether a constraint tool's click of sketch mode numbered `serial` is unsettled:
+    /// queued to be planned, or its edit queued or under way.
+    fn relating(&self, serial: u64) -> bool {
+        self.edits.queue.iter().any(|queued| {
+            matches!(queued, Queued::Click { click, .. } | Queued::Relate { click, .. } if click.serial == serial)
+        }) || self
+            .under
+            .iter()
+            .any(|under| matches!(under, Under::Relate { click, .. } if click.serial == serial))
+    }
+
+    /// A click waiting at the queue's front for its read, given another chance once a read
+    /// may have come; and each sketch mode closed with a click still unsettled, its read
+    /// polled meanwhile, let go once none is.
+    fn relate_waiting<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let mut leaving = std::mem::take(&mut self.leaving);
+        leaving.retain(|mode| self.relating(mode.serial));
+        self.leaving = leaving;
+        if matches!(self.edits.queue.front(), Some(Queued::Click { .. })) {
+            self.advance(sessions);
+        }
+    }
+
     /// The browser's row of the feature `id` chosen while the open dialog's boxes hold the
     /// selection as bodies (`Dialog::boxes_hold_bodies`): taken into its active box, if it's a
     /// body's row (one the dialog's own feature isn't built into), or refused, said under it;
@@ -6984,10 +7452,7 @@ impl Tab {
     /// Any other refusal leaves it unsent till an input changes; either way OK stays off
     /// while no feature is made ([`ok_for`](Self::ok_for)).
     fn add_refused(&mut self, serial: u64, problems: &Problems) {
-        let stale = problems.errors().iter().any(|error| {
-            error.code() == silico_core::ErrorCode::Conflict
-                && error.parameter() == Some("revision")
-        });
+        let stale = stale(problems);
         if let Some(dialog) = self
             .dialog
             .as_mut()
