@@ -25611,6 +25611,21 @@ fn tangent_over_an_on_adds_a_tangent_on_then_removes_the_on_and_one_undo_takes_b
     // One Undo: both, the `on` back and the `tangent_on` gone, byte for byte.
     undo_by_key(&mut h);
     assert_eq!(text_of(&f, &h), RELATING);
+    // One Redo: both again, the pair redone to its end.
+    redo_by_key(&mut h);
+    let forms: Vec<Form> = sketch_of_text(&f, &h, "s0000001")
+        .constraints
+        .into_iter()
+        .map(|c| c.form)
+        .collect();
+    assert!(forms.contains(&tangent), "{forms:?}");
+    assert!(!forms.contains(&replaced), "{forms:?}");
+    assert_eq!(forms.len(), 2, "{forms:?}");
+    assert!(
+        matches!(h.state().tabs()[0].sent.last(), Some(Sent::Redo(Some(_)))),
+        "{:?}",
+        h.state().tabs()[0].sent.last()
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -25847,6 +25862,62 @@ fn a_click_before_sketch_modes_first_read_then_finish_keeps_the_relation() {
     };
     assert!(forms.contains(&kept), "{forms:?}");
     assert_eq!(h.state().tabs()[0].message, None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_undo_asked_with_tangent_waits_for_its_remove_and_takes_back_the_pair() {
+    // Tangent over the `on`, then Undo, in one frame: the remove goes as soon as the add is
+    // taken, ahead of the Undo, which then takes back both.
+    use silico_core::sketch_tools::RelationTool;
+    let f = fixture();
+    let mut h = relating_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(90.0, 25.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(105.0, 20.0));
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_relate(&sessions, RelationTool::Tangent);
+        tab.step(&sessions, true);
+    }
+    settled_and_read(&mut h);
+    assert_eq!(sketch_sends(&h), ["sketch_add", "sketch_remove"]);
+    assert_eq!(text_of(&f, &h), RELATING);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`RELATING`] with nd000001 tangent where it ends on the circle already (kd000002), beside
+/// the `on` (kd000001) that holds it there.
+fn relating_tangent_already() -> String {
+    RELATING.replace(
+        r#"{"id": "ke000001", "type": "on""#,
+        r#"{"id": "kd000002", "type": "tangent_on", "a": "nd000001", "at": "pd000002", "b": "cc000001", "direction": "same"}, {"id": "ke000001", "type": "on""#,
+    )
+}
+
+#[test]
+fn tangent_already_there_beside_its_on_removes_the_on_alone() {
+    // C5 and C6 as amended (#478): the tangent_on is there as drawn, so nothing is added,
+    // and the `on` it makes redundant is removed, one `sketch_remove`, said.
+    let f = fixture();
+    let text = relating_tangent_already();
+    assert!(text.contains("kd000002"));
+    let (mut h, _) = f.opened("relating.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Relate"));
+    double_click(&mut h, "Browser", "Relate");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    sketch_events(&f, &mut h, &clicked(90.0, 25.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(105.0, 20.0));
+    relate_button(&mut h, "Tangent");
+    settled(&mut h);
+    assert_eq!(sketch_sends(&h), ["sketch_remove"]);
+    let after = text_of(&f, &h);
+    assert!(!after.contains("kd000001"), "{after}");
+    assert!(after.contains("kd000002"), "{after}");
+    let said = toast_said(&h).map(|(text, _)| text).unwrap_or_default();
+    assert!(said.contains("kd000001"), "{said}");
     assert_eq!(never_waits::waits(), 0);
 }
 
