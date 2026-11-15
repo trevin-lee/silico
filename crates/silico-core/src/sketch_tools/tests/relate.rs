@@ -1578,6 +1578,25 @@ fn each_tools_sentence_is_the_decisions() {
 }
 
 #[test]
+fn each_tools_name_is_its_buttons_label() {
+    // The CONSTRAINTS row's labels in silico-app's toolbar.rs, the prototype's, in
+    // RelationTool::ALL's order: the undo step a click makes is named by them.
+    let want = [
+        "Horizontal",
+        "Vertical",
+        "Coincident",
+        "Tangent",
+        "Equal",
+        "Parallel",
+        "Perpendicular",
+        "Midpoint",
+        "Symmetric",
+        "Fix",
+    ];
+    assert_eq!(RelationTool::ALL.map(RelationTool::name), want);
+}
+
+#[test]
 fn nothing_selected_is_the_prototypes_words_for_every_tool() {
     let s = s5();
     for tool in RelationTool::ALL {
@@ -1973,6 +1992,47 @@ fn a1_a_coincident_at_what_the_solver_takes_or_past_it_by_what_the_sketch_holds(
     let mut arcs = held_arc(many(100, 100).0);
     arcs.constraints.clear();
     let e = relate(&arcs, READ, Coincident, &picks, &mut kt_ids()).unwrap_err();
+    assert!(
+        e.message().starts_with("the sketch has 10001 constraints"),
+        "{e:?}"
+    );
+}
+
+#[test]
+fn a1_an_on_held_of_a_point_or_curve_picked_with_one_not_picked_still_counts_against_the_solver() {
+    // 100 points on 100 lines, 10,000 `on`s, and a line n0000100 not picked. The sketch
+    // holding `on {p0000000, n0000100}`, a picked point on a line that isn't, is no repeat
+    // of the click's: 1 + 10,000 = 10,001, refused before one is built. So is
+    // `on {q0000100, n0000000}`, a point not picked on a picked line.
+    let (s, picks) = many(100, 100);
+    let s = with_line(s, "n0000100", [100.0, 0.0], [100.0, 10.0]);
+    let mut point_picked = s.clone();
+    point_picked.constraints.push(kt(
+        "k0000000",
+        Form::On {
+            point: el("p0000000"),
+            curve: el("n0000100"),
+        },
+    ));
+    work::BUILT.with(|n| n.set(0));
+    let e = relate(&point_picked, READ, Coincident, &picks, &mut kt_ids()).unwrap_err();
+    assert_eq!(work::BUILT.with(|n| n.get()), 0);
+    assert!(
+        e.message().starts_with("the sketch has 10001 constraints"),
+        "{e:?}"
+    );
+    let mut curve_picked = s;
+    curve_picked.points.push(point("q0000100", 0.0, 5.0));
+    curve_picked.constraints.push(kt(
+        "k0000000",
+        Form::On {
+            point: el("q0000100"),
+            curve: el("n0000000"),
+        },
+    ));
+    work::BUILT.with(|n| n.set(0));
+    let e = relate(&curve_picked, READ, Coincident, &picks, &mut kt_ids()).unwrap_err();
+    assert_eq!(work::BUILT.with(|n| n.get()), 0);
     assert!(
         e.message().starts_with("the sketch has 10001 constraints"),
         "{e:?}"
