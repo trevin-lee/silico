@@ -267,7 +267,7 @@ pub fn next_crossing(
     };
     // A curve built on the moving end's point (an arc starting at a line's end, a circle
     // about it) moves with it, so it isn't met.
-    let ends = end_ids(sketch, curve);
+    let ends: Vec<ElementId> = end_ids(sketch, curve).into_iter().cloned().collect();
     let Some(moving_id) = (match end {
         End::Start => ends.first(),
         End::End => ends.get(1),

@@ -718,7 +718,7 @@ fn a_member_that_isnt_a_point_or_a_point_that_isnt_two_pieces_is_refused_naming_
     assert_eq!(
         said(&error),
         (
-            "point n0000000 is shared by line a0000000, line b1000000 and line w1000000: a join takes a point only its two pieces use",
+            "point n0000000 is shared by line a0000000, line b1000000, and line w1000000: a join takes a point only its two pieces use",
             Some("point"),
             vec!["n0000000", "a0000000", "b1000000", "w1000000"],
             None,

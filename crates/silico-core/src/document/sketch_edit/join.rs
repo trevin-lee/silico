@@ -9,14 +9,12 @@ use std::collections::BTreeSet;
 use silico_protocol::arc_from_points;
 
 use super::split::point_at;
-use super::{
-    Edited, curves, implied_ons, kinds_of, listed, no_member, ordered, own_curve, references_mut,
-};
+use super::{Edited, curves, implied_ons, kinds_of, no_member, ordered, own_curve, references_mut};
 use crate::document::sketch::{
     Coordinate, Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchCircle,
     SketchConstraint,
 };
-use crate::{Error, ErrorCode};
+use crate::{Error, ErrorCode, listed};
 
 /// Two pieces joined: the edit, and the pieces, the start-side one first, whose ID the
 /// joined curve keeps, then the one removed.

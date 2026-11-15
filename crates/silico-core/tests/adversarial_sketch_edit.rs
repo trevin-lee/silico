@@ -394,7 +394,7 @@ fn merging_an_arcs_two_ends_is_refused_naming_the_points_merged() {
     .unwrap_err();
     assert_eq!(
         error.message(),
-        "merging q0000000, p0000001 and q0000002 would give arc r0000000 one point as its centre and both its ends"
+        "merging q0000000, p0000001, and q0000002 would give arc r0000000 one point as its centre and both its ends"
     );
 }
 
@@ -532,7 +532,7 @@ fn removing_a_hub_point_names_at_most_the_problems_listed_and_counts_the_rest() 
     assert_eq!(error.elements()[99], "n0000098");
     assert_eq!(
         error.message(),
-        "point h0000000 is used by lines n0000000, n0000001, n0000002 and 508 more"
+        "point h0000000 is used by lines n0000000, n0000001, n0000002, and 508 more"
     );
 }
 

@@ -38,7 +38,7 @@ impl Dim {
                 dofs: 1000,
                 ..under()
             },
-            ids: Counter(100),
+            ids: Counter::after(100),
             made: Vec::new(),
             messages: Vec::new(),
             left: false,
@@ -1928,7 +1928,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         states: &under(),
     };
     let mut tool = SmartDimension::new();
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
         tool.handle(&context, &mut ids, DimensionEvent::Press(at));
         tool.handle(&context, &mut ids, DimensionEvent::Release(at));
@@ -3259,7 +3259,7 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
         states: &under(),
     };
     let mut tool = SmartDimension::new();
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let mut send =
         |tool: &mut SmartDimension, event: DimensionEvent| tool.handle(&context, &mut ids, event);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
@@ -3364,7 +3364,7 @@ fn a_placement_not_yet_answered_holds_the_next() {
         states: &under(),
     };
     let mut tool = SmartDimension::new();
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let click = |tool: &mut SmartDimension, ids: &mut Counter, at: [f64; 2]| {
         tool.handle(&context, ids, DimensionEvent::Press(at));
         tool.handle(&context, ids, DimensionEvent::Release(at))
@@ -3462,7 +3462,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             states: &under(),
         };
         let mut tool = SmartDimension::new();
-        let mut ids = Counter(0);
+        let mut ids = Counter::after(0);
         for at in [[20.0, 10.0], [20.0, 30.0]] {
             tool.handle(&context, &mut ids, DimensionEvent::Press(at));
             tool.handle(&context, &mut ids, DimensionEvent::Release(at));

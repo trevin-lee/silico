@@ -17,13 +17,16 @@ use silico_core::cache::Cache;
 use silico_core::command::sketch::SketchRead;
 use silico_core::command::{Call, ModelChoice, NewMembers, Revision, SessionId, Sessions};
 use silico_core::document::sketch_edit::Members;
-use silico_core::document::{ElementId, FeatureId, Form, Length, Reference, SketchConstraint};
+use silico_core::document::{
+    Direction, ElementId, FeatureId, Form, Length, Reference, SketchConstraint,
+};
 use silico_core::fake::FakeKernel;
 use silico_core::sketch::{SketchSolver, SketchWorker};
 use silico_core::sketch_states::{ConstraintState, SketchState};
 use silico_core::sketch_tools::{
     Context, DimensionEvent, Event, Modifiers, NewIds, Offer, OfferChoice, OfferRequest, Placement,
-    PlacementKind, SketchTool, SmartDimension, ToolKind, offer, read_typed,
+    PlacementKind, RelateEdit, RelationTool, SketchTool, SmartDimension, ToolKind, offer,
+    read_typed, relate,
 };
 use tempfile::TempDir;
 
@@ -2260,4 +2263,174 @@ fn a_dimension_that_takes_a_freedom_from_a_solved_sketch_is_never_offered() {
         moved > 0,
         "of {judged_count} judged, the contest's flags moved for none"
     );
+}
+
+// --- The constraint tools (`relate`) on the real solve ------------------------------------
+
+/// A line ended on a circle by an `on`, as a line drawn to a circle's rim is left: the line
+/// ne000001 from pe000001 (0, 15) to pe000002 (20, 15), its end held by kt000001 on the
+/// circle ce000001 about pe000003 (20, 10), radius 5, whose top (20, 15) it is.
+fn ended_on() -> String {
+    r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{"id": "pe000001", "x": 0, "y": 15, "construction": false}, {"id": "pe000002", "x": 20, "y": 15, "construction": false}, {"id": "pe000003", "x": 20, "y": 10, "construction": false}], "lines": [{"id": "ne000001", "from": "pe000001", "to": "pe000002", "construction": false}], "circles": [{"id": "ce000001", "center": "pe000003", "radius": 5, "construction": false}], "arcs": [], "constraints": [{"id": "kt000001", "type": "on", "point": "pe000002", "curve": "ce000001"}]}]}"#.to_owned()
+}
+
+/// #478's port review sketch: the arc ae000003 about pe000020 (100, 10), counter-clockwise from
+/// pe000021 (100, 0) to pe000022 (110, 10), radius 10; the line ne000010 from pe000023
+/// (90, 0) to pe000024 (110, 0); and kt000004, `midpoint {point: pe000021, line:
+/// ne000010}`, which the arc's start is drawn at.
+fn held_at_a_midpoint() -> String {
+    r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{"id": "pe000020", "x": 100, "y": 10, "construction": false}, {"id": "pe000021", "x": 100, "y": 0, "construction": false}, {"id": "pe000022", "x": 110, "y": 10, "construction": false}, {"id": "pe000023", "x": 90, "y": 0, "construction": false}, {"id": "pe000024", "x": 110, "y": 0, "construction": false}], "lines": [{"id": "ne000010", "from": "pe000023", "to": "pe000024", "construction": false}], "circles": [], "arcs": [{"id": "ae000003", "center": "pe000020", "start": "pe000021", "end": "pe000022", "construction": false}], "constraints": [{"id": "kt000004", "type": "midpoint", "point": "pe000021", "line": "ne000010"}]}]}"#.to_owned()
+}
+
+impl Fixture {
+    /// `members` sent as a `sketch_remove`, which must be taken.
+    fn sketch_remove(&self, members: Vec<Reference>) {
+        let revision = self.sessions.status(&s1()).session.unwrap().revision;
+        let removed = self
+            .sessions
+            .sketch_remove(&s1(), revision, sketch_id(), members)
+            .wait_timeout(HANG)
+            .unwrap_or_else(|_| panic!("sketch_remove didn't answer in {HANG:?}"));
+        assert!(removed.result.unwrap_or_else(|p| panic!("{p:?}")).changed);
+    }
+
+    /// Tangent of `a` and `b` on the newest read: the edit, planned on that read's revision.
+    fn tangent(&mut self, a: &str, b: &str) -> RelateEdit {
+        let (read, revision) = self.read_at();
+        let picks = [
+            Reference::Element(element(a)),
+            Reference::Element(element(b)),
+        ];
+        let related = relate(
+            &read.members,
+            revision,
+            RelationTool::Tangent,
+            &picks,
+            &mut self.ids,
+        )
+        .unwrap();
+        assert_eq!(related.revision(), revision);
+        related
+            .edit()
+            .cloned()
+            .unwrap_or_else(|| panic!("{related:?}"))
+    }
+}
+
+#[test]
+fn tangent_over_an_on_replaces_it_and_the_solve_flags_nothing_where_the_add_alone_flags_one() {
+    // C5's reason, on PlaneGCS. Unknowns: the line's two points, four; the circle's centre
+    // and radius, three: seven. The `on` is one equation: six freedoms, nothing flagged.
+    // Tangent of [ne000001, ce000001]: the tool's add of the tangent_on (its end on the
+    // circle, and the angle there: two equations, FreeCAD's endpoint-to-edge tangency), then
+    // the removal of kt000001. After both: five freedoms, nothing flagged.
+    let mut f = opened_with(ToolKind::Line, &ended_on());
+    let read = f.read();
+    assert_eq!(read.states.dofs, 6);
+    assert!(
+        flagged_in(&read).is_empty(),
+        "{:?}",
+        read.states.constraints
+    );
+    let RelateEdit::AddThenRemove { add, remove } = f.tangent("ne000001", "ce000001") else {
+        panic!()
+    };
+    assert_eq!(remove, vec![element("kt000001")]);
+    let [tangent] = add.constraints.as_slice() else {
+        panic!("{add:?}");
+    };
+    assert_eq!(
+        tangent.form,
+        Form::TangentOn {
+            a: Reference::Element(element("ne000001")),
+            at: Reference::Element(element("pe000002")),
+            b: Reference::Element(element("ce000001")),
+            direction: Direction::Same,
+        }
+    );
+    f.sketch_add(&add);
+    f.sketch_remove(remove.into_iter().map(Reference::Element).collect());
+    let read = f.read();
+    assert_eq!(read.states.dofs, 5);
+    assert_eq!(read.members.constraints.len(), 1);
+    assert!(
+        flagged_in(&read).is_empty(),
+        "{:?}",
+        read.states.constraints
+    );
+    assert_eq!(
+        state_of(&read, tangent.id.as_str()),
+        ConstraintState::Satisfied
+    );
+
+    // The same add without the removal (the pair interrupted): the `on` repeats the
+    // tangent_on's end on the circle, so the freedoms are the same five, and one of the two
+    // is flagged, whichever PlaneGCS picks.
+    let mut f = opened_with(ToolKind::Line, &ended_on());
+    f.sketch_add(&add);
+    let read = f.read();
+    assert_eq!(read.states.dofs, 5);
+    assert_eq!(read.members.constraints.len(), 2);
+    assert_eq!(flagged_in(&read).len(), 1, "{:?}", read.states.constraints);
+    // #478's port review test 15: Tangent again finishes it, the remove of kt000001 alone (C5 and C6 as amended, #478): five
+    // freedoms, as after the pair, and nothing flagged.
+    let edit = f.tangent("ne000001", "ce000001");
+    assert_eq!(edit, RelateEdit::Remove(vec![element("kt000001")]));
+    f.sketch_remove(vec![Reference::Element(element("kt000001"))]);
+    let read = f.read();
+    assert_eq!(read.states.dofs, 5);
+    assert_eq!(read.members.constraints.len(), 1);
+    assert!(
+        flagged_in(&read).is_empty(),
+        "{:?}",
+        read.states.constraints
+    );
+}
+
+#[test]
+fn tangent_at_a_midpoints_hold_solves_where_drawn_with_the_point_on_the_line_said_twice() {
+    // #478's port review test 5. A line has four freedoms and an arc five: nine. The midpoint takes two;
+    // Tangent writes a tangent_on beside it (C3 as amended, #478), its point-on-line said by the midpoint
+    // already and its angle one more: six freedoms, exactly one constraint flagged
+    // redundant. It solves where it's drawn: the arc's start at (100, 0), its centre at
+    // (100, 10).
+    let mut f = opened_with(ToolKind::Line, &held_at_a_midpoint());
+    let read = f.read();
+    assert_eq!(read.states.dofs, 7);
+    assert!(
+        flagged_in(&read).is_empty(),
+        "{:?}",
+        read.states.constraints
+    );
+    let RelateEdit::Add(add) = f.tangent("ae000003", "ne000010") else {
+        panic!()
+    };
+    assert_eq!(
+        add.constraints
+            .iter()
+            .map(|c| c.form.clone())
+            .collect::<Vec<_>>(),
+        vec![Form::TangentOn {
+            a: Reference::Element(element("ae000003")),
+            at: Reference::Element(element("pe000021")),
+            b: Reference::Element(element("ne000010")),
+            direction: Direction::Same,
+        }]
+    );
+    f.sketch_add(&add);
+    let read = f.read();
+    assert_eq!(read.states.dofs, 6);
+    assert_eq!(read.members.constraints.len(), 2);
+    assert_eq!(flagged_in(&read).len(), 1, "{:?}", read.states.constraints);
+    let solved = |id: &str| {
+        let p = read
+            .members
+            .points
+            .iter()
+            .find(|p| p.id == element(id))
+            .unwrap();
+        at(p.x.mm(), p.y.mm())
+    };
+    assert_eq!(solved("pe000021"), at(100.0, 0.0));
+    assert_eq!(solved("pe000020"), at(100.0, 10.0));
 }
