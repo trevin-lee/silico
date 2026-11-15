@@ -232,6 +232,54 @@ fn merging_an_end_with_a_point_on_the_curve_tangent_to_its_line_listed_first() {
 }
 
 #[test]
+fn merging_an_arcs_end_with_a_point_held_at_the_middle_of_the_line_its_tangent_to() {
+    // Fable's P1 arc ae000003 about pe000020 (100, 10) from pe000021 (100, 0) to pe000022
+    // (110, 10), edge tangent (left) to ne000010, pe000023 (90, 0) to pe000024 (110, 0); a
+    // line nf000001 from pf000001 (100, 0) to pf000002 (100, -20), its start held at
+    // ne000010's middle. Merged with the arc's start, keeping it, the midpoint holds the arc's
+    // end at the line's middle beside an edge tangent of the two, which the gate refuses
+    // (#498): refused as the merge's, naming the midpoint, the arc and the line, either way
+    // round, not in the gate's generic words.
+    for (a, b) in [("ae000003", "ne000010"), ("ne000010", "ae000003")] {
+        let before = doc(
+            &[
+                point("pe000020", 100.0, 10.0),
+                point("pe000021", 100.0, 0.0),
+                point("pe000022", 110.0, 10.0),
+                point("pe000023", 90.0, 0.0),
+                point("pe000024", 110.0, 0.0),
+                point("pf000001", 100.0, 0.0),
+                point("pf000002", 100.0, -20.0),
+            ]
+            .join(", "),
+            &format!(
+                "{}, {}",
+                line("ne000010", "pe000023", "pe000024"),
+                line("nf000001", "pf000001", "pf000002")
+            ),
+            "",
+            &arc("ae000003", "pe000020", "pe000021", "pe000022"),
+            &format!(
+                r#"{{"id": "kt000004", "type": "midpoint", "point": "pf000001", "line": "ne000010"}}, {{"id": "kt000005", "type": "tangent", "a": "{a}", "b": "{b}", "side": "left"}}"#
+            ),
+        );
+        assert_eq!(gate(&before, sketch_of(&before)), Vec::<String>::new());
+        let merged = merge(sketch_of(&before), &ids(&["pe000021", "pf000001"]));
+        refused_as(
+            merged.clone(),
+            &format!(
+                "merging them would make constraint kt000005 an edge tangency of {a} and {b} where kt000004 holds an end of one at the other's middle: make the tangent a tangent_on, keeping the midpoint"
+            ),
+            &["kt000005", "kt000004", a, b],
+        );
+        assert_eq!(
+            merged.unwrap_err().suggestion(),
+            Some("remove the constraint first, or merge other points")
+        );
+    }
+}
+
+#[test]
 fn merging_a_midpoint_with_an_end_of_its_line() {
     // q0 is held at a's midpoint; merged into a's start, the line's midpoint would be its
     // own end (a line of no length).
