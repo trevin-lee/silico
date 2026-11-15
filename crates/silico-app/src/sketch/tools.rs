@@ -26,8 +26,9 @@ use silico_core::sketch_tools::{
     Preview, SketchTool, SmartDimension, SystemIds, ToolKind,
 };
 
-use super::draw::{Curve, Geometry, add, angle, dot, foot, length, mul, sub};
-use super::hit::distance;
+use super::draw::{
+    Curve, Geometry, add, angle, direction, dot, foot, length, mul, segment_distance, sub,
+};
 
 /// The tool chosen: a drawing tool of the core's, Smart Dimension, trim, or split.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -515,6 +516,29 @@ pub(crate) fn curve_at(
         .filter(|(d, ..)| *d <= tolerance)
         .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)))
         .map(|(_, id, kind, curve)| (id.clone(), kind, curve))
+}
+
+/// How far `at` is from `curve`, as trim and split take a curve under the pointer: from a
+/// line's segment, a circle's rim, or an arc's (or its nearer end, past its sweep).
+fn distance(curve: Curve, at: [f64; 2]) -> f64 {
+    match curve {
+        Curve::Line { from, to } => segment_distance(at, from, to),
+        Curve::Round {
+            centre,
+            radius,
+            start,
+            sweep,
+        } => {
+            let off = sub(at, centre);
+            let within = (angle(off) - start).rem_euclid(TAU) <= sweep;
+            if sweep >= TAU || within {
+                (length(off) - radius).abs()
+            } else {
+                let end = |a: f64| add(centre, mul(direction(a), radius));
+                length(sub(at, end(start))).min(length(sub(at, end(start + sweep))))
+            }
+        }
+    }
 }
 
 /// `at` put on `curve`: the nearest place of a line's line, or of an arc's or a circle's

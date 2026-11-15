@@ -80,9 +80,8 @@
 use super::adds::Adds;
 use super::build::Builder;
 use super::geometry::{cross, distance, dot, length, scale, sub, unit};
-use super::implied::ViewClasses;
-use super::infer::{Pointer, View};
-use super::{AddToken, Context, Message, NewIds, Outcome, Xy, geometry};
+use super::infer::{View, pick_in};
+use super::{AddToken, Axes, Context, Message, NewIds, Outcome, Xy, geometry};
 use crate::command::Revision;
 use crate::command::sketch::SketchRead;
 use crate::document::json::{self, At, Node, Value};
@@ -630,22 +629,8 @@ impl SmartDimension {
         }
         let pending = self.adds.members();
         let view = View::of(context.sketch, &pending);
-        // Smart Dimension picks, inferring no relation, so it judges none: its pointer's
-        // classes are never built.
-        let classes = ViewClasses::default();
         let closed = self.revalidate(&view);
-        let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
-            context.tolerance
-        } else {
-            0.0
-        };
-        let pointer = Pointer {
-            view: &view,
-            tolerance,
-            infer: true,
-            woken: &[],
-            classes: &classes,
-        };
+        let tolerance = context.tolerance;
         let event = match event {
             Some(DimensionEvent::Cancel) => {
                 if let Some(before) = self.before_press.take() {
@@ -686,7 +671,7 @@ impl SmartDimension {
             self.pointer = Some(at);
         }
         let Some(event) = event else {
-            self.preview = self.drawn(&view, &pointer);
+            self.preview = self.drawn(&view, tolerance);
             return Outcome {
                 message: closed,
                 ..Outcome::default()
@@ -735,7 +720,7 @@ impl SmartDimension {
             DimensionEvent::Move(_) => Outcome::default(),
             DimensionEvent::Release(at) if self.pressed => {
                 self.pressed = false;
-                self.click(&view, &pointer, at)
+                self.click(&view, tolerance, at)
             }
             DimensionEvent::Release(_) => Outcome::default(),
             DimensionEvent::RightClick(at) => {
@@ -748,7 +733,7 @@ impl SmartDimension {
         if outcome.message.is_none() {
             outcome.message = closed;
         }
-        self.preview = self.drawn(&view, &pointer);
+        self.preview = self.drawn(&view, tolerance);
         outcome
     }
 
@@ -797,12 +782,12 @@ impl SmartDimension {
         }
     }
 
-    /// A click at `at`: a pick, while fewer than two are picked and it's on something not
-    /// picked; else the dimension placed, its Modify box opened, unless the last placement's
-    /// offer isn't settled (the offer is modal).
-    fn click(&mut self, view: &View<'_>, pointer: &Pointer<'_, '_>, at: Xy) -> Outcome {
+    /// A click at `at`: a pick within `tolerance` ([`pick_in`]), while fewer than two are
+    /// picked and it's on something not picked; else the dimension placed, its Modify box
+    /// opened, unless the last placement's offer isn't settled (the offer is modal).
+    fn click(&mut self, view: &View<'_>, tolerance: f64, at: Xy) -> Outcome {
         if self.picks.len() < 2
-            && let Some(hit) = pointer.pick(at)
+            && let Some(hit) = pick_in(view, tolerance, at, Axes::BOTH)
             && !self.picks.contains(&hit)
         {
             self.picks.push(hit);
@@ -901,8 +886,8 @@ impl SmartDimension {
         })
     }
 
-    /// The preview, at the pointer.
-    fn drawn(&self, view: &View<'_>, pointer: &Pointer<'_, '_>) -> DimensionPreview {
+    /// The preview, at the pointer, what it would pick within `tolerance` ([`pick_in`]).
+    fn drawn(&self, view: &View<'_>, tolerance: f64) -> DimensionPreview {
         let mut preview = DimensionPreview {
             pointer: self.pointer,
             picks: self.picks.clone(),
@@ -918,7 +903,8 @@ impl SmartDimension {
             return preview;
         };
         if self.picks.len() < 2 {
-            preview.hover = pointer.pick(at).filter(|r| !self.picks.contains(r));
+            preview.hover =
+                pick_in(view, tolerance, at, Axes::BOTH).filter(|r| !self.picks.contains(r));
         }
         let locked = self.lock == Some(Measure::PointLine);
         match offered(view, &self.picks, at, self.lock, locked) {
@@ -1049,32 +1035,9 @@ fn points(
         _ if within(at[1], 1) && !within(at[0], 0) => Measure::DistanceY,
         _ => Measure::Distance,
     };
-    let ordered = |i: usize| {
-        if q[i] < p[i] {
-            (b.clone(), a.clone(), p[i] - q[i])
-        } else {
-            (a.clone(), b.clone(), q[i] - p[i])
-        }
-    };
     let form = match measure {
-        Measure::DistanceX => {
-            let (a, b, value) = ordered(0);
-            Form::DistanceX {
-                a,
-                b,
-                value: rounded(value)?,
-                driving: true,
-            }
-        }
-        Measure::DistanceY => {
-            let (a, b, value) = ordered(1);
-            Form::DistanceY {
-                a,
-                b,
-                value: rounded(value)?,
-                driving: true,
-            }
-        }
+        Measure::DistanceX => distance_along(DistanceAxis::X, (a, *p), (b, *q)).map_err(Some)?,
+        Measure::DistanceY => distance_along(DistanceAxis::Y, (a, *p), (b, *q)).map_err(Some)?,
         _ => {
             let value = rounded(distance(*p, *q))?;
             if value.nm() == 0 {
@@ -1089,6 +1052,105 @@ fn points(
         }
     };
     Ok(Offered { measure, form })
+}
+
+/// Which of the sketch's axes a dimension of two points runs along ([`distance_along`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DistanceAxis {
+    /// `distance_x`.
+    X,
+    /// `distance_y`.
+    Y,
+}
+
+/// The driving dimension of two points along an axis, `first` and `second` each a point and
+/// where it is, as Smart Dimension writes `distance_x` and `distance_y`, and Fix each
+/// point's two from the origin (the constraint tools' C2): the difference rounded to the
+/// nanometre (SD2), `a` the point to the left (below), so the value is never negative,
+/// `first` where they're level (plumb) at the nanometre. Ordered by the rounded difference,
+/// so a point a fraction of a nanometre either side of level is written the one way (Fix of
+/// it again is C6's repeat). One writer, so the two tools can't spell one dimension two
+/// ways.
+pub(super) fn distance_along(
+    axis: DistanceAxis,
+    first: (&Reference, Xy),
+    second: (&Reference, Xy),
+) -> Result<Form, Message> {
+    let ((a, p), (b, q)) = (first, second);
+    let i = match axis {
+        DistanceAxis::X => 0,
+        DistanceAxis::Y => 1,
+    };
+    let signed = Length::rounded(q[i] - p[i]).ok_or(Message::TooFar)?;
+    let value = signed
+        .nm()
+        .checked_abs()
+        .map(Length::from_nm)
+        .ok_or(Message::TooFar)?;
+    let (a, b) = if signed.nm() < 0 {
+        (b.clone(), a.clone())
+    } else {
+        (a.clone(), b.clone())
+    };
+    Ok(match axis {
+        DistanceAxis::X => Form::DistanceX {
+            a,
+            b,
+            value,
+            driving: true,
+        },
+        DistanceAxis::Y => Form::DistanceY {
+            a,
+            b,
+            value,
+            driving: true,
+        },
+    })
+}
+
+/// Where a point lies off a line, as Smart Dimension measures a `point_line_distance`: the
+/// line's unit direction, the point's signed distance off it (to its left, facing along it,
+/// positive), that distance rounded to the nanometre, and the side it's on.
+pub(super) struct Off {
+    pub(super) along: Xy,
+    pub(super) off: f64,
+    pub(super) distance: Length,
+    pub(super) side: LineSide,
+}
+
+/// Why a point has no side of a line ([`off_line`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NotOff {
+    /// The line has no direction: no length.
+    NoDirection,
+    /// The point is on the line at the nanometre.
+    OnIt,
+    /// The distance is past what a length holds.
+    TooFar,
+}
+
+/// Where `point` lies off the line through `start` along `direction` ([`Off`]): refused
+/// where the line has no length, or the point is on it at the nanometre (no side to hold it
+/// on), as Smart Dimension refuses a distance of a point on its line. The constraint tools'
+/// Tangent reads a round's side of a line the same way.
+pub(super) fn off_line(start: Xy, direction: Xy, point: Xy) -> Result<Off, NotOff> {
+    let along = unit(direction).ok_or(NotOff::NoDirection)?;
+    let off = cross(along, sub(point, start));
+    let distance = Length::rounded(off.abs()).ok_or(NotOff::TooFar)?;
+    if distance.nm() == 0 {
+        return Err(NotOff::OnIt);
+    }
+    let side = if off > 0.0 {
+        LineSide::Left
+    } else {
+        LineSide::Right
+    };
+    Ok(Off {
+        along,
+        off,
+        distance,
+        side,
+    })
 }
 
 /// Whether the pointer `at` is across `line` from `off`, a signed distance from it (to its
@@ -1118,12 +1180,16 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
     else {
         return Err(None);
     };
-    let along = unit(*direction).ok_or(None)?;
-    let off = cross(along, sub(*p, *start));
-    let value = rounded(off.abs())?;
-    if value.nm() == 0 {
-        return Err(Some(Message::NoDistance));
-    }
+    let Off {
+        along,
+        off,
+        distance: value,
+        side,
+    } = off_line(*start, *direction, *p).map_err(|not| match not {
+        NotOff::NoDirection => None,
+        NotOff::OnIt => Some(Message::NoDistance),
+        NotOff::TooFar => Some(Message::TooFar),
+    })?;
     if let Some(at) = at
         && *centreline
         && across(*start, along, off, at)
@@ -1136,11 +1202,7 @@ fn point_line(point: &Item, line: &Item, at: Option<Xy>) -> Result<Offered, NotO
             point: p_ref.clone(),
             line: reference.clone(),
             value,
-            side: if off > 0.0 {
-                LineSide::Left
-            } else {
-                LineSide::Right
-            },
+            side,
             driving: true,
         },
     })

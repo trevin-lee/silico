@@ -12,21 +12,41 @@ use crate::command::Revision;
 mod dimension;
 mod edges;
 mod implied;
+mod relate;
 use crate::document::json::{self, Plain};
 use crate::document::sketch_edit::{self, Members};
 use crate::document::{
-    Coordinate, Form, Plane, Reference, SketchConstraint, SketchLine, SketchPoint,
+    Coordinate, Form, Plane, Reference, SketchArc, SketchCircle, SketchConstraint, SketchLine,
+    SketchPoint,
 };
 use crate::sketch_states::{SketchState, SketchStates};
 
-/// IDs `t0000001`, `t0000002`, ... in turn, skipping any taken.
-struct Counter(u32);
+/// IDs with a prefix, numbered on from a start, eight characters in all, in turn, skipping
+/// any taken: `t0000001`, `t0000002`, ... from [`Counter::after`]; `kt000101`, ... from
+/// `Counter::with("kt", 100)`.
+struct Counter {
+    prefix: &'static str,
+    n: u32,
+}
+
+impl Counter {
+    /// `t` IDs, numbered on from `n`.
+    fn after(n: u32) -> Self {
+        Counter::with("t", n)
+    }
+
+    /// `prefix` IDs, numbered on from `n`.
+    fn with(prefix: &'static str, n: u32) -> Self {
+        Counter { prefix, n }
+    }
+}
 
 impl NewIds for Counter {
     fn next(&mut self, taken: &dyn Fn(&ElementId) -> bool) -> Result<ElementId, Error> {
         loop {
-            self.0 += 1;
-            let id = ElementId::new(&format!("t{:07}", self.0)).unwrap();
+            self.n += 1;
+            let width = 8 - self.prefix.len();
+            let id = ElementId::new(&format!("{}{:0width$}", self.prefix, self.n)).unwrap();
             if !taken(&id) {
                 return Ok(id);
             }
@@ -59,6 +79,26 @@ fn line(name: &str, from: &str, to: &str) -> SketchLine {
         id: id(name),
         from: id(from),
         to: id(to),
+        construction: false,
+    }
+}
+
+fn circle(name: &str, center: &str, radius: f64) -> SketchCircle {
+    SketchCircle {
+        id: id(name),
+        center: id(center),
+        radius: Coordinate::new(radius).unwrap(),
+        construction: false,
+    }
+}
+
+/// An arc counter-clockwise from `start` to `end` about `center`.
+fn arc(name: &str, center: &str, start: &str, end: &str) -> SketchArc {
+    SketchArc {
+        id: id(name),
+        center: id(center),
+        start: id(start),
+        end: id(end),
         construction: false,
     }
 }
@@ -169,7 +209,7 @@ impl Drive {
             automatic: true,
             construction: false,
             keys: Modifiers::default(),
-            ids: Box::new(Counter(0)),
+            ids: Box::new(Counter::after(0)),
             added: Vec::new(),
             made: Vec::new(),
             messages: Vec::new(),
@@ -991,6 +1031,20 @@ fn the_origin_nearer_than_a_point_wins() {
     );
     // 0.3 from the origin, 0.1 from the point: the point, so nothing (#278's D).
     d.click(0.3, 0.0);
+    assert_eq!(d.messages, [Message::PointThere(id("q0000001"))]);
+}
+
+#[test]
+fn a_point_at_the_origins_place_is_shared_from_any_side() {
+    // A point solved to (1e-15, 0), one place with the origin to the kernel, and a click at
+    // (−0.2, 0): 0.2 from the origin, 0.2 + 1e-15 from the point. The point stands for the
+    // origin, so the click is on it, and the point tool adds nothing (#278's D); a new point
+    // at the origin beside it would be a second at one place.
+    let mut s = empty();
+    s.points.push(point("q0000001", 1e-15, 0.0));
+    let mut d = Drive::new(ToolKind::Point, s);
+    d.click(-0.2, 0.0);
+    assert!(d.added.is_empty(), "{:?}", d.adds());
     assert_eq!(d.messages, [Message::PointThere(id("q0000001"))]);
 }
 
@@ -2015,7 +2069,7 @@ fn a_cancel_after_the_add_its_chain_names_was_refused_starts_afresh() {
         construction: false,
         states: no_states(),
     };
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let keys = Modifiers::default();
     let mut tool = SketchTool::new(ToolKind::Line);
     let mut send = |tool: &mut SketchTool, event| tool.handle(&context, &mut ids, event, keys);
@@ -2026,9 +2080,14 @@ fn a_cancel_after_the_add_its_chain_names_was_refused_starts_afresh() {
     };
     click(&mut tool, [10.0, 10.0]);
     let token = click(&mut tool, [40.0, 30.0]).token.unwrap();
-    tool.handle(&context, &mut Counter(100), Event::Press([70.0, 5.0]), keys);
+    tool.handle(
+        &context,
+        &mut Counter::after(100),
+        Event::Press([70.0, 5.0]),
+        keys,
+    );
     tool.refused(token);
-    let out = tool.handle(&context, &mut Counter(100), Event::Cancel, keys);
+    let out = tool.handle(&context, &mut Counter::after(100), Event::Cancel, keys);
     assert_eq!(out, Outcome::default());
     assert!(!tool.busy());
     assert_eq!(click(&mut tool, [60.0, 50.0]).add, None);
@@ -2525,7 +2584,7 @@ fn clicks_on_a_stale_read(tool: &mut SketchTool, sketch: &Sketch, at: &[[f64; 2]
         construction: false,
         states: no_states(),
     };
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let keys = Modifiers::default();
     at.iter()
         .map(|&p| {

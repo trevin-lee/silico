@@ -38,7 +38,7 @@ impl Dim {
                 dofs: 1000,
                 ..under()
             },
-            ids: Counter(100),
+            ids: Counter::after(100),
             made: Vec::new(),
             messages: Vec::new(),
             left: false,
@@ -365,10 +365,149 @@ fn an_axis_is_picked_where_no_line_of_the_sketch_lies_on_it() {
             (off_y, [0.1, 20.0], Reference::YAxis),
         ] {
             let mut d = Dim::new(sketch);
+            // The pointer over it first: the preview shows the axis it would pick.
+            d.to(at[0], at[1]);
+            assert_eq!(
+                d.tool.preview().hover,
+                Some(axis.clone()),
+                "{name} at {at:?}"
+            );
             d.click(at[0], at[1]);
             assert_eq!(d.tool.preview().picks, vec![axis], "{name} at {at:?}");
         }
     }
+}
+
+#[test]
+fn pick_ranks_the_origin_with_the_points_and_the_axes_with_the_curves() {
+    // Sketch mode's selection's pick (C9), within 0.5. The empty sketch at (0.2, 0.1): the
+    // origin, √0.05 = 0.224 off, though the x axis is nearer, 0.1 off (points first).
+    assert_eq!(
+        pick(&empty(), [0.2, 0.1], 0.5, Axes::BOTH),
+        Some(Reference::Origin)
+    );
+    // A point at the origin's place, as near: the point (the sketch's own on a tie).
+    let at_origin = with_point(empty(), "p0000001", [0.0, 0.0]);
+    assert_eq!(
+        pick(&at_origin, [0.2, 0.1], 0.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    // A point at (0.4, 0), and (0.1, 0): the origin 0.1 off, the point 0.3: the origin.
+    let beside = with_point(empty(), "p0000001", [0.4, 0.0]);
+    assert_eq!(
+        pick(&beside, [0.1, 0.0], 0.5, Axes::BOTH),
+        Some(Reference::Origin)
+    );
+    // Far along an axis, 0.3 off it: the axis, anywhere along it.
+    assert_eq!(
+        pick(&empty(), [500.0, 0.3], 0.5, Axes::BOTH),
+        Some(Reference::XAxis)
+    );
+    assert_eq!(
+        pick(&empty(), [0.3, -700.0], 0.5, Axes::BOTH),
+        Some(Reference::YAxis)
+    );
+    // A line along the x axis, (10, 0) to (50, 0), 0.2 off both at (30, 0.2): the line.
+    let [(along_x, _, _), _] = along_the_axes("zz000001");
+    assert_eq!(
+        pick(&along_x, [30.0, 0.2], 0.5, Axes::BOTH),
+        Some(el("zz000001"))
+    );
+    // A place that isn't finite picks nothing, at any tolerance: (0, ∞) is ∞ from the
+    // origin and the x axis, which an infinite tolerance would otherwise reach.
+    assert_eq!(pick(&empty(), [f64::INFINITY, 0.0], 0.5, Axes::BOTH), None);
+    assert_eq!(pick(&empty(), [0.0, f64::NAN], 0.5, Axes::BOTH), None);
+    assert_eq!(
+        pick(&empty(), [0.0, f64::INFINITY], f64::INFINITY, Axes::BOTH),
+        None
+    );
+    // Nothing 3 from everything. A tolerance below zero or not a number is 0, as Smart
+    // Dimension takes it: nothing 0.14 off, and the origin exactly there.
+    assert_eq!(pick(&empty(), [3.0, 3.0], 0.5, Axes::BOTH), None);
+    assert_eq!(pick(&empty(), [0.1, 0.1], -1.0, Axes::BOTH), None);
+    assert_eq!(pick(&empty(), [0.1, 0.1], f64::NAN, Axes::BOTH), None);
+    assert_eq!(
+        pick(&empty(), [0.0, 0.0], f64::NAN, Axes::BOTH),
+        Some(Reference::Origin)
+    );
+}
+
+#[test]
+fn an_axis_a_pick_doesnt_allow_drops_out_and_the_nearest_of_the_rest_is_taken() {
+    // A line 0.3 above the x axis, (10, 0.3) to (50, 0.3), and a pick at (20, 0.1): the axis
+    // 0.1 off, the line 0.2. With both axes allowed, the axis; with the x axis not, the line.
+    let beside = with_line(empty(), "zz000001", [10.0, 0.3], [50.0, 0.3]);
+    let no_x = Axes { x: false, y: true };
+    assert_eq!(
+        pick(&beside, [20.0, 0.1], 0.5, Axes::BOTH),
+        Some(Reference::XAxis)
+    );
+    assert_eq!(pick(&beside, [20.0, 0.1], 0.5, no_x), Some(el("zz000001")));
+    // With nothing else near, nothing; the y axis, allowed, still taken where it's near.
+    assert_eq!(pick(&empty(), [20.0, 0.1], 0.5, no_x), None);
+    assert_eq!(
+        pick(&empty(), [0.1, 20.0], 0.5, no_x),
+        Some(Reference::YAxis)
+    );
+    let no_y = Axes { x: true, y: false };
+    assert_eq!(pick(&empty(), [0.1, 20.0], 0.5, no_y), None);
+    // The origin is no axis: a pick at it takes it whatever the axes.
+    let neither = Axes { x: false, y: false };
+    assert_eq!(
+        pick(&empty(), [0.1, 0.1], 0.5, neither),
+        Some(Reference::Origin)
+    );
+}
+
+#[test]
+fn a_point_at_the_origins_place_is_picked_over_the_origin_from_any_side() {
+    // A point solved to (1e-15, 0), one place with the origin to the kernel (1e-7), clicked
+    // at (−0.2, 0): the origin is 0.2 off and the point 0.2 + 1e-15, yet the point stands
+    // for the origin and is picked. On its own side, (0.2, 0), it's nearer anyway.
+    let solved = with_point(empty(), "p0000001", [1e-15, 0.0]);
+    assert_eq!(
+        pick(&solved, [-0.2, 0.0], 0.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    assert_eq!(
+        pick(&solved, [0.2, 0.0], 0.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    // Within the tolerance of the origin but not of the point, which is 1e-15 farther: the
+    // point all the same, at its place.
+    assert_eq!(
+        pick(&solved, [-0.5, 0.0], 0.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    // A point 2e-7 off, past one place: the origin, 0.2 off, against 0.2000002.
+    let apart = with_point(empty(), "p0000001", [2e-7, 0.0]);
+    assert_eq!(
+        pick(&apart, [-0.2, 0.0], 0.5, Axes::BOTH),
+        Some(Reference::Origin)
+    );
+    // And a nearer point elsewhere still wins: (0.3, 0) clicked at (0.25, 0), 0.05 from it.
+    let both = with_point(solved, "p0000002", [0.3, 0.0]);
+    assert_eq!(
+        pick(&both, [0.25, 0.0], 0.5, Axes::BOTH),
+        Some(el("p0000002"))
+    );
+}
+
+#[test]
+fn a_point_as_near_as_the_origin_is_picked_over_it() {
+    // A point at (2, 2), far past one place with the origin, clicked at (1, 1): √2 from
+    // each, exactly, as (1, 1) and (−1, −1) give the same length. The tie goes to the
+    // sketch's own point.
+    let apart = with_point(empty(), "p0000001", [2.0, 2.0]);
+    assert_eq!(
+        pick(&apart, [1.0, 1.0], 1.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    // A hair nearer the origin, it's the origin's.
+    assert_eq!(
+        pick(&apart, [0.999, 0.999], 1.5, Axes::BOTH),
+        Some(Reference::Origin)
+    );
 }
 
 // --- SD1: two points, by the pointer; signs and order ---------------------------------
@@ -1789,7 +1928,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         states: &under(),
     };
     let mut tool = SmartDimension::new();
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
         tool.handle(&context, &mut ids, DimensionEvent::Press(at));
         tool.handle(&context, &mut ids, DimensionEvent::Release(at));
@@ -3120,7 +3259,7 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
         states: &under(),
     };
     let mut tool = SmartDimension::new();
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let mut send =
         |tool: &mut SmartDimension, event: DimensionEvent| tool.handle(&context, &mut ids, event);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
@@ -3225,7 +3364,7 @@ fn a_placement_not_yet_answered_holds_the_next() {
         states: &under(),
     };
     let mut tool = SmartDimension::new();
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let click = |tool: &mut SmartDimension, ids: &mut Counter, at: [f64; 2]| {
         tool.handle(&context, ids, DimensionEvent::Press(at));
         tool.handle(&context, ids, DimensionEvent::Release(at))
@@ -3323,7 +3462,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             states: &under(),
         };
         let mut tool = SmartDimension::new();
-        let mut ids = Counter(0);
+        let mut ids = Counter::after(0);
         for at in [[20.0, 10.0], [20.0, 30.0]] {
             tool.handle(&context, &mut ids, DimensionEvent::Press(at));
             tool.handle(&context, &mut ids, DimensionEvent::Release(at));

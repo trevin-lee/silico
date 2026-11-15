@@ -49,16 +49,21 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::accesskit::Role;
 use eframe::egui::{
-    Color32, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, ViewportCommand,
+    Color32, CursorIcon, Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Shape,
+    ViewportCommand,
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
 use silico_app::browse::{Answer, Ask, Browse};
+use silico_core::command::Sessions;
 use silico_core::disk::{Clock, Found};
+use silico_core::document::FeatureId;
+use silico_core::document::json::{self, Plain};
 use silico_core::fake::{FakeKernel, never_waits};
 use silico_core::kernel::{Clients, Op};
 use silico_core::pool::KernelPool;
+use silico_protocol::{Camera, Projection};
 
 /// The app in a harness.
 pub type AppUi<P> = Harness<'static, App<P>>;
@@ -459,6 +464,28 @@ pub fn ok_enabled<P: AppKernel>(h: &AppUi<P>) -> bool {
         .get_by_role_and_label(Role::Button, "OK")
         .accesskit_node()
         .is_disabled()
+}
+
+/// `pane`'s node labelled `label` double-clicked: both clicks in one frame, as the
+/// harness's own clicks each take frames of their own, a quarter second apart, which egui
+/// counts as two single clicks.
+pub fn double_click<P: AppKernel>(h: &mut AppUi<P>, pane: &str, label: &str) {
+    let pos = h
+        .get_by_role_and_label(Role::Pane, pane)
+        .get_by_label(label)
+        .rect()
+        .center();
+    h.input_mut().events.push(Event::PointerMoved(pos));
+    step(h);
+    for pressed in [true, false, true, false] {
+        h.input_mut().events.push(Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::default(),
+        });
+    }
+    step(h);
 }
 
 /// The dialog's feature's add answered.
@@ -900,6 +927,261 @@ pub fn meshes_settled_in<P: AppKernel>(h: &mut AppUi<P>, tab: usize) {
     step_until(h, "the meshes read", |h| {
         !h.state().tabs()[tab].view.reading()
     });
+}
+
+// --- A feature dialog's arrows in the canvas ----------------------------------------------
+
+/// A 40 × 20 plate sketched on XY from the origin, its profile's centroid (20, 10), and its
+/// pad, 10 up: the pad's end over the centroid at [`PLATE_END`], the arrows' place.
+pub const PLATE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Plate", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}, {"id": "pa000004", "x": 0, "y": 20, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}
+  ]
+}
+"#;
+
+/// The plate's pad's end: its profile's centroid, (20, 10), 10 up.
+pub const PLATE_END: [f64; 3] = [20.0, 10.0, 10.0];
+
+/// The arrows' blue (interact.js's `#4676ff`), and the white of the one dragged.
+pub const ARROW_BLUE: Color32 = Color32::from_rgb(0x46, 0x76, 0xff);
+pub const ARROW_WHITE: Color32 = Color32::from_rgb(0xff, 0xff, 0xff);
+
+/// The plate's sketch.
+pub fn plate_sketch() -> FeatureId {
+    FeatureId::new("s0000001").unwrap()
+}
+
+/// The pad's dialog opened as Edit Feature opens it, a double-click on its timeline item:
+/// its length loaded into it, and its sketch's read held, which its arrows stand on.
+pub fn edit_plates_pad<P: AppKernel>(h: &mut AppUi<P>) {
+    step_until(h, "the pad in the timeline", |h| {
+        h.query_by_role_and_label(Role::Pane, "Timeline")
+            .is_some_and(|timeline| timeline.query_by_label("Pad").is_some())
+    });
+    double_click(h, "Timeline", "Pad");
+    step_until(h, "its dialog, loaded, its sketch read", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
+            && field(h, In::Dialog, "Length").value().as_deref() == Some("10")
+            && h.state().tabs()[0]
+                .sketch_reads
+                .held(&plate_sketch())
+                .is_some()
+    });
+}
+
+/// The pad's dialog opened on the plate (open in `h`) as [`edit_plates_pad`] opens it, its
+/// answers settled, and the view from the front onto the pad's end at 4 points a millimetre
+/// ([`from_the_front`]): the image's centre, where the end is.
+pub fn plates_pad_from_the_front<P: AppKernel>(h: &mut AppUi<P>) -> Pos2 {
+    edit_plates_pad(h);
+    settled(h);
+    from_the_front(h, PLATE_END, 4.0);
+    image_centre(h)
+}
+
+/// `points` above `at` on the screen (below it for a negative number).
+pub fn up(at: Pos2, points: f32) -> Pos2 {
+    at - eframe::egui::vec2(0.0, points)
+}
+
+/// The extent of a one-sided pad of `length`, `reversed` or not, as JSON reads it.
+pub fn pad_extent(length: &str, reversed: bool) -> Plain {
+    Plain::of(
+        &json::read(
+            format!(r#"{{"type": "one_side", "length": {length}, "reversed": {reversed}}}"#)
+                .as_bytes(),
+        )
+        .unwrap(),
+    )
+}
+
+/// The first tab's document, as its session holds it now (`text`).
+pub fn text_of<P: AppKernel>(sessions: &Sessions<P>, h: &AppUi<P>) -> String {
+    let id = h.state().tabs()[0].id;
+    sessions.text(&id, None).wait().result.unwrap().text
+}
+
+/// The fields of the feature named `name` in `text`, but its `id`, `v`, and `fingerprint`,
+/// each as JSON writes it: none if no feature has that name.
+pub fn fields_of(text: &str, name: &str) -> Option<Vec<(String, Plain)>> {
+    let root = json::read(text.as_bytes()).unwrap();
+    let Plain::Object(members) = Plain::of(&root) else {
+        panic!("not an object");
+    };
+    let (_, Plain::Array(features)) = members.into_iter().find(|(key, _)| key == "features")?
+    else {
+        panic!("no features");
+    };
+    features.into_iter().find_map(|feature| {
+        let Plain::Object(fields) = feature else {
+            return None;
+        };
+        fields
+            .iter()
+            .any(|(key, value)| key == "name" && *value == Plain::String(name.to_owned()))
+            .then(|| sorted_fields(fields))
+    })
+}
+
+/// `fields`, but `id`, `v`, and `fingerprint`, sorted by key.
+pub fn sorted_fields(fields: Vec<(String, Plain)>) -> Vec<(String, Plain)> {
+    let mut fields: Vec<(String, Plain)> = fields
+        .into_iter()
+        .filter(|(key, _)| !["id", "v", "fingerprint"].contains(&key.as_str()))
+        .collect();
+    fields.sort_by(|a, b| a.0.cmp(&b.0));
+    fields
+}
+
+/// The field `field` of the feature named `name` in the first tab's document, as its session
+/// holds it now ([`fields_of`]): none if no feature has that name, or it has no such field.
+pub fn written<P: AppKernel>(
+    sessions: &Sessions<P>,
+    h: &AppUi<P>,
+    name: &str,
+    field: &str,
+) -> Option<Plain> {
+    fields_of(&text_of(sessions, h), name)?
+        .into_iter()
+        .find(|(key, _)| key == field)
+        .map(|(_, value)| value)
+}
+
+/// The extent of the feature named Pad in the first tab's document, as its session holds it
+/// now ([`written`]).
+pub fn pads_extent<P: AppKernel>(sessions: &Sessions<P>, h: &AppUi<P>) -> Plain {
+    written(sessions, h, "Pad", "extent").unwrap()
+}
+
+/// The text `tab`'s open dialog's Length input holds, as the tab has it (its field's,
+/// drawn or not): none with no dialog, or one with no Length.
+pub fn dialog_length(tab: &silico_app::tab::Tab) -> Option<String> {
+    tab.dialog.as_ref().and_then(|dialog| {
+        dialog.inputs.iter().find_map(|input| match &input.value {
+            silico_app::dialog::Value::Length(text) if input.label == "Length" => {
+                Some(text.clone())
+            }
+            _ => None,
+        })
+    })
+}
+
+/// Whether the open dialog's Reversed is ticked.
+pub fn reversed_ticked<P: AppKernel>(h: &AppUi<P>) -> bool {
+    dialog(h)
+        .get_by_role_and_label(Role::CheckBox, "Reversed")
+        .accesskit_node()
+        .toggled()
+        == Some(eframe::egui::accesskit::Toggled::True)
+}
+
+/// The view from the front onto `target`, Z up, orthographic at `per_mm` points a
+/// millimetre, and a frame drawn through it: X right and Z up the screen, `target` at the
+/// image's centre ([`image_centre`]).
+pub fn from_the_front<P: AppKernel>(h: &mut AppUi<P>, target: [f64; 3], per_mm: f64) {
+    let at = frame(h).unwrap();
+    let rows = f64::from(at.size_px[1]);
+    let ppp = f64::from(at.pixels_per_point);
+    view_mut(h).set_camera(Camera {
+        projection: Projection::Orthographic {
+            view_height: rows / ppp / per_mm,
+        },
+        eye: [target[0], target[1] - 500.0, target[2]],
+        target,
+        up: [0.0, 0.0, 1.0],
+    });
+    step(h);
+    step(h);
+}
+
+/// Where the image's centre is on the screen, in points: the viewport's top left, and half
+/// its pixels each way at its pixels a point, as the pane places a pixel. What the view's
+/// target lands on.
+pub fn image_centre<P: AppKernel>(h: &AppUi<P>) -> Pos2 {
+    let at = frame(h).unwrap();
+    let ppp = at.pixels_per_point;
+    at.rect.min
+        + eframe::egui::vec2(
+            at.size_px[0] as f32 / 2.0 / ppp,
+            at.size_px[1] as f32 / 2.0 / ppp,
+        )
+}
+
+/// Every shape the last frame painted, nested ones flattened.
+pub fn shapes_painted<P: AppKernel>(h: &AppUi<P>) -> Vec<Shape> {
+    fn flat(shape: &Shape, into: &mut Vec<Shape>) {
+        match shape {
+            Shape::Vec(shapes) => shapes.iter().for_each(|s| flat(s, into)),
+            other => into.push(other.clone()),
+        }
+    }
+    let mut shapes = Vec::new();
+    for clipped in &h.output().shapes {
+        flat(&clipped.shape, &mut shapes);
+    }
+    shapes
+}
+
+/// The distance arrows' dots painted last frame (a disc 3.5 in radius, in the arrows' blue or
+/// white): each one's centre and colour.
+pub fn arrow_dots<P: AppKernel>(h: &AppUi<P>) -> Vec<(Pos2, Color32)> {
+    shapes_painted(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Circle(dot)
+                if dot.radius == 3.5 && [ARROW_BLUE, ARROW_WHITE].contains(&dot.fill) =>
+            {
+                Some((dot.center, dot.fill))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The arrows' shafts painted last frame (a segment 2.5 wide in the arrows' blue or white):
+/// each one's ends and colour.
+pub fn arrow_shafts<P: AppKernel>(h: &AppUi<P>) -> Vec<([Pos2; 2], Color32)> {
+    shapes_painted(h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::LineSegment { points, stroke }
+                if stroke.width == 2.5 && [ARROW_BLUE, ARROW_WHITE].contains(&stroke.color) =>
+            {
+                Some((points, stroke.color))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `got` is `expected`, to a thousandth of a point (the renderer's projection is
+/// f32's).
+pub fn near_point(got: Pos2, expected: Pos2) -> bool {
+    (got - expected).length() < 1e-3
+}
+
+/// The cursor the last frame asked for.
+pub fn cursor<P: AppKernel>(h: &AppUi<P>) -> CursorIcon {
+    h.output().platform_output.cursor_icon
+}
+
+/// The left button pressed at `at`, the pointer there: a frame.
+pub fn left_down_at<P: AppKernel>(h: &mut AppUi<P>, at: Pos2) {
+    h.hover_at(at);
+    button_event(h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(h);
+}
+
+/// The left button let go at `at`, the pointer there: a frame.
+pub fn left_up_at<P: AppKernel>(h: &mut AppUi<P>, at: Pos2) {
+    h.hover_at(at);
+    button_event(h, at, PointerButton::Primary, false, Modifiers::NONE);
+    step(h);
 }
 
 // --- The stand-ins -------------------------------------------------------------------------

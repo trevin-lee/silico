@@ -109,8 +109,7 @@ fn not_held(id: SessionId, asked: Revision, held: &[Revision], parameter: &str) 
     let holds = match numbers.as_slice() {
         [] => "none".to_owned(),
         [one] => format!("revision {one}"),
-        [first, second] => format!("revisions {first} and {second}"),
-        [rest @ .., last] => format!("revisions {}, and {last}", rest.join(", ")),
+        _ => format!("revisions {}", crate::listed(&numbers)),
     };
     Error::new(
         ErrorCode::InvalidInput,

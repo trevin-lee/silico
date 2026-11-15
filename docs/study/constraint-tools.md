@@ -420,7 +420,7 @@ SolidWorks' relation group, one numbered relation for all, survives either. Free
 *Recommended:*
 
 - The selection becomes an ordered set in pick order (`IndexSet`, which CLAUDE.md admits). It is deterministic, being the person's own input. Open item 24's rules stay: a plain click replaces, a Ctrl-click toggles, and empty space or Esc clears.
-- Its members become `Reference`s, and the origin and the axes are hit as Smart Dimension picks them (`View::pick`, crates/silico-core/src/sketch_tools/infer.rs:657): a point or the origin, whichever is nearer (the point on a tie), else the nearest curve, an axis anywhere along it.
+- Its members become `Reference`s, and the origin and the axes are hit as Smart Dimension picks them (`sketch_tools::pick`, crates/silico-core/src/sketch_tools/mod.rs, which Smart Dimension's picks go through too): a point or the origin, whichever is nearer (the point on a tie), else the nearest curve, an axis anywhere along it.
 - This amends M5.7's selection in sketch mode, so it is named here as a decision, not an implementation detail.
 
 ## 6. The interaction
@@ -529,7 +529,7 @@ Each case is a headless test of the core function (`sketch_tools`, beside Smart 
 **A plan, core first** (each PR after `/adversarial-review`, with `/break-it` on the core function):
 
 1. **Core: the relations, headless.** A `sketch_tools::relate(sketch, relation, picks, ids)`, from the newest read's members and a selection in pick order to one edit: an add, a merge, or C5's remove and add. It has a `Message` per refusal (§4) and is tested by §7's cases and the refusals. Nine tools, Fix aside. No command or contract changes.
-2. **App: the selection.** C9: pick order, the origin and axes hit as `View::pick` picks them, open item 24's rules kept, and the tests of M5.7's sketch selection updated.
+2. **App: the selection.** C9: pick order, the origin and axes hit as `sketch_tools::pick` picks them, open item 24's rules kept, and the tests of M5.7's sketch selection updated.
 3. **App: the buttons.**
    - `Does::Constraint(relation)` in place of `Does::NotBuilt` for nine buttons; a click sends what `relate` returns through the tab's queue (`sketch_add`, `sketch_merge`, or the grouped pair).
    - A refusal shows in the toast; the step is named for Undo.
@@ -542,9 +542,11 @@ Each case is a headless test of the core function (`sketch_tools`, beside Smart 
 
 Fable's decisions on C1 to C9, for the maintainer, 2026-11-14, taken on this note at Silico `main` (`9b756de9`); the maintainer may veto. M5.0's open item 34 states them; this section keeps them whole, with the refusal sentences, the tie rules, and the tests the code must pass, worked by hand.
 
+*Amended 2026-11-14 (Fable, on the port review of #478; the maintainer may veto):* C3's places count every hold (an `on`, a `tangent_on`, a `midpoint`); C5's remove is sent alone where the relation is already there; C6's list gains `tangent` and `tangent_at`.
+
 ### The design in one paragraph
 
-One headless function in the core, `sketch_tools::relate(read, relation, picks, ids)`, turns a selection in pick order into one edit, for all ten buttons. It checks only what it needs to choose a form and its roles. Everything else that's wrong with a selection is the gate's to refuse, in the gate's words, when the command runs. The edit is a `sketch_add`, except in two places where the document's structure already is the relation: points made coincident are merged (`sketch_merge`), and a new relation that implies an `on` already there replaces it (a `sketch_add`, then a `sketch_remove`, one undo step). No new form, no new command, and no protected file changes.
+One headless function in the core, `sketch_tools::relate(read, revision, relation, picks, ids)`, turns a selection in pick order into one edit, for all ten buttons. It checks only what it needs to choose a form and its roles. Everything else that's wrong with a selection is the gate's to refuse, in the gate's words, when the command runs. The edit is a `sketch_add`, except in two places where the document's structure already is the relation: points made coincident are merged (`sketch_merge`), and a new relation that implies an `on` already there replaces it (a `sketch_add`, then a `sketch_remove`, one undo step). No new form, no new command, and no protected file changes.
 
 Where this departs from the study, it has fewer cases:
 
@@ -603,24 +605,34 @@ The refusal doesn't contradict SD7. The line between the two is already drawn in
 
 ### C3. Tangent
 
+*Amended 2026-11-14 (the coordinator, in building): a `tangent_on`'s hold is a place too, so a second click on a pair it holds is C6's repeat.*
+
+*Amended 2026-11-14 (in building, on #478's robustness review): a line's side is the centre's distance off the line as Smart Dimension measures a point off its line, refused where it rounds to 0 nm, not the sign of the cross product alone; a line of no length is refused in its own words; and a point picked with the curves that isn't one of their places is refused naming the places.*
+
 **Decided:** the form follows the sketch's structure, by one rule.
 
-The places two curves can be tangent *at* are the ends they share, and the ends of one that an `on` holds on the other.
+The places two curves can be tangent *at* are the ends they share, and the ends of one that a constraint holds on the other. Three forms hold a point on a curve: an `on`, a `tangent_on` (its `at` on its `b`), and a `midpoint` (its `point` on its `line`).
 
 - **None:** an edge `tangent {a, b, side}`.
-- **One:** tangent there. A shared end gives `tangent_at {a, b, at, direction}`. An end held on gives `tangent_on {a: the curve that ends there, at, b, direction}`, and replaces the `on` (C5).
+- **One:** tangent there. A shared end gives `tangent_at {a, b, at, direction}`. An end held on gives `tangent_on {a: the curve that ends there, at, b, direction}`, and replaces each `on` that holds it (C5). Where a `tangent_on` already holds it, that's C6's repeat. Where a `midpoint` holds it, the `tangent_on` is added beside the midpoint, which stays: its point-on-line is then said twice and reads redundant, the plain kind, where an edge `tangent` there would be redundant only at the solution, as the gate refuses it beside an `on`.
 - **More than one:** refused, unless a point picked with the curves is one of them, and then it's there.
 
 `a` and `b` are in pick order wherever the structure doesn't fix them.
 
 **What's read from the drawing** (the newest read's coordinates):
 
-- **A line's side:** the sign of `(to − from) × (centre − from)`, positive `left`, negative `right`. An axis runs toward +x or +y. Zero is refused: "the centre of circle ce000002 is on line ne000002: which side it's tangent on is unclear; move one off the other first", as Smart Dimension refuses a point on its line.
+- **A line's side:** the centre's signed distance off the line, as Smart Dimension measures a point's distance from its line (to the left, facing from `from` to `to`, positive): positive `left`, negative `right`. An axis runs toward +x or +y. A distance that rounds to 0 nm is refused: "the centre of circle ce000002 is on line ne000002: which side it's tangent on is unclear; move one off the other first", as Smart Dimension refuses a point on its line. A line of no length is refused too: "line ne000009 has no length, so it has no side for circle ce000001 to be tangent on".
 - **Two rounds:** `outside` where the centres are at least the larger radius apart, else `inside`. This is FreeCAD's rule.
-- **`tangent_on`'s direction:** `same` where `a`, leaving `at`, runs as `b`'s own direction there, the dot product at least 0. This is trim's `drawn` (`sketch_edit/trim.rs`), and the tool calls that function, not a copy.
+- **`tangent_on`'s direction:** `same` where `a`, leaving `at`, runs as `b`'s own direction there, the dot product at least 0. This is trim's `drawn` (now in `document/sketch_edit.rs`, beside the leaving-direction helper both use), and the tool calls that function, not a copy.
 - **`tangent_at`'s direction:** `same` where `a` arriving at `at` and `b` leaving it have a dot product of at least 0. It uses the same leaving-direction helper.
 
-**Refused by the tool:** a selection with no circle or arc among its curves, in the gate's own words, "two lines can't be tangent". The check is needed because two lines sharing an end would otherwise get a `tangent_at`, which the gate takes (split writes one). That is Collinear, not Tangent.
+**Refused by the tool:**
+
+- a selection with no circle or arc among its curves, in the gate's own words, "two lines can't be tangent". The check is needed because two lines sharing an end would otherwise get a `tangent_at`, which the gate takes (split writes one). That is Collinear, not Tangent;
+- a centre on the line at the nanometre, and a line of no length, as above;
+- a point picked with the curves that isn't one of their places: "point pe000012 isn't where line ne000007 and arc ae000002 meet: deselect it, or select pe000010 or pe000011" (with no places, only "…: deselect it");
+- more than one place with no point picked, naming them;
+- more than one point, or other than two curves: Tangent's sentence, "Tangent takes two curves, at least one a circle or an arc, and at most one point where they meet".
 
 **Not refused by the tool:** two rounds about one centre point. The tool writes `inside`, and the solve says what it finds (SD7). A guard for it would be a special case with no rule behind it.
 
@@ -649,6 +661,7 @@ The places two curves can be tangent *at* are the ends they share, and the ends 
 
 - It applies to exactly two forms, the two that hold a point on a curve themselves: `tangent_on` (its `at` on its `b`) and `midpoint` (its `point` on its `line`).
 - **The order is add, then remove.** If the add is refused, nothing else is sent, so there's no remove to take back. A removal of a constraint by ID isn't refused by the gate.
+- **Already there.** Where the relation is in the sketch already (C6) and an `on` it implies is too (the pair interrupted, or both written by an agent), the remove is sent alone, and the toast names what was removed. The edit is whatever separates the sketch from the relation there and its implied `on`s gone.
 - **The step** is the tab's existing undo group (`tab.rs`, `Group`, a dialog's OK'd edits). No contract changes, and an agent makes the same two calls.
 - **Coincident never substitutes.** An `on` where an edge `tangent` already makes the curves tangent is refused by the gate, in its words. The person deletes the tangent and uses Tangent with the `on` in place.
 
@@ -664,7 +677,7 @@ The places two curves can be tangent *at* are the ends they share, and the ends 
 
 ### C6. A relation already there
 
-**Decided:** (b), by exact equality. A constraint the click would write is left out when the sketch holds one equal to it in everything but its ID. `a` and `b` may be either way round in the forms where they're interchangeable: `horizontal_points`, `vertical_points`, `parallel`, `perpendicular`, `equal`, and `symmetric`.
+**Decided:** (b), by exact equality. A constraint the click would write is left out when the sketch holds one equal to it in everything but its ID. `a` and `b` may be either way round in the forms where they're interchangeable: `horizontal_points`, `vertical_points`, `parallel`, `perpendicular`, `equal`, `symmetric`, `tangent` (the `side` is the line's, or symmetric in two rounds), and `tangent_at` (a smooth path is smooth both ways).
 
 - All left out: nothing is sent, and the toast says so, for example "line ne000002 is already vertical: nothing was added".
 - Some left out: the rest are added, and the toast says how many were already there.
@@ -700,7 +713,7 @@ This is the tool's rule only. `sketch_add` still adds whatever it's sent (SD7).
 
 - An ordered set in place of the `BTreeSet`. Open item 24's rules are unchanged: a plain click replaces, a Ctrl-click toggles (a member toggled back in joins at the end), and empty space or Esc clears.
 - Members that join together, as a box's would, join in ID order.
-- The origin and the axes are hit as `View::pick` ranks them: a point or the origin, whichever is nearer, then the nearest curve, an axis anywhere along it. The sketch's own member wins a tie.
+- The origin and the axes are hit as `sketch_tools::pick` ranks them (Smart Dimension's rule, one function for both): a point or the origin, whichever is nearer, then the nearest curve, an axis anywhere along it. The sketch's own member wins a tie.
 - Delete ignores the origin and the axes.
 
 **Why.** C1's survivor, C4's mirror, and C8's first each need pick order, and pick order is the person's own input, so it's deterministic. Symmetric about an axis and Coincident with the origin need the two to be selectable, and the forms and the gate already take them.
@@ -720,7 +733,7 @@ This is the tool's rule only. `sketch_add` still adds whatever it's sent (SD7).
 | Any, nothing selected | "Select the curves or points first; the relation applies to them." |
 | Horizontal, Vertical | "Horizontal takes lines, or two or more points" |
 | Coincident | "Coincident takes points and the curves they lie on, or two or more points to make one" |
-| Tangent | "Tangent takes two curves, at least one a circle or an arc"; and the two in C3 |
+| Tangent | "Tangent takes two curves, at least one a circle or an arc, and at most one point where they meet"; and its own refusals in C3 (the centre on the line, a line of no length, a point not where they meet, more than one place) |
 | Equal | "Equal takes two or more lines, or two or more circles and arcs" |
 | Parallel | "Parallel takes two or more lines" |
 | Perpendicular | "Perpendicular takes two lines" |
@@ -781,7 +794,10 @@ Headless tests of `relate`, beside Smart Dimension's. Each gives a sketch, picks
 - Ctrl-click three lines in an order that isn't ID order, then Equal: each `equal`'s `a` is the first clicked;
 - a click at the origin selects it, and with a point selected too, Coincident sends the pair;
 - Tangent over an `on`: two commands sent, and one Undo takes back both;
-- a refused click leaves the selection as it was and sends nothing more.
+- a refused click leaves the selection as it was and sends nothing more;
+- a double click: the second click, before the first's read comes, is sent against the first's read, refused as stale (`conflict`), and planned again on the next read, so nothing is written twice and the conflict isn't shown;
+- a refused add sends no remove (the add-then-remove pair);
+- the remove is sent at the revision the add made.
 
 ### The plan, amended
 
@@ -795,10 +811,11 @@ The study's separate Fix step, with its form, schema, and oracle case, is gone.
 ### Residual risk
 
 - **Fix looks like dimensions, not an anchor.** Visible, and reversible by adding a form.
-- **The add-then-remove pair isn't atomic.** If the app dies between the two, the sketch keeps both, and the `on` reads redundant. That's loud (`constraints_redundant`) and harmless.
+- **The add-then-remove pair isn't atomic.** If the app dies between the two, the sketch keeps both, and the `on` reads redundant. That's loud (`constraints_redundant`) and harmless, and the same click again removes the `on`.
 - **I read the gate as taking a `tangent_on` beside an `on` of the same point and curve** (its tangent rule pairs an edge `tangent` with either). I didn't run it; test 7 proves it. If it's refused, the order becomes remove, then add, with an undo to the revision when the add is refused.
 - **Which member moves** when a relation is added is the solver's choice, and isn't promised.
 - **A pin on an unsolved sketch** is taken at the coordinates the read shows. The same is true of Smart Dimension.
+- **A `tangent_on` beside a `midpoint`** of the same point and line reads redundant. Loud and harmless, and the same whichever was added first. The gate's tangent rule doesn't yet count a `midpoint` hold as it counts an `on`'s; it should, by the same list, in a PR of its own.
 
 ## Method
 

@@ -7,7 +7,8 @@
 //! `sketch` read; it draws the tool's [`Preview`], says its [`Message`], and sends its
 //! [`Outcome::add`] as a `sketch_add` (`NewMembers::of`). Smart Dimension
 //! ([`SmartDimension`]) sits beside them, from picks, a right-click, and the Modify box to the
-//! `sketch_add` of one dimension, and the offer SD7 makes when it over-defines ([`offer`]).
+//! `sketch_add` of one dimension, and the offer SD7 makes when it over-defines ([`offer`]);
+//! and the ten constraint tools ([`relate`]), from a selection in pick order to one edit.
 //! Behaviour is SolidWorks', as the design takes it (docs/ux/solidworks.md, §4):
 //!
 //! - **Modes.** The first press decides: a press, a drag, and a release draws one entity;
@@ -83,6 +84,7 @@ mod infer;
 mod line;
 mod point;
 mod rectangle;
+mod relate;
 #[cfg(test)]
 mod tests;
 
@@ -99,9 +101,15 @@ pub use dimension::{
 };
 pub use implied::implied_by;
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
+pub use relate::{NOTHING_SELECTED, RelateEdit, Related, RelationTool, relate};
 
 /// A point or a vector in the sketch's plane, `[x, y]`, in millimetres.
 pub type Xy = [f64; 2];
+
+/// How many members a constraint tool's words name before counting the rest ("lines
+/// ne000001, ne000002, ne000003, and 47 more"), as an error's elements read, so a toast for
+/// a large selection stays short.
+pub(crate) const NAMED: usize = 3;
 
 /// Which tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,6 +284,19 @@ pub enum Message {
     /// Smart Dimension: the last dimension's offer (SD7) is open: no other is placed until
     /// it's answered.
     OfferOpen,
+    /// A constraint tool: every constraint the click would write is there already (C6), as
+    /// the phrase says ("line ne000002 is already vertical").
+    AllThere(String),
+    /// A constraint tool: this many of the constraints the click would write were there
+    /// already, and left out (C6).
+    SomeThere(usize),
+    /// A constraint tool: the relation is there already, as `said` says, and the `on`s it
+    /// makes redundant, `removed`, were removed (C5 and C6 as amended, #478): the first
+    /// [`NAMED`] named, the rest counted.
+    RedundantRemoved {
+        said: String,
+        removed: Vec<ElementId>,
+    },
 }
 
 impl Message {
@@ -315,6 +336,28 @@ impl Message {
                 "the last dimension is still solving: place this one once it has".to_owned()
             }
             Message::OfferOpen => "the last dimension over-defines the sketch: make it driven, leave it, or cancel it before placing another".to_owned(),
+            Message::AllThere(said) => format!("{said}: nothing was added"),
+            Message::SomeThere(1) => {
+                "1 of these constraints was already there: it wasn't added again".to_owned()
+            }
+            Message::SomeThere(n) => {
+                format!("{n} of these constraints were already there: they weren't added again")
+            }
+            Message::RedundantRemoved { said, removed } => {
+                let ids: Vec<String> = removed
+                    .iter()
+                    .take(NAMED)
+                    .map(ElementId::to_string)
+                    .collect();
+                let (noun, was) = match removed.len() {
+                    1 => ("constraint", "was"),
+                    _ => ("constraints", "were"),
+                };
+                format!(
+                    "{said}: nothing was added, and {noun} {}, which that makes redundant, {was} removed",
+                    crate::listed_first(&ids, removed.len())
+                )
+            }
         }
     }
 }
@@ -705,4 +748,37 @@ fn not_finite(what: &str) -> Error {
         format!("a sketch tool made {what} that isn't a finite number"),
     )
     .with_suggestion(crate::worker::SILICO_BUG)
+}
+
+/// Which of the axes a pick may take, the x axis and the y axis: both, for Smart Dimension;
+/// for sketch mode's selection, each only where the viewport draws it within the pick's
+/// points of the click on the screen, which the core can't see (in a view oblique to the
+/// plane, the pick's millimetres reach farther one way than its points do).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Axes {
+    pub x: bool,
+    pub y: bool,
+}
+
+impl Axes {
+    /// Either axis may be picked.
+    pub const BOTH: Axes = Axes { x: true, y: true };
+}
+
+/// What a click at `at` picks of `sketch`, within `tolerance` millimetres, as Smart Dimension
+/// picks: a point of the sketch, or the origin where it's nearer (the point on a tie, and
+/// a point at the origin's place always); else the nearest curve, a line or an arc where
+/// it's drawn, a circle all round, an axis `axes` allows anywhere along it but where a line
+/// of the sketch lies along it (the sketch's own curve on a tie); else nothing. An axis
+/// `axes` doesn't allow drops out, so the nearest of the rest is taken. Sketch mode's
+/// selection hits the origin and the axes by it (the constraint tools' C9), so the two rank
+/// them by one rule. A tolerance that isn't a finite number above 0 is taken as 0, as Smart
+/// Dimension takes one; a place that isn't finite picks nothing.
+pub fn pick(sketch: &Sketch, at: Xy, tolerance: f64, axes: Axes) -> Option<Reference> {
+    infer::pick_in(
+        &infer::View::of(sketch, &Members::default()),
+        tolerance,
+        at,
+        axes,
+    )
 }

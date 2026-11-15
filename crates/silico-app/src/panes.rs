@@ -399,8 +399,9 @@ impl<P: Clients + 'static> Panes<'_, P> {
 
     /// The open dialog, docked in the property panel (open item 27): drawn, what's changed
     /// in it sent, and its OK or Cancel taken, or the key pressed: Enter is OK, if OK is on;
-    /// Esc goes to the first of these there is (section 3), a dialog's preview rebuilding,
-    /// which it stops, the dialog left open, or the dialog, which it cancels
+    /// Esc goes to the first of these there is (section 3): an arrow's press held in the
+    /// canvas, which it ends, a drag where it began; a dialog's preview rebuilding, which it
+    /// stops; the dialog left open by either; or the dialog, which it cancels
     /// ([`Tab::dialog_escape`]).
     fn dialog(&mut self, ui: &mut Ui) {
         let sessions = self.sessions;
@@ -952,7 +953,8 @@ fn measure_rows(
         }
     }
     if let Some(position) = entry.position {
-        let [x, y, z] = position.map(|length| properties::trimmed(length.nm().into(), NM_PER_MM));
+        let [x, y, z] =
+            position.map(|length| properties::trimmed(length.nm().into(), properties::NM_PER_MM));
         properties::text_row(ui, "Position", value(&format!("({x}, {y}, {z}) mm")));
     }
 }
@@ -1037,12 +1039,14 @@ fn angle_words(angle: silico_core::document::Angle) -> String {
 
 /// `length` as the selection view writes it: in mm, to two decimals (`fmtF`).
 fn mm(length: Length) -> String {
-    format!("{} mm", properties::fixed(length.nm().into(), NM_PER_MM))
+    format!(
+        "{} mm",
+        properties::fixed(length.nm().into(), properties::NM_PER_MM)
+    )
 }
 
-/// A length's nanometres in a mm, an area's millionths in a mm², and an angle's nanodegrees
-/// in a degree and in half a turn: the steps the core gives each in.
-const NM_PER_MM: i128 = 1_000_000;
+/// An area's millionths in a mm², and an angle's nanodegrees in a degree and in half a turn:
+/// the steps the core gives each in (a length's, [`properties::NM_PER_MM`]).
 const MILLIONTHS: i128 = 1_000_000;
 const NDEG_PER_DEGREE: i128 = 1_000_000_000;
 const NDEG_HALF_TURN: i64 = 180_000_000_000;
