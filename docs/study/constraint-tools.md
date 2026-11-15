@@ -815,7 +815,7 @@ The study's separate Fix step, with its form, schema, and oracle case, is gone.
 - **I read the gate as taking a `tangent_on` beside an `on` of the same point and curve** (its tangent rule pairs an edge `tangent` with either). I didn't run it; test 7 proves it. If it's refused, the order becomes remove, then add, with an undo to the revision when the add is refused.
 - **Which member moves** when a relation is added is the solver's choice, and isn't promised.
 - **A pin on an unsolved sketch** is taken at the coordinates the read shows. The same is true of Smart Dimension.
-- **A `tangent_on` beside a `midpoint`** of the same point and line reads redundant. Loud and harmless, and the same whichever was added first. The gate's tangent rule counts a `midpoint` hold as it counts an `on`'s, by the same list (`Form::hold`), since a change of its own after #478: an edge `tangent` beside the midpoint is refused at whichever of the two comes later, and its suggestion is this `tangent_on`, keeping the midpoint.
+- **A `tangent_on` beside a `midpoint`** of the same point and line reads redundant. Loud and harmless, and the same whichever was added first. The gate's tangent rule counts a `midpoint` hold as it counts an `on`'s, by the same list (`Form::hold`), since #498: an edge `tangent` beside the midpoint is refused at whichever of the two comes later, and its suggestion is this `tangent_on`, keeping the midpoint.
 
 ## Method
 
