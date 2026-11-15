@@ -11152,6 +11152,26 @@ mod tests {
         holding.store(false, Ordering::SeqCst);
         hold.release();
         published_quietly(&mut tab, &sessions);
+        // What the last two cases read, each after its model is published, so later under
+        // load, waited for: the block's elements named (a card's name, and a candidate, are
+        // read among them: till then each is "not answered yet"), and the timeline's read
+        // answered (the sentence names the feature as the timeline lists it, `Tab::named`,
+        // by its ID till then).
+        let block = FeatureId::new("k7f2qx3m").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !(matches!(
+            tab.selection.read_on("k7f2qx3m.box.Edge1", &block),
+            crate::selection::OnBase::Found(Ok(_))
+        ) && tab.entry("f0000001").map(|entry| entry.name.as_str()) == Some("Round"))
+        {
+            tab.poll(&sessions);
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the block's elements never named, or the timeline never listed Round"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(tab.quiet());
         // A name the model finds (Edge1, at its own place): never written over.
         let now = tab.revision;
         refused_as_stale(
