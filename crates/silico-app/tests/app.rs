@@ -46600,6 +46600,59 @@ fn a_drags_release_in_the_frame_another_tab_is_shown_is_saved_as_its_field_shows
 }
 
 #[test]
+fn a_drag_back_to_its_press_cancelled_as_another_tab_is_shown_sends_the_value_its_field_shows() {
+    // #491, the Cancel twin of the release above: pressed at 10, dragged to 15 (answered), 16
+    // (sent, its preview held) and 17, then back to 10, held back behind 16's preview. Another
+    // file's open is answered and a frame drawn with the button still held: the plate's tab
+    // hidden, its stream ends in a Cancel (the viewport's `end_unshown`), whose restore of 10
+    // changes no text, so the arrows ask nothing to be sent; only the frame's own send of the
+    // value held back sends 10. The session then holds 10, not 16: the file's own value, so
+    // the tab has nothing unsaved and closes without asking, the file as it was.
+    let f = fixture();
+    let (mut h, c, hold, sent) = held_back_at_17(&f);
+    let path = f.dir.path().join("plate.silico");
+    move_to(&mut h, up(c, 56.0));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("10")
+    );
+    assert_eq!(h.state().tabs()[0].edits.sent, sent + 1, "10 held back");
+    let woken = h.state().wakes();
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    let deadline = Instant::now() + WAIT;
+    while h.state().wakes() == woken {
+        assert!(Instant::now() < deadline, "the open never answered");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs().len(),
+        2,
+        "the open wasn't taken in that frame"
+    );
+    assert_eq!(dialog_length(&h.state().tabs()[0]).as_deref(), Some("10"));
+    hold.release();
+    step_until(&mut h, "10 sent and answered", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.edits.sent == sent + 2 && tab.edits.idle()
+    });
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
+    assert!(!h.state().tabs()[0].unsaved());
+    left_up_at(&mut h, up(c, 56.0));
+    h.get_by_label("Close plate.silico").click_accesskit();
+    step_until(&mut h, "the plate's tab closed", |h| {
+        h.state().tabs().len() == 1
+    });
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(r#""length": 10,"#), "saved: {saved}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn ok_mid_drag_keeps_the_value_its_field_shows_when_it_was_held_back() {
     // #480's review, T2-1: Enter with 17 held back behind 16's preview.
     let f = fixture();
