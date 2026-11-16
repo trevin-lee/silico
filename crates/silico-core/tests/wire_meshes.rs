@@ -213,6 +213,40 @@ fn the_designs_request_is_read_exactly_written_back_and_holds_to_its_schema() {
 }
 
 #[test]
+fn a_request_from_each_cube_edge_is_read_as_that_view_and_holds_to_its_schema() {
+    use silico_core::views::NamedView;
+    let schema = schema_of("request");
+    for (name, view) in [
+        ("top_front", NamedView::TopFront),
+        ("top_back", NamedView::TopBack),
+        ("top_left", NamedView::TopLeft),
+        ("top_right", NamedView::TopRight),
+        ("bottom_front", NamedView::BottomFront),
+        ("bottom_back", NamedView::BottomBack),
+        ("bottom_left", NamedView::BottomLeft),
+        ("bottom_right", NamedView::BottomRight),
+        ("front_left", NamedView::FrontLeft),
+        ("front_right", NamedView::FrontRight),
+        ("back_left", NamedView::BackLeft),
+        ("back_right", NamedView::BackRight),
+    ] {
+        let text = format!(
+            "{{\n  \"session\": \"s1\",\n  \"model\": \"current\",\n  \"view\": \"{name}\",\n  \"camera\": null,\n  \"width\": 100,\n  \"height\": 100,\n  \"features\": null,\n  \"held\": []\n}}\n"
+        );
+        let request = MeshesRequest::read(&parsed(&text)).unwrap();
+        assert_eq!(request.meshes.view, Some(view), "{name}");
+        assert_eq!(written(&request), text, "{name}");
+        holds(&schema, &text, name);
+    }
+    // Its faces the other way round, a word no view is: refused, naming `view`.
+    let text = r#"{"session": "s1", "model": "current", "view": "front_top", "camera": null, "width": 100, "height": 100, "features": null, "held": []}"#;
+    let refused = MeshesRequest::read(&parsed(text)).unwrap_err();
+    let fields: Vec<Option<&str>> = refused.errors().iter().map(|e| e.parameter()).collect();
+    assert_eq!(fields, [Some("view")]);
+    assert_eq!(refused.errors()[0].candidates().len(), 26);
+}
+
+#[test]
 fn a_request_naming_features_and_held_meshes_is_read_as_it_says_and_written_back() {
     let key = "00ff".repeat(16);
     let text = format!(
