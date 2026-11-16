@@ -738,9 +738,41 @@ pub fn take(ui: &mut Ui, command: Command) -> bool {
 /// Whether `command` was pressed this frame by any of its chords, as [`take`] would find
 /// it, taking nothing.
 pub fn pressed(ctx: &egui::Context, command: Command) -> bool {
+    ctx.input(|input| first_press(&input.events, command).is_some())
+}
+
+/// Whether `command`, pressed this frame, came after the frame's first release of the left
+/// button among its events, as the window gave them: what that release ends (a line's
+/// gesture, a button's click) is done by then, so the command is to act once the canvas and
+/// the window have had it; one pressed before it, or in a frame with none, acts as it's
+/// taken. Read before [`take`] takes it: taking a key moves no other event.
+pub fn after_release(ctx: &egui::Context, command: Command) -> bool {
     ctx.input(|input| {
-        command.entry().keys.iter().any(|chord| {
-            input.events.iter().any(|event| match (chord, event) {
+        let release = input.events.iter().position(|event| {
+            matches!(
+                event,
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    ..
+                }
+            )
+        });
+        release.is_some_and(|release| {
+            first_press(&input.events, command).is_some_and(|press| press > release)
+        })
+    })
+}
+
+/// Where among `events` the first of `command`'s presses is, by any of its chords, as
+/// [`take`] would find it.
+fn first_press(events: &[egui::Event], command: Command) -> Option<usize> {
+    events.iter().position(|event| {
+        command
+            .entry()
+            .keys
+            .iter()
+            .any(|chord| match (chord, event) {
                 (
                     Chord::Key(shortcut),
                     egui::Event::Key {
@@ -764,7 +796,6 @@ pub fn pressed(ctx: &egui::Context, command: Command) -> bool {
                 ) => *key == shortcut.logical_key && *modifiers == shortcut.modifiers,
                 _ => false,
             })
-        })
     })
 }
 
