@@ -133,7 +133,7 @@ pub(crate) fn keys(ui: &mut Ui, search: &mut Search, can: &dyn Fn(Command) -> Ca
     });
     let listed = listed(&search.query);
     let last = listed.len().saturating_sub(1);
-    let mut highlight = search.highlight(listed.len());
+    let mut highlight = search.highlight;
     for _ in 0..down {
         highlight = (highlight + 1).min(last);
     }

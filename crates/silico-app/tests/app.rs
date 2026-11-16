@@ -48223,6 +48223,10 @@ fn the_arrows_move_the_highlight_held_to_the_list_and_typing_puts_it_back_on_the
         step(&mut h);
     }
     assert_eq!(search_lit(&h).as_deref(), Some("Save As… File"));
+    // Held there, so ↑ goes straight back to the first.
+    h.key_press(Key::ArrowUp);
+    step(&mut h);
+    assert_eq!(search_lit(&h).as_deref(), Some("Save File"));
     // The field kept the keyboard throughout.
     assert!(search_focused(&h));
     assert_eq!(never_waits::waits(), 0);
