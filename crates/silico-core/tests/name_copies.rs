@@ -1139,3 +1139,67 @@ fn a_tools_copy_of_a_sweeps_name_from_above_or_below_reads_and_of_a_cuts_is_refu
         );
     }
 }
+
+#[test]
+fn a_tools_copy_of_a_pad_on_a_cut_leaves_out_the_cuts_names() {
+    // The sweep arm of the rule (`Copied::wraps`): a pad on a cut keeps the cut's names
+    // in its last step's map, an operation's that isn't a sweep's, which no tool's copy may
+    // wrap (the parser refuses `(C1 cccccccc.cut.Face1)`); the pad's own are wrapped.
+    let base = ElementMap::by_number(
+        id("cccccccc"),
+        OpCode::Cut,
+        ElementCounts {
+            faces: 6,
+            edges: 0,
+            vertices: 0,
+            ..ElementCounts::default()
+        },
+    );
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+            InputHistory {
+                faces: vec![kept(7), kept(8)],
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+        ],
+        result: ElementCounts {
+            faces: 8,
+            edges: 0,
+            vertices: 0,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let last = ElementMap::operation(id("p0000001"), OpCode::Pad, &[&base, &pad()], &history);
+    assert_eq!(
+        last.name(face(1)).unwrap().to_string(),
+        "cccccccc.cut.Face1"
+    );
+    let one = Instance::new(&[1]).unwrap();
+    let copies = ElementMap::copy(
+        &last,
+        id("t0000001"),
+        OpCode::LinearPattern,
+        Copied::Tool,
+        &one,
+    )
+    .unwrap();
+    for n in 1..=6 {
+        assert_eq!(copies.name(face(n)), None, "Face{n}");
+    }
+    assert_eq!(
+        copies.name(face(8)).unwrap().to_string(),
+        "t0000001.linear_pattern.Face(C1 p0000001.pad.Face2)"
+    );
+}

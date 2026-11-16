@@ -276,6 +276,19 @@ impl Copied {
             Copied::Solid => 'S',
         }
     }
+
+    /// Whether a copy of this letter may wrap a name whose type word is `made` (N10): a
+    /// tool's copy (`C`) only a sweep's, a tool being always a sweep step; a solid's (`S`)
+    /// anything but a sketch's, whose elements are in no solid. The one rule the parser
+    /// reads names by and [`ElementMap::copy`] builds them by, so a map never holds a copy
+    /// a reference to it can't store.
+    pub fn wraps(self, made: TypeWord) -> bool {
+        match (self, made) {
+            (Copied::Tool, TypeWord::Operation(op)) => op.sweeps(),
+            (Copied::Tool, TypeWord::Primitive(_)) => false,
+            (Copied::Solid, made) => made != TypeWord::Operation(OpCode::Sketch),
+        }
+    }
 }
 
 /// Where a copy was placed (N10): its steps from the original along each of its feature's

@@ -518,19 +518,14 @@ impl Reader<'_> {
         let end = self.at;
         // Where the inner name writes its type, past its feature's ID and its `.`.
         self.at = inner_at + crate::document::ID_LENGTH + 1;
-        match (copied, of.type_word()) {
-            (Copied::Tool, TypeWord::Operation(made)) if made.sweeps() => {}
-            (Copied::Tool, made) => {
-                return Err(self.error(&format!(
+        let made = of.type_word();
+        if !copied.wraps(made) {
+            return Err(self.error(&match copied {
+                Copied::Tool => format!(
                     "a copy marked `C` is of a tool's element, a pad's, pocket's, revolve's, or groove's, and a {made}'s isn't one: a copy of the base solid's element is marked `S`"
-                )));
-            }
-            (Copied::Solid, TypeWord::Operation(OpCode::Sketch)) => {
-                return Err(self.error(
-                    "a copy marked `S` is of the base solid's element, and a sketch's elements are in no solid",
-                ));
-            }
-            (Copied::Solid, _) => {}
+                ),
+                Copied::Solid => "a copy marked `S` is of the base solid's element, and a sketch's elements are in no solid".to_owned(),
+            }));
         }
         self.at = end;
         self.expect(")")?;
