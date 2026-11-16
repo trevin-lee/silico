@@ -44817,11 +44817,12 @@ fn look_at_before_the_sketchs_first_read_says_so_and_the_view_stays() {
     let mut h = f.app();
     step(&mut h);
     new_part(&mut h);
+    // The toolbar is there once the tab is: queried, not got, so a frame still showing the
+    // start page waits rather than failing.
     step_until(&mut h, "Create Sketch on", |h| {
-        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Create Sketch")
-            .accesskit_node()
-            .is_disabled()
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
     });
     f.sketches.hold();
     create_sketch(&mut h, "XY plane");
@@ -47691,11 +47692,12 @@ fn create_sketchs_planes_show_all_three_origin_planes_the_one_pointed_at_lit() {
     use eframe::egui::Key;
     let f = fixture();
     let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    // The toolbar is there once the tab is: queried, not got, so a frame still showing the
+    // start page waits rather than failing.
     step_until(&mut h, "Create Sketch on", |h| {
-        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Create Sketch")
-            .accesskit_node()
-            .is_disabled()
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
     });
     click_browser_eye(&mut h, "Show XY");
     planes_become(&mut h, &record, &[("XY", false)]);
@@ -47904,11 +47906,12 @@ fn the_plane_whose_item_has_the_keys_focus_is_lit() {
     use eframe::egui::Key;
     let f = fixture();
     let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    // The toolbar is there once the tab is: queried, not got, so a frame still showing the
+    // start page waits rather than failing.
     step_until(&mut h, "Create Sketch on", |h| {
-        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Create Sketch")
-            .accesskit_node()
-            .is_disabled()
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
     });
     h.get_by_role_and_label(Role::Toolbar, "CREATE")
         .get_by_label("Create Sketch")
