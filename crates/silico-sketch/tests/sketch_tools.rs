@@ -24,9 +24,9 @@ use silico_core::fake::FakeKernel;
 use silico_core::sketch::{SketchSolver, SketchWorker};
 use silico_core::sketch_states::{ConstraintState, SketchState};
 use silico_core::sketch_tools::{
-    Context, DimensionEvent, Event, Modifiers, NewIds, Offer, OfferChoice, OfferRequest, Placement,
-    PlacementKind, RelateEdit, RelationTool, SketchTool, SmartDimension, ToolKind, offer,
-    read_typed, relate,
+    Axes, Context, DimensionEvent, Event, Modifiers, NewIds, Offer, OfferChoice, OfferRequest,
+    Placement, PlacementKind, RelateEdit, RelationTool, SketchTool, SmartDimension, ToolKind,
+    offer, read_typed, relate,
 };
 use tempfile::TempDir;
 
@@ -168,6 +168,7 @@ impl Fixture {
             automatic_relations: true,
             construction: false,
             states: &read.states,
+            axes: Axes::BOTH,
         };
         let outcome = self.tool.handle(&context, &mut self.ids, event, self.keys);
         assert_eq!(outcome.message, None, "{event:?}");
@@ -586,6 +587,7 @@ impl Fixture {
             automatic_relations: true,
             construction: false,
             states: &read.states,
+            axes: Axes::BOTH,
         };
         let ids: &mut dyn NewIds = if self.sort_first {
             &mut self.first
@@ -865,6 +867,7 @@ fn each_equal_horizontal_distance_after_the_first_is_offered() {
             automatic_relations: true,
             construction: false,
             states: &read.states,
+            axes: Axes::BOTH,
         };
         tool.settle(&context);
         assert_eq!(tool.busy(), n > 0, "{n}");

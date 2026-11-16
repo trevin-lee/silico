@@ -336,6 +336,11 @@ pub struct SketchMode {
     /// The pick tolerance, in millimetres, at the last frame's view's middle: what Smart
     /// Dimension is given with a read or the Modify box, between pointer events.
     tolerance: f64,
+    /// Which axes the pointer may take, as the last pointer event on the plane given to a
+    /// tool found them there ([`axes_at`]): what a tool is given with a read, the Modify
+    /// box, or a key, between pointer events, so Smart Dimension's hover worked out again
+    /// on a read takes no axis the pointer couldn't. Both before any.
+    axes: Axes,
 }
 
 impl SketchMode {
@@ -370,6 +375,7 @@ impl SketchMode {
             asks: Vec::new(),
             modify_screen: None,
             tolerance: 0.0,
+            axes: Axes::BOTH,
             menu_at: None,
             panels: None,
         }
@@ -438,6 +444,7 @@ impl SketchMode {
             self.sketch.as_ref(),
             &self.settings,
             self.tolerance,
+            self.axes,
         ) {
             self.tools.settle(&input);
         }
@@ -650,13 +657,7 @@ impl SketchMode {
         dragged: Option<&Drag>,
     ) -> Option<SketchPick> {
         let read = dragged.and_then(Drag::shown).or_else(|| self.drawable())?;
-        let scale = scale_at(input.to_plane, at)?;
-        let on = (input.to_plane)(at)?;
-        let near = |along| axis_near(input.project, along, on, at, scale);
-        let axes = Axes {
-            x: near([1.0, 0.0]),
-            y: near([0.0, 1.0]),
-        };
+        let (on, scale, axes) = axes_at(input, at)?;
         hit(read, on, scale.mm(SKETCH_PICK_TOLERANCE), scale, axes)
     }
 
@@ -739,8 +740,10 @@ impl SketchMode {
     }
 
     /// The frame's left-button events given to the tool on, in the sketch's millimetres
-    /// (through `to_plane`), each with the pick tolerance where it is; then the pointer, if
-    /// it has moved since, as a hover, with the keys `held`. A press off the plane is none
+    /// (through `to_plane`), each with the pick tolerance where it is and the axes it may
+    /// take there, as the selection finds them ([`axes_at`], kept for the events with no
+    /// place on the plane and for a read or a key between them); then the pointer, if it
+    /// has moved since, as a hover, with the keys `held`. A press off the plane is none
     /// of the tool's; a release off it, or a press cancelled, ends the gesture with nothing
     /// added; a double-click off it ends a chain. With no read of the sketch to work
     /// against, only a release or a cancel reaches the tool, ending its gesture.
@@ -750,6 +753,7 @@ impl SketchMode {
         let tolerance = |at: Pos2| {
             scale_at(input.to_plane, at).map_or(0.0, |scale| scale.mm(SKETCH_PICK_TOLERANCE))
         };
+        let axes = |at: Pos2, kept: Axes| axes_at(input, at).map_or(kept, |(.., axes)| axes);
         for event in input.events {
             // A right-click is Smart Dimension's lock; with any other tool, the menu's.
             if event.action == PointerAction::RightClick
@@ -758,11 +762,13 @@ impl SketchMode {
                 self.menu_at = Some(event.at);
                 continue;
             }
+            self.axes = axes(event.at, self.axes);
             let Some(context) = tool_input(
                 &self.read,
                 self.sketch.as_ref(),
                 &self.settings,
                 tolerance(event.at),
+                self.axes,
             ) else {
                 // No read to work against (none yet, or a failed one): a press's end still
                 // ends it, so none outlives its release.
@@ -804,11 +810,13 @@ impl SketchMode {
         if self.tools.choice().is_none() || self.tools.last() == Some(at) {
             return;
         }
+        self.axes = axes(pointer, self.axes);
         if let Some(context) = tool_input(
             &self.read,
             self.sketch.as_ref(),
             &self.settings,
             tolerance(pointer),
+            self.axes,
         ) {
             self.tools.handle(&context, Event::Move(at), held);
         }
@@ -1097,6 +1105,7 @@ impl SketchMode {
             self.sketch.as_ref(),
             &self.settings,
             self.tolerance,
+            self.axes,
         ) else {
             return;
         };
@@ -1146,14 +1155,26 @@ impl SketchMode {
     /// Esc, with a tool on: the gesture ended and the tool left, the tool told if the sketch
     /// is read (section 9, *Line*). Whether a tool was on to take it.
     pub fn escape_tool(&mut self) -> bool {
-        let input = tool_input(&self.read, self.sketch.as_ref(), &self.settings, 0.0);
+        let input = tool_input(
+            &self.read,
+            self.sketch.as_ref(),
+            &self.settings,
+            0.0,
+            self.axes,
+        );
         self.tools.escape(input.as_ref())
     }
 
     /// Enter, or the right-click menu's *End chain* (`event`), given to the tool on: a
     /// chain ended, the tool kept. Nothing before the sketch is read.
     pub fn end_chain(&mut self, event: Event) {
-        if let Some(input) = tool_input(&self.read, self.sketch.as_ref(), &self.settings, 0.0) {
+        if let Some(input) = tool_input(
+            &self.read,
+            self.sketch.as_ref(),
+            &self.settings,
+            0.0,
+            self.axes,
+        ) {
             self.tools.handle(&input, event, Modifiers::default());
         }
     }
@@ -1192,12 +1213,14 @@ impl SketchMode {
 }
 
 /// What the tools work against: the newest read, if it read the sketch `sketch` of a model
-/// it names; the pick `tolerance`, in millimetres; and the palette's settings.
+/// it names; the pick `tolerance`, in millimetres, and the `axes` the pointer may take; and
+/// the palette's settings.
 fn tool_input<'a>(
     read: &'a Option<Read>,
     sketch: Option<&'a FeatureId>,
     settings: &Settings,
     tolerance: f64,
+    axes: Axes,
 ) -> Option<Input<'a>> {
     let read = read.as_ref()?;
     let revision = read.model?;
@@ -1208,6 +1231,7 @@ fn tool_input<'a>(
         sketch,
         revision,
         tolerance,
+        axes,
         automatic_relations: settings.automatic_relations,
         construction: settings.construction,
         trim: settings.trim,
@@ -1279,6 +1303,22 @@ fn axis_near(
         off.length()
     };
     across <= SKETCH_PICK_TOLERANCE
+}
+
+/// Where the screen's point `at` is on the plane, the millimetres a point there
+/// ([`scale_at`]), and which axes a pick there may take: each only where the view draws it
+/// within the pick tolerance of `at` on the screen ([`axis_near`]). Sketch mode's selection
+/// and its tools work it out alike, so for the same pointer they allow the same axes. None
+/// where `at`, or a point's step from it, misses the plane.
+fn axes_at(input: &FrameInput<'_>, at: Pos2) -> Option<([f64; 2], Scale, Axes)> {
+    let scale = scale_at(input.to_plane, at)?;
+    let on = (input.to_plane)(at)?;
+    let near = |along| axis_near(input.project, along, on, at, scale);
+    let axes = Axes {
+        x: near([1.0, 0.0]),
+        y: near([0.0, 1.0]),
+    };
+    Some((on, scale, axes))
 }
 
 /// Millimetres per screen point on the plane at `at`: the mean of how far one point across
