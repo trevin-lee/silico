@@ -953,7 +953,7 @@ pub fn meshes_settled_in<P: AppKernel>(h: &mut AppUi<P>, tab: usize) {
 pub const PLATE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Plate", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}, {"id": "pa000004", "x": 0, "y": 20, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []},
     {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}
@@ -1414,7 +1414,7 @@ pub fn failing_kernel(kernel: &FakeKernel) -> Arc<AtomicBool> {
 pub const EXAMPLE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -1431,7 +1431,7 @@ pub const EXAMPLE: &str = r#"{
 pub const SKETCHED_EXAMPLE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -1449,7 +1449,7 @@ pub const SKETCHED_EXAMPLE: &str = r#"{
 pub const TWO_BOXES: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Small", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50},
     {"id": "a91cw0de", "type": "box", "v": 1, "name": "Large", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
@@ -1461,7 +1461,7 @@ pub const TWO_BOXES: &str = r#"{
 pub const A_BOX: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
   ]

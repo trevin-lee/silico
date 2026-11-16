@@ -24,7 +24,7 @@ const STATE_BYTES: usize = 24 + 8 + 16 + 4 + 122;
 /// from M2.1's layout.
 fn canonical(length: u32) -> String {
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n    {{\"id\": \"k7f2qx3m\", \"type\": \"box\", \"v\": 1, \"name\": \"Block\", \"position\": [0, 0, 0], \"length\": {length}, \"width\": 20, \"height\": 10}}\n  ]\n}}\n"
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n    {{\"id\": \"k7f2qx3m\", \"type\": \"box\", \"v\": 1, \"name\": \"Block\", \"position\": [0, 0, 0], \"length\": {length}, \"width\": 20, \"height\": 10}}\n  ]\n}}\n"
     )
 }
 

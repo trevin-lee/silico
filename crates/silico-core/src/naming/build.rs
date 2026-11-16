@@ -28,7 +28,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::{
-    ElementMap, LastOp, Name, OpCode, Place, Raw, Relation, Side, Source, Stage, TypeWord, freecad,
+    Copied, ElementMap, Instance, LastOp, Name, OpCode, Place, Raw, Relation, Side, Source, Stage,
+    TypeWord, freecad,
 };
 use crate::document::{ElementId, FeatureId};
 use crate::kernel::{ElementKind, ElementRef, History};
@@ -187,6 +188,62 @@ impl ElementMap {
         builder.by_number(history);
         builder.settle(&[]);
         builder.map
+    }
+
+    /// The map of a copy of `of`'s solid, placed at `instance` by `feature`'s `operation`, a
+    /// pattern or mirror (N10): each element numbered as `of` numbers it (a copy's elements
+    /// are the tool's: the worker numbers copy k's as the tool's, `Op::Copies`), each of its
+    /// names wrapped once, `feature.type.Kind(C<instance> <name>)` for a feature's tool, or
+    /// `(S<instance> <name>)` for the base solid, as `copied` says; the step's
+    /// [`ElementMap::operation`] then names its result from it as from any input. A copy of
+    /// an unstable name is unstable.
+    ///
+    /// None where no step makes such a copy, as the parser refuses its names: an operation
+    /// that copies nothing; an instance of more offsets than the operation has directions;
+    /// a tool's copy (`C`) of a map that isn't a sweep step's, the only tool a pattern
+    /// copies; a solid's (`S`) of a sketch's faces, which are in no solid.
+    ///
+    /// A copied name past the bounds ([`MOST_DEPTH`], [`MOST_WEIGHT`]) is left out, never
+    /// numbered here: by the tool's number every copy of the element would share one name.
+    /// An element left with none is the step's to name by its number in its result.
+    pub fn copy(
+        of: &ElementMap,
+        feature: FeatureId,
+        operation: OpCode,
+        copied: Copied,
+        instance: &Instance,
+    ) -> Option<ElementMap> {
+        let directions = operation.directions()?;
+        if instance.offsets().len() > directions {
+            return None;
+        }
+        let copies = match (copied, of.made()) {
+            (Copied::Tool, TypeWord::Operation(made)) => made.sweeps(),
+            (Copied::Tool, TypeWord::Primitive(_)) => false,
+            (Copied::Solid, made) => made != TypeWord::Operation(OpCode::Sketch),
+        };
+        if !copies {
+            return None;
+        }
+        let mut builder = Builder::new(feature, operation, Stage::Last);
+        for (element, names) in &of.names {
+            for name in names {
+                let copy = Name::Copy {
+                    feature: builder.map.feature.clone(),
+                    operation,
+                    kind: element.kind,
+                    copied,
+                    instance: instance.clone(),
+                    of: Arc::clone(name),
+                };
+                let (depth, weight) = builder.parts_size(&copy);
+                if depth <= MOST_DEPTH && weight <= MOST_WEIGHT {
+                    builder.set(*element, Arc::new(copy));
+                }
+            }
+        }
+        builder.settle(&[of]);
+        Some(builder.map)
     }
 }
 

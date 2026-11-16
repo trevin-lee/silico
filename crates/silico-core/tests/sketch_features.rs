@@ -47,7 +47,7 @@ fn mm(nm: i64) -> Length {
 const EXAMPLE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Outline", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []},
     {
@@ -140,7 +140,7 @@ fn the_designs_example_reads_as_its_values_and_writes_back_byte_for_byte() {
 /// writes it (the feature over lines).
 fn with_feature(lines: &str) -> String {
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n    {}\n  ]\n}}\n",
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n    {}\n  ]\n}}\n",
         lines
     )
 }

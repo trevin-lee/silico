@@ -163,13 +163,45 @@ fn the_document_saved_under_naming_scheme_5_rebuilds_with_every_name_finding_its
         out.contains(r#""ok":true"#) && out.contains(r#""total":0"#),
         "{out}"
     );
+    // Read under scheme 6, a strict superset of 5 (N10), it isn't in canonical form until
+    // one `fmt` writes its `naming` line as 6, the only line that changes (M6.1).
     let canonical = silico(&scratch, &["fmt", "--check"], &file);
     assert_eq!(
         canonical.status.code(),
-        Some(0),
+        Some(1),
         "{}",
         String::from_utf8_lossy(&canonical.stderr)
     );
+    assert_eq!(
+        String::from_utf8_lossy(&canonical.stderr),
+        format!(
+            "{}: not in canonical form; `silico fmt` would rewrite it\n",
+            file.display()
+        )
+    );
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), committed);
+    let line = "\n  \"naming\": 5,\n";
+    assert_eq!(committed.matches(line).count(), 1);
+    let saved = silico(&scratch, &["fmt"], &file);
+    assert_eq!(
+        saved.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&saved.stderr)
+    );
+    // No fingerprint or solve written: every feature rebuilt to the one stored.
+    assert!(
+        saved.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&saved.stderr)
+    );
+    let six = committed.replacen(line, "\n  \"naming\": 6,\n", 1);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), six);
+    let again = silico(&scratch, &["fmt", "--check"], &file);
+    assert_eq!(again.status.code(), Some(0));
+    let rechecked = silico(&scratch, &["check", "--json"], &file);
+    assert_eq!(rechecked.status.code(), Some(0));
+    std::fs::write(&file, &committed).unwrap();
 
     // And the check can fail: a rim named from the block's side at x = 0, which the pin
     // never meets, finds no edge.
@@ -194,14 +226,15 @@ fn a_golden_model_saved_before_naming_was_recorded_is_checked_clean_and_formatte
     // M4.0: a document saved before the header recorded its naming scheme reads as scheme
     // 5. `check` finds nothing wrong with it (as with any layout that isn't canonical);
     // `fmt --check` says `fmt` would rewrite it; `fmt` writes exactly the committed model,
-    // its one new line `"naming": 5`, and nothing else; and then leaves it as it is.
+    // its one new line `"naming": 6` (the scheme every save writes, M6.1), and nothing else;
+    // and then leaves it as it is.
     for model in ["chamfered-box.silico", "plate-with-boss.silico"] {
         let scratch = Scratch::new(&format!(
             "before-naming-{}",
             model.trim_end_matches(".silico")
         ));
         let committed = std::fs::read_to_string(golden().join(model)).unwrap();
-        let line = "  \"naming\": 5,\n";
+        let line = "  \"naming\": 6,\n";
         assert_eq!(committed.matches(line).count(), 1, "{model}");
         let before = committed.replacen(line, "", 1);
         let file = scratch.0.join(model);

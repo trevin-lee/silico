@@ -123,6 +123,26 @@ fn write(name: &Name, out: &mut String) {
             }
             out.push_str(";SKT");
         }
+        // FreeCAD copies the tool's whole map for each copy, its postfix `Data::indexSuffix`
+        // of the copy's place in the transformations, from 1: nothing for the first, `_k`
+        // from the second (`FeatureTransformed.cpp:531`; docs/ports/patterns.md, section
+        // 3), so copy 1 is written as the original is and copy 2 `Face1;_2`. A grid's place
+        // is FreeCAD's flat `i·n₂ + j`, which needs a count no name holds: its offsets are
+        // written as Silico writes them (`_2,1`), so two copies' forms never collide.
+        Name::Copy { instance, of, .. } => {
+            write(of, out);
+            match instance.offsets() {
+                [1] => {}
+                [k] => {
+                    out.push_str(";_");
+                    out.push_str(&k.to_string());
+                }
+                _ => {
+                    out.push_str(";_");
+                    out.push_str(&instance.to_string());
+                }
+            }
+        }
     }
 }
 

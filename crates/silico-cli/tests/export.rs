@@ -19,7 +19,7 @@ use threemf::{model, printable};
 const BOX: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
   ]
@@ -230,7 +230,7 @@ fn the_features_listed_are_written_in_their_order() {
 const SKETCH_AND_BOX: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Line", "plane": "xy",
      "points": [

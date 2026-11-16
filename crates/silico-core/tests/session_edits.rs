@@ -31,7 +31,7 @@ const BLOCK: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1n
 
 /// [`BLOCK`] 41 long, saved: in canonical form, by hand, its fingerprint the new box's:
 /// 41 × 20 × 10 = 8200, area 2(820 + 410 + 200) = 2860, to x = 41.
-const BLOCK_41: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 41,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8200, \"area\": 2860, \"center\": [20.5, 10, 5], \"bbox\": [0, 0, 0, 41, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+const BLOCK_41: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 41,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8200, \"area\": 2860, \"center\": [20.5, 10, 5], \"bbox\": [0, 0, 0, 41, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 /// A block, a lug clear of it, and their fuse, none with a fingerprint.
 const FUSED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}, {"id": "b0000001", "type": "box", "v": 1, "name": "Lug", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10}, {"id": "f0000001", "type": "fuse", "v": 1, "name": "Both", "base": "k7f2qx3m", "tool": "b0000001", "note": "Kept together"}]}"#;
@@ -42,7 +42,7 @@ const FUSED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1n
 const SKETCHED: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Sketch", "plane": "xy", "points": [{"id": "pb000000", "x": 10, "y": 0, "construction": false}, {"id": "pa000000", "x": 0, "y": 0, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "k0000002", "type": "length", "line": "na000000", "value": 10, "driving": true}, {"id": "k0000001", "type": "horizontal", "line": "na000000"}]}]}"#;
 
 /// The design's `replace_text` example: a document of no features, in canonical form.
-const EMPTY: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": []\n}\n";
+const EMPTY: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": []\n}\n";
 
 struct Fixture {
     _dir: TempDir,
@@ -1053,7 +1053,9 @@ fn a_document_saved_before_naming_was_recorded_takes_its_own_text_back() {
         .result
         .unwrap();
     assert!(replaced.changed);
-    assert!(f.text().contains("\"naming\": 5"), "{}", f.text());
+    // Written with the header as every save is: scheme 6, which reads the unrecorded 5's
+    // names as they are (N10).
+    assert!(f.text().contains("\n  \"naming\": 6,\n"), "{}", f.text());
 }
 
 #[test]

@@ -20,7 +20,7 @@ const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const BOX: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 60, "width": 40, "height": 50}
   ]

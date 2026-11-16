@@ -1534,7 +1534,7 @@ fn a_distance_from_a_centre_is_written_whole() {
 const BLOCK: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
   ]

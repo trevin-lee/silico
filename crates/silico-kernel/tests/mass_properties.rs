@@ -18,7 +18,7 @@ const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 const THREE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Box", "position": [0, 0, 0], "length": 10, "width": 20, "height": 30},
     {"id": "cccccccc", "type": "cylinder", "v": 1, "name": "Cylinder", "position": [100, 0, 0], "radius": 2.5, "height": 10},

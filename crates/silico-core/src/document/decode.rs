@@ -18,7 +18,7 @@ use super::sketch::{
     LineSide, MemberPaths, OriginPlane, Plane, Reference, Sketch, SketchArc, SketchCircle,
     SketchConstraint, SketchLine, SketchPoint, TangentSide, member_id,
 };
-use crate::naming::{NAMING_SCHEME_NUMBER, UNRECORDED_NAMING_SCHEME};
+use crate::naming::{NAMING_SCHEME_NUMBER, NAMING_SCHEMES_READ, UNRECORDED_NAMING_SCHEME};
 use crate::{Error, ErrorCode};
 
 /// The reader's tree of `bytes`, or why they aren't a document's JSON.
@@ -315,11 +315,13 @@ fn units(node: Node) -> Result<(), Error> {
 }
 
 /// The naming scheme the document's names were written under (`naming`, M4.0): read as
-/// `silico` is, so it's a whole number, and refused, naming it, unless it's the scheme this
-/// Silico names by, the only one whose names it reads: so no name is read under a scheme
-/// other than the one it was written under. A document without it was saved before the
-/// header recorded it, so its names are [`UNRECORDED_NAMING_SCHEME`]'s (`document_at`, where
-/// the document starts, is where a refusal of that scheme points).
+/// `silico` is, so it's a whole number, and refused, naming it, unless it's one whose names
+/// this Silico reads as they are ([`NAMING_SCHEMES_READ`]: its own, and 5, of which its own
+/// is a strict superset, N10): so no name is read under a scheme that names otherwise than
+/// the one it was written under. A document without it was saved before the header recorded
+/// it, so its names are [`UNRECORDED_NAMING_SCHEME`]'s (`document_at`, where the document
+/// starts, is where a refusal of that scheme points). Either is written back as this
+/// Silico's scheme.
 fn naming(node: Option<Node>, document_at: At) -> Result<NamingScheme, Error> {
     let (scheme, at) = match &node {
         Some(node) => (
@@ -328,7 +330,10 @@ fn naming(node: Option<Node>, document_at: At) -> Result<NamingScheme, Error> {
         ),
         None => (UNRECORDED_NAMING_SCHEME.to_string(), document_at),
     };
-    if scheme == NamingScheme::NUMBER.to_string() {
+    if NAMING_SCHEMES_READ
+        .iter()
+        .any(|read| scheme == read.to_string())
+    {
         return Ok(NamingScheme);
     }
     let said = if node.is_some() {
@@ -345,10 +350,20 @@ fn naming(node: Option<Node>, document_at: At) -> Result<NamingScheme, Error> {
             shown_number(&scheme)
         ),
         format!(
-            "this Silico reads naming scheme {}: open it in the Silico that wrote it",
-            NamingScheme::NUMBER
+            "this Silico reads naming schemes {}: open it in the Silico that wrote it",
+            schemes_read()
         ),
     ))
+}
+
+/// The schemes this Silico reads, as a message lists them: `5 and 6`.
+fn schemes_read() -> String {
+    let words: Vec<String> = NAMING_SCHEMES_READ.iter().map(u32::to_string).collect();
+    match words.split_last() {
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+        None => String::new(),
+    }
 }
 
 fn id(node: Node, feature: Option<&str>, parameter: &str) -> Result<FeatureId, Error> {

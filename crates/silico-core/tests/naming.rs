@@ -1315,14 +1315,25 @@ fn which_operations_keep_an_inputs_outside_is_a_fixed_table() {
     for op in [OpCode::Fillet, OpCode::Chamfer] {
         assert!(op.bites(0), "{op:?}");
     }
-    // M3.6 adds the sweep features and the sketch (design S4): every type word the document
-    // writes.
+    // M3.6 adds the sweep features and the sketch (design S4), and scheme 6 the patterns
+    // and mirror (N10): every type word the document writes.
     let words: Vec<&str> = OpCode::ALL.iter().map(|op| op.word()).collect();
     assert_eq!(
         words,
         [
-            "fuse", "cut", "common", "fillet", "chamfer", "pad", "pocket", "revolve", "groove",
-            "sketch"
+            "fuse",
+            "cut",
+            "common",
+            "fillet",
+            "chamfer",
+            "pad",
+            "pocket",
+            "revolve",
+            "groove",
+            "sketch",
+            "linear_pattern",
+            "polar_pattern",
+            "mirror"
         ]
     );
 }

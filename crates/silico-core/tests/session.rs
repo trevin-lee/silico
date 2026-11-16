@@ -28,7 +28,7 @@ const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"
 const FLAT_BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 0, "width": 20, "height": 10}]}"#;
 
 /// An empty document in canonical form, as the design's `text` example gives it.
-const EMPTY: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": []\n}\n";
+const EMPTY: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": []\n}\n";
 
 /// The fake kernel, counting its clients alive: each session's engine holds one until the
 /// session's thread ends.
@@ -721,7 +721,7 @@ fn a_feature_over_several_lines_is_written_as_the_document_writes_it_not_indente
     // A box with its fingerprint (an object inside it), so one member a line; the canonical
     // document holds it four spaces in.
     let feature = "{\n  \"id\": \"k7f2qx3m\",\n  \"type\": \"box\",\n  \"v\": 1,\n  \"name\": \"Block\",\n  \"position\": [0, 0, 0],\n  \"length\": 40,\n  \"width\": 20,\n  \"height\": 10,\n  \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n}";
-    let document = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+    let document = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
     let f = fixture();
     let s = f.open(&f.file("block.silico", document));
     let text = answer(f.sessions.text(&s, FeatureId::new("k7f2qx3m")))

@@ -986,7 +986,9 @@ fn written_out(name: &Name) -> u64 {
             .chain(more)
             .map(Arc::as_ref)
             .collect(),
-        Name::Duplicate { name, .. } | Name::Modified { name, .. } => vec![name.as_ref()],
+        Name::Duplicate { name, .. }
+        | Name::Modified { name, .. }
+        | Name::Copy { of: name, .. } => vec![name.as_ref()],
     };
     1 + parts.into_iter().map(written_out).sum::<u64>()
 }

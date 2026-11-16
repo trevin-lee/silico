@@ -423,6 +423,9 @@ pub(crate) fn retyped<'a>(
             }
             | Name::Lower {
                 feature, operation, ..
+            }
+            | Name::Copy {
+                feature, operation, ..
             } => (feature, TypeWord::Operation(*operation)),
             Name::Duplicate { name, .. } | Name::Modified { name, .. } => {
                 stack.push(name);
