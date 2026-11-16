@@ -24637,6 +24637,8 @@ fn power_trim_extends_a_line_dragged_along_to_the_pointer() {
             .sent
             .contains(&Sent::SketchEdit("sketch_extend"))
     );
+    // Trim's extend is a sketch edit as any other, named by the sketch, not Extend's.
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit Cross");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -24652,9 +24654,26 @@ const WALLED: &str = r#"{
 }
 "#;
 
+/// [`WALLED`] with a wall behind the line's start too, nc000001, along x = −20 from
+/// pc000001 (−20, −10) to pc000002 (−20, 10).
+const WALLED_BOTH: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Wall", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}, {"id": "pb000001", "x": 30, "y": -10, "construction": false}, {"id": "pb000002", "x": 30, "y": 10, "construction": false}, {"id": "pc000001", "x": -20, "y": -10, "construction": false}, {"id": "pc000002", "x": -20, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nc000001", "from": "pc000001", "to": "pc000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
 /// Sketch mode on [`WALLED`]'s sketch, read.
 fn walled_sketch(f: &Fixture) -> AppHarness {
-    let (mut h, _) = f.opened("walled.silico", WALLED);
+    walled_sketch_of(f, WALLED)
+}
+
+/// Sketch mode on the sketch Wall of `text`, read.
+fn walled_sketch_of(f: &Fixture, text: &str) -> AppHarness {
+    let (mut h, _) = f.opened("walled.silico", text);
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Wall"));
     double_click(&mut h, "Browser", "Wall");
     sketch_read(&mut h);
@@ -24724,6 +24743,22 @@ fn extend_hovered_then_clicked_takes_a_lines_end_to_the_wall_as_one_undo_step() 
     undo_by_key(&mut h);
     assert_eq!(text_of(&f.sessions, &h), before);
     assert_eq!(tool_on(&h), Some(Choice::Extend));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn extend_clicked_near_a_lines_start_takes_it_back_to_the_wall_behind() {
+    let f = fixture();
+    let mut h = walled_sketch_of(&f, WALLED_BOTH);
+    extend_button(&mut h);
+    // At (2, 0), na000001's start's half: its start, pa000001 at (0, 0), goes on to the
+    // wall at x = −20; its end stays at (10, 0).
+    sketch_events(&f, &mut h, &clicked(2.0, 0.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(point_at(&sketch, -20.0, 0.0), "pa000001");
+    assert_eq!(point_at(&sketch, 10.0, 0.0), "pa000002");
+    assert_eq!(sketch_sends(&h), ["sketch_extend"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
