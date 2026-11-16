@@ -12798,7 +12798,11 @@ mod tests {
         polled_until(&mut tab, &sessions, |tab| {
             tab.quiet() && tab.dialog.is_some()
         });
-        assert!(tab.message.is_some(), "the radius wasn't refused");
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(
+            said.contains("radius"),
+            "the radius wasn't refused: {said:?}"
+        );
         assert!(
             tab.dialog_began,
             "the dialog took the refused edit's transaction"
@@ -12807,6 +12811,45 @@ mod tests {
         polled_until(&mut tab, &sessions, Tab::quiet);
         let open = sessions.status(&tab.id).session.unwrap().transaction;
         assert!(!open, "a transaction left open");
+    }
+
+    #[test]
+    fn a_dialogs_refused_edit_keeps_its_transaction_and_its_ok_undoes_as_one_step() {
+        // #504's second review: the pin's dialog open with no transaction, its first edit's
+        // begin its own. That edit isn't plain: refused (a radius of -1), it rolls nothing
+        // back, so the dialog's next edit lands in the same transaction, and Undo after OK
+        // takes the dialog's edits back as one step, to the document byte for byte.
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        let before = sessions.text(&tab.id, None).wait().result.unwrap().text;
+        tab.edit_feature(&sessions, &pin);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet() && tab.dialog.is_some()
+        });
+        let from = tab.sent.len();
+        tab.edit(&sessions, field_set(&pin, "radius", "-1"));
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(
+            said.contains("radius"),
+            "the radius wasn't refused: {said:?}"
+        );
+        tab.edit(&sessions, field_set(&pin, "radius", "0.75"));
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        tab.close_dialog(&sessions, true);
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        assert!(
+            !tab.sent[from..].contains(&Sent::Rollback),
+            "a dialog's edit rolled back: {:?}",
+            &tab.sent[from..]
+        );
+        let edited = sessions.text(&tab.id, None).wait().result.unwrap().text;
+        assert_ne!(edited, before);
+        tab.step(&sessions, true);
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        let undone = sessions.text(&tab.id, None).wait().result.unwrap().text;
+        assert_eq!(undone, before, "{:?} {:?}", tab.message, &tab.sent[from..]);
     }
 
     #[test]
