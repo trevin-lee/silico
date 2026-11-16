@@ -138,6 +138,9 @@ pub struct Panes<'a, P: Clients + 'static> {
     /// What each kind of dialog was last OK'd with: the selection view's Fillet opens its
     /// dialog with them, as the toolbar's does.
     pub remembered: &'a crate::dialog::Remembered,
+    /// egui's fade of a disabled `Ui`, as the style has it: what's off of its own in a pane
+    /// fades by, behind a modal too (`crate::modal::unfaded`).
+    pub fade: f32,
     /// Whether the browser is collapsed to its strip (`#main.browser-collapsed`).
     pub browser_collapsed: bool,
     /// Whether the browser's chevron was clicked this frame, to collapse it or show it
@@ -147,6 +150,7 @@ pub struct Panes<'a, P: Clients + 'static> {
 
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     fn pane_ui(&mut self, ui: &mut Ui, _tile_id: TileId, pane: &mut Pane) -> UiResponse {
+        ui.visuals_mut().disabled_alpha = self.fade;
         let label = pane.label();
         let rect = ui.max_rect();
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
@@ -2452,6 +2456,7 @@ mod tests {
                             drawing: &mut shown.drawing,
                             dialog_key: None,
                             remembered: &shown.remembered,
+                            fade: ui.visuals().disabled_alpha,
                             browser_collapsed: false,
                             browser_toggled: &mut shown.toggled,
                         }
@@ -3610,6 +3615,7 @@ mod property_panel_drawn {
                             drawing: &mut shown.drawing,
                             dialog_key: None,
                             remembered: &shown.remembered,
+                            fade: ui.visuals().disabled_alpha,
                             browser_collapsed: false,
                             browser_toggled: &mut shown.toggled,
                         }

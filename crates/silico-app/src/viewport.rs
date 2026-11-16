@@ -246,11 +246,11 @@ pub enum LeftKind {
     /// Let go, after a press on the canvas.
     Release,
     /// Held no longer, with no release: the window lost the focus, a navigation tool took
-    /// the drag, another press came with no release before it (the window lost one), or
-    /// the tab stopped being shown. What the stream did is undone, not done; it's at where
-    /// the stream was last (its press, or its last move). The pointer leaving the window
-    /// cancels nothing: the drag goes on past its edge, and its release, wherever it
-    /// comes, ends it.
+    /// the drag, a modal came over the window, another press came with no release before it
+    /// (the window lost one), or the tab stopped being shown. What the stream did is undone,
+    /// not done; it's at where the stream was last (its press, or its last move). The pointer
+    /// leaving the window cancels nothing: the drag goes on past its edge, and its release,
+    /// wherever it comes, ends it.
     Cancel,
     /// A double-click on the canvas, straight after the Release that made it: the second of
     /// two left clicks within egui's delay and distance, counted as egui counts them
@@ -1278,9 +1278,11 @@ impl View {
     /// press on the canvas (where the ViewCube and the bar, on top, aren't, and not while
     /// the pane drags: the middle button's pan or orbit, or the cube's), the moves while it's
     /// held, its release or its cancel, and a double-click straight after the release that
-    /// made it; none while a navigation tool makes a left drag navigate. `held` is the
-    /// pane's, which [`end_unshown`] has already ended if another tab's. Each is placed by
-    /// the egui event that made it ([`Placed`]), its `seq` given by [`sequenced`].
+    /// made it; none while a navigation tool makes a left drag navigate, and no press while
+    /// a modal is over the window, which cancels what's still held after the frame's events.
+    /// `held` is the pane's, which [`end_unshown`] has already ended if another tab's. Each
+    /// is placed by the egui event that made it ([`Placed`]), its `seq` given by
+    /// [`sequenced`].
     fn left_events(
         &self,
         button: &mut LeftButton,
@@ -1297,7 +1299,13 @@ impl View {
         // begin while the button is held from the canvas: egui gives a drag to the widget
         // pressed, and takes no other press until its release.)
         let taken = self.tool.is_some();
-        let pressable = response.hovered() && self.drag.is_none() && !taken;
+        // A modal over the window takes no press (#487: nothing behind a modal takes input),
+        // and cancels what's still held after the frame's events, as the focus going does.
+        // In the frame a key opens it, the press already held takes that frame's moves and
+        // its release, before the key or after it (the keys are read first): a release among
+        // them ends its gesture as ever.
+        let behind = crate::modal::behind(ui);
+        let pressable = response.hovered() && self.drag.is_none() && !taken && !behind;
         let mut left = Vec::new();
         let LeftButton { held, clicks } = button;
         // Read where the events are, not cloned out each frame.
@@ -1375,6 +1383,10 @@ impl View {
                     _ => {}
                 }
             }
+            if behind && let Some(was) = held.take() {
+                let place = input.events.len() + 1;
+                left.push(event(place, LeftKind::Cancel, was.at_px, input.modifiers));
+            }
         });
         left
     }
@@ -1398,6 +1410,13 @@ impl View {
         let px = |at: Pos2| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp];
         let options = ui.ctx().options(|options| options.input_options);
         let pressable = response.hovered() && self.drag.is_none();
+        // A right press held as a modal comes over the window is no click, though let go
+        // among the frame's events before the key that opened it (unlike the left button's
+        // release): what a right click opens, a menu, closes under a modal, and one first
+        // shown then would be raised over it.
+        if crate::modal::behind(ui) {
+            *held = None;
+        }
         ui.input(|input| {
             let time = input.time;
             let mut clicks = Vec::new();
@@ -1458,6 +1477,11 @@ impl View {
     /// or a named view's) is given. A drag ends when its button is let go, the pointer leaves the
     /// window, or the window loses the focus (whose release may never come).
     fn navigate(&mut self, ui: &mut Ui, response: &egui::Response, size_px: [u32; 2]) {
+        // A modal over the window ends a pan or an orbit held (the canvas inert under it
+        // takes no new one), as SolidWorks ends a drag when a dialog takes the focus.
+        if crate::modal::behind(ui) {
+            self.drag = None;
+        }
         let rect = response.rect;
         let height = f64::from(rect.height());
         let (pressed, origin, latest, shift, down, lost) = ui.input(|input| {
@@ -1556,7 +1580,8 @@ impl View {
 }
 
 /// A frame's button events, each with its place: 0 for a Cancel a navigation tool forces
-/// before the frame's events, `i + 1` for one the frame's `i`th egui event made.
+/// before the frame's events, `i + 1` for one the frame's `i`th egui event made, and `n + 1`
+/// for a Cancel a modal forces after the frame's `n` events.
 type Placed<T> = Vec<(usize, T)>;
 
 /// The frame's left events and right clicks, each given its `seq`: their order together,

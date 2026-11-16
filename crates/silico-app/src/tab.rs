@@ -2010,6 +2010,15 @@ impl Tab {
         }
     }
 
+    /// A modal over the window (#487), each frame it is, before the canvas reads the frame's
+    /// events ([`crate::arrow::Grip::modal_over`]): an arrow's stream held takes them as
+    /// ever, so a release before the modal's key finishes its click and a move its drag, and
+    /// the cancel the canvas then gives what's still held keeps the drag's value, sent as
+    /// the stream ends ([`arrows_frame`](Self::arrows_frame)).
+    pub(crate) fn arrow_under_modal(&mut self) {
+        self.grip.modal_over();
+    }
+
     /// Esc given to an arrow's stream held, if one is and still acts in the open dialog: a
     /// drag ends where it began, its input given back the text it held at its press and that
     /// sent; a press on the flip arrow does nothing more. Whether it took the Esc.

@@ -731,6 +731,17 @@ crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | arrows | replace > with >= | #480
 crates/silico-app/src/arrow.rs | Grip::centroid | replace match guard Arc::ptr_eq(kept, read) with false | #480
+# Equivalent (#497). `App::frame`'s `modal::unfaded(&ctx, top > OnTop::Window, ..)` as
+# `>=`: with no modal open, the global style's `disabled_alpha` is 1 while the panes are
+# drawn, and put back after. egui reads it only when a `Ui` is made disabled, and nothing is
+# disabled at its making with no modal: each pane's `Ui` sets its own alpha from the style's
+# (`Panes::pane_ui`, `fade`), and the menus the panes open draw their off items through
+# `menu::item`, which sets its own opacity. `View::left_events`' place of the Cancel a modal
+# forces, `input.events.len() + 1`, as `* 1`: the place orders a left event only against
+# the right clicks (`sequenced`; the left events keep their own order), and behind a modal
+# the canvas's response is disabled, so it's never hovered and takes no right press.
+crates/silico-app/src/app.rs | App<P>::frame | replace > with >= | #497
+crates/silico-app/src/viewport.rs | View::left_events | replace + with * | #497
 # A maker that is the base itself loses nothing on the way, which `stop >= base` also finds
 # (the first stop from it is itself or past it, never before the base): so `<=` in on_way
 # changes no answer.
