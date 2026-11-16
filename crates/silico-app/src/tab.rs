@@ -2080,7 +2080,7 @@ impl Tab {
     /// Look At (Ctrl+8; Fusion's Look At, SolidWorks' Normal To; the prototype's `lookAt`):
     /// in sketch mode, the view square to the sketch's plane, its x across and its y up;
     /// otherwise square to the one face selected, if the core measured it planar, from its
-    /// outward normal, up as the named views have it ([`crate::navigate::up_across`]). Each
+    /// outward normal, up as the named views have it ([`silico_core::views::up_across`]). Each
     /// fits what a named view fits. Else what's missing is said, and the view stays.
     pub fn look_at(&mut self) {
         use crate::viewport::ViewAsk;
@@ -2102,12 +2102,12 @@ impl Tab {
     }
 
     /// The view square to a planar face from `toward`, its outward unit normal, up as the
-    /// named views have it ([`crate::navigate::up_across`]): Look At's turn to a face, from
+    /// named views have it ([`silico_core::views::up_across`]): Look At's turn to a face, from
     /// the face selected (Ctrl+8) or the one under the canvas menu.
     pub fn look_at_face(&mut self, toward: [f64; 3]) {
         self.view.ask(crate::viewport::ViewAsk::LookAt {
             toward,
-            up: crate::navigate::up_across(toward),
+            up: silico_core::views::up_across(toward),
         });
     }
 
