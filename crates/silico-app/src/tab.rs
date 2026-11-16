@@ -30,6 +30,7 @@ use crate::sketch::drag::{Drag, News};
 use crate::sketch::screen::Screen;
 use crate::sketch::tools::{Choice, Request};
 use crate::sketch::{self, Deletion, FrameInput, SketchMode, SketchReads};
+use crate::toast::Toast;
 
 /// What's said when an over-defining dimension's choice is refused as a `conflict`: the
 /// session moved on before it was sent, so it was overtaken, and isn't sent again (SD7: its
@@ -525,6 +526,34 @@ pub const LOOK_AT_UNMEASURABLE: &str = "Look At: the face selected couldn't be m
 /// sketch the rebuild couldn't place (on a face not found) says the read's own error.
 pub const LOOK_AT_UNREAD: &str = "Look At: the sketch isn't read yet.";
 
+/// What Undo says with nothing to undo (the prototype's `undo`).
+pub const NOTHING_TO_UNDO: &str = "Nothing to undo";
+
+/// What Redo says with nothing to redo (the prototype's `redo`).
+pub const NOTHING_TO_REDO: &str = "Nothing to redo";
+
+/// What an Undo (`undo`) or a Redo says once done (the prototype's `'Undid: ' + u.label`):
+/// the step, `label`, as Undo's or Redo's tooltip names it, or, where the tab can't name it
+/// ([`Tab::undo_step`]), that it took one step.
+pub fn stepped_words(undo: bool, label: Option<&str>) -> String {
+    let verb = if undo { "Undid" } else { "Redid" };
+    match label {
+        Some(label) => format!("{verb}: {label}"),
+        None => format!("{verb} one step"),
+    }
+}
+
+/// What Save says of a document that matches its file, `name` (the prototype's `save`).
+pub fn nothing_to_save_words(name: &str) -> String {
+    format!("Nothing to save: {name} matches the file.")
+}
+
+/// What a save says once it has written `name`, the session at `revision` after it (the
+/// prototype's `save`, with its check icon).
+pub fn saved_words(name: &str, revision: u64) -> String {
+    format!("Saved {name} (revision {revision})")
+}
+
 /// A command a tab sent that changes its transaction, as it sent it: what a test reads
 /// as the call record.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -687,14 +716,16 @@ enum Under {
         lands: Lands,
     },
     /// An undo or a redo, the sketch mode it was asked in, if it was, and whether it's an
-    /// over-defining dimension's Cancel (SD7), whose `conflict` is said as overtaken; and
-    /// what dialog's Cancel it lands where it answers, if it's one's undo.
+    /// over-defining dimension's Cancel (SD7), whose `conflict` is said as overtaken; what
+    /// dialog's Cancel it lands where it answers, if it's one's undo; and, if it's the
+    /// person's Undo or Redo, what its toast says once it's done (`Undid: Edit Pad`).
     Step {
         running: Running<Stepped>,
         undo: bool,
         sketch: Option<u64>,
         offered: bool,
         lands: Lands,
+        said: Option<String>,
     },
     /// A move along the timeline, as it was sent.
     Move {
@@ -1173,9 +1204,15 @@ pub struct Tab {
     /// What the core says of the face the canvas's context menu is over: its entry, read as
     /// the selection view's is, for its type (Sketch on this face, `crate::canvas_menu`).
     menu_face: crate::measures::Measures,
-    /// What a toast is to say for the tab (a box's count, or why it took nothing), until
-    /// the app takes it.
-    toast: Option<String>,
+    /// What toasts are to say for the tab (a box's count, or why it took nothing; an undo's,
+    /// a save's), in the order said, until the app takes them.
+    toasts: Vec<Toast>,
+    /// The rebuild the person's stop stopped, by its revision, until `status` says it
+    /// stopped there (or that it didn't: it ended, or another revision's runs).
+    stop_asked: Option<Revision>,
+    /// How far that rebuild got once `status` says it stopped, if it says (`None` inside),
+    /// until the app takes it for the stop's toast.
+    stopped: Option<Option<(usize, usize)>>,
     /// The `diff` of the reload [`reloaded`](Self::reloaded) shows, asked as the reload was
     /// seen, from the revision the tab had to the session's now, until it answers.
     reload_diff: Option<Running<DiffAnswer>>,
@@ -1504,7 +1541,9 @@ impl Tab {
             select_other: crate::select_other::SelectOther::default(),
             measures: crate::measures::Measures::default(),
             menu_face: crate::measures::Measures::default(),
-            toast: None,
+            toasts: Vec::new(),
+            stop_asked: None,
+            stopped: None,
             reload_diff: None,
             outside: BTreeMap::new(),
             held_changes: None,
@@ -1726,7 +1765,7 @@ impl Tab {
             current,
             &hidden,
         ) {
-            self.toast = Some(toast);
+            self.toasts.push(Toast::info(toast));
         }
         let candidate = self
             .candidate_hot
@@ -1979,7 +2018,7 @@ impl Tab {
         };
         match asked {
             Ok((toward, up)) => self.view.ask(ViewAsk::LookAt { toward, up }),
-            Err(said) => self.toast = Some(said),
+            Err(said) => self.toasts.push(Toast::info(said)),
         }
     }
 
@@ -2084,9 +2123,17 @@ impl Tab {
         !toggled.is_empty()
     }
 
-    /// What a toast is to say for the tab, taken once (the app shows it).
-    pub fn take_toast(&mut self) -> Option<String> {
-        self.toast.take()
+    /// What toasts are to say for the tab, in the order said, taken once (the app shows
+    /// them).
+    pub fn take_toasts(&mut self) -> Vec<Toast> {
+        std::mem::take(&mut self.toasts)
+    }
+
+    /// How far the rebuild got that the person's stop stopped, once `status` says it
+    /// stopped (`None` inside if it doesn't say), taken once: the app says it in a toast
+    /// with Rebuild's key.
+    pub fn take_stopped(&mut self) -> Option<Option<(usize, usize)>> {
+        self.stopped.take()
     }
 
     /// The canvas's Select Other (M5.7): the menu open, if one is, and its rows.
@@ -2353,19 +2400,7 @@ impl Tab {
         if !self.undoable() || !self.quiet() {
             return None;
         }
-        let at = self.state_of(self.revision);
-        // Sketch mode's undo is a step of its own edits, never a dialog's group.
-        let group = self
-            .groups
-            .iter()
-            .find(|group| self.sketch.is_none() && group.end == at);
-        match group {
-            Some(group) => self.step_text(&group.words, group.start, group.end),
-            None => {
-                let step = self.steps.get(&at)?;
-                self.step_text(&step.words, step.from, at)
-            }
-        }
+        self.step_label(true)
     }
 
     /// The step Redo would give back, as its tooltip names it after "Redo: ": a dialog's
@@ -2376,18 +2411,79 @@ impl Tab {
         if !self.redoable() || !self.quiet() {
             return None;
         }
+        self.step_label(false)
+    }
+
+    /// The step an undo (`undo`) or a redo from the session's state now takes back or gives
+    /// back, by what made it ([`step_text`](Self::step_text)): for Undo, a dialog's OK'd
+    /// edits ending there by the dialog's words, else the step that made the state (sketch
+    /// mode's undo is a step of its own edits, never a dialog's group); for Redo, a dialog's
+    /// OK'd edits starting there, else the state after it, by the step that made that.
+    fn step_label(&self, undo: bool) -> Option<String> {
         let at = self.state_of(self.revision);
-        let group = self
-            .groups
-            .iter()
-            .find(|group| self.sketch.is_none() && group.start == at);
-        match group {
-            Some(group) => self.step_text(&group.words, group.start, group.end),
-            None => {
+        let group = self.groups.iter().find(|group| {
+            self.sketch.is_none()
+                && if undo {
+                    group.end == at
+                } else {
+                    group.start == at
+                }
+        });
+        match (group, undo) {
+            (Some(group), _) => self.step_text(&group.words, group.start, group.end),
+            (None, true) => {
+                let step = self.steps.get(&at)?;
+                self.step_text(&step.words, step.from, at)
+            }
+            (None, false) => {
                 let (made, step) = self.steps.range(at..).find(|(state, _)| **state != at)?;
                 self.step_text(&step.words, step.from, *made)
             }
         }
+    }
+
+    /// Undo or Redo pressed with nothing to step (`undo`: Undo's): said in a toast, as the
+    /// prototype's `undo` says it, only where it's so: nothing of the tab's under way (whose
+    /// answer would move the counts), no dialog open nor drag under way (which hold Undo
+    /// off with steps to take), and the session's counts read at its revision; so Undo off
+    /// then is for want of a step (no transaction, none in it to undo, or sketch mode at
+    /// where it opened), and so is Redo (none undone, sketch mode's own none, or a fence).
+    pub fn nothing_to_step(&mut self, undo: bool) {
+        let can = if undo {
+            self.undoable()
+        } else {
+            self.redoable()
+        };
+        if can
+            || !self.quiet()
+            || self.in_dialog()
+            || self.drag.as_ref().is_some_and(Drag::under_way)
+            || !self.synced()
+            || self.status.is_none()
+        {
+            return;
+        }
+        self.toasts.push(Toast::info(if undo {
+            NOTHING_TO_UNDO
+        } else {
+            NOTHING_TO_REDO
+        }));
+    }
+
+    /// Save pressed with nothing to save: said in a toast, as the prototype's `save` says
+    /// it, only where it's so: nothing unsaved (no edit held nor under way), a titled part
+    /// (an untitled one's Save writes it all the same), and the file on disk, as `status`
+    /// last compared it, the bytes the session last read or wrote.
+    pub fn nothing_to_save(&mut self) {
+        let matches = self
+            .status
+            .as_ref()
+            .is_some_and(|status| matches!(status.disk, None | Some(Disk::Unchanged)));
+        if self.unsaved() || self.is_untitled() || !matches {
+            return;
+        }
+        self.toasts
+            .push(Toast::info(nothing_to_save_words(self.name())));
     }
 
     /// What a step says, made from the state `from` and making `made` (a group: its start
@@ -2684,6 +2780,7 @@ impl Tab {
                     self.rebuilt = Some((status.rebuild.revision, progress.elapsed_ms()));
                 }
                 self.status = Some(status);
+                self.stop_seen();
             }
             // Its session isn't open any more: the tab goes.
             Err(_) => {
@@ -3138,6 +3235,23 @@ impl Tab {
                 Ok(response) => {
                     self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
+                    // Said once the core has answered (the prototype's `save`): what it
+                    // wrote, and the session's revision after it; or, finding the document
+                    // the one `begin` saw, that it wrote nothing. Not of a save to close,
+                    // whose tab goes.
+                    if let Ok(committed) = &response.result
+                        && !then_close
+                    {
+                        let name = self.name().to_owned();
+                        let toast = match (&response.session, committed.written) {
+                            (Some(session), true) => {
+                                Toast::check(saved_words(&name, session.revision.number()))
+                            }
+                            (None, true) => Toast::check(format!("Saved {name}")),
+                            (_, false) => Toast::info(nothing_to_save_words(&name)),
+                        };
+                        self.toasts.push(toast);
+                    }
                     self.ended(response.result.map(|_| ()), then_close, close);
                     None
                 }
@@ -3218,6 +3332,7 @@ impl Tab {
                 sketch,
                 offered,
                 lands,
+                said: step_said,
             } => match running.try_take() {
                 Ok(response) => {
                     self.landed(lands, response.session.as_ref());
@@ -3245,6 +3360,11 @@ impl Tab {
                             self.redo_fence = Some(state);
                         }
                     }
+                    // The person's Undo or Redo, done: said in a toast as the prototype's
+                    // `undo` says it, once the core has answered, never before.
+                    if let (Ok(_), Some(step_said)) = (&response.result, step_said) {
+                        self.toasts.push(Toast::info(step_said));
+                    }
                     match response.result {
                         // Typing queued after it is applied next: the field keeps it.
                         Ok(_) if self.edits.idle() => self.resets += 1,
@@ -3260,6 +3380,7 @@ impl Tab {
                     sketch,
                     offered,
                     lands,
+                    said: step_said,
                 }),
             },
             Under::Add {
@@ -4077,7 +4198,7 @@ impl Tab {
                     Planned::Said => {}
                     Planned::Gone(said) => {
                         if self.pressed.as_ref() == Some(&click) {
-                            self.toast = Some(said.clone());
+                            self.toasts.push(Toast::info(said.clone()));
                         }
                         self.message = Some(said);
                     }
@@ -4205,6 +4326,7 @@ impl Tab {
                                 sketch: Some(serial),
                                 offered: true,
                                 lands: Lands::Nothing,
+                                said: None,
                             });
                         }
                     }
@@ -4315,6 +4437,7 @@ impl Tab {
                             undo: true,
                             offered: false,
                             lands,
+                            said: None,
                         });
                     }
                 }
@@ -4322,6 +4445,10 @@ impl Tab {
                     if then_close {
                         self.under.push(Under::Close(sessions.close(&self.id)));
                         self.edits.queue.clear();
+                    } else {
+                        // No transaction open once the edits before it answered: the
+                        // document is the file's, said so where it's so.
+                        self.nothing_to_save();
                     }
                 }
                 Queued::Revert { then_close } if !self.transaction => {
@@ -4375,6 +4502,9 @@ impl Tab {
                     if undo && floor.is_some_and(|floor| self.state_of(floor) == state) {
                         continue;
                     }
+                    // What it takes back or gives back, named as Undo's or Redo's tooltip
+                    // names it now, before it's sent, for its toast once it's done.
+                    let step_said = Some(stepped_words(undo, self.step_label(undo).as_deref()));
                     // At a dialog's OK'd edits' end (undo) or start (redo): all of them at
                     // once, to its other side (section 9). Never in sketch mode, whose steps
                     // are its own edits', one at a time, but for a constraint tool's add and
@@ -4407,6 +4537,7 @@ impl Tab {
                         sketch,
                         offered: false,
                         lands: Lands::Nothing,
+                        said: step_said,
                     });
                 }
             }
@@ -4979,8 +5110,45 @@ impl Tab {
     /// and the refusal is said.
     pub fn stop<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         match self.halt(sessions) {
-            Ok(()) => self.message = None,
+            Ok(()) => {
+                self.message = None;
+                self.stop_said();
+            }
             Err(problems) => self.message = Some(said(&problems)),
+        }
+    }
+
+    /// A stop the person asked for, taken: once `status` says the rebuild it stopped (the
+    /// one `status` said runs) stopped at the tab's revision, a toast says how far it got
+    /// ([`stop_seen`](Self::stop_seen)).
+    fn stop_said(&mut self) {
+        self.stopped = None;
+        self.stop_asked = self.status.as_ref().map(|status| status.rebuild.revision);
+    }
+
+    /// The stop asked for ([`stop_said`](Self::stop_said)) as `status` now says it: stopped
+    /// at the rebuild's revision, which is the tab's, so Rebuild starts it again, kept with
+    /// how far it got for the app's toast; still running, waited on; else (it ended before
+    /// the stop reached it, or an edit made another revision since) let go, saying nothing.
+    fn stop_seen(&mut self) {
+        let (Some(asked), Some(status)) = (self.stop_asked, self.status.as_ref()) else {
+            return;
+        };
+        let rebuild = &status.rebuild;
+        if rebuild.revision == asked && rebuild.state == RebuildState::Running {
+            return;
+        }
+        self.stop_asked = None;
+        if rebuild.revision == asked
+            && rebuild.revision == self.revision
+            && rebuild.state == RebuildState::Stopped
+        {
+            self.stopped = Some(
+                rebuild
+                    .progress
+                    .as_ref()
+                    .map(|progress| (progress.done, progress.steps)),
+            );
         }
     }
 
@@ -5152,10 +5320,10 @@ impl Tab {
     /// does nothing in one (it says why); its rebuild is sent once the document is read.
     pub fn reload<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if self.file_gone() {
-            self.toast = Some(format!(
+            self.toasts.push(Toast::info(format!(
                 "{} is gone from disk: nothing to reload. Save As keeps your work",
                 self.name()
-            ));
+            )));
             return;
         }
         // An untitled part has no file to read and its edits are all it is: nothing reverted,
@@ -5258,6 +5426,7 @@ impl Tab {
         let stopped = self.halt(sessions).is_ok();
         if stopped {
             self.hush();
+            self.stop_said();
         }
         stopped
     }
@@ -7271,12 +7440,12 @@ impl Tab {
         let related = match planned {
             Ok(related) => related,
             Err(error) => {
-                self.toast = Some(said(&Problems::from(error)));
+                self.toasts.push(Toast::info(said(&Problems::from(error))));
                 return Planned::Said;
             }
         };
         if let Some(message) = related.message() {
-            self.toast = Some(message.text());
+            self.toasts.push(Toast::info(message.text()));
         }
         let elements = |ids: &[ElementId]| -> Vec<Reference> {
             ids.iter().cloned().map(Reference::Element).collect()
@@ -7304,7 +7473,7 @@ impl Tab {
                 Planned::Send(related.revision(), Box::new(relating))
             }
             Err(error) => {
-                self.toast = Some(said(&Problems::from(error)));
+                self.toasts.push(Toast::info(said(&Problems::from(error))));
                 Planned::Said
             }
         }
@@ -11955,6 +12124,54 @@ mod tests {
         }
     }
 
+    /// The words of `toasts`, each with its icon.
+    fn toasts_said(toasts: Vec<Toast>) -> Vec<(String, crate::toast::Kind)> {
+        toasts
+            .into_iter()
+            .map(|toast| (toast.text, toast.kind))
+            .collect()
+    }
+
+    #[test]
+    fn nothing_to_undo_redo_or_save_is_said_only_where_its_so() {
+        use crate::toast::Kind::Info;
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        // Just opened: nothing to step, nothing to save (the prototype's words).
+        tab.nothing_to_step(true);
+        tab.nothing_to_step(false);
+        tab.nothing_to_save();
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [
+                ("Nothing to undo".to_owned(), Info),
+                ("Nothing to redo".to_owned(), Info),
+                (
+                    "Nothing to save: part.silico matches the file.".to_owned(),
+                    Info
+                ),
+            ]
+        );
+        // A rename in flight: Redo is off for want of its answer, not of a step, and the
+        // document is unsaved: nothing said.
+        tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        tab.nothing_to_step(false);
+        tab.nothing_to_save();
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        // Answered: Undo has the rename to take back, Redo nothing, and Save the rename.
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
+        tab.nothing_to_step(true);
+        tab.nothing_to_save();
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        tab.nothing_to_step(false);
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [("Nothing to redo".to_owned(), Info)]
+        );
+    }
+
     #[test]
     fn a_refused_undo_leaves_what_undo_and_redo_name_and_the_count_as_they_were() {
         // The pin renamed through the session: one step, "Rename Pin" (by hand). Then an
@@ -11973,9 +12190,12 @@ mod tests {
             sketch: None,
             offered: false,
             lands: Lands::Nothing,
+            said: Some(stepped_words(true, Some("Rename Pin"))),
         });
         polled_until(&mut tab, &sessions, |tab| !tab.stepping());
         assert!(tab.message.is_some(), "the undo wasn't refused");
+        // Refused: not said as done.
+        assert_eq!(toasts_said(tab.take_toasts()), []);
         polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
         assert_eq!(tab.undo_step().as_deref(), Some("Rename Pin"));
         assert_eq!(tab.redo_step().as_deref(), None);
