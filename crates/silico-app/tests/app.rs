@@ -20407,6 +20407,47 @@ fn a_click_on_a_face_during_a_transition_ends_it_where_it_was_drawn_and_selects_
 }
 
 #[test]
+fn a_press_in_the_frame_a_transitions_time_runs_out_lands_on_the_view_asked_for() {
+    // At egui's 0.2 the right view asked from the front, 11 frames of its 12 stepped (the
+    // last drawn 11/12 of its time in, ease 1 − (1/6)²/2 = 71/72 of the way), then the middle
+    // button pressed in the twelfth: its time is up, so the press ends it on the right view
+    // to the bit, named, not where the eleventh drew it, 1.25° short.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+    step(&mut h);
+    let right = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    transition_frames(&mut h, 12, "Orthographic · Front");
+    let (azimuth, _) = azimuth_and_elevation(view(&h).camera());
+    assert!((azimuth - 90.0 * 71.0 / 72.0).abs() < 1e-3, "{azimuth}");
+    let middle = |h: &AppHarness, pressed: bool| {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    };
+    middle(&h, true);
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(view_label(&h), "Orthographic · Right");
+    middle(&h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_projection_chosen_mid_transition_takes_the_view_asked_for_in_it() {
     // At egui's 0, Ctrl+4 then the cube menu's Perspective: the right view in perspective,
     // named so. Back to the front, orthographic; then at 0.2 the right view asked and, 3

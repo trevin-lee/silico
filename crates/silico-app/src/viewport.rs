@@ -748,15 +748,21 @@ impl View {
     }
 
     /// The transition under way moved on to `now`, egui's clock: the camera where it has
-    /// reached, or, once its time is up, the view it was asked for, exactly, and it ends.
-    /// Each camera raised to the least the bodies allow, as every camera a control makes is
-    /// (`navigate::clamped`), which leaves the view asked for, already raised, as it was
-    /// unless the bodies changed meanwhile.
-    fn advance(&mut self, now: f64) {
+    /// reached, or, once its time is up, the view it was asked for, exactly, and it ends. A
+    /// press on the canvas this frame (`pressed`) ends it while it's still moving, the camera
+    /// left where it was drawn last frame, what the person pressed on; once its time is up,
+    /// the press is on the view asked for. Each camera raised to the least the bodies allow,
+    /// as every camera a control makes is (`navigate::clamped`), which leaves the view asked
+    /// for, already raised, as it was unless the bodies changed meanwhile.
+    fn advance(&mut self, now: f64, pressed: bool) {
         let Some(transition) = &self.transition else {
             return;
         };
         let camera = match transition.at(now) {
+            Step::Moving(_) if pressed => {
+                self.transition = None;
+                return;
+            }
             Step::Moving(camera) => camera,
             Step::Ended(camera) => {
                 self.transition = None;
@@ -1901,13 +1907,11 @@ pub fn show<P: Clients + 'static>(
     };
     let now = drawing.now();
     // A transition under way moved on before anything of this frame reads the camera; but a
-    // press on the canvas (to select, to drag, for a menu) ends it where it was drawn last
-    // frame, what the person pressed on, so the press and what it's of are of one view.
-    if response.hovered() && ui.input(|input| input.pointer.any_pressed()) {
-        tab.view.transition = None;
-    } else {
-        tab.view.advance(ui.input(|input| input.time));
-    }
+    // press on the canvas (to select, to drag, for a menu) ends one still moving where it was
+    // drawn last frame, what the person pressed on, so the press and what it's of are of one
+    // view.
+    let pressed = response.hovered() && ui.input(|input| input.pointer.any_pressed());
+    tab.view.advance(ui.input(|input| input.time), pressed);
     let now_hidden: BTreeSet<FeatureId> = tab
         .browser
         .bodies()

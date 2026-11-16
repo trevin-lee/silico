@@ -3,8 +3,11 @@
 //! a move to a view worked out whole (Home, Fit, a named view, a ViewCube click, Look At)
 //! eases from the camera as it is to that view over [`theme::VIEW_TRANSITION_SECONDS`], by
 //! the prototype's quadratic in-out ([`ease`]), and ends on that view exactly. Orbit, pan,
-//! and zoom, by a drag or the wheel, move the view at once, and one during a transition ends
-//! it where it is (a drag from its press; a wheel's turn that zooms).
+//! and zoom, by a drag or the wheel, move the view at once. A press on the canvas during a
+//! transition (to select, to drag, or for a menu) ends it with the camera last drawn, the one
+//! pressed on, or on its view once its time is up; a wheel's turn that zooms ends it where it
+//! has reached; a projection chosen ends it on its view in that projection (the viewport's
+//! `View`).
 //!
 //! The prototype's camera is an azimuth and an elevation about its target, and a height;
 //! its up follows from them (`upOf`). It eases the azimuth the short way round, and the
@@ -13,9 +16,12 @@
 //! whose y isn't the view's up, an orbit over a pole): so each camera is read as the
 //! prototype's azimuth and elevation of its direction from the target to the eye, a roll of
 //! its up from the prototype's up there, its target, its eye's distance, and, orthographic,
-//! its view's height; each of those is eased as the prototype eases its own (the azimuth and
-//! the roll the short way round), and the camera made again from them ([`between`]). Where
-//! neither end is rolled, the path is the prototype's. Straight up or down, where the
+//! its view's height; each of those is eased as the prototype eases its own (the azimuth the
+//! short way round), the roll by whichever turn, the short way or a whole turn either side,
+//! turns the image least about the view's axis with the azimuth's ([`least_twist`]: the image
+//! turns by the roll's turn and `sin el` of the azimuth's, so near a pole the two each taken
+//! the short way could add to a whole spin), and the camera made again from them
+//! ([`between`]). Where neither end is rolled, the path is the prototype's. Straight up or down, where the
 //! azimuth is any, it's read from the camera's right (the prototype's right is `(cos az,
 //! sin az, 0)` at every elevation), so a top or a bottom view's up is its own, unrolled, and
 //! the up turns smoothly into it. A perspective view's size is its eye's distance, eased
