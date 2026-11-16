@@ -324,6 +324,16 @@ pub struct Frame<'a> {
     /// view's reach, which its near and far planes are set from, takes their boxes as it
     /// takes a body's, so lines with no body are drawn too.
     pub lines: &'a [Lines<'a>],
+    /// Planes drawn among the bodies, translucent, and in no picking (the app's origin
+    /// planes): each filled and outlined ([`Plane`]), at most [`MAX_FRAME_PLANES`]. The fill
+    /// is drawn after every opaque face, tested against their depth and writing none, so a
+    /// body in front of a plane hides it and a plane in front of a body tints it and hides
+    /// nothing; the outline is placed as a line is. Neither goes into the picking layer: a
+    /// frame's picking is the same with them as without them, pixel for pixel (the module
+    /// `planes` says how). An orthographic view's reach takes their corners as it takes a
+    /// line's, so a plane with no body is drawn whole; one the view is too small for is
+    /// refused, naming `planes`.
+    pub planes: &'a [Plane],
 }
 
 impl Frame<'_> {
@@ -331,7 +341,8 @@ impl Frame<'_> {
     /// `held` (a body's mesh by its number, none if it holds none), if it would: its pixels
     /// per point, its bodies (ascending, each once, each held), its tint, its highlights,
     /// hover, and tinted faces (each of a body it draws, numbered within its mesh's counts,
-    /// each tinted one a face), its vertices' radius, its picking rectangle, and its lines.
+    /// each tinted one a face), its vertices' radius, its picking rectangle, its lines, and
+    /// its planes.
     /// No GPU: what a frame's size may be is the device's, and its camera and what's in its
     /// view are checked as [`Renderer::prepare`] places it, after this.
     pub fn check<'m>(
@@ -469,6 +480,7 @@ impl Frame<'_> {
                 ),
             });
         }
+        planes::check(self.planes)?;
         for (i, set) in self.lines.iter().enumerate() {
             let width = set.width;
             if !(width.is_finite() && width > 0.0 && width <= MAX_LINE_WIDTH) {
@@ -837,7 +849,7 @@ impl Renderer {
         queue: wgpu::Queue,
         output_format: wgpu::TextureFormat,
     ) -> Result<Renderer, String> {
-        let ctx = RenderContext::new(
+        let mut ctx = RenderContext::new(
             adapter,
             device,
             queue,
@@ -845,6 +857,7 @@ impl Renderer {
             RenderConfig::best_for_device_caps,
         )
         .map_err(|e| format!("no render context: {e}"))?;
+        planes::register(&mut ctx);
         Ok(Renderer {
             ctx,
             readback: 1,
@@ -960,7 +973,8 @@ impl Renderer {
         if let Some(frames) = self.backoff.refuses() {
             return Err(RenderFailure::BackingOff { frames });
         }
-        let (view, lit) = self.check_frame(frame).map_err(RenderFailure::Invalid)?;
+        let CheckedFrame { view, lit, planes } =
+            self.check_frame(frame).map_err(RenderFailure::Invalid)?;
         let device = self.ctx.device.clone();
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validity = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -1012,6 +1026,7 @@ impl Renderer {
             Drawn {
                 bodies: &drawn,
                 lines: frame.lines,
+                planes: &planes,
             },
             picking.map(|(rect, id)| Picked {
                 rect,
@@ -1119,11 +1134,9 @@ impl Renderer {
         })
     }
 
-    /// `frame`'s checks, and what it draws: its view, and each body's highlights.
-    fn check_frame(
-        &self,
-        frame: &Frame<'_>,
-    ) -> Result<(View, BTreeMap<u32, Lit>), InvalidParameter> {
+    /// `frame`'s checks, and what it draws: its view, each body's highlights, and each plane
+    /// with its outline.
+    fn check_frame(&self, frame: &Frame<'_>) -> Result<CheckedFrame, InvalidParameter> {
         let largest = self.ctx.device.limits().max_texture_dimension_2d;
         if frame
             .size_px
@@ -1159,9 +1172,23 @@ impl Renderer {
             height,
             in_view,
             frame.lines.iter().map(|set| set.strips),
+            "lines",
+        )?;
+        // Each checked by `checked`: an outline each.
+        let planes: Vec<(Plane, Strips)> = frame
+            .planes
+            .iter()
+            .filter_map(|plane| plane.outline().map(|outline| (*plane, outline)))
+            .collect();
+        let in_view = with_lines(
+            frame.camera,
+            height,
+            in_view,
+            planes.iter().map(|(_, outline)| outline),
+            "planes",
         )?;
         let view = View::new(frame.camera, camera_frame, frame.size_px, in_view);
-        Ok((view, lit))
+        Ok(CheckedFrame { view, lit, planes })
     }
 
     /// The newest picking the GPU has answered, kept for [`Renderer::take_picking`] (which
@@ -1271,6 +1298,7 @@ impl Renderer {
             Drawn {
                 bodies: &drawn,
                 lines: &[],
+                planes: &[],
             },
             scene.ids.then_some(Picked {
                 rect: whole,
@@ -1290,7 +1318,8 @@ impl Renderer {
     /// its lines, in a
     /// frame `re_renderer`'s already begun: each face an instance moved into the view, its
     /// mesh uploaded where it has none; each edge a strip placed in the view; then each
-    /// line's strip placed in it ([`lines_batch`]); highlights
+    /// line's strip placed in it ([`lines_batch`]); its planes, in no picking ([`planes::draw`]);
+    /// highlights
     /// drawn in each body's [`Lit::style`], and outlined in `colours`' outlines; the picking
     /// rectangle and its readback's identifier, with the vertices' discs it asks for
     /// ([`vertices`]), and the image's readback, if asked; behind it all, `colours`'
@@ -1313,6 +1342,7 @@ impl Renderer {
         let Drawn {
             bodies: drawn,
             lines: sets,
+            planes,
         } = drawn;
         let Renderer {
             ctx,
@@ -1400,6 +1430,14 @@ impl Renderer {
             }
             _ => None,
         };
+        let (planes_drawn, plane_draws) = if planes.is_empty() {
+            (0, Vec::new())
+        } else {
+            planes::draw(ctx, planes, view, pixels_per_point)?
+        };
+        if !planes.is_empty() {
+            tracing::debug!(planes = planes.len(), drawn = planes_drawn, "planes");
+        }
         *placed = placing.elapsed();
         let highlighted = drawn.iter().any(|(_, lit)| lit.any());
         let config = TargetConfiguration {
@@ -1462,6 +1500,13 @@ impl Renderer {
                 .queue_draw(ctx, draw)
                 .map_err(|e| format!("couldn't queue the vertices: {e}"))?;
         }
+        // After everything else, as the planes' module says: their fills drawn last of what's
+        // transparent, and neither in the picking layer.
+        for draw in plane_draws {
+            builder
+                .queue_draw(ctx, draw)
+                .map_err(|e| format!("couldn't queue the planes: {e}"))?;
+        }
         if let Some(screenshot) = screenshot {
             builder
                 .schedule_screenshot(ctx, screenshot, ())
@@ -1486,6 +1531,7 @@ fn with_lines<'a>(
     height: u32,
     in_view: InView,
     sets: impl IntoIterator<Item = &'a Strips>,
+    parameter: &'static str,
 ) -> Result<InView, InvalidParameter> {
     let InView::Orthographic {
         view_height,
@@ -1514,9 +1560,9 @@ fn with_lines<'a>(
                 .fold(0.0, f64::max);
             if !takes(points) {
                 return Err(InvalidParameter {
-                    parameter: "lines",
+                    parameter,
                     message: format!(
-                        "lines[{i}] reach {points:?} mm from camera.target, too far for camera.view_height {view_height:?} in an image {height} pixels high: it must be at least {:?} mm, where f32 draws them to an eighth of a pixel (the image's height times the reach over 2^19), or camera.target nearer them",
+                        "{parameter}[{i}] reach {points:?} mm from camera.target, too far for camera.view_height {view_height:?} in an image {height} pixels high: it must be at least {:?} mm, where f32 draws them to an eighth of a pixel (the image's height times the reach over 2^19), or camera.target nearer them",
                         least_view_height(height, points)
                     ),
                 });
@@ -1592,12 +1638,22 @@ enum Listed {
     Tinted,
 }
 
+/// A frame as [`Renderer::check_frame`] passed it: its view, each body's highlights, and
+/// each plane with its outline.
+struct CheckedFrame {
+    view: View,
+    lit: BTreeMap<u32, Lit>,
+    planes: Vec<(Plane, Strips)>,
+}
+
 /// What a view draws: its bodies, each by number with its highlights, and its lines
 /// ([`Frame::lines`]; a render's, none).
 #[derive(Clone, Copy)]
 struct Drawn<'a> {
     bodies: &'a [(u32, &'a Lit)],
     lines: &'a [Lines<'a>],
+    /// Each plane with its outline ([`Frame::planes`]; a render's, none).
+    planes: &'a [(Plane, Strips)],
 }
 
 /// What a view's picking asks: its rectangle, its readback's identifier, the radius in
@@ -2983,7 +3039,8 @@ impl Caster {
         let target = camera.target;
         let mut exact = |_: u32, mesh: &Mesh| reach_of_points(mesh, target);
         let in_view = check_bodies_in_view(camera, size_px[1], drawn, &mut exact).ok()?;
-        let in_view = with_lines(camera, size_px[1], in_view, lines.iter().copied()).ok()?;
+        let in_view =
+            with_lines(camera, size_px[1], in_view, lines.iter().copied(), "lines").ok()?;
         let (span, near) = match in_view {
             InView::Orthographic { view_height, reach } => {
                 (view_height, Some(orthographic_depth(reach)))
@@ -4432,6 +4489,10 @@ fn png(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
         .map_err(|e| format!("couldn't finish the PNG: {e}"))?;
     Ok(out)
 }
+
+mod planes;
+
+pub use planes::{MAX_FRAME_PLANES, Plane};
 
 #[cfg(test)]
 mod frame_tests;

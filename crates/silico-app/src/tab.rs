@@ -5708,6 +5708,18 @@ impl Tab {
         }
     }
 
+    /// Every origin plane shown (`shown`) or hidden: the Origin folder's eye (the
+    /// prototype's, which shows all three while none shows, else hides them all), each
+    /// plane's eye then as one click on it leaves it ([`toggle_shown`](Self::toggle_shown)).
+    pub fn show_origin_planes(&mut self, shown: bool) {
+        for (_, name) in crate::planes::ORIGIN_PLANES {
+            let what = Hideable::Origin(name);
+            if self.shown(&what) != shown {
+                self.toggle_shown(what);
+            }
+        }
+    }
+
     /// Why the sketch of `row` is drawn nowhere, whatever its eye, for the eye's tooltip:
     /// suppressed, or its read placing it on no plane (a face gone,
     /// found by an unstable name, not planar, or its feature unbuilt: `plane_problem`'s
@@ -8058,12 +8070,13 @@ fn sketch_row<'a>(browser: &'a Browser, what: &Hideable) -> Option<&'a Row> {
 }
 
 /// Whether `what`'s row shows before any click (decision 29: "everything but the sketches
-/// a feature is built from"): a body and an origin row, yes; a sketch, while nothing is
-/// built from it.
+/// a feature is built from"): a body and an origin row, yes, but an origin plane, hidden
+/// as the prototype's, Fusion's, and SolidWorks' are (`crate::planes`); a sketch, while
+/// nothing is built from it.
 fn shown_by_default(browser: &Browser, what: &Hideable) -> bool {
     match what {
         Hideable::Feature(id) => browser.consumed.get(id).is_none_or(|built| !built),
-        Hideable::Origin(_) => true,
+        Hideable::Origin(name) => crate::planes::of_row(name).is_none(),
     }
 }
 

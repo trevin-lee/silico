@@ -472,8 +472,9 @@ pub struct View {
     /// The bodies the browser hides, by feature, as the last frame had them: drawn by no
     /// frame, and so not in the reach a view is clamped by.
     hidden: BTreeSet<FeatureId>,
-    /// The boxes of the shown sketches' lines the last frame drew (`crate::sketch::lines`):
-    /// in the reach a view is clamped by, as the renderer takes them into its own.
+    /// The boxes of the shown sketches' lines (`crate::sketch::lines`) and of the origin
+    /// planes (`crate::planes`) the last frame drew: in the reach a view is clamped by, as
+    /// the renderer takes them into its own.
     sketch_boxes: Vec<[[f64; 3]; 2]>,
     notice: Option<Notice>,
     /// A held mesh an answer gave none of wasn't found: the next read holds none.
@@ -530,6 +531,9 @@ pub struct View {
     /// timeline, drawn before the canvas, each frame. Once the canvas's hover names another
     /// feature, the viewport asks for the next frame at once, so the timeline catches up.
     pub ringed_feature: Option<FeatureId>,
+    /// The origin plane whose browser row the pointer is on, set by the browser each frame
+    /// it's drawn: drawn hovered, its eye open or not (`crate::planes`).
+    pub plane_hovered: Option<silico_core::document::OriginPlane>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
     /// The serial of the newest frame that carried a pick of this view's: an answer to a
@@ -618,6 +622,7 @@ impl Default for View {
             candidate: None,
             linked: None,
             ringed_feature: None,
+            plane_hovered: None,
             picking: None,
             picked: None,
             last_asked: None,
@@ -1021,7 +1026,8 @@ impl View {
         self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
     }
 
-    /// The shown sketches' lines' boxes, as the frame draws them: if they changed, the view
+    /// The shown sketches' lines' boxes and the planes', as the frame draws them: if they
+    /// changed, the view
     /// raised to the least they allow with the bodies, if it's under it, as the renderer
     /// takes their reach too (an orthographic view under it would have every frame
     /// refused).
@@ -1864,10 +1870,24 @@ pub fn show<P: Clients + 'static>(
         }
         lines
     };
+    // The origin planes, by their eyes, the browser row hovered, and Create Sketch's planes
+    // if they're open (`crate::planes`), whatever mode the tab is in.
+    let planes_menu = crate::planes::menu(ui.ctx());
+    let planes = crate::planes::drawn(
+        |plane| tab.shown(&crate::tab::Hideable::Origin(crate::planes::row_of(plane))),
+        tab.view.plane_hovered,
+        planes_menu,
+    );
     let sketch_boxes: Vec<[[f64; 3]; 2]> = lines
         .iter()
         .filter_map(|line| line.strips.bounds())
         .map(|(low, high)| [low, high])
+        .chain(
+            planes
+                .iter()
+                .filter_map(|plane| silico_protocol::box_of(plane.corners().iter()))
+                .map(|(low, high)| [low, high]),
+        )
         .collect();
     let view = &mut tab.view;
     view.take_sketch_boxes(sketch_boxes);
@@ -2024,6 +2044,7 @@ pub fn show<P: Clients + 'static>(
         edges: view.edges,
         vertices: view.vertices,
         lines,
+        planes,
     };
     if view.grid && !sketching {
         let shapes = crate::grid::shapes(&view.camera, size_px, ppp, rect);
@@ -2059,6 +2080,11 @@ pub fn show<P: Clients + 'static>(
         frame.left.clear();
         frame.secondary.clear();
         tab.view.frame = Some(frame);
+    }
+    // Create Sketch's planes opened, closed, or lit otherwise since the frame was built (the
+    // canvas's menu is drawn after it): the next frame draws them as they are.
+    if crate::planes::menu_changed(ui.ctx(), planes_menu) {
+        ui.ctx().request_repaint();
     }
     // The canvas's hover now over what another feature made than the timeline rang (or over
     // nothing now, or something now): the timeline, drawn before the canvas, rings it in

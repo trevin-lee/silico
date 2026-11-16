@@ -1052,16 +1052,26 @@ fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
 /// a click on one closes the menu, and is the plane a sketch is started on. The one menu of
 /// them, which Create Sketch's button opens, and its item in CREATE's drop-down, and the
 /// canvas's context menu over nothing (`crate::canvas_menu`).
+///
+/// While they're drawn, the viewport draws all three origin planes, the one whose item the
+/// pointer is on (or has the keys' focus) lit (`crate::planes`, the prototype's
+/// `startPickPlane`).
 pub(crate) fn planes(ui: &mut Ui) -> Option<OriginPlane> {
     let mut chosen = None;
+    let mut lit = None;
     crate::menu::node(ui, CREATE_SKETCH.label, |ui| {
         for (plane, word) in PLANES {
-            if ui.button(word).clicked() {
+            let item = ui.button(word);
+            if item.hovered() || item.has_focus() {
+                lit = Some(plane);
+            }
+            if item.clicked() {
                 chosen = Some(plane);
                 ui.close();
             }
         }
     });
+    crate::planes::menu_drawn(ui.ctx(), lit);
     chosen
 }
 

@@ -274,6 +274,15 @@ impl<P: Clients + 'static> Panes<'_, P> {
         for what in asked.toggled {
             tab.toggle_shown(what);
         }
+        if let Some(shown) = asked.planes_shown {
+            tab.show_origin_planes(shown);
+        }
+        if tab.view.plane_hovered != asked.plane_hovered {
+            tab.view.plane_hovered = asked.plane_hovered;
+            // The canvas, drawn before the browser or after it, draws it from the next frame,
+            // asked for at once.
+            ui.ctx().request_repaint();
+        }
         if let Some((id, how)) = asked.selected {
             row_clicked(tab, id, how, Click::Left);
         }
@@ -1213,6 +1222,10 @@ fn units() -> String {
 #[derive(Default)]
 struct Asked {
     toggled: Vec<Hideable>,
+    /// The Origin folder's eye clicked: the planes all shown (true) or all hidden.
+    planes_shown: Option<bool>,
+    /// The origin plane whose row the pointer is on, if one is.
+    plane_hovered: Option<silico_core::document::OriginPlane>,
     /// A row clicked: its feature, and how its row selects it.
     selected: Option<(FeatureId, SelectedAs)>,
     /// A selected row Ctrl-clicked (Cmd on macOS): its feature taken out of the selection.
@@ -1322,6 +1335,8 @@ fn tree(
             caret: Some(root.open),
             eye: None,
             not_drawn: None,
+            eye_named: None,
+            fades: true,
             icon: Icon::Doc,
             prefix: None,
             name: root_name,
@@ -1338,7 +1353,15 @@ fn tree(
     if !root.open {
         return;
     }
-    let origin_open = header(ui, "Origin", None);
+    // The folder's eye is the planes', as the prototype's: open while any shows, and a
+    // click shows all three if none shows, else hides them all.
+    let any_plane = crate::planes::ORIGIN_PLANES
+        .iter()
+        .any(|(_, name)| tab.shown(&Hideable::Origin(name)));
+    let (origin_open, folder_eye) = header(ui, "Origin", None, Some((any_plane, "origin planes")));
+    if folder_eye {
+        asked.planes_shown = Some(!any_plane);
+    }
     if origin_open {
         group(ui, "Origin", |ui| {
             for (name, icon) in ORIGIN {
@@ -1352,6 +1375,8 @@ fn tree(
                         caret: None,
                         eye: Some(shown),
                         not_drawn: None,
+                        eye_named: None,
+                        fades: false,
                         icon,
                         prefix: None,
                         name,
@@ -1366,6 +1391,13 @@ fn tree(
                 );
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
+                }
+                // A plane's row under the pointer lights its plane in the canvas.
+                if let Some(plane) = crate::planes::of_row(name)
+                    && (answer.row.hovered()
+                        || answer.eye.as_ref().is_some_and(egui::Response::hovered))
+                {
+                    asked.plane_hovered = Some(plane);
                 }
                 answer
                     .row
@@ -1407,7 +1439,7 @@ fn tree(
     ];
     for (group_name, rows, icon, empty, how) in groups {
         let count = rows.is_empty().then_some("0");
-        if !header(ui, group_name, count) {
+        if !header(ui, group_name, count, None).0 {
             continue;
         }
         let sketches = group_name == "Sketches";
@@ -1432,6 +1464,8 @@ fn tree(
                         caret: None,
                         eye: Some(tab.shown(&what)),
                         not_drawn: not_drawn.as_deref(),
+                        eye_named: None,
+                        fades: true,
                         icon,
                         prefix: if sketches {
                             sketch_prefix(tab, &each.id)
@@ -1537,8 +1571,10 @@ impl Openness {
     }
 }
 
-/// A group's header row (a folder, with its caret, and `meta`): whether it's open.
-fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
+/// A group's header row (a folder, with its caret, and `meta`, and an eye if `eye` gives
+/// whether it shows and what its label names): whether it's open, and whether its eye was
+/// clicked.
+fn header(ui: &mut Ui, name: &str, meta: Option<&str>, eye: Option<(bool, &str)>) -> (bool, bool) {
     let ctx = ui.ctx().clone();
     let mut openness = Openness::load(&ctx, name);
     let answer = row(
@@ -1547,8 +1583,10 @@ fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
             id: egui::Id::new(("browser-group", name)),
             depth: 1,
             caret: Some(openness.open),
-            eye: None,
+            eye: eye.map(|(shown, _)| shown),
             not_drawn: None,
+            eye_named: eye.map(|(_, named)| named),
+            fades: false,
             icon: Icon::Folder,
             prefix: None,
             name,
@@ -1561,7 +1599,8 @@ fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
         },
     );
     openness.take(&ctx, &answer);
-    openness.open
+    let eye_clicked = answer.eye.as_ref().is_some_and(egui::Response::clicked);
+    (openness.open, eye_clicked)
 }
 
 /// A group of rows, labelled for the accessibility tree (the browser's Origin, Bodies, and
@@ -1616,6 +1655,13 @@ struct Line<'a> {
     /// Why what its eye shows is drawn nowhere, if it is (a sketch suppressed, or on no
     /// plane): its eye's tooltip says it under its word.
     not_drawn: Option<&'a str>,
+    /// What its eye's label names after its word (Hide or Show), if not its name: the
+    /// Origin folder's eye is the planes' ("origin planes"), apart from the origin point's
+    /// row, also named Origin.
+    eye_named: Option<&'a str>,
+    /// Whether its eye closed fades it: a body's and a sketch's do (the prototype's
+    /// `hidden-obj`); the origin's rows' don't, as the prototype's planes' and folder's.
+    fades: bool,
     icon: Icon,
     /// A sketch's definition prefix, before its name.
     prefix: Option<&'static str>,
@@ -1765,8 +1811,9 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
     // The eye: open while the row shows, struck through while it's hidden.
     let eye = eye.map(|(eye, shown)| {
         let word = if shown { "Hide" } else { "Show" };
+        let named = line.eye_named.unwrap_or(line.name);
         eye.widget_info(|| {
-            WidgetInfo::labeled(WidgetType::Button, true, format!("{word} {}", line.name))
+            WidgetInfo::labeled(WidgetType::Button, true, format!("{word} {named}"))
         });
         let colour = if eye.hovered() {
             ui.painter().rect_filled(
@@ -1800,7 +1847,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
             shown,
         )
     });
-    let hidden = eye.as_ref().is_some_and(|(_, shown)| !shown);
+    let hidden = line.fades && eye.as_ref().is_some_and(|(_, shown)| !shown);
     let (name_colour, icon_colour) = row_colours(hovered, selected, line.failed, hidden);
     // The icon.
     line.icon
@@ -2760,7 +2807,14 @@ mod tests {
             let header = parts(top, 1);
             assert!(labelled_at(&h, name, header.row), "{name}'s row");
             caret_drawn(&h, &header, &format!("Collapse {name}"), true);
-            assert_eq!(icon_at(&h, header.glyph), None, "{name}'s eye");
+            if name == "Origin" {
+                // The planes' eye (the prototype's folder row's), closed while none shows,
+                // as they open: Gray.400, the eye off's, the folder not faded.
+                assert!(labelled_at(&h, "Show origin planes", header.eye));
+                assert_eq!(icon_at(&h, header.glyph), Some(css::G400), "{name}'s eye");
+            } else {
+                assert_eq!(icon_at(&h, header.glyph), None, "{name}'s eye");
+            }
             assert_eq!(icon_at(&h, header.icon), Some(css::G500), "{name}'s icon");
             let right = match meta {
                 Some(meta) => {
@@ -2850,9 +2904,11 @@ mod tests {
     fn the_rows_are_drawn_as_the_prototypes_rows_with_their_eyes_icons_names_and_marks() {
         let h = drawn(modelled());
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;
-        // Depth 2, no caret: the eye, open, Gray.550; the icon, Gray.500; the name, Gray.700,
-        // a failed sketch's `--red`, cut 4 before its mark, if it has one: `--red` for an
-        // error, `--orange` for a warning, said with what's said of its feature.
+        // Depth 2, no caret: the eye, open, Gray.550 (an origin plane's closed, Gray.400: the
+        // planes open hidden, as the prototype's, its row not faded); the icon, Gray.500; the
+        // name, Gray.700, a failed sketch's `--red`, cut 4 before its mark, if it has one:
+        // `--red` for an error, `--orange` for a warning, said with what's said of its
+        // feature.
         let origin = ["Origin", "X", "Y", "Z", "XY", "XZ", "YZ"];
         let mut rows: Vec<Expected<'_>> = origin
             .iter()
@@ -2884,9 +2940,15 @@ mod tests {
                 laid.row
             );
             assert_eq!(turned_at(&h, laid.chevron), None, "{name}'s caret");
-            let eye = format!("Hide {name}");
+            let plane = ["XY", "XZ", "YZ"].contains(&name);
+            let (word, glyph) = if plane {
+                ("Show", css::G400)
+            } else {
+                ("Hide", css::G550)
+            };
+            let eye = format!("{word} {name}");
             assert!(labelled_at(&h, &eye, laid.eye), "{eye} at {:?}", laid.eye);
-            assert_eq!(icon_at(&h, laid.glyph), Some(css::G550), "{name}'s eye");
+            assert_eq!(icon_at(&h, laid.glyph), Some(glyph), "{name}'s eye");
             assert_eq!(icon_at(&h, laid.icon), Some(css::G500), "{name}'s icon");
             let right = match mark {
                 Some((tint, said)) => {
@@ -2927,6 +2989,8 @@ mod tests {
                             caret: None,
                             eye: Some(true),
                             not_drawn: None,
+                            eye_named: None,
+                            fades: true,
                             icon: Icon::Sketch,
                             prefix: Some("(–)"),
                             name: "Profile",
@@ -2998,6 +3062,8 @@ mod tests {
                                     caret: None,
                                     eye: Some(true),
                                     not_drawn: None,
+                                    eye_named: None,
+                                    fades: true,
                                     icon,
                                     prefix,
                                     name,
