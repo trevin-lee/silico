@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 
-use jiff::Zoned;
+use jiff::Timestamp;
 use jiff::tz::TimeZone;
 
 pub use crate::app_data::Read;
@@ -47,9 +47,9 @@ pub struct Recent {
     pub path: String,
     /// Whether nothing was at its path when the list was read.
     pub missing: bool,
-    /// When its file was last modified, in the platform's time zone, as it was last looked
-    /// at: none until it has been, if it's missing, or if the file system gives no time.
-    pub modified: Option<Zoned>,
+    /// When its file was last modified, as it was last looked at: none until it has been, if
+    /// it's missing, or if the file system gives no time. Said in [`Recents::zone`].
+    pub modified: Option<Timestamp>,
 }
 
 impl Recent {
@@ -90,15 +90,28 @@ enum Ask {
 
 /// What the list's thread tells the window.
 enum Told {
-    /// The list, as it is now.
-    List(Vec<Recent>),
+    /// The list, as it is now, and the platform's time zone its times are said in.
+    List(Vec<Recent>, TimeZone),
     /// A document dropped from the list because nothing was at its path.
     Gone(Recent),
+    /// A document dropped from the list as asked ([`Ask::Remove`]), its file written.
+    Removed(String),
+}
+
+/// What the list's thread told since the last poll, besides the list.
+#[derive(Debug, Default)]
+pub(crate) struct Polled {
+    /// The documents dropped because nothing was at their paths.
+    pub gone: Vec<Recent>,
+    /// The paths removed from the list as asked ([`Recents::remove`]).
+    pub removed: Vec<String>,
 }
 
 /// The list of recent documents, as the window last heard it from the thread that keeps it.
 pub struct Recents {
     list: Vec<Recent>,
+    /// The platform's time zone, as the thread last read it with the list.
+    zone: TimeZone,
     read: bool,
     asks: Option<Sender<Ask>>,
     told: Option<Receiver<Told>>,
@@ -125,6 +138,7 @@ impl Recents {
         match started {
             Ok(_) => Recents {
                 list: Vec::new(),
+                zone: TimeZone::UTC,
                 read: false,
                 asks: Some(asks),
                 told: Some(told),
@@ -141,6 +155,7 @@ impl Recents {
     pub(crate) fn unkept() -> Self {
         Recents {
             list: Vec::new(),
+            zone: TimeZone::UTC,
             read: true,
             asks: None,
             told: None,
@@ -206,23 +221,31 @@ impl Recents {
         }
     }
 
+    /// The platform's time zone, as the thread last read it: each document's time is said
+    /// in it.
+    pub fn zone(&self) -> &TimeZone {
+        &self.zone
+    }
+
     /// What the thread has told since the last poll, never waited for: the list taken, and
-    /// the documents dropped because nothing was at their paths.
-    pub(crate) fn poll(&mut self) -> Vec<Recent> {
-        let mut gone = Vec::new();
+    /// the documents dropped because nothing was at their paths or as asked.
+    pub(crate) fn poll(&mut self) -> Polled {
+        let mut polled = Polled::default();
         let Some(told) = &self.told else {
-            return gone;
+            return polled;
         };
         for told in told.try_iter() {
             match told {
-                Told::List(list) => {
+                Told::List(list, zone) => {
                     self.list = list;
+                    self.zone = zone;
                     self.read = true;
                 }
-                Told::Gone(recent) => gone.push(recent),
+                Told::Gone(recent) => polled.gone.push(recent),
+                Told::Removed(path) => polled.removed.push(path),
             }
         }
-        gone
+        polled
     }
 
     /// The thread asks `ctx` for a frame whenever it tells something.
@@ -237,12 +260,12 @@ enum Found {
     /// Nothing (a link to nothing included).
     Nothing,
     /// Something, last modified then, if the file system said when.
-    There(Option<Zoned>),
+    There(Option<Timestamp>),
 }
 
-/// What's at `path`, its time in `zone`: [`Found::Nothing`] only if nothing is there, not
-/// for a file that can't be read, which is still there, with no time.
-fn look(path: &str, zone: &TimeZone) -> Found {
+/// What's at `path`: [`Found::Nothing`] only if nothing is there, not for a file that
+/// can't be read, which is still there, with no time.
+fn look(path: &str) -> Found {
     match std::fs::metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Found::Nothing,
         Err(_) => Found::There(None),
@@ -250,8 +273,7 @@ fn look(path: &str, zone: &TimeZone) -> Found {
             metadata
                 .modified()
                 .ok()
-                .and_then(|time| jiff::Timestamp::try_from(time).ok())
-                .map(|time| time.to_zoned(zone.clone())),
+                .and_then(|time| Timestamp::try_from(time).ok()),
         ),
     }
 }
@@ -264,7 +286,7 @@ fn listed(paths: &[String], found: &BTreeMap<String, Found>) -> Vec<Recent> {
         .map(|path| {
             let (missing, modified) = match found.get(path) {
                 Some(Found::Nothing) => (true, None),
-                Some(Found::There(modified)) => (false, modified.clone()),
+                Some(Found::There(modified)) => (false, *modified),
                 None => (false, None),
             };
             Recent {
@@ -276,13 +298,11 @@ fn listed(paths: &[String], found: &BTreeMap<String, Found>) -> Vec<Recent> {
         .collect()
 }
 
-/// Each of `paths` looked for, its time in the platform's time zone (read here, on the
-/// list's thread: its rules may be read from disk).
+/// Each of `paths` looked for.
 fn look_all(paths: &[String]) -> BTreeMap<String, Found> {
-    let zone = TimeZone::system();
     paths
         .iter()
-        .map(|path| (path.clone(), look(path, &zone)))
+        .map(|path| (path.clone(), look(path)))
         .collect()
 }
 
@@ -298,16 +318,26 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wak
     let _span = tracing::info_span!("recent documents", file = %file.display()).entered();
     let mut paths: Vec<String> = read(file).map(|bytes| parse(&bytes)).unwrap_or_default();
     let mut found: BTreeMap<String, Found> = BTreeMap::new();
-    let mut told = listed(&paths, &found);
-    if tell.send(Told::List(told.clone())).is_err() {
+    // The platform's time zone, read here, on the list's thread (its rules may be read from
+    // disk), with each look through the list.
+    let mut zone = TimeZone::UTC;
+    let mut told = (listed(&paths, &found), zone.clone());
+    if tell
+        .send(Told::List(told.0.clone(), told.1.clone()))
+        .is_err()
+    {
         return;
     }
     wake.wake();
     found = look_all(&paths);
-    let now = listed(&paths, &found);
+    zone = TimeZone::system();
+    let now = (listed(&paths, &found), zone.clone());
     if now != told {
         told = now;
-        if tell.send(Told::List(told.clone())).is_err() {
+        if tell
+            .send(Told::List(told.0.clone(), told.1.clone()))
+            .is_err()
+        {
             return;
         }
         wake.wake();
@@ -317,6 +347,7 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wak
         let before = on_disk.unwrap_or_else(|| paths.clone());
         let mut after = before.clone();
         let mut gone = Vec::new();
+        let mut removed = Vec::new();
         let mut look_again = false;
         for ask in std::iter::once(first).chain(asked.try_iter()) {
             match ask {
@@ -324,7 +355,7 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wak
                     if let Some(path) = absolute(&path) {
                         after.retain(|kept| *kept != path);
                         // Opened, so there: its time read again (a save as writes it).
-                        let time = match look(&path, &TimeZone::system()) {
+                        let time = match look(&path) {
                             Found::There(time) => time,
                             Found::Nothing => None,
                         };
@@ -347,6 +378,7 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wak
                 Ask::Remove(path) => {
                     after.retain(|kept| *kept != path);
                     found.remove(&path);
+                    removed.push(path);
                 }
                 Ask::Look => look_again = true,
             }
@@ -360,18 +392,28 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wak
         paths = after;
         if look_again {
             found = look_all(&paths);
+            zone = TimeZone::system();
         } else {
             found.retain(|path, _| paths.contains(path));
         }
-        let now = listed(&paths, &found);
+        let now = (listed(&paths, &found), zone.clone());
         if now != told {
             told = now;
-            if tell.send(Told::List(told.clone())).is_err() {
+            if tell
+                .send(Told::List(told.0.clone(), told.1.clone()))
+                .is_err()
+            {
                 return;
             }
         }
         for recent in gone {
             if tell.send(Told::Gone(recent)).is_err() {
+                return;
+            }
+        }
+        // Told after the list without them, so the window has that list when it hears.
+        for path in removed {
+            if tell.send(Told::Removed(path)).is_err() {
                 return;
             }
         }
@@ -441,7 +483,7 @@ pub(crate) fn text(paths: &[&str]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
@@ -781,14 +823,20 @@ mod tests {
         assert_eq!((recent.name(), recent.folder()), ("one.silico", "/a/b"));
     }
 
-    /// The file at `path` given `seconds` after the epoch as its modified time.
-    fn modified_at(path: &Path, seconds: u64) {
+    /// The file at `path` given `time` as its modified time, as a save gives it one (std's
+    /// `File::set_modified`, as the core's cache tests set theirs).
+    pub(crate) fn modified_at(path: &Path, time: Timestamp) {
         std::fs::File::options()
             .write(true)
             .open(path)
             .unwrap()
-            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(seconds))
+            .set_modified(std::time::SystemTime::from(time))
             .unwrap();
+    }
+
+    /// `seconds` after the epoch.
+    fn second(seconds: i64) -> Timestamp {
+        Timestamp::from_second(seconds).unwrap()
     }
 
     /// Each listed document's path, whether it's missing, and its time in seconds after the
@@ -801,10 +849,7 @@ mod tests {
                 (
                     recent.path.clone(),
                     recent.missing,
-                    recent
-                        .modified
-                        .as_ref()
-                        .map(|time| time.timestamp().as_second()),
+                    recent.modified.map(|time| time.as_second()),
                 )
             })
             .collect()
@@ -817,7 +862,7 @@ mod tests {
         let gone = dir.path().join("gone.silico");
         for (path, seconds) in [(&one, 1_000_000_000), (&two, 1_700_000_000)] {
             std::fs::write(path, b"").unwrap();
-            modified_at(path, seconds);
+            modified_at(path, second(seconds));
         }
         let paths: Vec<String> = [&one, &two, &gone]
             .iter()
@@ -833,15 +878,12 @@ mod tests {
             (paths[2].clone(), true, None),
         ];
         polled_until(&mut recents, |recents| seen(recents) == want);
-        // Each time in the platform's zone, the same instant.
-        assert_eq!(
-            recents.list()[0].modified.as_ref().unwrap().time_zone(),
-            &TimeZone::system()
-        );
+        // Said in the platform's zone, read with the list.
+        assert_eq!(recents.zone(), &TimeZone::system());
         // The files change on disk: nothing is told until the list is looked through again.
-        modified_at(&one, 1_800_000_000);
+        modified_at(&one, second(1_800_000_000));
         std::fs::write(&gone, b"").unwrap();
-        modified_at(&gone, 1_600_000_000);
+        modified_at(&gone, second(1_600_000_000));
         std::fs::remove_file(&two).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
         recents.poll();
@@ -856,7 +898,7 @@ mod tests {
         // Looking writes nothing: the list's file is as it was.
         assert_eq!(std::fs::read_to_string(&file).unwrap(), text(&listed));
         // A document opened is there, with its time read as it's opened.
-        modified_at(&one, 1_900_000_000);
+        modified_at(&one, second(1_900_000_000));
         recents.opened(&paths[0]);
         let opened = vec![
             (paths[0].clone(), false, Some(1_900_000_000)),

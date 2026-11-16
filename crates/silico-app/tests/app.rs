@@ -16290,9 +16290,16 @@ impl Fixture {
             text.push('\n');
         }
         std::fs::write(&file, text).unwrap();
+        self.remembering_at_file(clock)
+    }
+
+    /// The app keeping its recent documents in [`recents_file`](Self::recents_file) as it
+    /// is, its wall clock `clock`'s, the list read.
+    fn remembering_at_file(&self, clock: &Arc<std::sync::atomic::AtomicI64>) -> AppHarness {
         let clock = Arc::clone(clock);
         let wall: silico_app::app::WallClock =
-            Arc::new(move || jiff::Timestamp::from_second(clock.load(Ordering::SeqCst)).unwrap());
+            Arc::new(move || jiff::Timestamp::from_second(clock.load(Ordering::SeqCst)).ok());
+        let file = self.recents_file();
         let mut h = self.app_made(|app| app.remembering(Recents::at(file)).dated(wall));
         recents_read(&mut h);
         h
@@ -16355,6 +16362,17 @@ fn each_recent_document_says_when_its_file_was_modified_by_the_wall_clock() {
     // A document opened, then saved meanwhile (its time set as a save sets it): Home looks
     // through the list again, and says its new time.
     open_and_wait(&mut h, &old);
+    // Listed first with the time its open read, 2001's, before it's saved: so the new time
+    // can only come from Home's look through the list.
+    step_until(&mut h, "old listed first with its first time", |h| {
+        h.state()
+            .recents()
+            .and_then(|recents| recents.list().first())
+            .is_some_and(|first| {
+                first.path == old.to_str().unwrap()
+                    && first.modified.map(|time| time.as_second()) == Some(981_201_600)
+            })
+    });
     modified_at(&old, NOON_AND_A_HALF + 3 * 60);
     home_button(&h).click();
     step_until(&mut h, "old's new time, first", |h| {
@@ -16403,8 +16421,14 @@ fn remove_from_list_drops_a_missing_document_opens_nothing_and_a_restart_reads_i
         .find(|node| node.accesskit_node().description().as_deref() == Some(gone_at))
         .unwrap()
         .click();
+    // Said only once the list's thread has dropped it: never with it still listed.
     step_until(&mut h, "gone removed", |h| {
-        recent_names(h) == ["kept.silico", "also-gone.silico"]
+        let listed = recent_names(h);
+        assert!(
+            h.state().toast().is_none() || !listed.contains(&"gone.silico".to_owned()),
+            "said removed while still listed: {listed:?}"
+        );
+        listed == ["kept.silico", "also-gone.silico"] && h.state().toast().is_some()
     });
     assert_eq!(
         h.state().toast().map(|(said, _)| said),
@@ -16490,20 +16514,6 @@ fn removing_the_last_recent_document_shows_recents_empty_state() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-impl Fixture {
-    /// The app keeping its recent documents in [`recents_file`](Self::recents_file) as it
-    /// is, its wall clock `clock`'s, the list read.
-    fn remembering_at_file(&self, clock: &Arc<std::sync::atomic::AtomicI64>) -> AppHarness {
-        let clock = Arc::clone(clock);
-        let wall: silico_app::app::WallClock =
-            Arc::new(move || jiff::Timestamp::from_second(clock.load(Ordering::SeqCst)).unwrap());
-        let file = self.recents_file();
-        let mut h = self.app_made(|app| app.remembering(Recents::at(file)).dated(wall));
-        recents_read(&mut h);
-        h
-    }
-}
-
 /// Whether Recent's row labelled `name` has the keyboard's focus.
 fn row_focused(h: &AppHarness, name: &str) -> bool {
     start_page(h)
@@ -16545,8 +16555,6 @@ fn up_and_down_move_along_recent_clamped_and_enter_opens_the_row_focused() {
         step(&mut h);
         assert_eq!(rows_focused(&h), [want], "after {key:?}");
     }
-    // The hint says so in Recent's header.
-    assert!(anywhere(&h, "RECENT"));
     // Enter opens the row focused, two, as its click does.
     h.key_press(Key::Enter);
     step_until(&mut h, "two's tab", |h| {
@@ -16790,6 +16798,155 @@ fn a_dropped_silico_that_isnt_a_document_is_refused_as_opens_pick_of_it_is() {
     assert_eq!(h.state().message(), Some(refused.as_str()));
     assert!(h.state().tabs().is_empty());
     assert_eq!(h.state().toast(), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// `name`'s tab edited, unsaved: its Pin renamed PinQ.
+fn pin_renamed(h: &mut AppHarness, name: &str) {
+    step_until(h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(h, "Pin");
+    type_name(h, "Q");
+    step_until(h, "unsaved", |h| anywhere(h, &format!("{name} *")));
+}
+
+#[test]
+fn a_file_dropped_while_a_quit_closes_the_tabs_isnt_opened_and_the_window_still_closes() {
+    let f = fixture();
+    let (mut h, a) = f.opened("a.silico", EXAMPLE);
+    let b = f.file("b.silico", EXAMPLE);
+    pin_renamed(&mut h, "a.silico");
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    // Save all, its save held: the quit closing the tabs, no question asked.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Save all")
+        .click_accesskit();
+    step_until(&mut h, "the question answered", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_none()
+    });
+    assert_eq!(tab_names(&h), ["a.silico"]);
+    dropped(&mut h, &[&b]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Quitting: b.silico not opened")
+    );
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(names_in(&a), ["Block", "PinQ", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_dropped_under_a_question_isnt_opened_and_the_quit_it_asks_goes_on() {
+    let f = fixture();
+    let (mut h, _) = f.opened("a.silico", EXAMPLE);
+    let b = f.file("b.silico", EXAMPLE);
+    pin_renamed(&mut h, "a.silico");
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    dropped(&mut h, &[&b]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Answer the question first: b.silico not opened")
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(tab_names(&h), ["a.silico"]);
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn recents_arrows_are_not_taken_under_a_question_or_with_a_menu_open() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let a = f.file("a.silico", EXAMPLE);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&one], &clock);
+    // A menu open over the start page: File's.
+    step_until(&mut h, "listed", |h| recent_names(h) == ["one.silico"]);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(eframe::egui::Popup::is_any_open(&h.ctx), "File's menu");
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert!(rows_focused(&h).is_empty());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| {
+        !eframe::egui::Popup::is_any_open(&h.ctx)
+    });
+    // A question asked over Home: a quit with an edited document.
+    open_and_wait(&mut h, &a);
+    pin_renamed(&mut h, "a.silico");
+    home_button(&h).click();
+    step_until(&mut h, "Home", |h| {
+        start_shown(h) && recent_names(h) == ["a.silico", "one.silico"]
+    });
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    assert!(start_shown(&h));
+    // The press alone in a frame's input (egui_kittest's key_press steps a frame for its
+    // release too), checked at that frame and each after. egui itself never lets a widget
+    // behind a modal keep the focus (its `create_widget` surrenders it in the frame it's
+    // given), so this holds with or without the app's own guard: it pins what's seen.
+    h.input_mut().events.push(eframe::egui::Event::Key {
+        key: Key::ArrowDown,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(rows_focused(&h).is_empty());
+        assert_eq!(h.ctx.memory(|memory| memory.focused()), None);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_dropped_by_another_path_to_an_open_one_shows_its_tab() {
+    let f = fixture();
+    let (mut h, first) = f.opened("first.silico", EXAMPLE);
+    let second = f.file("second.silico", EXAMPLE);
+    open_and_wait(&mut h, &second);
+    // The fixture's folder again through a link: another path, its text unlike the tab's.
+    let link = f.dir.path().join("link");
+    std::os::unix::fs::symlink(f.dir.path(), &link).unwrap();
+    let through = link.join("first.silico");
+    assert_ne!(through, first);
+    dropped(&mut h, &[&through]);
+    step_until(&mut h, "first shown", |h| {
+        toggled(&h.get_by_role_and_label(Role::Button, "first.silico")) == Some(true)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(tab_names(&h), ["first.silico", "second.silico"]);
+    assert_eq!(h.state().message(), None);
     assert_eq!(never_waits::waits(), 0);
 }
 

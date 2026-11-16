@@ -2286,10 +2286,7 @@ impl Tab {
     /// The tab's name: its file's, or, while it's untitled, the name it was given.
     pub fn name(&self) -> &str {
         match &self.path {
-            Some(path) => std::path::Path::new(path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(path),
+            Some(path) => crate::recent::name_of(path),
             None => &self.untitled,
         }
     }

@@ -16,7 +16,8 @@ use eframe::egui::{
     self, Align, Align2, Color32, FontFamily, FontId, Id, Key, Modifiers, Pos2, Rect, Response,
     RichText, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
 };
-use jiff::{SignedDuration, Timestamp, Zoned};
+use jiff::tz::TimeZone;
+use jiff::{SignedDuration, Timestamp};
 
 use crate::icons::{Icon, IconSize};
 use crate::recent::{Recent, Recents};
@@ -217,40 +218,37 @@ pub(crate) struct Shown<'a> {
     /// Whether Copy MCP config knows a workspace to name: if not, it says so.
     pub workspace_known: bool,
     /// Now, by the wall clock: what each recent document's time is said against ([`when`]).
-    pub now: Timestamp,
+    /// None if the system's clock can't be read as a time: then no time is said.
+    pub now: Option<Timestamp>,
     /// Whether the page takes the arrow keys this frame (Recent's ↑ and ↓): not while a text
     /// field has the keyboard, nor with a modal or a menu open.
     pub keys: bool,
 }
 
-/// The abbreviated names of the months, January first, as the prototype's dates give them
-/// (`Oct 28`).
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
 /// When a document was modified, `then`, as the start page's Recent says it at `now` (the
-/// prototype's `.when`: `12 min ago`, `Yesterday`, `Oct 28`), in `then`'s time zone. The
-/// time between them is the time elapsed (a day with a clock change counts its real hours);
-/// the days are the calendar's in that zone. In order, the first that holds:
+/// prototype's `.when`: `12 min ago`, `Yesterday`, `Oct 28`), in `zone`. The time between
+/// them is the time elapsed (a day with a clock change counts its real hours); the days are
+/// the calendar's in `zone`. In order, the first that holds:
 ///
 /// - less than a minute between them, either way: `Just now` (a time a little ahead of the
 ///   clock is a file server's clock a little ahead of this one's);
 /// - `then` a minute or more ahead of `now`: its date, as below (no time ago can be said);
 /// - less than an hour ago: whole minutes, `1 min ago` to `59 min ago`;
-/// - on `now`'s day: whole hours, `1 h ago` to `23 h ago`;
+/// - on `now`'s day: whole hours, `1 h ago` to `23 h ago` (`24 h ago` on a day of 25 hours,
+///   the clocks going back);
 /// - on the day before `now`'s: `Yesterday`;
 /// - in `now`'s year: the month's abbreviation and the day, `Oct 28` (`Oct 5`, no leading
 ///   zero);
 /// - else with the year too, `Oct 28, 2025`.
-pub fn when(then: &Zoned, now: Timestamp) -> String {
-    let now = now.to_zoned(then.time_zone().clone());
-    let ago = then.timestamp().duration_until(now.timestamp());
-    let minute = SignedDuration::from_secs(60);
-    if ago.abs() < minute {
+pub fn when(then: Timestamp, now: Timestamp, zone: &TimeZone) -> String {
+    let ago = then.duration_until(now);
+    if ago.abs() < SignedDuration::from_secs(60) {
         return "Just now".to_owned();
     }
-    let (day, today) = (then.date(), now.date());
+    let (day, today) = (
+        then.to_zoned(zone.clone()).date(),
+        now.to_zoned(zone.clone()).date(),
+    );
     if ago > SignedDuration::ZERO {
         if ago < SignedDuration::from_secs(60 * 60) {
             return format!("{} min ago", ago.as_secs() / 60);
@@ -262,15 +260,25 @@ pub fn when(then: &Zoned, now: Timestamp) -> String {
             return "Yesterday".to_owned();
         }
     }
-    let month = usize::try_from(day.month() - 1)
-        .ok()
-        .and_then(|month| MONTHS.get(month))
-        .copied()
-        .unwrap_or("");
-    if day.year() == today.year() {
-        format!("{month} {}", day.day())
+    let form = if day.year() == today.year() {
+        "%b %-d"
     } else {
-        format!("{month} {}, {}", day.day(), day.year())
+        "%b %-d, %Y"
+    };
+    // A date always has a month, a day, and a year: the ISO date only if jiff says not.
+    jiff::fmt::strtime::format(form, day).unwrap_or_else(|_| day.to_string())
+}
+
+/// How many of the files a drop's toast names before it says how many more there are.
+pub const NAMED: usize = 3;
+
+/// `names` as a toast lists them: each of the first [`NAMED`], then how many more.
+fn listed(names: &[String]) -> String {
+    match names.get(NAMED..) {
+        Some(more) if !more.is_empty() => {
+            format!("{} and {} more", names[..NAMED].join(", "), more.len())
+        }
+        _ => names.join(", "),
     }
 }
 
@@ -283,15 +291,29 @@ pub fn names_a_document(path: &Path) -> bool {
 }
 
 /// What a toast says of the files dropped on the window that aren't documents, `names` (by
-/// their file names, in the order dropped), none of which was opened.
+/// their file names, in the order dropped), none of which was opened: the first
+/// [`NAMED`] named, and how many more.
 pub fn not_documents(names: &[String]) -> String {
     match names {
         [one] => format!("{one} isn't a .silico document, so it wasn't opened"),
         names => format!(
             "{} aren't .silico documents, so they weren't opened",
-            names.join(", ")
+            listed(names)
         ),
     }
+}
+
+/// What a toast says of the files dropped on the window while a quit closes the tabs,
+/// `names`, none of which was opened.
+pub fn not_opened_quitting(names: &[String]) -> String {
+    format!("Quitting: {} not opened", listed(names))
+}
+
+/// What a toast says of the files dropped on the window while a question is asked over it
+/// (a modal: New, Open, and Recent can't be reached then either), `names`, none of which
+/// was opened.
+pub fn not_opened_asking(names: &[String]) -> String {
+    format!("Answer the question first: {} not opened", listed(names))
 }
 
 /// What the drop note under Recent says (`.drop-note`), its middle part in `.mono`.
@@ -669,20 +691,15 @@ fn keys_hint(ui: &Ui, right: Pos2) {
         opens,
         theme::TEXT_SUBDUED,
     );
-    let colours = (
-        theme::KEY_CAP_BG,
-        theme::KEY_CAP_STROKE,
-        theme::KEY_CAP_TEXT,
-    );
     let enter = vec![crate::shortcuts::key_cap(Key::Enter)];
     let enter_right = Pos2::new(opens_left - space, right.y);
-    key_caps_coloured(ui, enter_right, &enter, colours, theme::KEY_CAP_GAP);
+    key_caps(ui, enter_right, &enter, false);
     let arrows = vec![
         crate::shortcuts::key_cap(Key::ArrowUp),
         crate::shortcuts::key_cap(Key::ArrowDown),
     ];
     let arrows_right = Pos2::new(enter_right.x - key_caps_width(ui, &enter) - space, right.y);
-    key_caps_coloured(ui, arrows_right, &arrows, colours, 0.0);
+    key_caps_spaced(ui, arrows_right, &arrows, false, 0.0);
 }
 
 /// What Recent says when the app keeps no list: the platform named no folder for it, or its
@@ -717,6 +734,8 @@ fn recent(ui: &mut Ui, shown: &Shown<'_>, act: &mut Act) {
             return;
         }
         let list = recents.map(Recents::list).unwrap_or_default();
+        let utc = TimeZone::UTC;
+        let zone = recents.map_or(&utc, Recents::zone);
         let ids: Vec<Id> = list
             .iter()
             .map(|recent| ui.id().with(("recent row", &recent.path)))
@@ -729,7 +748,7 @@ fn recent(ui: &mut Ui, shown: &Shown<'_>, act: &mut Act) {
             if at > 0 {
                 ui.add_space(theme::START_RECENT_ROW_GAP);
             }
-            match row(ui, id, recent, shown.now) {
+            match row(ui, id, recent, shown.now, zone) {
                 Row::Opened => *act = Act::Recent(recent.path.clone()),
                 Row::Removed => *act = Act::Remove(recent.path.clone()),
                 Row::None => {}
@@ -874,10 +893,11 @@ pub const REMOVE_FROM_LIST: &str = "Remove from list";
 
 /// A recent document's row, `id`: its thumbnail's place (the document's icon; a warning's if
 /// nothing was at its path), its name and its folder, and "not found" if nothing was; at its
-/// right (`.when`), when it was modified, said at `now` ([`when`]), or, if it's missing,
+/// right (`.when`), when it was modified, said at `now` in `zone` ([`when`]; nothing if the
+/// clock gave no time), or, if it's missing,
 /// [`REMOVE_FROM_LIST`], a link that takes its own click. Its name and folder are cut short
 /// before that column and the grid's gap.
-fn row(ui: &mut Ui, id: Id, recent: &Recent, now: Timestamp) -> Row {
+fn row(ui: &mut Ui, id: Id, recent: &Recent, now: Option<Timestamp>, zone: &TimeZone) -> Row {
     let size = Vec2::new(ui.available_width(), theme::START_RECENT_ROW_HEIGHT);
     let (_, rect) = ui.allocate_space(size);
     let response = ui.interact(rect, id, Sense::click());
@@ -904,7 +924,7 @@ fn row(ui: &mut Ui, id: Id, recent: &Recent, now: Timestamp) -> Row {
     };
     let (when_text, link) = match (&recent.missing, &recent.modified) {
         (true, _) => (Some(REMOVE_FROM_LIST.to_owned()), true),
-        (false, Some(modified)) => (Some(when(modified, now)), false),
+        (false, Some(modified)) => (now.map(|now| when(*modified, now, zone)), false),
         (false, None) => (None, false),
     };
     let when_size = when_text.as_ref().map_or(Vec2::ZERO, |text| {
@@ -1476,7 +1496,7 @@ mod tests {
         let shown = Shown {
             recents: None,
             workspace_known: true,
-            now: NOW,
+            now: Some(NOW),
             keys: true,
         };
         let mut h = drawn(|ui| {
@@ -1645,7 +1665,7 @@ mod tests {
         let shown = Shown {
             recents: None,
             workspace_known: true,
-            now: NOW,
+            now: Some(NOW),
             keys: true,
         };
         let mut h = drawn(|ui| {
@@ -1858,7 +1878,7 @@ mod tests {
         let shown = Shown {
             recents: None,
             workspace_known: true,
-            now: NOW,
+            now: Some(NOW),
             keys: true,
         };
         let mut h = drawn(|ui| {
@@ -1916,7 +1936,7 @@ mod tests {
         assert!(ringed(&h, button(&h, "Copy MCP config")));
     }
 
-    /// A list read of `paths`, each looked for.
+    /// A list read of `paths`, each looked for: marked missing, or given its time.
     fn listing(paths: &[&str]) -> Recents {
         let bytes = crate::recent::text(paths).into_bytes();
         let dir = tempfile::tempdir().unwrap();
@@ -1925,8 +1945,12 @@ mod tests {
             Box::new(move |_| Some(bytes)),
         );
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        // Read, then each looked for: told again if any is missing.
-        while !recents.list().iter().any(|recent| recent.missing) {
+        while !(recents.list().len() == paths.len()
+            && recents
+                .list()
+                .iter()
+                .all(|recent| recent.missing || recent.modified.is_some()))
+        {
             recents.poll();
             assert!(std::time::Instant::now() < deadline, "never told");
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -1934,15 +1958,7 @@ mod tests {
         recents
     }
 
-    /// The file at `path` given `time` as its modified time.
-    fn modified_at(path: &Path, time: Timestamp) {
-        std::fs::File::options()
-            .write(true)
-            .open(path)
-            .unwrap()
-            .set_modified(std::time::SystemTime::from(time))
-            .unwrap();
-    }
+    use crate::recent::tests::modified_at;
 
     /// Twelve minutes before [`NOW`].
     const TWELVE_MIN_AGO: Timestamp = Timestamp::constant(1_794_753_000 - 12 * 60, 0);
@@ -1958,7 +1974,7 @@ mod tests {
         let shown = Shown {
             recents: Some(&recents),
             workspace_known: true,
-            now: NOW,
+            now: Some(NOW),
             keys: true,
         };
         let mut h = drawn(|ui| {
@@ -2134,7 +2150,7 @@ mod tests {
         let shown = Shown {
             recents: Some(&recents),
             workspace_known: true,
-            now: NOW,
+            now: Some(NOW),
             keys: true,
         };
         let h = drawn(|ui| {
@@ -2177,8 +2193,8 @@ mod tests {
     }
 
     /// [`when`] of `then` in `zone`, at `now`.
-    fn said(zone: &jiff::tz::TimeZone, then: &str, now: &str) -> String {
-        when(&ts(then).to_zoned(zone.clone()), ts(now))
+    fn said(zone: &TimeZone, then: &str, now: &str) -> String {
+        when(ts(then), ts(now), zone)
     }
 
     #[test]
@@ -2269,6 +2285,12 @@ mod tests {
             said(&new_york, "2026-11-01T04:30:00Z", "2026-11-01T17:00:00Z"),
             "12 h ago"
         );
+        // That day has 25 hours: from 00:05 EDT (04:05Z) to 23:55 EST (04:55Z the next
+        // day) is 24 h 50 min on one date.
+        assert_eq!(
+            said(&new_york, "2026-11-01T04:05:00Z", "2026-11-02T04:55:00Z"),
+            "24 h ago"
+        );
     }
 
     #[test]
@@ -2293,28 +2315,29 @@ mod tests {
             not_documents(&["photo.png".to_owned(), "notes.txt".to_owned()]),
             "photo.png, notes.txt aren't .silico documents, so they weren't opened"
         );
-    }
-
-    /// A list read of `paths`, each looked for, all of them first there with a time.
-    fn listing_timed(paths: &[&str]) -> Recents {
-        let bytes = crate::recent::text(paths).into_bytes();
-        let dir = tempfile::tempdir().unwrap();
-        let mut recents = Recents::reading(
-            dir.path().join("recent-documents"),
-            Box::new(move |_| Some(bytes)),
+        // Three named, then how many more: of 4, one more; of 1000, 997.
+        let named =
+            |count: usize| -> Vec<String> { (0..count).map(|n| format!("{n}.txt")).collect() };
+        assert_eq!(
+            not_documents(&named(3)),
+            "0.txt, 1.txt, 2.txt aren't .silico documents, so they weren't opened"
         );
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while !(recents.list().len() == paths.len()
-            && recents
-                .list()
-                .iter()
-                .all(|recent| recent.missing || recent.modified.is_some()))
-        {
-            recents.poll();
-            assert!(std::time::Instant::now() < deadline, "never told");
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        recents
+        assert_eq!(
+            not_documents(&named(4)),
+            "0.txt, 1.txt, 2.txt and 1 more aren't .silico documents, so they weren't opened"
+        );
+        assert_eq!(
+            not_documents(&named(1000)),
+            "0.txt, 1.txt, 2.txt and 997 more aren't .silico documents, so they weren't opened"
+        );
+        assert_eq!(
+            not_opened_quitting(&named(1000)),
+            "Quitting: 0.txt, 1.txt, 2.txt and 997 more not opened"
+        );
+        assert_eq!(
+            not_opened_asking(&["b.silico".to_owned()]),
+            "Answer the question first: b.silico not opened"
+        );
     }
 
     /// `.link`'s `--info`, and `.recent-row .when`'s size.
@@ -2335,7 +2358,7 @@ mod tests {
             modified_at(path, time);
         }
         let gone = dir.path().join("vise-jaw.silico");
-        let recents = listing_timed(&[
+        let recents = listing(&[
             bracket.to_str().unwrap(),
             plate.to_str().unwrap(),
             gone.to_str().unwrap(),
@@ -2345,7 +2368,7 @@ mod tests {
             let shown = Shown {
                 recents: Some(&recents),
                 workspace_known: true,
-                now: NOW,
+                now: Some(NOW),
                 keys: true,
             };
             let act = page(ui, &shown);
@@ -2428,6 +2451,20 @@ mod tests {
             .is_focused()
     }
 
+    /// `key` pressed twice in one frame, then a frame more.
+    fn twice_in_a_frame(h: &mut Harness<'_>, key: Key) {
+        for pressed in [true, false, true, false] {
+            h.input_mut().events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            });
+        }
+        h.run_steps(2);
+    }
+
     #[test]
     fn up_and_down_move_the_focus_along_recent_stopping_at_its_ends_and_enter_opens() {
         let dir = tempfile::tempdir().unwrap();
@@ -2441,14 +2478,14 @@ mod tests {
             })
             .collect();
         let listed: Vec<&str> = paths.iter().map(String::as_str).collect();
-        let recents = listing_timed(&listed);
+        let recents = listing(&listed);
         let keys = std::cell::Cell::new(true);
         let acts = std::cell::RefCell::new(Vec::new());
         let mut h = drawn(|ui| {
             let shown = Shown {
                 recents: Some(&recents),
                 workspace_known: true,
-                now: NOW,
+                now: Some(NOW),
                 keys: keys.get(),
             };
             let act = page(ui, &shown);
@@ -2456,11 +2493,12 @@ mod tests {
                 acts.borrow_mut().push(act);
             }
         });
-        let only = |h: &Harness<'_>, name: Option<&str>| {
-            for row in names {
+        #[track_caller]
+        fn only(h: &Harness<'_>, name: Option<&str>) {
+            for row in ["one.silico", "two.silico", "three.silico"] {
                 assert_eq!(focused(h, row), Some(row) == name, "{row}, want {name:?}");
             }
-        };
+        }
         only(&h, None);
         // Nothing focused: ↓ focuses the first row (interact.js: from -1, the next is 0);
         // then each ↓ the next, the last staying.
@@ -2482,20 +2520,32 @@ mod tests {
             Some((css::G200, CornerRadius::same(css::R)))
         );
         assert!(ringed(&h, one));
-        // Two presses in one frame move two rows.
-        h.key_press(Key::ArrowDown);
-        h.key_press(Key::ArrowDown);
-        h.run_steps(2);
+        // Two presses in one frame (egui_kittest's key_press steps a frame for each event it
+        // queues, so they're put in the frame's input together) move two rows.
+        twice_in_a_frame(&mut h, Key::ArrowDown);
         only(&h, Some("three.silico"));
+        // From the middle row, two in one frame stop at the end they run into: the last
+        // (one row on, then held there) and the first (one row back, then held).
+        for (press, want) in [
+            (Key::ArrowDown, "three.silico"),
+            (Key::ArrowUp, "one.silico"),
+        ] {
+            h.get_by_role_and_label(egui::accesskit::Role::Button, "two.silico")
+                .focus();
+            h.run_steps(2);
+            only(&h, Some("two.silico"));
+            twice_in_a_frame(&mut h, press);
+            only(&h, Some(want));
+        }
         // With a modifier, an arrow isn't Recent's.
-        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowUp);
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
         h.run_steps(2);
-        only(&h, Some("three.silico"));
+        only(&h, Some("one.silico"));
         // Enter opens the row focused, as its click does.
         assert!(acts.borrow().is_empty());
         h.key_press(Key::Enter);
         h.run_steps(2);
-        assert_eq!(*acts.borrow(), [Act::Recent(paths[2].clone())]);
+        assert_eq!(*acts.borrow(), [Act::Recent(paths[0].clone())]);
         // From another of the page's controls, ↑ goes to Recent's first row, not to the
         // control above it.
         h.get_by_role_and_label(egui::accesskit::Role::Button, "Open…")
@@ -2520,11 +2570,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let one = dir.path().join("one.silico");
         std::fs::write(&one, b"").unwrap();
-        let recents = listing_timed(&[one.to_str().unwrap()]);
+        let recents = listing(&[one.to_str().unwrap()]);
         let shown = Shown {
             recents: Some(&recents),
             workspace_known: true,
-            now: NOW,
+            now: Some(NOW),
             keys: true,
         };
         let h = drawn(|ui| {
@@ -2598,7 +2648,7 @@ mod tests {
         let shown = Shown {
             recents: Some(&empty),
             workspace_known: true,
-            now: NOW,
+            now: Some(NOW),
             keys: true,
         };
         let h = drawn(|ui| {
@@ -2619,11 +2669,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let one = dir.path().join("one.silico");
         std::fs::write(&one, b"").unwrap();
-        let recents = listing_timed(&[one.to_str().unwrap()]);
+        let recents = listing(&[one.to_str().unwrap()]);
         let shown = Shown {
             recents: Some(&recents),
             workspace_known: true,
-            now: NOW,
+            now: Some(NOW),
             keys: true,
         };
         let h = drawn(|ui| {

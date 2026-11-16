@@ -51,8 +51,32 @@ pub const FILTERS_SAID: &str =
     "F5 shows the selection filters. They live in the toolbar, under SELECT.";
 
 /// The wall clock the start page says each recent document's time against: a test's, to set
-/// by hand, or [`jiff::Timestamp::now`].
-pub type WallClock = Arc<dyn Fn() -> jiff::Timestamp + Send + Sync>;
+/// by hand, or [`system_time`]. None when it gives no time, and then no time is said.
+pub type WallClock = Arc<dyn Fn() -> Option<jiff::Timestamp> + Send + Sync>;
+
+/// The system's clock as a time, if it can be one (jiff's `Timestamp::now` would panic on a
+/// clock outside its range).
+pub fn system_time() -> Option<jiff::Timestamp> {
+    jiff::Timestamp::try_from(std::time::SystemTime::now()).ok()
+}
+
+/// What's said of a path that can't be used because it isn't UTF-8 (an Open's pick, a drop).
+fn not_utf8(path: &std::ffi::OsStr) -> String {
+    format!(
+        "{} can't be used: its path isn't UTF-8",
+        std::path::Path::new(path).display()
+    )
+}
+
+/// The session another holds the file an open was refused for, if that's why it was: the
+/// core's refusal, "… is already open in session s1" (the one place it names the holder).
+fn held_by(problems: &silico_core::command::Problems) -> Option<&str> {
+    problems
+        .errors()
+        .iter()
+        .find_map(|error| error.message().rsplit_once(" is already open in session "))
+        .map(|(_, holder)| holder)
+}
 
 /// What Reload says with a feature dialog open (⌘R, Ctrl+R elsewhere): as Rebuild everything
 /// does nothing in a dialog, the dialog's OK or Cancel comes first.
@@ -493,7 +517,7 @@ impl<P: Clients + 'static> App<P> {
             tab_in_view: None,
             recents: None,
             start_was_shown: true,
-            wall: Arc::new(jiff::Timestamp::now),
+            wall: Arc::new(system_time),
             columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
@@ -738,7 +762,7 @@ impl<P: Clients + 'static> App<P> {
             }
             self.waker_set = true;
         }
-        self.poll();
+        self.poll(ui.input(|input| input.time));
         // The candidate a card's row was hovered on last frame, lit in the canvas from now.
         for tab in &mut self.tabs {
             if tab.take_candidate_hover() {
@@ -940,14 +964,10 @@ impl<P: Clients + 'static> App<P> {
             start::Act::Open => self.ask_open(ui.ctx()),
             start::Act::Shortcuts => self.sheet = Some(Sheet::default()),
             start::Act::Recent(path) => *next_frame |= self.open_recent(&path),
+            // Said once the list's thread tells it's done (`poll`).
             start::Act::Remove(path) => {
                 if let Some(recents) = &self.recents {
                     recents.remove(&path);
-                    let name = crate::recent::name_of(&path);
-                    self.toast = Some((
-                        format!("Removed {name} from Recent"),
-                        ui.input(|input| input.time),
-                    ));
                 }
             }
             start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
@@ -958,8 +978,11 @@ impl<P: Clients + 'static> App<P> {
     /// page: "Drop a .silico file anywhere in this window to open it"), with a document
     /// shown or none: each `.silico` one ([`start::names_a_document`]) opened as Open's pick
     /// is, its refusals the same, or its tab shown if it's open already, as a recent
-    /// document's click does; the rest named in a toast, none of them opened. None is taken
-    /// while a quit closes the tabs. Whether an open was started.
+    /// document's click does; the rest named in a toast, none of them opened. None is opened
+    /// while a quit closes the tabs, or while a question is asked over the window (New,
+    /// Open, and Recent can't be reached then either, and an open answering mid-quit would
+    /// leave a tab the quit never closes): each is named in a toast, unopened. Whether an
+    /// open was started.
     fn take_drops(&mut self, ui: &Ui) -> bool {
         let dropped: Vec<PathBuf> = ui.input(|input| {
             input
@@ -969,35 +992,45 @@ impl<P: Clients + 'static> App<P> {
                 .map(|file| file.path().to_path_buf())
                 .collect()
         });
-        if dropped.is_empty() || self.quitting {
+        if dropped.is_empty() {
+            return false;
+        }
+        let name = |path: &PathBuf| {
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        };
+        let now = ui.input(|input| input.time);
+        if self.quitting || self.asking.is_some() {
+            let names: Vec<String> = dropped.iter().map(name).collect();
+            let said = if self.quitting {
+                start::not_opened_quitting(&names)
+            } else {
+                start::not_opened_asking(&names)
+            };
+            self.toast = Some((said, now));
+            ui.ctx().request_repaint();
             return false;
         }
         let mut started = false;
         let mut refused = Vec::new();
         for path in dropped {
             if !start::names_a_document(&path) {
-                refused.push(
-                    path.file_name()
-                        .unwrap_or(path.as_os_str())
-                        .to_string_lossy()
-                        .into_owned(),
-                );
+                refused.push(name(&path));
                 continue;
             }
             match path.into_os_string().into_string() {
                 Ok(path) => started |= self.open_recent(&path),
                 Err(path) => {
                     // As Open's pick of such a path is said.
-                    self.message = Some(format!(
-                        "{} can't be used: its path isn't UTF-8",
-                        std::path::Path::new(&path).display()
-                    ));
+                    self.message = Some(not_utf8(&path));
                     self.message_from = None;
                 }
             }
         }
         if !refused.is_empty() {
-            self.toast = Some((start::not_documents(&refused), ui.input(|input| input.time)));
+            self.toast = Some((start::not_documents(&refused), now));
             ui.ctx().request_repaint();
         }
         started
@@ -1105,10 +1138,17 @@ impl<P: Clients + 'static> App<P> {
 
     /// The opens under way and every tab polled; tabs whose sessions closed dropped; and
     /// what the recent documents' thread has told, a document it dropped said.
-    fn poll(&mut self) {
+    fn poll(&mut self, now: f64) {
         self.columns.poll();
-        let gone = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
-        for recent in gone {
+        let polled = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
+        // Said once the list's thread has dropped it, its list without it taken just now.
+        if let Some(path) = polled.removed.last() {
+            self.toast = Some((
+                format!("Removed {} from Recent", crate::recent::name_of(path)),
+                now,
+            ));
+        }
+        for recent in polled.gone {
             self.message = Some(format!(
                 "{} isn't in {} any more, so it's no longer listed in Recent",
                 recent.name(),
@@ -1248,6 +1288,18 @@ impl<P: Clients + 'static> App<P> {
         let opened = match response.result {
             Ok(opened) => opened,
             Err(problems) => {
+                // The file is open in a tab already, by another path to it (a link): that
+                // tab shown, as for a recent document's click on its own path.
+                if let Some(id) = held_by(&problems).and_then(|holder| {
+                    self.tabs
+                        .iter()
+                        .find(|tab| tab.id.to_string() == holder)
+                        .map(|tab| tab.id)
+                }) {
+                    self.active = Some(id);
+                    self.home = false;
+                    return;
+                }
                 self.message = Some(said(&problems));
                 self.message_from = Some(number);
                 // A recent document's: dropped from the list if nothing is at its path.
@@ -1790,10 +1842,7 @@ impl<P: Clients + 'static> App<P> {
         let path = match path.into_os_string().into_string() {
             Ok(path) => path,
             Err(path) => {
-                self.message = Some(format!(
-                    "{} can't be used: its path isn't UTF-8",
-                    std::path::Path::new(&path).display()
-                ));
+                self.message = Some(not_utf8(&path));
                 self.message_from = None;
                 if let Browsed::SaveAs {
                     session,
@@ -3372,7 +3421,7 @@ mod tests {
         assert_eq!(app.active, Some(third));
         // The third's tab closed: the first is shown in its place.
         assert!(app.sessions().close(&third).wait().result.is_ok());
-        app.poll();
+        app.poll(0.0);
         assert_eq!(app.active, Some(first));
         // The second, answering now, was asked after every open still open: it's shown.
         app.take_opens(vec![two]);
@@ -3428,7 +3477,7 @@ mod tests {
         let (first, second) = (session(&one), session(&two));
         app.take_opens(vec![one, two]);
         assert!(app.sessions().close(&first).wait().result.is_ok());
-        app.poll();
+        app.poll(0.0);
         assert_eq!(names(&app), ["two.silico"]);
         assert_eq!(app.open_numbers.keys().collect::<Vec<_>>(), [&second]);
     }
@@ -3446,7 +3495,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while app.tabs().is_empty() {
             assert!(std::time::Instant::now() < deadline, "never opened");
-            app.poll();
+            app.poll(0.0);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         // Opened: a click shows its tab, from Home, and opens nothing.
