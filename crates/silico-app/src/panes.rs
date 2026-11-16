@@ -138,6 +138,9 @@ pub struct Panes<'a, P: Clients + 'static> {
     /// What each kind of dialog was last OK'd with: the selection view's Fillet opens its
     /// dialog with them, as the toolbar's does.
     pub remembered: &'a crate::dialog::Remembered,
+    /// egui's fade of a disabled `Ui`, as the style has it: what's off of its own in a pane
+    /// fades by, behind a modal too (`crate::modal::unfaded`).
+    pub fade: f32,
     /// Whether the browser is collapsed to its strip (`#main.browser-collapsed`).
     pub browser_collapsed: bool,
     /// Whether the browser's chevron was clicked this frame, to collapse it or show it
@@ -147,6 +150,7 @@ pub struct Panes<'a, P: Clients + 'static> {
 
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     fn pane_ui(&mut self, ui: &mut Ui, _tile_id: TileId, pane: &mut Pane) -> UiResponse {
+        ui.visuals_mut().disabled_alpha = self.fade;
         let label = pane.label();
         let rect = ui.max_rect();
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
@@ -1500,29 +1504,47 @@ fn tree(
         None if any_features => "No body: nothing builds one yet".to_owned(),
         _ => "None yet. A pad makes one.".to_owned(),
     };
-    // Each group with how its rows select their features: a body's whole, a sketch as itself.
+    // Each group with how its rows select their features (a body's whole, a sketch as
+    // itself) and whether they're sketches, together so they can't drift apart.
+    struct Group<'a> {
+        name: &'static str,
+        rows: &'a [crate::tab::Row],
+        icon: Icon,
+        empty: String,
+        how: SelectedAs,
+        sketches: bool,
+    }
     let groups = [
-        (
-            "Bodies",
-            tab.browser.bodies(),
-            Icon::Body,
-            no_body,
-            SelectedAs::Body,
-        ),
-        (
-            "Sketches",
-            tab.browser.sketches(),
-            Icon::Sketch,
-            "None yet. Create Sketch starts one.".to_owned(),
-            SelectedAs::Itself,
-        ),
+        Group {
+            name: "Bodies",
+            rows: tab.browser.bodies(),
+            icon: Icon::Body,
+            empty: no_body,
+            how: SelectedAs::Body,
+            sketches: false,
+        },
+        Group {
+            name: "Sketches",
+            rows: tab.browser.sketches(),
+            icon: Icon::Sketch,
+            empty: "None yet. Create Sketch starts one.".to_owned(),
+            how: SelectedAs::Itself,
+            sketches: true,
+        },
     ];
-    for (group_name, rows, icon, empty, how) in groups {
+    for Group {
+        name: group_name,
+        rows,
+        icon,
+        empty,
+        how,
+        sketches,
+    } in groups
+    {
         let count = rows.is_empty().then_some("0");
         if !header(ui, group_name, count, None).0 {
             continue;
         }
-        let sketches = group_name == "Sketches";
         group(ui, group_name, |ui| {
             if rows.is_empty() {
                 empty_words(ui, &empty);
@@ -2481,6 +2503,7 @@ mod tests {
                             drawing: &mut shown.drawing,
                             dialog_key: None,
                             remembered: &shown.remembered,
+                            fade: ui.visuals().disabled_alpha,
                             browser_collapsed: false,
                             browser_toggled: &mut shown.toggled,
                         }
@@ -3658,6 +3681,7 @@ mod property_panel_drawn {
                             drawing: &mut shown.drawing,
                             dialog_key: None,
                             remembered: &shown.remembered,
+                            fade: ui.visuals().disabled_alpha,
                             browser_collapsed: false,
                             browser_toggled: &mut shown.toggled,
                         }

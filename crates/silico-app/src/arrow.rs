@@ -38,6 +38,11 @@
 //! has its arrow too, along the pocket's way, against the sketch's normal; a symmetric extent's
 //! one arrow stands at half its length, its value moving by twice its end's move; a two-sided
 //! extent has one for each length, the second's against the sweep. Through all has none.
+//! Where each length ends, and the way the sweep goes, are the core's
+//! ([`silico_core::sweep::prism`], of the extent the dialog's fields read as, by the reader a
+//! feature's extent is read by, [`silico_core::document::read_extent`]): the rule the rebuild's
+//! prism step reads, so an arrow stands where the preview builds. While a field the extent shows
+//! doesn't read, there's no distance arrow, as there's no sweep to build.
 //! Revolve's and groove's angle would take Fusion's angle widget, not an arrow: none is drawn.
 //!
 //! **The flip arrow** is Fusion's direction input's (docs/ux/fusion.md, *Feature dialogs*: "a
@@ -58,8 +63,9 @@
 //! held back in the release's frame, its tab shown or not (`Tab::arrows_frame`); OK, and a save
 //! that closes the tab, end a drag still under way by sending it first (`Tab::close_dialog`,
 //! `Tab::flush_held`). Esc ends a drag where it began (section 3's chain, an open drag first:
-//! `Tab::escape_first`), as the stream's cancel does; a dialog closed, or its tab beginning to
-//! close, mid-drag leaves the rest of its stream doing nothing.
+//! `Tab::escape_first`), as the stream's cancel does, but the cancel a modal coming over the
+//! window gives it (`Grip::modal_over`), which keeps the value it was dragged to; a dialog
+//! closed, or its tab beginning to close, mid-drag leaves the rest of its stream doing nothing.
 //!
 //! Each arrow is data first, in model space ([`handles`], from the dialog, the sketch's plane,
 //! and its profile's centroid, [`profile_centroid`]) and then on the screen ([`arrows`], through
@@ -72,8 +78,9 @@ use eframe::egui::{
     CornerRadius, CursorIcon, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2,
 };
 use silico_core::command::sketch::SketchRead;
-use silico_core::document::Length;
+use silico_core::document::{Length, SweepFeature, read_extent};
 use silico_core::kernel::SketchPlane;
+use silico_core::sweep;
 use silico_protocol::Camera;
 use silico_render::render::project;
 
@@ -109,7 +116,7 @@ pub struct Distance {
     pub way: [f64; 3],
     /// How far the value moves for each millimetre its end does: 1, or 2 for a symmetric
     /// extent's length, half of which lies each side of the profile.
-    pub factor: f64,
+    pub per_mm: f64,
 }
 
 /// A dialog's arrows in model space.
@@ -121,7 +128,12 @@ pub struct Handles {
     /// The way the sweep goes, a unit vector: the sketch's normal for a pad, against it for a
     /// pocket, the other way when reversed (docs/design/m3.6-sketch-features.md, *Directions*).
     pub direction: [f64; 3],
-    /// A distance arrow for each length the dialog shows that holds a length above 0.
+    /// A distance arrow for each of the extent's lengths above 0, at its end of the core's
+    /// prism ([`silico_core::sweep::prism`]); none while a field the extent shows doesn't read,
+    /// as the extent the core would read is then none. A length that reads but isn't above 0
+    /// still reads as an extent (the gate refuses it later, as it does a typed one), so the
+    /// other length keeps its arrow; it has none of its own, a sweep of no length having no
+    /// end to drag away from the profile.
     pub distances: Vec<Distance>,
     /// Whether the flip arrow shows: while the dialog's Reversed does.
     pub flip: bool,
@@ -168,64 +180,47 @@ pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
 
 /// `dialog`'s arrows in model space, its sketch on `plane` with its profile's centroid at
 /// `centroid`: a pad's and a pocket's, as the module says; none for another kind, or a dialog
-/// with no extent. A length that doesn't read as one above 0 has no arrow.
+/// with no extent. Its sweep is the core's prism of the extent the dialog's shown fields read
+/// as: none while one of them doesn't read, and a length not above 0 has no arrow.
 pub fn handles(dialog: &Dialog, plane: SketchPlane, centroid: [f64; 2]) -> Option<Handles> {
-    let along = match dialog.kind {
-        Kind::Pad => 1.0,
-        Kind::Pocket => -1.0,
+    let kind = match dialog.kind {
+        Kind::Pad => SweepFeature::Pad,
+        Kind::Pocket => SweepFeature::Pocket,
         _ => return None,
     };
-    let form = dialog
-        .inputs
-        .iter()
-        .find_map(|input| match (&input.part, &input.value) {
-            (Part::ExtentType, Value::Choice { options, chosen }) => {
-                options.get(*chosen).map(|(form, _)| form.as_str())
-            }
-            _ => None,
-        })?;
     let reversed = dialog
         .inputs
         .iter()
         .find(|input| input.part == Part::Reversed && dialog.shown(input))
         .map(|input| matches!(input.value, Value::Toggle(true)));
-    let sense = if reversed == Some(true) {
-        -along
-    } else {
-        along
-    };
-    let direction = plane.normal().map(|c| c * sense);
     let start = plane.place(centroid);
     if !finite3(start) {
         return None;
     }
-    let distances = dialog
-        .inputs
-        .iter()
-        .filter(|input| dialog.shown(input))
-        .filter_map(|input| {
-            let (Part::ExtentNumber(field), Value::Length(text)) = (input.part, &input.value)
-            else {
-                return None;
-            };
-            let value = dialog::number(text)
-                .and_then(|number| Length::parse(&number).ok())
-                .filter(|value| value.nm() > 0)?;
-            let (side, factor) = match (form, field) {
-                ("one_side" | "two_sides", "length") => (1.0, 1.0),
-                ("two_sides", "length2") => (-1.0, 1.0),
-                ("symmetric", "length") => (1.0, 2.0),
-                _ => return None,
-            };
-            let reach = value.mm() / factor;
-            let way = direction.map(|c| c * side);
-            let base: [f64; 3] = std::array::from_fn(|k| start[k] + reach * way[k]);
+    // The sweep the rebuild would make of the extent the dialog shows: none while a field of
+    // it doesn't read, whose way the flip arrow still shows.
+    let prism = dialog
+        .fields()
+        .remove("extent")?
+        .and_then(|text| read_extent(kind, &text).ok())
+        .and_then(|extent| sweep::prism(extent, plane.normal()));
+    let direction = match &prism {
+        Some(prism) => prism.direction,
+        None => sweep::prism_direction(kind, reversed == Some(true), plane.normal()),
+    };
+    let distances = prism
+        .map(|prism| prism.ends)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|end| end.length.nm() > 0)
+        .filter_map(|end| {
+            let base: [f64; 3] = std::array::from_fn(|k| start[k] + end.offset[k]);
             finite3(base).then_some(Distance {
-                part: input.part,
-                value,
+                part: Part::ExtentNumber(end.field),
+                value: end.length,
                 base,
-                way,
-                factor,
+                way: end.way,
+                per_mm: end.per_mm,
             })
         })
         .collect();
@@ -250,7 +245,7 @@ pub struct Arrow {
     pub unit: [f64; 2],
     /// Its points a millimetre along the sweep at its base, measured over [`PROBE_MM`]
     /// (`ppu`).
-    pub per_mm: f64,
+    pub points_per_mm: f64,
     /// Its shaft's end, its length past its base.
     pub tip: Pos2,
     /// Its head: its point, [`theme::ARROW_HEAD_LENGTH`] past the shaft's end, then its
@@ -260,9 +255,9 @@ pub struct Arrow {
 }
 
 impl Arrow {
-    /// The arrow from `base` along `unit` on the screen (a unit vector), `per_mm` points a
+    /// The arrow from `base` along `unit` on the screen (a unit vector), `points_per_mm` points a
     /// millimetre, its shaft `length` points; none where a place of it isn't finite.
-    fn new(base: [f64; 2], unit: [f64; 2], per_mm: f64, length: f32) -> Option<Arrow> {
+    fn new(base: [f64; 2], unit: [f64; 2], points_per_mm: f64, length: f32) -> Option<Arrow> {
         let along = |from: [f64; 2], by: f32| add(from, mul(unit, f64::from(by)));
         let tip = along(base, length);
         let across = [-unit[1], unit[0]];
@@ -275,7 +270,7 @@ impl Arrow {
         Some(Arrow {
             base: point(base)?,
             unit,
-            per_mm,
+            points_per_mm,
             tip: point(tip)?,
             head: [
                 point(along(tip, theme::ARROW_HEAD_LENGTH))?,
@@ -364,11 +359,16 @@ pub fn arrows(
         let a = on_screen(base)?;
         let b = on_screen(std::array::from_fn(|k| base[k] + PROBE_MM * way[k]))?;
         let d = sub(b, a);
-        let per_mm = length(d) / PROBE_MM;
-        if !(per_mm >= FLAT && per_mm.is_finite()) {
+        let points_per_mm = length(d) / PROBE_MM;
+        if !(points_per_mm >= FLAT && points_per_mm.is_finite()) {
             return None;
         }
-        Arrow::new(a, mul(d, 1.0 / (per_mm * PROBE_MM)), per_mm, shaft)
+        Arrow::new(
+            a,
+            mul(d, 1.0 / (points_per_mm * PROBE_MM)),
+            points_per_mm,
+            shaft,
+        )
     };
     let distances = handles
         .distances
@@ -487,13 +487,13 @@ pub fn cursor(hit: Hit) -> CursorIcon {
 
 /// The value a drag of `distance`'s arrow gives, the arrow as `arrow` was at the press at
 /// `press`, the pointer now at `at` (`onPointerDrag`): the pointer's move along the arrow's way
-/// on the screen over its points a millimetre is how far the end moved, in mm; times the
-/// arrow's factor, that's how far the value moves, to the nanometre, to `t`; and the value is
+/// on the screen over its `points_per_mm` is how far the end moved, in mm; times `distance`'s
+/// `per_mm`, that's how far the value moves, to the nanometre, to `t`; and the value is
 /// [`stepped`]'s from the value at the press to `t`. None where that isn't a length (a move
 /// past what one holds, or one that isn't a number).
 pub fn dragged(distance: &Distance, arrow: &Arrow, press: Pos2, at: Pos2) -> Option<Length> {
-    let moved = dot(sub(wide(at), wide(press)), arrow.unit) / arrow.per_mm;
-    let by = distance.factor * moved * crate::properties::NM_PER_MM as f64;
+    let moved = dot(sub(wide(at), wide(press)), arrow.unit) / arrow.points_per_mm;
+    let by = distance.per_mm * moved * crate::properties::NM_PER_MM as f64;
     if !by.is_finite() {
         return None;
     }
@@ -598,6 +598,10 @@ struct Held {
     /// Whether it still acts: not once the dialog it was pressed in has closed, or Esc has
     /// ended it.
     live: bool,
+    /// Whether a modal has come over the window while it's held ([`Grip::modal_over`]): its
+    /// cancel, the canvas's as the modal came, then keeps a drag's value rather than giving
+    /// the input back the text it held at the press.
+    kept: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -630,9 +634,11 @@ impl Grip {
     ///
     /// A press on an arrow takes its stream: its moves drag a distance arrow ([`dragged`]), its
     /// release on the flip arrow, where it was pressed, turns Reversed over, and its cancel
-    /// gives a dragged input back the text it held at the press. A stream an arrow didn't take
-    /// is given back whole, and so is a press with no dialog. Once the dialog it was pressed in
-    /// has closed, the rest of the stream asks nothing.
+    /// gives a dragged input back the text it held at the press, but once a modal has come
+    /// over the window ([`modal_over`](Self::modal_over)), when the drag keeps the value it
+    /// was dragged to. A stream an arrow didn't take is given back whole, and so is a press
+    /// with no dialog. Once the dialog it was pressed in has closed, the rest of the stream
+    /// asks nothing.
     pub fn frame(
         &mut self,
         events: &[LeftEvent],
@@ -663,6 +669,7 @@ impl Grip {
                             press_px: event.at_px,
                             took: took(arrows, dialog, at)?,
                             live: true,
+                            kept: false,
                         })
                     });
                     if self.held.is_none() {
@@ -701,6 +708,7 @@ impl Grip {
                 LeftKind::Cancel => match self.held.take() {
                     Some(Held {
                         live: true,
+                        kept: false,
                         took: Took::Distance { distance, was, .. },
                         ..
                     }) => asked.push(Asked::Restore(distance.part, was)),
@@ -744,6 +752,18 @@ impl Grip {
         match &held.took {
             Took::Distance { distance, .. } => Some(distance.part),
             Took::Flip(_) => None,
+        }
+    }
+
+    /// A modal over the window (#487), told each frame it is, before the canvas reads the
+    /// frame's events: the stream held goes on through them, so a release among them, before
+    /// the key that opened the modal, still finishes its click and a move its drag; and the
+    /// cancel the canvas gives what's still held after them keeps the drag's value, as when
+    /// its tab begins to close mid-drag (#480's review, RL1), never putting the press's text
+    /// back as Esc does.
+    pub fn modal_over(&mut self) {
+        if let Some(held) = &mut self.held {
+            held.kept = true;
         }
     }
 
