@@ -115,7 +115,7 @@ pub struct Distance {
     pub way: [f64; 3],
     /// How far the value moves for each millimetre its end does: 1, or 2 for a symmetric
     /// extent's length, half of which lies each side of the profile.
-    pub factor: f64,
+    pub per_mm: f64,
 }
 
 /// A dialog's arrows in model space.
@@ -127,7 +127,12 @@ pub struct Handles {
     /// The way the sweep goes, a unit vector: the sketch's normal for a pad, against it for a
     /// pocket, the other way when reversed (docs/design/m3.6-sketch-features.md, *Directions*).
     pub direction: [f64; 3],
-    /// A distance arrow for each length the dialog shows that holds a length above 0.
+    /// A distance arrow for each of the extent's lengths above 0, at its end of the core's
+    /// prism ([`silico_core::sweep::prism`]); none while a field the extent shows doesn't read,
+    /// as the extent the core would read is then none. A length that reads but isn't above 0
+    /// still reads as an extent (the gate refuses it later, as it does a typed one), so the
+    /// other length keeps its arrow; it has none of its own, a sweep of no length having no
+    /// end to drag away from the profile.
     pub distances: Vec<Distance>,
     /// Whether the flip arrow shows: while the dialog's Reversed does.
     pub flip: bool,
@@ -214,7 +219,7 @@ pub fn handles(dialog: &Dialog, plane: SketchPlane, centroid: [f64; 2]) -> Optio
                 value: end.length,
                 base,
                 way: end.way,
-                factor: end.per_mm,
+                per_mm: end.per_mm,
             })
         })
         .collect();
@@ -477,12 +482,12 @@ pub fn cursor(hit: Hit) -> CursorIcon {
 /// The value a drag of `distance`'s arrow gives, the arrow as `arrow` was at the press at
 /// `press`, the pointer now at `at` (`onPointerDrag`): the pointer's move along the arrow's way
 /// on the screen over its points a millimetre is how far the end moved, in mm; times the
-/// arrow's factor, that's how far the value moves, to the nanometre, to `t`; and the value is
+/// arrow's `per_mm`, that's how far the value moves, to the nanometre, to `t`; and the value is
 /// [`stepped`]'s from the value at the press to `t`. None where that isn't a length (a move
 /// past what one holds, or one that isn't a number).
 pub fn dragged(distance: &Distance, arrow: &Arrow, press: Pos2, at: Pos2) -> Option<Length> {
     let moved = dot(sub(wide(at), wide(press)), arrow.unit) / arrow.per_mm;
-    let by = distance.factor * moved * crate::properties::NM_PER_MM as f64;
+    let by = distance.per_mm * moved * crate::properties::NM_PER_MM as f64;
     if !by.is_finite() {
         return None;
     }

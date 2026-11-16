@@ -1421,4 +1421,26 @@ mod tests {
                 .all(|e| plus_zeros(e.offset) && plus_zeros(e.way))
         );
     }
+
+    #[test]
+    fn two_sides_sweep_their_sum_taken_in_nanometres_not_millimetres() {
+        // #511's review: 0.1 + 0.2 in f64 is 0.30000000000000004; 300000 nm is 0.3.
+        use crate::document::PadExtent;
+        let mm = |t: &str| Length::parse(t).unwrap();
+        let p = prism(
+            Extent::Pad(PadExtent::TwoSides {
+                length: mm("0.1"),
+                length2: mm("0.2"),
+            }),
+            [0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        assert_eq!(
+            p.span.unwrap(),
+            Span {
+                start: [0.0, 0.0, -0.2],
+                vector: [0.0, 0.0, 0.3]
+            }
+        );
+    }
 }

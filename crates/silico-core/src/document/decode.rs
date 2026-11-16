@@ -787,8 +787,9 @@ fn extent_form(
     ))
 }
 
-/// A `kind` feature's `extent`, `node`, read as a feature's is, by the readers a feature's
-/// read (and so `set_field`'s) calls: what an extent's fields mean, read in one place.
+/// A `kind` feature's `extent`, `node`, read by the same readers a feature's `extent` is read
+/// by (and so `set_field`'s), which take it as their feature's member: so it's put in an
+/// object of its own, as that member, for them to take.
 pub fn extent(kind: SweepFeature, node: Node) -> Result<Extent, Error> {
     let at = node.at;
     let feature = Node {

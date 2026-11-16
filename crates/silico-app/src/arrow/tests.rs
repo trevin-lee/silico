@@ -504,7 +504,7 @@ fn a_pads_arrow_stands_at_its_end_over_the_centroid_and_its_flip_on_the_plane() 
     near3(h.direction, [0.0, 0.0, 1.0]);
     assert_eq!(h.distances.len(), 1);
     let d = h.distances[0];
-    assert_eq!((d.part, d.value, d.factor), (LENGTH, mm("10"), 1.0));
+    assert_eq!((d.part, d.value, d.per_mm), (LENGTH, mm("10"), 1.0));
     near3(d.base, [20.0, 10.0, 10.0]);
     near3(d.way, [0.0, 0.0, 1.0]);
     assert!(h.flip);
@@ -552,7 +552,7 @@ fn a_symmetric_extents_arrow_stands_at_half_its_length_and_two_sides_have_one_ea
     let h = pad_handles(&dialog, SketchPlane::Xy);
     assert_eq!(h.distances.len(), 1);
     near3(h.distances[0].base, [20.0, 10.0, 5.0]);
-    assert_eq!(h.distances[0].factor, 2.0);
+    assert_eq!(h.distances[0].per_mm, 2.0);
     // Reversed is hidden for symmetric, so it changes nothing.
     near3(h.direction, [0.0, 0.0, 1.0]);
     assert!(!h.flip);
@@ -754,6 +754,35 @@ fn a_length_that_doesnt_read_takes_every_arrow_of_its_extent_with_it_but_the_fli
     let h = pad_handles(&dialog, SketchPlane::Xy);
     assert!(h.distances.is_empty());
     assert!(h.flip);
+    near3(h.direction, [0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn an_extent_that_doesnt_read_keeps_the_way_its_plane_and_reversed_give() {
+    // #511's review: Reversed off, the length cleared: a pad still points along +Z, a pocket
+    // against it.
+    for (kind, up) in [(Kind::Pad, 1.0), (Kind::Pocket, -1.0)] {
+        let mut dialog = dialog_of(kind);
+        set_reversed(&mut dialog, false);
+        set_text(&mut dialog, LENGTH, "");
+        let h = pad_handles(&dialog, SketchPlane::Xy);
+        assert!(h.distances.is_empty() && h.flip);
+        near3(h.direction, [0.0, 0.0, up]);
+    }
+    // On XZ, whose normal is −Y: the way is −Y, never the XY plane's +Z.
+    let mut dialog = dialog_of(Kind::Pad);
+    set_text(&mut dialog, LENGTH, "x");
+    near3(
+        pad_handles(&dialog, SketchPlane::Xz).direction,
+        [0.0, -1.0, 0.0],
+    );
+    // Symmetric with Reversed hidden but on, its length cleared: the toggle changes nothing.
+    let mut dialog = dialog_of(Kind::Pad);
+    set_form(&mut dialog, "symmetric");
+    set_reversed(&mut dialog, true);
+    set_text(&mut dialog, LENGTH, "");
+    let h = pad_handles(&dialog, SketchPlane::Xy);
+    assert!(!h.flip);
     near3(h.direction, [0.0, 0.0, 1.0]);
 }
 
@@ -1158,7 +1187,7 @@ fn a_symmetric_extents_drag_moves_its_length_by_twice_its_ends_move() {
     set_form(&mut dialog, "symmetric");
     // Its end at 5, up 5 mm: the length 10 → 20.
     let arrow = tilted_arrow(&dialog);
-    assert_eq!(arrow.distance.factor, 2.0);
+    assert_eq!(arrow.distance.per_mm, 2.0);
     assert_eq!(drag_by(&arrow, 0.0, -5.0 * SQRT_2 as f32), Some(mm("20")));
     // A quarter millimetre up: 10.5 (a half), not 10.25.
     assert_eq!(
