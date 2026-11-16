@@ -90,14 +90,21 @@ pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
     .collect()
 }
 
+/// The toast's layer: of the order under the modals ([`modal::UNDER_MODALS`]).
+fn toast_layer() -> egui::LayerId {
+    egui::LayerId::new(modal::UNDER_MODALS, egui::Id::new("toast"))
+}
+
 /// A toast saying `text` over `canvas`'s bottom right (the prototype's `.toast`): drawn in
-/// its own area, above the panes, taking no input. SEAM: the prototype's info icon and its
-/// fade, which the UI port adds.
+/// its own area, above the panes and under any modal ([`modal::UNDER_MODALS`]; the
+/// prototype's `#toasts`, z 650, under `.backdrop`, 700), so one asked while a modal is open
+/// is drawn at once under it, dimmed, its time running; taking no input. SEAM: the
+/// prototype's info icon and its fade, which the UI port adds.
 fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
     let corner =
         canvas.right_bottom() - egui::vec2(theme::TOAST_MARGIN_RIGHT, theme::TOAST_MARGIN_BOTTOM);
-    egui::Area::new(egui::Id::new("toast"))
-        .order(egui::Order::Foreground)
+    egui::Area::new(toast_layer().id)
+        .order(modal::UNDER_MODALS)
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .fixed_pos(corner)
         .interactable(false)
@@ -172,9 +179,54 @@ const SKETCH_TOOLS: [(Command, sketch::tools::Choice); 7] = {
 /// its top, centred; the palette at its right, below the ViewCube, as far from the canvas's
 /// right (and, at most, its bottom) as `PALETTE_MARGIN`.
 const SKETCH_BAR_FROM_TOP: f32 = 10.0;
+/// The least the sketch bar stands in from the canvas's left, as far as it stands below its
+/// top, and from its right, clear of the ViewCube as a banner is (#466).
+const SKETCH_BAR_FROM_SIDE: f32 = SKETCH_BAR_FROM_TOP;
+const SKETCH_BAR_FROM_RIGHT: f32 = theme::BANNER_MARGIN_RIGHT;
 const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
     egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
+
+/// Where the sketch bar showing `bar` stands over `canvas`, its top left, and the most it may
+/// be wide ([`sketch_bar_room`], [`sketch_bar_left`]), from its widths laid out in the
+/// app's style.
+fn sketch_bar_place(
+    ctx: &egui::Context,
+    canvas: egui::Rect,
+    bar: &sketch::bar::BarView,
+) -> (egui::Pos2, f32) {
+    let style = ctx.global_style();
+    let rest = sketch::bar::rest_width(ctx, &style, bar);
+    let most = sketch_bar_room(canvas.width(), rest);
+    let width = sketch::bar::bar_width(ctx, &style, bar, most);
+    let left = sketch_bar_left(canvas, width);
+    // On a whole pixel, down, so the area's own rounding to pixels never moves it right.
+    let ppp = ctx.pixels_per_point();
+    let left = (left * ppp).floor() / ppp;
+    (egui::pos2(left, canvas.top() + SKETCH_BAR_FROM_TOP), most)
+}
+
+/// The most the sketch bar may be wide over a canvas `canvas_width` wide, all of it but its
+/// name `rest` wide: the room between [`SKETCH_BAR_FROM_SIDE`] from the canvas's left and
+/// [`SKETCH_BAR_FROM_RIGHT`] from its right, clear of the ViewCube as a banner is
+/// (`crate::banner`); or, where that room is narrower, the rest and the name's least
+/// ([`sketch::bar::NAME_LEAST`]), so a usual name is whole.
+fn sketch_bar_room(canvas_width: f32, rest: f32) -> f32 {
+    let clear = canvas_width - SKETCH_BAR_FROM_SIDE - SKETCH_BAR_FROM_RIGHT;
+    clear.max(rest + sketch::bar::NAME_LEAST)
+}
+
+/// The sketch bar's left over `canvas`, the bar `width` wide: centred, moved left as far as
+/// keeps its right [`SKETCH_BAR_FROM_RIGHT`] from the canvas's right, but never nearer the
+/// canvas's left than [`SKETCH_BAR_FROM_SIDE`]. A bar wider than that room runs right from
+/// there, over the ViewCube only as far as it must.
+fn sketch_bar_left(canvas: egui::Rect, width: f32) -> f32 {
+    let centred = canvas.center().x - width / 2.0;
+    let clear_of_cube = canvas.right() - SKETCH_BAR_FROM_RIGHT - width;
+    centred
+        .min(clear_of_cube)
+        .max(canvas.left() + SKETCH_BAR_FROM_SIDE)
+}
 
 /// The bands sketch mode's panels cover, in pixels at `pixels_per_point`: from the canvas's
 /// top to as far below the sketch bar as it stands below the top, and from the canvas's
@@ -240,6 +292,41 @@ enum Asking {
     /// Whether to drop `session`'s unsaved edits to reload its file (Reload, Trevin's ask of
     /// 2026-11-09), naming them: the tab's `held_changes`' own.
     Reload(SessionId),
+}
+
+/// What's on top of the window (#487): nothing, or the modal open there. In the order they
+/// stack, the lowest first, each drawn under any after it: what's drawn at a level takes
+/// input only while nothing after it is open, and everything under the one on top is inert
+/// (`modal::inert`), as SolidWorks' and Fusion's modals leave the window behind them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum OnTop {
+    /// No modal: the window takes input.
+    Window,
+    /// The over-define prompt (SD7), drawn with sketch mode's canvas.
+    Offer,
+    /// The shortcut sheet.
+    Sheet,
+    /// What's Wrong.
+    WhatsWrong,
+    /// What the app is asking ([`Asking`]), drawn last, over everything.
+    Asking,
+}
+
+/// The name of the modal of what the app is asking.
+const ASKING: &str = "asking";
+
+impl OnTop {
+    /// The layer egui draws the modal on: none for the window.
+    fn layer(self) -> Option<egui::LayerId> {
+        let id = match self {
+            OnTop::Window => return None,
+            OnTop::Offer => sketch::dimension::offer_id(),
+            OnTop::Sheet => sheet::id(),
+            OnTop::WhatsWrong => crate::whats_wrong::id(),
+            OnTop::Asking => egui::Id::new(ASKING),
+        };
+        Some(egui::LayerId::new(egui::Order::Foreground, id))
+    }
 }
 
 /// What a native dialog's answer goes to.
@@ -368,6 +455,14 @@ pub struct App<P: Clients + 'static> {
     /// Enter or Esc pressed this frame with a modal already open at its start: the modal's
     /// OK or Cancel, taken before anything else could read it.
     modal_key: Option<Key>,
+    /// Each widget a modal took the keyboard's focus from (`App::frame`), and the modal on
+    /// top as it did, the earliest first: given it back once that modal has gone, as
+    /// SolidWorks' and Windows' dialogs give the focus back to the control that held it.
+    focus_behind: Vec<(egui::Id, OnTop)>,
+    /// The tab ⌘W (Ctrl+W) asked to close this frame: closed, or asked about, once the canvas
+    /// has had the frame's events (`after_drawing`), so an edit a release before the key made
+    /// (a line's) is asked about, as an edit made before the frame is.
+    close_key: Option<SessionId>,
     /// The canvas's place in the window, as the panes last laid it out: where sketch mode's
     /// palette floats.
     canvas: Option<egui::Rect>,
@@ -498,6 +593,8 @@ impl<P: Clients + 'static> App<P> {
             wakes: Arc::new(AtomicU64::new(0)),
             waker_set: false,
             modal_key: None,
+            focus_behind: Vec::new(),
+            close_key: None,
             canvas: None,
             drawing: crate::viewport::Drawing::default(),
             browser: None,
@@ -604,6 +701,44 @@ impl<P: Clients + 'static> App<P> {
         }
         let at = self.active_place()?;
         self.tabs.get_mut(at).filter(|tab| tab.whats_wrong)
+    }
+
+    /// The tab shown, if its sketch mode's over-define prompt is open over it (not under
+    /// the start page, where sketch mode's canvas isn't drawn).
+    fn offer_shown(&mut self) -> Option<&mut Tab> {
+        if self.start_shown() {
+            return None;
+        }
+        let at = self.active_place()?;
+        self.tabs.get_mut(at).filter(|tab| {
+            tab.sketch
+                .as_ref()
+                .is_some_and(|mode| mode.offer().is_some())
+        })
+    }
+
+    /// The modal on top of the window, if one is open: what's drawn under it is inert.
+    fn on_top(&self) -> OnTop {
+        if self.asking.is_some() {
+            return OnTop::Asking;
+        }
+        let shown = if self.start_shown() {
+            None
+        } else {
+            self.active_place().and_then(|at| self.tabs.get(at))
+        };
+        if shown.is_some_and(|tab| tab.whats_wrong) {
+            OnTop::WhatsWrong
+        } else if self.sheet.is_some() {
+            OnTop::Sheet
+        } else if shown
+            .and_then(|tab| tab.sketch.as_ref())
+            .is_some_and(|mode| mode.offer().is_some())
+        {
+            OnTop::Offer
+        } else {
+            OnTop::Window
+        }
     }
 
     /// The documents opened lately, if the app keeps a list.
@@ -765,12 +900,50 @@ impl<P: Clients + 'static> App<P> {
         let (mut next_frame, dialog_key) = self.keys(ui);
         // Files dropped on the window, opened as Open's pick is.
         next_frame |= self.take_drops(ui);
-        // The canvas's Select Other closed under a modal, the shortcut sheet, or What's
-        // Wrong (one its keys just opened, `?`, too): the focus and the keys are theirs.
-        let over =
-            self.asking.is_some() || self.sheet.is_some() || self.whats_wrong_shown().is_some();
-        if over && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
-            tab.close_select_other(ui.ctx());
+        // Under a modal (the shortcut sheet, What's Wrong, and the over-define prompt too; one
+        // its keys just opened, `?`, as well), the window takes no input (#487): drawn inert,
+        // so no button behind it is clicked, by the pointer or through the accessibility tree,
+        // where each is off; the keys are the modal's (`keys`). What it holds goes on: its
+        // tabs polled, rebuilt, and watched on disk as ever. The canvas's Select Other and
+        // sketch mode's canvas menu close, and so does any egui menu open (the File menu, a
+        // feature's), whose items would stand over the window on a layer of their own; sketch
+        // mode's floating panels are drawn inert (`sketch_canvas`), and what the pointer held
+        // in the canvas ends (`crate::viewport`). A modal that opens or closes later in the
+        // frame (a click's) has the window drawn so from the next, asked for at once
+        // (`after_drawing`).
+        let top = self.on_top();
+        if let Some(modal) = top.layer() {
+            // The keyboard's focus taken from what holds it behind the modal (a field the
+            // modal came over), before anything is drawn: egui gives a focused field the
+            // frame's typing before it finds the field off. The modal's own fields keep it.
+            // It's given back once the modal has gone (`give_focus_back`, in `after_drawing`).
+            let ctx = ui.ctx().clone();
+            if let Some(id) = ctx.memory(|memory| memory.focused())
+                && ctx
+                    .read_response(id)
+                    .is_some_and(|focused| focused.layer_id != modal)
+            {
+                ctx.memory_mut(|memory| memory.surrender_focus(id));
+                self.focus_behind.retain(|(taken, _)| *taken != id);
+                self.focus_behind.push((id, top));
+            }
+            if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+                // A dialog's arrow held takes the frame's events as ever (a release before the
+                // modal's key finishes its click, a move its drag), and keeps the value it was
+                // dragged to when the canvas cancels what the pointer still holds after them
+                // (`crate::viewport`), its stream ending there; while what else the canvas
+                // held ends undone: a sketch drag from its begin state, a box selecting
+                // nothing, a tool's gesture adding nothing.
+                tab.arrow_under_modal();
+                tab.close_select_other(ui.ctx());
+                // And sketch mode's canvas menu, so the next Esc is the modal's, never the
+                // menu's behind it (`Tab::escape_first` closes a menu first).
+                if let Some(mode) = tab.sketch.as_mut() {
+                    mode.menu_at = None;
+                }
+            }
+            egui::Popup::close_all(ui.ctx());
+            modal::inert(ui);
         }
         next_frame |= renamed;
         next_frame |= self.take_browsed();
@@ -821,7 +994,7 @@ impl<P: Clients + 'static> App<P> {
             self.start_act(ui, act, &mut next_frame);
             // A drop's refusal, or a removal from Recent, over the page's bottom right.
             self.show_toast(ui, page);
-            self.after_drawing(ui, next_frame);
+            self.after_drawing(ui, next_frame, top);
             return;
         }
         self.toolbar(ui, &mut next_frame);
@@ -866,21 +1039,27 @@ impl<P: Clients + 'static> App<P> {
                 ..
             } = self;
             let mut browser_toggled = false;
-            let mut panes = Panes {
-                tab: active.and_then(|at| tabs.get_mut(at)),
-                sessions,
-                name,
-                next_frame: &mut next_frame,
-                drawing,
-                dialog_key,
-                remembered,
-                browser_collapsed: columns.collapsed(),
-                browser_toggled: &mut browser_toggled,
-            };
             let area = ui.available_rect_before_wrap();
             let laid = columns.laid(area.width());
             panes::fit(tree, &laid);
-            tree.ui(&mut panes, ui);
+            // egui_tiles draws each pane in a `Ui` of its own, off as the window is under a
+            // modal: with none of egui's fade, as `modal::inert` has none.
+            let ctx = ui.ctx().clone();
+            modal::unfaded(&ctx, top > OnTop::Window, |fade| {
+                let mut panes = Panes {
+                    tab: active.and_then(|at| tabs.get_mut(at)),
+                    sessions,
+                    name,
+                    next_frame: &mut next_frame,
+                    drawing,
+                    dialog_key,
+                    remembered,
+                    fade,
+                    browser_collapsed: columns.collapsed(),
+                    browser_toggled: &mut browser_toggled,
+                };
+                tree.ui(&mut panes, ui);
+            });
             // Over the panes' borders, after them, so a press there drags the border.
             columns.handles(ui, area, laid);
             // The browser's chevron: collapsed or shown, laid out so from the next frame.
@@ -898,7 +1077,8 @@ impl<P: Clients + 'static> App<P> {
             self.disk_banner(ui, canvas, &mut next_frame);
             self.show_toast(ui, canvas);
         });
-        self.sketch_canvas(ui, &mut next_frame);
+        let modify_layer = self.sketch_canvas(ui, &mut next_frame);
+        self.raise_toast(ui.ctx(), modify_layer);
         // A toast the tab shown asked for this frame (a box's), drawn from the next; one a tab
         // not shown asked for (its drag ended as it was left) dropped, never shown later out
         // of its context.
@@ -914,7 +1094,35 @@ impl<P: Clients + 'static> App<P> {
             self.toast = Some((text, ui.input(|input| input.time)));
             ui.ctx().request_repaint();
         }
-        self.after_drawing(ui, next_frame);
+        self.after_drawing(ui, next_frame, top);
+    }
+
+    /// The keyboard's focus given back to each widget a modal took it from, the frame drawn
+    /// with the modal it was taken under gone (`top`, the modal the frame was drawn under, is
+    /// below it): as SolidWorks' and Windows' dialogs give it back to the control that held
+    /// it, so what's typed after the modal reaches the field it went to before. Only to one
+    /// drawn this frame, and on. One drawn inert under a lower modal still open (an
+    /// over-define offer that waited under a question shows once it has gone) waits for it
+    /// to go too, kept with what's under it. One not drawn now (its tab closed, or not shown)
+    /// is let go: drawn inert under the modal, it's off in what egui read of it last frame,
+    /// and egui would otherwise hold the focus on a widget that isn't there. At the frame's
+    /// end, after the widgets are drawn: egui keeps the focus off what's under the modal it
+    /// drew the frame before, so a focus asked for at the frame's top would be given up as
+    /// its widget is drawn; asked for now, the widget has it from the next frame.
+    fn give_focus_back(&mut self, ctx: &egui::Context, top: OnTop) {
+        while let Some(&(id, under)) = self.focus_behind.last()
+            && top < under
+        {
+            let drawn = ctx.read_response(id);
+            let on = drawn.as_ref().is_some_and(egui::Response::enabled);
+            if !on && drawn.is_some() && top > OnTop::Window {
+                break;
+            }
+            self.focus_behind.pop();
+            if on {
+                ctx.memory_mut(|memory| memory.request_focus(id));
+            }
+        }
     }
 
     /// The active tab's rename field, if a press of the pointer this frame lands away from
@@ -992,12 +1200,15 @@ impl<P: Clients + 'static> App<P> {
                 .into_owned()
         };
         let now = ui.input(|input| input.time);
-        if self.quitting || self.asking.is_some() {
+        // Under a modal, as no other input acts behind one (#487): said, and opened by none.
+        let top = self.on_top();
+        if self.quitting || top != OnTop::Window {
             let names: Vec<String> = dropped.iter().map(name).collect();
-            let said = if self.quitting {
-                start::not_opened_quitting(&names)
-            } else {
-                start::not_opened_asking(&names)
+            let said = match top {
+                _ if self.quitting => start::not_opened_quitting(&names),
+                OnTop::Sheet => start::not_opened_until_closed("the shortcut sheet", &names),
+                OnTop::WhatsWrong => start::not_opened_until_closed("What's Wrong", &names),
+                OnTop::Asking | OnTop::Offer | OnTop::Window => start::not_opened_asking(&names),
             };
             self.toast = Some((said, now));
             ui.ctx().request_repaint();
@@ -1056,8 +1267,9 @@ impl<P: Clients + 'static> App<P> {
 
     /// The frame's end, the window drawn: what's asked, as a modal; the window closed once
     /// a quit has closed every tab, or kept open while one holds edits; and the next frame
-    /// asked for, if `next_frame` (or what's done here) says it's to be.
-    fn after_drawing(&mut self, ui: &mut Ui, mut next_frame: bool) {
+    /// asked for, if `next_frame` (or what's done here) says it's to be, or if the modal on
+    /// top is no longer `top`, the one the window was drawn under.
+    fn after_drawing(&mut self, ui: &mut Ui, mut next_frame: bool, top: OnTop) {
         // A border's drag whose release the panes didn't see (they're gone) ended.
         self.columns.settle(ui.ctx());
         // The dialog OK'd this frame, if one was (one tab's panes draw a frame), remembered.
@@ -1066,16 +1278,18 @@ impl<P: Clients + 'static> App<P> {
                 self.remembered.keep(&oked);
             }
         }
-        // The sheet under a question asked over it meanwhile (a quit, a replace).
+        // The sheet under a question asked over it meanwhile (a quit, a replace), inert.
+        let behind = self.on_top() > OnTop::Sheet;
         if let Some(open) = self.sheet.as_mut()
-            && sheet::show(ui.ctx(), open)
+            && sheet::show(ui.ctx(), open, behind)
         {
             self.sheet = None;
         }
         // What's Wrong, the shown tab's, the same.
+        let behind = self.on_top() > OnTop::WhatsWrong;
         let sessions = Arc::clone(&self.sessions);
         if let Some(tab) = self.whats_wrong_shown() {
-            let (asked, hovered) = crate::whats_wrong::show(ui.ctx(), tab);
+            let (asked, hovered) = crate::whats_wrong::show(ui.ctx(), tab, behind);
             tab.hover_candidate(hovered);
             match asked {
                 crate::whats_wrong::Asked::None => {}
@@ -1092,6 +1306,16 @@ impl<P: Clients + 'static> App<P> {
                     next_frame |= tab.card_asked(&sessions, asked);
                 }
             }
+        }
+        // ⌘W's Close (`command_keys`), decided now the canvas has had the frame's events:
+        // a release among them before the key (a line's, a dimension's) has made its edit,
+        // which the close then asks about, as one made in an earlier frame. Not over a
+        // question asked meanwhile (a click's), as no key acts under one; an over-define
+        // offer come meanwhile waits under the close's question.
+        if let Some(id) = self.close_key.take()
+            && self.on_top() <= OnTop::Offer
+        {
+            self.close(id);
         }
         self.ask(ui, &mut next_frame);
         next_frame |= self.next_quit_save(ui.ctx());
@@ -1116,6 +1340,10 @@ impl<P: Clients + 'static> App<P> {
                 self.asking = Some(Asking::Quit);
             }
         }
+        // A modal opened or closed after the window was drawn (a click's, a quit's): the
+        // window drawn again at once, inert under it or taking input again.
+        next_frame |= self.on_top() != top;
+        self.give_focus_back(ui.ctx(), top);
         if next_frame {
             // A command started is polled next frame, even if it answered at once; a key
             // taken has its change drawn there.
@@ -1369,41 +1597,61 @@ impl<P: Clients + 'static> App<P> {
     /// In sketch mode, Del (or ⌫) deletes the sketch's selection instead, never a feature,
     /// F2 says why it renames nothing (as its menu item is off), and Ctrl+Enter finishes
     /// the sketch.
-    /// With a modal open (the sheet too), none acts: Esc is the modal's Cancel (the sheet's
-    /// close), and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
+    /// With a modal open (the sheet, What's Wrong, and the over-define prompt too), none
+    /// acts: Esc is the modal's Cancel (the sheet's close; the prompt's after a drag held),
+    /// and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
     /// here and given to it once its inputs have taken this frame's typing (`Panes::dialog`,
     /// in `crate::panes`). Whether the frame after is to be asked for (a command started, a
-    /// modal's key taken, or an Esc [`command_keys`](Self::command_keys) takes; not the
-    /// sheet's or What's Wrong's Esc, which closes it and asks nothing), and the dialog's key.
+    /// modal's key taken, the prompt's Esc, or an Esc [`command_keys`](Self::command_keys)
+    /// takes; not the sheet's or What's Wrong's Esc, which closes it and asks nothing), and
+    /// the dialog's key.
     fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         self.modal_key = None;
-        if self.asking.is_some() {
-            // A modal open since the last frame: Esc is its Cancel, and Enter its OK unless
-            // a button or a checkbox of its has focus, whose own click Enter then is. Taken
-            // only now, so an Enter that opened the modal (on a focused menu item) isn't
-            // also its OK.
-            let escape = shortcuts::take(ui, Command::Cancel);
-            let enter = !escape && enter_is_ok(ui);
-            self.modal_key = match (escape, enter) {
-                (true, _) => Some(Key::Escape),
-                (false, true) => Some(Key::Enter),
-                (false, false) => None,
-            };
-            return (escape || enter, None);
-        }
-        if self.sheet.is_some() {
-            // The sheet is a modal too: Esc closes it, and no other command acts under it.
-            if shortcuts::take(ui, Command::Cancel) {
-                self.sheet = None;
+        // The modal on top takes the keys, in the order the modals stack ([`OnTop`]).
+        match self.on_top() {
+            OnTop::Asking => {
+                // A modal open since the last frame: Esc is its Cancel, and Enter its OK
+                // unless a button or a checkbox of its has focus, whose own click Enter then
+                // is. Taken only now, so an Enter that opened the modal (on a focused menu
+                // item) isn't also its OK.
+                let escape = shortcuts::take(ui, Command::Cancel);
+                let enter = !escape && enter_is_ok(ui);
+                self.modal_key = match (escape, enter) {
+                    (true, _) => Some(Key::Escape),
+                    (false, true) => Some(Key::Enter),
+                    (false, false) => None,
+                };
+                return (escape || enter, None);
             }
-            return (false, None);
-        }
-        if let Some(tab) = self.whats_wrong_shown() {
-            // What's Wrong too: Esc closes it, and no other command acts under it.
-            if shortcuts::take(ui, Command::Cancel) {
-                tab.whats_wrong = false;
+            OnTop::WhatsWrong => {
+                // What's Wrong too: Esc closes it, and no other command acts under it.
+                if shortcuts::take(ui, Command::Cancel)
+                    && let Some(tab) = self.whats_wrong_shown()
+                {
+                    tab.whats_wrong = false;
+                }
+                return (false, None);
             }
-            return (false, None);
+            OnTop::Sheet => {
+                // The sheet is a modal too: Esc closes it, and no other command acts under it.
+                if shortcuts::take(ui, Command::Cancel) {
+                    self.sheet = None;
+                }
+                return (false, None);
+            }
+            OnTop::Offer => {
+                // The over-define prompt too (SD7): Esc goes first to what takes it before
+                // the prompt (a sketch drag held, ended from its begin state), then is its
+                // Cancel (`Tab::escape_first`), the frame after asked for; 1 and 2 are its
+                // choices, which it takes as it's drawn; no other command acts under it.
+                let esc = shortcuts::take(ui, Command::Stop);
+                let sessions = Arc::clone(&self.sessions);
+                if esc && let Some(tab) = self.offer_shown() {
+                    tab.escape_first(&sessions);
+                }
+                return (esc, None);
+            }
+            OnTop::Window => {}
         }
         let renamed = self.rename_before_command(ui.ctx());
         let (next_frame, dialog_key) = self.command_keys(ui);
@@ -1665,7 +1913,7 @@ impl<P: Clients + 'static> App<P> {
             tab.sketch_toggle(choice);
         }
         if construction {
-            tab.sketch_toggle_construction();
+            tab.sketch_construction(sessions);
         }
         if sketch_enter {
             tab.sketch_enter(sessions);
@@ -1717,8 +1965,9 @@ impl<P: Clients + 'static> App<P> {
             let now = ui.input(|input| input.time);
             self.reload(id, now);
         }
-        if close && let Some(id) = self.active {
-            self.close(id);
+        if close {
+            // Asked once the canvas has had the frame's events (`after_drawing`).
+            self.close_key = self.active;
         }
         (
             save || undo
@@ -1731,10 +1980,30 @@ impl<P: Clients + 'static> App<P> {
                 || rebuild_all
                 || deleted
                 || sketch_delete
+                || construction
                 || finish
                 || sketch_enter,
             dialog_key,
         )
+    }
+
+    /// The toast shown this frame, if one is, raised over everything else of its order
+    /// (egui's `Middle`, under every modal): over sketch mode's bar and palette and the
+    /// timeline's rename field, as the prototype's `#toasts` (z 650) are over `.sketch-bar`
+    /// (26) and `.palette` (22), so a press that raises one of them (egui raises an area
+    /// clicked) never stands it over the toast; and right over the Modify box (`.modify-box`,
+    /// 40), if it's drawn (`modify`), which raises itself each frame too: egui's end-of-pass
+    /// sort keeps the order of the layers that each ask to be on top, so a box first shown
+    /// after the toast would stay over it, but a layer's sublayer is placed straight after it.
+    fn raise_toast(&self, ctx: &egui::Context, modify: Option<egui::LayerId>) {
+        if self.toast.is_none() {
+            return;
+        }
+        let layer = toast_layer();
+        ctx.move_to_top(layer);
+        if let Some(modify) = modify {
+            ctx.set_sublayer(modify, layer);
+        }
     }
 
     /// The toast, if one is shown, over `canvas`'s bottom right, until
@@ -2393,7 +2662,10 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
-            Some(toolbar::Act::Construction) => tab.sketch_toggle_construction(),
+            Some(toolbar::Act::Construction) => {
+                tab.sketch_construction(&self.sessions);
+                *next_frame = true;
+            }
             Some(toolbar::Act::Relate(relation)) => {
                 tab.sketch_relate(&self.sessions, relation);
                 *next_frame = true;
@@ -2449,8 +2721,9 @@ impl<P: Clients + 'static> App<P> {
 
     /// Sketch mode's panels in the canvas while a sketch is open in the tab shown (the
     /// prototype's): the sketch bar at the canvas's top centre, its Finish Sketch and Cancel
-    /// taken, and the Sketch Palette at its right.
-    fn sketch_canvas(&mut self, ui: &mut Ui, next_frame: &mut bool) {
+    /// taken, and the Sketch Palette at its right, each of the order under the modals
+    /// ([`modal::UNDER_MODALS`]). The Modify box's layer, if it's drawn.
+    fn sketch_canvas(&mut self, ui: &mut Ui, next_frame: &mut bool) -> Option<egui::LayerId> {
         // A tab not shown has no menu open: it closes as the tab is hidden.
         let shown_at = self.active_place();
         for (at, tab) in self.tabs.iter_mut().enumerate() {
@@ -2460,15 +2733,19 @@ impl<P: Clients + 'static> App<P> {
                 mode.menu_at = None;
             }
         }
+        // Under a modal, the bar, the palette, and the Modify box are inert, and the canvas's
+        // menu closed. The over-define prompt waits under one asked over it: egui raises an
+        // area first shown over every other of its order (its end-of-pass sort keeps that
+        // order, whichever asks to be on top), so drawn then it would stand over the modal
+        // on top, which [`OnTop`] has over it; it shows once that one has gone, as a replace's
+        // question waits for no other to be asked.
+        let top = self.on_top();
+        let (behind, offer_waits) = (top > OnTop::Window, top > OnTop::Offer);
         let sessions = &self.sessions;
-        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-            return;
-        };
+        let tab = self.active_place().and_then(|at| self.tabs.get_mut(at))?;
         let name = tab.sketch_name();
         let (revision, enabled, id) = (tab.revision, !tab.closing(), tab.id);
-        let Some(mode) = tab.sketch.as_mut() else {
-            return;
-        };
+        let mode = tab.sketch.as_mut()?;
         let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
         let bar = mode.bar_view(&name, enabled);
         let view = mode.palette_view(revision, tab.drag.as_ref());
@@ -2478,25 +2755,37 @@ impl<P: Clients + 'static> App<P> {
         // Known by the tab's session and the sketch mode's opening, so each sketch mode's
         // boxes are its own.
         let owner = sketch::dimension::modify_owner(&id, mode.serial);
-        let offer = mode.offer_view(&name);
+        let modify_layer = modify.as_ref().map(|view| {
+            let area = sketch::dimension::modify_area(owner, view.opened);
+            egui::LayerId::new(modal::UNDER_MODALS, area)
+        });
+        let offer = mode.offer_view(&name).filter(|_| !offer_waits);
+        if behind {
+            mode.menu_at = None;
+        }
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
-        let bar_drawn = egui::Area::new(sketch::dimension::bar_area(&id))
-            .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
-            .pivot(egui::Align2::CENTER_TOP)
-            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar))
-            .response
-            .rect;
+        let (bar_at, bar_width) = sketch_bar_place(ui.ctx(), canvas, &bar);
+        let area = egui::Area::new(sketch::dimension::bar_area(&id))
+            .order(modal::UNDER_MODALS)
+            .fixed_pos(bar_at)
+            .pivot(egui::Align2::LEFT_TOP);
+        let bar_drawn = modal::area(ui.ctx(), area, behind, |ui| {
+            action = sketch::bar::sketch_bar(ui, &bar, bar_width);
+        })
+        .response
+        .rect;
         // Pinned at the canvas's top right, under the ViewCube, as the prototype's is, and
         // kept above the canvas's bottom by the prototype's margin: its body scrolls if it
         // doesn't fit.
         let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
         let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
-        let shown = egui::Area::new(sketch::dimension::palette_area(&id))
-            .fixed_pos(palette_at)
-            .show(ui.ctx(), |ui| {
-                sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
-            });
+        let area = egui::Area::new(sketch::dimension::palette_area(&id))
+            .order(modal::UNDER_MODALS)
+            .fixed_pos(palette_at);
+        let shown = modal::area(ui.ctx(), area, behind, |ui| {
+            sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
+        });
         let (look_at, palette) = (shown.inner, shown.response.rect);
         mode.panels = Some(sketch::Panels {
             bar: bar_drawn,
@@ -2513,9 +2802,9 @@ impl<P: Clients + 'static> App<P> {
         }
         *next_frame |= action != BarAction::None;
         // Whole in the canvas, and clear of the palette.
-        if let Some(asked) = modify
-            .and_then(|view| sketch::dimension::modify_box(ui.ctx(), owner, &view, canvas, palette))
-        {
+        if let Some(asked) = modify.and_then(|view| {
+            sketch::dimension::modify_box(ui.ctx(), owner, &view, canvas, palette, behind)
+        }) {
             tab.sketch_modify(sessions, asked);
             *next_frame = true;
         }
@@ -2567,6 +2856,7 @@ impl<P: Clients + 'static> App<P> {
             tab.sketch_offer(sessions, choice);
             *next_frame = true;
         }
+        modify_layer
     }
 
     /// The banner over the canvas (section 4; DESIGN.md's 6c and 6d): a file changed on
@@ -2743,7 +3033,7 @@ impl<P: Clients + 'static> App<P> {
         // question has gone; and a close refused (a typed Save As cancelled that was to close).
         let mut save_panel = None;
         let mut refused = None;
-        modal::show(ui.ctx(), egui::Id::new("asking"), |ui| match asking {
+        modal::show(ui.ctx(), egui::Id::new(ASKING), |ui| match asking {
             Asking::Open => {
                 modal::head(ui, Some(Icon::Open), "Open document");
                 let beside = self.browse_button();
@@ -3175,11 +3465,108 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        Answered, App, Opening, Part, held_list, mine_row, sketch_inset, split_answered, theirs_row,
+        Answered, App, Opening, Part, held_list, mine_row, sketch_bar_left, sketch_bar_place,
+        sketch_bar_room, sketch_inset, split_answered, theirs_row,
     };
     use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
     use crate::theme;
+
+    #[test]
+    fn the_sketch_bars_room_is_clear_of_the_viewcube_unless_that_leaves_a_name_too_little() {
+        // All of the bar but its name 400 wide: the room between 10 from the canvas's left
+        // and 148 from its right (its width less 158), but never less than the rest and the
+        // name's 96, 496: the two meet at a canvas 400 + 96 + 158 = 654 wide.
+        for (canvas, most) in [
+            (340.0, 496.0),
+            (456.0, 496.0),
+            (653.0, 496.0),
+            (654.0, 496.0),
+            (655.0, 497.0),
+            (736.0, 578.0),
+        ] {
+            assert_eq!(sketch_bar_room(canvas, 400.0), most, "{canvas}");
+        }
+    }
+
+    #[test]
+    fn the_sketch_bar_is_centred_moved_left_of_the_viewcube_and_kept_off_the_canvass_left() {
+        use eframe::egui::{Rect, pos2};
+        // A canvas from x = 200, `width` wide; the bar `bar` wide; its left and right, by
+        // hand. Centred is the canvas's middle less half the bar; clear of the ViewCube, the
+        // canvas's right less 148 less the bar; never left of the canvas's left and 10.
+        let canvas =
+            |width: f32| Rect::from_min_max(pos2(200.0, 100.0), pos2(200.0 + width, 700.0));
+        for (width, bar, left) in [
+            // A long name in the room the canvas gives it (`sketch_bar_room`, the rest 400):
+            // at 655 and 654 its right at the 148 (855 − 148 = 707, 854 − 148 = 706) and its
+            // left at the 10 (210); at 653, 456, and 340 the rest and 96, 496, from the 10,
+            // its right 706 past the 148 (705, 508, 392) as far as it must be.
+            (655.0, 497.0, 210.0),
+            (654.0, 496.0, 210.0),
+            (653.0, 496.0, 210.0),
+            (456.0, 496.0, 210.0),
+            (340.0, 496.0, 210.0),
+            // At 736 (1280's), centred until it would reach the 148, at a bar 736 − 296 =
+            // 440 wide: 439 centred, 568 − 219.5 = 348.5; 440 both, 348; 441 at the 148,
+            // 936 − 148 − 441 = 347.
+            (736.0, 300.0, 418.0),
+            (736.0, 439.0, 348.5),
+            (736.0, 440.0, 348.0),
+            (736.0, 441.0, 347.0),
+            // Then at the 148 until it meets the 10, at 736 − 158 = 578 wide: 577 from 211;
+            // 578 from 210; 579 from 210 too, its right 789 one past the 148's 788.
+            (736.0, 577.0, 211.0),
+            (736.0, 578.0, 210.0),
+            (736.0, 579.0, 210.0),
+        ] {
+            let got = sketch_bar_left(canvas(width), bar);
+            assert_eq!(got, left, "{width}, {bar}");
+            let right = got + bar;
+            let limit = 200.0 + width - 148.0;
+            assert_eq!(
+                right <= limit,
+                bar <= width - 158.0,
+                "{width}, {bar}: {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sketch_bars_left_is_rounded_down_to_a_whole_pixel() {
+        use crate::sketch::bar::{BarView, StateShown};
+        use eframe::egui::{Rect, pos2};
+        use std::sync::Mutex;
+        // A canvas from x = 200.8, 340 wide, and a sketch named 400 W's: too long for the
+        // room clear of the ViewCube, so the bar stands 10 from the canvas's left, 210.8.
+        // Rounded down to a whole pixel: at 1 pixel a point, 210; at 1.5, pixel 316.2 down to
+        // 316, 316 / 1.5; at 2, pixel 421.6 down to 421, 210.5. Its top 10 below the canvas's.
+        for (ppp, left) in [(1.0, 210.0), (1.5, 316.0 / 1.5), (2.0, 210.5)] {
+            let placed = Arc::new(Mutex::new(None));
+            let into = Arc::clone(&placed);
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(eframe::egui::vec2(1000.0, 400.0))
+                .with_pixels_per_point(ppp)
+                .build_ui(move |ui| {
+                    let canvas = Rect::from_min_max(pos2(200.8, 100.0), pos2(540.8, 380.0));
+                    let bar = BarView {
+                        name: "W".repeat(400),
+                        plane: "XY".to_owned(),
+                        state: Some(StateShown {
+                            words: "Fully defined".to_owned(),
+                            colour: theme::TEXT_DEFAULT,
+                        }),
+                        enabled: true,
+                    };
+                    *into.lock().unwrap() = Some(sketch_bar_place(ui.ctx(), canvas, &bar).0);
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(2);
+            let at = placed.lock().unwrap().unwrap();
+            assert_eq!(at, pos2(left, 110.0), "{ppp}");
+            assert_eq!((at.x * ppp).fract(), 0.0, "{ppp}: {at:?}");
+        }
+    }
 
     #[test]
     fn sketch_modes_bands_are_the_drawn_panels_and_as_far_again_in_pixels_rounded_up() {

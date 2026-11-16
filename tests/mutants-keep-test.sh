@@ -9,6 +9,15 @@
 #   pixi run test-ci-decisions   (or bash tests/mutants-keep-test.sh)
 set -euo pipefail
 
+# What a job's environment says about the run is the cases' to give, never the job's: the
+# gate runs this test, and a re-run of the gate (GITHUB_RUN_ATTEMPT=2) once failed it, the
+# marker kept saying the gate's attempt where a case wants the default's. Nor does a case
+# write the gate's own summary (GITHUB_STEP_SUMMARY).
+unset GITHUB_RUN_ATTEMPT GITHUB_STEP_SUMMARY
+# Whether this is the run the test makes of itself below: an argument, so no environment
+# skips that case.
+inner=${1:-}
+
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/silico-mutants-keep.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
@@ -108,6 +117,19 @@ bash "$keep" "$tmp/out/none" "$tmp/results/early" >/dev/null || fail "a missing 
 [ "$(ls -A "$tmp/results/early")" = kept ] || fail "a missing mutants.out: not the marker alone"
 pass
 
+# A shard whose cargo-mutants found no mutants at all (.github/mutants-none.sh): no list, but
+# its markers, `none` with a file that matched nothing among them, are kept as they are.
+found=$tmp/found-none/mutants.out
+mkdir -p "$found"
+echo 0 >"$found/shard"
+echo "2 threads" >"$found/threads"
+echo "no file in the tree matches crates/typo.rs" >"$found/none"
+bash "$keep" "$found" "$tmp/results/found-none" >/dev/null || fail "a shard that found no mutants failed it"
+[ "$(ls -A "$tmp/results/found-none" | sort | tr '\n' ' ')" = "kept none shard threads " ] ||
+  fail "a shard that found no mutants: kept $(ls -A "$tmp/results/found-none" | tr '\n' ' ')"
+cmp -s "$found/none" "$tmp/results/found-none/none" || fail "a shard that found no mutants: its none marker changed"
+pass
+
 # A mutants.out with no outcomes.json yet (stopped mid-baseline: cargo-mutants writes it only
 # once the baseline ends): its lists kept, and the baseline's log so far, and nothing fails.
 partial=$tmp/partial/mutants.out
@@ -133,5 +155,16 @@ pass
 if bash "$keep" "$out" "" >/dev/null 2>&1; then fail "an empty results directory was taken"; fi
 [ -f "$out/caught.txt" ] || fail "an empty results directory: mutants.out was touched"
 pass
+
+# Run as a re-run of the gate runs it, the job's attempt and summary set: it passes, and its
+# cases leave that summary as it was. (Once, from the outer run only.)
+if [ -z "$inner" ]; then
+  echo "the gate's own summary" >"$tmp/gate-summary.md"
+  GITHUB_RUN_ATTEMPT=2 GITHUB_STEP_SUMMARY=$tmp/gate-summary.md \
+    "$BASH" "${BASH_SOURCE[0]}" --inner >"$tmp/inner.log" 2>&1 || fail "run as a gate's re-run (attempt 2), it failed: $(cat "$tmp/inner.log")"
+  grep -q "cases passed" "$tmp/inner.log" || fail "run as a gate's re-run, it ran no cases: $(cat "$tmp/inner.log")"
+  [ "$(cat "$tmp/gate-summary.md")" = "the gate's own summary" ] || fail "run as a gate's job, it wrote the job's summary"
+  pass
+fi
 
 echo "mutants-keep: $passed cases passed"

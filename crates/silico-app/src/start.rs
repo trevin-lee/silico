@@ -316,6 +316,13 @@ pub fn not_opened_asking(names: &[String]) -> String {
     format!("Answer the question first: {} not opened", listed(names))
 }
 
+/// What a toast says of the files dropped on the window while `modal`, one that asks
+/// nothing (the shortcut sheet, What's Wrong), is open over it, `names`, none of which was
+/// opened.
+pub fn not_opened_until_closed(modal: &str, names: &[String]) -> String {
+    format!("Close {modal} first: {} not opened", listed(names))
+}
+
 /// What the drop note under Recent says (`.drop-note`), its middle part in `.mono`.
 pub const DROP_NOTE: [&str; 3] = [
     "Drop a ",
@@ -2337,6 +2344,10 @@ mod tests {
         assert_eq!(
             not_opened_asking(&["b.silico".to_owned()]),
             "Answer the question first: b.silico not opened"
+        );
+        assert_eq!(
+            not_opened_until_closed("What's Wrong", &named(2)),
+            "Close What's Wrong first: 0.txt, 1.txt not opened"
         );
     }
 
