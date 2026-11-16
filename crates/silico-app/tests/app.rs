@@ -4974,22 +4974,13 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
     // characters with an ellipsis (`changes::SHOWN_CHARS`).
     let f = fixture();
     let (plate, triangle) = ("W".repeat(400), "V".repeat(400));
-    let text = SKETCHED
-        .replace(r#""name": "Plate""#, &format!(r#""name": "{plate}""#))
-        .replace(r#""name": "Triangle""#, &format!(r#""name": "{triangle}""#));
-    let (mut h, _) = f.opened("long.silico", &text);
+    let (mut h, _) = f.opened("long.silico", &sketched_named(&triangle, Some(&plate)));
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", &triangle));
-    let edit = |h: &mut AppHarness, id: &str, sketch: bool| {
+    {
         let sessions = Arc::clone(&f.sessions);
-        let id = silico_core::document::FeatureId::new(id).unwrap();
-        let tab = &mut h.state_mut().tabs_mut()[0];
-        if sketch {
-            tab.edit_sketch(&sessions, &id);
-        } else {
-            tab.edit_feature(&sessions, &id);
-        }
-    };
-    edit(&mut h, "b0000001", false);
+        let plate = silico_core::document::FeatureId::new("b0000001").unwrap();
+        h.state_mut().tabs_mut()[0].edit_feature(&sessions, &plate);
+    }
     step_until(&mut h, "its dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Box").is_some()
     });
@@ -5002,22 +4993,187 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
         tooltip_title(&mut h, "Undo"),
         format!("Undo: Edit {}…", "W".repeat(60))
     );
-    edit(&mut h, "s0000001", true);
-    sketch_read(&mut h);
-    settled(&mut h);
+    triangle_edited(&f, &mut h);
     delete_line(&mut h, "na000000");
-    // Finished through the tab: the sketch bar draws the whole name, its Finish past the
-    // window's edge.
-    {
-        let sessions = Arc::clone(&f.sessions);
-        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, true);
-    }
-    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
-    settled(&mut h);
+    // Finished through the sketch bar, whose name is cut to fit (#466).
+    leave_sketch(&mut h, true);
     assert_eq!(
         tooltip_title(&mut h, "Undo"),
         format!("Undo: Edit {}…", "V".repeat(60))
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_long_named_sketchs_bar_keeps_cancel_and_finish_in_the_window_and_finish_finishes_it() {
+    // #466: the triangle named 400 W's, open in sketch mode with a line deleted, at the
+    // window's least size (888 by 336) and at a usual one (1280 by 800). The bar's Cancel and
+    // Finish Sketch lie inside the window, its left and its tag inside the canvas; at 1280 the bar inside the canvas less 10 at its
+    // left and 148 at its right, clear of the ViewCube (1280 − 248 − 296 = 736, so at most
+    // 578 wide); its name whole in the tree,
+    // the painted one cut with an ellipsis. Finish, clicked at its middle, keeps the edit:
+    // one step named for the sketch, cut at 60 characters.
+    let triangle = "W".repeat(400);
+    let text = sketched_named(&triangle, None);
+    let least = (
+        silico_app::theme::WINDOW_MIN_WIDTH,
+        silico_app::theme::WINDOW_MIN_HEIGHT,
+    );
+    assert_eq!(least, (888.0, 336.0));
+    for (width, height) in [least, (1280.0, 800.0)] {
+        let f = fixture();
+        let size = (width + 2.0 * MARGIN, height + 2.0 * MARGIN);
+        let mut h = opened_sized(&f, "long.silico", &text, size);
+        triangle_edited(&f, &mut h);
+        delete_line(&mut h, "na000000");
+        let window = eframe::egui::Rect::from_min_size(
+            eframe::egui::pos2(MARGIN, MARGIN),
+            eframe::egui::vec2(width, height),
+        );
+        let bar = h.get_by_role_and_label(Role::Toolbar, "Sketch bar");
+        for word in ["Cancel", "Finish Sketch"] {
+            let rect = bar.get_by_label(word).rect();
+            assert!(window.contains_rect(rect), "{word} at {rect:?}, {width}");
+        }
+        let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+        // Its left at least 10 inside the canvas, and its tag in the canvas, at each size: at
+        // 888 the canvas is 888 − 248 − 296 = 344 (the panes at the prototype's widths),
+        // narrower than the bar, which runs right from its 10 past the canvas's right, inside
+        // the window.
+        assert!(
+            bar.rect().left() >= canvas.left() + 10.0,
+            "{:?} in {canvas:?}, {width}",
+            bar.rect()
+        );
+        let tag = bar.get_by_label("SKETCH").rect();
+        assert!(canvas.contains_rect(tag), "{tag:?} in {canvas:?}, {width}");
+        if width == least.0 {
+            assert_eq!(canvas.width(), 344.0);
+        }
+        if width == 1280.0 {
+            assert_eq!(canvas.width(), 736.0);
+            let inside = eframe::egui::Rect::from_x_y_ranges(
+                canvas.left() + 10.0..=canvas.right() - 148.0,
+                canvas.y_range(),
+            );
+            assert_eq!(inside.width(), 578.0);
+            assert!(
+                inside.contains_rect(bar.rect()),
+                "{:?} in {canvas:?}",
+                bar.rect()
+            );
+        }
+        let names: Vec<String> = bar
+            .query_all_by_role(Role::Label)
+            .filter_map(|node| node.accesskit_node().value())
+            .collect();
+        assert!(names.contains(&triangle), "{names:?}");
+        // The bar's own (the browser and the timeline paint it too).
+        let painted: Vec<String> = painted_in(&h, bar.rect())
+            .into_iter()
+            .filter_map(|shape| match shape {
+                eframe::egui::Shape::Text(text) if text.galley.text() == triangle => {
+                    Some(text.galley.rows.iter().map(|row| row.text()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        let [shown] = painted.as_slice() else {
+            panic!("{painted:?}");
+        };
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(shown.starts_with('W') && shown.len() < 400, "{shown}");
+        leave_sketch(&mut h, true);
+        assert_eq!(
+            tooltip_title(&mut h, "Undo"),
+            format!("Undo: Edit {}…", "W".repeat(60))
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// [`SKETCHED`] with its triangle named `triangle`, and its plate `plate` if given.
+fn sketched_named(triangle: &str, plate: Option<&str>) -> String {
+    let text = SKETCHED.replace(r#""name": "Triangle""#, &format!(r#""name": "{triangle}""#));
+    match plate {
+        Some(plate) => text.replace(r#""name": "Plate""#, &format!(r#""name": "{plate}""#)),
+        None => text,
+    }
+}
+
+/// [`SKETCHED`]'s triangle opened in sketch mode through the tab, read, and everything
+/// answered.
+fn triangle_edited(f: &Fixture, h: &mut AppHarness) {
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let id = silico_core::document::FeatureId::new("s0000001").unwrap();
+        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &id);
+    }
+    sketch_read(h);
+    settled(h);
+}
+
+#[test]
+fn a_sketch_bar_with_a_usual_long_name_keeps_clear_of_the_viewcube_and_home_view_works() {
+    // #466's review: the triangle named "Mounting bracket base profile" (29 characters) at
+    // 1280 by 800. Centred, the bar would reach the ViewCube's Home view (its column 24 wide,
+    // its right 4 left of the cube, which is 16 in from the canvas's right and 92 wide); it's
+    // kept at least 148 from the canvas's right (`theme::BANNER_MARGIN_RIGHT`, as a banner
+    // is), shifted left, clear of Home view, its ▾, and the cube, its name whole. Front, then
+    // Home view, each clicked at its middle, give their views: from −y, then from
+    // (1, −1, 1)/√3.
+    let f = fixture();
+    let name = "Mounting bracket base profile";
+    assert_eq!(name.chars().count(), 29);
+    let (mut h, _record) = f.drawn("bracket.silico", &sketched_named(name, None));
+    meshes_settled(&mut h);
+    triangle_edited(&f, &mut h);
+    let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+    let bar = h.get_by_role_and_label(Role::Toolbar, "Sketch bar").rect();
+    assert!(
+        bar.right() <= canvas.right() - 148.0,
+        "{bar:?} in {canvas:?}"
+    );
+    assert!(bar.left() >= canvas.left() + 10.0, "{bar:?} in {canvas:?}");
+    // Centred it would reach past the 148: so it's moved left, its right at the 148 (to
+    // within the pixel its left is rounded down to).
+    assert!(canvas.center().x + bar.width() / 2.0 > canvas.right() - 148.0);
+    assert!(
+        bar.right() > canvas.right() - 149.0,
+        "{bar:?} in {canvas:?}"
+    );
+    let cube = h.get_by_role_and_label(Role::Group, "ViewCube");
+    let controls = [
+        cube.get_by_label("Home view").rect(),
+        cube.get_by_label("View cube options").rect(),
+        silico_app::viewport::view_cube_rect(canvas),
+    ];
+    for control in controls {
+        assert!(!bar.intersects(control), "{bar:?} over {control:?}");
+    }
+    let rows = painted_in(&h, bar)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) if text.galley.text() == name => {
+                Some((text.galley.elided, text.galley.rows.len()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows, [(false, 1)]);
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Front")
+        .click();
+    step(&mut h);
+    let front = view(&h).camera().clone();
+    near(view_direction(&front), [0.0, -1.0, 0.0], 1e-12);
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Home view")
+        .click();
+    step(&mut h);
+    let d = 1.0 / 3f64.sqrt();
+    near(view_direction(view(&h).camera()), [d, -d, d], 1e-12);
+    assert!(sketch_mode(&h).is_some());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -48487,5 +48643,2070 @@ fn reopening_a_part_whose_session_is_still_closing_waits_for_the_close_and_then_
     });
     assert_eq!(f.thumb_files(), [thumb_of(EXAMPLE.as_bytes())]);
     assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #487: while a modal asks, nothing behind it takes input ----
+
+/// Whether `node` is on: not disabled in the accessibility tree.
+fn is_on(node: &egui_kittest::Node<'_>) -> bool {
+    !node.accesskit_node().is_disabled()
+}
+
+/// The one button labelled `label` that's on: behind a modal, any other is off.
+fn on_button<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
+    let mut on = h
+        .query_all_by_role_and_label(Role::Button, label)
+        .filter(is_on);
+    let node = on.next().unwrap_or_else(|| panic!("no {label} on"));
+    assert!(on.next().is_none(), "two {label}s on");
+    node
+}
+
+/// The timeline's item `name`.
+fn timeline_item<'a>(h: &'a AppHarness, name: &'a str) -> egui_kittest::Node<'a> {
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label(name)
+}
+
+/// [`EXAMPLE`] open, its Pin renamed Pins, selected, and the edit held unsaved: the file's
+/// path.
+fn pins_held(f: &Fixture) -> (AppHarness, PathBuf) {
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
+    });
+    (h, path)
+}
+
+/// Behind a modal: the timeline's item `name` off, and a click on it through the
+/// accessibility tree (an agent's) selecting nothing; with `pointer`, a click of the pointer
+/// on it too (not where the modal's backdrop takes the click as its close, as the sheet's
+/// and What's Wrong's do).
+fn item_takes_no_click(h: &mut AppHarness, name: &str, pointer: bool) {
+    step(h);
+    assert!(
+        !is_on(&timeline_item(h, name)),
+        "{name} on behind the modal"
+    );
+    let selected = selected_features(h);
+    timeline_item(h, name).click_accesskit();
+    step(h);
+    if pointer {
+        timeline_item(h, name).click();
+        step(h);
+    }
+    step(h);
+    assert_eq!(
+        selected_features(h),
+        selected,
+        "{name} selected behind the modal"
+    );
+}
+
+/// With no modal open: the timeline's item `name` on, and a click on it through the
+/// accessibility tree selecting it, the feature `id`.
+fn item_takes_a_click(h: &mut AppHarness, name: &str, id: &str) {
+    step(h);
+    assert!(is_on(&timeline_item(h, name)), "{name} off with no modal");
+    timeline_item(h, name).click_accesskit();
+    step_until(h, "selected", |h| selected_features(h) == [id]);
+}
+
+#[test]
+fn behind_command_rs_question_the_banners_reload_is_off_and_a_click_on_it_drops_nothing() {
+    // #487: the amber banner's "Reload, discard my edits" (a revert) and ⌘R's question's (a
+    // reload, every feature rebuilt) on screen at once. Only the question's is on; the
+    // banner's, clicked through the accessibility tree or by the pointer, does nothing, and
+    // is on again once the question has gone.
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    let mine = text_of(&f.sessions, &h);
+    std::fs::write(&path, example_theirs()).unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, changed));
+    let reload = "Reload, discard my edits";
+    // The banner's, the only one yet: where it stands.
+    let banners = h.get_by_role_and_label(Role::Button, reload).rect();
+    command_r(&mut h);
+    let asked = "Reload example.silico from disk?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    // Each button of the name: whether it's the banner's, and whether it's on.
+    let buttons = |h: &AppHarness| -> Vec<(bool, bool)> {
+        let mut found: Vec<(bool, bool)> = h
+            .query_all_by_role_and_label(Role::Button, reload)
+            .map(|node| (node.rect() == banners, is_on(&node)))
+            .collect();
+        found.sort_unstable();
+        found
+    };
+    assert_eq!(buttons(&h), [(false, true), (true, false)]);
+    // The banner's clicked through the tree, then by the pointer: nothing dropped.
+    fn banner(h: &AppHarness, at: eframe::egui::Rect) -> egui_kittest::Node<'_> {
+        h.query_all_by_role_and_label(Role::Button, "Reload, discard my edits")
+            .find(|node| node.rect() == at)
+            .unwrap()
+    }
+    banner(&h, banners).click_accesskit();
+    step(&mut h);
+    banner(&h, banners).click();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, asked));
+    let tab = &h.state().tabs()[0];
+    assert!(tab.unsaved() && tab.transaction);
+    assert!(!tab.sent.contains(&Sent::Rollback), "{:?}", tab.sent);
+    assert_eq!(tab.rebuilds_all, 0);
+    assert_eq!(text_of(&f.sessions, &h), mine);
+    // Esc, the question's Cancel: the banner's on again, the edits kept.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    step(&mut h);
+    assert_eq!(buttons(&h), [(true, true)]);
+    assert!(h.state().tabs()[0].unsaved());
+    // Asked again, the question's own Reload, the one on: the edits dropped, the file read
+    // again, and every feature rebuilt, which the banner's revert doesn't do.
+    command_r(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    on_button(&h, reload).click();
+    step_until(&mut h, "reloaded and rebuilt", |h| {
+        let tab = &h.state().tabs()[0];
+        shows(h, "Timeline", "Drill") && !tab.unsaved() && tab.rebuilds_all == 1 && !tab.checking()
+    });
+    assert!(!anywhere(&h, asked));
+    assert_eq!(text_of(&f.sessions, &h), example_theirs());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_close_question_the_window_takes_no_click_and_esc_gives_it_back() {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    press_chord(&mut h, keys_of(Command::Close)[0]);
+    let asked = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    item_takes_no_click(&mut h, "Block", true);
+    // The app bar's Save off, the question's own on.
+    let saves: Vec<bool> = h
+        .query_all_by_role_and_label(Role::Button, "Save")
+        .map(|node| is_on(&node))
+        .collect();
+    assert_eq!(saves, [false, true]);
+    // Esc, its Cancel: the window takes clicks again, the edits kept.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_quit_question_the_window_takes_no_click_while_the_disk_watch_goes_on() {
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    item_takes_no_click(&mut h, "Block", true);
+    // The file changed on disk under it: found, and announced behind it, the banner off.
+    std::fs::write(&path, example_theirs()).unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, changed));
+    step(&mut h);
+    let keep = "Keep my edits…";
+    assert!(!is_on(&h.get_by_role_and_label(Role::Button, keep)));
+    // Its own Cancel, the one on: the window takes clicks again, the banner's too.
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains(asked).is_none()
+    });
+    step(&mut h);
+    assert!(is_on(&h.get_by_role_and_label(Role::Button, keep)));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_show_changes_the_banners_buttons_are_off_until_its_close() {
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    std::fs::write(&path, example_theirs()).unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, changed));
+    on_button(&h, "Show changes").click_accesskit();
+    let asked = "What changed on disk";
+    step_until(&mut h, "Show changes", |h| anywhere(h, asked));
+    step(&mut h);
+    let banners = ["Show changes", "Reload, discard my edits", "Keep my edits…"];
+    for label in banners {
+        assert!(
+            !is_on(&h.get_by_role_and_label(Role::Button, label)),
+            "{label}"
+        );
+    }
+    item_takes_no_click(&mut h, "Block", true);
+    // Keep my edits…, clicked through the tree: nothing kept, the banner still offering it.
+    h.get_by_role_and_label(Role::Button, "Keep my edits…")
+        .click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, changed));
+    // Its own Close: the banner's on again.
+    on_button(&h, "Close").click_accesskit();
+    step_until(&mut h, "Show changes gone", |h| !anywhere(h, asked));
+    step(&mut h);
+    for label in banners {
+        assert!(
+            is_on(&h.get_by_role_and_label(Role::Button, label)),
+            "{label}"
+        );
+    }
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_export_dialog_the_window_takes_no_click_until_its_cancel() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    let title = "Export example.silico";
+    open_export(&mut h, title);
+    item_takes_no_click(&mut h, "Block", true);
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, title));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_shortcut_sheet_the_window_takes_no_click_and_behind_a_question_over_it_neither_does_the_sheet()
+ {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+    step_until(&mut h, "the sheet", sheet_open);
+    // A pointer's click on the window lands on the sheet's backdrop, its close.
+    item_takes_no_click(&mut h, "Block", false);
+    // A quit's question over it: the sheet's × and filter off, a click on its × closing
+    // nothing.
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    step(&mut h);
+    fn sheets_close(h: &AppHarness) -> egui_kittest::Node<'_> {
+        the_sheet(h).get_by_role_and_label(Role::Button, "Close")
+    }
+    assert!(!is_on(&sheets_close(&h)));
+    assert!(!is_on(&the_sheet(&h).get_by_role(Role::TextInput)));
+    sheets_close(&h).click_accesskit();
+    step(&mut h);
+    step(&mut h);
+    assert!(sheet_open(&h));
+    // The question's Cancel: the sheet on again, the window still off under it.
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains(asked).is_none()
+    });
+    step(&mut h);
+    assert!(is_on(&sheets_close(&h)));
+    item_takes_no_click(&mut h, "Block", false);
+    // The sheet's ×: the window takes clicks again.
+    sheets_close(&h).click_accesskit();
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_whats_wrong_the_window_takes_no_click_until_esc_closes_it() {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click();
+    step_until(&mut h, "What's Wrong open", |h| whats_wrong(h).is_some());
+    item_takes_no_click(&mut h, "Second", false);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "What's Wrong closed", |h| whats_wrong(h).is_none());
+    item_takes_a_click(&mut h, "Second", "a0000001");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_over_define_prompt_sketch_modes_bar_and_keys_take_nothing_until_its_cancel() {
+    let f = fixture();
+    let (mut h, text) = over_define_offered(&f, None);
+    step_until(&mut h, "the prompt", |h| prompt(h).is_some());
+    step(&mut h);
+    fn finish(h: &AppHarness) -> egui_kittest::Node<'_> {
+        h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+            .get_by_role_and_label(Role::Button, "Finish Sketch")
+    }
+    assert!(!is_on(&finish(&h)));
+    // The bar's Finish Sketch clicked through the tree, L (the Line tool's key), and Ctrl+Z:
+    // none acts under it.
+    let choice = sketch_mode(&h).unwrap().tools.choice();
+    let sent = h.state().tabs()[0].sent.clone();
+    finish(&h).click_accesskit();
+    step(&mut h);
+    h.key_press(Key::L);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert!(prompt(&h).is_some());
+    assert!(sketch_mode(&h).is_some());
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), choice);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    // Esc, its Cancel: the edit undone, the bar on again.
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    assert_eq!(text_of(&f.sessions, &h), text);
+    step_until(&mut h, "the prompt closed", |h| prompt(h).is_none());
+    step(&mut h);
+    assert!(is_on(&finish(&h)));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #497's review: what comes while a modal is open, and every inert path tried ----
+
+/// The boxed rectangle in sketch mode, the solve counting a length of 99 as repeating the
+/// others, its bottom's Modify box open with 99 typed and accepted while the sketch worker
+/// is held: the over-define offer still to come. The document's text on disk.
+fn offer_on_its_way(f: &Fixture) -> (AppHarness, String) {
+    use silico_app::sketch::dimension::ModifyAction;
+    counting_redundant_99(f);
+    let mut h = boxed_length(f);
+    let on_disk = std::fs::read_to_string(f.dir.path().join("boxed.silico")).unwrap();
+    open_modify_box(f, &mut h);
+    modify_dimension(f, &mut h, ModifyAction::Typed("99".to_owned()));
+    f.sketches.hold();
+    modify_dimension(f, &mut h, ModifyAction::Accept);
+    (h, on_disk)
+}
+
+/// The sketch worker let go, and frames stepped until the offer [`offer_on_its_way`] waited
+/// for is the sketch mode's, and ten more.
+fn offer_come(f: &Fixture, h: &mut AppHarness) {
+    f.sketches.release();
+    step_until(h, "the offer", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.offer().is_some())
+    });
+    for _ in 0..10 {
+        step(h);
+    }
+}
+
+#[test]
+fn an_over_define_offer_that_comes_while_the_close_question_is_open_waits_until_it_has_gone() {
+    // #497's review, finding 1: egui raises an area first shown to the top of its order, so
+    // an offer drawn while the question was up stood over it, inert, and a click on its
+    // "Leave it driving" fell through to the question's "Don't save". Held back, it shows
+    // once the question has gone, on top, and takes the pointer.
+    let f = fixture();
+    let (mut h, on_disk) = offer_on_its_way(&f);
+    h.get_by_label("Close boxed.silico").click_accesskit();
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    offer_come(&f, &mut h);
+    assert!(
+        prompt(&h).is_none(),
+        "the offer drawn while the question is up"
+    );
+    assert!(anywhere(&h, question));
+    assert_ne!(text_of(&f.sessions, &h), on_disk);
+    // Its key, 1, does nothing under the question.
+    let sent = h.state().tabs()[0].sent.clone();
+    h.key_press(Key::Num1);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert!(sketch_mode(&h).unwrap().offer().is_some());
+    // The question's Cancel, by the pointer, the question on top: the offer shows.
+    let cancel = on_button(&h, "Cancel").rect().center();
+    click_in_one_frame(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    // Its "Leave it driving", by the pointer: chosen, the tab open, the edit kept.
+    choose_in_prompt(&mut h, "Leave it driving");
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(prompt(&h).is_none());
+    assert!(sketch_mode(&h).unwrap().offer().is_none());
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_ne!(text_of(&f.sessions, &h), on_disk);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_over_define_offer_that_comes_while_the_shortcut_sheet_is_open_waits_until_it_closes() {
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    h.get_by_role_and_label(Role::Button, "Shortcuts")
+        .click_accesskit();
+    step_until(&mut h, "the sheet", sheet_open);
+    offer_come(&f, &mut h);
+    assert!(
+        prompt(&h).is_none(),
+        "the offer drawn while the sheet is open"
+    );
+    // The sheet's ×, by the pointer, the sheet on top: the offer shows; Esc is its Cancel.
+    let close = the_sheet(&h)
+        .get_by_role_and_label(Role::Button, "Close")
+        .rect()
+        .center();
+    click_in_one_frame(&mut h, close);
+    step_until(&mut h, "the offer shown", |h| {
+        !sheet_open(h) && prompt(h).is_some()
+    });
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_under_the_over_define_prompt_is_its_cancel_though_the_canvas_menu_was_open_as_it_came() {
+    // #497's review, finding 6: the canvas's menu, open as the offer comes, closes with it
+    // coming, so Esc goes to the prompt, not to the menu behind it.
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    let at = to_screen([20.0, 20.0]).unwrap();
+    h.state_mut().tabs_mut()[0].sketch.as_mut().unwrap().menu_at = Some(at);
+    step_until(&mut h, "the menu", |h| {
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_some()
+    });
+    offer_come(&f, &mut h);
+    assert!(prompt(&h).is_some());
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_none()
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_egui_menu_open_as_a_question_comes_closes_with_none_of_its_items_left() {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(h.query_by_role_and_label(Role::Button, "Revert").is_some());
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    step(&mut h);
+    assert!(h.query_by_role_and_label(Role::Button, "Revert").is_none());
+    assert!(h.query_by_role_and_label(Role::Button, "Export…").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_a_question_over_whats_wrong_its_buttons_are_off_and_take_no_click() {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    select(&mut h, "Second");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.unsaved() && tab.edits.idle() && shows(h, "Timeline", "Secondx")
+    });
+    step_until(&mut h, "rebuilt", |h| {
+        h.query_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click_accesskit();
+    step_until(&mut h, "three listed", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 3
+    });
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    step(&mut h);
+    let buttons = |h: &AppHarness| -> Vec<bool> {
+        whats_wrong(h)
+            .unwrap()
+            .query_all_by_role(Role::Button)
+            .map(|node| is_on(&node))
+            .collect()
+    };
+    assert!(!buttons(&h).is_empty());
+    assert!(buttons(&h).iter().all(|on| !on), "{:?}", buttons(&h));
+    // Its Show in timeline and its ×, clicked through the tree: nothing.
+    let selected = selected_features(&h);
+    whats_wrong(&h)
+        .unwrap()
+        .query_all_by_role_and_label(Role::Button, "Show in timeline")
+        .next()
+        .unwrap()
+        .click_accesskit();
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Close")
+        .click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(whats_wrong(&h).is_some());
+    assert_eq!(selected_features(&h), selected);
+    // The question's Cancel: What's Wrong on again.
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains(asked).is_none()
+    });
+    step(&mut h);
+    assert!(buttons(&h).iter().all(|on| *on), "{:?}", buttons(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The boxed rectangle in sketch mode, its bottom's length set to 50 (repeating nothing):
+/// an edit held, so Close asks.
+fn boxed_edited(f: &Fixture) -> AppHarness {
+    counting(f);
+    let mut h = boxed_length(f);
+    edit_length(f, &mut h, "50");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.unsaved() && tab.edits.idle()
+    });
+    h
+}
+
+/// The tab's Close clicked through the tree, and stepped until its question is up.
+fn close_asked(h: &mut AppHarness) -> &'static str {
+    h.get_by_label("Close boxed.silico").click_accesskit();
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(h, "the question", |h| anywhere(h, question));
+    step(h);
+    question
+}
+
+#[test]
+fn behind_the_close_question_the_sketch_palette_is_off_and_takes_no_click() {
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    let profile = |h: &AppHarness| sketch_mode(h).unwrap().settings.show_profile;
+    let before = profile(&h);
+    let question = close_asked(&mut h);
+    let checkbox = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .get_by_label("Profile")
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(checkbox(&h));
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_label("Profile")
+        .click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(profile(&h), before);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(!checkbox(&h));
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_label("Profile")
+        .click_accesskit();
+    step_until(&mut h, "toggled", |h| profile(h) != before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_close_question_the_modify_boxs_accept_is_off_and_sends_nothing() {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    open_modify_box(&f, &mut h);
+    modify_dimension(&f, &mut h, ModifyAction::Typed("33".to_owned()));
+    step(&mut h);
+    let question = close_asked(&mut h);
+    fn accept(h: &AppHarness) -> egui_kittest::Node<'_> {
+        h.get_by_role_and_label(Role::Dialog, "Modify dimension")
+            .get_by_role_and_label(Role::Button, "Accept")
+    }
+    assert!(!is_on(&accept(&h)));
+    let sent = h.state().tabs()[0].sent.clone();
+    accept(&h).click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert!(sketch_mode(&h).unwrap().edit_box.is_some());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(is_on(&accept(&h)));
+    accept(&h).click_accesskit();
+    step_until(&mut h, "33 sent", |h| {
+        h.state().tabs()[0].sent.len() > sent.len()
+    });
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("constraints.ka000005.value".to_owned()))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_canvas_menu_open_as_the_close_question_comes_closes_and_stays_closed() {
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    let at = to_screen([20.0, 20.0]).unwrap();
+    sketch_events(
+        &f,
+        &mut h,
+        &[silico_app::sketch::PointerEvent {
+            action: silico_app::sketch::PointerAction::RightClick,
+            at,
+            shift: false,
+            ctrl: false,
+        }],
+    );
+    let menu = |h: &AppHarness| {
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_some()
+    };
+    step_until(&mut h, "the menu", menu);
+    let question = close_asked(&mut h);
+    assert!(!menu(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!menu(&h));
+    assert!(sketch_mode(&h).unwrap().menu_at.is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_name_typed_in_the_timeline_takes_no_key_once_a_question_comes_and_goes_as_typed() {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    f2_typed(&mut h, "Block", "Base");
+    // The quit asked; then, in the first frame drawn under it, a key typed.
+    close_window(&mut h);
+    h.event(eframe::egui::Event::Text("Z".to_owned()));
+    step(&mut h);
+    // The field, drawn once more under it as its name is sent, is off.
+    assert!(
+        rename_field(&h, "Block").is_some_and(|field| field.accesskit_node().is_disabled()),
+        "the rename field on under the question"
+    );
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    // The name sent as it was typed, before the key.
+    step_until(&mut h, "renamed", |h| {
+        shows(h, "Timeline", "Base") || shows(h, "Timeline", "BaseZ")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(rename_field(&h, "Block").is_none());
+    assert!(!shows(&h, "Timeline", "BaseZ"));
+    assert!(text_of(&f.sessions, &h).contains(r#""name": "Base""#));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_middle_drag_held_as_a_modal_opens_ends_and_pans_no_further() {
+    // #497's review, finding 5: as SolidWorks ends a drag when a dialog takes the focus.
+    let f = fixture();
+    let (mut h, _seen) = f.overlaid(EXAMPLE);
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
+    let middle = eframe::egui::PointerButton::Middle;
+    let before = view(&h).camera().clone();
+    h.hover_at(at);
+    button_event(&h, at, middle, true, Modifiers::NONE);
+    step(&mut h);
+    h.hover_at(at + eframe::egui::vec2(20.0, 0.0));
+    step(&mut h);
+    let panned = view(&h).camera().clone();
+    assert_ne!(panned, before, "the middle button panned nothing");
+    // The shortcut sheet, by its key, the button still held: no further move pans.
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for i in 1..=4u8 {
+        h.hover_at(at + eframe::egui::vec2(20.0 + 10.0 * f32::from(i), 0.0));
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &panned);
+    button_event(
+        &h,
+        at + eframe::egui::vec2(60.0, 0.0),
+        middle,
+        false,
+        Modifiers::NONE,
+    );
+    step(&mut h);
+    // Closed, the pointer moved: still none.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    h.hover_at(at + eframe::egui::vec2(80.0, 0.0));
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &panned);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_left_press_held_as_a_modal_opens_is_cancelled_and_its_moves_and_release_go_nowhere() {
+    // #497's reviews: what was held is cancelled as the modal comes, as the focus going
+    // cancels it (m5.0-app.md, a drag cut short), and nothing after it is handed on.
+    use silico_app::viewport::LeftKind::{Cancel, Press};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
+    let left = eframe::egui::PointerButton::Primary;
+    h.hover_at(at);
+    step(&mut h);
+    left_taken(&seen);
+    button_event(&h, at, left, true, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let pressed = left_taken(&seen);
+    assert_eq!(kinds(&pressed), [Press]);
+    let pressed_at = pressed[0].event.at_px;
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let cut = left_taken(&seen);
+    assert_eq!(kinds(&cut), [Cancel]);
+    assert_eq!(cut[0].event.at_px, pressed_at);
+    h.hover_at(at + eframe::egui::vec2(30.0, 0.0));
+    step(&mut h);
+    button_event(
+        &h,
+        at + eframe::egui::vec2(30.0, 0.0),
+        left,
+        false,
+        Modifiers::NONE,
+    );
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(left_taken(&seen).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A shape as it looks: a text by what it says, in which font and colours, and where (not
+/// where in the font atlas its glyphs are, which the atlas moves as it grows with new text,
+/// the sheet's); a mesh by its corners, their colours, and its texture, not where in the
+/// texture it reads, for the same reason; a line coloured by a function (the canvas's grid
+/// fading out) by its points and width, the function being made again each frame; any other
+/// shape whole.
+#[derive(Debug, PartialEq)]
+enum Looks {
+    Text {
+        pos: eframe::egui::Pos2,
+        job: Arc<eframe::egui::text::LayoutJob>,
+        underline: eframe::egui::Stroke,
+        fallback: eframe::egui::Color32,
+        over: Option<eframe::egui::Color32>,
+        opacity: f32,
+        angle: f32,
+    },
+    Shape(eframe::egui::Shape),
+}
+
+/// What the frame painted under any modal, each shape as it looks ([`Looks`]): its shapes up
+/// to the first modal's backdrop (a rectangle over the whole window in
+/// [`silico_app::theme::MODAL_BACKDROP`]).
+fn window_painted(h: &AppHarness) -> Vec<Looks> {
+    use eframe::egui::Shape;
+    use eframe::egui::epaint::ColorMode;
+    fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+        match shape {
+            Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+            shape => out.push(shape.clone()),
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in &h.output().shapes {
+        flatten(&clipped.shape, &mut out);
+    }
+    let window = h.ctx.content_rect();
+    let backdrop = out.iter().position(|shape| {
+        matches!(shape, Shape::Rect(rect)
+            if rect.fill == silico_app::theme::MODAL_BACKDROP && rect.rect.contains_rect(window))
+    });
+    out.truncate(backdrop.unwrap_or(out.len()));
+    out.into_iter()
+        .map(|shape| match shape {
+            Shape::Text(text) => Looks::Text {
+                pos: text.pos,
+                job: Arc::clone(&text.galley.job),
+                underline: text.underline,
+                fallback: text.fallback_color,
+                over: text.override_text_color,
+                opacity: text.opacity_factor,
+                angle: text.angle,
+            },
+            Shape::Path(mut path) if matches!(path.stroke.color, ColorMode::UV(_)) => {
+                path.stroke.color = ColorMode::Solid(eframe::egui::Color32::TRANSPARENT);
+                Looks::Shape(Shape::Path(path))
+            }
+            Shape::Mesh(mut mesh) => {
+                for vertex in &mut Arc::make_mut(&mut mesh).vertices {
+                    vertex.uv = eframe::egui::Pos2::ZERO;
+                }
+                Looks::Shape(Shape::Mesh(mesh))
+            }
+            shape => Looks::Shape(shape),
+        })
+        .collect()
+}
+
+#[test]
+fn behind_the_shortcut_sheet_the_window_is_painted_as_it_is_with_none_open() {
+    // #497's review, finding 2: the prototype's backdrop only dims (styles.css `.backdrop`);
+    // nothing behind it is drawn off. Every shape of the window's, the bars', the panes'
+    // (egui_tiles draws each in a `Ui` of its own), and the timeline's, the same under the
+    // sheet as with no modal.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    pointer_away(&mut h);
+    settled(&mut h);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let open = window_painted(&h);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!is_on(&timeline_item(&h, "Block")));
+    let under = window_painted(&h);
+    assert_eq!(under.len(), open.len(), "the window's shapes, counted");
+    for (at, (under, open)) in under.iter().zip(&open).enumerate() {
+        assert_eq!(under, open, "shape {at}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_shortcut_sheet_opened_by_its_button_keeps_the_keyboard_in_its_filter() {
+    // The focus taken from behind a modal is only what's behind it: the sheet, opened by a
+    // click partway through a frame, keeps its filter's.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.get_by_role_and_label(Role::Button, "Shortcuts")
+        .click_accesskit();
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(the_sheet(&h).get_by_role(Role::TextInput).is_focused());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_dragged_as_the_sheet_comes_adds_nothing_behind_it() {
+    // #497's review, round 2: a click-drag line's press and moves add nothing, its release
+    // does; the sheet coming with the button down cancels the gesture, as the focus going
+    // does, so nothing is added behind the sheet.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(Key::L);
+    step(&mut h);
+    let sent = h.state().tabs()[0].sent.clone();
+    pane_press(&mut h, [10.0, 50.0]);
+    pane_move(&mut h, [20.0, 55.0]);
+    pane_move(&mut h, [30.0, 60.0]);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        sent,
+        "an edit sent behind the sheet, the button never let go"
+    );
+    // Let go under the sheet, then the sheet closed: still nothing.
+    pane_release(&mut h, [30.0, 60.0]);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dimension_pressed_as_the_sheet_comes_places_nothing_and_opens_no_modify_box() {
+    // #497's review, round 2: Smart Dimension's press, the sheet coming before its release,
+    // places nothing and opens no Modify box, which, first shown then, egui would raise over
+    // the sheet, inert, its ✓ and ✕ letting a click fall through to the sheet.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(Key::D);
+    step(&mut h);
+    let sent = h.state().tabs()[0].sent.clone();
+    pane_click(&mut h, [50.0, 20.0]);
+    pane_press(&mut h, [60.0, 20.0]);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).unwrap().modify_view().is_none());
+    assert!(modify_field(&h).is_none());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    pane_release(&mut h, [60.0, 20.0]);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert!(sketch_mode(&h).unwrap().modify_view().is_none());
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_box_dragged_as_the_sheet_comes_selects_nothing() {
+    // #497's review, round 2: as the focus going cancels a box, so does a modal coming.
+    use eframe::egui::Modifiers;
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 2.0));
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    let before = selected_names(&h);
+    assert_eq!(before, box_edges(&[1, 5, 9, 10]));
+    // A crossing dragged, then the sheet comes, the button still down: nothing changes.
+    let (right_low, left_high) = (on_canvas(&h, 42.0, -2.0), on_canvas(&h, -2.0, 12.0));
+    box_press(&mut h, right_low, left_high, Modifiers::NONE);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(selected_names(&h), before);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    box_release(&mut h, left_high, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(selected_names(&h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A key event pressed, with `modifiers`: one of a frame's events.
+fn key_event(key: Key, modifiers: eframe::egui::Modifiers) -> eframe::egui::Event {
+    eframe::egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// The modifiers ⌘ (Ctrl elsewhere) puts on a key event, as the platform's window gives them.
+fn command_modifiers(h: &AppHarness) -> eframe::egui::Modifiers {
+    use eframe::egui::Modifiers;
+    use eframe::egui::os::OperatingSystem;
+    if h.ctx.os() == OperatingSystem::Mac {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    }
+}
+
+/// What the last frame painted, in the order painted (the lowest first): each text's words,
+/// and `None` for each modal's backdrop (a rectangle over the whole window, black at any
+/// opacity: [`silico_app::theme::MODAL_BACKDROP`], or less as egui fades a new modal in);
+/// nothing else.
+fn painted_stack(h: &AppHarness) -> Vec<Option<String>> {
+    use eframe::egui::Shape;
+    fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+        match shape {
+            Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+            shape => out.push(shape.clone()),
+        }
+    }
+    let mut shapes = Vec::new();
+    for clipped in &h.output().shapes {
+        flatten(&clipped.shape, &mut shapes);
+    }
+    let window = h.ctx.content_rect();
+    shapes
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Text(text) => Some(Some(text.galley.text().to_owned())),
+            Shape::Rect(rect)
+                if matches!(rect.fill.to_array(), [0, 0, 0, alpha] if alpha > 0)
+                    && rect.rect.contains_rect(window) =>
+            {
+                Some(None)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Where the last frame painted `words`, in [`painted_stack`]'s order, and where it painted
+/// the first modal's backdrop, if it did.
+fn painted_with_the_modal(h: &AppHarness, words: &str) -> (Vec<usize>, Option<usize>) {
+    let stack = painted_stack(h);
+    let at = (0..stack.len())
+        .filter(|&i| stack[i].as_deref() == Some(words))
+        .collect();
+    (at, stack.iter().position(Option::is_none))
+}
+
+/// Whether the last frame painted `words`, every time under the first modal's backdrop.
+fn painted_under_the_modal(h: &AppHarness, words: &str) -> bool {
+    let (at, backdrop) = painted_with_the_modal(h, words);
+    !at.is_empty() && backdrop.is_some_and(|backdrop| at.iter().all(|&i| i < backdrop))
+}
+
+/// Whether the last frame painted `words` over the first modal's backdrop, any time.
+fn painted_over_the_modal(h: &AppHarness, words: &str) -> bool {
+    let (at, backdrop) = painted_with_the_modal(h, words);
+    backdrop.is_some_and(|backdrop| at.iter().any(|&i| i > backdrop))
+}
+
+/// The boxed sketch open in sketch mode, seen from the top, the Line tool chosen.
+fn boxed_line_tool(f: &Fixture) -> AppHarness {
+    counting(f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(Key::L);
+    step(&mut h);
+    h
+}
+
+/// A click-drag line pressed at the top view's (10, 50) and moved to (30, 60), its button
+/// still down: the edits sent before it.
+fn line_held(h: &mut AppHarness) -> Vec<Sent> {
+    let sent = h.state().tabs()[0].sent.clone();
+    pane_press(h, [10.0, 50.0]);
+    pane_move(h, [20.0, 55.0]);
+    pane_move(h, [30.0, 60.0]);
+    sent
+}
+
+/// The left button let go at the top view's (30, 60), then `key`, in one frame, as a window
+/// gets two events between frames; the frame.
+fn let_go_then(h: &mut AppHarness, key: eframe::egui::Event) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let at = top_screen(h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key);
+    step(h);
+}
+
+#[test]
+fn a_line_let_go_before_the_sheets_key_in_one_frame_is_added() {
+    // #497's review, round 3: the release came before the key that opened the sheet, so the
+    // gesture was finished before any modal came; only what's still held after the frame's
+    // events is cancelled (as a release in the frame the tab changes is a release).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    let sent = line_held(&mut h);
+    let_go_then(
+        &mut h,
+        key_event(Key::Questionmark, eframe::egui::Modifiers::NONE),
+    );
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert!(
+        added.contains(&Sent::SketchEdit("sketch_add")),
+        "a line let go before the sheet's key, in one frame, was dropped: {added:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_close_in_one_frame_is_in_the_file_the_questions_save_writes() {
+    // #497's review, round 3: the release, then ⌘W, in one frame: the line is added, and the
+    // close question's Save writes it. A line drawn first, from (40, 50) to (45, 60), so
+    // there's an edit to ask about as ⌘W comes (before the canvas has the release).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    pane_press(&mut h, [40.0, 50.0]);
+    pane_move(&mut h, [42.0, 55.0]);
+    pane_move(&mut h, [45.0, 60.0]);
+    pane_release(&mut h, [45.0, 60.0]);
+    settled(&mut h);
+    assert!(h.state().tabs()[0].unsaved());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::W, command));
+    let asked = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    // The question's Save, not the application bar's (off behind it).
+    on_button(&h, "Save").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    let saved = std::fs::read(f.dir.path().join("example.silico")).unwrap();
+    let document = silico_core::document::read(&saved).unwrap();
+    let sketch = document
+        .features
+        .into_iter()
+        .find_map(|feature| match feature.operation {
+            silico_core::document::Operation::Sketch(sketch) => Some(sketch),
+            _ => None,
+        })
+        .unwrap();
+    // The box's four sides, the first line, and the line from (10, 50) to (30, 60) as it
+    // was let go.
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    let (from, to) = (
+        point_near(&sketch, 10.0, 50.0, 0.5),
+        point_near(&sketch, 30.0, 60.0, 0.5),
+    );
+    assert!(
+        sketch.lines.iter().any(|line| {
+            let ends = [line.from.as_str(), line.to.as_str()];
+            ends == [from.as_str(), to.as_str()] || ends == [to.as_str(), from.as_str()]
+        }),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dimension_let_go_before_the_sheets_key_in_one_frame_is_placed_under_the_sheet() {
+    // #497's review, round 3: Smart Dimension's release, then `?`, in one frame: the
+    // dimension is placed (its gesture was finished), and its Modify box drawn under the
+    // sheet, never over it (egui raises an area first shown over every other of its order,
+    // and never over a higher order), taking no keyboard there; once the sheet has gone, the
+    // box takes the keyboard, and what's typed reaches it.
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    // The sheet shown once, before any box: a box first shown in the frame the sheet is
+    // again, egui would keep above it, were they of one order.
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    h.key_press(Key::D);
+    step(&mut h);
+    pane_click(&mut h, [50.0, 20.0]);
+    pane_press(&mut h, [60.0, 20.0]);
+    let at = top_screen(&h, [60.0, 20.0]);
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    // Each frame: the box, once it's there, never over the sheet, and without the keyboard.
+    let under = |h: &AppHarness| {
+        let Some(view) = sketch_mode(h).unwrap().modify_view() else {
+            return;
+        };
+        if let Some(field) = modify_field(h) {
+            assert!(
+                !field.is_focused(),
+                "the box took the keyboard behind the sheet"
+            );
+            assert!(field.accesskit_node().is_disabled());
+        }
+        assert!(
+            !painted_over_the_modal(h, &view.text),
+            "the box's {:?} painted over the sheet: {:?}",
+            view.text,
+            painted_stack(h)
+        );
+    };
+    step(&mut h);
+    let mut frames = 0;
+    while !(sheet_open(&h) && modify_field(&h).is_some()) {
+        assert!(
+            frames < 600,
+            "the sheet and the box: {:?}",
+            painted_stack(&h)
+        );
+        step(&mut h);
+        under(&h);
+        frames += 1;
+    }
+    for _ in 0..5 {
+        step(&mut h);
+        under(&h);
+    }
+    // Drawn, dimmed, under the sheet drawn whole.
+    let measured = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    assert!(
+        painted_under_the_modal(&h, &measured),
+        "the box's {measured:?} not painted under the sheet: {:?}",
+        painted_stack(&h)
+    );
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    step(&mut h);
+    assert!(
+        modify_field(&h).is_some_and(|field| field.is_focused()),
+        "the box without the keyboard once the sheet has gone"
+    );
+    h.event(Event::Text("7".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{measured}7")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_toast_asked_while_a_modal_is_open_is_drawn_at_once_under_it() {
+    // #497's review, round 3: as the prototype's `#toasts` (z 650) sit under `.backdrop`
+    // (700), dimmed, their time running. F5 (its toast) and ⌘R (its question, the edits
+    // held) in one frame, as a window gets two keys between frames: the question comes
+    // before the toast is drawn, and the toast is drawn at once, under it.
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    // The keyboard off the name field: F5 is no field's key.
+    timeline_item(&h, "Block").click();
+    step_until(&mut h, "Block selected", |h| {
+        selected_features(h) == ["k7f2qx3m"]
+    });
+    assert!(!h.ctx.text_edit_focused());
+    let said = silico_app::app::FILTERS_SAID;
+    let asked = "Reload example.silico from disk?";
+    let command = command_modifiers(&h);
+    // The question shown once, then a toast after it, gone: in one frame each first shown
+    // again, egui keeps the toast above the question, were they of one order.
+    h.event(key_event(Key::R, command));
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    h.key_press(Key::F5);
+    step_until(&mut h, "the toast", |h| anywhere(h, said));
+    step_until(&mut h, "the toast gone", |h| !anywhere(h, said));
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::F5, eframe::egui::Modifiers::NONE));
+    events.push(key_event(Key::R, command));
+    step(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(anywhere(&h, said), "the toast not drawn under the question");
+        assert!(
+            painted_under_the_modal(&h, said),
+            "the toast drawn over the question: {:?}",
+            painted_stack(&h)
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_modify_box_takes_the_keyboard_back_once_the_close_question_has_gone() {
+    // #497's review, round 3: as SolidWorks' and Windows' dialogs give the focus back to the
+    // control that held it.
+    use eframe::egui::Event;
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    assert!(modify_field(&h).is_some_and(|field| field.is_focused()));
+    let before = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    h.event(Event::Text("3".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{before}3")
+    );
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    assert!(modify_field(&h).is_some_and(|field| !field.is_focused()));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    // Given back as the first frame drawn without the question ends; a frame more, typed in.
+    step(&mut h);
+    assert!(
+        modify_field(&h).is_some_and(|field| field.is_focused()),
+        "the box's field without the keyboard once the question has gone"
+    );
+    h.event(Event::Text("4".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{before}34")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_name_field_takes_the_keyboard_back_once_the_close_question_has_gone() {
+    // #497's review, round 3: a text field in a pane, the properties' Name.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    assert!(!name_field(&h).is_focused());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(
+        name_field(&h).is_focused(),
+        "the name field without the keyboard once the question has gone"
+    );
+    h.event(Event::Text("x".to_owned()));
+    step(&mut h);
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pinsx"));
+    step_until(&mut h, "renamed", |h| shows(h, "Timeline", "Pinsx"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_rename_field_opened_in_the_frame_a_question_comes_is_drawn_under_it() {
+    // #497's review, round 3: F2 and ⌘R in one frame open the timeline's rename field and
+    // the reload question over it; the field, of the order under the modals', is never drawn
+    // over the question, though its layer is newer.
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    let asked = "Reload example.silico from disk?";
+    let command = command_modifiers(&h);
+    timeline_item(&h, "Block").click();
+    step_until(&mut h, "Block selected", |h| {
+        selected_features(h) == ["k7f2qx3m"]
+    });
+    // The question shown once first.
+    h.event(key_event(Key::R, command));
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    step(&mut h);
+    assert!(!h.ctx.text_edit_focused());
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::F2, eframe::egui::Modifiers::NONE));
+    events.push(key_event(Key::R, command));
+    step(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    let mut drawn = false;
+    for _ in 0..5 {
+        step(&mut h);
+        if let Some(field) = rename_field(&h, "Block") {
+            assert!(field.accesskit_node().is_disabled());
+            drawn = true;
+        }
+        assert!(
+            !painted_over_the_modal(&h, "Block"),
+            "the rename field painted over the question: {:?}",
+            painted_stack(&h)
+        );
+    }
+    assert!(drawn, "no rename field under the question");
+    assert!(painted_under_the_modal(&h, "Block"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_modify_box_stays_over_the_sketch_bar_after_a_press_on_the_bar() {
+    // #497's review, round 3: the box is of the order under the modals', the sketch bar's
+    // and the palette's; a press on the bar raises the bar among them, and the box, raised
+    // each frame, stays over it, as the prototype's `.modify-box` (z 40) is over
+    // `.sketch-bar` (26).
+    use eframe::egui::{Modifiers, PointerButton, Pos2};
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    let text = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    let bar = sketch_mode(&h).unwrap().panels.as_ref().unwrap().bar;
+    // On the bar's own padding, at its left: no button of its.
+    let at = Pos2::new(bar.left() + 3.0, bar.center().y);
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().map(|view| view.text),
+        Some(text.clone())
+    );
+    let stack = painted_stack(&h);
+    let last = |words: &str| {
+        stack
+            .iter()
+            .rposition(|painted| painted.as_deref() == Some(words))
+    };
+    assert!(
+        last(&text) > last("Finish Sketch"),
+        "the bar painted over the box: {stack:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_flip_arrows_click_let_go_before_the_sheets_key_in_one_frame_flips_the_pad() {
+    // #497's review, round 4: the release came before the key that opened the sheet, so the
+    // click was finished before any modal came; the grip is let go only after the canvas
+    // has handed on the frame's events.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    // On the flip arrow's shaft, 30 below the end: Reversed ticked.
+    click_over_two_frames(&mut h, up(c, -30.0), Modifiers::NONE);
+    step_until(&mut h, "Reversed ticked", reversed_ticked);
+    settled(&mut h);
+    // The flip arrow, turned with the pad, from 40 below the end to 68: pressed at 50 below,
+    // then let go there and `?`, in one frame.
+    let at = up(c, -50.0);
+    left_down_at(&mut h, at);
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    step(&mut h);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    settled(&mut h);
+    assert!(
+        !reversed_ticked(&h),
+        "a flip arrow's click let go before the sheet's key, in one frame, was dropped"
+    );
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_arrows_drag_as_the_sheet_comes_keeps_the_frames_last_move_before_its_key() {
+    // #497's review, round 4: the pointer moved 40 above the tip, then `?`, in one frame: the
+    // drag keeps that move's length, 10 + 40 / 4 = 20 mm (4 points a millimetre), never the
+    // 15 of the frame before, nor the 10 it was pressed at (as the modal's cancel would put
+    // back); the rest of its stream, under the sheet, does nothing.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 20.0));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("15")
+    );
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerMoved(up(tip, 40.0)));
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    step(&mut h);
+    step_until(&mut h, "the sheet", sheet_open);
+    // Under the sheet, the pointer on up the arrow and let go: nothing more of the dialog's.
+    move_to(&mut h, up(tip, 60.0));
+    left_up_at(&mut h, up(tip, 60.0));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert_eq!(dialog_length(&h.state().tabs()[0]).as_deref(), Some("20"));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("20", false));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    settled(&mut h);
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("20")
+    );
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("20", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_close_in_one_frame_with_nothing_edited_before_asks_and_is_saved() {
+    // #497's review, round 4: the release, then ⌘W, in one frame, with no edit before: the
+    // release's line is an edit, so the close question is asked (Close is decided once the
+    // canvas has had the frame's events), and its Save writes the line.
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    assert!(!h.state().tabs()[0].unsaved());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::W, command));
+    let asked = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    on_button(&h, "Save").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    let saved = std::fs::read(f.dir.path().join("example.silico")).unwrap();
+    let document = silico_core::document::read(&saved).unwrap();
+    let sketch = document
+        .features
+        .into_iter()
+        .find_map(|feature| match feature.operation {
+            silico_core::document::Operation::Sketch(sketch) => Some(sketch),
+            _ => None,
+        })
+        .unwrap();
+    // The box's four sides, and the line from (10, 50) to (30, 60) as it was let go.
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    let (from, to) = (
+        point_near(&sketch, 10.0, 50.0, 0.5),
+        point_near(&sketch, 30.0, 60.0, 0.5),
+    );
+    assert!(
+        sketch.lines.iter().any(|line| {
+            let ends = [line.from.as_str(), line.to.as_str()];
+            ends == [from.as_str(), to.as_str()] || ends == [to.as_str(), from.as_str()]
+        }),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_toast_stays_over_the_modify_box_and_the_palette_after_a_press_on_the_palette() {
+    // #497's review, round 4: the prototype's `#toasts` (z 650) are over `.modify-box` (40),
+    // `.sketch-bar` (26) and `.palette` (22); all of one egui order here, the toast is
+    // raised over them each frame, so neither a box first shown after it nor a press that
+    // raises the palette stands over it.
+    use eframe::egui::{PointerButton, Pos2};
+    let said = silico_app::app::FILTERS_SAID;
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    assert!(!h.ctx.text_edit_focused());
+    h.key_press(Key::F5);
+    step_until(&mut h, "the toast", |h| anywhere(h, said));
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    let last = |stack: &[Option<String>], words: &str| {
+        stack
+            .iter()
+            .rposition(|painted| painted.as_deref() == Some(words))
+    };
+    let text = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    let stack = painted_stack(&h);
+    assert!(last(&stack, said).is_some(), "{stack:?}");
+    assert!(
+        last(&stack, said) > last(&stack, &text),
+        "the Modify box painted over the toast: {stack:?}"
+    );
+    assert!(
+        last(&stack, said) > last(&stack, "SKETCH PALETTE"),
+        "the palette painted over the toast: {stack:?}"
+    );
+    // On the palette's own padding, at its top left: no control of its.
+    let palette = sketch_mode(&h).unwrap().panels.as_ref().unwrap().palette;
+    let at = Pos2::new(palette.left() + 3.0, palette.top() + 3.0);
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    step(&mut h);
+    let stack = painted_stack(&h);
+    assert!(last(&stack, said).is_some(), "the toast gone: {stack:?}");
+    assert!(
+        last(&stack, said) > last(&stack, "SKETCH PALETTE"),
+        "the palette painted over the toast after a press on it: {stack:?}"
+    );
+    if let Some(view) = sketch_mode(&h).unwrap().modify_view() {
+        assert!(
+            last(&stack, said) > last(&stack, &view.text),
+            "the Modify box painted over the toast: {stack:?}"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_field_whose_tab_closes_under_the_close_question_is_given_no_focus_back() {
+    // #497's review, round 4: the name field held the keyboard as the question came; Don't
+    // save closes its tab: the field isn't there to take it back, so nothing has the
+    // keyboard, and the app goes on (no panic, no accessibility tree naming a gone focus).
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    on_button(&h, "Don't save").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), None);
+    assert!(!h.ctx.text_edit_focused());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_modify_box_takes_the_keyboard_back_after_the_question_and_the_offer_that_waited_under_it() {
+    // #497's review, round 4: the Modify box held the keyboard as the close question came;
+    // an over-define offer came under it and waited; the question's Cancel shows the offer,
+    // under which the box is drawn inert. The keyboard waits for the box through the offer
+    // too, and is given back once the offer has gone.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    step_until(&mut h, "the first box closed", |h| {
+        sketch_mode(h).unwrap().edit_box.is_none()
+    });
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    assert!(modify_field(&h).is_some_and(|field| field.is_focused()));
+    // ⌘W, the field holding the keyboard (a click on the tab's ✕ would take it first).
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    assert!(modify_field(&h).is_some_and(|field| !field.is_focused()));
+    offer_come(&f, &mut h);
+    let cancel = on_button(&h, "Cancel").rect().center();
+    click_in_one_frame(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(
+            modify_field(&h).is_some_and(|field| !field.is_focused()),
+            "the box took the keyboard under the offer"
+        );
+    }
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        modify_field(&h).is_some_and(|field| field.is_focused()),
+        "the box's field without the keyboard once the question and the offer have gone"
+    );
+    let before = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    h.event(Event::Text("4".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{before}4")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_field_drawn_off_of_its_own_once_the_question_has_gone_is_given_no_focus_when_it_turns_on() {
+    // #497's review, round 5: the name field held the keyboard as ⌘W's question came; the
+    // question's Save starts the close, so the field is drawn off (an edit then would be
+    // dropped, #298's review) with no modal left: the keyboard is let go there. When the
+    // save is refused and the field turns on again, it's not given the keyboard back.
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    // The save held behind a check, and the folder made read-only, so it's refused.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let folder = path.parent().unwrap().to_owned();
+    let was = std::fs::metadata(&folder).unwrap().permissions();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    on_button(&h, "Save").click_accesskit();
+    step_until(&mut h, "closing, the question gone", |h| {
+        h.state().tabs()[0].closing() && !anywhere(h, question)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!name_field(&h).is_focused());
+        assert!(name_field(&h).accesskit_node().is_disabled());
+    }
+    hold.release();
+    check.wait();
+    step_until(&mut h, "the close refused", |h| {
+        !h.state().tabs()[0].closing() && h.state().tabs()[0].edits.idle()
+    });
+    std::fs::set_permissions(&folder, was).unwrap();
+    step_until(&mut h, "the field on", |h| {
+        !name_field(h).accesskit_node().is_disabled()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(
+            !name_field(&h).is_focused(),
+            "the keyboard given back to a field let go of while it was off"
+        );
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_field_gone_while_the_offer_is_still_up_is_given_nothing_when_it_comes_back() {
+    // #497's review, round 5: the Modify box held the keyboard as ⌘W's question came; an
+    // offer came under it, shown once the question had gone. While the offer is up the box
+    // goes (its place behind the eye) and is let go of there; it comes back under the
+    // offer, and once the offer has gone it's not given the keyboard: it was gone.
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    step_until(&mut h, "the first box closed", |h| {
+        sketch_mode(h).unwrap().edit_box.is_none()
+    });
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    assert!(modify_field(&h).is_some_and(|field| field.is_focused()));
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    offer_come(&f, &mut h);
+    let cancel = on_button(&h, "Cancel").rect().center();
+    click_in_one_frame(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    step(&mut h);
+    assert!(modify_field(&h).is_some());
+    // The box's place behind the eye: looking up from 10 above the sketch's plane.
+    let camera = view(&h).camera().clone();
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Perspective {
+            field_of_view: 45.0,
+        },
+        eye: [0.0, 0.0, 10.0],
+        target: [0.0, 0.0, 20.0],
+        up: [0.0, 1.0, 0.0],
+    });
+    step_until(&mut h, "the box gone", |h| modify_field(h).is_none());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(prompt(&h).is_some());
+    view_mut(&mut h).set_camera(camera);
+    step_until(&mut h, "the box back", |h| modify_field(h).is_some());
+    step(&mut h);
+    assert!(prompt(&h).is_some());
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(
+            modify_field(&h).is_some_and(|field| !field.is_focused()),
+            "the keyboard given back to a box let go of while it was gone"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn close_asked_in_the_frame_a_tab_with_an_offer_is_shown_asks_over_the_offer() {
+    // #497's review, round 5: ⌘W's Close is decided after the frame is drawn. A click on
+    // another tab's button, in the frame ⌘W comes, shows that tab, whose over-define
+    // offer came while it was hidden: the Close asked of the tab ⌘W was pressed in (its
+    // edits held) is asked over the offer, which waits under the question and shows once
+    // the question has gone.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs, the other shown", |h| {
+        h.state().tabs().len() == 2 && shows(h, "Timeline", "Pin")
+    });
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the other's edit held", |h| {
+        let tab = &h.state().tabs()[1];
+        tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
+    });
+    offer_come(&f, &mut h);
+    assert!(prompt(&h).is_none(), "the hidden tab's offer drawn");
+    // A click on boxed.silico's tab, pressed and let go, then ⌘W, in one frame.
+    let at = h
+        .get_by_role_and_label(Role::Button, "boxed.silico *")
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    for pressed in [true, false] {
+        events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events.push(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to other.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(
+            prompt(&h).is_none(),
+            "the offer drawn while the question is up"
+        );
+        assert!(sketch_mode(&h).unwrap().offer().is_some());
+    }
+    let cancel = on_button(&h, "Cancel").rect().center();
+    click_in_one_frame(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    assert_eq!(h.state().tabs().len(), 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn close_in_the_frame_a_click_opens_export_is_dropped_and_export_stays_up() {
+    // #497's review, round 6: ⌘W's Close is decided after the frame is drawn, and not over
+    // a question a click opened meanwhile, as no key acts under one: a click on File's
+    // Export… and ⌘W in one frame leave the tab open, no Close question asked, Export's
+    // dialog up.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    assert!(!h.state().tabs()[0].unsaved());
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    let at = h
+        .get_by_role_and_label(Role::Button, "Export…")
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    for pressed in [true, false] {
+        events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events.push(key_event(Key::W, command));
+    step(&mut h);
+    step_until(&mut h, "the export dialog", |h| anywhere(h, EXPORT_EXAMPLE));
+    for _ in 0..5 {
+        step(&mut h);
+        assert_eq!(h.state().tabs().len(), 1, "the tab closed under Export");
+        assert!(anywhere(&h, EXPORT_EXAMPLE), "Export's dialog gone");
+        assert!(
+            !anywhere(&h, "Save changes to example.silico before closing?"),
+            "the Close question asked"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_after_the_sheets_key_in_one_frame_is_added() {
+    // #497's review, round 6: `?`, then the release, in one frame: the canvas reads the
+    // frame's pointer events after the keys, so the release of the press already held is
+    // handed on, as one before the key is, and ends its gesture.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    let sent = line_held(&mut h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert!(
+        added.contains(&Sent::SketchEdit("sketch_add")),
+        "a line let go after the sheet's key, in one frame, was dropped: {added:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn typing_in_the_first_frame_under_the_close_question_never_reaches_the_name_field() {
+    // #497's mutants (app.rs `focused.layer_id != modal`): the field behind the modal loses
+    // the keyboard at the top of each frame a modal is on, before anything is drawn, as egui
+    // gives a focused field the frame's typing before it finds the field off. A key typed in
+    // the first frame the question is drawn reaches nothing; the name is as it was.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    // The first frame drawn under the question, a key typed in it.
+    h.event(Event::Text("y".to_owned()));
+    step(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pins"));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pins"));
+    assert!(shows(&h, "Timeline", "Pins"));
+    assert!(!shows(&h, "Timeline", "Pinsy"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_keyboard_comes_back_to_each_widget_through_a_question_over_the_sheet() {
+    // #497's mutants (app.rs `focus_behind.retain(|(taken, _)| *taken != id)`): each widget a
+    // modal took the keyboard from is kept until its modal has gone. The Shortcuts button
+    // holds the keyboard as `?` opens the sheet, whose filter takes it; a quit's question
+    // over the sheet takes it from the filter. The question's Esc gives it back to the
+    // filter, and the sheet's Esc gives it back to the button.
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    h.get_by_role_and_label(Role::Button, "Shortcuts").focus();
+    step(&mut h);
+    step(&mut h);
+    let button = h.ctx.memory(|memory| memory.focused());
+    assert!(button.is_some());
+    assert!(!h.ctx.text_edit_focused());
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    step_until(&mut h, "the sheet's filter focused", |h| {
+        the_sheet(h).get_by_role(Role::TextInput).is_focused()
+    });
+    let filter = h.ctx.memory(|memory| memory.focused());
+    assert_ne!(filter, button);
+    close_window(&mut h);
+    let question = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    step(&mut h);
+    assert!(!the_sheet(&h).get_by_role(Role::TextInput).is_focused());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(sheet_open(&h));
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), filter);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    step(&mut h);
+    assert_eq!(
+        h.ctx.memory(|memory| memory.focused()),
+        button,
+        "the Shortcuts button without the keyboard once the sheet has gone"
+    );
     assert_eq!(never_waits::waits(), 0);
 }

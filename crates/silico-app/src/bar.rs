@@ -150,6 +150,7 @@ pub(crate) fn styled_button(
     // Painted at the bar's opacity, not faded further when off: `.ab-btn:disabled` is
     // Gray.400 itself.
     let opacity = ui.opacity();
+    let own = enabled;
     ui.add_enabled(enabled, |ui: &mut Ui| {
         ui.set_opacity(opacity);
         let galley = text.map(|text| {
@@ -171,8 +172,9 @@ pub(crate) fn styled_button(
             return response;
         }
         // `.ab-btn:hover:not(:disabled)` outweighs `.ab-btn.on` (a class and two
-        // pseudo-classes to two classes), so a hovered button takes hovered's fill.
-        let (fill, color) = if !enabled {
+        // pseudo-classes to two classes), so a hovered button takes hovered's fill. Behind a
+        // modal, drawn as its own flag has it (#487).
+        let (fill, color) = if !crate::modal::looks_on(ui, own) {
             (None, theme::TEXT_DISABLED)
         } else if response.hovered() {
             (Some(theme::APP_BAR_BUTTON_HOVER_BG), theme::TEXT_STRONG)
@@ -618,6 +620,16 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     use super::*;
+
+    #[test]
+    fn a_bar_button_behind_a_modal_keeps_its_own_look_on_or_off_and_shown_on() {
+        crate::modal::tests::drawn_alike_behind(|ui, on| {
+            button(ui, Icon::Save, None, "Save", on, None);
+        });
+        crate::modal::tests::drawn_alike_behind(|ui, on| {
+            button(ui, Icon::Undo, Some("Undo"), "Undo", on, Some(true));
+        });
+    }
 
     /// The prototype's tokens and geometry (docs/design/m5-ui/styles.css).
     mod css {

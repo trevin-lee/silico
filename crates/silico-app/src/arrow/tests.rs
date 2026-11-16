@@ -504,7 +504,7 @@ fn a_pads_arrow_stands_at_its_end_over_the_centroid_and_its_flip_on_the_plane() 
     near3(h.direction, [0.0, 0.0, 1.0]);
     assert_eq!(h.distances.len(), 1);
     let d = h.distances[0];
-    assert_eq!((d.part, d.value, d.factor), (LENGTH, mm("10"), 1.0));
+    assert_eq!((d.part, d.value, d.per_mm), (LENGTH, mm("10"), 1.0));
     near3(d.base, [20.0, 10.0, 10.0]);
     near3(d.way, [0.0, 0.0, 1.0]);
     assert!(h.flip);
@@ -552,7 +552,7 @@ fn a_symmetric_extents_arrow_stands_at_half_its_length_and_two_sides_have_one_ea
     let h = pad_handles(&dialog, SketchPlane::Xy);
     assert_eq!(h.distances.len(), 1);
     near3(h.distances[0].base, [20.0, 10.0, 5.0]);
-    assert_eq!(h.distances[0].factor, 2.0);
+    assert_eq!(h.distances[0].per_mm, 2.0);
     // Reversed is hidden for symmetric, so it changes nothing.
     near3(h.direction, [0.0, 0.0, 1.0]);
     assert!(!h.flip);
@@ -605,6 +605,204 @@ fn a_length_that_isnt_one_above_zero_has_no_arrow_and_other_kinds_have_none() {
     );
 }
 
+#[test]
+fn each_arrow_stands_where_the_cores_prism_ends_for_every_form_and_plane() {
+    // #482: the arrows read the rebuild's own rule. For each form of each kind, on an origin
+    // plane and a tilted face, the dialog's arrows against the prism the core makes of the
+    // same extent, written here as the document would hold it: `length`'s arrow at the
+    // prism's far end (its start plus its vector), `length2`'s at its start, each over the
+    // centroid, and the arrows' way the prism's.
+    use silico_core::document::{Extent, PadExtent, PocketExtent};
+    let r = FRAC_1_SQRT_2;
+    let planes = [
+        SketchPlane::Xz,
+        SketchPlane::Face(FaceFrame {
+            origin: [1.0, 2.0, 3.0],
+            x: [r, 0.0, -r],
+            y: [0.0, 1.0, 0.0],
+        }),
+    ];
+    let (l, l2) = (mm("10.5"), mm("4"));
+    // The dialog's form, Reversed, and the extent the file would hold.
+    let forms = [
+        (
+            Kind::Pad,
+            "one_side",
+            false,
+            Extent::Pad(PadExtent::OneSide {
+                length: l,
+                reversed: false,
+            }),
+        ),
+        (
+            Kind::Pad,
+            "one_side",
+            true,
+            Extent::Pad(PadExtent::OneSide {
+                length: l,
+                reversed: true,
+            }),
+        ),
+        (
+            Kind::Pad,
+            "symmetric",
+            false,
+            Extent::Pad(PadExtent::Symmetric { length: l }),
+        ),
+        (
+            Kind::Pad,
+            "two_sides",
+            false,
+            Extent::Pad(PadExtent::TwoSides {
+                length: l,
+                length2: l2,
+            }),
+        ),
+        (
+            Kind::Pocket,
+            "one_side",
+            true,
+            Extent::Pocket(PocketExtent::OneSide {
+                length: l,
+                reversed: true,
+            }),
+        ),
+        (
+            Kind::Pocket,
+            "symmetric",
+            false,
+            Extent::Pocket(PocketExtent::Symmetric { length: l }),
+        ),
+        (
+            Kind::Pocket,
+            "two_sides",
+            false,
+            Extent::Pocket(PocketExtent::TwoSides {
+                length: l,
+                length2: l2,
+            }),
+        ),
+        (
+            Kind::Pocket,
+            "through_all",
+            true,
+            Extent::Pocket(PocketExtent::ThroughAll { reversed: true }),
+        ),
+    ];
+    for plane in planes {
+        let start = plane.place([20.0, 10.0]);
+        for (kind, form, on, extent) in forms {
+            let mut dialog = dialog_of(kind);
+            set_form(&mut dialog, form);
+            set_reversed(&mut dialog, on);
+            set_text(&mut dialog, LENGTH, "10.5");
+            set_text(&mut dialog, LENGTH2, "4");
+            let h = pad_handles(&dialog, plane);
+            let prism = silico_core::sweep::prism(extent, plane.normal()).unwrap();
+            assert_eq!(h.direction, prism.direction, "{kind:?} {form}");
+            let Some(span) = prism.span else {
+                assert!(h.distances.is_empty(), "{form}: {h:?}");
+                continue;
+            };
+            let far: [f64; 3] = std::array::from_fn(|k| start[k] + span.start[k] + span.vector[k]);
+            let near_end: [f64; 3] = std::array::from_fn(|k| start[k] + span.start[k]);
+            let unit = |v: [f64; 3]| {
+                let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                v.map(|c| c / n)
+            };
+            let parts: Vec<Part> = h.distances.iter().map(|d| d.part).collect();
+            let expected: &[Part] = if form == "two_sides" {
+                &[LENGTH, LENGTH2]
+            } else {
+                &[LENGTH]
+            };
+            assert_eq!(parts, expected, "{kind:?} {form}");
+            for d in &h.distances {
+                let (end, way) = if d.part == LENGTH {
+                    (far, unit(span.vector))
+                } else {
+                    (near_end, unit(span.vector).map(|c| -c))
+                };
+                for k in 0..3 {
+                    assert!(
+                        (d.base[k] - end[k]).abs() < 1e-12,
+                        "{kind:?} {form} {plane:?}: {d:?} {end:?}"
+                    );
+                    assert!((d.way[k] - way[k]).abs() < 1e-12, "{kind:?} {form}: {d:?}");
+                }
+                assert_eq!(d.value, if d.part == LENGTH { l } else { l2 });
+            }
+        }
+    }
+}
+
+#[test]
+fn a_length_that_doesnt_read_takes_every_arrow_of_its_extent_with_it_but_the_flip() {
+    // The extent the dialog shows doesn't read while one of its fields doesn't, so it sweeps
+    // nothing: two sides with `length2` emptied have no arrow for `length` either.
+    let mut dialog = dialog_of(Kind::Pad);
+    set_form(&mut dialog, "two_sides");
+    set_text(&mut dialog, LENGTH2, "");
+    let h = pad_handles(&dialog, SketchPlane::Xy);
+    assert!(h.distances.is_empty(), "{h:?}");
+    assert!(!h.flip);
+    near3(h.direction, [0.0, 0.0, 1.0]);
+    // A reversed pocket with its length emptied: no arrow, the flip pointing up still.
+    let mut dialog = dialog_of(Kind::Pocket);
+    set_reversed(&mut dialog, true);
+    set_text(&mut dialog, LENGTH, "x");
+    let h = pad_handles(&dialog, SketchPlane::Xy);
+    assert!(h.distances.is_empty());
+    assert!(h.flip);
+    near3(h.direction, [0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn two_sides_with_one_length_not_above_zero_keeps_the_others_arrow() {
+    // A length at 0 still reads as an extent, so the other length keeps
+    // its arrow, as `Handles::distances` says.
+    for (zero, kept, base_z) in [(LENGTH, LENGTH2, -4.0), (LENGTH2, LENGTH, 10.0)] {
+        let mut dialog = dialog_of(Kind::Pad);
+        set_form(&mut dialog, "two_sides");
+        set_text(&mut dialog, LENGTH, "10");
+        set_text(&mut dialog, LENGTH2, "4");
+        set_text(&mut dialog, zero, "0");
+        let h = pad_handles(&dialog, SketchPlane::Xy);
+        let parts: Vec<Part> = h.distances.iter().map(|d| d.part).collect();
+        assert_eq!(parts, [kept], "{zero:?} at 0: {h:?}");
+        near3(h.distances[0].base, [20.0, 10.0, base_z]);
+    }
+}
+
+#[test]
+fn an_extent_that_doesnt_read_keeps_the_way_its_plane_and_reversed_give() {
+    // Reversed off, the length cleared: a pad still points along +Z, a pocket
+    // against it.
+    for (kind, up) in [(Kind::Pad, 1.0), (Kind::Pocket, -1.0)] {
+        let mut dialog = dialog_of(kind);
+        set_reversed(&mut dialog, false);
+        set_text(&mut dialog, LENGTH, "");
+        let h = pad_handles(&dialog, SketchPlane::Xy);
+        assert!(h.distances.is_empty() && h.flip);
+        near3(h.direction, [0.0, 0.0, up]);
+    }
+    // On XZ, whose normal is −Y: the way is −Y, never the XY plane's +Z.
+    let mut dialog = dialog_of(Kind::Pad);
+    set_text(&mut dialog, LENGTH, "x");
+    near3(
+        pad_handles(&dialog, SketchPlane::Xz).direction,
+        [0.0, -1.0, 0.0],
+    );
+    // Symmetric with Reversed hidden but on, its length cleared: the toggle changes nothing.
+    let mut dialog = dialog_of(Kind::Pad);
+    set_form(&mut dialog, "symmetric");
+    set_reversed(&mut dialog, true);
+    set_text(&mut dialog, LENGTH, "");
+    let h = pad_handles(&dialog, SketchPlane::Xy);
+    assert!(!h.flip);
+    near3(h.direction, [0.0, 0.0, 1.0]);
+}
+
 // ---- On the screen ----
 
 #[test]
@@ -620,7 +818,11 @@ fn from_the_front_the_arrow_points_up_56_points_from_its_end_as_worked_by_hand()
     let d = &a.distances[0];
     at(d.arrow.base, [140.0, 80.0]);
     near(d.arrow.unit, [0.0, -1.0], 1e-6);
-    assert!((d.arrow.per_mm - 2.0).abs() < 1e-5, "{}", d.arrow.per_mm);
+    assert!(
+        (d.arrow.points_per_mm - 2.0).abs() < 1e-5,
+        "{}",
+        d.arrow.points_per_mm
+    );
     at(d.arrow.tip, [140.0, 24.0]);
     at(d.arrow.head[0], [140.0, 12.0]);
     at(d.arrow.head[1], [146.0, 24.0]);
@@ -653,7 +855,7 @@ fn on_a_tilted_face_the_arrow_points_along_its_normal_on_the_screen() {
     let d = &a.distances[0];
     at(d.arrow.base, [140.0, 80.0]);
     near(d.arrow.unit, [r, -r], 1e-6);
-    assert!((d.arrow.per_mm - 2.0).abs() < 1e-5);
+    assert!((d.arrow.points_per_mm - 2.0).abs() < 1e-5);
     at(d.arrow.tip, [140.0 + 56.0 * r, 80.0 - 56.0 * r]);
     at(d.arrow.head[0], [140.0 + 68.0 * r, 80.0 - 68.0 * r]);
     at(d.arrow.head[1], [140.0 + 62.0 * r, 80.0 - 50.0 * r]);
@@ -674,7 +876,11 @@ fn from_45_degrees_above_the_sweep_is_foreshortened_by_its_cosine() {
     let d = &a.distances[0];
     at(d.arrow.base, [140.0, 80.0]);
     near(d.arrow.unit, [0.0, -1.0], 1e-6);
-    assert!((d.arrow.per_mm - SQRT_2).abs() < 1e-5, "{}", d.arrow.per_mm);
+    assert!(
+        (d.arrow.points_per_mm - SQRT_2).abs() < 1e-5,
+        "{}",
+        d.arrow.points_per_mm
+    );
     at(d.arrow.tip, [140.0, 24.0]);
     // The flip arrow's base, 10 mm down Z: 10/√2 mm down the view, 10√2 points.
     at(a.flip.unwrap().base, [140.0, 80.0 + 10.0 * SQRT_2]);
@@ -702,7 +908,11 @@ fn in_perspective_the_arrow_is_measured_at_its_end() {
     let d = &a.distances[0];
     at(d.arrow.base, [100.0, 100.0]);
     near(d.arrow.unit, [0.0, -1.0], 1e-6);
-    assert!((d.arrow.per_mm - 1.0).abs() < 1e-5, "{}", d.arrow.per_mm);
+    assert!(
+        (d.arrow.points_per_mm - 1.0).abs() < 1e-5,
+        "{}",
+        d.arrow.points_per_mm
+    );
     at(d.arrow.tip, [100.0, 44.0]);
     // The eye 5 mm past the end, looking away from it: neither arrow can be shown.
     let behind = Camera {
@@ -734,7 +944,7 @@ fn seen_end_on_or_under_six_tenths_of_a_point_a_millimetre_no_arrow_is_drawn() {
         assert_eq!(a.distances.len(), usize::from(drawn), "{s}");
         assert_eq!(a.flip.is_some(), drawn, "{s}");
         if drawn {
-            assert!((a.distances[0].arrow.per_mm - 2.0 * s).abs() < 1e-5);
+            assert!((a.distances[0].arrow.points_per_mm - 2.0 * s).abs() < 1e-5);
         }
     }
     // Zoomed out to 0.5 points a millimetre (200 mm on 200 pixels at 2 a point): flat too,
@@ -1006,7 +1216,7 @@ fn a_symmetric_extents_drag_moves_its_length_by_twice_its_ends_move() {
     set_form(&mut dialog, "symmetric");
     // Its end at 5, up 5 mm: the length 10 → 20.
     let arrow = tilted_arrow(&dialog);
-    assert_eq!(arrow.distance.factor, 2.0);
+    assert_eq!(arrow.distance.per_mm, 2.0);
     assert_eq!(drag_by(&arrow, 0.0, -5.0 * SQRT_2 as f32), Some(mm("20")));
     // A quarter millimetre up: 10.5 (a half), not 10.25.
     assert_eq!(
