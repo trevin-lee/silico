@@ -102,6 +102,17 @@ jobs:
     # and a margin past the step's own limit, for the steps after it.
     timeout-minutes: 90
     steps:
+      # Where the exploration writes what it found: on the VM, which every runner shares, for
+      # the report to read there, as a mutants shard keeps its outcomes (mutants.yml), so
+      # GitHub's artifact storage full (every upload refused from 2026-11-09) can't fail the
+      # run or hide what failed in it. Emptied first, so a re-run's report reads none of an
+      # earlier attempt's.
+      - name: The exploration's results on the VM
+        run: |
+          results=$HOME/.cache/silico/proptest-explore-results/$GITHUB_RUN_ID
+          rm -rf "$results"
+          mkdir -p "$results"
+          echo "SILICO_EXPLORE_RESULTS=$results" >>"$GITHUB_ENV"
       - uses: actions/checkout@v5
       - name: Toolchains
         run: bash .github/tools.sh
@@ -109,7 +120,7 @@ jobs:
         run: bash .github/scratch.sh start
       - name: Explore
         id: explore
-        # Within the job's limit, so a run past it still uploads what it found, and its report
+        # Within the job's limit, so a run past it still keeps what it found, and its report
         # reads it as cut off mid-round, not as a setup failure (its outcome, below).
         timeout-minutes: 80
         env:
@@ -141,12 +152,12 @@ jobs:
           # The rounds that ran (rounds.tsv's rows below its header), for "Rounds ran": none
           # when the build ended too late for one, which passes, or when it failed. Never an
           # earlier run's rows.
-          rm -f "$RUNNER_TEMP/explore/rounds.tsv"
+          rm -f "$SILICO_EXPLORE_RESULTS/rounds.tsv"
           status=0
-          chrt --idle 0 ionice -c 3 nice -n 19 pixi run proptest-explore -- "$RUNNER_TEMP/explore" ${SEED:+"$SEED"} || status=$?
+          chrt --idle 0 ionice -c 3 nice -n 19 pixi run proptest-explore -- "$SILICO_EXPLORE_RESULTS" ${SEED:+"$SEED"} || status=$?
           rounds=0
-          if [ -f "$RUNNER_TEMP/explore/rounds.tsv" ]; then
-            rounds=$(( $(wc -l <"$RUNNER_TEMP/explore/rounds.tsv") - 1 ))
+          if [ -f "$SILICO_EXPLORE_RESULTS/rounds.tsv" ]; then
+            rounds=$(( $(wc -l <"$SILICO_EXPLORE_RESULTS/rounds.tsv") - 1 ))
           fi
           echo "rounds=$rounds" >>"$GITHUB_OUTPUT"
           exit "$status"
@@ -160,13 +171,18 @@ jobs:
         env:
           ROUNDS: ${{ steps.explore.outputs.rounds }}
         run: echo "$ROUNDS rounds ran"
-      # Even when a round failed: its report and the failures' issues are in it.
+      # Even when a round failed: its report and the failures' issues are in it. For a look in
+      # GitHub's UI, and the report's fallback should the VM's copy be gone. An upload that
+      # fails (the account's artifact storage full) fails nothing: the report reads the VM's.
+      # Kept two days, as a mutants shard's are.
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
+        continue-on-error: true
         with:
           name: proptest-explore
-          path: ${{ runner.temp }}/explore
+          path: ${{ env.SILICO_EXPLORE_RESULTS }}
           if-no-files-found: ignore
+          retention-days: 2
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
@@ -185,9 +201,12 @@ jobs:
       - uses: actions/checkout@v5
         with:
           sparse-checkout: .github
-      # None if the exploration stopped before it wrote anything: the report says so.
+      # Only if the VM has no copy of what the exploration found (below): a download that
+      # fails, or takes past its few minutes, fails nothing. None if the exploration stopped
+      # before it wrote anything: the report says so.
       - uses: actions/download-artifact@v4
         continue-on-error: true
+        timeout-minutes: 3
         with:
           name: proptest-explore
           path: explore
@@ -198,5 +217,13 @@ jobs:
           OWNER: ${{ github.repository_owner }}
           RESULT: ${{ needs.explore.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          DIR: explore
-        run: bash .github/proptest-report.sh
+        run: |
+          # What the exploration found: from the VM (~/.cache/silico/proptest-explore-results/
+          # <run>/, written by the explore job), else from its artifact. Other runs' results
+          # there older than a week are let go.
+          results=$HOME/.cache/silico/proptest-explore-results
+          find "$results" -mindepth 1 -maxdepth 1 -type d ! -name "$GITHUB_RUN_ID" -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+          DIR=explore
+          if [ -n "$(ls -A "$results/$GITHUB_RUN_ID" 2>/dev/null)" ]; then DIR=$results/$GITHUB_RUN_ID; fi
+          export DIR
+          bash .github/proptest-report.sh
