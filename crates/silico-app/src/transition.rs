@@ -21,10 +21,12 @@
 //! the up turns smoothly into it. A perspective view's size is its eye's distance, eased
 //! straight, as the prototype's height (its distance times a constant) is.
 
+use std::f64::consts::{PI, TAU};
+
 use silico_protocol::vec3::dot;
 use silico_protocol::{Camera, Projection};
 
-use crate::theme;
+use crate::{navigate, theme};
 
 /// The prototype's ease (viewport.js's `ease`), quadratic in and out: `2t²` to the middle,
 /// `1 − (2 − 2t)²/2` after it, from 0 at 0 to 1 at 1 through ½ at ½.
@@ -40,7 +42,6 @@ pub fn ease(t: f64) -> f64 {
 /// The turn from angle `from` to angle `to` the short way round, in radians, in [−π, π):
 /// the prototype's `daz`, `((to − from + π) % 2π + 2π) % 2π − π`.
 pub fn short_turn(from: f64, to: f64) -> f64 {
-    use std::f64::consts::{PI, TAU};
     ((to - from + PI) % TAU + TAU) % TAU - PI
 }
 
@@ -78,11 +79,10 @@ fn direction_and_up(azimuth: f64, elevation: f64) -> ([f64; 3], [f64; 3]) {
 fn pose(camera: &Camera) -> Option<Pose> {
     let frame = camera.frame().ok()?;
     let back = frame.back;
-    let elevation = libm::asin(back[2].clamp(-1.0, 1.0));
+    let (azimuth, elevation) = navigate::azimuth_and_elevation(back);
     let (azimuth, roll) = if libm::hypot(back[0], back[1]) < POLE {
         (libm::atan2(frame.right[1], frame.right[0]), 0.0)
     } else {
-        let azimuth = libm::atan2(back[0], -back[1]);
         let (_, up) = direction_and_up(azimuth, elevation);
         let right = right_of(azimuth);
         (
@@ -103,9 +103,39 @@ fn lerp(a: f64, b: f64, along: f64) -> f64 {
     a + (b - a) * along
 }
 
+/// The turn of the roll, of `roll` (the short way round) or a whole turn either side of it,
+/// that turns the image least about the view's axis, the azimuth's turn turning it by `swing`
+/// meanwhile: the first of them where two turn it as little. A view turns about its own axis
+/// by its roll's turn and, at elevation `el`, `sin el` of its azimuth's, so near a pole the
+/// two each taken the short way could add to a whole turn of the image, where an orbit over
+/// the top left both at a half turn (`short_turn` takes either half turn as −π).
+fn least_twist(swing: f64, roll: f64) -> f64 {
+    let mut least = roll;
+    for other in [roll - TAU, roll + TAU] {
+        if (swing + other).abs() < (swing + least).abs() {
+            least = other;
+        }
+    }
+    least
+}
+
+/// How far the image turns about the view's axis with the azimuth's turn `turn`, the
+/// elevation moving straight from `from` to `to` meanwhile: the integral of `sin el` times
+/// the azimuth's step, `turn (cos from − cos to) / (to − from)`, or `turn sin from` where the
+/// elevation keeps still.
+fn swing(turn: f64, from: f64, to: f64) -> f64 {
+    let rise = to - from;
+    if rise.abs() < 1e-9 {
+        turn * libm::sin((from + to) / 2.0)
+    } else {
+        turn * (libm::cos(from) - libm::cos(to)) / rise
+    }
+}
+
 /// The camera `along` of the way from `from` to `to` (0 at `from`, 1 at `to`, both as
-/// [`Pose`]s made again): the azimuth and the roll turned the short way round, the elevation,
-/// the target, the eye's distance, and an orthographic view's height each moved straight.
+/// [`Pose`]s made again): the azimuth turned the short way round, and the roll by the turn
+/// that with it turns the image least ([`least_twist`]); the elevation, the target, the eye's
+/// distance, and an orthographic view's height each moved straight.
 /// None if either makes no frame, or their projections differ in kind or in angle, which no
 /// transition joins.
 pub fn between(from: &Camera, to: &Camera, along: f64) -> Option<Camera> {
@@ -123,9 +153,14 @@ pub fn between(from: &Camera, to: &Camera, along: f64) -> Option<Camera> {
         _ => return None,
     };
     let (a, b) = (pose(from)?, pose(to)?);
-    let azimuth = a.azimuth + short_turn(a.azimuth, b.azimuth) * along;
+    let turn = short_turn(a.azimuth, b.azimuth);
+    let azimuth = a.azimuth + turn * along;
     let elevation = lerp(a.elevation, b.elevation, along);
-    let roll = a.roll + short_turn(a.roll, b.roll) * along;
+    let roll_turn = least_twist(
+        swing(turn, a.elevation, b.elevation),
+        short_turn(a.roll, b.roll),
+    );
+    let roll = a.roll + roll_turn * along;
     let target: [f64; 3] = std::array::from_fn(|k| lerp(a.target[k], b.target[k], along));
     let distance = lerp(a.distance, b.distance, along);
     let (back, plain_up) = direction_and_up(azimuth, elevation);

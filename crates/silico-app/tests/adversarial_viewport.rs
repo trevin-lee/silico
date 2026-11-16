@@ -33,12 +33,12 @@ use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
 use ui::{
     ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT, In, PLATE, PLATE_END,
-    TRIAD_DOT, TWO_BOXES, advance, arrow_dots, arrow_shafts, body_of, button_event, dialog_open,
-    drag, edit_plates_pad, failing_kernel, field, from_the_front, hand_clock, hover_item,
-    image_centre, left_down_at, left_up_at, looks_from, meshes_settled, meshes_settled_in, move_to,
-    near_point, pad_extent, pads_extent, plates_pad_from_the_front, repaint_delay, reversed_ticked,
-    settled, stand_in_sessions, step, step_until, tessellated, the_viewport, triad_origin, up,
-    view, view_label, view_mut,
+    TRIAD_DOT, TWO_BOXES, advance, apply_look, arrow_dots, arrow_shafts, body_of, button_event,
+    dialog_open, drag, edit_plates_pad, failing_kernel, field, from_the_front, hand_clock,
+    hover_item, image_centre, left_down_at, left_up_at, looks_from, meshes_settled,
+    meshes_settled_in, move_to, near_point, pad_extent, pads_extent, plates_pad_from_the_front,
+    repaint_delay, reversed_ticked, settled, stand_in_sessions, step, step_until, tessellated,
+    the_viewport, triad_origin, up, view, view_label, view_mut,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -213,7 +213,7 @@ impl Fixture {
                 .with_size(size)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         let path = self.file(name, text);
         h.state_mut().open(&path, false);
         (h, record)
@@ -532,7 +532,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         let path = self.file(name, text);
         h.state_mut().open(&path, false);
         (h, record)
@@ -1157,7 +1157,7 @@ fn a_pick_answered_two_frames_late_across_a_renumber_is_taken_only_by_its_own_ta
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     let path = f.file("a.silico", EXAMPLE);
     h.state_mut().open(&path, false);
     meshes_settled(&mut h);
@@ -1740,7 +1740,7 @@ fn a_renderer_backing_off_has_the_pane_ask_for_each_frame_at_once_until_it_stops
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     let path = f.file("boxes.silico", TWO_BOXES);
     h.state_mut().open(&path, false);
     meshes_settled(&mut h);

@@ -36,19 +36,20 @@ use tempfile::TempDir;
 use ui::{
     A_BOX, ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT,
     FakeBrowser, In, PLATE, PLATE_END, SKETCHED_EXAMPLE, TRIAD_DOT, TWO_BOXES, added, advance,
-    animation_time, answer_question, anywhere, arrow_dots, arrow_shafts, begin_sketch_on, body_of,
-    boxed, button_event, choose, chosen, click_in_one_frame, click_over_two_frames, close_window,
-    create, create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag,
-    every_face, everything, f2_typed, faces_made_by, failing_kernel, field, fields_of,
-    from_the_front, hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state,
-    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
-    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
-    open_export, pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away,
-    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
-    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
-    stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
-    tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
-    view_label, view_label_node, view_mut, wheel, window_told, written,
+    animation_time, answer_question, anywhere, apply_look, arrow_dots, arrow_shafts,
+    begin_sketch_on, body_of, boxed, button_event, choose, chosen, click_in_one_frame,
+    click_over_two_frames, close_window, create, create_sketch, cursor, dialog, dialog_length,
+    dialog_open, double_click, drag, every_face, everything, f2_typed, faces_made_by,
+    failing_kernel, field, fields_of, from_the_front, hand_clock, hover_item, image_centre,
+    in_status_bar, lavapipe_render_state, leave_sketch, leave_sketch_unsettled, left_down_at,
+    left_up_at, looks_from, meshes_settled, modify, modify_field, move_to, name_field, near_point,
+    new_part, ok_enabled, on_lavapipe, open_export, pad_extent, pads_extent, plain_read,
+    plates_pad_from_the_front, pointer_away, press, prompt, redo_by_key, rename_field,
+    repaint_delay, retype, reversed_ticked, save_as_of, select, selected_names, settled,
+    shapes_painted, sketch_mode, sketch_read, sorted_fields, stand_in_sessions, step, step_until,
+    tab_named, tessellated, text_of, the_viewport, tooltip_title, triad_origin, type_in, type_name,
+    undo_by_key, up, view, view_direction, view_label, view_label_node, view_mut, wheel,
+    window_told, written,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -112,7 +113,7 @@ impl Fixture {
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
         // The app's look, as main.rs gives it: its fonts above all, without which every
         // text lays out empty and a field's cursor never leaves its start.
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 
@@ -342,7 +343,7 @@ fn in_window(
             .with_size((window + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the panes", |h| {
         h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
@@ -855,7 +856,7 @@ fn at_the_windows_least_width_the_app_bar_toolbar_and_status_bar_fit() {
             .with_size((least.0 + 2.0 * MARGIN, least.1 + 2.0 * MARGIN))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the timeline read", |h| {
         h.state()
@@ -2589,7 +2590,7 @@ fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
             };
             h.set_render_every_step(true);
             // The app's fonts, look, and icons, as main.rs sets them, so the shot has words.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("blocks.silico", BLOCK_AND_PLATE);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "its features", |h| {
@@ -2849,7 +2850,7 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
                 App::new(Arc::clone(&f.sessions)),
             )
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
     assert!(f.kernel.wait_running(2, WAIT));
@@ -3624,7 +3625,7 @@ fn the_window_for_missing_workers_says_each_and_quits() {
         |ui, app: &mut Missing| app.frame(ui),
         Missing::new(lines.clone()),
     );
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     // Laid out again in the app's fonts, so the click lands where Quit is drawn.
     h.step();
     for line in &lines {
@@ -8787,7 +8788,7 @@ fn a_stopped_rebuild_with_nothing_published_reads_nothing_more_and_asks_for_no_f
                 App::new(Arc::clone(&f.sessions)),
             )
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     let (mut h, hold) = first_rebuild_stopped_in(&f, h);
     quiet_wakes(&mut h);
     let woken = h.state().wakes();
@@ -10128,11 +10129,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
-        // The viewport's tests here look at the view a frame at a time: each view asked for
-        // taken at once, as egui_kittest's own animation time has it (the transitions' tests
-        // set egui's 0.2 again).
-        animation_time(&h, 0.0);
+        apply_look(&h);
         h.state_mut().open(path.to_str().unwrap(), false);
         (h, record)
     }
@@ -12119,7 +12116,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             // Each frame drawn: egui's paint callbacks prepared and painted, as a window's.
             h.set_render_every_step(true);
             let path = f.file("box.silico", A_BOX);
@@ -12331,7 +12328,7 @@ fn a_viewport_with_no_renderer_says_why_in_its_pane() {
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     step(&mut h);
     // With no document, the start page shows, and no viewport.
     assert!(h.query_by_role_and_label(Role::Pane, "Viewport").is_none());
@@ -12429,7 +12426,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h.state_mut().open(path.to_str().unwrap(), false);
         meshes_settled(&mut h);
         h.state_mut().tabs_mut()[0].watch = Some(watching(&seen));
@@ -13265,7 +13262,7 @@ impl Fixture {
         let h = Harness::builder()
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 
@@ -14533,7 +14530,7 @@ fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             // As main.rs does, once at startup.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -14852,7 +14849,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             // As main.rs does, once at startup.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             step(&mut h);
             let ppp = h.ctx.pixels_per_point();
@@ -15019,7 +15016,7 @@ impl Fixture {
         let h = Harness::builder()
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 
@@ -15899,7 +15896,7 @@ fn the_start_page_draws_in_the_themes_colours_on_lavapipe() {
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             recents_read(&mut h);
             for _ in 0..5 {
@@ -16001,7 +15998,7 @@ impl Fixture {
     /// `names` open, each the example, the last shown.
     fn themed_with(&self, names: &[&str]) -> AppHarness {
         let mut h = self.app();
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         for name in names {
             let path = self.file(name, EXAMPLE);
             open_and_wait(&mut h, &path);
@@ -16517,7 +16514,7 @@ fn the_app_bar_draws_the_shown_tab_in_gray_200_on_lavapipe() {
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("bracket.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -17111,7 +17108,7 @@ fn toolbar_with(
             },
             stub,
         );
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.step();
     h.step();
     h
@@ -17462,7 +17459,7 @@ fn the_toolbar_draws_solid_in_gray_200_and_its_hovered_button_in_gray_300_on_lav
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("bracket.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -17930,7 +17927,7 @@ fn the_browsers_rows_are_filled_as_the_prototype_fills_them_and_its_mark_is_red_
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("sketched.silico", SKETCHED_FAILING);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -18371,7 +18368,7 @@ fn the_timeline_draws_a_selected_item_blue_and_a_failed_one_red_on_lavapipe() {
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("ladder.silico", LADDER);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -19131,7 +19128,7 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             // Two features, each healthy, with no warning's line along its bottom, which
             // would take the ring's place (`.warn`'s `box-shadow`, after
@@ -20283,12 +20280,12 @@ fn a_named_view_eases_there_over_200_ms_and_ends_on_the_camera_a_jump_gives() {
 
 #[test]
 fn a_middle_drag_or_the_wheel_mid_transition_ends_it_where_the_view_had_reached() {
-    // From the front, the right view asked, 6 frames: then the middle button pressed. That frame
-    // moves it on a seventh (47/72 of 90°, 58.75°) and ends it there: the pan's 40 points
-    // left move the target 40 points' worth along that view's right, (cos 58.75°,
-    // sin 58.75°, 0), and the view never goes on to the right. Then the top view from
-    // there (its azimuth 0, its right +x), 3 frames, and the wheel: its frame moves it on a
-    // fourth (2 · (1/3)² = 2/9 of the way: the azimuth 58.75° · 7/9 = 45.694…°, the
+    // From the front, the right view asked, 6 frames: half the way, 45°. Then the middle
+    // button pressed: that frame ends it where it was drawn, what the press was on, so at
+    // 45°: the pan's 40 points left move the target 40 points' worth along that view's
+    // right, (cos 45°, sin 45°, 0), and the view never goes on to the right. Then the top
+    // view from there (its azimuth 0, its right +x), 3 frames, and the wheel: its frame
+    // moves it on a fourth (2 · (1/3)² = 2/9 of the way: the azimuth 45° · 7/9 = 35°, the
     // elevation 90° · 2/9 = 20°) and ends it, the zoom keeping that view's direction.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
@@ -20316,7 +20313,7 @@ fn a_middle_drag_or_the_wheel_mid_transition_ends_it_where_the_view_had_reached(
     assert!(view(&h).transition().is_none());
     let reached = view(&h).camera().clone();
     let (azimuth, elevation) = azimuth_and_elevation(&reached);
-    assert!((azimuth - 58.75).abs() < 1e-4, "{azimuth}");
+    assert!((azimuth - 45.0).abs() < 1e-4, "{azimuth}");
     assert!(elevation.abs() < 1e-9, "{elevation}");
     // Named for the view it's at once the transition ends: none.
     assert_eq!(view_label(&h), "Orthographic");
@@ -20326,7 +20323,7 @@ fn a_middle_drag_or_the_wheel_mid_transition_ends_it_where_the_view_had_reached(
     press(&h, to, false);
     step(&mut h);
     let mm = ortho_height(&reached) / f64::from(the_viewport(&h).height());
-    let a = 58.75f64.to_radians();
+    let a = 45f64.to_radians();
     let panned = view(&h).camera().clone();
     let along = [40.0 * mm * libm::cos(a), 40.0 * mm * libm::sin(a), 0.0];
     near(
@@ -20355,12 +20352,97 @@ fn a_middle_drag_or_the_wheel_mid_transition_ends_it_where_the_view_had_reached(
     assert!(view(&h).transition().is_none());
     let zoomed = view(&h).camera().clone();
     let (azimuth, elevation) = azimuth_and_elevation(&zoomed);
-    assert!((azimuth - 58.75 * 7.0 / 9.0).abs() < 1e-4, "{azimuth}");
+    assert!((azimuth - 35.0).abs() < 1e-4, "{azimuth}");
     assert!((elevation - 20.0).abs() < 1e-4, "{elevation}");
     for _ in 0..20 {
         step(&mut h);
     }
     assert_eq!(view(&h).camera(), &zoomed);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_a_face_during_a_transition_ends_it_where_it_was_drawn_and_selects_the_face() {
+    // At egui's 0.2, Ctrl+1 from the home view, two frames more, then a click on the box's
+    // front face: its press ends the transition with the camera it pressed on, unmoved, so
+    // the pick asked of it is answered and the face selected by its name.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    step(&mut h);
+    step(&mut h);
+    assert!(view(&h).transition().is_some());
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    assert!(view(&h).transition().is_some());
+    let drawn = view(&h).camera().clone();
+    let centre = pixel_at(&h, at);
+    answering(&record, Some((1, Face(3), centre)), None);
+    button_event(
+        &h,
+        at,
+        eframe::egui::PointerButton::Primary,
+        true,
+        Modifiers::NONE,
+    );
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &drawn);
+    button_event(
+        &h,
+        at,
+        eframe::egui::PointerButton::Primary,
+        false,
+        Modifiers::NONE,
+    );
+    step(&mut h);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_projection_chosen_mid_transition_takes_the_view_asked_for_in_it() {
+    // At egui's 0, Ctrl+4 then the cube menu's Perspective: the right view in perspective,
+    // named so. Back to the front, orthographic; then at 0.2 the right view asked and, 3
+    // frames on, Perspective chosen: the transition ends on that same camera, named.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let choose = |h: &mut AppHarness, word: &str| {
+        h.get_by_role_and_label(Role::Menu, "View cube options")
+            .get_by_label(word)
+            .click();
+        step(h);
+        step(h);
+    };
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+    step(&mut h);
+    cube_options(&mut h);
+    choose(&mut h, "Perspective");
+    let right = view(&h).camera().clone();
+    assert!(view(&h).perspective());
+    assert!(looks_from(&right, [1.0, 0.0, 0.0]));
+    assert_eq!(view_label(&h), "Perspective · Right");
+    cube_options(&mut h);
+    choose(&mut h, "Orthographic");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    animation_time(&h, 0.2);
+    cube_options(&mut h);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    transition_frames(&mut h, 3, "Orthographic · Front");
+    choose(&mut h, "Perspective");
+    assert!(view(&h).transition().is_none());
+    assert!(view(&h).perspective());
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(view_label(&h), "Perspective · Right");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21039,9 +21121,6 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 // own tests check which).
                 let f = fixture();
                 let mut h = triangle_opened(&f);
-                // Each view taken at once, as egui_kittest's animation time has it, so the
-                // cameras compared are each one's own, not one eased to.
-                animation_time(&h, 0.0);
                 for chord in keys_of(command) {
                     press_chord(&mut h, chord);
                     step(&mut h);
@@ -29220,7 +29299,7 @@ fn opened_scaled(
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
     // The app's look, as main.rs gives it and `Fixture::app` does.
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the timeline read", |h| {
         h.state()
@@ -33504,7 +33583,7 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
             };
             h.set_render_every_step(true);
             // In the theme, its fonts and icons, as main.rs applies them: for the screenshot.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
             meshes_settled(&mut h);
@@ -35597,7 +35676,7 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
             meshes_settled(&mut h);
@@ -37390,7 +37469,7 @@ fn on_lavapipe_a_features_card_is_titled_by_its_name_and_its_message_wraps_acros
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("blocks.silico", THREE_BLOCKS);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "rebuilt with its two errors", |h| {
@@ -37447,7 +37526,7 @@ fn on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings() {
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("blocks.silico", THREE_BLOCKS);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "rebuilt with its two errors", |h| {
@@ -38186,7 +38265,7 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
         h.set_render_every_step(true);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         let path = f.file("block.silico", BLOCK_AND_SKETCH);
         h.state_mut().open(path.to_str().unwrap(), false);
         step_until(&mut h, "rebuilt", |h| status_said(h, "Rebuilt").is_some());
@@ -38223,7 +38302,7 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
 /// a field's text is laid out and typed in as it is for a person.
 fn opened_themed(f: &Fixture, name: &str, text: &str) -> AppHarness {
     let (h, _) = f.opened(name, text);
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h
 }
 
@@ -39602,7 +39681,7 @@ fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_car
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             // Opened with the pin already widened (an upstream edit made before it was
             // saved): the broken fillet builds nothing, so the cut's body is drawn, whose
             // elements the real box's mesh has, as a built fillet's it wouldn't.
@@ -41754,7 +41833,13 @@ fn select_others_boxes_are_kept_through_the_body_hidden_and_the_tab_hidden_made_
     // The tab hidden mid-drag (its drag's end given it unshown, as another document's tab is
     // shown over it), and shown again.
     h.hover_at(at);
-    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    button_event(
+        &h,
+        at,
+        eframe::egui::PointerButton::Primary,
+        true,
+        Modifiers::NONE,
+    );
     step(&mut h);
     // Another box (another key, so its meshes aren't the box's: the core gives a model's
     // meshes to every session that reads them, each tab making their boxes).
@@ -43902,7 +43987,7 @@ fn on_lavapipe_a_shown_sketchs_line_is_drawn_on_its_face_in_eguis_image_and_its_
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("box.silico", &boxed_front_line());
             h.state_mut().open(path.to_str().unwrap(), false);

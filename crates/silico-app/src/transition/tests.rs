@@ -170,7 +170,7 @@ fn a_view_turned_about_its_own_axis_rolls_the_short_way() {
     let half = between(&front(), &rolled, 0.5).unwrap();
     near(half.eye, [0.0, -100.0, 0.0], 1e-12);
     near(half.up, [FRAC_1_SQRT_2, 0.0, FRAC_1_SQRT_2], 1e-15);
-    // Upside down (−Z up), a half turn: −π, as the short way gives it, so through −x up.
+    // Upside down (−Z up), a half turn: −π, as the short way gives it, so through +x up.
     let upside_down = camera(80.0, [0.0; 3], [0.0, -100.0, 0.0], [0.0, 0.0, -1.0]);
     let half = between(&front(), &upside_down, 0.5).unwrap();
     near(half.up, [1.0, 0.0, 0.0], 1e-15);
@@ -252,9 +252,71 @@ fn a_transition_eases_over_its_time_and_ends_on_its_view_exactly() {
 }
 
 #[test]
-fn the_label_names_the_camera_it_was_given_until_the_end() {
-    let to = level_at(90.0);
-    let transition = Transition::new(front(), to.clone(), level_at(45.0), Motion::JUMP);
-    assert_eq!(transition.labelled(), &level_at(45.0));
-    assert_eq!(transition.to(), &to);
+fn roll_turns_the_short_way_across_a_half_turn() {
+    // Rolled 170° and −170° from Z up: 20° apart the short way, through −Z up halfway; 340°
+    // apart the long way, through +Z.
+    let r = 170f64.to_radians();
+    let a = camera(
+        80.0,
+        [0.0; 3],
+        [0.0, -100.0, 0.0],
+        [-libm::sin(r), 0.0, libm::cos(r)],
+    );
+    let b = camera(
+        80.0,
+        [0.0; 3],
+        [0.0, -100.0, 0.0],
+        [libm::sin(r), 0.0, libm::cos(r)],
+    );
+    near(between(&a, &b, 0.5).unwrap().up, [0.0, 0.0, -1.0], 1e-12);
+}
+
+/// How far the image turns about the view's axis, in degrees, over a hundred steps from
+/// `from` to `to`: each step's up's turn from the step before's, about the step's view axis.
+fn twist(from: &Camera, to: &Camera) -> f64 {
+    use silico_protocol::vec3::{cross, dot};
+    let mut last = from.frame().unwrap().up;
+    let mut turned = 0.0;
+    for k in 1..=100 {
+        let frame = between(from, to, f64::from(k) / 100.0)
+            .unwrap()
+            .frame()
+            .unwrap();
+        turned += libm::atan2(dot(cross(last, frame.up), frame.back), dot(last, frame.up));
+        last = frame.up;
+    }
+    turned.to_degrees()
+}
+
+#[test]
+fn from_just_over_the_top_to_the_top_the_image_hardly_turns() {
+    // The front orbited over the top, by a drag of 182, 190, and 200 points down (91°, 95°,
+    // 100°: `navigate::orbit` turns the model with the pointer, so the eye goes up), and 3
+    // points across too (1.5° about Z): upside down from behind, so its
+    // azimuth and its roll each a half turn from the top's (Y up, azimuth 0). Each taken the
+    // short way, −π and −π, their image's turns add to a whole turn; taken together, the
+    // roll turns +π and they cancel, so to the top the image turns a few degrees at most
+    // (the drag across's 1.5°, and what tipping back up to 10° over the top adds: 2.4° at
+    // most here), not a whole turn. As made by hand with the azimuth +π and −π (its x +0
+    // and −0) at 91°, the same.
+    let top = camera(80.0, [0.0; 3], [0.0, 0.0, 100.0], [0.0, 1.0, 0.0]);
+    let mut starts = Vec::new();
+    for up in [182.0, 190.0, 200.0] {
+        for across in [0.0, 3.0] {
+            starts.push(crate::navigate::orbit(&front(), across, up).unwrap());
+        }
+    }
+    let a = 91f64.to_radians();
+    for x in [0.0, -0.0] {
+        starts.push(camera(
+            80.0,
+            [0.0; 3],
+            [x, -100.0 * libm::cos(a), 100.0 * libm::sin(a)],
+            [x, libm::sin(a), libm::cos(a)],
+        ));
+    }
+    for start in &starts {
+        let turned = twist(start, &top);
+        assert!(turned.abs() < 3.0, "{turned}° from {start:?}");
+    }
 }

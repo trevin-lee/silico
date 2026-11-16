@@ -1315,9 +1315,14 @@ impl View {
         }
     }
 
-    /// The view made perspective, or orthographic.
+    /// The view made perspective, or orthographic: at once, and if a transition is under way,
+    /// its view, which it ends, so the view is the one asked for, in the projection asked.
     fn project(&mut self, perspective: bool) {
-        let camera = navigate::projected(&self.camera, perspective);
+        let from = self
+            .transition
+            .as_ref()
+            .map_or(&self.camera, Transition::to);
+        let camera = navigate::projected(from, perspective);
         if self.moved(camera) {
             self.perspective = perspective;
         }
@@ -1558,9 +1563,6 @@ impl View {
             && let (Some(button), Some(origin)) = (pressed, origin)
             && (button == PointerButton::Middle || self.tool.is_some())
         {
-            // A drag's press ends a transition under way where it has reached, the drag's
-            // moves taken from there.
-            self.transition = None;
             self.drag = Some(Drag::Canvas {
                 button,
                 last: origin,
@@ -1898,8 +1900,14 @@ pub fn show<P: Clients + 'static>(
         return;
     };
     let now = drawing.now();
-    // A transition under way moved on before anything of this frame reads the camera.
-    tab.view.advance(ui.input(|input| input.time));
+    // A transition under way moved on before anything of this frame reads the camera; but a
+    // press on the canvas (to select, to drag, for a menu) ends it where it was drawn last
+    // frame, what the person pressed on, so the press and what it's of are of one view.
+    if response.hovered() && ui.input(|input| input.pointer.any_pressed()) {
+        tab.view.transition = None;
+    } else {
+        tab.view.advance(ui.input(|input| input.time));
+    }
     let now_hidden: BTreeSet<FeatureId> = tab
         .browser
         .bodies()
