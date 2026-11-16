@@ -223,12 +223,24 @@ fn a_line_of_no_length_or_an_arc_of_no_sweep_is_refused_for_what_it_lacks() {
     ];
     s.lines = vec![line("na000001", "pa000001", "pa000002")];
     s.arcs = vec![arc("aa000001", "pb000001", "pb000002", "pb000003")];
+    let no_length = "line na000001 has no length, so it has no direction to extend";
     assert_eq!(
         extend_end(&s, &id("na000001"), [5.0, 5.0])
             .unwrap_err()
             .message(),
-        "line na000001 has no length, so it has no direction to extend"
+        no_length
     );
+    // `next_crossing`, which `sketch_extend` with `next_curve` extends by, says the same of
+    // it, either end: the hover and the command agree. (The gate refuses such a line, and
+    // the solve a result with one, so a session never reaches the command with it.)
+    for end in [End::Start, End::End] {
+        assert_eq!(
+            crate::extend::next_crossing(&s, &id("na000001"), end)
+                .unwrap_err()
+                .message(),
+            no_length
+        );
+    }
     assert_eq!(
         extend_end(&s, &id("aa000001"), [15.0, 0.0])
             .unwrap_err()

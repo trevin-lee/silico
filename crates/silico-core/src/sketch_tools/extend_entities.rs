@@ -14,7 +14,7 @@ use super::{Preview, PreviewArc, Xy};
 use crate::Error;
 use crate::document::sketch_edit::Geo;
 use crate::document::{ElementId, Sketch};
-use crate::extend::{End, extendable, next_crossing, no_length, no_next_curve};
+use crate::extend::{End, extendable, next_crossing, no_next_curve};
 
 /// The end of `sketch`'s line or arc `curve` that the pointer at `at` picks: the end of the
 /// half under it. A line's start if `at`, put on its line, falls before its midpoint, else
@@ -25,7 +25,8 @@ use crate::extend::{End, extendable, next_crossing, no_length, no_next_curve};
 /// on neither half: at an arc's centre, or at a place that isn't finite. Refused, in the
 /// words `sketch_extend` refuses it with, for a member that isn't a line or an arc (a
 /// circle, a point, a constraint, or none of the sketch's) and an arc whose ends are at one
-/// angle from its centre; and for a line of no length, which has no direction to go on in.
+/// angle from its centre, and a line of no length, which has no direction to go on in (as
+/// `extendable` says, never one of a gated document's sketch or its solve).
 pub fn extend_end(sketch: &Sketch, curve: &ElementId, at: Xy) -> Result<Option<End>, Error> {
     let geo = extendable(sketch, curve)?;
     if !finite(at) {
@@ -34,11 +35,7 @@ pub fn extend_end(sketch: &Sketch, curve: &ElementId, at: Xy) -> Result<Option<E
     Ok(match geo {
         Geo::Line { from, to } => {
             let d = sub(to, from);
-            let span = dot(d, d);
-            if span <= 0.0 {
-                return Err(no_length(curve));
-            }
-            let t = dot(sub(at, from), d) / span;
+            let t = dot(sub(at, from), d) / dot(d, d);
             if !t.is_finite() {
                 return Ok(None);
             }

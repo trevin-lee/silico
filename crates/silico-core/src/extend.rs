@@ -364,10 +364,14 @@ pub(crate) fn no_next_curve(sketch: &Sketch, curve: &ElementId, end: End) -> Err
 /// `sketch`'s line or arc `curve`, as [`next_crossing`] and Extend Entities' hover take it
 /// (`sketch_tools::extend_end`); refused as [`extend`] refuses a member that isn't a line or
 /// an arc, and an arc whose ends are at one angle from its centre, which has no circle to go
-/// around.
+/// around; and a line whose ends are at one place, which has no direction to go on in. (The
+/// gate refuses such a line, and a solve that makes one, so neither a document's sketch nor
+/// its solve, as `sketch_extend` and a `sketch` read take them, holds one; a caller's own
+/// sketch may.)
 pub(crate) fn extendable(sketch: &Sketch, curve: &ElementId) -> Result<Geo, Error> {
     match Geo::of(sketch, curve) {
         Some(Geo::Circle { .. }) => Err(not_extendable(sketch, curve)),
+        Some(Geo::Line { from, to }) if distance(from, to) <= 0.0 => Err(no_length(curve)),
         Some(geo) => Ok(geo),
         None if sketch.arcs.iter().any(|a| &a.id == curve) => Err(no_sweep(curve)),
         None => Err(not_extendable(sketch, curve)),
@@ -375,7 +379,7 @@ pub(crate) fn extendable(sketch: &Sketch, curve: &ElementId) -> Result<Geo, Erro
 }
 
 /// Refuses a line whose ends are at one place: it has no direction to go on in.
-pub(crate) fn no_length(curve: &ElementId) -> Error {
+fn no_length(curve: &ElementId) -> Error {
     refused(
         format!("line {curve} has no length, so it has no direction to extend"),
         "curve",
