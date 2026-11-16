@@ -731,3 +731,7 @@ crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | arrows | replace > with >= | #480
 crates/silico-app/src/arrow.rs | Grip::centroid | replace match guard Arc::ptr_eq(kept, read) with false | #480
+# A maker that is the base itself loses nothing on the way, which `stop >= base` also finds
+# (the first stop from it is itself or past it, never before the base): so `<=` in on_way
+# changes no answer.
+crates/silico-core/src/document/suppression.rs | ConsumerForest::on_way | replace < with <= | #503
