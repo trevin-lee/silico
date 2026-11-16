@@ -73,6 +73,7 @@ use crate::references::EdgeNames;
 use crate::sketch::{
     Diagnosed, SketchSolution, SketchSolver, SketchWorker, SolveStopper, Translation,
 };
+use crate::sweep::plus_zero;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
 use silico_protocol::Description;
@@ -2901,104 +2902,75 @@ enum SweepPlan {
     Waits,
 }
 
-/// `value`, a zero of either sign as +0: the requests' zeros are all +0 (design S3).
-fn plus_zero(value: f64) -> f64 {
-    value + 0.0
-}
-
-/// The sweep step of `feature`, a pad, pocket, revolve, or groove of type `kind` sweeping
-/// its sketch's profile on `plane` (the sketch's plane as resolved: an origin plane, or its
-/// face's frame), whose faces step is `faces`, onto `base`'s solid if it has one: the start
-/// offset, direction, and axis worked out from the sketch's plane and the extent, from the
+/// The sweep step of `feature`, a pad, pocket, revolve, or groove sweeping its sketch's
+/// profile on `plane` (the sketch's plane as resolved: an origin plane, or its face's
+/// frame), whose faces step is `faces`, onto `base`'s solid if it has one: the start offset,
+/// direction, and axis worked out from the sketch's plane and the extent, from the
 /// document's integers, so each is exact or rounded once (design S3).
 ///
-/// A pad goes along the sketch's normal, a pocket against it, and either the other way when
-/// `reversed`; an origin plane's normal is a unit axis, so a length along it is exact, and a
-/// face frame's is rounded once. `one_side` starts
-/// on the plane; `symmetric` half its length back (halving is exact); `two_sides` `length2`
-/// back, swept their sum, taken in nanometres. `through_all` sweeps from the plane through
-/// all of the base. A revolve turns right-handed about its axis (left-handed `reversed`),
-/// its angle by FreeCAD's conversion, `symmetric` from minus half of it.
+/// A pad's or pocket's is [`crate::sweep::prism`]'s, the rule the app's arrows read too; an
+/// origin plane's normal is a unit axis, so a length along it is exact, and a face frame's
+/// is rounded once. `through_all` sweeps from the plane through all of the base. A revolve
+/// turns right-handed about its axis (left-handed `reversed`), its angle by FreeCAD's
+/// conversion, `symmetric` from minus half of it.
 fn sweep_step(
     feature: &crate::document::Feature,
-    kind: SweepFeature,
     plane: silico_protocol::SketchPlane,
     axis: Option<([f64; 2], [f64; 2])>,
     faces: Key,
     base: Option<Key>,
 ) -> Result<Step, Error> {
-    use crate::document::{Extent, PadExtent, PocketExtent, TurnExtent};
-    let along = |d: [f64; 3], length: f64| d.map(|c| plus_zero(c * length));
-    let direction = |reversed: bool| {
-        let sign = if kind.adds() != reversed { 1.0 } else { -1.0 };
-        plane.normal().map(|c| plus_zero(c * sign))
-    };
-    let prism = |d: [f64; 3], back: f64, length: f64| Step::Prism {
-        faces,
-        start: along(d, -back),
-        vector: along(d, length),
-    };
+    use crate::document::{Extent, TurnExtent};
     let unchecked = || {
         silico_bug("a sketch feature's extent isn't one its type takes, though the gate checked it")
             .with_feature(feature.id.as_str())
     };
-    let length = |l: crate::document::Length| l.mm();
-    Ok(match feature.operation.extent().ok_or_else(unchecked)? {
-        Extent::Pad(PadExtent::OneSide {
-            length: l,
-            reversed,
-        })
-        | Extent::Pocket(PocketExtent::OneSide {
-            length: l,
-            reversed,
-        }) => prism(direction(reversed), 0.0, length(l)),
-        Extent::Pad(PadExtent::Symmetric { length: l })
-        | Extent::Pocket(PocketExtent::Symmetric { length: l }) => {
-            prism(direction(false), length(l) / 2.0, length(l))
-        }
-        Extent::Pad(PadExtent::TwoSides { length: l, length2 })
-        | Extent::Pocket(PocketExtent::TwoSides { length: l, length2 }) => {
-            let total = crate::document::Length::from_nm(l.nm().saturating_add(length2.nm()));
-            prism(direction(false), length(length2), length(total))
-        }
-        Extent::Pocket(PocketExtent::ThroughAll { reversed }) => Step::PrismThroughAll {
-            faces,
-            base: base.ok_or_else(unchecked)?,
-            direction: direction(reversed),
-        },
-        Extent::Turn(extent) => {
-            let (origin, line) = axis.ok_or_else(unchecked)?;
-            let (angle, reversed, symmetric) = match extent {
-                TurnExtent::OneSide { angle, reversed } => (angle, reversed, false),
-                TurnExtent::Symmetric { angle } => (angle, false, true),
-            };
-            // An origin plane's axes are unit axes of model space, so the line's direction
-            // in it is its direction in the sketch, exactly. A face frame's are square only to
-            // its check's 1e-14, so x·l₀ + y·l₁ can be that far from a unit: normalized, so
-            // the revolution's own check of a unit direction (4ε) takes it.
-            let (x, y) = (plane.x_axis(), plane.y_axis());
-            let sign = if reversed { -1.0 } else { 1.0 };
-            let along = [0, 1, 2].map(|k| sign * (x[k] * line[0] + y[k] * line[1]));
-            let along = match plane {
-                silico_protocol::SketchPlane::Face(_) => silico_protocol::vec3::normalize(along),
-                silico_protocol::SketchPlane::Xy
-                | silico_protocol::SketchPlane::Xz
-                | silico_protocol::SketchPlane::Yz => along,
-            };
-            let direction = along.map(plus_zero);
-            let angle = silico_protocol::radians(angle.degrees());
-            Step::Revolution {
+    let extent = feature.operation.extent().ok_or_else(unchecked)?;
+    let Extent::Turn(extent) = extent else {
+        let swept = crate::sweep::prism(extent, plane.normal()).ok_or_else(unchecked)?;
+        return Ok(match swept.span {
+            Some(crate::sweep::Span { start, vector }) => Step::Prism {
                 faces,
-                origin: plane.place(origin),
-                direction,
-                start: if symmetric {
-                    plus_zero(-(angle / 2.0))
-                } else {
-                    0.0
-                },
-                angle,
-            }
-        }
+                start,
+                vector,
+            },
+            None => Step::PrismThroughAll {
+                faces,
+                base: base.ok_or_else(unchecked)?,
+                direction: swept.direction,
+            },
+        });
+    };
+    let (origin, line) = axis.ok_or_else(unchecked)?;
+    let (angle, reversed, symmetric) = match extent {
+        TurnExtent::OneSide { angle, reversed } => (angle, reversed, false),
+        TurnExtent::Symmetric { angle } => (angle, false, true),
+    };
+    // An origin plane's axes are unit axes of model space, so the line's direction
+    // in it is its direction in the sketch, exactly. A face frame's are square only to
+    // its check's 1e-14, so x·l₀ + y·l₁ can be that far from a unit: normalized, so
+    // the revolution's own check of a unit direction (4ε) takes it.
+    let (x, y) = (plane.x_axis(), plane.y_axis());
+    let sign = if reversed { -1.0 } else { 1.0 };
+    let along = [0, 1, 2].map(|k| sign * (x[k] * line[0] + y[k] * line[1]));
+    let along = match plane {
+        silico_protocol::SketchPlane::Face(_) => silico_protocol::vec3::normalize(along),
+        silico_protocol::SketchPlane::Xy
+        | silico_protocol::SketchPlane::Xz
+        | silico_protocol::SketchPlane::Yz => along,
+    };
+    let direction = along.map(plus_zero);
+    let angle = silico_protocol::radians(angle.degrees());
+    Ok(Step::Revolution {
+        faces,
+        origin: plane.place(origin),
+        direction,
+        start: if symmetric {
+            plus_zero(-(angle / 2.0))
+        } else {
+            0.0
+        },
+        angle,
     })
 }
 
@@ -3431,7 +3403,7 @@ impl Plan {
             return SweepPlan::Waits;
         };
         let faces = self.add(Step::Faces(Arc::new(profile.faces(plane))), &feature.id);
-        let step = match sweep_step(feature, kind, plane, axis, faces, base.map(|b| b.1)) {
+        let step = match sweep_step(feature, plane, axis, faces, base.map(|b| b.1)) {
             Ok(step) => step,
             Err(error) => return SweepPlan::Refused(error),
         };
@@ -8312,7 +8284,6 @@ mod tests {
         let document = crate::document::read(text.as_bytes()).unwrap();
         let step = sweep_step(
             &document.features[1],
-            SweepFeature::Revolve,
             plane,
             Some(([0.0, 0.0], [half, half])),
             Key([0; 32]),
@@ -8336,7 +8307,6 @@ mod tests {
         // On an origin plane, the direction is the line's own, exactly.
         let Step::Revolution { direction, .. } = sweep_step(
             &document.features[1],
-            SweepFeature::Revolve,
             silico_protocol::SketchPlane::Xy,
             Some(([0.0, 0.0], [half, half])),
             Key([0; 32]),
