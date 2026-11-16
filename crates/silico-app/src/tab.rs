@@ -548,10 +548,21 @@ pub fn nothing_to_save_words(name: &str) -> String {
     format!("Nothing to save: {name} matches the file.")
 }
 
-/// What a save says once it has written `name`, the session at `revision` after it (the
-/// prototype's `save`, with its check icon).
-pub fn saved_words(name: &str, revision: u64) -> String {
-    format!("Saved {name} (revision {revision})")
+/// What a save says once it has written `name`, the session at `revision` after it, if its
+/// answer says (the prototype's `save`, with its check icon).
+pub fn saved_words(name: &str, revision: Option<u64>) -> String {
+    match revision {
+        Some(revision) => format!("Saved {name} (revision {revision})"),
+        None => format!("Saved {name}"),
+    }
+}
+
+/// How far a rebuild the person stopped got, once `status` says it stopped: as `status`
+/// counts its plan's steps, or not counted (`status` gives no count).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoppedAt {
+    Step { done: usize, steps: usize },
+    Uncounted,
 }
 
 /// A command a tab sent that changes its transaction, as it sent it: what a test reads
@@ -1210,9 +1221,9 @@ pub struct Tab {
     /// The rebuild the person's stop stopped, by its revision, until `status` says it
     /// stopped there (or that it didn't: it ended, or another revision's runs).
     stop_asked: Option<Revision>,
-    /// How far that rebuild got once `status` says it stopped, if it says (`None` inside),
-    /// until the app takes it for the stop's toast.
-    stopped: Option<Option<(usize, usize)>>,
+    /// How far that rebuild got once `status` says it stopped, until the app takes it for
+    /// the stop's toast.
+    stopped: Option<StoppedAt>,
     /// The `diff` of the reload [`reloaded`](Self::reloaded) shows, asked as the reload was
     /// seen, from the revision the tab had to the session's now, until it answers.
     reload_diff: Option<Running<DiffAnswer>>,
@@ -2130,9 +2141,8 @@ impl Tab {
     }
 
     /// How far the rebuild got that the person's stop stopped, once `status` says it
-    /// stopped (`None` inside if it doesn't say), taken once: the app says it in a toast
-    /// with Rebuild's key.
-    pub fn take_stopped(&mut self) -> Option<Option<(usize, usize)>> {
+    /// stopped, taken once: the app says it in a toast with Rebuild's key.
+    pub fn take_stopped(&mut self) -> Option<StoppedAt> {
         self.stopped.take()
     }
 
@@ -2473,17 +2483,20 @@ impl Tab {
     /// Save pressed with nothing to save: said in a toast, as the prototype's `save` says
     /// it, only where it's so: nothing unsaved (no edit held nor under way), a titled part
     /// (an untitled one's Save writes it all the same), and the file on disk, as `status`
-    /// last compared it, the bytes the session last read or wrote.
-    pub fn nothing_to_save(&mut self) {
+    /// last compared it, the bytes the session last read or wrote (`unchanged`; not before a
+    /// comparison has ended, nor after a save failed, which `status` gives as none). Whether
+    /// it said so.
+    pub fn nothing_to_save(&mut self) -> bool {
         let matches = self
             .status
             .as_ref()
-            .is_some_and(|status| matches!(status.disk, None | Some(Disk::Unchanged)));
+            .is_some_and(|status| status.disk == Some(Disk::Unchanged));
         if self.unsaved() || self.is_untitled() || !matches {
-            return;
+            return false;
         }
         self.toasts
             .push(Toast::info(nothing_to_save_words(self.name())));
+        true
     }
 
     /// What a step says, made from the state `from` and making `made` (a group: its start
@@ -3243,12 +3256,14 @@ impl Tab {
                         && !then_close
                     {
                         let name = self.name().to_owned();
-                        let toast = match (&response.session, committed.written) {
-                            (Some(session), true) => {
-                                Toast::check(saved_words(&name, session.revision.number()))
-                            }
-                            (None, true) => Toast::check(format!("Saved {name}")),
-                            (_, false) => Toast::info(nothing_to_save_words(&name)),
+                        let toast = if committed.written {
+                            let revision = response
+                                .session
+                                .as_ref()
+                                .map(|session| session.revision.number());
+                            Toast::check(saved_words(&name, revision))
+                        } else {
+                            Toast::info(nothing_to_save_words(&name))
                         };
                         self.toasts.push(toast);
                     }
@@ -5143,12 +5158,13 @@ impl Tab {
             && rebuild.revision == self.revision
             && rebuild.state == RebuildState::Stopped
         {
-            self.stopped = Some(
-                rebuild
-                    .progress
-                    .as_ref()
-                    .map(|progress| (progress.done, progress.steps)),
-            );
+            self.stopped = Some(rebuild.progress.as_ref().map_or(
+                StoppedAt::Uncounted,
+                |progress| StoppedAt::Step {
+                    done: progress.done,
+                    steps: progress.steps,
+                },
+            ));
         }
     }
 
@@ -12132,6 +12148,171 @@ mod tests {
             .collect()
     }
 
+    /// `tab`'s last `status` as giving `disk` for its file.
+    fn set_disk(tab: &mut Tab, disk: Option<Disk>) {
+        if let Some(status) = tab.status.as_mut() {
+            status.disk = disk;
+        }
+    }
+
+    #[test]
+    fn nothing_to_save_is_said_only_of_a_file_status_found_unchanged() {
+        use crate::toast::Kind::Info;
+        // `status.disk`: none before a comparison has ended or after a save failed; changed,
+        // gone, or unreadable: none of them a file known to match.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        for disk in [
+            None,
+            Some(Disk::Changed),
+            Some(Disk::Gone),
+            Some(Disk::Unreadable),
+        ] {
+            set_disk(&mut tab, disk);
+            assert!(!tab.nothing_to_save(), "{disk:?}");
+            assert_eq!(toasts_said(tab.take_toasts()), [], "{disk:?}");
+        }
+        set_disk(&mut tab, Some(Disk::Unchanged));
+        assert!(tab.nothing_to_save());
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(
+                "Nothing to save: part.silico matches the file.".to_owned(),
+                Info
+            )]
+        );
+    }
+
+    #[test]
+    fn a_save_that_comes_up_with_no_transaction_says_nothing_to_save_of_a_file_unchanged() {
+        use crate::toast::Kind::Info;
+        // Queued with no transaction open (none begun): it has nothing to commit, and says
+        // so, the file found unchanged; not of a file changed on disk.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        set_disk(&mut tab, Some(Disk::Changed));
+        tab.save(&sessions, false);
+        assert!(tab.quiet());
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        set_disk(&mut tab, Some(Disk::Unchanged));
+        tab.save(&sessions, false);
+        assert!(tab.quiet());
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(
+                "Nothing to save: part.silico matches the file.".to_owned(),
+                Info
+            )]
+        );
+    }
+
+    #[test]
+    fn a_save_whose_commit_finds_the_document_begin_saw_says_nothing_to_save() {
+        use crate::toast::Kind::Info;
+        // The pin renamed, then undone, Save pressed while the undo is in flight: the commit
+        // finds the document `begin` saw and writes nothing, and the toast says so, whatever
+        // `status` last said of the disk (here none: no watch).
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
+        tab.take_toasts();
+        tab.step(&sessions, true);
+        assert!(tab.unsaved());
+        tab.save(&sessions, false);
+        assert_eq!(tab.saves, 0, "the save waits behind the undo");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
+        assert_eq!(tab.saves, 1);
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [
+                ("Undid: Rename Pin".to_owned(), Info),
+                (
+                    "Nothing to save: part.silico matches the file.".to_owned(),
+                    Info
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_save_says_its_revision_if_its_answer_gives_one() {
+        assert_eq!(
+            saved_words("part.silico", Some(3)),
+            "Saved part.silico (revision 3)"
+        );
+        assert_eq!(saved_words("part.silico", None), "Saved part.silico");
+        assert_eq!(stepped_words(true, None), "Undid one step");
+        assert_eq!(stepped_words(false, Some("Edit Pad")), "Redid: Edit Pad");
+    }
+
+    #[test]
+    fn a_stop_is_said_only_once_status_says_its_rebuild_stopped_at_the_tabs_revision() {
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        let at = tab.revision;
+        // `status` as saying the rebuild of `revision` is in `state`, with no count.
+        let said = |tab: &mut Tab, revision: Revision, state: RebuildState| {
+            if let Some(status) = tab.status.as_mut() {
+                status.rebuild.revision = revision;
+                status.rebuild.state = state;
+                status.rebuild.progress = None;
+            }
+            tab.stop_asked = Some(at);
+            tab.stop_seen();
+            (tab.stop_asked, tab.take_stopped())
+        };
+        // Still running: waited on.
+        assert_eq!(said(&mut tab, at, RebuildState::Running), (Some(at), None));
+        // Resumed (Ctrl+B) and built before the poll that would have seen it stopped: let
+        // go, nothing said.
+        assert_eq!(said(&mut tab, at, RebuildState::Done), (None, None));
+        // An edit landed first: the tab at a newer revision than the rebuild stopped.
+        tab.revision = rev(at.number() + 1);
+        assert_eq!(said(&mut tab, at, RebuildState::Stopped), (None, None));
+        // Another revision's rebuild running: let go.
+        assert_eq!(
+            said(&mut tab, rev(at.number() + 1), RebuildState::Running),
+            (None, None)
+        );
+        // Stopped at the tab's revision: said, uncounted.
+        tab.revision = at;
+        assert_eq!(
+            said(&mut tab, at, RebuildState::Stopped),
+            (None, Some(StoppedAt::Uncounted))
+        );
+    }
+
+    #[test]
+    fn nothing_to_undo_or_redo_is_said_only_with_the_sessions_counts_read_at_its_revision() {
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        // The newest status of an older revision than the tab's: nothing said.
+        let read = tab.status_revision;
+        tab.status_revision = rev(read.number() + 1);
+        tab.nothing_to_step(true);
+        tab.nothing_to_step(false);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        tab.status_revision = read;
+        // No status yet: nothing said.
+        let status = tab.status.take();
+        tab.nothing_to_step(true);
+        tab.nothing_to_step(false);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        // Both read: said.
+        tab.status = status;
+        tab.nothing_to_step(true);
+        assert_eq!(toasts_said(tab.take_toasts()).len(), 1);
+    }
+
     #[test]
     fn nothing_to_undo_redo_or_save_is_said_only_where_its_so() {
         use crate::toast::Kind::Info;
@@ -12139,7 +12320,9 @@ mod tests {
         polled_until(&mut tab, &sessions, |tab| {
             tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
         });
-        // Just opened: nothing to step, nothing to save (the prototype's words).
+        // Just opened, its file found unchanged on disk: nothing to step, nothing to save
+        // (the prototype's words).
+        set_disk(&mut tab, Some(Disk::Unchanged));
         tab.nothing_to_step(true);
         tab.nothing_to_step(false);
         tab.nothing_to_save();

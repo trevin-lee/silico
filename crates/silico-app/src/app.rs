@@ -31,7 +31,7 @@ use crate::sheet::{self, Sheet};
 use crate::shortcuts::{self, Command};
 use crate::sketch::{self, bar::BarAction};
 use crate::start::{self, Warm};
-use crate::tab::{DiskChoice, Tab, said};
+use crate::tab::{DiskChoice, StoppedAt, Tab, said};
 use crate::theme::{self, FieldKind};
 use crate::toast::{Toast, Toasts};
 use crate::toolbar;
@@ -58,12 +58,12 @@ pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload dr
 /// What the toast says once a stop the person asked for has stopped the rebuild (the
 /// prototype's `stopRebuild`): how far it got, as `status` counts the plan's steps, if it
 /// says, and the key that starts it again, `keys` (Rebuild's, `Ctrl+B`, `⌘B` on macOS).
-pub fn stopped_words(progress: Option<(usize, usize)>, keys: &str) -> String {
-    match progress {
-        Some((done, steps)) => {
+pub fn stopped_words(at: StoppedAt, keys: &str) -> String {
+    match at {
+        StoppedAt::Step { done, steps } => {
             format!("Rebuild stopped at step {done} of {steps}. Rebuild ({keys}) resumes it.")
         }
-        None => format!("Rebuild stopped. Rebuild ({keys}) resumes it."),
+        StoppedAt::Uncounted => format!("Rebuild stopped. Rebuild ({keys}) resumes it."),
     }
 }
 
@@ -747,6 +747,12 @@ impl<P: Clients + 'static> App<P> {
                 })
                 .inner;
             self.start_act(ui, act, &mut next_frame);
+            // What the tabs asked to say meanwhile is dropped, as a tab not shown's is (see
+            // below): never shown later out of its context.
+            for tab in &mut self.tabs {
+                tab.take_toasts();
+                tab.take_stopped();
+            }
             self.after_drawing(ui, next_frame);
             return;
         }
@@ -826,8 +832,8 @@ impl<P: Clients + 'static> App<P> {
         let rebuild_keys = Command::Rebuild.keys_text(ui.ctx());
         for (at, tab) in self.tabs.iter_mut().enumerate() {
             let mut toasts = tab.take_toasts();
-            if let Some(progress) = tab.take_stopped() {
-                toasts.push(Toast::info(stopped_words(progress, &rebuild_keys)));
+            if let Some(at) = tab.take_stopped() {
+                toasts.push(Toast::info(stopped_words(at, &rebuild_keys)));
             }
             if Some(at) == active {
                 asked = toasts;
@@ -1512,9 +1518,10 @@ impl<P: Clients + 'static> App<P> {
             }
         } else if save && tab.unsaved() && !tab.editing() {
             tab.save(sessions, false);
-        } else if save && !tab.editing() {
-            // The prototype's `save` of a document that matches its file: said so.
-            tab.nothing_to_save();
+        } else if save && !tab.editing() && !tab.nothing_to_save() {
+            // Nothing unsaved, but the file not known to match (no comparison ended yet, or it
+            // changed, went, or can't be read): the save sent, the core's answer deciding.
+            tab.save(sessions, false);
         }
         if sketch_delete {
             tab.sketch_delete(sessions);
@@ -3013,6 +3020,20 @@ mod tests {
     use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
     use crate::theme;
+
+    #[test]
+    fn a_stop_says_how_far_it_got_as_status_counted_it_or_only_that_it_stopped() {
+        use crate::tab::StoppedAt;
+        // The prototype's `stopRebuild` words, with the app's key.
+        assert_eq!(
+            super::stopped_words(StoppedAt::Step { done: 3, steps: 4 }, "Ctrl+B"),
+            "Rebuild stopped at step 3 of 4. Rebuild (Ctrl+B) resumes it."
+        );
+        assert_eq!(
+            super::stopped_words(StoppedAt::Uncounted, "⌘B"),
+            "Rebuild stopped. Rebuild (⌘B) resumes it."
+        );
+    }
 
     #[test]
     fn sketch_modes_bands_are_the_drawn_panels_and_as_far_again_in_pixels_rounded_up() {

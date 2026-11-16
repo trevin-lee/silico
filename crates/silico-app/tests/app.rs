@@ -46859,19 +46859,12 @@ fn a_drags_release_sends_the_value_it_held_back_in_the_releases_own_frame() {
 
 // ---- Toasts (the prototype audit's item 19: app.js's `toast`, styles.css's `#toasts`) ----
 
-/// The toasts shown, oldest first: each one's words, icon, error look, and when it was shown.
-fn toasts_shown(h: &AppHarness) -> Vec<(String, silico_app::toast::Kind, bool, f64)> {
+/// The toasts shown, oldest first: each one's words, icon, and when it was shown.
+fn toasts_shown(h: &AppHarness) -> Vec<(String, silico_app::toast::Kind, f64)> {
     h.state()
         .toasts()
         .iter()
-        .map(|shown| {
-            (
-                shown.toast.text.clone(),
-                shown.toast.kind,
-                shown.toast.error,
-                shown.at,
-            )
-        })
+        .map(|shown| (shown.toast.text.clone(), shown.toast.kind, shown.at))
         .collect()
 }
 
@@ -46925,7 +46918,7 @@ fn toasts_stack_newest_last_each_taken_down_on_its_own_clock_asking_no_frame_onc
     assert!(toasts_shown(&h).is_empty());
     command_key(&mut h, Key::Z);
     step_until(&mut h, "Undo's toast", |h| !toasts_shown(h).is_empty());
-    let first = toasts_shown(&h)[0].3;
+    let first = toasts_shown(&h)[0].2;
     while time(&h) < first + 1.0 {
         step(&mut h);
     }
@@ -46936,14 +46929,14 @@ fn toasts_stack_newest_last_each_taken_down_on_its_own_clock_asking_no_frame_onc
     assert_eq!(
         shown
             .iter()
-            .map(|(text, kind, error, _)| (text.as_str(), *kind, *error))
+            .map(|(text, kind, _)| (text.as_str(), *kind))
             .collect::<Vec<_>>(),
         [
-            ("Nothing to undo", Kind::Info, false),
-            (silico_app::app::FILTERS_SAID, Kind::Info, false),
+            ("Nothing to undo", Kind::Info),
+            (silico_app::app::FILTERS_SAID, Kind::Info),
         ]
     );
-    let second = shown[1].3;
+    let second = shown[1].2;
     assert!(
         (1.0..1.0 + 2.0 * frame).contains(&(second - first)),
         "{first} {second}"
@@ -47061,11 +47054,13 @@ fn save_says_what_it_wrote_at_which_revision_once_done_or_that_the_file_matches(
     use silico_app::toast::Kind;
     // The prototype's `save`: "Saved <file> (revision N)" with its check icon, N the
     // session's revision after the save (1 as opened, 2 after the rename, 3 once the save
-    // writes it, by hand); or "Nothing to save: <file> matches the file.".
-    let f = fixture();
+    // writes it, by hand); or "Nothing to save: <file> matches the file.", of a file
+    // `status` found unchanged.
+    let f = fixture_reading(Some(Arc::new(plain_read)));
     let (mut h, path) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     settled(&mut h);
+    step_until(&mut h, "its file compared", file_unchanged);
     let matches = "Nothing to save: example.silico matches the file.";
     command_key(&mut h, Key::S);
     toasted(&mut h, matches);
@@ -47082,12 +47077,157 @@ fn save_says_what_it_wrote_at_which_revision_once_done_or_that_the_file_matches(
     // Written by then, and the status bar says so too.
     assert!(std::fs::read_to_string(&path).unwrap().contains("Pinx"));
     let newest = toasts_shown(&h).pop().unwrap();
-    assert_eq!((newest.1, newest.2), (Kind::Check, false));
+    assert_eq!(newest.1, Kind::Check);
     assert_eq!(toast_icon(&h, saved).as_deref(), Some("Done"));
     step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
     settled(&mut h);
+    step_until(&mut h, "its file compared again", file_unchanged);
     command_key(&mut h, Key::S);
     toasted(&mut h, matches);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether the first tab's last `status` found its file as the session last read or wrote it.
+fn file_unchanged(h: &AppHarness) -> bool {
+    h.state().tabs()[0]
+        .status
+        .as_ref()
+        .is_some_and(|status| status.disk == Some(silico_core::disk::Disk::Unchanged))
+}
+
+/// Command+`key` pressed once, then held: 30 of the system's repeats of it, each a frame.
+fn command_key_held(h: &mut AppHarness, key: eframe::egui::Key) {
+    use eframe::egui::{Event, Modifiers};
+    command_key(h, key);
+    for _ in 0..30 {
+        h.event(Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: Modifiers::COMMAND,
+        });
+        step(h);
+    }
+    step(h);
+}
+
+#[test]
+fn undo_held_with_nothing_to_undo_shows_one_toast() {
+    // #514's review: each repeat of a held key asks again; a toast saying what one shown
+    // says, with its icon, isn't stacked again.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    command_key_held(&mut h, eframe::egui::Key::Z);
+    let shown: Vec<String> = toasts_shown(&h).into_iter().map(|t| t.0).collect();
+    assert_eq!(shown, ["Nothing to undo"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_held_on_a_clean_titled_part_shows_one_toast() {
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared", file_unchanged);
+    command_key_held(&mut h, eframe::egui::Key::S);
+    let shown: Vec<String> = toasts_shown(&h).into_iter().map(|t| t.0).collect();
+    assert_eq!(shown, ["Nothing to save: example.silico matches the file."]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_with_a_dialog_open_say_nothing_to_undo_or_redo_of_nothing() {
+    use eframe::egui::Key;
+    // A dialog open holds Undo off with its Cancel to come: "Nothing to undo" isn't said.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    settled(&mut h);
+    double_click(&mut h, "Timeline", "Block");
+    step_until(&mut h, "its dialog", dialog_open);
+    settled(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!h.state().tabs()[0].unsettled());
+    command_key(&mut h, Key::Z);
+    command_key(&mut h, Key::Y);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(dialog_open(&h));
+    assert_eq!(toasts_shown(&h), []);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_with_a_sketch_drag_pressed_say_nothing_to_undo_or_redo_of_nothing() {
+    use eframe::egui::Key;
+    use silico_app::sketch::PointerAction::{Press, Release};
+    // A point pressed in sketch mode and held, its drag not begun: Undo is held off till its
+    // end, whose edit is to come. "Nothing to undo" isn't said. Its points under defined
+    // (`counting`), so a press on one grabs it.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    sketch_events(&f, &mut h, &[pointer(Press, 50.0, 30.0)]);
+    step(&mut h);
+    assert!(the_drag(&h).is_some_and(|d| d.under_way() && !d.in_flight()));
+    assert!(!h.state().tabs()[0].unsettled());
+    command_key(&mut h, Key::Z);
+    command_key(&mut h, Key::Y);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(the_drag(&h).is_some_and(|d| d.under_way()));
+    assert_eq!(toasts_shown(&h), []);
+    sketch_events(&f, &mut h, &[pointer(Release, 50.0, 30.0)]);
+    step(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_answered_while_home_is_shown_is_not_said_once_the_document_is_shown_again() {
+    use eframe::egui::Key;
+    // The block's length edited, its rebuild held, so a save waits on it; Home shown, then
+    // the rebuild let go: the save answers while Home is shown, and what the tab would say
+    // is dropped, as a tab not shown's is, never shown later out of its context.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    settled(&mut h);
+    let hold = edit_the_block_held(&f, &mut h);
+    command_key(&mut h, Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    hold.release();
+    step_until(&mut h, "saved", |h| !h.state().tabs()[0].unsaved());
+    assert!(std::fs::read_to_string(&path).unwrap().contains("41"));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(start_shown(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        !toasts_shown(&h)
+            .iter()
+            .any(|(text, ..)| text.starts_with("Saved")),
+        "{:?}",
+        toasts_shown(&h)
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 

@@ -118,7 +118,6 @@ All colours are re_ui 0.38.1 dark-theme values (resolved through `color_table.ro
 | error text | `#ff3865` | Red.550 (*proposal*: `#ab0116` is too dark for text on black) | error text and icons |
 | warning | `#ff7a0c` | `warn_fg_color` | blocked features, warnings |
 | alert warning | `#df7700` @ 18%, text `#ffd28a` | `alert_warning` | conflict banner |
-| error border | `#6e1228` | (prototype) | the error banner's border, an error toast's (`.toast.err`) |
 | success | `#00da7e` | Green.700 | "Rebuilt", ready dots |
 | axes X/Y/Z | `#ff6981` `#00b266` `#7a95ff` | `axis_color_x/y/z` | grid axes, triad, cube stubs |
 | changed outside | `#b780ff` | Purple.600 (*proposal*) | agent/other-program changes |
