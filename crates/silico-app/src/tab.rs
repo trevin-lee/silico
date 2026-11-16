@@ -716,9 +716,11 @@ enum Under {
         sent_at: Revision,
         running: Running<Begun>,
     },
+    /// A commit, and whether `status` had last found the file unchanged as it was sent.
     Commit {
         running: Running<Committed>,
         then_close: bool,
+        matched: bool,
     },
     /// A rollback, and what Cancel or revert it lands ([`Tab::land`]) where it answers.
     Rollback {
@@ -2480,6 +2482,15 @@ impl Tab {
         }));
     }
 
+    /// Whether `status` last found the file as the session last read or wrote it
+    /// (`unchanged`; not before a comparison has ended, nor after a save failed, which it
+    /// gives as none).
+    fn disk_unchanged(&self) -> bool {
+        self.status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(Disk::Unchanged))
+    }
+
     /// Save pressed with nothing to save: said in a toast, as the prototype's `save` says
     /// it, only where it's so: nothing unsaved (no edit held nor under way), a titled part
     /// (an untitled one's Save writes it all the same), and the file on disk, as `status`
@@ -2487,11 +2498,7 @@ impl Tab {
     /// comparison has ended, nor after a save failed, which `status` gives as none). Whether
     /// it said so.
     pub fn nothing_to_save(&mut self) -> bool {
-        let matches = self
-            .status
-            .as_ref()
-            .is_some_and(|status| status.disk == Some(Disk::Unchanged));
-        if self.unsaved() || self.is_untitled() || !matches {
+        if self.unsaved() || self.is_untitled() || !self.disk_unchanged() {
             return false;
         }
         self.toasts
@@ -3244,28 +3251,41 @@ impl Tab {
             Under::Commit {
                 running,
                 then_close,
+                matched,
             } => match running.try_take() {
                 Ok(response) => {
                     self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
                     // Said once the core has answered (the prototype's `save`): what it
                     // wrote, and the session's revision after it; or, finding the document
-                    // the one `begin` saw, that it wrote nothing. Not of a save to close,
-                    // whose tab goes.
+                    // the one `begin` saw, that it wrote nothing, and the file matches, if
+                    // that's known: `status` found it unchanged as the commit was sent and
+                    // finds it so now, at the commit's revision (no reload since). The core
+                    // writes nothing too of a file changed or gone since (an unchanged
+                    // transaction loses nothing), which the reload's banner tells. Not of a
+                    // save to close, whose tab goes.
                     if let Ok(committed) = &response.result
                         && !then_close
                     {
                         let name = self.name().to_owned();
+                        let matches = matched
+                            && self.disk_unchanged()
+                            && response
+                                .session
+                                .as_ref()
+                                .is_some_and(|session| session.revision == self.status_revision);
                         let toast = if committed.written {
                             let revision = response
                                 .session
                                 .as_ref()
                                 .map(|session| session.revision.number());
-                            Toast::check(saved_words(&name, revision))
+                            Some(Toast::check(saved_words(&name, revision)))
+                        } else if matches {
+                            Some(Toast::info(nothing_to_save_words(&name)))
                         } else {
-                            Toast::info(nothing_to_save_words(&name))
+                            None
                         };
-                        self.toasts.push(toast);
+                        self.toasts.extend(toast);
                     }
                     self.ended(response.result.map(|_| ()), then_close, close);
                     None
@@ -3273,6 +3293,7 @@ impl Tab {
                 Err(running) => Some(Under::Commit {
                     running,
                     then_close,
+                    matched,
                 }),
             },
             Under::SaveAs {
@@ -4504,6 +4525,7 @@ impl Tab {
                     self.under.push(Under::Commit {
                         running: sessions.commit(&self.id),
                         then_close,
+                        matched: self.disk_unchanged(),
                     });
                 }
                 Queued::Step {
@@ -12210,14 +12232,55 @@ mod tests {
         );
     }
 
+    /// `text` written to a file, opened in a tab by sessions comparing it on disk as often
+    /// as they may, reading it as it is: its directory (kept for the file), the sessions, the
+    /// file's path, and the tab, its timeline read and the file found unchanged.
+    fn opened_watching(text: &str) -> (tempfile::TempDir, FakeSessions, std::path::PathBuf, Tab) {
+        let read: silico_core::disk::Reader = Arc::new(|path: &std::path::Path| {
+            std::fs::read(path).map_or(silico_core::disk::Found::Gone, |bytes| {
+                silico_core::disk::Found::Bytes(bytes)
+            })
+        });
+        let now: silico_core::disk::Clock = Arc::new(std::time::Instant::now);
+        let fake = silico_core::fake::FakeKernel::new(1).unwrap();
+        let sessions = Sessions::with_cache_opener(Arc::new(fake), |dir| {
+            silico_core::cache::Cache::unsealed(dir)
+        })
+        .watching_disk(std::time::Duration::ZERO, read, now)
+        .unwrap();
+        let (dir, sessions, mut tab) = opened_in(sessions, text);
+        let path = dir.path().join("part.silico");
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && disk_is(tab, Disk::Unchanged)
+        });
+        (dir, sessions, path, tab)
+    }
+
+    /// Whether `tab`'s last `status` found its file so.
+    fn disk_is(tab: &Tab, disk: Disk) -> bool {
+        tab.status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(disk))
+    }
+
+    /// The pin renamed in `tab`, then undone back to the file's document, its toasts taken:
+    /// a transaction open with nothing changed.
+    fn renamed_and_undone(tab: &mut Tab, sessions: &FakeSessions) {
+        tab.rename(sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        polled_until(tab, sessions, |tab| tab.quiet() && tab.undoable());
+        tab.step(sessions, true);
+        polled_until(tab, sessions, |tab| tab.quiet() && tab.redoable());
+        assert!(tab.transaction && !tab.unsaved());
+        tab.take_toasts();
+    }
+
     #[test]
     fn a_save_whose_commit_finds_the_document_begin_saw_says_nothing_to_save() {
         use crate::toast::Kind::Info;
         // The pin renamed, then undone, Save pressed while the undo is in flight: the commit
-        // finds the document `begin` saw and writes nothing, and the toast says so, whatever
-        // `status` last said of the disk (here none: no watch).
-        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
-        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        // finds the document `begin` saw and writes nothing, and, the file found unchanged on
+        // disk, the toast says so.
+        let (_dir, sessions, _path, mut tab) = opened_watching(BLOCK);
         tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
         polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
         tab.take_toasts();
@@ -12227,6 +12290,7 @@ mod tests {
         assert_eq!(tab.saves, 0, "the save waits behind the undo");
         polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
         assert_eq!(tab.saves, 1);
+        assert!(disk_is(&tab, Disk::Unchanged));
         assert_eq!(
             toasts_said(tab.take_toasts()),
             [
@@ -12237,6 +12301,33 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn a_commit_that_writes_nothing_over_a_file_changed_on_disk_says_nothing_matches() {
+        // #514's second round: an unchanged transaction's commit writes nothing over a file
+        // another program wrote since, and the file doesn't match: nothing is toasted (the
+        // reload's banner tells of it).
+        let (_dir, sessions, path, mut tab) = opened_watching(BLOCK);
+        renamed_and_undone(&mut tab, &sessions);
+        written_by_another_program(&path, &BLOCK.replace("\"Pin\"", "\"Bolt\""));
+        polled_until(&mut tab, &sessions, |tab| disk_is(tab, Disk::Changed));
+        tab.save(&sessions, false);
+        assert_eq!(tab.saves, 1, "the commit sent");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+    }
+
+    #[test]
+    fn a_commit_that_writes_nothing_over_a_file_gone_from_disk_says_nothing_matches() {
+        let (_dir, sessions, path, mut tab) = opened_watching(BLOCK);
+        renamed_and_undone(&mut tab, &sessions);
+        std::fs::remove_file(&path).unwrap();
+        polled_until(&mut tab, &sessions, |tab| disk_is(tab, Disk::Gone));
+        tab.save(&sessions, false);
+        assert_eq!(tab.saves, 1, "the commit sent");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
     }
 
     #[test]

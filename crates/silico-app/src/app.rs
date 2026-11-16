@@ -1520,7 +1520,9 @@ impl<P: Clients + 'static> App<P> {
             tab.save(sessions, false);
         } else if save && !tab.editing() && !tab.nothing_to_save() {
             // Nothing unsaved, but the file not known to match (no comparison ended yet, or it
-            // changed, went, or can't be read): the save sent, the core's answer deciding.
+            // changed, went, or can't be read): the save queued. With a transaction open (its
+            // edits undone back to `begin`'s document), it's the commit, the core's answer
+            // deciding; with none, it only asks `nothing_to_save` again, sending nothing.
             tab.save(sessions, false);
         }
         if sketch_delete {
