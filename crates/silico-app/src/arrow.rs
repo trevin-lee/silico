@@ -38,6 +38,11 @@
 //! has its arrow too, along the pocket's way, against the sketch's normal; a symmetric extent's
 //! one arrow stands at half its length, its value moving by twice its end's move; a two-sided
 //! extent has one for each length, the second's against the sweep. Through all has none.
+//! Where each length ends, and the way the sweep goes, are the core's
+//! ([`silico_core::sweep::prism`], of the extent the dialog's fields read as, by the reader a
+//! feature's extent is read by, [`silico_core::document::read_extent`]): the rule the rebuild's
+//! prism step reads, so an arrow stands where the preview builds. While a field the extent shows
+//! doesn't read, there's no distance arrow, as there's no sweep to build.
 //! Revolve's and groove's angle would take Fusion's angle widget, not an arrow: none is drawn.
 //!
 //! **The flip arrow** is Fusion's direction input's (docs/ux/fusion.md, *Feature dialogs*: "a
@@ -72,8 +77,9 @@ use eframe::egui::{
     CornerRadius, CursorIcon, FontId, Painter, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2,
 };
 use silico_core::command::sketch::SketchRead;
-use silico_core::document::Length;
+use silico_core::document::{Length, SweepFeature, read_extent};
 use silico_core::kernel::SketchPlane;
+use silico_core::sweep;
 use silico_protocol::Camera;
 use silico_render::render::project;
 
@@ -168,64 +174,47 @@ pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
 
 /// `dialog`'s arrows in model space, its sketch on `plane` with its profile's centroid at
 /// `centroid`: a pad's and a pocket's, as the module says; none for another kind, or a dialog
-/// with no extent. A length that doesn't read as one above 0 has no arrow.
+/// with no extent. Its sweep is the core's prism of the extent the dialog's shown fields read
+/// as: none while one of them doesn't read, and a length not above 0 has no arrow.
 pub fn handles(dialog: &Dialog, plane: SketchPlane, centroid: [f64; 2]) -> Option<Handles> {
-    let along = match dialog.kind {
-        Kind::Pad => 1.0,
-        Kind::Pocket => -1.0,
+    let kind = match dialog.kind {
+        Kind::Pad => SweepFeature::Pad,
+        Kind::Pocket => SweepFeature::Pocket,
         _ => return None,
     };
-    let form = dialog
-        .inputs
-        .iter()
-        .find_map(|input| match (&input.part, &input.value) {
-            (Part::ExtentType, Value::Choice { options, chosen }) => {
-                options.get(*chosen).map(|(form, _)| form.as_str())
-            }
-            _ => None,
-        })?;
     let reversed = dialog
         .inputs
         .iter()
         .find(|input| input.part == Part::Reversed && dialog.shown(input))
         .map(|input| matches!(input.value, Value::Toggle(true)));
-    let sense = if reversed == Some(true) {
-        -along
-    } else {
-        along
-    };
-    let direction = plane.normal().map(|c| c * sense);
     let start = plane.place(centroid);
     if !finite3(start) {
         return None;
     }
-    let distances = dialog
-        .inputs
-        .iter()
-        .filter(|input| dialog.shown(input))
-        .filter_map(|input| {
-            let (Part::ExtentNumber(field), Value::Length(text)) = (input.part, &input.value)
-            else {
-                return None;
-            };
-            let value = dialog::number(text)
-                .and_then(|number| Length::parse(&number).ok())
-                .filter(|value| value.nm() > 0)?;
-            let (side, factor) = match (form, field) {
-                ("one_side" | "two_sides", "length") => (1.0, 1.0),
-                ("two_sides", "length2") => (-1.0, 1.0),
-                ("symmetric", "length") => (1.0, 2.0),
-                _ => return None,
-            };
-            let reach = value.mm() / factor;
-            let way = direction.map(|c| c * side);
-            let base: [f64; 3] = std::array::from_fn(|k| start[k] + reach * way[k]);
+    // The sweep the rebuild would make of the extent the dialog shows: none while a field of
+    // it doesn't read, whose way the flip arrow still shows.
+    let prism = dialog
+        .fields()
+        .remove("extent")?
+        .and_then(|text| read_extent(kind, &text).ok())
+        .and_then(|extent| sweep::prism(extent, plane.normal()));
+    let direction = match &prism {
+        Some(prism) => prism.direction,
+        None => sweep::prism_direction(kind, reversed == Some(true), plane.normal()),
+    };
+    let distances = prism
+        .map(|prism| prism.ends)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|end| end.length.nm() > 0)
+        .filter_map(|end| {
+            let base: [f64; 3] = std::array::from_fn(|k| start[k] + end.offset[k]);
             finite3(base).then_some(Distance {
-                part: input.part,
-                value,
+                part: Part::ExtentNumber(end.field),
+                value: end.length,
                 base,
-                way,
-                factor,
+                way: end.way,
+                factor: end.per_mm,
             })
         })
         .collect();

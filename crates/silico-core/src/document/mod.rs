@@ -92,6 +92,13 @@ pub(crate) fn read_tree(root: json::Node) -> Result<Document, Error> {
     }
 }
 
+/// The extent `text` writes, of a feature of type `kind`, or why it isn't one: read as a
+/// document's feature's `extent` is, so a client holding an extent's fields (the app's
+/// dialog) has the [`Extent`] the core would read of them.
+pub fn read_extent(kind: SweepFeature, text: &str) -> Result<Extent, Error> {
+    decode::extent(kind, decode::tree(text.as_bytes())?)
+}
+
 /// The feature the reader's tree `node` holds, at `index` in the timeline, read as [`read`]
 /// reads each of a document's features.
 pub(crate) fn read_feature(index: usize, node: json::Node) -> Result<Feature, Error> {

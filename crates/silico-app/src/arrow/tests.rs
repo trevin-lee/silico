@@ -605,6 +605,158 @@ fn a_length_that_isnt_one_above_zero_has_no_arrow_and_other_kinds_have_none() {
     );
 }
 
+#[test]
+fn each_arrow_stands_where_the_cores_prism_ends_for_every_form_and_plane() {
+    // #482: the arrows read the rebuild's own rule. For each form of each kind, on an origin
+    // plane and a tilted face, the dialog's arrows against the prism the core makes of the
+    // same extent, written here as the document would hold it: `length`'s arrow at the
+    // prism's far end (its start plus its vector), `length2`'s at its start, each over the
+    // centroid, and the arrows' way the prism's.
+    use silico_core::document::{Extent, PadExtent, PocketExtent};
+    let r = FRAC_1_SQRT_2;
+    let planes = [
+        SketchPlane::Xz,
+        SketchPlane::Face(FaceFrame {
+            origin: [1.0, 2.0, 3.0],
+            x: [r, 0.0, -r],
+            y: [0.0, 1.0, 0.0],
+        }),
+    ];
+    let (l, l2) = (mm("10.5"), mm("4"));
+    // The dialog's form, Reversed, and the extent the file would hold.
+    let forms = [
+        (
+            Kind::Pad,
+            "one_side",
+            false,
+            Extent::Pad(PadExtent::OneSide {
+                length: l,
+                reversed: false,
+            }),
+        ),
+        (
+            Kind::Pad,
+            "one_side",
+            true,
+            Extent::Pad(PadExtent::OneSide {
+                length: l,
+                reversed: true,
+            }),
+        ),
+        (
+            Kind::Pad,
+            "symmetric",
+            false,
+            Extent::Pad(PadExtent::Symmetric { length: l }),
+        ),
+        (
+            Kind::Pad,
+            "two_sides",
+            false,
+            Extent::Pad(PadExtent::TwoSides {
+                length: l,
+                length2: l2,
+            }),
+        ),
+        (
+            Kind::Pocket,
+            "one_side",
+            true,
+            Extent::Pocket(PocketExtent::OneSide {
+                length: l,
+                reversed: true,
+            }),
+        ),
+        (
+            Kind::Pocket,
+            "symmetric",
+            false,
+            Extent::Pocket(PocketExtent::Symmetric { length: l }),
+        ),
+        (
+            Kind::Pocket,
+            "two_sides",
+            false,
+            Extent::Pocket(PocketExtent::TwoSides {
+                length: l,
+                length2: l2,
+            }),
+        ),
+        (
+            Kind::Pocket,
+            "through_all",
+            true,
+            Extent::Pocket(PocketExtent::ThroughAll { reversed: true }),
+        ),
+    ];
+    for plane in planes {
+        let start = plane.place([20.0, 10.0]);
+        for (kind, form, on, extent) in forms {
+            let mut dialog = dialog_of(kind);
+            set_form(&mut dialog, form);
+            set_reversed(&mut dialog, on);
+            set_text(&mut dialog, LENGTH, "10.5");
+            set_text(&mut dialog, LENGTH2, "4");
+            let h = pad_handles(&dialog, plane);
+            let prism = silico_core::sweep::prism(extent, plane.normal()).unwrap();
+            assert_eq!(h.direction, prism.direction, "{kind:?} {form}");
+            let Some(span) = prism.span else {
+                assert!(h.distances.is_empty(), "{form}: {h:?}");
+                continue;
+            };
+            let far: [f64; 3] = std::array::from_fn(|k| start[k] + span.start[k] + span.vector[k]);
+            let near_end: [f64; 3] = std::array::from_fn(|k| start[k] + span.start[k]);
+            let unit = |v: [f64; 3]| {
+                let n = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+                v.map(|c| c / n)
+            };
+            let parts: Vec<Part> = h.distances.iter().map(|d| d.part).collect();
+            let expected: &[Part] = if form == "two_sides" {
+                &[LENGTH, LENGTH2]
+            } else {
+                &[LENGTH]
+            };
+            assert_eq!(parts, expected, "{kind:?} {form}");
+            for d in &h.distances {
+                let (end, way) = if d.part == LENGTH {
+                    (far, unit(span.vector))
+                } else {
+                    (near_end, unit(span.vector).map(|c| -c))
+                };
+                for k in 0..3 {
+                    assert!(
+                        (d.base[k] - end[k]).abs() < 1e-12,
+                        "{kind:?} {form} {plane:?}: {d:?} {end:?}"
+                    );
+                    assert!((d.way[k] - way[k]).abs() < 1e-12, "{kind:?} {form}: {d:?}");
+                }
+                assert_eq!(d.value, if d.part == LENGTH { l } else { l2 });
+            }
+        }
+    }
+}
+
+#[test]
+fn a_length_that_doesnt_read_takes_every_arrow_of_its_extent_with_it_but_the_flip() {
+    // The extent the dialog shows doesn't read while one of its fields doesn't, so it sweeps
+    // nothing: two sides with `length2` emptied have no arrow for `length` either.
+    let mut dialog = dialog_of(Kind::Pad);
+    set_form(&mut dialog, "two_sides");
+    set_text(&mut dialog, LENGTH2, "");
+    let h = pad_handles(&dialog, SketchPlane::Xy);
+    assert!(h.distances.is_empty(), "{h:?}");
+    assert!(!h.flip);
+    near3(h.direction, [0.0, 0.0, 1.0]);
+    // A reversed pocket with its length emptied: no arrow, the flip pointing up still.
+    let mut dialog = dialog_of(Kind::Pocket);
+    set_reversed(&mut dialog, true);
+    set_text(&mut dialog, LENGTH, "x");
+    let h = pad_handles(&dialog, SketchPlane::Xy);
+    assert!(h.distances.is_empty());
+    assert!(h.flip);
+    near3(h.direction, [0.0, 0.0, 1.0]);
+}
+
 // ---- On the screen ----
 
 #[test]
