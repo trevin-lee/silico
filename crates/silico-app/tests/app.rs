@@ -24780,14 +24780,15 @@ fn read_with_point_at(h: &mut AppHarness, point: &str, x: f64, y: f64) {
 fn extend_clicks_again_once_the_read_of_its_first_extend_has_come() {
     // On [`WALLED_BOTH`]: a click at (8, 0.2) takes na000001's end to the wall at x = 30.
     // Once the read holds it, the line runs from (0, 0) to (30, 0), its midpoint (15, 0), so
-    // a click at (2, 0) is its start's: on to the wall at x = −20.
+    // a click at (12, 0) is its start's: on to the wall at x = −20. (On the read before, the
+    // line ended at (10, 0), and (12, 0), 2 mm past it, had nothing under it.)
     let f = fixture();
     let mut h = walled_sketch_of(&f, WALLED_BOTH);
     extend_button(&mut h);
     sketch_events(&f, &mut h, &clicked(8.0, 0.2));
     settled(&mut h);
     read_with_point_at(&mut h, "pa000002", 30.0, 0.0);
-    sketch_events(&f, &mut h, &clicked(2.0, 0.0));
+    sketch_events(&f, &mut h, &clicked(12.0, 0.0));
     settled(&mut h);
     let sketch = sketch_of_text(&f, &h, "s0000001");
     assert_eq!(point_at(&sketch, 30.0, 0.0), "pa000002");
