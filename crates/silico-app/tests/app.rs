@@ -16540,6 +16540,38 @@ fn each_recent_document_says_when_its_file_was_modified_by_the_wall_clock() {
 }
 
 #[test]
+fn the_start_page_looks_through_recent_once_as_it_is_shown_not_at_each_frame() {
+    // Home looks through the list again as the page is shown; while it stays shown, a file
+    // saved meanwhile keeps the time the last look found. The list's thread takes its asks
+    // in order, so once a removal asked after five frames is done, a look asked in any of
+    // them would have been done too.
+    let f = fixture();
+    let part = f.file("part.silico", EXAMPLE);
+    let gone = f.dir.path().join("gone.silico");
+    modified_at(&part, NOON_AND_A_HALF - 30 * 60);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&part, &gone], &clock);
+    step_until(&mut h, "part's time, and gone marked", |h| {
+        recent_times(h).first().map(String::as_str) == Some("30 min ago")
+            && recent_rows(h)
+                .iter()
+                .any(|(name, said)| name == "gone.silico" && said.ends_with(", not found"))
+    });
+    modified_at(&part, NOON_AND_A_HALF - 10 * 60);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    start_page(&h)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    step_until(&mut h, "gone removed", |h| {
+        recent_names(h) == ["part.silico"]
+    });
+    assert_eq!(recent_times(&h), ["30 min ago"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn remove_from_list_drops_a_missing_document_opens_nothing_and_a_restart_reads_it_gone() {
     let f = fixture();
     let kept = f.file("kept.silico", EXAMPLE);

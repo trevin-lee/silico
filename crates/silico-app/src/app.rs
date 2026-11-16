@@ -3473,6 +3473,25 @@ mod tests {
     use crate::theme;
 
     #[test]
+    fn the_system_time_is_the_clock_std_reads() {
+        // std's clock read on either side of it: the time it gives lies between them.
+        let seconds = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        };
+        let before = i64::try_from(seconds()).unwrap();
+        let given = super::system_time().unwrap().as_second();
+        let after = i64::try_from(seconds()).unwrap();
+        assert!(
+            before <= given && given <= after,
+            "{before} <= {given} <= {after}"
+        );
+        assert!(before > 1_700_000_000, "{before}");
+    }
+
+    #[test]
     fn the_sketch_bars_room_is_clear_of_the_viewcube_unless_that_leaves_a_name_too_little() {
         // All of the bar but its name 400 wide: the room between 10 from the canvas's left
         // and 148 from its right (its width less 158), but never less than the rest and the

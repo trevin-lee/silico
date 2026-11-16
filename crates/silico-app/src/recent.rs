@@ -843,6 +843,29 @@ pub(crate) mod tests {
         assert_eq!((recent.name(), recent.folder()), ("one.silico", "/a/b"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_document_whose_folder_cant_be_read_is_there_with_no_time_and_one_gone_is_nothing() {
+        // A folder its user can't search (mode 000): the file in it can't be looked at, so
+        // its metadata is refused (EACCES), not found missing, and it stays listed, with no
+        // time, as a file that can't be read does.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let shut = dir.path().join("shut");
+        std::fs::create_dir(&shut).unwrap();
+        let part = shut.join("part.silico");
+        std::fs::write(&part, b"").unwrap();
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = std::fs::metadata(&part).map_err(|e| e.kind());
+        let found = look(part.to_str().unwrap());
+        std::fs::set_permissions(&shut, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // The test's premise: run as a user the folder's mode binds (root's reads it anyway).
+        assert_eq!(refused.err(), Some(std::io::ErrorKind::PermissionDenied));
+        assert!(matches!(found, Found::There(None)), "{found:?}");
+        let gone = dir.path().join("gone.silico");
+        assert!(matches!(look(gone.to_str().unwrap()), Found::Nothing));
+    }
+
     /// The file at `path` given `time` as its modified time, as a save gives it one (std's
     /// `File::set_modified`, as the core's cache tests set theirs).
     pub(crate) fn modified_at(path: &Path, time: Timestamp) {

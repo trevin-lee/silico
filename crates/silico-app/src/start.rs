@@ -2670,6 +2670,72 @@ mod tests {
     }
 
     #[test]
+    fn a_rounded_outlines_corners_are_never_rounder_than_half_its_width_or_height() {
+        // A radius of 5.5 on a rect 10 wide and 4 high is 2 (half its height): its first
+        // point, the top right corner's arc's start, a quarter turn before its right, is
+        // (10 - 2, 0); on one 4 wide and 10 high, 2 (half its width), (4 - 2, 0). Every point
+        // within the rect (each corner's arc stays inside its own corner).
+        for (size, first) in [
+            (Vec2::new(10.0, 4.0), Pos2::new(8.0, 0.0)),
+            (Vec2::new(4.0, 10.0), Pos2::new(2.0, 0.0)),
+        ] {
+            let rect = Rect::from_min_size(Pos2::ZERO, size);
+            let outline = rounded_outline(rect, 5.5);
+            assert_eq!(outline.len(), 4 * 9 + 1);
+            assert!(
+                (outline[0] - first).length() < 1e-5,
+                "{size:?}: {:?}",
+                outline[0]
+            );
+            assert_eq!(outline.first(), outline.last());
+            for point in &outline {
+                assert!(
+                    rect.expand(1e-5).contains(*point),
+                    "{size:?}: {point:?} outside"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_drop_notes_words_wrap_inside_its_padding_and_border_at_every_width() {
+        // `.drop-note`'s `padding: 14px` and 1 px border each side: its words wrap in its
+        // width less 30. At each width from 120 to 420 a point apart, the widest of its
+        // lines is no wider than that, so no line runs into the padding by even a point,
+        // and the narrow ones take more than one line.
+        const INSET: f32 = 2.0 * (14.0 + 1.0);
+        let mut wrapped = 0;
+        for width in 120..=420_u16 {
+            let available = std::cell::Cell::new(0.0_f32);
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(f32::from(width), 300.0))
+                .build_ui(|ui| {
+                    available.set(ui.available_width());
+                    drop_note(ui);
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(2);
+            let said = painted(&h)
+                .into_iter()
+                .find_map(|shape| match shape {
+                    Shape::Text(shown) if shown.galley.text().starts_with("Drop a ") => Some(shown),
+                    _ => None,
+                })
+                .expect("the drop note");
+            let room = available.get() - INSET;
+            assert!(
+                said.galley.size().x <= room + 0.01,
+                "at {width}: a line {} wide in {room}",
+                said.galley.size().x
+            );
+            if said.galley.size().y > 1.5 * css::LH {
+                wrapped += 1;
+            }
+        }
+        assert!(wrapped > 50, "{wrapped} widths wrapped");
+    }
+
+    #[test]
     fn the_drop_note_is_drawn_as_drop_note_under_recent() {
         // `.drop-note`: `margin-top: 26px; padding: 14px; border: 1px dashed var(--g350);
         // border-radius: var(--r); color: var(--g550); text-align: center`, after `.recent`
