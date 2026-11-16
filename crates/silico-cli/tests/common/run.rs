@@ -1,8 +1,8 @@
 //! Running `silico` in the CLI's tests: each run logged at debug (its log kept apart from
 //! the stderr a test checks), its cache given a secret (so a run makes none, and syncs
-//! nothing to disk before it rebuilds), and held to a deadline under
-//! nextest's, after which it's killed and the test is told where its time went: the run's
-//! elapsed time, the longest waits between its log lines, and the log's last lines.
+//! nothing to disk before it rebuilds), and held to what's left of the test's [`BUDGET`],
+//! under nextest's limit, after which it's killed and the test is told where its time went:
+//! the run's elapsed time, the longest waits between its log lines, and the log's last lines.
 
 // Each test program that includes this uses only some of it.
 #![allow(dead_code)]
@@ -12,9 +12,35 @@ use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
-/// How long one run may take: half of nextest's 120 s, so a run that stalls is told of
-/// here, with its log, rather than killed with nothing to say.
-pub const DEADLINE: Duration = Duration::from_secs(60);
+/// How long a test may wait on silico in all, its runs and its server's replies: there
+/// only so a run or a server that's hung fails the test, saying what it waited for, rather
+/// than hanging it. Each wait is held to what's left of it ([`left`]), so the test's own
+/// message always comes before nextest's limit for the CLI's tests (300 s,
+/// .config/nextest.toml). A server answers `initialize` in about 0.2 s, and in 4 s with
+/// twenty busy threads per CPU; but on CI's runner the CLI's tests stalled together, twice
+/// (#513's and #514's gates, 2026-11-16), servers started then saying nothing for about 85
+/// to 100 s from the stall's start, and a copy of `silico` and a run of it taking 42 s (0.14
+/// s on other runs). A server's start reads and hashes two whole worker executables (the
+/// kernel's and the render worker's, `silico_core::worker`'s `hashed`), which may be why it
+/// suffers most under the runner's I/O or memory pressure. So about 2.7 times the longest
+/// silence seen.
+pub const BUDGET: Duration = Duration::from_secs(270);
+
+thread_local! {
+    static BEGAN: Instant = Instant::now();
+}
+
+/// When the test began, as its waits count it: the first time one of these helpers ran on
+/// its thread (nextest runs each test in a process of its own, `cargo test` each on a
+/// thread of its own; a test's setup before it is small).
+pub fn began() -> Instant {
+    BEGAN.with(|began| *began)
+}
+
+/// What's left of the test's [`BUDGET`].
+pub fn left() -> Duration {
+    BUDGET.saturating_sub(began().elapsed())
+}
 
 /// A run's end: how it exited (none if it ran past its deadline and was killed), its
 /// output, the stderr a test checks (without the debug log), its log, and how long it ran.
@@ -45,6 +71,7 @@ pub fn give_secret(file: &Path) {
 /// log at debug, unless the test chose the log itself. Says whether the log is this
 /// module's to keep apart.
 pub fn ready(cmd: &mut Command) -> bool {
+    began();
     let envs: Vec<(String, Option<String>)> = cmd
         .get_envs()
         .map(|(k, v)| {
@@ -202,8 +229,8 @@ pub fn diagnosis(f: &Finished) -> String {
 }
 
 /// `cmd`'s output, as `Command::output` gives it, but readied ([`ready`]), its stderr
-/// without the debug log, and the run held to [`DEADLINE`]: one past it fails the test,
-/// saying where its time went.
+/// without the debug log, and the run held to what's left of the test's [`BUDGET`]: one
+/// past it fails the test, saying where its time went.
 #[track_caller]
 pub fn output(mut cmd: Command) -> Output {
     let split = ready(&mut cmd);
@@ -212,10 +239,11 @@ pub fn output(mut cmd: Command) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    let f = finish(child, DEADLINE, split);
+    let f = finish(child, left(), split);
     let Some(status) = f.status else {
         panic!(
-            "silico ran past {DEADLINE:?}: {}its stderr:\n{}",
+            "silico ran {:?} and was killed, when the test's {BUDGET:?} ran out: it's hung; {}its stderr:\n{}",
+            f.took,
             diagnosis(&f),
             f.stderr
         );
