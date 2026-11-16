@@ -4,7 +4,9 @@
 # build; the summary gathers every shard's caught, missed, timed-out, and unviable mutants
 # into the run's summary, and fails if any mutant was missed, or if a shard tested fewer
 # mutants than it planned (INCOMPLETE), so a run whose shard's baseline failed never reads
-# as clean. Each shard leaves its outcomes on the VM, which every runner shares
+# as clean. A run that finds nothing to mutate (a change to data only) passes, saying so,
+# unless a file given isn't in the tree or a regex given matched nothing
+# (.github/mutants-none.sh). Each shard leaves its outcomes on the VM, which every runner shares
 # (~/.cache/silico/mutants-results/<run>/), and the summary reads them there: GitHub's
 # artifact storage full (2026-11-09) can't fail a run or hide its results. Artifacts are
 # still uploaded, for the per-mutant logs, but an upload that fails fails nothing.
@@ -402,12 +404,22 @@ jobs:
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0
           "${priority[@]}" pixi run mutants -- "${args[@]}" || status=$?
-          # A shard with no mutants writes an empty list; it still reports. (After the run, which
-          # moves a mutants.out it finds aside.)
+          # A shard that sharding left no mutants writes an empty list; it still reports. (After
+          # the run, which moves a mutants.out it finds aside.)
           mkdir -p "$RUNNER_TEMP/out/mutants.out"
           echo "$chosen" >"$RUNNER_TEMP/out/mutants.out/threads"
           case $status in 0 | 2 | 3) ;; *) exit "$status" ;; esac
           echo "$SHARD" >"$RUNNER_TEMP/out/mutants.out/shard"
+          # A run that finds no mutants at all writes no list: say so, with each file given
+          # that matches nothing in the tree (.github/mutants-none.sh). If that fails, the
+          # summary reads the shard as stopped before it listed its mutants, so incomplete.
+          if [ "$status" -eq 0 ]; then
+            set -f
+            # shellcheck disable=SC2086 # FILES is a list of globs, split but not expanded
+            bash .github/mutants-none.sh "$RUNNER_TEMP/out/mutants.out" "$SILICO_TREE_COMMIT" $FILES ||
+              echo "::warning::.github/mutants-none.sh failed: a shard that found no mutants reads as incomplete"
+            set +f
+          fi
       # Even when the run is cancelled or times out: cargo-mutants writes each outcome as it
       # goes, so a stopped shard's harvest is kept (and the summary says it's incomplete). On
       # the VM, for the summary: the outcome lists, and the logs of the baseline and of each
@@ -504,6 +516,11 @@ jobs:
               python3 -I -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$1" 2>/dev/null
           }
           : >all/incomplete.txt
+          # The files given that match nothing in the tree, by each shard that found no mutants.
+          : >all/unmatched.txt
+          # The shards that had no mutants to test: cargo-mutants found none at all, or
+          # sharding left one none.
+          none=0
           # Every planned shard, not only those that uploaded: one cancelled while queued, or
           # whose runner was lost, uploads nothing, and one that failed before cargo-mutants
           # (a build, OCCT) uploads only its threads.
@@ -513,7 +530,15 @@ jobs:
               echo "shard $n reported nothing (never started, its runner was lost, or its outcomes were let go: a run's are kept on the VM a week, so dispatch a new run)" >>all/incomplete.txt
               continue
             fi
-            # cargo-mutants writes its list (an empty one for no mutants) before it tests.
+            # A run that finds no mutants at all writes no list; its shard says so once
+            # cargo-mutants has ended well (.github/mutants-none.sh), never one that stopped.
+            if [ ! -s "$dir/mutants.json" ] && [ -f "$dir/none" ]; then
+              cat "$dir/none" >>all/unmatched.txt
+              none=$((none + 1))
+              continue
+            fi
+            # cargo-mutants writes its list (an empty one for a shard sharding left none)
+            # before it tests.
             if [ ! -s "$dir/mutants.json" ]; then
               echo "shard $n stopped before cargo-mutants listed its mutants (see the shard's log)" >>all/incomplete.txt
               continue
@@ -523,6 +548,7 @@ jobs:
               echo "shard $n's mutants.json can't be read, so its count can't be checked" >>all/incomplete.txt
               continue
             fi
+            if [ "$planned" -eq 0 ]; then none=$((none + 1)); fi
             outcomes=$(cat "$dir"/{caught,missed,timeout,unviable}.txt 2>/dev/null | grep -c . || true)
             if [ "$outcomes" -lt "$planned" ]; then
               why=""
@@ -581,6 +607,14 @@ jobs:
               echo
               echo "### INCOMPLETE: not every mutant was tested, so a zero miss count here is not a pass"
               sed 's/^/- /' all/incomplete.txt
+            elif [ "$none" -eq "$SHARDS" ] && [ ! -s all/unmatched.txt ]; then
+              echo
+              echo "No mutants: cargo-mutants found nothing to mutate${FILES:+ in $FILES}${BASE:+ (the change since $BASE)}${RE:+ matching \`$RE\`}"
+            fi
+            if [ -s all/unmatched.txt ]; then
+              echo
+              echo "### Files given that match nothing in the tree"
+              sort -u all/unmatched.txt | sed 's/^/- /'
             fi
             # Each shard's threads, as it chose them (.github/shard-threads.sh).
             if compgen -G 'shards/*/threads' >/dev/null; then
@@ -635,11 +669,26 @@ jobs:
             exit 1
           fi
           # cargo-mutants passes a run that finds no mutants: a misspelt file or regex would
-          # pass having tested nothing. (With a base, a change that touches none of the files
-          # also finds none.)
-          if [ -n "$FILES$RE" ] && [ "$tested" -eq 0 ]; then
-            echo "::error::the files or regex matched no mutants${BASE:+ changed since $BASE}: check each file is a path from the repository's root in the packages given, and the regex matches mutants' names (file:line:column: what was replaced)"
+          # pass having tested nothing. Each shard that found none checked the files given
+          # against the tree (.github/mutants-none.sh), so a file that isn't there fails, while
+          # files that are there and hold nothing to mutate pass, the summary saying so: a
+          # change to data only (run 43831530760), or, with a base, one that touches none of
+          # them. A regex can't be checked so, and one that matches nothing fails.
+          if [ -s all/unmatched.txt ]; then
+            sort -u all/unmatched.txt | while read -r line; do echo "::error::$line"; done
+            echo "::error::the files given matched no mutants: check each is a path from the repository's root"
             exit 1
+          fi
+          if [ -n "$RE" ] && [ "$tested" -eq 0 ]; then
+            echo "::error::the regex matched no mutants${BASE:+ changed since $BASE}: check it matches mutants' names (file:line:column: what was replaced) in the files and packages given"
+            exit 1
+          fi
+          if [ -n "$FILES" ] && [ "$tested" -eq 0 ] && [ "$none" -ne "$SHARDS" ]; then
+            echo "::error::the files matched no mutants${BASE:+ changed since $BASE}: check each file is a path from the repository's root in the packages given"
+            exit 1
+          fi
+          if [ "$tested" -eq 0 ]; then
+            echo "::notice::no mutants: cargo-mutants found nothing to mutate${FILES:+ in $FILES}${BASE:+ (the change since $BASE)}"
           fi
           if [ -s all/missed.txt ]; then
             # Each miss as an annotation too, so `gh run view` lists them (up to 20; the
