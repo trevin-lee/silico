@@ -519,8 +519,8 @@ impl<P: Clients + 'static> App<P> {
         self
     }
 
-    /// The app, drawing a thumbnail of each document it opens or saves for its start page's
-    /// Recent (`crate::thumbs`), kept by `thumbs`.
+    /// The app, drawing a thumbnail of each document for its start page's Recent as its tab
+    /// closes and as the start page is shown over it (`crate::thumbs`), kept by `thumbs`.
     #[must_use]
     pub fn thumbnailing(mut self, thumbs: Thumbs) -> Self {
         self.thumbs = Some(thumbs);
@@ -744,9 +744,12 @@ impl<P: Clients + 'static> App<P> {
             thumbs.frame(
                 ui.ctx(),
                 &self.sessions,
-                &self.tabs,
+                &mut self.tabs,
                 self.recents.as_ref(),
                 start_shown,
+                // A quit draws nothing: the window closes with its last tab, before a picture
+                // could be written. Its question counts, since its answer closes tabs at once.
+                self.quitting || matches!(self.asking, Some(Asking::Quit)),
             );
         }
         // The candidate a card's row was hovered on last frame, lit in the canvas from now.
@@ -1086,6 +1089,14 @@ impl<P: Clients + 'static> App<P> {
         // A tab's save or revert was refused: it stays, holding its edits, and a quit stops.
         for name in refused {
             self.close_refused(&name);
+        }
+        // The pictures asked as tabs closed, taken before the tabs go: they answer after.
+        if let Some(thumbs) = &mut self.thumbs {
+            for tab in &mut self.tabs {
+                if let Some(closing) = tab.take_closing_picture() {
+                    thumbs.closing(closing);
+                }
+            }
         }
         let open_numbers = &mut self.open_numbers;
         self.tabs.retain(|tab| {

@@ -4,36 +4,43 @@
 //! none.
 //!
 //! A picture is the core's `render` of a tab's model, Home's view at [`WIDTH`] by
-//! [`HEIGHT`], asked once the model is built and the document is as its file holds it: a
-//! session outside a transaction whose model is published at its revision, as it is once a
-//! document opens, once a Save or a Save As writes it, and once a reload takes another
-//! program's edit. It's kept in a folder of the app's own beside the recent documents
+//! [`HEIGHT`], drawn only when the start page will show it: as a tab closes, and each time
+//! the start page is shown, once for each open tab. Either way only for a tab with a file,
+//! outside a transaction, whose model is built at its revision: the document as its file
+//! holds it. As a tab closes, its text and its render are queued on its session ahead of the
+//! close, which runs them first ([`Closing`]); on the start page, an open tab's text is read
+//! first, and its render asked only if its bytes have no picture. Never on a publish
+//! otherwise, so an agent's edits reloaded every few seconds, or saves, draw nothing while
+//! the start page is hidden. A render is never cancelled (a cancel kills the shared render
+//! worker): one that comes back of another revision is dropped.
+//!
+//! A picture is kept in a folder of the app's own beside the recent documents
 //! ([`Thumbs::default_folder`]), named by [`key`], the SHA-256 of the file's bytes the model
 //! was built from, which the session's `text` at the model's revision gives exactly. So a
 //! picture is shown only for the exact bytes it was drawn from: a file changed since (an
-//! agent's edit) shows the icon until the app draws it again. A model whose key already has
-//! a picture isn't drawn again.
+//! agent's edit) shows the icon until the app draws it again.
 //!
-//! The folder is kept by a thread of its own, so the UI thread never touches the disk
-//! (invariant 4): it hashes each recent document's file, reads and decodes the picture its
-//! key names, and cuts it to the cell, ready to upload; it writes each picture drawn; and it
-//! removes every picture no recent document's bytes name, so the folder holds at most as
-//! many as Recent lists. A picture that can't be read, is more than [`MAX_PNG_BYTES`], isn't
-//! a PNG, or is more than [`MAX_SIDE`] a side is no picture: the icon shows. A render that
-//! fails (nothing built, no bodies, no render worker) is logged, never said: a thumbnail is
-//! a nicety.
+//! The folder is kept by a thread of its own, so the UI thread never touches the disk or
+//! hashes a document (invariant 4): it hashes each recent document's file and each text
+//! read, reads and decodes the picture a key names, and cuts it to the cell, ready to
+//! upload; it writes each picture drawn; and it prunes the folder ([`prune`]). A picture
+//! that can't be read, is more than [`MAX_PNG_BYTES`], isn't a PNG, or is more than
+//! [`MAX_SIDE`] a side is no picture: the icon shows. A render that fails (nothing built, no
+//! bodies, no render worker) is logged, never said: a thumbnail is a nicety.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::time::{Duration, SystemTime};
 
 use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureOptions};
 use sha2::{Digest as _, Sha256};
 use silico_core::command::render::{Render, Rendering};
 use silico_core::command::wire::Named;
-use silico_core::command::{ModelChoice, Revision, Running, SessionId, Sessions, TextAnswer};
+use silico_core::command::{
+    ModelChoice, Response, Revision, Running, SessionId, Sessions, TextAnswer,
+};
 use silico_core::kernel::Clients;
 
 use crate::recent::Recents;
@@ -57,6 +64,15 @@ pub const MAX_PNG_BYTES: usize = 1 << 20;
 /// nothing is allocated for it.
 pub const MAX_SIDE: u32 = 1024;
 
+/// How many pictures the folder keeps besides those of the recent documents' bytes: the
+/// newest, by when they were written, so another instance's picture, or one of a document
+/// that can't be read just now, isn't removed at once ([`prune`]).
+pub const SPARE: usize = crate::recent::KEPT;
+
+/// How old a file left by a write that never finished (`<key>.png.<pid>.<n>.new`, a quit
+/// mid-write) is before it's removed: far longer than any write takes.
+pub const LEFT_OVER_AGE: Duration = Duration::from_secs(60 * 60);
+
 /// How many of a picture's pixels a point of the cell has, each way: a Retina display's 2
 /// shows it pixel for pixel, a display of 1 at half (egui's wgpu textures have no mipmaps,
 /// so the thread cuts it down, averaging, rather than leave a quarter of a 260 by 160
@@ -76,15 +92,26 @@ pub const PICTURE: [usize; 2] = [
     (CELL.y * PICTURE_SCALE) as usize,
 ];
 
+/// The render a picture is drawn by: Home's view, [`WIDTH`] by [`HEIGHT`].
+fn request() -> Render {
+    Render {
+        view: Some(crate::navigate::HOME),
+        camera: None,
+        width: WIDTH,
+        height: HEIGHT,
+        highlight: Vec::new(),
+        to: None,
+        replace: false,
+    }
+}
+
 /// The key a picture of a document is kept by: the SHA-256 of its file's bytes, in lower-case
 /// hexadecimal.
 pub fn key(bytes: &[u8]) -> String {
-    hex(&Sha256::digest(bytes))
-}
-
-/// `bytes` in lower-case hexadecimal.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// The name of the file the picture keyed `key` is kept in.
@@ -92,46 +119,48 @@ pub fn file_name(key: &str) -> String {
     format!("{key}.png")
 }
 
+/// Whether `key` is one [`key`] gives: 64 lower-case hexadecimal digits.
+fn is_key(key: &str) -> bool {
+    key.len() == 64
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// The key a file in the folder named `name` is a picture of, if its name is one
 /// [`file_name`] gives: never another file, which is left alone.
 fn key_named(name: &str) -> Option<&str> {
     let key = name.strip_suffix(".png")?;
-    (key.len() == 64
-        && key
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-    .then_some(key)
+    is_key(key).then_some(key)
+}
+
+/// Whether a file in the folder named `name` is one a write of a picture left
+/// (`app_data::write_bytes`'s `<key>.png.<pid>.<n>.new`), and nothing else.
+fn left_by_a_write(name: &str) -> bool {
+    let Some(rest) = name.strip_suffix(".new") else {
+        return false;
+    };
+    let mut parts = rest.rsplitn(3, '.');
+    let (Some(n), Some(pid), Some(picture)) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    let number = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    number(n) && number(pid) && key_named(picture).is_some()
 }
 
 /// The key of the document at `path`, as its bytes are now: none if it isn't a regular file
 /// (a pipe could hang the read), can't be read, or is longer than a document can be
 /// (`json::MAX_DOCUMENT_LEN`), which no session opens.
 pub fn key_of_file(path: &Path) -> Option<String> {
-    if !std::fs::metadata(path).ok()?.is_file() {
-        return None;
-    }
-    let limit = silico_core::document::json::MAX_DOCUMENT_LEN as u64;
-    let mut hasher = Sha256::new();
-    let read = std::io::copy(
-        &mut std::fs::File::open(path).ok()?.take(limit + 1),
-        &mut hasher,
-    )
-    .ok()?;
-    (read <= limit).then(|| hex(&hasher.finalize()))
+    let limit = silico_core::document::json::MAX_DOCUMENT_LEN;
+    let bytes = crate::app_data::read_up_to(path, limit)?;
+    (bytes.len() <= limit).then(|| key(&bytes))
 }
 
 /// The picture in `file`, cut to [`PICTURE`]: none if it can't be read, is longer than
 /// [`MAX_PNG_BYTES`], or isn't a picture ([`picture`]).
 fn read_picture(file: &Path) -> Option<ColorImage> {
-    if !std::fs::metadata(file).ok()?.is_file() {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(file)
-        .ok()?
-        .take(MAX_PNG_BYTES as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    let bytes = crate::app_data::read_up_to(file, MAX_PNG_BYTES)?;
     if bytes.len() > MAX_PNG_BYTES {
         return None;
     }
@@ -268,33 +297,40 @@ struct Found {
     image: ColorImage,
 }
 
+/// The bytes a picture drawn is keyed by: their key, or a document's text, which the thread
+/// hashes.
+enum Of {
+    Key(String),
+    Text(String),
+}
+
 /// What the window asks the folder's thread.
 enum Ask {
-    /// The recent documents' paths, as Recent lists them: each one's picture found, and every
-    /// picture none of them names removed.
+    /// The recent documents' paths, as Recent lists them: each one's picture found, and the
+    /// folder pruned ([`prune`]).
     Look(Vec<String>),
-    /// Whether a picture keyed `key` is kept, for `session`'s model at `revision`
+    /// Whether the bytes `text` has a picture, for `session`'s model at `revision`
     /// ([`Told::Have`], [`Told::Missing`]).
     Want {
         session: SessionId,
         revision: Revision,
-        key: String,
+        text: String,
     },
-    /// A picture drawn, `png`, to keep as `key`'s.
-    Keep { key: String, png: Vec<u8> },
+    /// A picture drawn, `png`, to write as `of`'s, unless it has one.
+    Write { of: Of, png: Vec<u8> },
 }
 
 /// What the folder's thread tells the window.
 enum Told {
     /// The pictures of the recent documents last looked at, by path: those that have one.
     Pictures(Vec<Found>),
-    /// A picture is kept as the key `session`'s model at `revision` was asked for: it isn't
-    /// drawn again.
+    /// A picture is kept for the bytes of `session`'s model at `revision`: it isn't drawn.
     Have {
         session: SessionId,
         revision: Revision,
     },
-    /// No picture is kept as `key`'s: `session`'s model at `revision` is to be drawn.
+    /// No picture is kept as `key`'s, the key of `session`'s model at `revision`: it's to be
+    /// drawn.
     Missing {
         session: SessionId,
         revision: Revision,
@@ -302,47 +338,54 @@ enum Told {
     },
 }
 
-/// Where a tab's picture stands, for the revision it's of.
+/// A command's answer, while it's out, then once it's taken.
+enum Waiting<T> {
+    Out(Running<T>),
+    Taken(Response<T>),
+}
+
+/// A tab's picture asked as it closes: its text at its revision and its render (the
+/// current model, queued, so its revision's), both queued on its session ahead of the close,
+/// which runs them first; taken by the app's thumbnails, which outlive the tab.
+pub struct Closing {
+    session: SessionId,
+    revision: Revision,
+    text: Waiting<TextAnswer>,
+    rendering: Running<Rendering>,
+}
+
+impl Closing {
+    /// The text and the render of `session`'s model at `revision`, sent: before its close.
+    pub(crate) fn sent<P: Clients + 'static>(
+        sessions: &Arc<Sessions<P>>,
+        session: SessionId,
+        revision: Revision,
+    ) -> Self {
+        Closing {
+            session,
+            revision,
+            text: Waiting::Out(sessions.text_at(&session, None, Some(Named::Revision(revision)))),
+            rendering: sessions.render(&session, ModelChoice::Current, request()),
+        }
+    }
+}
+
+/// Where an open tab's picture stands while the start page is shown, for the revision it's
+/// of.
 enum Drawing {
     /// The text the model was built from, read to key it.
     Reading {
         revision: Revision,
         running: Running<TextAnswer>,
     },
-    /// The thread asked whether its key has a picture.
+    /// The thread asked whether its bytes have a picture.
     Asking { revision: Revision },
-    /// Drawn by the core's `render`.
+    /// Drawn by the core's `render`, of the published model.
     Rendering {
         revision: Revision,
         key: String,
         running: Running<Rendering>,
     },
-    /// Done with: kept, already had, or not drawn.
-    Done { revision: Revision },
-}
-
-impl Drawing {
-    fn revision(&self) -> Revision {
-        match self {
-            Drawing::Reading { revision, .. }
-            | Drawing::Asking { revision }
-            | Drawing::Rendering { revision, .. }
-            | Drawing::Done { revision } => *revision,
-        }
-    }
-
-    /// Stopped, if a command of its is running: one for a revision gone by.
-    fn cancel(&self) {
-        match self {
-            Drawing::Reading { running, .. } => {
-                running.cancel();
-            }
-            Drawing::Rendering { running, .. } => {
-                running.cancel();
-            }
-            Drawing::Asking { .. } | Drawing::Done { .. } => {}
-        }
-    }
 }
 
 /// A picture uploaded, and the key it's of.
@@ -351,22 +394,47 @@ struct Shown {
     texture: TextureHandle,
 }
 
+/// The png of a render of a model at `revision`, `response`: or why it's not that, the
+/// render refused, or a model of another revision drawn (one published since it was asked
+/// for), whose picture isn't of the bytes keyed.
+fn drawn_at(revision: Revision, response: Response<Rendering>) -> Result<Vec<u8>, String> {
+    let of = response.model.as_ref().map(|model| model.revision);
+    match response.result {
+        Ok(rendering) if of == Some(revision) => Ok(rendering.png),
+        Ok(_) => Err(format!(
+            "the model drawn wasn't revision {}'s",
+            revision.number()
+        )),
+        Err(problems) => Err(format!(
+            "the render was refused: {}",
+            crate::tab::said(&problems)
+        )),
+    }
+}
+
 /// The recent documents' pictures, as the window last heard them from the thread that keeps
-/// them, and each open tab's being drawn.
+/// them, and the pictures of open tabs being drawn.
 pub struct Thumbs {
     asks: Option<Sender<Ask>>,
     told: Option<Receiver<Told>>,
     wake: Wake,
     shown: BTreeMap<String, Shown>,
     drawing: BTreeMap<SessionId, Drawing>,
+    closing: Vec<Closing>,
+    /// The open tabs drawn, or found pictured, since the start page was last shown.
+    this_showing: BTreeSet<SessionId>,
+    /// Each open tab's revision known to have a picture: not drawn again.
+    pictured: BTreeMap<SessionId, Revision>,
     /// The paths last told the thread, and whether the start page was shown last frame.
     looked: Option<Vec<String>>,
     was_shown: bool,
-    /// How many pictures have been drawn and sent to be kept, how many models were found to
-    /// have one already, so weren't drawn, and how many times the thread has told the recent
-    /// documents' pictures: what a test counts.
-    pub kept: u64,
-    pub had: u64,
+    /// What a test counts: renders whose picture was sent to be written; renders refused,
+    /// or of another revision's model, so not written; models whose bytes were found to have
+    /// a picture, so weren't drawn; and how many times the thread has told the recent
+    /// documents' pictures.
+    pub renders_written: u64,
+    pub renders_dropped: u64,
+    pub already_pictured: u64,
     pub looks: u64,
 }
 
@@ -379,7 +447,7 @@ impl Thumbs {
         let waking = wake.clone();
         let started = std::thread::Builder::new()
             .name("silico-thumbnails".to_owned())
-            .spawn(move || keep(&folder, &asked, &tell, &waking));
+            .spawn(move || keep_folder(&folder, &asked, &tell, &waking));
         match started {
             Ok(_) => Thumbs {
                 asks: Some(asks),
@@ -401,10 +469,14 @@ impl Thumbs {
             wake,
             shown: BTreeMap::new(),
             drawing: BTreeMap::new(),
+            closing: Vec::new(),
+            this_showing: BTreeSet::new(),
+            pictured: BTreeMap::new(),
             looked: None,
             was_shown: false,
-            kept: 0,
-            had: 0,
+            renders_written: 0,
+            renders_dropped: 0,
+            already_pictured: 0,
             looks: 0,
         }
     }
@@ -433,36 +505,77 @@ impl Thumbs {
         }
     }
 
+    /// A tab's picture asked as it closed: polled from now on, whatever becomes of the tab.
+    pub(crate) fn closing(&mut self, closing: Closing) {
+        self.closing.push(closing);
+    }
+
     /// One frame's worth, never waiting: what the thread told taken (pictures uploaded to
-    /// `ctx`, and drawings it found missing started); each tab of `tabs` whose model is
-    /// built at its revision, outside a transaction, and has a file, keyed and drawn if its
-    /// key has no picture; and, once `recents` is read, its paths told the thread each time
-    /// they change and each time the start page is `shown` again. Nothing at all while the
-    /// app keeps no list of recent documents: there's nowhere to show a picture.
+    /// `ctx`, and drawings it found missing started); every drawing polled; each tab of
+    /// `tabs` told whether it's to draw its picture as it closes (not while `quitting`, nor
+    /// for a revision known to have one); and, while the start page is `shown`, each open
+    /// tab with a file, outside a transaction, and built at its revision, read once a
+    /// showing and drawn if its bytes have no picture. Once `recents` is read, its paths told
+    /// the thread each time they change and each time the start page is shown again.
+    /// Nothing at all while the app keeps no list of recent documents: there's nowhere to
+    /// show a picture.
     pub(crate) fn frame<P: Clients + 'static>(
         &mut self,
         ctx: &egui::Context,
         sessions: &Arc<Sessions<P>>,
-        tabs: &[Tab],
+        tabs: &mut [Tab],
         recents: Option<&Recents>,
         shown: bool,
+        quitting: bool,
     ) {
         let Some(recents) = recents.filter(|recents| recents.is_kept()) else {
+            for tab in tabs {
+                tab.draws_on_close = false;
+            }
             return;
         };
         self.take_told(ctx, sessions);
-        self.drawing
-            .retain(|session, _| tabs.iter().any(|tab| tab.id == *session));
-        for tab in tabs {
-            self.draw(sessions, tab);
+        self.poll_closing();
+        let sessions_drawing: Vec<SessionId> = self.drawing.keys().copied().collect();
+        for session in sessions_drawing {
+            self.poll_drawing(session);
+        }
+        let open = |session: &SessionId| tabs.iter().any(|tab| tab.id == *session);
+        self.pictured.retain(|session, _| open(session));
+        self.this_showing.retain(|session| open(session));
+        if shown && !self.was_shown {
+            self.this_showing.clear();
+        }
+        for tab in tabs.iter_mut() {
+            let pictured = self.pictured.get(&tab.id) == Some(&tab.revision);
+            tab.draws_on_close = !quitting && !pictured;
+            let ready =
+                tab.path.is_some() && !tab.transaction && tab.published == Some(tab.revision);
+            if shown
+                && ready
+                && !pictured
+                && !self.this_showing.contains(&tab.id)
+                && !self.drawing.contains_key(&tab.id)
+            {
+                self.this_showing.insert(tab.id);
+                let running = sessions.text_at(&tab.id, None, Some(Named::Revision(tab.revision)));
+                self.drawing.insert(
+                    tab.id,
+                    Drawing::Reading {
+                        revision: tab.revision,
+                        running,
+                    },
+                );
+            }
         }
         if recents.is_read() {
-            let paths: Vec<String> = recents
-                .list()
-                .iter()
-                .map(|recent| recent.path.clone())
-                .collect();
-            if self.looked.as_ref() != Some(&paths) || (shown && !self.was_shown) {
+            let listed = recents.list().iter().map(|recent| &recent.path);
+            let same = self
+                .looked
+                .as_ref()
+                .is_some_and(|looked| looked.iter().eq(listed.clone()));
+            if !same || (shown && !self.was_shown) {
+                let paths: Vec<String> = listed.cloned().collect();
                 self.ask(Ask::Look(paths.clone()));
                 self.looked = Some(paths);
             }
@@ -500,8 +613,9 @@ impl Thumbs {
                 }
                 Told::Have { session, revision } => {
                     if self.asked(session, revision) {
-                        self.drawing.insert(session, Drawing::Done { revision });
-                        self.had += 1;
+                        self.drawing.remove(&session);
+                        self.pictured.insert(session, revision);
+                        self.already_pictured += 1;
                     }
                 }
                 Told::Missing {
@@ -510,16 +624,7 @@ impl Thumbs {
                     key,
                 } => {
                     if self.asked(session, revision) {
-                        let request = Render {
-                            view: Some(crate::navigate::HOME),
-                            camera: None,
-                            width: WIDTH,
-                            height: HEIGHT,
-                            highlight: Vec::new(),
-                            to: None,
-                            replace: false,
-                        };
-                        let running = sessions.render(&session, ModelChoice::Published, request);
+                        let running = sessions.render(&session, ModelChoice::Published, request());
                         self.drawing.insert(
                             session,
                             Drawing::Rendering {
@@ -535,7 +640,7 @@ impl Thumbs {
     }
 
     /// Whether `session`'s drawing is waiting on the thread to say whether its model at
-    /// `revision` has a picture.
+    /// `revision` has a picture: a word of another revision's is of a drawing gone.
     fn asked(&self, session: SessionId, revision: Revision) -> bool {
         matches!(
             self.drawing.get(&session),
@@ -543,56 +648,34 @@ impl Thumbs {
         )
     }
 
-    /// `tab`'s drawing polled, and one started for its revision if it's built, outside a
-    /// transaction, and has a file, and none is under way for that revision (one for a
-    /// revision gone by stopped).
-    fn draw<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, tab: &Tab) {
-        let drawing = self
-            .drawing
-            .remove(&tab.id)
-            .map(|drawing| self.answered(tab.id, drawing));
-        let wanted = tab.path.is_some() && !tab.transaction && tab.published == Some(tab.revision);
-        let drawing = match drawing {
-            Some(drawing) if !wanted || drawing.revision() == tab.revision => Some(drawing),
-            gone_by => {
-                if let Some(gone_by) = gone_by {
-                    gone_by.cancel();
-                }
-                wanted.then(|| Drawing::Reading {
-                    revision: tab.revision,
-                    running: sessions.text_at(&tab.id, None, Some(Named::Revision(tab.revision))),
-                })
-            }
+    /// `session`'s drawing moved on by its command's answer, if it has come: dropped once
+    /// it's done.
+    fn poll_drawing(&mut self, session: SessionId) {
+        let Some(drawing) = self.drawing.remove(&session) else {
+            return;
         };
-        if let Some(drawing) = drawing {
-            self.drawing.insert(tab.id, drawing);
-        }
-    }
-
-    /// `drawing`, of `session`, moved on by its command's answer, if it has come.
-    fn answered(&mut self, session: SessionId, drawing: Drawing) -> Drawing {
-        match drawing {
+        let next = match drawing {
             Drawing::Reading { revision, running } => match running.try_take() {
-                Ok(response) => {
-                    match response.result {
-                        Ok(answer) => {
-                            self.ask(Ask::Want {
-                                session,
-                                revision,
-                                key: key(answer.text.as_bytes()),
-                            });
-                            return Drawing::Asking { revision };
-                        }
-                        Err(problems) => tracing::info!(
+                Ok(response) => match response.result {
+                    Ok(answer) => {
+                        self.ask(Ask::Want {
+                            session,
+                            revision,
+                            text: answer.text,
+                        });
+                        Some(Drawing::Asking { revision })
+                    }
+                    Err(problems) => {
+                        tracing::info!(
                             %session,
                             "no thumbnail: the text of revision {} wasn't read: {}",
                             revision.number(),
                             crate::tab::said(&problems)
-                        ),
+                        );
+                        None
                     }
-                    Drawing::Done { revision }
-                }
-                Err(running) => Drawing::Reading { revision, running },
+                },
+                Err(running) => Some(Drawing::Reading { revision, running }),
             },
             Drawing::Rendering {
                 revision,
@@ -600,63 +683,108 @@ impl Thumbs {
                 running,
             } => match running.try_take() {
                 Ok(response) => {
-                    let of = response.model.as_ref().map(|model| model.revision);
-                    match response.result {
-                        Ok(rendering) if of == Some(revision) => {
-                            self.ask(Ask::Keep {
-                                key,
-                                png: rendering.png,
-                            });
-                            self.kept += 1;
-                        }
-                        // Another revision's model, published since: not the bytes keyed.
-                        Ok(_) => tracing::info!(
-                            %session,
-                            "no thumbnail: the model drawn wasn't revision {}'s",
-                            revision.number()
-                        ),
-                        Err(problems) => tracing::info!(
-                            %session,
-                            "no thumbnail: the render was refused: {}",
-                            crate::tab::said(&problems)
-                        ),
-                    }
-                    Drawing::Done { revision }
+                    self.took_render(session, revision, Of::Key(key), response);
+                    None
                 }
-                Err(running) => Drawing::Rendering {
+                Err(running) => Some(Drawing::Rendering {
                     revision,
                     key,
                     running,
-                },
+                }),
             },
-            asking_or_done => asking_or_done,
+            asking @ Drawing::Asking { .. } => Some(asking),
+        };
+        if let Some(next) = next {
+            self.drawing.insert(session, next);
+        }
+    }
+
+    /// Each picture asked as its tab closed, once its text and its render have answered:
+    /// written if both are its revision's.
+    fn poll_closing(&mut self) {
+        for mut closing in std::mem::take(&mut self.closing) {
+            if let Waiting::Out(running) = closing.text {
+                closing.text = match running.try_take() {
+                    Ok(response) => Waiting::Taken(response),
+                    Err(running) => Waiting::Out(running),
+                };
+            }
+            let Waiting::Taken(text) = closing.text else {
+                self.closing.push(closing);
+                continue;
+            };
+            match closing.rendering.try_take() {
+                Ok(response) => match text.result {
+                    Ok(answer) => self.took_render(
+                        closing.session,
+                        closing.revision,
+                        Of::Text(answer.text),
+                        response,
+                    ),
+                    Err(problems) => {
+                        tracing::info!(
+                            session = %closing.session,
+                            "no thumbnail: the text of revision {} wasn't read: {}",
+                            closing.revision.number(),
+                            crate::tab::said(&problems)
+                        );
+                        self.renders_dropped += 1;
+                    }
+                },
+                Err(running) => self.closing.push(Closing {
+                    text: Waiting::Taken(text),
+                    rendering: running,
+                    ..closing
+                }),
+            }
+        }
+    }
+
+    /// A render of `session`'s model at `revision` answered, `response`: its picture sent to
+    /// be written as `of`'s if it's that revision's ([`drawn_at`]), else logged and dropped.
+    fn took_render(
+        &mut self,
+        session: SessionId,
+        revision: Revision,
+        of: Of,
+        response: Response<Rendering>,
+    ) {
+        match drawn_at(revision, response) {
+            Ok(png) => {
+                self.ask(Ask::Write { of, png });
+                self.pictured.insert(session, revision);
+                self.renders_written += 1;
+            }
+            Err(why) => {
+                tracing::info!(%session, "no thumbnail: {why}");
+                self.renders_dropped += 1;
+            }
         }
     }
 }
 
 /// The thread that keeps the folder: each ask taken as it comes. A look finds each recent
-/// document's picture and removes every other; a want tells back whether a key has a
-/// picture (a file that isn't one doesn't count); a keep writes a picture, removes every
-/// other the recent documents last looked at don't name, and looks again, so a picture drawn
-/// shows.
-fn keep(folder: &Path, asked: &Receiver<Ask>, tell: &Sender<Told>, wake: &Wake) {
+/// document's picture and prunes the folder; a want hashes a text and tells back whether
+/// its key has a picture (a file that isn't one doesn't count); a write writes a picture
+/// (unless its key has one), then, once the recent documents have been looked at, prunes
+/// and looks again, so a picture drawn shows.
+fn keep_folder(folder: &Path, asked: &Receiver<Ask>, tell: &Sender<Told>, wake: &Wake) {
     let _span = tracing::info_span!("thumbnails", folder = %folder.display()).entered();
     let mut listed: Option<Vec<String>> = None;
     while let Ok(ask) = asked.recv() {
         let told = match ask {
             Ask::Look(paths) => {
-                let (found, keys) = look(folder, &paths);
-                remove_all_but(folder, &keys);
+                let told = look_and_prune(folder, &paths);
                 listed = Some(paths);
-                Some(Told::Pictures(found))
+                Some(told)
             }
             Ask::Want {
                 session,
                 revision,
-                key,
-            } => Some(
-                // One that isn't a picture (a corrupt file) is drawn again, over it.
-                if read_picture(&folder.join(file_name(&key))).is_some() {
+                text,
+            } => {
+                let key = key(text.as_bytes());
+                Some(if read_picture(&folder.join(file_name(&key))).is_some() {
                     Told::Have { session, revision }
                 } else {
                     Told::Missing {
@@ -664,21 +792,20 @@ fn keep(folder: &Path, asked: &Receiver<Ask>, tell: &Sender<Told>, wake: &Wake) 
                         revision,
                         key,
                     }
-                },
-            ),
-            Ask::Keep { key, png } => {
+                })
+            }
+            Ask::Write { of, png } => {
+                let key = match of {
+                    Of::Key(key) => key,
+                    Of::Text(text) => key(text.as_bytes()),
+                };
                 let file = folder.join(file_name(&key));
-                if let Err(e) = crate::app_data::write_bytes(&file, &png) {
+                if read_picture(&file).is_none()
+                    && let Err(e) = crate::app_data::write_bytes(&file, &png)
+                {
                     tracing::info!("a thumbnail couldn't be written to {}: {e}", file.display());
                 }
-                listed.as_ref().map(|paths| {
-                    // The picture just kept stays, whether or not its document is listed yet
-                    // (a Save As's new path is listed once Recent's thread has written it).
-                    let (found, mut keys) = look(folder, paths);
-                    keys.insert(key);
-                    remove_all_but(folder, &keys);
-                    Told::Pictures(found)
-                })
+                listed.as_ref().map(|paths| look_and_prune(folder, paths))
             }
         };
         if let Some(told) = told {
@@ -690,13 +817,18 @@ fn keep(folder: &Path, asked: &Receiver<Ask>, tell: &Sender<Told>, wake: &Wake) 
     }
 }
 
-/// The pictures of the documents at `paths` found in `folder`, and the keys of every one of
-/// those documents that could be read, pictured or not.
-fn look(folder: &Path, paths: &[String]) -> (Vec<Found>, BTreeSet<String>) {
+/// The pictures of the documents at `paths` found in `folder`, the folder pruned to them
+/// ([`prune`]): no picture removed if a document there couldn't be hashed, since its key
+/// isn't known.
+fn look_and_prune(folder: &Path, paths: &[String]) -> Told {
     let mut found = Vec::new();
     let mut keys = BTreeSet::new();
+    let mut unknown = false;
     for path in paths {
         let Some(key) = key_of_file(Path::new(path)) else {
+            // Something there that can't be read just now (not nothing: a missing document's
+            // picture may go).
+            unknown |= std::fs::symlink_metadata(path).is_ok();
             continue;
         };
         if let Some(image) = read_picture(&folder.join(file_name(&key))) {
@@ -708,25 +840,51 @@ fn look(folder: &Path, paths: &[String]) -> (Vec<Found>, BTreeSet<String>) {
         }
         keys.insert(key);
     }
-    (found, keys)
+    prune(folder, (!unknown).then_some(&keys), SystemTime::now());
+    Told::Pictures(found)
 }
 
-/// Every picture in `folder` but those of `keys` removed: only files named as pictures are
-/// (anything else there is left).
-fn remove_all_but(folder: &Path, keys: &BTreeSet<String>) {
+/// `folder` pruned at `now`: every picture but those of `keys` and the newest [`SPARE`] of
+/// the rest (by when each was modified, then by name) removed, or none if `keys` is none;
+/// and every file a write left ([`left_by_a_write`]) older than [`LEFT_OVER_AGE`]. Any other
+/// file is left. So the folder holds at most twice as many pictures as Recent lists.
+fn prune(folder: &Path, keys: Option<&BTreeSet<String>>, now: SystemTime) {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return;
     };
+    let mut others = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(key) = name.to_str().and_then(key_named) else {
+        let Some(name) = name.to_str() else {
             continue;
         };
-        if !keys.contains(key)
-            && let Err(e) = std::fs::remove_file(entry.path())
+        let modified = entry
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        if let Some(key) = key_named(name) {
+            if keys.is_some_and(|keys| !keys.contains(key)) {
+                others.push((modified, name.to_owned()));
+            }
+        } else if left_by_a_write(name)
+            && now
+                .duration_since(modified)
+                .is_ok_and(|age| age > LEFT_OVER_AGE)
         {
-            tracing::info!("a thumbnail couldn't be removed: {e}");
+            remove(&folder.join(name));
         }
+    }
+    // Newest first.
+    others.sort_by(|a, b| b.cmp(a));
+    for (_, name) in others.into_iter().skip(SPARE) {
+        remove(&folder.join(name));
+    }
+}
+
+/// `file` removed, a failure logged.
+fn remove(file: &Path) {
+    if let Err(e) = std::fs::remove_file(file) {
+        tracing::info!("{} couldn't be removed: {e}", file.display());
     }
 }
 
@@ -993,7 +1151,7 @@ mod tests {
         let (asks, asked) = mpsc::channel();
         let (tell, told) = mpsc::channel();
         let folder = folder.to_path_buf();
-        std::thread::spawn(move || keep(&folder, &asked, &tell, &Wake::default()));
+        std::thread::spawn(move || keep_folder(&folder, &asked, &tell, &Wake::default()));
         (asks, told)
     }
 
@@ -1021,12 +1179,41 @@ mod tests {
         }
     }
 
+    /// `name` in `folder` written with `bytes`, modified `ago` before now.
+    fn written_ago(folder: &Path, name: &str, bytes: &[u8], ago: Duration) {
+        let path = folder.join(name);
+        std::fs::write(&path, bytes).unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() - ago)
+            .unwrap();
+    }
+
+    /// `n` hours.
+    fn hours(n: u64) -> Duration {
+        Duration::from_secs(n * 60 * 60)
+    }
+
+    /// The pictures of twelve documents no listed document is now, the first written last.
+    fn twelve_others(folder: &Path) -> Vec<String> {
+        (0..12)
+            .map(|n| {
+                let name = file_name(&key(format!("another document {n}").as_bytes()));
+                written_ago(folder, &name, &plain_png(4, 4, [0; 3]), hours(n + 1));
+                name
+            })
+            .collect()
+    }
+
     #[test]
-    fn a_look_finds_each_listed_documents_picture_and_removes_every_other() {
+    fn a_look_keeps_the_listed_documents_pictures_and_the_ten_newest_others() {
         let dir = tempfile::tempdir().unwrap();
         let folder = dir.path().join(FOLDER_NAME);
         std::fs::create_dir(&folder).unwrap();
-        // Three documents: "abc", pictured; "" with a corrupt picture; one with none.
+        // Three documents: "abc", pictured; "" with a corrupt picture; one with none; and
+        // one not there.
         let pictured_file = dir.path().join("a.silico");
         std::fs::write(&pictured_file, b"abc").unwrap();
         let corrupt = dir.path().join("b.silico");
@@ -1034,17 +1221,32 @@ mod tests {
         let bare = dir.path().join("c.silico");
         std::fs::write(&bare, b"bare").unwrap();
         let gone = dir.path().join("gone.silico");
-        std::fs::write(folder.join(file_name(ABC)), plain_png(4, 4, [1, 2, 3])).unwrap();
-        std::fs::write(folder.join(file_name(EMPTY)), b"not a png").unwrap();
-        // Pictures of what no listed document is now: the old bytes of one, another's.
-        let old = key(b"what a.silico was");
-        std::fs::write(folder.join(file_name(&old)), plain_png(4, 4, [0; 3])).unwrap();
-        let other = key(b"another document");
-        std::fs::write(folder.join(file_name(&other)), plain_png(4, 4, [0; 3])).unwrap();
-        // And files that aren't pictures of the folder's: left.
+        written_ago(
+            &folder,
+            &file_name(ABC),
+            &plain_png(4, 4, [1, 2, 3]),
+            hours(30),
+        );
+        written_ago(&folder, &file_name(EMPTY), b"not a png", hours(30));
+        let others = twelve_others(&folder);
+        // Files that aren't pictures of the folder's: left, however old.
         let upper = format!("{}.png", key(b"x").to_uppercase());
-        std::fs::write(folder.join(&upper), b"").unwrap();
-        std::fs::write(folder.join("notes.txt"), b"").unwrap();
+        // Files a write left: removed once older than an hour, if named as a write names
+        // them.
+        let left = |n: u64| format!("{ABC}.png.4242.{n}.new");
+        let not_left = [
+            "notes.txt".to_owned(),
+            upper,
+            "picture.png.4242.1.new".to_owned(),
+            format!("{ABC}.png.pid.1.new"),
+            format!("{ABC}.png.4242..new"),
+            format!("{ABC}.png.4242.1.old"),
+        ];
+        for name in &not_left {
+            written_ago(&folder, name, b"", hours(30));
+        }
+        written_ago(&folder, &left(1), b"", hours(2));
+        written_ago(&folder, &left(2), b"", Duration::from_secs(60));
         let (asks, told) = kept(&folder);
         let paths: Vec<String> = [&pictured_file, &corrupt, &bare, &gone]
             .iter()
@@ -1052,24 +1254,48 @@ mod tests {
             .collect();
         asks.send(Ask::Look(paths.clone())).unwrap();
         assert_eq!(pictured(next(&told)), [paths[0].clone()]);
-        let mut want = vec![
-            file_name(ABC),
-            file_name(EMPTY),
-            upper.clone(),
-            "notes.txt".to_owned(),
-        ];
+        // The listed documents' two, the ten newest of the twelve others (the two written
+        // longest ago removed), the write a minute old, and the rest.
+        let mut want = vec![file_name(ABC), file_name(EMPTY), left(2)];
+        want.extend(others[..10].iter().cloned());
+        want.extend(not_left.iter().cloned());
         want.sort();
         assert_eq!(names(&folder), want);
-        // A document no longer listed: its picture removed too.
+        // A document no longer listed: its picture one of the others now, the oldest of
+        // them, so removed.
         asks.send(Ask::Look(paths[1..].to_vec())).unwrap();
         assert!(pictured(next(&told)).is_empty());
-        let mut want = vec![file_name(EMPTY), upper, "notes.txt".to_owned()];
-        want.sort();
+        want.retain(|name| *name != file_name(ABC));
         assert_eq!(names(&folder), want);
     }
 
     #[test]
-    fn a_want_is_told_whether_its_key_has_a_picture_and_a_keep_writes_it() {
+    fn a_listed_document_that_cant_be_read_has_no_picture_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().join(FOLDER_NAME);
+        std::fs::create_dir(&folder).unwrap();
+        let others = twelve_others(&folder);
+        // Something at the listed path, but no document that can be read: its key unknown,
+        // so every picture might be its.
+        let unreadable = dir.path().join("folder.silico");
+        std::fs::create_dir(&unreadable).unwrap();
+        let unreadable = unreadable.to_str().unwrap().to_owned();
+        let (asks, told) = kept(&folder);
+        asks.send(Ask::Look(vec![unreadable])).unwrap();
+        assert!(pictured(next(&told)).is_empty());
+        let mut all = others.clone();
+        all.sort();
+        assert_eq!(names(&folder), all);
+        // Not listed: the two oldest go.
+        asks.send(Ask::Look(Vec::new())).unwrap();
+        assert!(pictured(next(&told)).is_empty());
+        let mut newest = others[..10].to_vec();
+        newest.sort();
+        assert_eq!(names(&folder), newest);
+    }
+
+    #[test]
+    fn a_want_is_told_whether_its_texts_bytes_have_a_picture_and_a_write_writes_it() {
         let dir = tempfile::tempdir().unwrap();
         // A folder not made yet.
         let folder = dir.path().join("app-data").join(FOLDER_NAME);
@@ -1078,52 +1304,188 @@ mod tests {
         let (asks, told) = kept(&folder);
         let session = SessionId::parse("s1").unwrap();
         let revision = Revision::from_number(3).unwrap();
-        let want = |key: &str| Ask::Want {
+        let want = |text: &str| Ask::Want {
             session,
             revision,
-            key: key.to_owned(),
+            text: text.to_owned(),
         };
-        asks.send(want(ABC)).unwrap();
+        asks.send(want("abc")).unwrap();
         assert!(matches!(
             next(&told),
             Told::Missing { key, .. } if key == ABC
         ));
-        // Kept before any look: written, nothing removed or told.
+        // Written before any look: nothing pruned or told.
         let png = plain_png(4, 4, [5, 6, 7]);
-        asks.send(Ask::Keep {
-            key: ABC.to_owned(),
+        asks.send(Ask::Write {
+            of: Of::Key(ABC.to_owned()),
             png: png.clone(),
         })
         .unwrap();
-        asks.send(want(ABC)).unwrap();
+        asks.send(want("abc")).unwrap();
         assert!(matches!(next(&told), Told::Have { .. }));
         assert_eq!(std::fs::read(folder.join(file_name(ABC))).unwrap(), png);
-        // Listed, then the document saved as other bytes, and those drawn: the old picture
-        // removed, the new one shown.
+        // Listed, then the document saved as other bytes, and those drawn, keyed by its
+        // text: the new one shown.
         let path = document.to_str().unwrap().to_owned();
         asks.send(Ask::Look(vec![path.clone()])).unwrap();
         assert_eq!(pictured(next(&told)), std::slice::from_ref(&path));
         std::fs::write(&document, b"").unwrap();
-        asks.send(Ask::Keep {
-            key: EMPTY.to_owned(),
+        asks.send(Ask::Write {
+            of: Of::Text(String::new()),
             png: png.clone(),
         })
         .unwrap();
         assert_eq!(pictured(next(&told)), std::slice::from_ref(&path));
-        assert_eq!(names(&folder), [file_name(EMPTY)]);
-        // A picture of a document not listed yet (a Save As's new path) stays, kept.
-        asks.send(Ask::Keep {
-            key: ABC.to_owned(),
-            png,
-        })
-        .unwrap();
-        assert_eq!(pictured(next(&told)), [path]);
         let mut both = vec![file_name(ABC), file_name(EMPTY)];
         both.sort();
         assert_eq!(names(&folder), both);
+        // A picture kept already isn't written again.
+        asks.send(Ask::Write {
+            of: Of::Key(EMPTY.to_owned()),
+            png: plain_png(4, 4, [0; 3]),
+        })
+        .unwrap();
+        next(&told);
+        assert_eq!(std::fs::read(folder.join(file_name(EMPTY))).unwrap(), png);
         // A key whose file isn't a picture: missing, so drawn again over it.
         std::fs::write(folder.join(file_name(EMPTY)), b"PNG 260x160").unwrap();
-        asks.send(want(EMPTY)).unwrap();
+        asks.send(want("")).unwrap();
         assert!(matches!(next(&told), Told::Missing { .. }));
+    }
+
+    /// Thumbs whose asks the test reads, and whose thread's words the test tells.
+    fn listening() -> (Thumbs, Receiver<Ask>, Sender<Told>) {
+        let (asks, asked) = mpsc::channel();
+        let (tell, told) = mpsc::channel();
+        let thumbs = Thumbs {
+            asks: Some(asks),
+            told: Some(told),
+            ..Thumbs::unkept(Wake::default())
+        };
+        (thumbs, asked, tell)
+    }
+
+    /// A render's answer, `PNG`, of the published model at `revision`.
+    fn rendered(revision: u64) -> Response<Rendering> {
+        use silico_core::command::render::{AnsweredCamera, RenderResult};
+        let camera = silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 10.0 },
+            eye: [10.0, -10.0, 10.0],
+            target: [0.0; 3],
+            up: [0.0, 0.0, 1.0],
+        };
+        Response {
+            session: None,
+            model: Some(silico_core::command::ModelRead {
+                revision: Revision::from_number(revision).unwrap(),
+                of: ModelChoice::Published,
+                fault: None,
+            }),
+            result: Ok(Rendering {
+                result: RenderResult {
+                    png_bytes: 3,
+                    path: None,
+                    width: WIDTH,
+                    height: HEIGHT,
+                    camera: AnsweredCamera::of(&camera).unwrap(),
+                },
+                png: b"PNG".to_vec(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_render_of_another_revisions_model_is_dropped_and_nothing_written() {
+        let (mut thumbs, asked, _tell) = listening();
+        let session = SessionId::parse("s1").unwrap();
+        let three = Revision::from_number(3).unwrap();
+        // Revision 4's model, published since revision 3's text was keyed: not its bytes.
+        thumbs.took_render(session, three, Of::Key(ABC.to_owned()), rendered(4));
+        assert_eq!((thumbs.renders_written, thumbs.renders_dropped), (0, 1));
+        assert!(asked.try_recv().is_err(), "nothing to write");
+        assert!(thumbs.pictured.is_empty());
+        // Revision 3's: written, as its key's.
+        thumbs.took_render(session, three, Of::Key(ABC.to_owned()), rendered(3));
+        assert_eq!((thumbs.renders_written, thumbs.renders_dropped), (1, 1));
+        assert!(matches!(
+            asked.try_recv(),
+            Ok(Ask::Write { of: Of::Key(key), png }) if key == ABC && png == b"PNG"
+        ));
+        assert_eq!(thumbs.pictured.get(&session), Some(&three));
+        // A model read with none named: dropped.
+        let mut unnamed = rendered(3);
+        unnamed.model = None;
+        thumbs.took_render(session, three, Of::Key(ABC.to_owned()), unnamed);
+        assert_eq!((thumbs.renders_written, thumbs.renders_dropped), (1, 2));
+    }
+
+    #[test]
+    fn a_word_of_another_revision_is_of_a_drawing_gone_and_does_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret");
+        let kernel = Arc::new(silico_core::fake::FakeKernel::new(1).unwrap());
+        let sessions = Arc::new(Sessions::with_stand_ins(
+            kernel,
+            move |cache| silico_core::cache::Cache::with_secret(cache, &secret),
+            || {
+                Ok(Box::new(silico_core::fake::FakeSketches::new())
+                    as Box<dyn silico_core::sketch::SketchSolver>)
+            },
+        ));
+        let ctx = egui::Context::default();
+        let (mut thumbs, _asked, tell) = listening();
+        let (one, two) = (
+            SessionId::parse("s1").unwrap(),
+            SessionId::parse("s2").unwrap(),
+        );
+        let three = Revision::from_number(3).unwrap();
+        let four = Revision::from_number(4).unwrap();
+        for session in [one, two] {
+            thumbs
+                .drawing
+                .insert(session, Drawing::Asking { revision: three });
+        }
+        let asking = |thumbs: &Thumbs, session| {
+            matches!(
+                thumbs.drawing.get(&session),
+                Some(Drawing::Asking { revision }) if *revision == three
+            )
+        };
+        // Revision 4's words, to drawings asking of revision 3's: nothing done.
+        tell.send(Told::Have {
+            session: one,
+            revision: four,
+        })
+        .unwrap();
+        tell.send(Told::Missing {
+            session: two,
+            revision: four,
+            key: ABC.to_owned(),
+        })
+        .unwrap();
+        thumbs.take_told(&ctx, &sessions);
+        assert!(asking(&thumbs, one) && asking(&thumbs, two));
+        assert_eq!(thumbs.already_pictured, 0);
+        assert!(thumbs.pictured.is_empty());
+        // Revision 3's: the one found pictured, the other drawn.
+        tell.send(Told::Have {
+            session: one,
+            revision: three,
+        })
+        .unwrap();
+        tell.send(Told::Missing {
+            session: two,
+            revision: three,
+            key: ABC.to_owned(),
+        })
+        .unwrap();
+        thumbs.take_told(&ctx, &sessions);
+        assert!(!thumbs.drawing.contains_key(&one));
+        assert_eq!(thumbs.already_pictured, 1);
+        assert_eq!(thumbs.pictured.get(&one), Some(&three));
+        assert!(matches!(
+            thumbs.drawing.get(&two),
+            Some(Drawing::Rendering { revision, key, .. }) if *revision == three && key == ABC
+        ));
     }
 }

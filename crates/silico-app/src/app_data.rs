@@ -1,8 +1,9 @@
 //! The app's own files in the platform's app-data folder ([`folder`]): the recent documents
 //! (`crate::recent`), the side panes' widths (`crate::pane_widths`), and the start page's
 //! thumbnails (`crate::thumbs`), each kept by a thread of its own. What they share is here:
-//! where the folder is, a capped read that never hangs on what isn't a regular file
-//! ([`read_capped`]), and a write a reader never sees half of ([`write`], [`write_bytes`]).
+//! where the folder is, capped reads that never hang on what isn't a regular file
+//! ([`read_capped`], [`read_up_to`]), and a write a reader never sees half of ([`write`],
+//! [`write_bytes`]).
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -22,6 +23,21 @@ pub(crate) fn folder() -> Option<PathBuf> {
 /// `file`'s first `max` bytes, if it's a regular file that can be read (a pipe, which could
 /// hang the read, isn't); if there's more, the line the cap cuts is dropped too.
 pub(crate) fn read_capped(file: &Path, max: usize) -> Option<Vec<u8>> {
+    let mut bytes = read_up_to(file, max)?;
+    if bytes.len() > max {
+        bytes.truncate(max);
+        let whole = bytes
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |at| at + 1);
+        bytes.truncate(whole);
+    }
+    Some(bytes)
+}
+
+/// `file`'s first `max` bytes and one more, if there's more, so the caller can tell: none if
+/// it isn't a regular file that can be read (a pipe, which could hang the read, isn't).
+pub(crate) fn read_up_to(file: &Path, max: usize) -> Option<Vec<u8>> {
     if !std::fs::metadata(file).ok()?.is_file() {
         return None;
     }
@@ -31,14 +47,6 @@ pub(crate) fn read_capped(file: &Path, max: usize) -> Option<Vec<u8>> {
         .take(max as u64 + 1)
         .read_to_end(&mut bytes)
         .ok()?;
-    if bytes.len() > max {
-        bytes.truncate(max);
-        let whole = bytes
-            .iter()
-            .rposition(|&byte| byte == b'\n')
-            .map_or(0, |at| at + 1);
-        bytes.truncate(whole);
-    }
     Some(bytes)
 }
 
