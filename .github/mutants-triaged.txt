@@ -742,6 +742,10 @@ crates/silico-app/src/arrow.rs | Grip::centroid | replace match guard Arc::ptr_e
 # the canvas's response is disabled, so it's never hovered and takes no right press.
 crates/silico-app/src/app.rs | App<P>::frame | replace > with >= | #497
 crates/silico-app/src/viewport.rs | View::left_events | replace + with * | #497
+# A maker that is the base itself loses nothing on the way, which `stop >= base` also finds
+# (the first stop from it is itself or past it, never before the base): so `<=` in on_way
+# changes no answer.
+crates/silico-core/src/document/suppression.rs | ConsumerForest::on_way | replace < with <= | #503
 crates/silico-core/src/sweep.rs | prism_direction | replace * with / | #511
 crates/silico-core/src/recompute.rs | sweep_step | delete - | #511
 crates/silico-core/src/recompute.rs | sweep_step | replace / with % | #511
