@@ -21,8 +21,29 @@ const TITLE_HEIGHT: f32 = 26.0;
 const HEAD_SIZE: f32 = 10.0;
 const SMALL_SIZE: f32 = 11.0;
 const DOT_RADIUS: f32 = 4.0;
-/// The palette's border's width, inside its width as the prototype's `box-sizing` has it.
+/// The bar's and the palette's borders' width, inside their widths as the prototype's
+/// `box-sizing` has it.
 const BORDER: f32 = 1.0;
+
+/// The sketch bar's layout (`.sketch-bar`, `.sketch-bar .tag`): its padding (`4px 4px 4px
+/// 10px`), its corners' radius (`--r`), and its tag's padding (`1px 6px`) and corners' (3).
+const BAR_MARGIN: Margin = Margin {
+    left: 10,
+    right: 4,
+    top: 4,
+    bottom: 4,
+};
+const BAR_RADIUS: u8 = crate::theme::NORMAL_CORNER_RADIUS;
+const TAG_MARGIN: Margin = Margin::symmetric(6, 1);
+const TAG_RADIUS: u8 = 3;
+/// The bar's tag's words, and its Cancel's.
+const TAG: &str = "SKETCH";
+const CANCEL: &str = "Cancel";
+/// The least room the bar gives the sketch's name, in points: a usual name (Sketch12) is
+/// whole even where the room the canvas gives the bar is narrower than the rest of it, as
+/// at the least canvas ([`crate::theme::CANVAS_MIN_WIDTH`], 340) with the longest state's
+/// words; the bar runs past its room there, and the window keeps it on screen.
+pub const NAME_LEAST: f32 = 96.0;
 
 /// What the sketch bar was asked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,67 +71,149 @@ pub struct BarView {
 }
 
 /// The sketch bar (the prototype's `.sketch-bar`): a tag, the sketch and its plane, its
-/// state, Cancel, and Finish Sketch with its key.
-pub fn sketch_bar(ui: &mut Ui, view: &BarView) -> BarAction {
+/// state, Cancel, and Finish Sketch with its key. At most `width` wide: the sketch's name is
+/// cut short with an ellipsis where the rest wouldn't fit (`text-overflow: ellipsis`, as the
+/// browser's rows cut theirs), its whole name its tooltip and its label in the accessibility
+/// tree, so no name pushes Cancel and Finish Sketch out (#466). Never narrower than all but
+/// the name and [`NAME_LEAST`] for it.
+pub fn sketch_bar(ui: &mut Ui, view: &BarView, width: f32) -> BarAction {
     let mut action = BarAction::None;
     dark(ui);
-    let (fill, accent, strong, weak) = (FLOATING_BG, SELECTION_BG, TEXT_STRONG, TEXT_SUBDUED);
+    let (accent, strong, weak) = (SELECTION_BG, TEXT_STRONG, TEXT_SUBDUED);
     // One row, whatever room the canvas leaves: its words are never wrapped away.
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-    let shown = egui::Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(1.0, accent))
-        .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin {
-            left: 10,
-            right: 4,
-            top: 4,
-            bottom: 4,
-        })
-        .show(ui, |ui| {
-            ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                node.set_role(egui::accesskit::Role::Toolbar);
-                node.set_label("Sketch bar");
-            });
-            ui.horizontal(|ui| {
-                egui::Frame::new()
-                    .fill(accent)
-                    .corner_radius(CornerRadius::same(3))
-                    .inner_margin(Margin::symmetric(6, 1))
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("SKETCH").size(HEAD_SIZE).color(ON_SELECTION));
-                    });
-                ui.label(RichText::new(&view.name).color(strong));
-                ui.label(RichText::new(format!("on {}", view.plane)).color(weak));
-                if let Some(state) = &view.state {
-                    state_dot(ui, state.colour);
-                    ui.label(RichText::new(&state.words).color(state.colour));
-                }
-                if ui
-                    .add_enabled(
-                        view.enabled,
-                        egui::Button::new("Cancel").fill(Color32::TRANSPARENT),
-                    )
-                    .clicked()
-                {
-                    action = BarAction::Cancel;
-                }
-                // Its name, keys, and line the registry's, as the toolbar's Finish Sketch
-                // and the shortcut sheet give them.
-                let command = Command::FinishSketch;
-                let finish = egui::Button::new(RichText::new(command.label()).color(ON_SELECTION))
-                    .fill(accent);
-                let response = ui.add_enabled(view.enabled, finish);
-                let keys = command.shown(ui.ctx());
-                let line = command.entry().description;
-                if crate::bar::tooltip(response, command.label(), keys, line).clicked() {
-                    action = BarAction::Finish;
-                }
-            });
-            ui.unique_id()
+    let shown = bar_frame().show(ui, |ui| {
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::Toolbar);
+            node.set_label("Sketch bar");
         });
+        ui.horizontal(|ui| {
+            tag_frame().show(ui, |ui| {
+                ui.label(RichText::new(TAG).size(HEAD_SIZE).color(ON_SELECTION));
+            });
+            let rest = rest_width(ui.ctx(), ui.style(), view);
+            let room = name_room(rest, width);
+            let name = name_galley(ui.ctx(), ui.style(), &view.name, strong, room);
+            ui.add(egui::Label::new(name).show_tooltip_when_elided(true));
+            let plane = plane_words(view);
+            ui.label(RichText::new(plane).color(weak));
+            if let Some(state) = &view.state {
+                state_dot(ui, state.colour);
+                ui.label(RichText::new(&state.words).color(state.colour));
+            }
+            if ui
+                .add_enabled(
+                    view.enabled,
+                    egui::Button::new(CANCEL).fill(Color32::TRANSPARENT),
+                )
+                .clicked()
+            {
+                action = BarAction::Cancel;
+            }
+            // Its name, keys, and line the registry's, as the toolbar's Finish Sketch
+            // and the shortcut sheet give them.
+            let command = Command::FinishSketch;
+            let finish =
+                egui::Button::new(RichText::new(command.label()).color(ON_SELECTION)).fill(accent);
+            let response = ui.add_enabled(view.enabled, finish);
+            let keys = command.shown(ui.ctx());
+            let line = command.entry().description;
+            if crate::bar::tooltip(response, command.label(), keys, line).clicked() {
+                action = BarAction::Finish;
+            }
+        });
+        ui.unique_id()
+    });
     bounded(ui, shown.inner, shown.response.rect);
     action
+}
+
+/// How wide the sketch bar showing `view` is laid out at most `width` wide (see
+/// [`sketch_bar`]): what it lays out besides its name, and its name as cut to fit. What
+/// places it reads it, so the bar stands where it was meant to the frame it's first drawn.
+pub fn bar_width(ctx: &egui::Context, style: &egui::Style, view: &BarView, width: f32) -> f32 {
+    let rest = rest_width(ctx, style, view);
+    let name = name_galley(ctx, style, &view.name, TEXT_STRONG, name_room(rest, width));
+    rest + name.size().x
+}
+
+/// What the bar lays out besides the sketch's name, `rest` of it, leaves of `width` for the
+/// name: never less than [`NAME_LEAST`].
+fn name_room(rest: f32, width: f32) -> f32 {
+    (width - rest).max(NAME_LEAST)
+}
+
+/// How wide the bar showing `view` is but for its name's own width: its margins and border,
+/// its tag, and every widget after its name, with the space before each, in `style` as the
+/// bar lays them out. It must change with them: its tests compare it with the bar as drawn.
+pub fn rest_width(ctx: &egui::Context, style: &egui::Style, view: &BarView) -> f32 {
+    let spacing = style.spacing.item_spacing.x;
+    let padding = style.spacing.button_padding.x;
+    let words = |text: egui::WidgetText| {
+        text.into_galley_impl(
+            ctx,
+            style,
+            egui::text::TextWrapping::no_max_width(),
+            egui::FontSelection::Default,
+            egui::Align::Center,
+        )
+        .size()
+        .x
+    };
+    let frame = bar_frame().total_margin().sum().x;
+    let tag = tag_frame().total_margin().sum().x
+        + words(RichText::new(TAG).size(HEAD_SIZE).into())
+        + spacing;
+    let plane = spacing + words(plane_words(view).into());
+    let state = view.state.as_ref().map_or(0.0, |state| {
+        spacing + 2.0 * DOT_RADIUS + spacing + words(state.words.as_str().into())
+    });
+    let button = |text: &str| spacing + words(text.into()) + 2.0 * padding;
+    frame + tag + plane + state + button(CANCEL) + button(Command::FinishSketch.label())
+}
+
+/// The sketch bar's frame (`.sketch-bar`): the floating panels' fill, bordered in the
+/// selection's blue, round at its corners, inside its padding.
+fn bar_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(FLOATING_BG)
+        .stroke(Stroke::new(BORDER, SELECTION_BG))
+        .corner_radius(CornerRadius::same(BAR_RADIUS))
+        .inner_margin(BAR_MARGIN)
+}
+
+/// The bar's tag's frame (`.sketch-bar .tag`): filled in the selection's blue, inside its
+/// padding.
+fn tag_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(SELECTION_BG)
+        .corner_radius(CornerRadius::same(TAG_RADIUS))
+        .inner_margin(TAG_MARGIN)
+}
+
+/// What the bar says of the sketch's plane.
+fn plane_words(view: &BarView) -> String {
+    format!("on {}", view.plane)
+}
+
+/// The sketch's name, `name`, in `colour`, laid out on one line no wider than `room`, cut
+/// short with an ellipsis where it won't fit. Its text stays the whole name, which the
+/// label's node in the accessibility tree says, and egui's label shows a cut text whole as
+/// its tooltip.
+fn name_galley(
+    ctx: &egui::Context,
+    style: &egui::Style,
+    name: &str,
+    colour: Color32,
+    room: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::simple_singleline(
+        name.to_owned(),
+        egui::FontSelection::Default.resolve(style),
+        colour,
+    );
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room);
+    ctx.fonts_mut(|fonts| fonts.layout_job(job))
 }
 
 /// The group `group`'s node (a ui's, which egui gives no bounds of its own) bounded by

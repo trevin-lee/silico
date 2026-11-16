@@ -8,7 +8,8 @@
 #
 # From cargo-mutants' MUTANTS_OUT (mutants.out, possibly partial or missing: a stopped
 # shard's), into RESULTS: the outcome lists (caught, missed, timeout, unviable), the mutants
-# it planned (mutants.json), outcomes.json, the shard's markers (shard, threads), the
+# it planned (mutants.json), outcomes.json, the shard's markers (shard, threads, and none,
+# when it found no mutants: .github/mutants-none.sh), the
 # baseline's log (whenever it's there: cargo-mutants writes outcomes.json only once the
 # baseline ends) and those of each mutant missed, timed out or failed (each with its path
 # under log/), and the last 5 MB of debug.log. Never the logs of mutants caught or
@@ -30,7 +31,7 @@ if [ ! -d "$out" ]; then
   echo "${GITHUB_RUN_ATTEMPT:-1}" >"$results/kept"
   exit 0
 fi
-for file in caught.txt missed.txt timeout.txt unviable.txt mutants.json outcomes.json shard threads; do
+for file in caught.txt missed.txt timeout.txt unviable.txt mutants.json outcomes.json shard threads none; do
   if [ -f "$out/$file" ]; then cp "$out/$file" "$results/"; fi
 done
 if [ -f "$out/debug.log" ]; then tail -c 5000000 "$out/debug.log" >"$results/debug.log"; fi
