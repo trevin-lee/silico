@@ -1300,8 +1300,10 @@ impl View {
         // pressed, and takes no other press until its release.)
         let taken = self.tool.is_some();
         // A modal over the window takes no press (#487: nothing behind a modal takes input),
-        // and cancels what's still held after the frame's events, as the focus going does;
-        // a release among them, before the key that opened it, ends its gesture as ever.
+        // and cancels what's still held after the frame's events, as the focus going does.
+        // In the frame a key opens it, the press already held takes that frame's moves and
+        // its release, before the key or after it (the keys are read first): a release among
+        // them ends its gesture as ever.
         let behind = crate::modal::behind(ui);
         let pressable = response.hovered() && self.drag.is_none() && !taken && !behind;
         let mut left = Vec::new();

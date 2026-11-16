@@ -47449,3 +47449,80 @@ fn close_asked_in_the_frame_a_tab_with_an_offer_is_shown_asks_over_the_offer() {
     assert_eq!(h.state().tabs().len(), 2);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn close_in_the_frame_a_click_opens_export_is_dropped_and_export_stays_up() {
+    // #497's review, round 6: ⌘W's Close is decided after the frame is drawn, and not over
+    // a question a click opened meanwhile, as no key acts under one: a click on File's
+    // Export… and ⌘W in one frame leave the tab open, no Close question asked, Export's
+    // dialog up.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    assert!(!h.state().tabs()[0].unsaved());
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    let at = h
+        .get_by_role_and_label(Role::Button, "Export…")
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    for pressed in [true, false] {
+        events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events.push(key_event(Key::W, command));
+    step(&mut h);
+    step_until(&mut h, "the export dialog", |h| anywhere(h, EXPORT_EXAMPLE));
+    for _ in 0..5 {
+        step(&mut h);
+        assert_eq!(h.state().tabs().len(), 1, "the tab closed under Export");
+        assert!(anywhere(&h, EXPORT_EXAMPLE), "Export's dialog gone");
+        assert!(
+            !anywhere(&h, "Save changes to example.silico before closing?"),
+            "the Close question asked"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_after_the_sheets_key_in_one_frame_is_added() {
+    // #497's review, round 6: `?`, then the release, in one frame: the canvas reads the
+    // frame's pointer events after the keys, so the release of the press already held is
+    // handed on, as one before the key is, and ends its gesture.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    let sent = line_held(&mut h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert!(
+        added.contains(&Sent::SketchEdit("sketch_add")),
+        "a line let go after the sheet's key, in one frame, was dropped: {added:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
