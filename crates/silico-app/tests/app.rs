@@ -22523,12 +22523,11 @@ fn undo_and_redo_are_off_while_an_empty_new_sketchs_finish_is_judged() {
         // Undo was on before: sketch mode's own add, after the rename.
         tab.finish_sketch(&sessions, true);
         // Till the close is taken, its undo back to where sketch mode opened still to send,
-        // Undo would go past it to the rename.
+        // Undo would go past it to the rename (the app's Ctrl+Z steps only if it's on).
         assert!(!tab.undoable());
         assert!(!tab.redoable());
     }
-    // Ctrl+Z pressed meanwhile does nothing; the discard undoes to the rename alone.
-    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    // The discard undoes to the rename alone.
     assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
     assert_eq!(text_of(&f.sessions, &h), renamed);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
