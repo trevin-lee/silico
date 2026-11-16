@@ -979,13 +979,13 @@ impl<P: Clients + 'static> App<P> {
                 self.remembered.keep(&oked);
             }
         }
-        // The search, closed by a question asked meanwhile (a quit, a replace), which is
-        // over everything.
-        if self.asking.is_some() {
+        // The search, closed by a question asked meanwhile (a quit, a replace), or sketch
+        // mode's over-define prompt, which are over everything.
+        if self.asking.is_some() || self.offered() {
             self.search = None;
         }
         if let Some(mut open) = self.search.take() {
-            match search::show(ui.ctx(), &mut open, &|command| self.search_can(command)) {
+            match search::show(ui.ctx(), &mut open, &|command| self.search_row(command)) {
                 search::Asked::None => self.search = Some(open),
                 search::Asked::Close => search::let_go(ui.ctx()),
                 search::Asked::Run(command) => next_frame |= self.run_searched(ui.ctx(), command),
@@ -1306,7 +1306,7 @@ impl<P: Clients + 'static> App<P> {
         if let Some(mut open) = self.search.take() {
             // The search's keys: Esc closes it, the arrows move its highlight, and Enter runs
             // it; no other command acts under it.
-            return match search::keys(ui, &mut open, &|command| self.search_can(command)) {
+            return match search::keys(ui, &mut open, &|command| self.search_row(command)) {
                 search::Asked::None => {
                     self.search = Some(open);
                     (false, None)
@@ -1332,7 +1332,7 @@ impl<P: Clients + 'static> App<P> {
             }
             return (false, None);
         }
-        let renamed = self.rename_before_command(ui.ctx(), queued);
+        let renamed = self.rename_before_command(ui.ctx());
         let (next_frame, dialog_key) = self.command_keys(ui, queued);
         (next_frame || renamed, dialog_key)
     }
@@ -1358,10 +1358,10 @@ impl<P: Clients + 'static> App<P> {
     /// [`COMMANDS_AFTER_RENAME`](Self::COMMANDS_AFTER_RENAME) was pressed this frame: its
     /// name sent there and then, through the path Enter takes, so the command acts on the
     /// renamed document. Whether the name was sent.
-    fn rename_before_command(&mut self, ctx: &egui::Context, queued: Option<Command>) -> bool {
+    fn rename_before_command(&mut self, ctx: &egui::Context) -> bool {
         let asked = Self::COMMANDS_AFTER_RENAME
             .iter()
-            .any(|&command| shortcuts::pressed(ctx, command) || queued == Some(command));
+            .any(|&command| shortcuts::pressed(ctx, command));
         asked && self.send_rename_if(crate::feature_menu::Renaming::focused)
     }
 
@@ -1383,12 +1383,9 @@ impl<P: Clients + 'static> App<P> {
             return (false, None);
         }
         // S: the command search, anywhere (the start page, sketch mode, a dialog open), but
-        // in a field, or over a menu or Select Other's, which hold the keys.
-        let held = self
-            .active_place()
-            .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| !self.home && tab.select_other().holds_keys());
-        if !typing && !held && !egui::Popup::is_any_open(ui.ctx()) && take(ui, Command::Search) {
+        // in a field, or over a menu, a modal, or what holds the keys
+        // ([`search_held`](Self::search_held)).
+        if !typing && !self.search_held(ui.ctx()) && take(ui, Command::Search) {
             self.search = Some(Search::default());
             return (false, None);
         }
@@ -1674,68 +1671,123 @@ impl<P: Clients + 'static> App<P> {
         )
     }
 
-    /// Whether the search can run `command` now, and if not, why: exactly where its button,
-    /// its menu item, or its keys would do it, the reason its button's or menu item's where
-    /// they give one. With no document shown (the start page) only New, Open, the search,
-    /// and the sheet run.
-    fn search_can(&self, command: Command) -> search::Can {
-        use crate::feature_menu::{Item, Place};
-        use search::Can;
-        let on = |on: bool| if on { Can::Run } else { Can::Off(None) };
-        if matches!(
-            command,
-            Command::New | Command::Open | Command::Search | Command::Shortcuts
-        ) {
-            return Can::Run;
-        }
-        let Some(tab) = self
+    /// Whether something open holds the keys S would open the search over: a menu or popup
+    /// (egui's, a feature's right-click menu among them), a modal (sketch mode's over-define
+    /// prompt among them), Select Other's menu, or sketch mode's canvas menu, in the tab
+    /// shown.
+    fn search_held(&self, ctx: &egui::Context) -> bool {
+        let tab = self
             .active_place()
+            .filter(|_| !self.home)
+            .and_then(|at| self.tabs.get(at));
+        egui::Popup::is_any_open(ctx)
+            || ctx.memory(|memory| memory.top_modal_layer()).is_some()
+            || self.offered()
+            || tab.is_some_and(|tab| {
+                tab.select_other().holds_keys()
+                    || tab
+                        .sketch
+                        .as_ref()
+                        .is_some_and(|mode| mode.menu_at.is_some())
+            })
+    }
+
+    /// Whether the tab shown holds sketch mode's over-define prompt (its offer).
+    fn offered(&self) -> bool {
+        self.active_place()
             .filter(|_| !self.start_shown())
             .and_then(|at| self.tabs.get(at))
-        else {
-            return Can::Off(Some(NO_DOCUMENT.to_owned()));
+            .and_then(|tab| tab.sketch.as_ref())
+            .is_some_and(|mode| mode.offer().is_some())
+    }
+
+    /// `command`'s row in the search now: its name, and whether it can run and if not why,
+    /// exactly where its button, its menu item, or its keys would do it, by the same rule
+    /// they follow, the reason theirs where they give one. With no document shown (the start
+    /// page) only New, Open, the search, and the sheet run.
+    fn search_row(&self, command: Command) -> search::Row {
+        use crate::feature_menu::{Item, Place};
+        use search::{Can, Row};
+        let on = |on: bool| if on { Can::Run } else { Can::Off(None) };
+        let row = |can| Row {
+            label: command.label(),
+            can,
         };
-        let in_sketch = tab.in_sketch();
-        // A feature menu's item, for the feature selected: off with its reason, as the menu
-        // has it, or off with none selected (no menu is open for none).
+        let tab = self
+            .active_place()
+            .filter(|_| !self.start_shown())
+            .and_then(|at| self.tabs.get(at));
+        let Some(tab) = tab else {
+            return row(match command {
+                Command::New | Command::Open | Command::Search | Command::Shortcuts => Can::Run,
+                _ => Can::Off(Some(NO_DOCUMENT.to_owned())),
+            });
+        };
+        // A feature menu's item, for the feature selected: named and off with its reason as
+        // the menu has it, or off with none selected (no menu is open for none).
         let feature = |item: Item, place: Place| {
             let Some(entry) = tab
                 .selection()
                 .feature()
                 .and_then(|id| tab.entry(id.as_str()))
             else {
-                return Can::Off(None);
+                return row(Can::Off(None));
             };
-            match crate::feature_menu::off(tab, entry, item, place) {
-                None => Can::Run,
-                Some(why) => Can::Off(Some(why)),
+            Row {
+                label: crate::feature_menu::label(item, entry, place),
+                can: match crate::feature_menu::off(tab, entry, item, place) {
+                    None => Can::Run,
+                    Some(why) => Can::Off(Some(why)),
+                },
             }
         };
         let place = key_place(tab, self.columns.collapsed());
         match command {
-            Command::Save => on(save_offered(tab)),
-            Command::SaveAs => on(self.save_as_offered()),
-            Command::Undo => on(tab.undoable()),
-            Command::Redo => on(tab.redoable()),
+            Command::New | Command::Open | Command::Search | Command::Shortcuts => row(Can::Run),
+            Command::Save => row(on(save_offered(tab))),
+            Command::SaveAs => row(on(self.save_as_offered())),
+            // Ctrl+W and File's Close close the tab shown, whatever it holds, asking first
+            // if it holds edits.
+            Command::Close => row(Can::Run),
+            Command::Undo => row(on(tab.undoable())),
+            Command::Redo => row(on(tab.redoable())),
             Command::Rename => feature(Item::Rename, place),
             // In sketch mode Del deletes the sketch's selection.
-            Command::Delete if in_sketch => Can::Run,
+            Command::Delete if tab.in_sketch() => row(on(tab.sketch_deletable())),
             Command::Delete => feature(Item::Delete, place),
             Command::Suppress => feature(Item::Suppress, place),
             Command::FindInBrowser => feature(Item::Find, Place::Timeline),
             Command::FindInTimeline => feature(Item::Find, Place::Browser),
-            Command::Rebuild => on(tab.can_rebuild()),
-            Command::RebuildAll => on(tab.can_rebuild_all()),
-            Command::Reload => on(!tab.closing() && !tab.in_dialog()),
-            Command::Stop => on(tab.stoppable()),
-            Command::WhatsWrong if tab.anything_wrong() => Can::Run,
-            Command::WhatsWrong => Can::Off(Some(crate::whats_wrong::NOTHING_WRONG.to_owned())),
-            // SELECT's, which a sketch's toolbar hasn't; Clear selection on with a selection,
-            // as its item is.
-            Command::FilterFace | Command::FilterEdge | Command::FilterVertex => on(!in_sketch),
-            Command::ClearSelection => {
-                on(!in_sketch && !tab.selection().is_empty() && !tab.in_dialog())
+            Command::Rebuild => row(on(tab.can_rebuild())),
+            Command::RebuildAll => row(on(tab.can_rebuild_all())),
+            Command::Reload => row(match tab.reloadable() {
+                Ok(()) => Can::Run,
+                Err(why) => Can::Off(why.map(str::to_owned)),
+            }),
+            Command::Stop => row(on(tab.stoppable())),
+            Command::WhatsWrong if tab.anything_wrong() => row(Can::Run),
+            Command::WhatsWrong => {
+                row(Can::Off(Some(crate::whats_wrong::NOTHING_WRONG.to_owned())))
             }
+            Command::Fit
+            | Command::Home
+            | Command::Front
+            | Command::Back
+            | Command::Left
+            | Command::Right
+            | Command::Top
+            | Command::Bottom
+            | Command::Isometric => row(Can::Run),
+            // Off where its keys only say why, in their words.
+            Command::LookAt => row(match tab.look_at_target() {
+                Ok(_) => Can::Run,
+                Err(said) => Can::Off(Some(said)),
+            }),
+            Command::FilterFace | Command::FilterEdge | Command::FilterVertex => {
+                row(on(tab.select_shown()))
+            }
+            Command::ClearSelection => row(on(tab.select_shown() && tab.selection_clearable())),
+            Command::Hide => row(on(tab.hideable().is_some())),
             // The SKETCH tab's, while a sketch is open.
             Command::Line
             | Command::Rectangle
@@ -1745,26 +1797,10 @@ impl<P: Clients + 'static> App<P> {
             | Command::Trim
             | Command::Dimension
             | Command::Construction
-            | Command::FinishSketch => on(in_sketch),
-            Command::Close
-            | Command::Fit
-            | Command::Home
-            | Command::Front
-            | Command::Back
-            | Command::Left
-            | Command::Right
-            | Command::Top
-            | Command::Bottom
-            | Command::Isometric
-            | Command::LookAt
-            | Command::Hide
-            | Command::New
-            | Command::Open
-            | Command::Search
-            | Command::Shortcuts => Can::Run,
+            | Command::FinishSketch => row(on(tab.in_sketch())),
             // Never listed (`search::LEFT_OUT`).
             Command::Orbit | Command::Pan | Command::Zoom | Command::Ok | Command::Cancel => {
-                Can::Off(None)
+                row(Can::Off(None))
             }
         }
     }
@@ -1775,48 +1811,106 @@ impl<P: Clients + 'static> App<P> {
     /// or menu item does it, through the same function. Whether the frame after is to be
     /// asked for.
     fn run_searched(&mut self, ctx: &egui::Context, command: Command) -> bool {
+        use crate::feature_menu::{Item, Place};
         search::let_go(ctx);
+        let place = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .map(|tab| key_place(tab, self.columns.collapsed()));
         let shown = self
             .active_place()
             .filter(|_| !self.start_shown())
             .and_then(|at| self.tabs.get_mut(at));
         let sessions = &self.sessions;
-        match (command, shown) {
-            // The status bar's Stop.
-            (Command::Stop, Some(tab)) => tab.stop(sessions),
-            // SELECT's Clear selection.
-            (Command::ClearSelection, Some(tab)) => tab.selection_mut().clear(),
-            // The status bar's errors.
-            (Command::WhatsWrong, Some(tab)) => tab.whats_wrong = true,
-            // The feature menus' items, for the feature selected: the timeline's Find in
-            // browser, the browser's Find in timeline.
-            (Command::Suppress | Command::FindInBrowser | Command::FindInTimeline, Some(tab)) => {
-                use crate::feature_menu::Act;
-                let Some(entry) = tab
-                    .selection()
-                    .feature()
-                    .and_then(|id| tab.entry(id.as_str()))
-                else {
-                    return false;
-                };
-                let id = entry.id.clone();
-                let act = match command {
-                    Command::Suppress => Act::Suppress(id, !entry.suppressed),
-                    Command::FindInBrowser => Act::FindInBrowser(id),
-                    _ => Act::FindInTimeline(id),
-                };
+        // A feature menu's item for the feature selected, as its menu does it.
+        let menu_item = |tab: &mut Tab, item: Item, place: Place| {
+            let act = tab
+                .selection()
+                .feature()
+                .and_then(|id| tab.entry(id.as_str()))
+                .map(|entry| crate::feature_menu::act_of(item, entry, place));
+            if let Some(act) = act {
                 crate::feature_menu::act(tab, sessions, act);
             }
-            (
-                Command::Stop
-                | Command::ClearSelection
-                | Command::WhatsWrong
-                | Command::Suppress
-                | Command::FindInBrowser
-                | Command::FindInTimeline,
-                None,
-            ) => return false,
-            _ => self.queued = Some(command),
+        };
+        match command {
+            // The status bar's Stop.
+            Command::Stop => {
+                if let Some(tab) = shown {
+                    tab.stop(sessions);
+                }
+            }
+            // SELECT's Clear selection.
+            Command::ClearSelection => {
+                if let Some(tab) = shown {
+                    tab.selection_mut().clear();
+                }
+            }
+            // The status bar's errors.
+            Command::WhatsWrong => {
+                if let Some(tab) = shown {
+                    tab.whats_wrong = true;
+                }
+            }
+            // The feature menus' items: Suppress where the feature was selected, the
+            // timeline's Find in browser, and the browser's Find in timeline.
+            Command::Suppress => {
+                if let (Some(tab), Some(place)) = (shown, place) {
+                    menu_item(tab, Item::Suppress, place);
+                }
+            }
+            Command::FindInBrowser => {
+                if let Some(tab) = shown {
+                    menu_item(tab, Item::Find, Place::Timeline);
+                }
+            }
+            Command::FindInTimeline => {
+                if let Some(tab) = shown {
+                    menu_item(tab, Item::Find, Place::Browser);
+                }
+            }
+            // Each by its keys' own code.
+            Command::New
+            | Command::Open
+            | Command::Save
+            | Command::SaveAs
+            | Command::Close
+            | Command::Undo
+            | Command::Redo
+            | Command::Search
+            | Command::Rename
+            | Command::Delete
+            | Command::Rebuild
+            | Command::RebuildAll
+            | Command::Reload
+            | Command::Fit
+            | Command::Home
+            | Command::Front
+            | Command::Back
+            | Command::Left
+            | Command::Right
+            | Command::Top
+            | Command::Bottom
+            | Command::Isometric
+            | Command::LookAt
+            | Command::FilterFace
+            | Command::FilterEdge
+            | Command::FilterVertex
+            | Command::Hide
+            | Command::Line
+            | Command::Rectangle
+            | Command::Circle
+            | Command::Arc
+            | Command::Point
+            | Command::Trim
+            | Command::Dimension
+            | Command::Construction
+            | Command::FinishSketch
+            | Command::Shortcuts => self.queued = Some(command),
+            // Never listed (`search::LEFT_OUT`).
+            Command::Orbit | Command::Pan | Command::Zoom | Command::Ok | Command::Cancel => {
+                return false;
+            }
         }
         ctx.request_repaint();
         true
@@ -1852,14 +1946,15 @@ impl<P: Clients + 'static> App<P> {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
             return;
         };
-        if tab.closing() {
-            return;
-        }
-        if tab.in_dialog() {
+        match tab.reloadable() {
+            Ok(()) => {}
+            Err(None) => return,
             // As Rebuild everything does nothing in a dialog: the dialog's OK or Cancel
             // first.
-            self.toast = Some((RELOAD_IN_DIALOG.to_owned(), now));
-            return;
+            Err(Some(why)) => {
+                self.toast = Some((why.to_owned(), now));
+                return;
+            }
         }
         // An untitled part's edits are all it is: it's only rebuilt, never asked about.
         if tab.unsaved() && !tab.file_gone() && !tab.is_untitled() {
@@ -2347,7 +2442,7 @@ impl<P: Clients + 'static> App<P> {
         let reloadable = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| !tab.closing() && !tab.in_dialog());
+            .is_some_and(|tab| tab.reloadable().is_ok());
         let label = Command::Reload.label();
         if ui
             .add_enabled(reloadable, egui::Button::new(label))
@@ -2435,8 +2530,7 @@ impl<P: Clients + 'static> App<P> {
                     create_sketch: Some(shown.is_some_and(Tab::can_sketch)),
                     can_open: &can_open,
                     why_closed: &why_closed,
-                    selected: shown
-                        .is_some_and(|tab| !tab.selection().is_empty() && !tab.in_dialog()),
+                    selected: shown.is_some_and(Tab::selection_clearable),
                     filter: shown.map_or_else(crate::selection::Filter::default, |tab| {
                         tab.selection().filter
                     }),
@@ -2544,6 +2638,9 @@ impl<P: Clients + 'static> App<P> {
                 mode.menu_at = None;
             }
         }
+        // The search open over the prompt keeps its keys: the prompt's 1 and 2 are typed
+        // there.
+        let searching = self.search.is_some();
         let sessions = &self.sessions;
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
             return;
@@ -2646,7 +2743,7 @@ impl<P: Clients + 'static> App<P> {
             *next_frame |= asked != sketch::bar::MenuAction::None;
         }
         if let Some(choice) =
-            offer.and_then(|view| sketch::dimension::offer_prompt(ui.ctx(), &view))
+            offer.and_then(|view| sketch::dimension::offer_prompt(ui.ctx(), &view, searching))
         {
             tab.sketch_offer(sessions, choice);
             *next_frame = true;
@@ -3641,7 +3738,7 @@ mod tests {
                 events: vec![ctrl_s],
                 ..Default::default()
             },
-            |ui| sent = Some(app.rename_before_command(ui.ctx(), None)),
+            |ui| sent = Some(app.rename_before_command(ui.ctx())),
         )
         .textures_delta
         .clear();

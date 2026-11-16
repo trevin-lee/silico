@@ -35,7 +35,7 @@ pub(crate) const MOST: usize = 40;
 /// The registry's commands the search leaves out (`paletteItems`'s `ok`, `cancel`, `orbit`,
 /// `pan`, and `zoom`: a dialog's keys and the pointer's gestures; its `selectOther` and
 /// `sNoRel` aren't in the app's registry).
-pub(crate) const LEFT_OUT: [Command; 5] = [
+pub const LEFT_OUT: [Command; 5] = [
     Command::Ok,
     Command::Cancel,
     Command::Orbit,
@@ -50,13 +50,14 @@ const FOOT: [(&[&str], &str); 3] = [
     (&["Esc"], " close"),
 ];
 
-/// Whether the search finds `entry` for `query`, its case aside: the query in its name, its
-/// group's, or its description (`paletteItems`'s filter); an empty query finds every one.
-pub(crate) fn finds(entry: &Entry, query: &str) -> bool {
+/// Whether the search finds `entry`, named `label` as its row is, for `query`, its case
+/// aside: the query in its name, its group's, or its description (`paletteItems`'s filter);
+/// an empty query finds every one.
+pub(crate) fn finds(entry: &Entry, label: &str, query: &str) -> bool {
     let query = query.to_lowercase();
     query.is_empty()
         || [
-            entry.label,
+            label,
             entry.group.name(),
             entry.description.unwrap_or_default(),
         ]
@@ -64,12 +65,15 @@ pub(crate) fn finds(entry: &Entry, query: &str) -> bool {
         .any(|text| text.to_lowercase().contains(&query))
 }
 
-/// The commands listed for `query`, in the registry's order: those it finds, but
-/// [`LEFT_OUT`], the first [`MOST`] of them.
-pub(crate) fn listed(query: &str) -> Vec<&'static Entry> {
+/// The commands listed for `query`, in the registry's order, each with its row as `row`
+/// gives it: those it finds by their rows' names, but [`LEFT_OUT`], the first [`MOST`] of
+/// them.
+pub(crate) fn listed(query: &str, row: &dyn Fn(Command) -> Row) -> Vec<(&'static Entry, Row)> {
     REGISTRY
         .iter()
-        .filter(|entry| !LEFT_OUT.contains(&entry.command) && finds(entry, query))
+        .filter(|entry| !LEFT_OUT.contains(&entry.command))
+        .map(|entry| (entry, row(entry.command)))
+        .filter(|(entry, row)| finds(entry, row.label, query))
         .take(MOST)
         .collect()
 }
@@ -79,6 +83,14 @@ pub(crate) fn listed(query: &str) -> Vec<&'static Entry> {
 pub(crate) enum Can {
     Run,
     Off(Option<String>),
+}
+
+/// A command's row as the app has it now: its name (the registry's, but Unsuppress for a
+/// suppressed feature, as its menu names it) and whether it can run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Row {
+    pub label: &'static str,
+    pub can: Can,
 }
 
 /// The search while it's open.
@@ -119,19 +131,21 @@ pub(crate) fn let_go(ctx: &egui::Context) {
 
 /// The search's keys this frame, taken before its field reads them: Esc closes it, ↑ and ↓
 /// move the highlight (clamped to the list), and Enter runs the highlighted command, if it
-/// can run (`interact.js`'s `S.palette` keys). `can` says whether each can.
-pub(crate) fn keys(ui: &mut Ui, search: &mut Search, can: &dyn Fn(Command) -> Can) -> Asked {
+/// can run (`interact.js`'s `S.palette` keys); Tab, which would take the keyboard from its
+/// field, does nothing. `row` gives each command's row.
+pub(crate) fn keys(ui: &mut Ui, search: &mut Search, row: &dyn Fn(Command) -> Row) -> Asked {
     if shortcuts::take(ui, Command::Cancel) {
         return Asked::Close;
     }
     let (down, up, enter) = ui.input_mut(|input| {
+        input.count_and_consume_key(Modifiers::NONE, Key::Tab);
         (
             input.count_and_consume_key(Modifiers::NONE, Key::ArrowDown),
             input.count_and_consume_key(Modifiers::NONE, Key::ArrowUp),
             input.consume_key(Modifiers::NONE, Key::Enter),
         )
     });
-    let listed = listed(&search.query);
+    let listed = listed(&search.query, row);
     let last = listed.len().saturating_sub(1);
     let mut highlight = search.highlight;
     for _ in 0..down {
@@ -145,8 +159,8 @@ pub(crate) fn keys(ui: &mut Ui, search: &mut Search, can: &dyn Fn(Command) -> Ca
     }
     search.highlight = highlight;
     if enter
-        && let Some(entry) = listed.get(highlight)
-        && can(entry.command) == Can::Run
+        && let Some((entry, row)) = listed.get(highlight)
+        && row.can == Can::Run
     {
         return Asked::Run(entry.command);
     }
@@ -194,7 +208,7 @@ fn foot_height() -> f32 {
 pub(crate) fn show(
     ctx: &egui::Context,
     search: &mut Search,
-    can: &dyn Fn(Command) -> Can,
+    row: &dyn Fn(Command) -> Row,
 ) -> Asked {
     let screen = ctx.content_rect();
     let backdrop = egui::Area::new(egui::Id::new("command-search-backdrop"))
@@ -212,7 +226,7 @@ pub(crate) fn show(
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
         .constrain(false)
-        .show(ctx, |ui| boxed(ui, screen, search, can));
+        .show(ctx, |ui| boxed(ui, screen, search, row));
     // Over its backdrop, whichever was last touched.
     ctx.move_to_top(area.response.layer_id);
     match area.inner {
@@ -222,7 +236,7 @@ pub(crate) fn show(
 }
 
 /// The box (`.palette-modal`) in `screen`: its field's row, its list, and its foot.
-fn boxed(ui: &mut Ui, screen: Rect, search: &mut Search, can: &dyn Fn(Command) -> Can) -> Asked {
+fn boxed(ui: &mut Ui, screen: Rect, search: &mut Search, row: &dyn Fn(Command) -> Row) -> Asked {
     ui.scope_builder(UiBuilder::new().id_salt("command-search"), |ui| {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         // Its frame, painted once its height is known.
@@ -243,7 +257,7 @@ fn boxed(ui: &mut Ui, screen: Rect, search: &mut Search, can: &dyn Fn(Command) -
         if changed {
             search.highlight = 0;
         }
-        let listed = listed(&search.query);
+        let listed = listed(&search.query, row);
         let rect = place(screen, listed.len());
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(Role::Dialog);
@@ -268,7 +282,7 @@ fn boxed(ui: &mut Ui, screen: Rect, search: &mut Search, can: &dyn Fn(Command) -
             pos2(inner_left, list_top),
             pos2(inner_right, list_top + list_height(listed.len())),
         );
-        let asked = rows(ui, list, &listed, search, changed, can);
+        let asked = rows(ui, list, &listed, search, changed);
         foot(
             ui,
             Rect::from_min_max(
@@ -341,10 +355,9 @@ fn field(ui: &mut Ui, row: Rect, search: &mut Search) -> bool {
 fn rows(
     ui: &mut Ui,
     list: Rect,
-    listed: &[&'static Entry],
+    listed: &[(&'static Entry, Row)],
     search: &mut Search,
     changed: bool,
-    can: &dyn Fn(Command) -> Can,
 ) -> Asked {
     let inside = list.shrink(theme::SEARCH_LIST_PADDING);
     let mut child = ui.new_child(
@@ -379,16 +392,16 @@ fn rows(
         .show(&mut child, |ui| {
             let mut asked = Asked::None;
             let ctx = ui.ctx().clone();
-            for (at, entry) in listed.iter().enumerate() {
+            for (at, (entry, row)) in listed.iter().enumerate() {
                 let caps = entry.command.caps(&ctx);
-                let can = can(entry.command);
-                let reason = match &can {
+                let can = &row.can;
+                let reason = match can {
                     Can::Run => None,
                     Can::Off(reason) => reason.clone(),
                 };
                 let item = menu::Item {
                     icon: Some(entry.icon.unwrap_or(Icon::Chevron)),
-                    label: entry.label,
+                    label: row.label,
                     sub: Some(entry.group.name()),
                     caps: &caps,
                     off: reason.as_deref(),
@@ -396,7 +409,7 @@ fn rows(
                     lit: at == highlight,
                     checked: None,
                 };
-                let runs = can == Can::Run;
+                let runs = *can == Can::Run;
                 let response = ui
                     .add_enabled_ui(runs, |ui| {
                         menu::item_sized(ui, &item, inside.width(), theme::SEARCH_ROW_HEIGHT)
@@ -485,8 +498,19 @@ mod tests {
 
     use super::*;
 
+    /// The list for `query`, each row the registry's name, every command on.
+    fn registry_listed(query: &str) -> Vec<(&'static Entry, Row)> {
+        listed(query, &|command| Row {
+            label: command.label(),
+            can: Can::Run,
+        })
+    }
+
     fn commands(query: &str) -> Vec<Command> {
-        listed(query).iter().map(|entry| entry.command).collect()
+        registry_listed(query)
+            .iter()
+            .map(|(entry, _)| entry.command)
+            .collect()
     }
 
     #[test]
@@ -538,12 +562,15 @@ mod tests {
         assert_eq!(commands("zoom"), []);
         for left_out in LEFT_OUT {
             assert!(
-                !listed("").iter().any(|entry| entry.command == left_out),
+                !registry_listed("")
+                    .iter()
+                    .any(|(entry, _)| entry.command == left_out),
                 "{left_out:?}"
             );
         }
-        // "view": Home view's name, the View group's fourteen less Orbit, Pan, and Zoom, and
-        // Fit's description ("The whole model in view").
+        // "view": the View group's thirteen less Orbit, Pan, and Zoom, ten, among them Home
+        // view (whose name has it too) and Fit (whose description, "The whole model in view",
+        // does).
         assert_eq!(
             commands("view"),
             [
@@ -562,25 +589,48 @@ mod tests {
     }
 
     #[test]
+    fn a_row_is_found_by_the_name_it_shows() {
+        // Suppress shown as Unsuppress, for a feature suppressed (its menu's word): found by
+        // that, and no longer by the registry's "Suppress" alone where the query is the
+        // longer word.
+        let row = |command: Command| Row {
+            label: if command == Command::Suppress {
+                "Unsuppress"
+            } else {
+                command.label()
+            },
+            can: Can::Run,
+        };
+        let found = |query: &str| -> Vec<(Command, &'static str)> {
+            listed(query, &row)
+                .into_iter()
+                .map(|(entry, row)| (entry.command, row.label))
+                .collect()
+        };
+        assert_eq!(found("unsupp"), [(Command::Suppress, "Unsuppress")]);
+        assert_eq!(commands("unsupp"), []);
+    }
+
+    #[test]
     fn at_most_forty_are_listed_the_first_in_the_registrys_order() {
         // The registry's 48 less the five left out are 43: the first 40 listed, so the last
         // three (Construction, Finish Sketch, Keyboard shortcuts) aren't until a query finds
         // them.
         assert_eq!(REGISTRY.len(), 48);
-        let all = listed("");
+        let all = registry_listed("");
         assert_eq!(all.len(), 40);
-        assert_eq!(all[0].command, Command::New);
-        assert_eq!(all[39].command, Command::Dimension);
+        assert_eq!(all[0].0.command, Command::New);
+        assert_eq!(all[39].0.command, Command::Dimension);
         for missing in [
             Command::Construction,
             Command::FinishSketch,
             Command::Shortcuts,
         ] {
-            assert!(!all.iter().any(|entry| entry.command == missing));
+            assert!(!all.iter().any(|(entry, _)| entry.command == missing));
         }
         assert_eq!(commands("finish"), [Command::FinishSketch]);
         // "e" is in 43's names, groups, or descriptions or more: still 40.
-        assert_eq!(listed("e").len(), 40);
+        assert_eq!(registry_listed("e").len(), 40);
     }
 
     #[test]

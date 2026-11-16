@@ -380,9 +380,10 @@ pub struct OfferView {
 
 /// The over-define prompt (SD7; the prototype's modal "This dimension over-defines …"): a
 /// word on what the dimension repeats, the constraints flagged, and SolidWorks' three
-/// choices, each with its key (1, 2, and Esc, which the tab's Esc takes). The choice made,
-/// if one was.
-pub fn offer_prompt(ctx: &egui::Context, view: &OfferView) -> Option<OfferChoice> {
+/// choices, each with its key (1, 2, and Esc, which the tab's Esc takes). 1 and 2 are its
+/// only while it's the top modal and the command search isn't open (`searching`), whose
+/// field takes what's typed. The choice made, if one was.
+pub fn offer_prompt(ctx: &egui::Context, view: &OfferView, searching: bool) -> Option<OfferChoice> {
     let mut chose = None;
     egui::Modal::new(egui::Id::new("sketch_offer"))
         .backdrop_color(Color32::from_black_alpha(153))
@@ -451,7 +452,14 @@ pub fn offer_prompt(ctx: &egui::Context, view: &OfferView) -> Option<OfferChoice
                     chose = Some(choice);
                 }
             }
-            let key = |key| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key));
+            let top = ui
+                .ctx()
+                .memory(|memory| memory.top_modal_layer())
+                .is_none_or(|top| top == ui.layer_id());
+            let key = |key| {
+                top && !searching
+                    && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, key))
+            };
             if key(egui::Key::Num1) {
                 chose = Some(OfferChoice::Driven);
             } else if key(egui::Key::Num2) {

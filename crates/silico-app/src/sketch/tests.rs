@@ -6029,7 +6029,7 @@ fn offer_prompt_shapes(view: &dimension::OfferView) -> Vec<egui::Shape> {
             ..Default::default()
         };
         let mut output = ctx.run_ui(input, |ui| {
-            dimension::offer_prompt(ui.ctx(), view);
+            dimension::offer_prompt(ui.ctx(), view, false);
         });
         output.textures_delta.clear();
         shapes.clear();
