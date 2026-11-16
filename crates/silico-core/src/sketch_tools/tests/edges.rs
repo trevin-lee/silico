@@ -220,6 +220,7 @@ fn a_refused_add_mid_chain_is_forgotten_with_the_chain() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut tool = SketchTool::new(ToolKind::Line);
     let mut ids = Counter::after(0);
@@ -291,6 +292,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
             automatic_relations: true,
             construction: false,
             states: no_states(),
+            axes: Axes::BOTH,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -307,6 +309,7 @@ fn a_switch_of_sketch_starts_the_tool_afresh() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut ids = Counter::after(0);
     line.handle(&context(&sid), &mut ids, Event::Press([1.0, 2.0]), keys);
@@ -375,6 +378,7 @@ fn a_sketch_at_the_gates_limits_builds_each_shape_once_and_tries_few_crossings()
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let mut ids = Counter::after(0);
@@ -1550,6 +1554,7 @@ fn an_id_source_that_gives_a_taken_id_is_caught() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut tool = SketchTool::new(ToolKind::Point);
     let keys = Modifiers::default();
@@ -1969,6 +1974,7 @@ fn each_add_is_answered_by_its_token_whatever_the_order() {
             automatic_relations: true,
             construction: false,
             states: no_states(),
+            axes: Axes::BOTH,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -2200,6 +2206,7 @@ fn another_tools_token_answers_nothing() {
             automatic_relations: true,
             construction: false,
             states: no_states(),
+            axes: Axes::BOTH,
         };
         tool.handle(&context, &mut ids, Event::Press(at), keys);
         tool.handle(&context, &mut ids, Event::Release(at), keys)
@@ -2680,6 +2687,7 @@ fn what_a_tool_added_keeps_its_ids_taken_before_a_read_shows_them() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let keys = Modifiers::default();
     for (kind, clicks) in [
@@ -2796,4 +2804,134 @@ fn a_centrepoint_arcs_end_clicked_straight_across_runs_clockwise() {
         "{:?}",
         d.adds()
     );
+}
+
+// --- #484: the axes the context allows --------------------------------------------------
+
+/// Which axes leave out the x axis (`y_axis` false) or the y axis (`y_axis` true), the
+/// other allowed.
+fn without(y_axis: bool) -> Axes {
+    Axes {
+        x: y_axis,
+        y: !y_axis,
+    }
+}
+
+/// The axis along x (`y_axis` false) or along y.
+fn axis(y_axis: bool) -> Reference {
+    if y_axis {
+        Reference::YAxis
+    } else {
+        Reference::XAxis
+    }
+}
+
+#[test]
+fn a_line_tools_point_beside_a_line_is_on_no_axis_its_context_disallows() {
+    // A line 0.3 off the x axis, (10, 0.3) to (50, 0.3), its middle (30, 0.3) and its ends
+    // far from (20, 0.1), where a line is started; it's ended at (40, 20), far from
+    // everything, 45° up (no direction within 2°). At (20, 0.1) the axis is 0.1 off and the
+    // line 0.2, parallel (no crossing). With both axes allowed (the control) the start is on
+    // the axis, at its foot (20, 0); with the x axis not, on the line, at (20, 0.3). Mirrored
+    // onto the y axis, the same with x and y swapped. The harness checks that the pointer
+    // showed what was added.
+    for y_axis in [false, true] {
+        for (axes, want, foot) in [
+            (Axes::BOTH, axis(y_axis), [20.0, 0.0]),
+            (
+                without(y_axis),
+                Reference::Element(id("zz000001")),
+                [20.0, 0.3],
+            ),
+        ] {
+            let s = with_line(
+                empty(),
+                "zz000001",
+                mirrored([10.0, 0.3], y_axis),
+                mirrored([50.0, 0.3], y_axis),
+            );
+            let mut d = Drive::new(ToolKind::Line, s);
+            d.axes = axes;
+            let (start, end) = (
+                mirrored([20.0, 0.1], y_axis),
+                mirrored([40.0, 20.0], y_axis),
+            );
+            d.click(start[0], start[1]).click(end[0], end[1]);
+            assert_eq!(ons(&d), [want], "along y: {y_axis}, {axes:?}");
+            let line = &d.made[0].lines[0];
+            let placed = d.made[0].points.iter().find(|p| p.id == line.from).unwrap();
+            let foot = mirrored(foot, y_axis);
+            assert_eq!(
+                [placed.x.mm(), placed.y.mm()],
+                foot,
+                "along y: {y_axis}, {axes:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_crossing_with_an_axis_the_context_disallows_isnt_snapped_to() {
+    // n0000001, (−5, 0.3) to (30, 0.3), crosses the y axis at (0, 0.3). A click at
+    // (0.1, 0.6): the crossing √(0.01 + 0.09) = 0.316 off, the y axis 0.1, the line 0.3,
+    // and the x axis and the origin past the pick's 0.5 (0.6 and 0.608), the line's middle,
+    // (12.5, 0.3), and its ends farther. With both axes allowed (the control), the point is
+    // where the two cross, (0, 0.3), on the line and the y axis; with the y axis not, on
+    // the line alone, at its foot (0.1, 0.3). Mirrored onto the x axis, the same with x and
+    // y swapped.
+    for y_axis in [true, false] {
+        let flip = |xy: Xy| mirrored(xy, !y_axis);
+        for (axes, want, place) in [
+            (
+                Axes::BOTH,
+                vec![Reference::Element(id("n0000001")), axis(y_axis)],
+                [0.0, 0.3],
+            ),
+            (
+                without(y_axis),
+                vec![Reference::Element(id("n0000001"))],
+                [0.1, 0.3],
+            ),
+        ] {
+            let s = with_line(empty(), "n0000001", flip([-5.0, 0.3]), flip([30.0, 0.3]));
+            let mut d = Drive::new(ToolKind::Point, s);
+            d.axes = axes;
+            let at = flip([0.1, 0.6]);
+            d.click(at[0], at[1]);
+            assert_eq!(ons(&d), want, "along y: {y_axis}, {axes:?}");
+            // Each place worked out on a line's arithmetic: to a picometre.
+            let p = &d.made[0].points[0];
+            assert!(
+                distance([p.x.mm(), p.y.mm()], flip(place)) < 1e-9,
+                "along y: {y_axis}, {axes:?}: {p:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_lines_middle_on_an_axis_the_context_disallows_takes_no_on_of_it() {
+    // n0000001, (−10, 5) to (10, 5), its middle (0, 5) on the y axis exactly, clicked at
+    // (0.1, 5.1): the middle 0.14 off. With both axes allowed (the control), the point is
+    // the line's midpoint and on the y axis, which passes through it; with the y axis not,
+    // its midpoint alone. Mirrored onto the x axis, the same with x and y swapped.
+    for y_axis in [true, false] {
+        let flip = |xy: Xy| mirrored(xy, !y_axis);
+        for (axes, ons_wanted) in [(Axes::BOTH, vec![axis(y_axis)]), (without(y_axis), vec![])] {
+            let s = with_line(empty(), "n0000001", flip([-10.0, 5.0]), flip([10.0, 5.0]));
+            let mut d = Drive::new(ToolKind::Point, s);
+            d.axes = axes;
+            let at = flip([0.1, 5.1]);
+            d.click(at[0], at[1]);
+            let made = &d.made[0];
+            let p = &made.points[0];
+            assert_eq!([p.x.mm(), p.y.mm()], flip([0.0, 5.0]), "along y: {y_axis}");
+            assert!(
+                made.constraints.iter().any(|c| matches!(&c.form,
+                    Form::Midpoint { line, .. } if *line == Reference::Element(id("n0000001")))),
+                "along y: {y_axis}, {axes:?}: {made:?}"
+            );
+            assert_eq!(ons(&d), ons_wanted, "along y: {y_axis}, {axes:?}");
+        }
+    }
 }
