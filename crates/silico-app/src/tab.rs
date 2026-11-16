@@ -931,10 +931,15 @@ pub struct Row {
     /// Whether its feature is suppressed (a sketch's: then nothing of it is drawn).
     pub suppressed: bool,
     /// A body's meta (app.js's `renderBrowser`): the name of the last healthy feature of its
-    /// chain in timeline order, a sketch's never counted. Healthy is the prototype's word for
-    /// built and shown, which a feature built with warnings is too (Fusion's yellow, "a
-    /// feature that still shows", `silico_core::timeline`); one in error, suppressed, or
-    /// not built (`unknown`) isn't. None for a sketch, or a body none of whose chain is.
+    /// chain in timeline order, a sketch's never counted, but only where that isn't the
+    /// body's own feature. The app names a body after its tip, as SolidWorks names a solid
+    /// body after the feature that last changed it, where the prototype names it `Body1`; so
+    /// the meta adds the last healthy feature only when the tip isn't it (a tip built but in
+    /// error, its drift), and a healthy body shows none rather than its name twice. Healthy
+    /// is the prototype's word for built and shown, which a feature built with warnings is
+    /// too (Fusion's yellow, "a feature that still shows", `silico_core::timeline`); one in
+    /// error, suppressed, or not built (`unknown`) isn't. None for a sketch, a body whose tip
+    /// is healthy, or one none of whose chain is.
     pub last_healthy: Option<String>,
 }
 
@@ -8061,6 +8066,8 @@ pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
                     entry.kind != "sketch"
                         && matches!(entry.health, Health::Healthy | Health::Warning)
                 })
+                // The tip itself is the row's own name already.
+                .filter(|entry| entry.id != entries[at].id)
                 .map(|entry| entry.name.clone());
             Row {
                 last_healthy,

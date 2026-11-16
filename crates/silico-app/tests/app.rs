@@ -18147,8 +18147,9 @@ fn row_texts(h: &AppHarness, name: &str) -> Vec<String> {
 }
 
 /// The body rows' metas name the last healthy feature of each one's chain, and the sketch
-/// rows' their planes: Washer, healthy, itself; Cut, in error (its drift), Raised, the
-/// Notch after it a sketch; each sketch its origin plane, as the prototype writes it.
+/// rows' their planes: Washer, healthy, none (its row is named after its tip, Washer
+/// itself); Cut, a tip in error (its drift), Raised, the Notch after it a sketch; each
+/// sketch its origin plane, as the prototype writes it.
 #[test]
 fn each_rows_meta_is_its_bodys_last_healthy_feature_or_its_sketchs_plane() {
     let f = fixture();
@@ -18161,7 +18162,7 @@ fn each_rows_meta_is_its_bodys_last_healthy_feature_or_its_sketchs_plane() {
     // Cut is in error: its body's mark.
     let bodies = browser(&h).get_by_role_and_label(Role::Group, "Bodies");
     assert!(bodies.query_by_label("Cut").is_some());
-    assert_eq!(row_texts(&h, "Washer"), ["Washer", "Washer"]);
+    assert_eq!(row_texts(&h, "Washer"), ["Washer"]);
     assert_eq!(row_texts(&h, "Cut"), ["Raised", "Cut"]);
     assert!(
         h.state().tabs()[0]
@@ -18188,9 +18189,11 @@ fn each_rows_meta_is_its_bodys_last_healthy_feature_or_its_sketchs_plane() {
 }
 
 /// A pocket the kernel refuses builds nothing, so its body is the pad's, as the model has
-/// it: the pad's row, its meta the pad itself, the last healthy feature of its chain.
+/// it: the pad's row, named after its tip, Raised, which is the last healthy feature of its
+/// chain too, so no meta; the failed pocket no body of its own. (A tip built but in error,
+/// Cut's drift in [`METAS`], shows the last healthy feature: the test before.)
 #[test]
-fn a_body_after_its_last_feature_failed_is_the_last_healthy_ones() {
+fn a_failing_last_feature_leaves_the_pads_body_whose_healthy_tip_shows_no_meta() {
     let f = fixture();
     refuses_the_cut(&f);
     let text = METAS.replace(&format!(", {BAD_FINGERPRINT}"), "");
@@ -18203,7 +18206,7 @@ fn a_body_after_its_last_feature_failed_is_the_last_healthy_ones() {
     });
     let bodies = browser(&h).get_by_role_and_label(Role::Group, "Bodies");
     assert!(bodies.query_by_label("Cut").is_none());
-    assert_eq!(row_texts(&h, "Raised"), ["Raised", "Raised"]);
+    assert_eq!(row_texts(&h, "Raised"), ["Raised"]);
     assert_eq!(never_waits::waits(), 0);
 }
 
