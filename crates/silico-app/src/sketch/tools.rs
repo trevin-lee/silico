@@ -1,11 +1,13 @@
 //! Sketch mode's tools (M5.11b and c; docs/design/m5.0-app.md, section 9, *Sketching*): the
 //! drawing tools, each the core's [`SketchTool`] (#335) driven through its API alone, with
 //! no rule of its own copied here; Smart Dimension, the core's [`SmartDimension`] (#345),
-//! likewise; and trim and split, the core's `sketch_trim`,
-//! `sketch_split`, and `sketch_extend` asked from the pointer's picks. What a tool asks of
-//! the core comes out as [`Request`]s, which the tab sends through its queue, never waited
-//! on; the core's answer to an add is given back by its token ([`Tools::added`],
-//! [`Tools::refused`]), in whatever order it comes.
+//! likewise; trim and split, the core's `sketch_trim`, `sketch_split`, and `sketch_extend`
+//! asked from the pointer's picks; and Extend, SolidWorks' Extend Entities, the core's hover
+//! (`extend_end`, `extend_preview`) on the curve trim and split would pick, and a click's
+//! `sketch_extend` to the next curve. What a tool asks of the core comes out as
+//! [`Request`]s, which the tab sends through its queue, never waited on; the core's answer
+//! to an add is given back by its token ([`Tools::added`], [`Tools::refused`]), in whatever
+//! order it comes.
 //!
 //! What's here of trim and split is only where the pointer is: which curve it's on (within
 //! the pick tolerance, as sketch mode's selection hits one), where a drag's path crosses a
@@ -23,20 +25,21 @@ use silico_core::document::{Coordinate, ElementId, ElementKind, FeatureId};
 use silico_core::extend::End;
 use silico_core::sketch_tools::{
     AddToken, Axes, Context, DimensionEvent, DimensionPreview, Event, Modifiers, NewIds, Offer,
-    Outcome, Preview, SketchTool, SmartDimension, SystemIds, ToolKind,
+    Outcome, Preview, SketchTool, SmartDimension, SystemIds, ToolKind, extend_end, extend_preview,
 };
 
 use super::draw::{
     Curve, Geometry, add, angle, direction, dot, foot, length, mul, segment_distance, sub,
 };
 
-/// The tool chosen: a drawing tool of the core's, Smart Dimension, trim, or split.
+/// The tool chosen: a drawing tool of the core's, Smart Dimension, trim, split, or extend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Choice {
     Draw(ToolKind),
     Dimension,
     Trim,
     Split,
+    Extend,
 }
 
 /// How trim trims: SolidWorks' Power trim, a drag across curves trimming each it crosses and
@@ -52,7 +55,8 @@ pub enum TrimMode {
 
 /// What a tool asks of the core, in the order it asks: a drawing tool's or Smart
 /// Dimension's `sketch_add`, with its token, and trim's, split's, and extend's edits, each
-/// of a curve of the newest read.
+/// of a curve of the newest read. An extend's `step` is what its undo step says, if not
+/// what every sketch edit's says ("Edit" and the sketch): Extend's own, [`EXTEND_STEP`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Request {
     Add {
@@ -71,6 +75,7 @@ pub enum Request {
         curve: ElementId,
         end: End,
         by: ExtendBy,
+        step: Option<&'static str>,
     },
 }
 
@@ -121,6 +126,7 @@ enum Active {
     Dimension(Box<SmartDimension>),
     Trim(Trim),
     Split(Split),
+    Extend(Extend),
 }
 
 /// Trim, between events: a press under way, with what it was on (a curve, its kind, and its
@@ -156,6 +162,15 @@ struct Split {
     pressed: Option<[f64; 2]>,
     first: Option<(ElementId, [f64; 2])>,
 }
+
+/// Extend, between events: a press under way, where it was.
+#[derive(Debug, Default)]
+struct Extend {
+    pressed: Option<[f64; 2]>,
+}
+
+/// What Extend's undo step says (SolidWorks' Extend Entities, as the toolbar names it).
+pub const EXTEND_STEP: &str = "Extend";
 
 /// Sketch mode's tools: the one on, if one is; where new members' IDs come from; what the
 /// tool says and draws; and what it asks of the core, until the tab takes it.
@@ -198,6 +213,7 @@ pub const NOTHING_TO_SPLIT: &str = "nothing to split there: click a line, an arc
 pub const SECOND_ON_CIRCLE: &str =
     "a circle splits at two places: click a second place on the same circle";
 pub const NO_END_TO_EXTEND: &str = "a circle has no end to extend";
+pub const NOTHING_TO_EXTEND: &str = "nothing to extend there: click a line or an arc";
 
 impl Tools {
     /// The tool chosen, if one is.
@@ -207,6 +223,7 @@ impl Tools {
             Active::Dimension(_) => Choice::Dimension,
             Active::Trim(_) => Choice::Trim,
             Active::Split(_) => Choice::Split,
+            Active::Extend(_) => Choice::Extend,
         })
     }
 
@@ -222,6 +239,7 @@ impl Tools {
             Choice::Dimension => Active::Dimension(Box::new(SmartDimension::new())),
             Choice::Trim => Active::Trim(Trim::Idle),
             Choice::Split => Active::Split(Split::default()),
+            Choice::Extend => Active::Extend(Extend::default()),
         });
         self.preview = Preview::default();
         self.said = None;
@@ -238,6 +256,7 @@ impl Tools {
             Some(Active::Dimension(tool)) => tool.busy(),
             Some(Active::Trim(trim)) => matches!(trim, Trim::Pressed { .. }),
             Some(Active::Split(split)) => split.pressed.is_some() || split.first.is_some(),
+            Some(Active::Extend(extend)) => extend.pressed.is_some(),
         }
     }
 
@@ -308,8 +327,15 @@ impl Tools {
 
     /// A newer read, given to Smart Dimension if it's on (`SmartDimension::settle`): its
     /// offer settled or released, its picks and its Modify box measured again; what that
-    /// says kept.
+    /// says kept. Extend, with no press under way, hovers again where the pointer was last,
+    /// so its preview and what it says are of the newest read (a click's extend shown done).
     pub fn settle(&mut self, input: &Input<'_>) {
+        if let (Some(Active::Extend(Extend { pressed: None })), Some(at)) =
+            (&self.active, self.last)
+        {
+            (self.preview, self.said) = extend_hover(input, at);
+            return;
+        }
         let Some(Active::Dimension(tool)) = &mut self.active else {
             return;
         };
@@ -388,6 +414,9 @@ impl Tools {
         if let Some(Active::Split(split)) = &mut self.active {
             *split = Split::default();
         }
+        if let Some(Active::Extend(extend)) = &mut self.active {
+            *extend = Extend::default();
+        }
         self.preview = Preview::default();
     }
 
@@ -436,6 +465,7 @@ impl Tools {
             Some(Active::Dimension(_)) => {}
             Some(Active::Trim(trim)) => *trim = Trim::Idle,
             Some(Active::Split(split)) => *split = Split::default(),
+            Some(Active::Extend(extend)) => *extend = Extend::default(),
             None => {}
         }
         self.preview = Preview::default();
@@ -485,6 +515,13 @@ impl Tools {
                 let asked = self.requests.len();
                 let said = split_event(split, input, event, &mut self.requests, &mut self.preview);
                 self.say(said, asked);
+            }
+            Some(Active::Extend(extend)) => {
+                if let Some(said) =
+                    extend_event(extend, input, event, &mut self.requests, &mut self.preview)
+                {
+                    self.said = said;
+                }
             }
         }
     }
@@ -754,6 +791,7 @@ fn released(
                     curve,
                     end,
                     by: ExtendBy::Point(by),
+                    step: None,
                 });
                 return None;
             }
@@ -774,6 +812,7 @@ fn released(
                 curve,
                 end: headed(geometry, press, at),
                 by: ExtendBy::NextCurve,
+                step: None,
             });
             None
         }
@@ -937,6 +976,94 @@ fn split_click(
             split.first = Some((curve, on));
             Some(SECOND_ON_CIRCLE)
         }
+    }
+}
+
+/// Extend's step (SolidWorks' Extend Entities): each place the pointer is given hovers
+/// there ([`extend_hover`]); a press and its release within the pick of it is a click, which
+/// asks the `sketch_extend` the hover at the press showed, of the curve trim and split would
+/// pick there, its end the half the press was on, to the next curve; or, where that meets
+/// nothing, asks nothing and says the core's words for it. The tool stays on, as SolidWorks'
+/// does. What it says now, if what it said changes: the hover's, then the click's.
+fn extend_event(
+    extend: &mut Extend,
+    input: &Input<'_>,
+    event: Event,
+    requests: &mut Vec<Request>,
+    preview: &mut Preview,
+) -> Option<Option<String>> {
+    let tolerance = input.tolerance();
+    let mut said = None;
+    match event {
+        Event::Press(at) | Event::Move(at) | Event::Release(at) => {
+            let (hovered, hover_said) = extend_hover(input, at);
+            *preview = hovered;
+            said = Some(hover_said);
+            if let Event::Press(at) = event {
+                extend.pressed = Some(at);
+            }
+            if let Event::Release(at) = event
+                && let Some(press) = extend.pressed.take()
+                && length(sub(at, press)) <= tolerance
+            {
+                said = Some(extend_click(input, press, requests));
+            }
+        }
+        Event::Escape | Event::Cancel => {
+            extend.pressed = None;
+            *preview = Preview::default();
+        }
+        Event::DoubleClick(_) | Event::EndChain | Event::Enter => {}
+    }
+    said
+}
+
+/// What Extend shows with the pointer at `at`: over a line or an arc (the curve trim and
+/// split would pick there), its end on the half under the pointer extended to the next
+/// curve, as the core previews it, with the pointer; and, where that meets nothing, no
+/// extension and the core's words for it. Over anything else (a circle, a point, an axis,
+/// nothing), the pointer alone, and nothing said.
+fn extend_hover(input: &Input<'_>, at: [f64; 2]) -> (Preview, Option<String>) {
+    let mut preview = Preview::default();
+    let mut said = None;
+    if let Some((curve, kind, _)) = curve_at(input.read, at, input.tolerance())
+        && kind != ElementKind::Circle
+        && let Some(end) = extend_end(&input.read.members, &curve, at)
+    {
+        match extend_preview(&input.read.members, &curve, end) {
+            Ok(extended) => preview = extended,
+            Err(refused) => said = Some(refused.message().to_owned()),
+        }
+    }
+    preview.pointer = Some(at);
+    (preview, said)
+}
+
+/// Extend's click at `at`: the `sketch_extend` of the curve under it, at the end of the half
+/// it's on, to the next curve, if the core's preview finds one (none said); else what's
+/// said: that there's nothing to extend there, that a circle has no end, or the core's words
+/// for a curve that meets nothing.
+fn extend_click(input: &Input<'_>, at: [f64; 2], requests: &mut Vec<Request>) -> Option<String> {
+    let Some((curve, kind, _)) = curve_at(input.read, at, input.tolerance()) else {
+        return Some(NOTHING_TO_EXTEND.to_owned());
+    };
+    if kind == ElementKind::Circle {
+        return Some(NO_END_TO_EXTEND.to_owned());
+    }
+    let Some(end) = extend_end(&input.read.members, &curve, at) else {
+        return Some(NOTHING_TO_EXTEND.to_owned());
+    };
+    match extend_preview(&input.read.members, &curve, end) {
+        Ok(_) => {
+            requests.push(Request::Extend {
+                curve,
+                end,
+                by: ExtendBy::NextCurve,
+                step: Some(EXTEND_STEP),
+            });
+            None
+        }
+        Err(refused) => Some(refused.message().to_owned()),
     }
 }
 

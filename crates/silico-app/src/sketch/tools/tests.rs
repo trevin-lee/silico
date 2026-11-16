@@ -678,7 +678,8 @@ fn trim_to_closest_trims_the_curve_clicked_at_the_click_and_extends_the_way_a_dr
         [Request::Extend {
             curve: id("na000001"),
             end: End::Start,
-            by: ExtendBy::NextCurve
+            by: ExtendBy::NextCurve,
+            step: None,
         }]
     );
     // And toward its end: at its end.
@@ -741,7 +742,8 @@ fn power_trim_trims_each_curve_a_drag_crosses_in_order_and_extends_one_dragged_a
         [Request::Extend {
             curve: id("na000001"),
             end: End::End,
-            by: ExtendBy::Point([x, y])
+            by: ExtendBy::Point([x, y]),
+            step: None,
         }]
     );
     // A drag from on the circle out across nothing else: a circle has no end to extend,
@@ -1358,7 +1360,8 @@ fn a_power_trim_sweep_pressed_near_a_line_trims_it_where_it_crosses_and_extends_
         [Request::Extend {
             curve: id("na000001"),
             end: End::Start,
-            by: ExtendBy::Point([x, y])
+            by: ExtendBy::Point([x, y]),
+            step: None,
         }]
     );
     // Past its end but off its line on the way, through (45, 3): a sweep, which crosses
@@ -1448,6 +1451,7 @@ fn trim_and_split_take_an_arc_where_its_clicked_crossed_or_dragged_past_its_end(
             curve,
             end: End::End,
             by: ExtendBy::Point([x, y]),
+            step: None,
         },
     ] = desk.edits.as_slice()
     else {
@@ -2299,4 +2303,174 @@ fn an_arcs_distance_is_its_rims_on_its_sweep_and_its_nearer_ends_past_it() {
     assert!((distance([-out, out]) - 1.0).abs() < 1e-9);
     // (−10, −1), just past its end: 1 from (−10, 0).
     assert!((distance([-10.0, -1.0]) - 1.0).abs() < 1e-9);
+}
+
+/// A line na000001 from (0, 0) to (10, 0); a wall, nb000001, along x = 30 from (30, −10) to
+/// (30, 10); a circle ca000001 of radius 5 about (60, 0); and a lone point, pd000001, at
+/// (20, 20).
+fn walled() -> Sketch {
+    let mut sketch = empty();
+    sketch.points = vec![
+        point("pa000001", 0.0, 0.0),
+        point("pa000002", 10.0, 0.0),
+        point("pb000001", 30.0, -10.0),
+        point("pb000002", 30.0, 10.0),
+        point("pc000001", 60.0, 0.0),
+        point("pd000001", 20.0, 20.0),
+    ];
+    sketch.lines = vec![
+        line("na000001", "pa000001", "pa000002"),
+        line("nb000001", "pb000001", "pb000002"),
+    ];
+    sketch.circles = vec![SketchCircle {
+        id: id("ca000001"),
+        center: id("pc000001"),
+        radius: silico_core::document::Coordinate::new(5.0).unwrap(),
+        construction: false,
+    }];
+    sketch
+}
+
+/// The pointer moved to (x, y) with no button held: a hover.
+fn hover(x: f64, y: f64) -> Vec<PointerEvent> {
+    vec![ev(PointerAction::Move, x, y)]
+}
+
+#[test]
+fn extend_previews_the_half_hovered_and_a_click_asks_that_end_to_the_next_curve() {
+    let mut desk = Desk::new(Choice::Extend, walled());
+    // Over na000001 at (8, 0.2), past its midpoint (5, 0): its end, (10, 0), drawn on along
+    // y = 0 to the wall at (30, 0); nothing said, nothing asked.
+    desk.frame(&hover(8.0, 0.2));
+    let preview = desk.mode.tools.preview().clone();
+    assert_eq!(preview.lines.len(), 1, "{preview:?}");
+    assert!(near(preview.lines[0][0], [10.0, 0.0]), "{preview:?}");
+    assert!(near(preview.lines[0][1], [30.0, 0.0]), "{preview:?}");
+    assert_eq!(desk.said(), None);
+    assert!(desk.edits.is_empty());
+    // A click there: one `sketch_extend` of that end to the next curve, its step Extend's.
+    // The tool stays on.
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(
+        desk.edits,
+        [Request::Extend {
+            curve: id("na000001"),
+            end: End::End,
+            by: ExtendBy::NextCurve,
+            step: Some(EXTEND_STEP),
+        }]
+    );
+    assert_eq!(desk.mode.tools.choice(), Some(Choice::Extend));
+    assert!(!desk.mode.tools.busy());
+    // Over (2, −0.2), before the midpoint: its start, (0, 0), which meets nothing to the
+    // left. No extension drawn; the core's words said.
+    desk.edits.clear();
+    desk.frame(&hover(2.0, -0.2));
+    let preview = desk.mode.tools.preview();
+    assert!(
+        preview.lines.is_empty() && preview.arcs.is_empty(),
+        "{preview:?}"
+    );
+    let nothing = "line na000001 meets no other curve past its start";
+    assert_eq!(desk.said(), Some(nothing));
+    // A click there asks nothing, and says so.
+    desk.frame(&click(2.0, -0.2));
+    assert!(desk.edits.is_empty());
+    assert_eq!(desk.said(), Some(nothing));
+    assert_eq!(desk.mode.tools.choice(), Some(Choice::Extend));
+    // Back over the end's half: shown again, what was said let go.
+    desk.frame(&hover(9.0, 0.0));
+    assert_eq!(desk.mode.tools.preview().lines.len(), 1);
+    assert_eq!(desk.said(), None);
+}
+
+#[test]
+fn extend_takes_nothing_from_a_circle_a_point_or_an_axis() {
+    let mut desk = Desk::new(Choice::Extend, walled());
+    // On the circle's rim at (65, 0.2), on the point at (20, 20), and on the y axis at
+    // (0.2, 20), clear of every curve: no extension, nothing said.
+    for [x, y] in [[65.0, 0.2], [20.0, 20.0], [0.2, 20.0]] {
+        desk.frame(&hover(x, y));
+        let preview = desk.mode.tools.preview();
+        assert!(
+            preview.lines.is_empty() && preview.arcs.is_empty() && preview.points.is_empty(),
+            "({x}, {y}): {preview:?}"
+        );
+        assert_eq!(desk.said(), None, "({x}, {y})");
+    }
+    // Clicked: nothing asked; a circle has no end, and the rest is nothing to extend.
+    desk.frame(&click(65.0, 0.2));
+    assert_eq!(desk.said(), Some(NO_END_TO_EXTEND));
+    desk.frame(&click(20.0, 20.0));
+    assert_eq!(desk.said(), Some(NOTHING_TO_EXTEND));
+    desk.frame(&click(0.2, 20.0));
+    assert_eq!(desk.said(), Some(NOTHING_TO_EXTEND));
+    assert!(desk.edits.is_empty());
+}
+
+#[test]
+fn extend_previews_an_arc_round_its_circle_from_the_end_hovered() {
+    // `arced`'s quarter, about (0, 0), radius 10, from 0° to 90°, and a ledge along y = 5
+    // from (−20, 5) to (−1, 5), which the circle meets at 150°, (−√75, 5).
+    let mut sketch = arced();
+    sketch.points.push(point("pb000001", -20.0, 5.0));
+    sketch.points.push(point("pb000002", -1.0, 5.0));
+    sketch.lines = vec![line("na000001", "pb000001", "pb000002")];
+    let ledge = [-(75.0_f64.sqrt()), 5.0];
+    let mut desk = Desk::new(Choice::Extend, sketch);
+    // At 80°, past the mid-angle: the end, from (0, 10) counter-clockwise on to the ledge.
+    let [x, y] = on_ten(80.0);
+    desk.frame(&hover(x, y));
+    let arcs = desk.mode.tools.preview().arcs.clone();
+    assert_eq!(arcs.len(), 1);
+    assert!(near(arcs[0].center, [0.0, 0.0]));
+    assert!(near(arcs[0].start, [0.0, 10.0]), "{arcs:?}");
+    assert!(near(arcs[0].end, ledge), "{arcs:?}");
+    desk.frame(&click(x, y));
+    assert!(matches!(
+        desk.edits.as_slice(),
+        [Request::Extend { curve, end: End::End, by: ExtendBy::NextCurve, .. }] if *curve == id("aa000001")
+    ));
+    // At 10°, before it: the start, clockwise 210° round to the same place, drawn
+    // counter-clockwise from there on to (10, 0).
+    desk.edits.clear();
+    let [x, y] = on_ten(10.0);
+    desk.frame(&hover(x, y));
+    let arcs = desk.mode.tools.preview().arcs.clone();
+    assert!(near(arcs[0].start, ledge), "{arcs:?}");
+    assert!(near(arcs[0].end, [10.0, 0.0]), "{arcs:?}");
+    desk.frame(&click(x, y));
+    assert!(matches!(
+        desk.edits.as_slice(),
+        [Request::Extend {
+            end: End::Start,
+            by: ExtendBy::NextCurve,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn a_read_after_an_extend_shows_the_hover_of_the_newest_sketch() {
+    let mut desk = Desk::new(Choice::Extend, walled());
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 1);
+    // The extend done, as the core does it: na000001's end at (30, 0). The read of it, the
+    // pointer still: the line's midpoint now (15, 0), so (8, 0.2) is its start's half,
+    // which meets nothing; no extension drawn, and said.
+    let end = desk
+        .sketch
+        .points
+        .iter_mut()
+        .find(|p| p.id == id("pa000002"))
+        .unwrap();
+    end.x = silico_core::document::Coordinate::new(30.0).unwrap();
+    desk.revision = desk.revision.next().unwrap();
+    desk.publish();
+    let preview = desk.mode.tools.preview();
+    assert!(preview.lines.is_empty(), "{preview:?}");
+    assert_eq!(
+        desk.said(),
+        Some("line na000001 meets no other curve past its start")
+    );
 }

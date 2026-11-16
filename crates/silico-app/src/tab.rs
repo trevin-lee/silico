@@ -284,12 +284,14 @@ enum Queued {
         curve: ElementId,
         at: Vec<[f64; 2]>,
     },
-    /// Trim's extend (`sketch_extend`) of `curve`'s `end` `by`.
+    /// Trim's or Extend's extend (`sketch_extend`) of `curve`'s `end` `by`; its undo step
+    /// saying `step` (Extend's "Extend"), or, with none, "Edit" and the sketch.
     SketchExtend {
         sketch: FeatureId,
         curve: ElementId,
         end: End,
         by: ExtendBy,
+        step: Option<&'static str>,
     },
     /// A placed dimension's value, of sketch mode numbered `serial`: `set_field` of the
     /// sketch's `constraints.ID.value` to `value`, as the Modify box's text read.
@@ -4326,6 +4328,7 @@ impl Tab {
                     curve,
                     end,
                     by,
+                    step: _,
                 } => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
@@ -5756,7 +5759,9 @@ impl Tab {
             | Queued::SketchAdd { sketch, .. }
             | Queued::SketchTrim { sketch, .. }
             | Queued::SketchSplit { sketch, .. }
-            | Queued::SketchExtend { sketch, .. }
+            | Queued::SketchExtend {
+                sketch, step: None, ..
+            }
             | Queued::DimensionValue { sketch, .. }
             | Queued::Offer {
                 request:
@@ -5765,6 +5770,10 @@ impl Tab {
                     },
                 ..
             } => Some(Words::Of("Edit", sketch.clone())),
+            // By its tool, as its button names it: Extend's click.
+            Queued::SketchExtend {
+                step: Some(step), ..
+            } => Some(Words::Text((*step).to_owned())),
             // By the relation, as its button names it ("Horizontal"), or "Construction": a
             // click's chain of edits one step of that name.
             Queued::Relate { click, .. } => Some(Words::Text(click.applies.name().to_owned())),
@@ -7363,11 +7372,17 @@ impl Tab {
                     curve,
                     at,
                 },
-                Request::Extend { curve, end, by } => Queued::SketchExtend {
+                Request::Extend {
+                    curve,
+                    end,
+                    by,
+                    step,
+                } => Queued::SketchExtend {
                     sketch: sketch.clone(),
                     curve,
                     end,
                     by,
+                    step,
                 },
             };
             if !queued {

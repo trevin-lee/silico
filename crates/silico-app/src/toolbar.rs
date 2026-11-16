@@ -347,12 +347,13 @@ const TRIM: Command = keyed(
     command("Trim", Icon::Trim, None, Does::Tool(Choice::Trim)),
     shortcuts::Command::Trim,
 );
-/// No tool of its own: Trim's drag along a curve extends it.
+/// SolidWorks' Extend Entities, a tool of its own beside Trim's drag-extend, as the
+/// prototype's `sExtend` is; no key, as it has none.
 const EXTEND: Command = command(
     "Extend",
     Icon::Extend,
-    Some("Trim extends a curve dragged along"),
-    Does::NotBuilt,
+    Some("Extends a line or arc to the next curve"),
+    Does::Tool(Choice::Extend),
 );
 const SPLIT: Command = command("Split", Icon::Split, None, Does::Tool(Choice::Split));
 const DIMENSION: Command = keyed(
@@ -1992,7 +1993,7 @@ mod tests {
         ),
         ("Construction", Some(Act::Construction)),
         ("Trim", Some(Act::SketchTool(Choice::Trim))),
-        ("Extend", None),
+        ("Extend", Some(Act::SketchTool(Choice::Extend))),
         ("Split", Some(Act::SketchTool(Choice::Split))),
         ("Smart Dimension", Some(Act::SketchTool(Choice::Dimension))),
         ("Horizontal", Some(Act::Relate(RelationTool::Horizontal))),

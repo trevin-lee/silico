@@ -222,6 +222,7 @@ pub fn choice_name(choice: Choice) -> &'static str {
         Choice::Dimension => "Smart Dimension",
         Choice::Trim => "Trim",
         Choice::Split => "Split",
+        Choice::Extend => "Extend",
     }
 }
 
@@ -254,6 +255,9 @@ fn usage(choice: Choice, trim: TrimMode) -> &'static str {
             "Click a curve to trim it to its closest cuts. Drag from one to extend it."
         }
         (Choice::Split, _) => "Click a curve to split it there. A circle takes two clicks.",
+        (Choice::Extend, _) => {
+            "Click a line or an arc near the end to extend it to the next curve."
+        }
         (Choice::Dimension, _) => {
             "Click a line, a circle, or an arc, or two points or lines, then where the dimension goes. Right-click locks its kind. Esc undoes the last pick."
         }
