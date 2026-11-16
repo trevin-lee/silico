@@ -742,3 +742,7 @@ crates/silico-app/src/arrow.rs | Grip::centroid | replace match guard Arc::ptr_e
 # the canvas's response is disabled, so it's never hovered and takes no right press.
 crates/silico-app/src/app.rs | App<P>::frame | replace > with >= | #497
 crates/silico-app/src/viewport.rs | View::left_events | replace + with * | #497
+crates/silico-core/src/sweep.rs | prism_direction | replace * with / | #511
+crates/silico-core/src/recompute.rs | sweep_step | delete - | #511
+crates/silico-core/src/recompute.rs | sweep_step | replace / with % | #511
+crates/silico-core/src/recompute.rs | sweep_step | replace / with * | #511

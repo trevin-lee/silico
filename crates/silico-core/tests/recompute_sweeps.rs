@@ -163,7 +163,7 @@ fn each_pad_and_pocket_form_sweeps_from_where_its_extent_says_along_its_planes_n
     // Design S3, worked by hand: a pad goes along the sketch's normal (+Z on XY, −Y on XZ,
     // +X on YZ), a pocket against it, either the other way reversed; one side starts on the
     // plane, symmetric half its length back, two sides length2 back and sweeps their sum.
-    let cases: [Form; 12] = [
+    let cases: [Form; 13] = [
         (
             "pad",
             "xy",
@@ -219,6 +219,15 @@ fn each_pad_and_pocket_form_sweeps_from_where_its_extent_says_along_its_planes_n
             r#"{"type": "two_sides", "length": 0.000001, "length2": 0.000002}"#,
             [-0.000002, 0.0, 0.0],
             [0.000003, 0.0, 0.0],
+        ),
+        // Their sum taken in nanometres, rounded once: 300000 nm is 0.3, where 0.1 + 0.2 in
+        // f64 is 0.30000000000000004.
+        (
+            "pad",
+            "xy",
+            r#"{"type": "two_sides", "length": 0.1, "length2": 0.2}"#,
+            [0.0, 0.0, -0.2],
+            [0.0, 0.0, 0.3],
         ),
         (
             "pocket",

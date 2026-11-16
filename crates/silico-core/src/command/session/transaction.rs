@@ -12,16 +12,15 @@ use std::sync::{Arc, OnceLock};
 
 use super::cancel::Ticket;
 use super::rebuilds::{Kept, Rebuilds};
+use super::registry::Unclaimed;
 #[cfg(doc)]
 use super::registry::claim;
-use super::registry::{FileId, Unclaimed, file_at};
 use super::{
     Begun, Committed, Gated, ModelChoice, ModelRead, Problems, Published, Reformatted, Revision,
     RolledBack, Session, SessionId, Transaction, shown_path,
 };
 use crate::command::edit::Candidate;
 use crate::command::wire::Named;
-use crate::disk::digest;
 use crate::document::json::MAX_INPUT_LEN;
 use crate::document::undo::{After, Pushed, UndoStack};
 use crate::document::{self, Document, FeatureId};
@@ -1542,69 +1541,16 @@ impl<C: Kernel + 'static> Session<C> {
         claim: &dyn Fn(Claim<'_>) -> Result<(), Unclaimed>,
     ) -> Result<Reload, Problems> {
         match self.reread(rereads)? {
-            Some(reread) => self.take(reread, claim),
+            Some(reread) => self.reload_from(reread, claim),
             None => Ok(Reload::AsHeld),
         }
     }
 
-    /// The disk watch's own reload (A3), queued for the bytes of digest `settled`, which it
-    /// found settled (#479): the file read as `commit` reads it ([`Rereads::Always`]), inside
-    /// a transaction too (a `begin` queued ahead of it), and taken as [`reload`](Self::reload)
-    /// takes it only if it holds those bytes or the session's own. Anything else it finds
-    /// (other bytes, changed again since it settled, perhaps mid-write; the file gone or
-    /// unreadable; a path leading out of the workspace) isn't claimed, and nothing of it is
-    /// kept: the watch reads it again, and its reload is queued once it has settled again.
-    /// A refusal is kept only of the settled bytes themselves, with what its claim was given
-    /// of the file that held them ([`FoundFile`], #490).
-    pub(super) fn reload_settled(
-        &self,
-        settled: &[u8; 32],
-        claim: &dyn Fn(Claim<'_>) -> Result<(), Unclaimed>,
-    ) -> SettledReload {
-        let reread = match self.reread(Rereads::Always) {
-            Ok(Some(reread)) => reread,
-            Ok(None) => return SettledReload::AsHeld,
-            // Out of the workspace: refused before anything was read.
-            Err(problems) => {
-                tracing::info!(session = %self.id, "the file's reload read nothing, so nothing of it is kept: {}", messages(&problems));
-                return SettledReload::Nothing;
-            }
-        };
-        let read_settled = matches!(&reread.found, Ok((_, now)) if digest(now) == *settled);
-        let read_held = matches!(&reread.found, Ok((_, now)) if *now == *reread.bytes);
-        if !read_settled && !read_held {
-            tracing::info!(session = %self.id, "the file changed again before its reload read it: not reloaded until it settles");
-            return SettledReload::Nothing;
-        }
-        // What the claim is given of the file, kept with a refusal of the settled bytes.
-        let found = FoundFile {
-            found_at: reread.found_at.clone(),
-            file: match &reread.found {
-                Ok((opened, _)) => FileId::of(opened).ok(),
-                Err(_) => None,
-            },
-        };
-        match self.take(reread, claim) {
-            Ok(Reload::Reloaded) => SettledReload::Reloaded,
-            Ok(Reload::AsHeld) => SettledReload::AsHeld,
-            // Inside a transaction: nothing reloaded.
-            Ok(Reload::Outside(_)) => SettledReload::Nothing,
-            // The settled bytes refused (another session's file, no revision left to give).
-            Err(problems) if read_settled => SettledReload::Refused(problems, found),
-            // The session's own bytes refused (another session's copy of them, through a
-            // link): not what settled, so nothing is kept.
-            Err(problems) => {
-                tracing::info!(session = %self.id, "the file's reload found the session's own text and couldn't take it, so nothing of it is kept: {}", messages(&problems));
-                SettledReload::Nothing
-            }
-        }
-    }
-
-    /// The session's file read again as `rereads` says, for [`take`](Self::take): none if
+    /// The session's file read again as `rereads` says, for [`reload_from`](Self::reload_from): none if
     /// it isn't read (no file, or a command that doesn't read it here). Refused, nothing
     /// read, if its path now leads out of the workspace.
-    fn reread(&self, rereads: Rereads) -> Result<Option<Reread>, Problems> {
-        let (own, bytes, transaction) = {
+    pub(super) fn reread(&self, rereads: Rereads) -> Result<Option<Reread>, Problems> {
+        let (own, held, transaction) = {
             let held = self.held.read();
             (
                 held.file.as_ref().map(|own| {
@@ -1630,36 +1576,23 @@ impl<C: Kernel + 'static> Session<C> {
         let Some(found_at) = leads_to(self.workspace.as_ref(), &resolved) else {
             return Err(Problems::from(Workspace::outside_now(Path::new(&path))));
         };
-        let found = file::opened_and_read(&resolved);
+        let read = file::opened_and_read(&resolved);
         Ok(Some(Reread {
             _span: span,
             path,
             resolved,
             found_at,
-            bytes,
+            held,
             part_written,
             transaction,
-            found,
+            read,
         }))
     }
 
-    /// What a reload's claim would be given of the session's file now, as
-    /// [`reread`](Self::reread) finds it, the file opened but not read: what a refusal kept
-    /// of it is matched against ([`Session::reload_wanted`], #490). None for a session with
-    /// no file, or whose path leads out of the workspace now, which a reload refuses before
-    /// it reads anything, keeping nothing.
-    pub(super) fn found_now(&self) -> Option<FoundFile> {
-        let resolved = self.held.read().file.as_ref()?.resolved.clone();
-        let found_at = leads_to(self.workspace.as_ref(), &resolved)?;
-        Some(FoundFile {
-            found_at,
-            file: file_at(&resolved),
-        })
-    }
-
-    /// What [`reread`](Self::reread) found, taken: compared with what the session held,
-    /// claimed, and reloaded or found for the command, as [`reload`](Self::reload) says.
-    fn take(
+    /// The session reloaded from what [`reread`](Self::reread) read: compared with what the
+    /// session held, claimed, and reloaded or found for the command, as
+    /// [`reload`](Self::reload) says.
+    pub(super) fn reload_from(
         &self,
         reread: Reread,
         claim: &dyn Fn(Claim<'_>) -> Result<(), Unclaimed>,
@@ -1669,10 +1602,10 @@ impl<C: Kernel + 'static> Session<C> {
             path,
             resolved,
             found_at,
-            bytes,
+            held,
             part_written,
             transaction,
-            found,
+            read,
         } = reread;
         let claimed = |opened| {
             claim(Claim {
@@ -1684,8 +1617,8 @@ impl<C: Kernel + 'static> Session<C> {
         };
         let gone = || matches!(resolved.try_exists(), Ok(false));
         if part_written {
-            if let Ok((opened, now)) = found
-                && now == *bytes
+            if let Ok((opened, now)) = read
+                && now == *held
             {
                 claimed(opened)?;
                 if let Some(file) = &mut self.held.session_changing().file {
@@ -1696,8 +1629,8 @@ impl<C: Kernel + 'static> Session<C> {
             return Ok(Reload::AsHeld);
         }
         if transaction {
-            let outside = match found {
-                Ok((opened, now)) if now == *bytes => {
+            let outside = match read {
+                Ok((opened, now)) if now == *held => {
                     claimed(opened)?;
                     return Ok(Reload::AsHeld);
                 }
@@ -1715,7 +1648,7 @@ impl<C: Kernel + 'static> Session<C> {
             tracing::info!(session = %self.id, "the file changed outside the session, inside a transaction: not reloaded");
             return Ok(Reload::Outside(outside));
         }
-        let (opened, now) = found.map_err(|error| {
+        let (opened, now) = read.map_err(|error| {
             let suggestion = if gone() {
                 put_back(&path)
             } else {
@@ -1726,7 +1659,7 @@ impl<C: Kernel + 'static> Session<C> {
             };
             Problems::from(not_reloaded(of_file(&path, &error), suggestion))
         })?;
-        if now == *bytes {
+        if now == *held {
             claimed(opened)?;
             return Ok(Reload::AsHeld);
         }
@@ -1745,22 +1678,22 @@ impl<C: Kernel + 'static> Session<C> {
         let now = Arc::new(now);
         // The session's own change, not the command's: it stands whatever the command comes
         // to (a cancel after it too), and the response says `reloaded`.
-        let mut held = self.held.session_changing();
+        let mut changing = self.held.session_changing();
         // What the reload replaces, kept for `diff` until the next reload.
-        held.reloaded_over = Some((held.revision, Arc::clone(&held.text)));
+        changing.reloaded_over = Some((changing.revision, Arc::clone(&changing.text)));
         // Nothing carried: a reloaded session is as a fresh `open`.
-        held.change(next, Arc::clone(&now), gated, Arc::new(BTreeSet::new()));
-        held.bytes = Arc::clone(&now);
+        changing.change(next, Arc::clone(&now), gated, Arc::new(BTreeSet::new()));
+        changing.bytes = Arc::clone(&now);
         // Under the held state's lock, the watch's taken last: what it compares with from
         // now on, the file unchanged.
         if let Some(disk) = self.disk.get() {
             disk.held(now);
         }
-        held.last_reload = Some(next);
+        changing.last_reload = Some(next);
         // Logged before the held state is let go, so whoever sees the new revision finds
         // this in the session's logs too (the logs' own lock is taken alone).
         tracing::info!(session = %self.id, revision = next.number(), "the file changed outside the session: reloaded");
-        drop(held);
+        drop(changing);
         Ok(Reload::Reloaded)
     }
 
@@ -2115,7 +2048,7 @@ impl Reload {
 }
 
 /// Each of `problems`' messages, for a log.
-fn messages(problems: &Problems) -> String {
+pub(super) fn messages(problems: &Problems) -> String {
     let messages: Vec<&str> = problems.errors().iter().map(Error::message).collect();
     messages.join("; ")
 }
@@ -2124,7 +2057,7 @@ fn messages(problems: &Problems) -> String {
 /// now, through links put there since (to another session's path, say), as a reload's claim
 /// is given it: `resolved` itself if it leads nowhere the system can follow; none if it
 /// leads out of the workspace.
-fn leads_to(workspace: Option<&Workspace>, resolved: &Path) -> Option<PathBuf> {
+pub(super) fn leads_to(workspace: Option<&Workspace>, resolved: &Path) -> Option<PathBuf> {
     match file::resolve(workspace, resolved) {
         Ok(found_at) => Some(found_at),
         Err(file::Unresolved::Outside) => None,
@@ -2132,51 +2065,20 @@ fn leads_to(workspace: Option<&Workspace>, resolved: &Path) -> Option<PathBuf> {
     }
 }
 
-/// What a reload's claim is given of the session's file besides its path as `open` resolved
-/// it (fixed while the session holds the file): where that path leads now ([`leads_to`]),
-/// and the file there, by device and inode, none if that couldn't be told. With the
-/// registry's claims, all a claim decides by ([`claim`]).
-#[derive(Debug, PartialEq, Eq)]
-pub(super) struct FoundFile {
-    pub(super) found_at: PathBuf,
-    pub(super) file: Option<FileId>,
-}
-
-/// What the disk watch's own reload came to ([`Session::reload_settled`]; A3, #479).
-pub(super) enum SettledReload {
-    /// Found changed, the settled bytes, and reloaded at a new revision.
-    Reloaded,
-    /// Nothing to change: the file as the session last read or wrote it (a command ahead of
-    /// the reload reloaded it first), the finding stale.
-    AsHeld,
-    /// Nothing reloaded, and nothing kept: inside a transaction (a `begin` queued ahead of
-    /// it), where the settled bytes or the session's are claimed, as `commit` claims what it
-    /// reads, but nothing is reloaded; or the file found other than the settled bytes or the
-    /// session's (changed again since it settled, perhaps mid-write; gone; unreadable;
-    /// leading out of the workspace), not claimed; or the session's own bytes refused
-    /// (another session's copy of them, through a link). The finding as the last comparison
-    /// left it.
-    Nothing,
-    /// The settled bytes, refused (a file another session holds, no revision left to
-    /// give), with what the claim was given of the file that held them: kept, so the same
-    /// bytes aren't queued again while that file stays at the path and no claim changes.
-    Refused(Problems, FoundFile),
-}
-
-/// The session's file as [`Session::reread`] read it, for [`Session::take`]: its path as
-/// `open` was given it, as its links resolved then, and where it leads now; the bytes the
-/// session last read or wrote, as it read; whether its own save left it part written, and
-/// whether a transaction was open; and the read. The reload's span, entered as it read,
-/// lasts until what it read is taken.
-struct Reread {
+/// The session's file as [`Session::reread`] read it, for [`Session::reload_from`]: its path
+/// as `open` was given it, as its links resolved then, and where it leads now; the bytes the
+/// session last read or wrote (`held`), as it read; whether its own save left it part
+/// written, and whether a transaction was open; and the read. The reload's span, entered as
+/// it read, lasts until what it read is taken.
+pub(super) struct Reread {
     _span: tracing::span::EnteredSpan,
     path: String,
     resolved: PathBuf,
-    found_at: PathBuf,
-    bytes: Arc<Vec<u8>>,
+    pub(super) found_at: PathBuf,
+    pub(super) held: Arc<Vec<u8>>,
     part_written: bool,
     transaction: bool,
-    found: Result<(std::fs::File, Vec<u8>), Error>,
+    pub(super) read: Result<(std::fs::File, Vec<u8>), Error>,
 }
 
 /// A file found, inside a transaction, not as its session last read or wrote it: for a
