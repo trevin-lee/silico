@@ -2474,3 +2474,26 @@ fn a_read_after_an_extend_shows_the_hover_of_the_newest_sketch() {
         Some("line na000001 meets no other curve past its start")
     );
 }
+
+#[test]
+fn a_second_click_before_the_read_of_the_first_extend_asks_nothing() {
+    // A wall at x = 20 too: the first click at (9, 0) extends na000001's end to it, (20, 0).
+    // Clicked again before any read shows that, the read is stale: on it the second click
+    // would plan the same end again, though the line now reaches the wall, and go on to the
+    // wall at x = 30, which no preview showed. So it asks nothing; one request in all.
+    let mut sketch = walled();
+    sketch.points.push(point("pe000001", 20.0, -10.0));
+    sketch.points.push(point("pe000002", 20.0, 10.0));
+    sketch.lines.push(line("ne000001", "pe000001", "pe000002"));
+    let mut desk = Desk::new(Choice::Extend, sketch);
+    let mut twice = click(9.0, 0.0);
+    twice.extend(click(9.0, 0.0));
+    desk.frame(&twice);
+    assert_eq!(desk.edits.len(), 1, "{:?}", desk.edits);
+    // And over two frames, with no read between them.
+    desk.edits.clear();
+    let mut desk = Desk::new(Choice::Extend, desk.sketch.clone());
+    desk.frame(&click(9.0, 0.0));
+    desk.frame(&click(9.0, 0.0));
+    assert_eq!(desk.edits.len(), 1, "{:?}", desk.edits);
+}
