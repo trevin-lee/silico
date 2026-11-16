@@ -4768,19 +4768,106 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
     sketch_read(&mut h);
     settled(&mut h);
     delete_line(&mut h, "na000000");
-    // Finished through the tab: the sketch bar draws the whole name, its Finish past the
-    // window's edge.
-    {
-        let sessions = Arc::clone(&f.sessions);
-        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, true);
-    }
-    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
-    settled(&mut h);
+    // Finished through the sketch bar, whose name is cut to fit (#466).
+    leave_sketch(&mut h, true);
     assert_eq!(
         tooltip_title(&mut h, "Undo"),
         format!("Undo: Edit {}…", "V".repeat(60))
     );
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_long_named_sketchs_bar_keeps_cancel_and_finish_in_the_window_and_finish_finishes_it() {
+    // #466: the triangle named 400 W's, open in sketch mode with a line deleted, at the
+    // window's least size (888 by 336) and at a usual one (1280 by 800). The bar's Cancel and
+    // Finish Sketch lie inside the window; at 1280 the bar inside the canvas less its 10 at
+    // each side (1280 − 248 − 296 = 736, so at most 716 wide); its name whole in the tree,
+    // the painted one cut with an ellipsis. Finish, clicked at its middle, keeps the edit:
+    // one step named for the sketch, cut at 60 characters.
+    let triangle = "W".repeat(400);
+    let text = SKETCHED.replace(r#""name": "Triangle""#, &format!(r#""name": "{triangle}""#));
+    let least = (
+        silico_app::theme::WINDOW_MIN_WIDTH,
+        silico_app::theme::WINDOW_MIN_HEIGHT,
+    );
+    assert_eq!(least, (888.0, 336.0));
+    for (width, height) in [least, (1280.0, 800.0)] {
+        let f = fixture();
+        let path = f.file("long.silico", &text);
+        let app = App::new(Arc::clone(&f.sessions));
+        let mut h = {
+            let _marked = never_waits::marked();
+            Harness::builder()
+                .with_size((width + 2.0 * MARGIN, height + 2.0 * MARGIN))
+                .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+        };
+        silico_app::theme::apply(&h.ctx);
+        h.state_mut().open(path.to_str().unwrap(), false);
+        step_until(&mut h, "the timeline read", |h| {
+            h.state()
+                .tabs()
+                .first()
+                .is_some_and(|tab| tab.timeline.is_some())
+        });
+        {
+            let sessions = Arc::clone(&f.sessions);
+            let id = silico_core::document::FeatureId::new("s0000001").unwrap();
+            h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &id);
+        }
+        sketch_read(&mut h);
+        settled(&mut h);
+        delete_line(&mut h, "na000000");
+        // The bar is centred on its last width: laid out again until it stays put.
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        let window = eframe::egui::Rect::from_min_size(
+            eframe::egui::pos2(MARGIN, MARGIN),
+            eframe::egui::vec2(width, height),
+        );
+        let bar = h.get_by_role_and_label(Role::Toolbar, "Sketch bar");
+        for word in ["Cancel", "Finish Sketch"] {
+            let rect = bar.get_by_label(word).rect();
+            assert!(window.contains_rect(rect), "{word} at {rect:?}, {width}");
+        }
+        if width == 1280.0 {
+            let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+            assert_eq!(canvas.width(), 736.0);
+            let inside = canvas.shrink2(eframe::egui::vec2(10.0, 0.0)).expand(0.5);
+            assert!(
+                inside.contains_rect(bar.rect()),
+                "{:?} in {canvas:?}",
+                bar.rect()
+            );
+        }
+        let names: Vec<String> = bar
+            .query_all_by_role(Role::Label)
+            .filter_map(|node| node.accesskit_node().value())
+            .collect();
+        assert!(names.contains(&triangle), "{names:?}");
+        // The bar's own (the browser and the timeline paint it too).
+        let painted: Vec<String> = painted_in(&h, bar.rect())
+            .into_iter()
+            .filter_map(|shape| match shape {
+                eframe::egui::Shape::Text(text) if text.galley.text() == triangle => {
+                    Some(text.galley.rows.iter().map(|row| row.text()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        let [shown] = painted.as_slice() else {
+            panic!("{painted:?}");
+        };
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(shown.starts_with('W') && shown.len() < 400, "{shown}");
+        leave_sketch(&mut h, true);
+        assert_eq!(
+            tooltip_title(&mut h, "Undo"),
+            format!("Undo: Edit {}…", "W".repeat(60))
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
 }
 
 #[test]

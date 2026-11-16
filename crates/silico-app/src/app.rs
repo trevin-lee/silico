@@ -154,6 +154,9 @@ const SKETCH_TOOLS: [(Command, sketch::tools::Choice); 7] = {
 /// its top, centred; the palette at its right, below the ViewCube, as far from the canvas's
 /// right (and, at most, its bottom) as `PALETTE_MARGIN`.
 const SKETCH_BAR_FROM_TOP: f32 = 10.0;
+/// The least the sketch bar stands in from each of the canvas's sides, as far as it stands
+/// below its top: a bar as wide as the canvas allows cuts its sketch's name short (#466).
+const SKETCH_BAR_FROM_SIDE: f32 = SKETCH_BAR_FROM_TOP;
 const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
     egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
@@ -2319,10 +2322,13 @@ impl<P: Clients + 'static> App<P> {
         let offer = mode.offer_view(&name);
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
+        let bar_width = canvas.width() - 2.0 * SKETCH_BAR_FROM_SIDE;
         let bar_drawn = egui::Area::new(sketch::dimension::bar_area(&id))
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
             .pivot(egui::Align2::CENTER_TOP)
-            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar))
+            .show(ui.ctx(), |ui| {
+                action = sketch::bar::sketch_bar(ui, &bar, bar_width);
+            })
             .response
             .rect;
         // Pinned at the canvas's top right, under the ViewCube, as the prototype's is, and
