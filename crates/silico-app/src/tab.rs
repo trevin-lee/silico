@@ -10709,6 +10709,74 @@ mod tests {
         assert!(!found(&tab), "not read from the Cancel's undo");
     }
 
+    /// A chain's edit (Construction's third field, say) refused by the core, not as stale:
+    /// the session's `set_field` of a field the box hasn't, answered as `take` polls it,
+    /// `sending` from the state `state`, the chain begun from `start`. What `take` leaves.
+    fn chain_refused(start: Option<Revision>, state: Revision) -> (Tab, String) {
+        let (_dir, sessions, mut tab) = session_tab();
+        let feature = FeatureId::new("k7f2qx3m").unwrap();
+        let field = "lines.nz000003.construction".to_owned();
+        let value = || Node {
+            at: At::UNPLACED,
+            value: Value::Bool(true),
+        };
+        // What the core says of that edit, asked on its own.
+        let refused = sessions
+            .set_field(
+                &tab.id,
+                tab.revision,
+                feature.clone(),
+                field.clone(),
+                value(),
+            )
+            .wait()
+            .result
+            .unwrap_err();
+        assert!(!stale(&refused), "{refused:?}");
+        let running = sessions.set_field(&tab.id, tab.revision, feature.clone(), field, value());
+        let mut under = Some(Under::Relate {
+            click: Click {
+                serial: 7,
+                sketch: feature,
+                applies: Applies::Construction,
+                picks: Vec::new(),
+            },
+            then: None,
+            pair: start,
+            sending: Sending {
+                against: state,
+                state,
+                step: None,
+            },
+            running: RelateRunning::Field(running),
+        });
+        let mut close = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while let Some(waiting) = under.take() {
+            assert!(std::time::Instant::now() < deadline, "no answer");
+            under = tab.take(&sessions, waiting, &mut close);
+        }
+        (tab, said(&refused))
+    }
+
+    #[test]
+    fn a_chain_refused_part_way_keeps_what_it_made_as_one_step_and_says_the_refusal() {
+        let revision = |n: u64| Revision::from_number(n).unwrap();
+        // Begun from state 1; its first two fields made states 2 and 3; the third, sent from
+        // 3, refused: 1 to 3 one step for sketch mode numbered 7, and the refusal said.
+        let (tab, refusal) = chain_refused(Some(revision(1)), revision(3));
+        assert_eq!(tab.sketch_pairs, [(7, revision(1), revision(3))]);
+        assert_eq!(tab.message, Some(refusal));
+        // Refused at its first edit's follow-up with nothing made since the start: no step.
+        let (tab, refusal) = chain_refused(Some(revision(3)), revision(3));
+        assert!(tab.sketch_pairs.is_empty());
+        assert_eq!(tab.message, Some(refusal));
+        // A click's only edit refused: no chain, no step.
+        let (tab, refusal) = chain_refused(None, revision(3));
+        assert!(tab.sketch_pairs.is_empty());
+        assert_eq!(tab.message, Some(refusal));
+    }
+
     #[test]
     fn a_refused_timeline_asks_again_only_when_the_refusal_changes_what_it_would_ask() {
         let refusal = |code: silico_core::ErrorCode, parameter: Option<&'static str>| {

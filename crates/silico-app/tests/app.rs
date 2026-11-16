@@ -29925,6 +29925,27 @@ fn enter_alone_in_sketch_mode_ends_the_chain_and_asks_for_the_next_frame_at_once
 }
 
 #[test]
+fn x_alone_in_sketch_mode_asks_for_the_next_frame_at_once_whether_it_turns_the_palette_or_curves() {
+    let f = fixture();
+    let mut h = constructing_sketch(&f);
+    settled(&mut h);
+    // Nothing selected: the palette's Construction turned on, a key taken, its change drawn
+    // in the frame it asks for at once.
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::X));
+    assert!(palette_construction(&h));
+    // The bottom selected: a command started, polled in the next frame, asked at once.
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    settled(&mut h);
+    assert!(asks_at_once_after(&mut h, Modifiers::NONE, Key::X));
+    assert_eq!(
+        construction_now(&f, &mut h),
+        constructed(&["na000001", "na000003"])
+    );
+    assert!(palette_construction(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn command_enter_alone_in_sketch_mode_finishes_it_and_asks_for_the_next_frame_at_once() {
     let f = fixture();
     let mut h = triangle_opened(&f);
