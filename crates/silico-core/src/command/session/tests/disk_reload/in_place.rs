@@ -821,37 +821,9 @@ fn a_part_left_written_for_more_than_an_interval_is_reloaded_then_the_whole_the_
 fn settled_bytes_put_back_after_a_link_out_of_the_workspace_are_reloaded() {
     // The reload finds the path leading out of the workspace: refused before anything is
     // read, so nothing is kept of the bytes the watch found settled.
-    let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
-    let root = dir.path().join("work");
-    std::fs::create_dir(&root).unwrap();
-    let path = root.join("a.silico");
-    std::fs::write(&path, BOX).unwrap();
-    let outside = dir.path().join("outside.silico");
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let clock = TestClock::new();
-    let reader = Arc::new(HeldReader::default());
-    let sessions = Sessions::with_stand_ins(
-        Arc::clone(&kernel),
-        move |cache| Cache::with_secret(cache, &secret),
-        || Ok(Box::new(crate::fake::FakeSketches::new()) as Box<dyn SketchSolver>),
-    )
-    .watching_disk(DISK_CHECK_INTERVAL, reader.reader(), clock.clock())
-    .unwrap()
-    .in_workspace(&root)
-    .unwrap();
-    let id = sessions.open(&path, false).wait().session.unwrap().id;
-    let w = Watched {
-        f: Fixture {
-            _dir: dir,
-            kernel,
-            sessions,
-            id,
-            path,
-        },
-        clock,
-        reader,
-    };
+    let w = watched_in(BOX, Some("work"));
+    // Beside the workspace, in the test's directory.
+    let outside = w.f.path.parent().unwrap().with_file_name("outside.silico");
     let count = counting(&w.f.sessions);
     w.compare();
     w.holds(Revision::OPENED, 0, Disk::Unchanged);
@@ -1016,14 +988,71 @@ fn settled_bytes_refused_through_a_link_and_linked_again_queue_no_reload() {
     drop(through);
 }
 
+impl Watched {
+    /// What each refusal of the session's own reload so far said, as its logs keep it: the
+    /// process's subscriber the core's log layer ([`keep_logs`]).
+    fn reload_refusals(&self) -> Vec<String> {
+        let query = crate::command::logs::LogQuery {
+            level: crate::command::logs::LogLevel::Warn,
+            feature: None,
+            after: None,
+            limit: 1000,
+        };
+        let logs = self
+            .f
+            .sessions
+            .read_logs(&self.f.id, &query)
+            .result
+            .unwrap();
+        logs.events
+            .into_iter()
+            .filter(|event| event.spans.first().map(String::as_str) == Some("reload"))
+            .map(|event| event.message)
+            .filter(|message| {
+                message
+                    .starts_with("the file changed on disk, and the session couldn't reload it: ")
+            })
+            .collect()
+    }
+
+    /// The session's own reload refused `refusals` times so far, the last time for the
+    /// session `holder`'s claim, naming no other session.
+    #[track_caller]
+    fn refused_for(&self, refusals: usize, holder: SessionId, others: &[SessionId]) {
+        let said = self.reload_refusals();
+        assert_eq!(said.len(), refusals, "{said:?}");
+        let last = &said[refusals - 1];
+        assert!(
+            last.contains(&format!("is already open in session {holder}")),
+            "{last}"
+        );
+        for other in others {
+            assert!(!last.contains(&format!("session {other}")), "{last}");
+        }
+    }
+}
+
+/// The process's subscriber the core's log layer alone, so each session's logs are kept: for
+/// a test alone in its process (nextest runs each test in its own).
+fn keep_logs() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(crate::command::logs::layer()),
+    )
+    .unwrap();
+}
+
 #[test]
 fn settled_bytes_refused_through_a_link_then_found_in_a_third_sessions_file_are_refused_for_it() {
     // Then the path linked to a third session's file with the same bytes, no claim changed
     // since: another file, so it's tried, and refused for its own holder, once. That
     // refusal is the third session's: the second session closed, the file is tried again (a
-    // claim changed) and still refused; the third closed, it's reloaded.
+    // claim changed) and still refused, for the third; the third closed, it's reloaded.
+    // Whose each refusal is, the session's logs say.
+    keep_logs();
     let (w, others, reload_started, through) = refused_through_a_link(&["b.silico", "c.silico"]);
     let ((second, _), (third, third_file)) = (&others[0], &others[1]);
+    w.refused_for(1, *second, &[*third]);
     w.link_to(third_file);
     w.compare_with_shared_reader();
     assert!(
@@ -1034,6 +1063,7 @@ fn settled_bytes_refused_through_a_link_then_found_in_a_third_sessions_file_are_
     through.send(()).unwrap();
     w.reload_ends();
     assert_eq!(w.f.at(), Revision::OPENED);
+    w.refused_for(2, *third, &[*second]);
     for _ in 0..2 {
         w.compare_with_shared_reader();
         assert!(!w.queued(), "the third session's file was tried again");
@@ -1050,6 +1080,7 @@ fn settled_bytes_refused_through_a_link_then_found_in_a_third_sessions_file_are_
     through.send(()).unwrap();
     w.reload_ends();
     assert_eq!(w.f.at(), Revision::OPENED);
+    w.refused_for(3, *third, &[*second]);
     w.f.sessions.close(third).wait().result.unwrap();
     w.compare_with_shared_reader();
     assert!(
@@ -1267,4 +1298,112 @@ fn a_settled_reload_inside_a_transaction_finding_the_settled_bytes_leaves_the_fi
     assert!(lock(&w.f.session().reloads).refused.is_none());
     // Read after the reload has ended: queued behind it, it would wait at its gate.
     assert_eq!(w.text_of(Revision(2)), other);
+}
+
+#[test]
+fn a_settled_reload_inside_a_transaction_claims_the_file_holding_the_settled_bytes_and_lets_the_last_go()
+ {
+    // Queued behind a `begin` that reloads other bytes, the reload runs inside its
+    // transaction and finds the settled bytes back, in a new file put at the path: it claims
+    // that file for the session, as `commit` claims what it reads, and lets go of the one the
+    // begin claimed, though it reloads nothing. Each file is reached by a name of its own
+    // too (a hard link), which no session holds: only the claim says whose it is.
+    let w = watching_box();
+    let (reload_started, reload_through) = shut(&w.f.session().reloading);
+    let (started, through) = shut(&w.f.session().gate);
+    let begin = w.f.sessions.begin(&w.f.id);
+    started.recv_timeout(WAIT).unwrap();
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    w.compare();
+    w.compare();
+    assert_eq!(w.told_count(), 1);
+    assert!(w.queued());
+    let other = BOX.replace("Block", "Other");
+    std::fs::write(&w.f.path, &other).unwrap();
+    open_gate(&w.f.session().gate);
+    through.send(()).unwrap();
+    // The begin reloads the other bytes (revision 2), claiming the file they're in.
+    assert_eq!(begin.wait().result.unwrap().base, Revision(2));
+    reload_started.recv_timeout(WAIT).unwrap();
+    let last = w.f.path.with_file_name("last.silico");
+    std::fs::hard_link(&w.f.path, &last).unwrap();
+    std::fs::remove_file(&w.f.path).unwrap();
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    let settled = w.f.path.with_file_name("settled.silico");
+    std::fs::hard_link(&w.f.path, &settled).unwrap();
+    open_gate(&w.f.session().reloading);
+    reload_through.send(()).unwrap();
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision(2));
+    assert!(w.f.status().transaction.is_some());
+    assert!(lock(&w.f.session().reloads).refused.is_none());
+    // The file holding the settled bytes is the session's now, by any name.
+    let refused =
+        w.f.sessions
+            .open(&settled, false)
+            .wait()
+            .result
+            .unwrap_err();
+    assert_eq!(refused.errors()[0].parameter(), Some("path"), "{refused:?}");
+    assert!(
+        refused.errors()[0]
+            .message()
+            .ends_with(&format!(" is already open in session {}", w.f.id)),
+        "{refused:?}"
+    );
+    // The one the begin claimed, let go, is anyone's.
+    let opened = w.f.sessions.open(&last, false).wait();
+    assert!(opened.result.is_ok(), "{opened:?}");
+}
+
+#[test]
+fn a_settled_reload_inside_a_transaction_refused_another_sessions_file_keeps_the_refusal_and_wakes_no_one()
+ {
+    // Queued behind a `begin` that reloads other bytes, the reload runs inside its
+    // transaction and finds the settled bytes, but in another session's file linked at the
+    // path: the claim refuses it, as `commit`'s would, and the refusal is kept, as outside a
+    // transaction. Nothing the client draws changed, so it isn't woken.
+    let w = watching_box();
+    let count = counting(&w.f.sessions);
+    let other_file = w.f.path.with_file_name("b.silico");
+    std::fs::write(&other_file, SPHERE).unwrap();
+    let second =
+        w.f.sessions
+            .open(&other_file, false)
+            .wait()
+            .session
+            .unwrap()
+            .id;
+    // Its open's wake given, as its next command answers.
+    settled_in(&w.f.sessions, &second, &count);
+    let (reload_started, reload_through) = shut(&w.f.session().reloading);
+    let (started, through) = shut(&w.f.session().gate);
+    let begin = w.f.sessions.begin(&w.f.id);
+    started.recv_timeout(WAIT).unwrap();
+    std::fs::write(&w.f.path, SPHERE).unwrap();
+    w.compare_with_shared_reader();
+    w.compare_with_shared_reader();
+    assert_eq!(w.told_count(), 1);
+    assert!(w.queued());
+    std::fs::write(&w.f.path, BOX.replace("Block", "Other")).unwrap();
+    open_gate(&w.f.session().gate);
+    through.send(()).unwrap();
+    assert_eq!(begin.wait().result.unwrap().base, Revision(2));
+    reload_started.recv_timeout(WAIT).unwrap();
+    w.link_to(&other_file);
+    let wakes = w.wakes_now(&count);
+    open_gate(&w.f.session().reloading);
+    reload_through.send(()).unwrap();
+    assert_eq!(
+        w.wakes_once_the_reload_returns(&count, Revision(2)),
+        wakes,
+        "the refused reload woke the client"
+    );
+    w.reload_ends();
+    assert_eq!(w.f.at(), Revision(2));
+    assert!(w.f.status().transaction.is_some());
+    assert!(
+        lock(&w.f.session().reloads).refused.is_some(),
+        "the refused reload of the other session's file wasn't kept"
+    );
 }
