@@ -203,6 +203,12 @@ fn foot_height() -> f32 {
         + f32::from(padding.bottom)
 }
 
+/// The search's box's area, the modal's layer (the app's `OnTop::Search`): what's behind it
+/// is inert while it's open, and its field keeps the keyboard.
+pub(crate) fn id() -> egui::Id {
+    egui::Id::new("command-search")
+}
+
 /// The search over the window: its backdrop, then its box. What was asked: a click on the
 /// backdrop closes it, a click on a row that can run runs it. `can` says whether each can.
 pub(crate) fn show(
@@ -222,7 +228,7 @@ pub(crate) fn show(
             response.clicked()
         })
         .inner;
-    let area = egui::Area::new(egui::Id::new("command-search"))
+    let area = egui::Area::new(id())
         .order(egui::Order::Foreground)
         .fixed_pos(screen.min)
         .constrain(false)

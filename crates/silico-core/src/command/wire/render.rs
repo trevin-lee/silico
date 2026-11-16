@@ -263,7 +263,7 @@ pub struct CameraSchema {
 }
 
 /// A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from
-/// −Y, `right` from +X, `top` from +Z, and the corners combine them.
+/// −Y, `right` from +X, `top` from +Z, and the corners and edges combine them.
 #[derive(JsonSchema)]
 #[schemars(rename = "NamedView", rename_all = "snake_case")]
 pub enum NamedViewSchema {
@@ -281,6 +281,18 @@ pub enum NamedViewSchema {
     BottomFrontRight,
     BottomBackLeft,
     BottomBackRight,
+    TopFront,
+    TopBack,
+    TopLeft,
+    TopRight,
+    BottomFront,
+    BottomBack,
+    BottomLeft,
+    BottomRight,
+    FrontLeft,
+    FrontRight,
+    BackLeft,
+    BackRight,
 }
 
 /// `render`'s request: a PNG of the model's bodies from a named view or a camera (one,

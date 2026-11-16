@@ -41,12 +41,18 @@ pub(crate) enum Asked {
     Card(CardAct),
 }
 
-/// What's Wrong over the window, of `tab`: what was asked of it, and the broken
-/// reference's candidate whose row the pointer is over, if it's over one.
-pub(crate) fn show(ctx: &egui::Context, tab: &Tab) -> (Asked, Option<String>) {
+/// What's Wrong's modal, by its name: what it's drawn on.
+pub(crate) fn id() -> egui::Id {
+    egui::Id::new("whats-wrong")
+}
+
+/// What's Wrong over the window, of `tab`, inert if `behind` a question asked over it: what
+/// was asked of it, and the broken reference's candidate whose row the pointer is over, if
+/// it's over one.
+pub(crate) fn show(ctx: &egui::Context, tab: &Tab, behind: bool) -> (Asked, Option<String>) {
     let window = ctx.content_rect().width();
     let width = theme::WHATS_WRONG_WIDTH.min(window - theme::WHATS_WRONG_WINDOW_MARGIN);
-    let (asked, backdrop) = modal::show_sized(ctx, egui::Id::new("whats-wrong"), width, |ui| {
+    let (asked, backdrop) = modal::show_sized(ctx, id(), width, behind, |ui| {
         ui.scope_builder(UiBuilder::new().id_salt("whats-wrong"), |ui| {
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Dialog);
@@ -240,7 +246,7 @@ mod tests {
     fn shown(tab: Tab, window: Vec2) -> Harness<'static, Shown> {
         let mut h = Harness::builder().with_size(window).build_ui_state(
             |ui, shown: &mut Shown| {
-                let (asked, _hovered) = show(ui.ctx(), &shown.tab);
+                let (asked, _hovered) = show(ui.ctx(), &shown.tab, false);
                 if asked != Asked::None {
                     shown.asked.push(asked);
                 }

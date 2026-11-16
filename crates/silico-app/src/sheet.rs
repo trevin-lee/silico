@@ -45,11 +45,17 @@ pub(crate) struct Sheet {
     focused: bool,
 }
 
-/// The sheet over the window: whether it's asked closed (its × or its backdrop).
-pub(crate) fn show(ctx: &egui::Context, sheet: &mut Sheet) -> bool {
+/// The sheet's modal, by its name: what it's drawn on.
+pub(crate) fn id() -> egui::Id {
+    egui::Id::new("shortcut-sheet")
+}
+
+/// The sheet over the window, inert if `behind` a question asked over it (a quit's, a
+/// replace's): whether it's asked closed (its × or its backdrop).
+pub(crate) fn show(ctx: &egui::Context, sheet: &mut Sheet, behind: bool) -> bool {
     let window = ctx.content_rect().width();
     let width = theme::SHEET_WIDTH.min(window - theme::SHEET_WINDOW_MARGIN);
-    let (closed, backdrop) = modal::show_sized(ctx, egui::Id::new("shortcut-sheet"), width, |ui| {
+    let (closed, backdrop) = modal::show_sized(ctx, id(), width, behind, |ui| {
         ui.scope_builder(UiBuilder::new().id_salt("shortcut-sheet"), |ui| {
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Dialog);
@@ -523,7 +529,7 @@ mod tests {
         };
         let mut h = Harness::builder().with_size(window).build_ui_state(
             |ui, (sheet, closed): &mut (Sheet, bool)| {
-                *closed |= show(ui.ctx(), sheet);
+                *closed |= show(ui.ctx(), sheet, false);
             },
             (open, false),
         );

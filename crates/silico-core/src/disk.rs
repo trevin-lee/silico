@@ -118,12 +118,26 @@ pub type Reader = Arc<dyn Fn(&Path) -> Found + Send + Sync>;
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// What a watch tells its session each time a comparison finds the file changed and settled,
-/// the comparison before it having found the same bytes (with the digest of what it read,
-/// [`digest`], and the count of the session's reads and writes it compared against), with no
-/// lock held, so the session can reload it ([`DiskWatch::when_changed`]): only if the count
-/// is still the session's ([`DiskWatch::current`]), as it checks under its own lock, since a
+/// the comparison before it having found the same bytes (with the [`Digest`] of what it
+/// read, and the count of the session's reads and writes it compared against), with no lock
+/// held, so the session can reload it ([`DiskWatch::when_changed`]): only if the count is
+/// still the session's ([`DiskWatch::current`]), as it checks under its own lock, since a
 /// read or write of the session's may come between the finding and this.
-pub type Changed = Arc<dyn Fn(&[u8; 32], u64) + Send + Sync>;
+pub type Changed = Arc<dyn Fn(&Digest, u64) + Send + Sync>;
+
+/// The SHA-256 digest of a file's bytes: what the disk watch keeps of a change until it
+/// settles and tells its session ([`Changed`]), what the session's own reload checks the
+/// file still holds before it loads it, and what a reload the session refused keeps, with
+/// the file that held them, so the same bytes in the same file aren't queued again.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Digest([u8; 32]);
+
+impl Digest {
+    /// The digest of `bytes`.
+    pub(crate) fn of(bytes: &[u8]) -> Self {
+        Digest(sha2::Sha256::digest(bytes).into())
+    }
+}
 
 /// A session's file watched for changes on disk.
 pub struct DiskWatch {
@@ -174,7 +188,7 @@ struct State {
     /// finding, and whenever the session reads or writes, so a change is told only for two
     /// comparisons in a row against what the session holds. A digest, not the bytes: a file
     /// may be as long as Silico reads, and stay changed for as long as a transaction is open.
-    unsettled: Option<[u8; 32]>,
+    unsettled: Option<Digest>,
     /// The finding the waker was last told of: what a new one is told against, whatever
     /// the session's reads and writes cleared since (so its own save, found unchanged
     /// again, tells nothing).
@@ -428,7 +442,7 @@ fn compare_once(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
     let (found, changed_to) = match (shared.read)(path) {
         Found::Bytes(bytes) if bytes.as_slice() == held => (Disk::Unchanged, None),
         Found::Bytes(bytes) if bytes.is_empty() => (Disk::Changed, None),
-        Found::Bytes(bytes) => (Disk::Changed, Some(digest(&bytes))),
+        Found::Bytes(bytes) => (Disk::Changed, Some(Digest::of(&bytes))),
         Found::Gone => (Disk::Gone, None),
         Found::Unreadable => (Disk::Unreadable, None),
     };
@@ -475,14 +489,6 @@ fn compare_once(shared: &Shared, path: &Path, counter: u64, held: &[u8]) {
             .changed_told
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
-}
-
-/// The SHA-256 digest of a file's bytes: what the disk watch keeps of a change until it
-/// settles, what the session's own reload checks the file still holds before it loads it,
-/// and what a reload the session refused keeps, with the file that held them, so the same
-/// bytes in the same file aren't queued again.
-pub(crate) fn digest(bytes: &[u8]) -> [u8; 32] {
-    sha2::Sha256::digest(bytes).into()
 }
 
 /// A comparison's end if its read panics: none running, and the time it ended.

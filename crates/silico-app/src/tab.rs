@@ -2019,6 +2019,15 @@ impl Tab {
         }
     }
 
+    /// A modal over the window (#487), each frame it is, before the canvas reads the frame's
+    /// events ([`crate::arrow::Grip::modal_over`]): an arrow's stream held takes them as
+    /// ever, so a release before the modal's key finishes its click and a move its drag, and
+    /// the cancel the canvas then gives what's still held keeps the drag's value, sent as
+    /// the stream ends ([`arrows_frame`](Self::arrows_frame)).
+    pub(crate) fn arrow_under_modal(&mut self) {
+        self.grip.modal_over();
+    }
+
     /// Esc given to an arrow's stream held, if one is and still acts in the open dialog: a
     /// drag ends where it began, its input given back the text it held at its press and that
     /// sent; a press on the flip arrow does nothing more. Whether it took the Esc.
@@ -2080,7 +2089,7 @@ impl Tab {
     /// Look At (Ctrl+8; Fusion's Look At, SolidWorks' Normal To; the prototype's `lookAt`):
     /// in sketch mode, the view square to the sketch's plane, its x across and its y up;
     /// otherwise square to the one face selected, if the core measured it planar, from its
-    /// outward normal, up as the named views have it ([`crate::navigate::up_across`]). Each
+    /// outward normal, up as the named views have it ([`silico_core::views::up_across`]). Each
     /// fits what a named view fits. Else what's missing is said, and the view stays.
     pub fn look_at(&mut self) {
         use crate::viewport::ViewAsk;
@@ -2114,12 +2123,12 @@ impl Tab {
     }
 
     /// The view square to a planar face from `toward`, its outward unit normal, up as the
-    /// named views have it ([`crate::navigate::up_across`]): Look At's turn to a face, from
+    /// named views have it ([`silico_core::views::up_across`]): Look At's turn to a face, from
     /// the face selected (Ctrl+8) or the one under the canvas menu.
     pub fn look_at_face(&mut self, toward: [f64; 3]) {
         self.view.ask(crate::viewport::ViewAsk::LookAt {
             toward,
-            up: crate::navigate::up_across(toward),
+            up: silico_core::views::up_across(toward),
         });
     }
 
@@ -2260,10 +2269,7 @@ impl Tab {
     /// the selection is the bodies its boxes hold, so the menu opens over it as it is, as a
     /// right-click never fills a box). Both panes' menus take this one rule.
     pub(crate) fn menu_selects(&self, id: &FeatureId, how: crate::selection::SelectedAs) -> bool {
-        let boxes_hold = self
-            .dialog
-            .as_ref()
-            .is_some_and(crate::dialog::Dialog::boxes_hold_bodies);
+        let boxes_hold = self.dialog.as_ref().is_some_and(Dialog::boxes_hold_bodies);
         !boxes_hold && !self.selection.selected_as(id, how)
     }
 
