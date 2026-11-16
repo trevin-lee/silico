@@ -749,9 +749,6 @@ crates/silico-app/src/viewport.rs | View::left_events | replace + with * | #497
 # changes no answer.
 crates/silico-core/src/document/suppression.rs | ConsumerForest::on_way | replace < with <= | #503
 crates/silico-core/src/sweep.rs | prism_direction | replace * with / | #511
-crates/silico-core/src/recompute.rs | sweep_step | delete - | #511
-crates/silico-core/src/recompute.rs | sweep_step | replace / with % | #511
-crates/silico-core/src/recompute.rs | sweep_step | replace / with * | #511
 crates/silico-app/src/canvas_hint.rs | empty_part | replace * with / | #518
 crates/silico-app/src/canvas_hint.rs | empty_part | replace * with / | #518
 crates/silico-app/src/toolbar.rs | forget_planes_drawn | replace forget_planes_drawn with () | #518
