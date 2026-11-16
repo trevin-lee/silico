@@ -574,14 +574,15 @@ struct Group {
 }
 
 /// An edit in flight: its feature and field, and its value, as it was sent, and its answer
-/// to come; and whether its `begin` was sent for it (rolled back if it's refused with
-/// nothing after it, so no empty transaction stays open: #475).
+/// to come; and whether it's a plain edit whose own `begin` was sent for it, outside a dialog
+/// or sketch mode, decided as it's sent (its transaction rolled back if it's refused, so no
+/// empty transaction stays open: #475).
 struct Flying {
     field: (FeatureId, String),
     value: Node,
     sending: Sending,
     running: Running<FieldSet>,
-    began: bool,
+    plain: bool,
 }
 
 /// A tab's edits and what waits with them: at most one edit in flight, the rest queued
@@ -687,6 +688,9 @@ enum Under {
         running: Running<RolledBack>,
         then_close: bool,
         lands: Lands,
+        /// Whether the fields keep what was typed: a refused plain edit's own transaction
+        /// rolled back (#475), its field showing the text refused, as any refusal leaves it.
+        keep_fields: bool,
     },
     /// An undo or a redo, the sketch mode it was asked in, if it was, and whether it's an
     /// over-defining dimension's Cancel (SD7), whose `conflict` is said as overtaken; and
@@ -2915,6 +2919,7 @@ impl Tab {
                 running: sessions.rollback(&self.id),
                 then_close: false,
                 lands: Lands::Nothing,
+                keep_fields: false,
             });
         }
         self.advance(sessions);
@@ -3196,13 +3201,14 @@ impl Tab {
                 running,
                 then_close,
                 lands,
+                keep_fields,
             } => match running.try_take() {
                 Ok(response) => {
                     self.landed(lands, response.session.as_ref());
                     self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
                     // Typing queued after it is applied next: the field keeps it.
-                    if response.result.is_ok() && self.edits.idle() {
+                    if response.result.is_ok() && self.edits.idle() && !keep_fields {
                         self.resets += 1;
                     }
                     self.ended(response.result.map(|_| ()), then_close, close);
@@ -3212,6 +3218,7 @@ impl Tab {
                     running,
                     then_close,
                     lands,
+                    keep_fields,
                 }),
             },
             Under::Step {
@@ -3811,16 +3818,11 @@ impl Tab {
             value,
             sending,
             running,
-            began,
+            plain,
         }) = self.edits.in_flight.take()
         {
             match running.try_take() {
                 Ok(response) => {
-                    // The session moved before the edit ran: its `begin` reloaded the file.
-                    let moved = response
-                        .session
-                        .as_ref()
-                        .is_some_and(|session| session.revision != sending.against);
                     self.took_session(&response);
                     // A rename says the name it replaced, as the session answers it, and
                     // names the state it made with the one it gave.
@@ -3848,22 +3850,22 @@ impl Tab {
                             } else {
                                 self.refused.insert(field);
                             }
-                            // A plain edit's own transaction (no dialog's or sketch mode's,
-                            // whose close ends it), its `begin` reloading the file and the
-                            // edit refused as sent against the revision before (#475): it
-                            // holds nothing, so it's ended now, as Restore's and Save As's
-                            // are; an edit queued after it begins its own. Any other refusal
-                            // keeps it, the field keeping what was typed (#298's review).
-                            if began
-                                && moved
-                                && !self.in_dialog()
-                                && self.dialog_base.is_none()
-                                && !self.in_sketch()
-                            {
+                            // A plain edit's own transaction, begun for it outside a
+                            // dialog or sketch mode, holds nothing once it's refused (its
+                            // begin reloading the file, the edit sent against the revision
+                            // before; or a value refused): ended now, as Restore's and Save
+                            // As's are, so no transaction stays open the person didn't open
+                            // (#475), and the session follows its file again. The field keeps
+                            // what was typed (#298's review); an edit queued after it begins
+                            // its own.
+                            if plain {
+                                self.supersede_preview();
+                                self.record(Sent::Rollback);
                                 self.under.push(Under::Rollback {
                                     running: sessions.rollback(&self.id),
                                     then_close: false,
                                     lands: Lands::Nothing,
+                                    keep_fields: true,
                                 });
                             }
                         }
@@ -3875,7 +3877,7 @@ impl Tab {
                         value,
                         sending,
                         running,
-                        began,
+                        plain,
                     });
                     return;
                 }
@@ -3891,7 +3893,10 @@ impl Tab {
             let step = self.step_words(&queued);
             match queued {
                 Queued::Edit(edit, _) => {
-                    let began = self.begin_if_none(sessions);
+                    let plain = self.begin_if_none(sessions)
+                        && self.dialog_base.is_none()
+                        && !self.in_dialog()
+                        && !self.in_sketch();
                     self.supersede_preview();
                     self.edits.sent += 1;
                     self.record(Sent::Edit(edit.field.clone()));
@@ -3910,7 +3915,7 @@ impl Tab {
                         value,
                         sending,
                         running,
-                        began,
+                        plain,
                     });
                 }
                 // A sweep's body read at another revision than the session's now: read again.
@@ -4322,6 +4327,7 @@ impl Tab {
                             running: sessions.rollback(&self.id),
                             then_close: false,
                             lands,
+                            keep_fields: false,
                         });
                     } else if unchanged {
                         // Nothing of the dialog's changed the document.
@@ -4366,6 +4372,7 @@ impl Tab {
                         running: sessions.rollback(&self.id),
                         then_close,
                         lands: Lands::Everything,
+                        keep_fields: false,
                     });
                 }
                 Queued::SaveAs {
@@ -9508,7 +9515,7 @@ mod tests {
                     field.to_owned(),
                     value(),
                 ),
-                began: false,
+                plain: false,
             });
             assert_eq!(tab.base_held(), held, "{feature}'s {field}");
             assert_eq!(tab.can_ok(), !held, "{feature}'s {field}");
@@ -12738,15 +12745,18 @@ mod tests {
         pin_named_at(&dir.path().join("part.silico"), "Bolt");
         tab.rename(&sessions, pin, "PinC");
         taken_until(&mut tab, &sessions, Tab::quiet);
-        assert!(tab.message.is_some(), "the refusal wasn't said");
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(said.contains("revision"), "the refusal said: {said:?}");
         assert_eq!(banner(&tab), Some((rev(3), rev(4))));
         let open = sessions.status(&tab.id).session.unwrap().transaction;
         assert!(!open, "an empty transaction left open");
         assert!(!tab.transaction);
+        assert_eq!(tab.unsaved_edits(), 0);
+        assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
     }
 
     #[test]
-    fn a_refused_plain_edit_with_another_queued_after_it_keeps_the_transaction() {
+    fn a_plain_edit_queued_after_a_refused_one_is_applied_in_its_own_transaction() {
         // The same, but another rename queued behind the refused one: sent after the empty
         // transaction is rolled back, it begins its own, and is applied, nothing lost.
         let (dir, sessions, mut tab, pin) = pin_renamed();
@@ -12763,6 +12773,40 @@ mod tests {
         );
         let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
         assert!(text.contains(r#""name": "Base""#), "{text}");
+        let name = || Sent::Edit("name".to_owned());
+        let tail = &tab.sent[tab.sent.len() - 5..];
+        assert_eq!(
+            tail,
+            [Sent::Begin, name(), Sent::Rollback, Sent::Begin, name()],
+            "{:?}",
+            tab.sent
+        );
+        assert_eq!(tab.unsaved_edits(), 1);
+    }
+
+    #[test]
+    fn a_plain_edit_refused_after_a_dialog_opened_behind_it_still_leaves_no_transaction() {
+        // #504's review: a radius of -1 typed for the pin (refused by the gate), then the
+        // block's dialog asked before any answer is taken. The edit was plain as it was sent,
+        // so its refusal rolls back its own transaction, and the dialog opens at no
+        // transaction, its own: its Cancel leaves none open.
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.edit(&sessions, field_set(&pin, "radius", "-1"));
+        tab.edit_feature(&sessions, &FeatureId::new("k7f2qx3m").unwrap());
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet() && tab.dialog.is_some()
+        });
+        assert!(tab.message.is_some(), "the radius wasn't refused");
+        assert!(
+            tab.dialog_began,
+            "the dialog took the refused edit's transaction"
+        );
+        tab.close_dialog(&sessions, false);
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        let open = sessions.status(&tab.id).session.unwrap().transaction;
+        assert!(!open, "a transaction left open");
     }
 
     #[test]
@@ -12789,6 +12833,7 @@ mod tests {
         let second = tab.loading.unwrap();
         assert_ne!(second, first);
         assert_eq!(tab.dialog_base, Some(past));
+        assert!(tab.dialog_began);
         assert!(tab.edits.queue.iter().any(|queued| matches!(
             queued,
             Queued::Load { serial, feature, .. } if *serial == second && *feature == pin
