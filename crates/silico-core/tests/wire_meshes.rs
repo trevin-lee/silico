@@ -231,7 +231,7 @@ fn a_request_from_each_cube_edge_is_read_as_that_view_and_holds_to_its_schema() 
         ("back_right", NamedView::BackRight),
     ] {
         let text = format!(
-            "{{\n  \"session\": \"s1\",\n  \"model\": \"current\",\n  \"view\": \"{name}\",\n  \"camera\": null,\n  \"width\": 100,\n  \"height\": 100,\n  \"features\": null,\n  \"held\": []\n}}\n"
+            "{{\"session\": \"s1\", \"model\": \"current\", \"view\": \"{name}\", \"camera\": null, \"width\": 100, \"height\": 100, \"features\": null, \"held\": []}}\n"
         );
         let request = MeshesRequest::read(&parsed(&text)).unwrap();
         assert_eq!(request.meshes.view, Some(view), "{name}");
