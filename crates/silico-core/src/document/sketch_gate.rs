@@ -480,12 +480,12 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     // nothing it doesn't, and every refusal of the pair says to remove the tangent, so none
     // asks for a tangent_on the sketch has (#498), or for a second tangency of the pair: the
     // point it names is the ending curve's own tangent_on's, holding the refused end, else the
-    // first tangent_on's of the pair (`tangency`). A tangent_on the gate refuses for its `at`
-    // or its two lines (`tangent_on_at`, `both_lines`) makes nothing tangent, so it isn't
-    // counted among the pair's, nor preferred as the hold a tangent's refusal names (each
-    // `tangent_on` with whether the gate takes it so far).
+    // first tangent_on's of the pair (`tangency`). A tangent_on the gate refuses on its own,
+    // for its `at` or its two lines (`tangent_on_at`, `both_lines`), holds nothing for the
+    // rule, which pairs it with no edge tangent: its own refusal says what's wrong, and once
+    // it's fixed the rule judges the pair as usual.
     let mut holds: BTreeMap<(&Reference, &ElementId), Vec<Hold>> = BTreeMap::new();
-    let mut tangent_ons: BTreeMap<(&Reference, &ElementId, &Reference), (usize, &ElementId, bool)> =
+    let mut tangent_ons: BTreeMap<(&Reference, &ElementId, &Reference), (usize, &ElementId)> =
         BTreeMap::new();
     let mut pairs: BTreeMap<(&Reference, &Reference), (usize, &ElementId)> = BTreeMap::new();
     for (i, c) in sketch.constraints.iter().enumerate() {
@@ -499,19 +499,19 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             _ => HoldKind::On,
         };
         if let Some(point) = point.element() {
+            if let HoldKind::TangentOn(a) = kind
+                && (tangent_on_at(sketch, a, point, curve, lookup).is_some()
+                    || both_lines(a, curve, lookup))
+            {
+                continue;
+            }
             holds
                 .entry((curve, point))
                 .or_default()
                 .push((i, &c.id, kind));
             if let HoldKind::TangentOn(a) = kind {
-                let taken = tangent_on_at(sketch, a, point, curve, lookup).is_none()
-                    && !both_lines(a, curve, lookup);
-                tangent_ons
-                    .entry((curve, point, a))
-                    .or_insert((i, &c.id, taken));
-                if taken {
-                    pairs.entry((a, curve)).or_insert((i, point));
-                }
+                tangent_ons.entry((curve, point, a)).or_insert((i, &c.id));
+                pairs.entry((a, curve)).or_insert((i, point));
             }
         }
     }
@@ -674,7 +674,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             tangents.entry((y, end)).or_insert((&constraint.id, x));
                         }
                         for &end in &ends {
-                            if let Some(&(place, id, true)) = tangent_ons.get(&(y, end, x))
+                            if let Some(&(place, id)) = tangent_ons.get(&(y, end, x))
                                 && place < i
                                 && tangent_on.is_none_or(|(first, ..)| place < first)
                             {
@@ -745,9 +745,15 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 ));
             }
             Form::TangentOn { a, at: end, b, .. } => {
+                let problem = end
+                    .element()
+                    .and_then(|point| tangent_on_at(sketch, a, point, b, lookup));
+                let lines = both_lines(a, b, lookup);
                 // The tangent rule's pair, refused here when the tangent_on comes after the
-                // tangent.
-                if let Some(point) = end.element()
+                // tangent; a tangent_on refused on its own holds nothing for the rule.
+                if problem.is_none()
+                    && !lines
+                    && let Some(point) = end.element()
                     && let Some(&(tangent, ending)) = tangents.get(&(b, point))
                 {
                     add(refuse(
@@ -765,7 +771,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     ));
                 }
                 if let Some(point) = end.element()
-                    && let Some(problem) = tangent_on_at(sketch, a, point, b, lookup)
+                    && let Some(problem) = problem
                 {
                     let (message, suggestion) = match problem {
                         TangentOnAt::NotAnEndOfA => (
@@ -790,7 +796,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     };
                     add(refuse(&format!("{at}.at"), message, suggestion));
                 }
-                if both_lines(a, b, lookup) {
+                if lines {
                     add(refuse(
                         &format!("{at}.b"),
                         "a tangent_on takes a curve ending on a circle or arc, or an arc ending on a line: two lines can't be tangent".to_owned(),
@@ -1177,10 +1183,7 @@ fn both_lines(
 /// (each `tangent_on` by the curve and point it holds and its a, `tangent_ons`), else the `at`
 /// of the first `tangent_on` of the two in the list (each by its a and b, `pairs`).
 fn tangency<'a>(
-    tangent_ons: &BTreeMap<
-        (&'a Reference, &'a ElementId, &'a Reference),
-        (usize, &'a ElementId, bool),
-    >,
+    tangent_ons: &BTreeMap<(&'a Reference, &'a ElementId, &'a Reference), (usize, &'a ElementId)>,
     pairs: &BTreeMap<(&'a Reference, &'a Reference), (usize, &'a ElementId)>,
     ending: &'a Reference,
     point: &'a ElementId,
