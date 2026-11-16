@@ -3530,11 +3530,16 @@ impl Tab {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(&sending, &response);
+                    // Extend's click's answer: made, its tool clicks again once a read holds
+                    // it; refused, at once.
+                    if extend_click && let Some(mode) = self.sketch.as_mut() {
+                        match (&response.result, &response.session) {
+                            (Ok(_), Some(session)) => mode.tools.extend_made(session.revision),
+                            _ => mode.tools.extend_refused(),
+                        }
+                    }
                     if let Err(problems) = response.result {
                         self.message = Some(said(&problems));
-                        if extend_click && let Some(mode) = self.sketch.as_mut() {
-                            mode.tools.extend_refused();
-                        }
                     }
                     None
                 }

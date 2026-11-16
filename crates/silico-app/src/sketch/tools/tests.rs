@@ -2501,7 +2501,7 @@ fn a_second_click_before_the_read_of_the_first_extend_asks_nothing() {
 }
 
 #[test]
-fn a_newer_read_or_the_extends_refusal_lets_extend_click_again() {
+fn the_extends_refusal_or_a_read_of_what_it_made_lets_extend_click_again() {
     let mut desk = Desk::new(Choice::Extend, walled());
     desk.frame(&click(8.0, 0.2));
     assert_eq!(desk.edits.len(), 1);
@@ -2513,14 +2513,74 @@ fn a_newer_read_or_the_extends_refusal_lets_extend_click_again() {
     desk.mode.tools.extend_refused();
     desk.frame(&click(8.0, 0.2));
     assert_eq!(desk.edits.len(), 2, "{:?}", desk.edits);
-    // And so does a newer read: the session one on, its sketch as it was (another client's
-    // edit elsewhere), so the click plans the same extend again.
+    // And so does its answer, made at the next revision, once a read of that revision comes
+    // (its sketch as it was, for the test, so the click plans the same extend again).
     desk.revision = desk.revision.next().unwrap();
+    desk.mode.tools.extend_made(desk.revision);
+    desk.frame(&click(8.0, 0.3));
+    assert_eq!(
+        desk.edits.len(),
+        2,
+        "made, but no read holds it yet: {:?}",
+        desk.edits
+    );
     desk.publish();
     desk.frame(&click(8.0, 0.3));
     assert_eq!(desk.edits.len(), 3, "{:?}", desk.edits);
     // Hovering went on all the while.
     assert_eq!(desk.mode.tools.preview().lines.len(), 1);
+}
+
+#[test]
+fn only_a_read_at_or_past_the_revision_an_extend_made_lets_it_go() {
+    let r0 = Revision::OPENED;
+    let r1 = r0.next().unwrap();
+    let r2 = r1.next().unwrap();
+    let r3 = r2.next().unwrap();
+    let mut desk = Desk::new(Choice::Extend, walled());
+    // Planned on r0's read; its answer made r2 (an undo's r1 came between, its read still
+    // to come).
+    desk.frame(&click(8.0, 0.2));
+    desk.mode.tools.extend_made(r2);
+    // r1's read: newer than the read it was planned on, older than what it made. Held.
+    desk.revision = r1;
+    desk.publish();
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 1, "{:?}", desk.edits);
+    // r2's: let go.
+    desk.revision = r2;
+    desk.publish();
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 2, "{:?}", desk.edits);
+    // That one made r3; a read at r0, older than any, comes late: held still.
+    desk.mode.tools.extend_made(r3);
+    desk.revision = r0;
+    desk.publish();
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 2, "{:?}", desk.edits);
+    // Refused, it's let go; the next click's extend makes r4, whose read comes before its
+    // answer: the answer lets it go at once.
+    desk.mode.tools.extend_refused();
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 3);
+    desk.revision = r3.next().unwrap();
+    desk.publish();
+    desk.mode.tools.extend_made(r3.next().unwrap());
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 4, "{:?}", desk.edits);
+}
+
+#[test]
+fn a_press_dropped_between_two_clicks_on_one_read_still_asks_one_edit() {
+    let mut desk = Desk::new(Choice::Extend, walled());
+    desk.frame(&click(8.0, 0.2));
+    // A press, then dropped with no read to give it (`cancel(None)`, as a release off the
+    // plane with no read is), then a click: still on the first click's read.
+    desk.frame(&[ev(PointerAction::Press, 8.0, 0.2)]);
+    desk.mode.tools.cancel(None);
+    assert!(!desk.mode.tools.busy());
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 1, "{:?}", desk.edits);
 }
 
 #[test]

@@ -170,14 +170,24 @@ struct Split {
     first: Option<(ElementId, [f64; 2])>,
 }
 
-/// Extend, between events: a press under way, where it was; and, once a click has asked an
-/// extend, the revision of the read it was planned on. Until a newer read (or the extend's
-/// refusal) lets it go, a click asks nothing: on that read, the curve it extended is drawn
-/// short still, so a second click would plan its end again, past the curve it now reaches.
+/// Extend, between events: a press under way, where it was; the revision of the newest read
+/// it has been given; and, once a click has asked an extend, how that stands. Until a read
+/// holds the extend (one at or past the revision its answer made), or the core refuses it, a
+/// click asks nothing: on the reads before, the curve it extended is drawn short still, so a
+/// second click would plan its end again, past the curve it now reaches.
 #[derive(Debug, Default)]
 struct Extend {
     pressed: Option<[f64; 2]>,
-    sent: Option<Revision>,
+    seen: Option<Revision>,
+    asked: Option<Asked>,
+}
+
+/// How a click's extend stands: asked, with no answer yet; or made, at the revision its
+/// answer gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asked {
+    Unanswered,
+    Made(Revision),
 }
 
 /// Sketch mode's tools: the one on, if one is; where new members' IDs come from; what the
@@ -329,7 +339,21 @@ impl Tools {
     /// has.
     pub fn extend_refused(&mut self) {
         if let Some(Active::Extend(extend)) = &mut self.active {
-            extend.sent = None;
+            extend.asked = None;
+        }
+    }
+
+    /// The core made the extend Extend's click asked, at `made`: it may click again once a
+    /// read at or past `made` has come (at once, if one has).
+    pub fn extend_made(&mut self, made: Revision) {
+        if let Some(Active::Extend(extend)) = &mut self.active
+            && extend.asked.is_some()
+        {
+            extend.asked = if extend.seen.is_some_and(|seen| seen >= made) {
+                None
+            } else {
+                Some(Asked::Made(made))
+            };
         }
     }
 
@@ -343,13 +367,19 @@ impl Tools {
 
     /// A newer read, given to Smart Dimension if it's on (`SmartDimension::settle`): its
     /// offer settled or released, its picks and its Modify box measured again; what that
-    /// says kept. Extend lets its click go once the read is newer than the one it was planned
-    /// on; and, with no press under way, hovers again where the pointer was last, so its
-    /// preview and what it says are of the newest read (a click's extend shown done).
+    /// says kept. Extend notes the read's revision, and lets its click's extend go once a
+    /// read holds it (at or past the revision its answer made); and, with no press under
+    /// way, hovers again where the pointer was last, so its preview and what it says are of
+    /// the newest read (a click's extend shown done).
     pub fn settle(&mut self, input: &Input<'_>) {
         if let Some(Active::Extend(extend)) = &mut self.active {
-            if extend.sent.is_some_and(|sent| input.revision > sent) {
-                extend.sent = None;
+            if extend.seen.is_none_or(|seen| input.revision > seen) {
+                extend.seen = Some(input.revision);
+            }
+            if let Some(Asked::Made(made)) = extend.asked
+                && input.revision >= made
+            {
+                extend.asked = None;
             }
             if extend.pressed.is_none()
                 && let Some(at) = self.last
@@ -1005,7 +1035,7 @@ fn split_click(
 /// Extend's step (SolidWorks' Extend Entities): each place the pointer is given hovers
 /// there ([`extend_hover`]); a press and its release within the pick of it is a click, which
 /// asks the `sketch_extend` the hover at the press showed ([`extend_click`]), unless a
-/// click's extend is still to be read. The tool stays on, as SolidWorks' does. What it says
+/// click's extend is still to be read. The read's revision is noted as seen. The tool stays on, as SolidWorks' does. What it says
 /// now, if what it said changes: the hover's, then the click's.
 fn extend_event(
     extend: &mut Extend,
@@ -1014,6 +1044,9 @@ fn extend_event(
     requests: &mut Vec<Request>,
     preview: &mut Preview,
 ) -> Option<Option<String>> {
+    if extend.seen.is_none_or(|seen| input.revision > seen) {
+        extend.seen = Some(input.revision);
+    }
     let mut said = None;
     match event {
         Event::Press(at) | Event::Move(at) | Event::Release(at) => {
@@ -1026,12 +1059,12 @@ fn extend_event(
             if let Event::Release(at) = event
                 && let Some(press) = extend.pressed.take()
                 && length(sub(at, press)) <= input.tolerance()
-                && extend.sent.is_none()
+                && extend.asked.is_none()
             {
                 let asked = requests.len();
                 said = Some(extend_click(input, press, requests));
                 if requests.len() > asked {
-                    extend.sent = Some(input.revision);
+                    extend.asked = Some(Asked::Unanswered);
                 }
             }
         }
