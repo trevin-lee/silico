@@ -641,6 +641,22 @@ pub struct Edits {
 }
 
 impl Edits {
+    /// Whether a Revert is queued with no save queued before it: what it drops of the queue
+    /// when it's asked ([`Tab::revert`]'s truncation, everything after the last save) reaches
+    /// back to what was asked before it, so a close still to come back from its judgement
+    /// ([`Under::Judge`]) is dropped too when its answer comes.
+    fn revert_before_save(&self) -> bool {
+        self.queue
+            .iter()
+            .find(|queued| {
+                matches!(
+                    queued,
+                    Queued::Save { .. } | Queued::SaveAs { .. } | Queued::Revert { .. }
+                )
+            })
+            .is_some_and(|queued| matches!(queued, Queued::Revert { .. }))
+    }
+
     /// Whether an edit of `feature`'s `field` is in flight or queued.
     fn pending_field(&self, feature: &FeatureId, field: &str) -> bool {
         self.in_flight
@@ -865,7 +881,8 @@ enum Under {
     /// Create Sketch's Finish judged ([`Tab::judge_created`]): the text of the sketch its add
     /// made, read at the tab's revision `sent_at`, the one everything asked before the Finish
     /// came to; then the Finish, saying `words`, closed as a Finish, or as a Cancel if the
-    /// sketch holds nothing.
+    /// sketch holds nothing, or dropped, if a revert with no save before it came first
+    /// ([`Edits::revert_before_save`]).
     Judge {
         words: Option<Words>,
         sent_at: Revision,
@@ -3808,28 +3825,17 @@ impl Tab {
                 Ok(response) => {
                     self.reload_in(sessions, sent_at, response.session.as_ref());
                     self.took_session(&response);
+                    // A Revert asked meanwhile, no save before it, drops the close as it
+                    // drops what's queued: the part goes back to its file, and nothing is
+                    // discarded to say.
+                    if self.edits.revert_before_save() {
+                        return None;
+                    }
                     // A read refused (the sketch gone, the session moved on by another
                     // client) judges nothing: the Finish is a Finish.
                     let empty = response
                         .result
                         .is_ok_and(|answer| holds_nothing(&answer.text));
-                    // A Revert asked meanwhile, no save before it, drops the close as it
-                    // drops what's queued: the part goes back to its file, and nothing is
-                    // discarded to say.
-                    let reverted = self
-                        .edits
-                        .queue
-                        .iter()
-                        .find(|queued| {
-                            matches!(
-                                queued,
-                                Queued::Save { .. } | Queued::SaveAs { .. } | Queued::Revert { .. }
-                            )
-                        })
-                        .is_some_and(|queued| matches!(queued, Queued::Revert { .. }));
-                    if reverted {
-                        return None;
-                    }
                     if empty {
                         self.toast = Some(EMPTY_SKETCH_DISCARDED.to_owned());
                         // The count its Finish held is a Cancel's.
@@ -4622,8 +4628,9 @@ impl Tab {
     /// to (`text`, never sketch mode's last read, which may be older), and the Finish queued
     /// again, judged, once it answers ([`Under::Judge`]): a Finish if the sketch holds
     /// anything, and otherwise Cancel's close, undone back to where sketch mode opened or
-    /// rolled back, leaving no step, and toasted. A Finish whose add made no sketch (refused
-    /// after sketch mode left) has nothing to judge.
+    /// rolled back, leaving no step, and toasted; or dropped, if a revert with no save before
+    /// it came first ([`Edits::revert_before_save`]). A Finish whose add made no sketch
+    /// (refused after sketch mode left) has nothing to judge.
     fn judge_created<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -5009,7 +5016,9 @@ impl Tab {
     /// revert it drops was to close the tab, close.
     /// The edits and steps queued since the last save queued are dropped, and the revert
     /// waits behind that save, which saves what was asked before it (#298's review): one in
-    /// flight answers first, and the rollback undoes it. Also how a file changed on disk is
+    /// flight answers first, and the rollback undoes it. A close still being judged
+    /// ([`Under::Judge`]) with no save queued is dropped too, when its answer comes
+    /// ([`Edits::revert_before_save`]). Also how a file changed on disk is
     /// reloaded with edits held: the session reloads it once the transaction has ended
     /// (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
