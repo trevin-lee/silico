@@ -50099,3 +50099,79 @@ fn a_line_let_go_after_the_sheets_key_in_one_frame_is_added() {
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn typing_in_the_first_frame_under_the_close_question_never_reaches_the_name_field() {
+    // #497's mutants (app.rs `focused.layer_id != modal`): the field behind the modal loses
+    // the keyboard at the top of each frame a modal is on, before anything is drawn, as egui
+    // gives a focused field the frame's typing before it finds the field off. A key typed in
+    // the first frame the question is drawn reaches nothing; the name is as it was.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    // The first frame drawn under the question, a key typed in it.
+    h.event(Event::Text("y".to_owned()));
+    step(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pins"));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pins"));
+    assert!(shows(&h, "Timeline", "Pins"));
+    assert!(!shows(&h, "Timeline", "Pinsy"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_keyboard_comes_back_to_each_widget_through_a_question_over_the_sheet() {
+    // #497's mutants (app.rs `focus_behind.retain(|(taken, _)| *taken != id)`): each widget a
+    // modal took the keyboard from is kept until its modal has gone. The Shortcuts button
+    // holds the keyboard as `?` opens the sheet, whose filter takes it; a quit's question
+    // over the sheet takes it from the filter. The question's Esc gives it back to the
+    // filter, and the sheet's Esc gives it back to the button.
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    h.get_by_role_and_label(Role::Button, "Shortcuts").focus();
+    step(&mut h);
+    step(&mut h);
+    let button = h.ctx.memory(|memory| memory.focused());
+    assert!(button.is_some());
+    assert!(!h.ctx.text_edit_focused());
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    step_until(&mut h, "the sheet's filter focused", |h| {
+        the_sheet(h).get_by_role(Role::TextInput).is_focused()
+    });
+    let filter = h.ctx.memory(|memory| memory.focused());
+    assert_ne!(filter, button);
+    close_window(&mut h);
+    let question = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    step(&mut h);
+    assert!(!the_sheet(&h).get_by_role(Role::TextInput).is_focused());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(sheet_open(&h));
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), filter);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    step(&mut h);
+    assert_eq!(
+        h.ctx.memory(|memory| memory.focused()),
+        button,
+        "the Shortcuts button without the keyboard once the sheet has gone"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
