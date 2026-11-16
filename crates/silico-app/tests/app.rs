@@ -28293,6 +28293,129 @@ fn constructions_button_and_x_do_the_same_to_a_selection() {
     assert_eq!(by(false), (now, sent, palette, text, undone));
 }
 
+#[test]
+fn a_second_construction_before_the_firsts_read_is_refused_as_stale_and_planned_again_on_the_next()
+{
+    // The bottom and the middle line, both profile; Construction twice in one frame, before
+    // any read. The first makes both construction. The second, planned on the read the first
+    // was (both profile), is sent against a revision the session has moved on from, refused
+    // as stale, and planned again on a newer read, where both are construction: so it makes
+    // both profile. The file ends as it began, the conflict never said, two steps.
+    let f = fixture();
+    let mut h = constructing_sketch(&f);
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_construction(&sessions);
+        tab.sketch_construction(&sessions);
+    }
+    assert_eq!(construction_now(&f, &mut h), constructed(&["na000003"]));
+    // The document as it began, written in canonical form now that it's been edited.
+    let began = silico_core::document::read(CONSTRUCTING.as_bytes()).unwrap();
+    let now = silico_core::document::read(text_of(&f.sessions, &h).as_bytes()).unwrap();
+    assert_eq!(now, began);
+    // The first chain's two fields; the second's stale attempt (planned on the first's read:
+    // its first field, of either line as that read holds them); then the second chain's
+    // two, planned again.
+    let both = ["lines.na000001.construction", "lines.na000002.construction"];
+    let sent = fields_sent(&h);
+    assert!(sent.len() >= 5, "a stale attempt among {sent:?}");
+    assert_eq!(sent[..2], both, "{sent:?}");
+    assert_eq!(sent[sent.len() - 2..], both, "{sent:?}");
+    assert_eq!(h.state().tabs()[0].message, None);
+    // Two steps: Undo takes back the second (both construction again), then the first.
+    undo_by_key(&mut h);
+    assert_eq!(
+        construction_now(&f, &mut h),
+        constructed(&["na000001", "na000002", "na000003"])
+    );
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), CONSTRUCTING);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn construction_whose_curves_an_undo_asked_before_it_removes_is_let_go_and_says_why() {
+    // A line drawn and selected, then Undo and Construction in one frame: Construction is
+    // pressed on the read that holds the line, so it's a click, queued behind the undo. Once
+    // the undo has taken the line back, the click is planned (again, if its first plan, on
+    // the read from before the undo, was sent and refused as stale) on a read without it:
+    // nothing to switch, said in the status bar; nothing more sent, the palette untouched.
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = constructing_sketch(&f);
+    h.state_mut().tabs_mut()[0].sketch_toggle(Choice::Draw(ToolKind::Line));
+    sketch_events(&f, &mut h, &clicked(10.0, 90.0));
+    sketch_events(&f, &mut h, &clicked(50.0, 90.0));
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    settled_and_read(&mut h);
+    h.state_mut().tabs_mut()[0].sketch_toggle(Choice::Draw(ToolKind::Line));
+    sketch_events(&f, &mut h, &clicked(30.0, 90.0));
+    let picked = sketch_picks(&h);
+    let [silico_core::document::Reference::Element(line)] = picked.as_slice() else {
+        panic!("one member picked: {picked:?}");
+    };
+    let line = line.as_str().to_owned();
+    assert!(
+        sketch_of_text(&f, &h, "s0000001")
+            .lines
+            .iter()
+            .any(|l| l.id.as_str() == line && !l.construction),
+        "the new line, profile: {line}"
+    );
+    assert!(!["na000001", "na000002", "na000003"].contains(&line.as_str()));
+    assert!(fields_sent(&h).is_empty());
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.step(&sessions, true);
+        tab.sketch_construction(&sessions);
+    }
+    settled_and_read(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), CONSTRUCTING);
+    assert_eq!(
+        h.state().tabs()[0].message.as_deref(),
+        Some("Construction wasn't applied: the curves selected are no longer in the sketch")
+    );
+    // At most the stale attempt, of the line, was sent.
+    let sent = fields_sent(&h);
+    assert!(
+        sent.is_empty() || sent == [format!("lines.{line}.construction")],
+        "{sent:?}"
+    );
+    assert!(!palette_construction(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn construction_on_selected_curves_with_the_palettes_construction_on_leaves_it_on() {
+    let f = fixture();
+    let mut h = constructing_sketch(&f);
+    // Nothing selected: X turns the palette's Construction on.
+    press_x(&mut h);
+    assert!(palette_construction(&h));
+    // The bottom and the middle line, then X: both made construction, the palette still on.
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    press_x(&mut h);
+    assert_eq!(
+        construction_now(&f, &mut h),
+        constructed(&["na000001", "na000002", "na000003"])
+    );
+    assert!(palette_construction(&h));
+    // And back to profile, the palette on still.
+    press_x(&mut h);
+    assert_eq!(construction_now(&f, &mut h), constructed(&["na000003"]));
+    assert!(palette_construction(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- The lean review of 453ccfd8 and f89d73c7 ----
 
 /// As [`counting`], but a length of 97 mm or 98 mm disagrees with the others (in conflict,
