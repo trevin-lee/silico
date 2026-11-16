@@ -3809,6 +3809,75 @@ fn a_long_sketch_name_is_cut_with_an_ellipsis_so_the_bar_keeps_to_its_width() {
 }
 
 #[test]
+fn the_bars_frame_and_its_tags_are_the_prototypes() {
+    // styles.css: `.sketch-bar` `--g200` (#212121) in a 1 border of `--blue` (#186add), its
+    // corners `--r` (6), its padding `4px 4px 4px 10px`; `.sketch-bar .tag` `--blue`, its
+    // padding `1px 6px`, its corners 3, no border. The tag's rectangle is its words' with
+    // that padding at each side, as high as the bar's row, and stands the border and the
+    // padding in from the bar's top left.
+    let (blue, g200) = (
+        egui::Color32::from_rgb(0x18, 0x6a, 0xdd),
+        egui::Color32::from_rgb(0x21, 0x21, 0x21),
+    );
+    let h = bar_at(bar_view("Sketch1", Some("Fully defined")), f32::INFINITY);
+    let mut shapes: Vec<egui::Shape> = h.output().shapes.iter().map(|c| c.shape.clone()).collect();
+    let (mut rects, mut words) = (Vec::new(), Vec::new());
+    while let Some(shape) = shapes.pop() {
+        match shape {
+            egui::Shape::Vec(inner) => shapes.extend(inner),
+            egui::Shape::Rect(rect) => rects.push(rect),
+            egui::Shape::Text(text) if text.galley.text() == "SKETCH" => {
+                words.push(egui::Rect::from_min_size(text.pos, text.galley.size()));
+            }
+            _ => {}
+        }
+    }
+    let [words] = words.as_slice() else {
+        panic!("{words:?}");
+    };
+    let frames: Vec<_> = rects.iter().filter(|rect| rect.fill == g200).collect();
+    let [frame] = frames.as_slice() else {
+        panic!("{rects:?}");
+    };
+    assert_eq!(frame.stroke, egui::Stroke::new(1.0, blue));
+    assert_eq!(frame.corner_radius, egui::CornerRadius::same(6));
+    // The tag: the leftmost blue rectangle (Finish Sketch is blue too, at the right).
+    let tag = rects
+        .iter()
+        .filter(|rect| rect.fill == blue)
+        .min_by(|a, b| a.rect.left().total_cmp(&b.rect.left()))
+        .unwrap();
+    assert_eq!(tag.corner_radius, egui::CornerRadius::same(3));
+    assert_eq!(tag.stroke.width, 0.0);
+    // As wide as its words and the padding at each side; as high as the bar's row (egui's
+    // least, `interact_size`'s height: the padding inside it, about the words centred in
+    // what's left); the words in its middle.
+    let row = h.ctx.global_style().spacing.interact_size.y;
+    assert!(
+        (tag.rect.width() - (words.width() + 6.0 + 6.0)).abs() < 1e-3,
+        "{:?} about {words:?}",
+        tag.rect
+    );
+    assert!(
+        (tag.rect.height() - row).abs() < 1e-3 && words.height() <= row - 1.0 - 1.0,
+        "{:?} about {words:?}, its row {row}",
+        tag.rect
+    );
+    assert!(
+        (tag.rect.center() - words.center()).length() < 1e-3,
+        "{:?} about {words:?}",
+        tag.rect
+    );
+    let (bar, ..) = bar_parts(&h);
+    assert_eq!(
+        tag.rect.left() - bar.left(),
+        1.0 + 10.0,
+        "{tag:?} in {bar:?}"
+    );
+    assert_eq!(tag.rect.top() - bar.top(), 1.0 + 4.0, "{tag:?} in {bar:?}");
+}
+
+#[test]
 fn a_short_sketch_name_is_shown_whole_and_the_bar_as_wide_as_it_needs() {
     // Sketch1 at 716: whole, uncut; the bar as wide as at no limit at all.
     let view = bar_view("Sketch1", Some("Fully defined"));
