@@ -14256,4 +14256,115 @@ mod tests {
         ));
         assert_eq!(tab.sketch_name(), "Sketch");
     }
+
+    /// A line na000001 from pa000001 (0, 0) to pa000002 (10, 0), between walls along
+    /// x = −20 (nc000001) and x = 30 (nb000001), each from y = −10 to 10.
+    const WALLED_BOTH: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "s0000001", "type": "sketch", "v": 1, "name": "Wall", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}, {"id": "pb000001", "x": 30, "y": -10, "construction": false}, {"id": "pb000002", "x": 30, "y": 10, "construction": false}, {"id": "pc000001", "x": -20, "y": -10, "construction": false}, {"id": "pc000002", "x": -20, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nc000001", "from": "pc000001", "to": "pc000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}]}"#;
+
+    /// A click of sketch mode's tool at `at`, in the sketch's millimetres, against the
+    /// mode's newest read, with a pick of 0.7 mm; what it asks left with the tool.
+    fn tool_click(tab: &mut Tab, at: [f64; 2]) {
+        use silico_core::sketch_tools::{Axes, Event, Modifiers};
+        let mode = tab.sketch.as_mut().unwrap();
+        let read = mode.drawable().unwrap().clone();
+        let revision = mode.read.as_ref().and_then(|read| read.model).unwrap();
+        let sketch = mode.sketch.clone().unwrap();
+        let input = crate::sketch::tools::Input {
+            read: &read,
+            sketch: &sketch,
+            revision,
+            tolerance: 0.7,
+            axes: Axes::BOTH,
+            automatic_relations: true,
+            construction: false,
+            trim: crate::sketch::tools::TrimMode::Power,
+        };
+        for event in [Event::Press(at), Event::Release(at)] {
+            mode.tools.handle(&input, event, Modifiers::default());
+        }
+    }
+
+    /// The point `id` of the sketch s0000001 as the session's text holds it.
+    fn place_in_text(sessions: &FakeSessions, tab: &Tab, id: &str) -> [f64; 2] {
+        let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
+        let document = silico_core::document::read(text.as_bytes()).unwrap();
+        document
+            .features
+            .into_iter()
+            .find_map(|feature| match feature.operation {
+                silico_core::document::Operation::Sketch(sketch) => sketch
+                    .points
+                    .into_iter()
+                    .find(|p| p.id.as_str() == id)
+                    .map(|p| [p.x.mm(), p.y.mm()]),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    fn extends_sent(tab: &Tab) -> usize {
+        tab.sent
+            .iter()
+            .filter(|sent| **sent == Sent::SketchEdit("sketch_extend"))
+            .count()
+    }
+
+    #[test]
+    fn an_extends_answer_taken_before_the_read_of_what_it_made_keeps_extend_from_clicking() {
+        // Sketch mode on Wall, read at the revision it opened at; Extend on. A click at
+        // (8, 0.2), the end's half, sends the extend of pa000002 to the wall at x = 30.
+        let (_dir, sessions, mut tab) = opened_sketching(WALLED_BOTH);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet()
+        });
+        let wall = FeatureId::new("s0000001").unwrap();
+        tab.edit_sketch(&sessions, &wall);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet() && tab.sketch.as_ref().is_some_and(|mode| mode.read.is_some())
+        });
+        tab.sketch_choose(Some(Choice::Extend));
+        let planned = tab
+            .sketch
+            .as_ref()
+            .and_then(|mode| mode.read.as_ref()?.model);
+        tool_click(&mut tab, [8.0, 0.2]);
+        tab.sketch_requests(&sessions);
+        assert_eq!(extends_sent(&tab), 1);
+        // Its answer taken, the tab at the revision it made, and no read of that revision
+        // yet (the tab's answers taken, its sketch reads not polled).
+        taken_until(&mut tab, &sessions, |tab| {
+            tab.under.is_empty() && tab.edits.queue.is_empty()
+        });
+        assert_ne!(Some(tab.revision), planned);
+        assert_eq!(
+            tab.sketch
+                .as_ref()
+                .and_then(|mode| mode.read.as_ref()?.model),
+            planned
+        );
+        // A click now, on the read from before the extend, where the line still ends at
+        // (10, 0): it would plan pa000002 again, past the wall it now reaches. It asks
+        // nothing.
+        tool_click(&mut tab, [8.0, 0.2]);
+        tab.sketch_requests(&sessions);
+        assert_eq!(extends_sent(&tab), 1);
+        assert_eq!(place_in_text(&sessions, &tab, "pa000002"), [30.0, 0.0]);
+        assert_eq!(place_in_text(&sessions, &tab, "pa000001"), [0.0, 0.0]);
+        // The read of what it made comes: the line from (0, 0) to (30, 0), its midpoint
+        // (15, 0). A click at (2, 0), its start's half, takes pa000001 to the wall at
+        // x = −20.
+        let made = tab.revision;
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.sketch
+                .as_ref()
+                .and_then(|mode| mode.read.as_ref()?.model)
+                .is_some_and(|model| model >= made)
+        });
+        tool_click(&mut tab, [2.0, 0.0]);
+        tab.sketch_requests(&sessions);
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        assert_eq!(extends_sent(&tab), 2);
+        assert_eq!(place_in_text(&sessions, &tab, "pa000001"), [-20.0, 0.0]);
+        assert_eq!(place_in_text(&sessions, &tab, "pa000002"), [30.0, 0.0]);
+    }
 }
