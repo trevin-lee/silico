@@ -748,3 +748,5 @@ crates/silico-core/src/sweep.rs | prism_direction | replace * with / | #511
 crates/silico-core/src/recompute.rs | sweep_step | delete - | #511
 crates/silico-core/src/recompute.rs | sweep_step | replace / with % | #511
 crates/silico-core/src/recompute.rs | sweep_step | replace / with * | #511
+crates/silico-app/src/app.rs | App<P>::take_drops | replace |= with &= | #522
+crates/silico-app/src/start.rs | when | replace > with >= | #522
