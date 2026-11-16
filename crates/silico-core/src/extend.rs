@@ -341,6 +341,32 @@ pub fn next_crossing(
     }))
 }
 
+/// The refusal of a next curve for `curve`'s `end` of `sketch` to meet, where there's none:
+/// `sketch_extend`'s, and Extend Entities' words for its hover (`sketch_tools::extend_preview`).
+pub(crate) fn no_next_curve(sketch: &Sketch, curve: &ElementId, end: End) -> Error {
+    let (noun, carrier, increment) = if sketch.arcs.iter().any(|a| &a.id == curve) {
+        ("arc", "circle", "an angle")
+    } else {
+        ("line", "line", "a length")
+    };
+    let which = match end {
+        End::Start => "start",
+        End::End => "end",
+    };
+    Error::new(
+        ErrorCode::InvalidInput,
+        format!("{noun} {curve} meets no other curve past its {which}"),
+    )
+    .with_elements([curve.to_string()])
+    .with_parameter("by")
+    .with_cause(format!(
+        "the next curve is the nearest that the {noun}, extended, crosses or touches past its {which}, as trim finds its cuts"
+    ))
+    .with_suggestion(format!(
+        "extend it by {increment}, or to a point on its {carrier}"
+    ))
+}
+
 /// Refuses `curve` as no line or arc of `sketch`.
 fn not_extendable(sketch: &Sketch, curve: &ElementId) -> Error {
     let what = sketch
