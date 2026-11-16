@@ -9614,12 +9614,12 @@ mod tests {
     }
 
     #[test]
-    fn the_canvas_sends_none_of_a_dialogs_changes_but_the_arrows_own() {
+    fn canvas_frames_with_no_arrow_drag_ending_send_nothing() {
         // #480's mutants (`arrows_frame`'s `holding && !self.grip.holding() && !closing`, its
-        // `&&`s as `||`): frames of the canvas in which no arrow's drag ends send nothing the
-        // arrows didn't ask, a Pocket's Length typed to 7 among it. That's the property
-        // panel's to send, for the tab shown alone (`Panes::dialog`), so a tab hidden as a
-        // click on its canvas ends there (`viewport::end_unshown`) sends none of it.
+        // `&&`s as `||`): frames of the canvas in which no arrow's drag ends send nothing. A
+        // Pocket's Length is set to 7 and left unsent on purpose, as something those frames
+        // could send and mustn't: the app never holds one so (the property panel sends a
+        // shown tab's every frame, `Panes::dialog`), but the mutants would send it here.
         use crate::viewport::{LeftEvent, LeftKind, ViewFrame};
         use eframe::egui;
         let fid = |text: &str| FeatureId::new(text).unwrap();
