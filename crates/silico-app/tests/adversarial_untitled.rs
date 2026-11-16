@@ -19,25 +19,13 @@ use egui_kittest::kittest::Queryable;
 use silico_app::App;
 use silico_app::browse::Pick;
 use silico_app::export::ExportForm;
-use silico_core::cache::Cache;
 use silico_core::command::{SessionId, Sessions};
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
-use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
 use ui::{
-    FakeBrowser, answer_question, anywhere, begin_sketch_on, close_window, new_part, step,
-    step_until, tab_named, window_told,
+    A_BOX, FakeBrowser, answer_question, anywhere, begin_sketch_on, close_window, new_part,
+    stand_in_sessions, step, step_until, tab_named, window_told,
 };
-
-const EXAMPLE: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
-  ]
-}
-"#;
 
 type Fake = Arc<FakeKernel>;
 type AppHarness = Harness<'static, App<Fake>>;
@@ -49,14 +37,8 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let solver = FakeSketches::new();
-    let sessions = Sessions::with_stand_ins(
-        Arc::clone(&kernel),
-        move |cache| Cache::with_secret(cache, &secret),
-        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    );
+    let sessions = stand_in_sessions(&dir, &kernel, &FakeSketches::new());
     Fixture {
         dir,
         sessions: Arc::new(sessions),
@@ -214,7 +196,7 @@ fn a_save_as_to_a_file_another_tab_holds_is_refused_said_and_leaves_the_part_unt
     let f = fixture();
     let browser = FakeBrowser::default();
     let held = f.dir.path().join("held.silico");
-    std::fs::write(&held, EXAMPLE).unwrap();
+    std::fs::write(&held, A_BOX).unwrap();
     let mut h = f.app(&browser);
     h.state_mut().open(held.to_str().unwrap(), false);
     step_until(&mut h, "its tab", |h| h.state().tabs().len() == 1);
@@ -234,7 +216,7 @@ fn a_save_as_to_a_file_another_tab_holds_is_refused_said_and_leaves_the_part_unt
     let tab = tab_named(&h, "Untitled");
     assert_eq!(tab.path, None);
     assert!(tab.unsaved());
-    assert_eq!(std::fs::read_to_string(&held).unwrap(), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&held).unwrap(), A_BOX);
     // Not stuck: saved elsewhere next.
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 2);
@@ -254,7 +236,7 @@ fn a_quits_save_to_a_file_another_session_holds_stops_the_quit() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let held = f.dir.path().join("held.silico");
-    std::fs::write(&held, EXAMPLE).unwrap();
+    std::fs::write(&held, A_BOX).unwrap();
     // Held by another client of the same sessions (an agent's, say): a tab of the app's
     // holding it would be closed by the quit, letting it go before the save.
     let other = f.sessions.open(&held, false).wait();
@@ -277,7 +259,7 @@ fn a_quits_save_to_a_file_another_session_holds_stops_the_quit() {
     steps(&mut h, 20);
     assert!(!window_told(&h, ViewportCommand::Close));
     assert!(tab_named(&h, "Untitled").unsaved());
-    assert_eq!(std::fs::read_to_string(&held).unwrap(), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&held).unwrap(), A_BOX);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -434,7 +416,7 @@ fn save_as_picking_the_documents_own_file_saves_it() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let own = f.dir.path().join("own.silico");
-    std::fs::write(&own, EXAMPLE).unwrap();
+    std::fs::write(&own, A_BOX).unwrap();
     let mut h = f.app(&browser);
     h.state_mut().open(own.to_str().unwrap(), false);
     step_until(&mut h, "its timeline", |h| {
@@ -460,7 +442,7 @@ fn save_as_picking_a_link_to_the_documents_own_file_saves_it_and_keeps_its_path(
     let f = fixture();
     let browser = FakeBrowser::default();
     let own = f.dir.path().join("own.silico");
-    std::fs::write(&own, EXAMPLE).unwrap();
+    std::fs::write(&own, A_BOX).unwrap();
     // A link to it, as a panel may answer (or its canonical form, /private/var for /var).
     let link = f.dir.path().join("link.silico");
     std::os::unix::fs::symlink(&own, &link).unwrap();
@@ -494,7 +476,7 @@ fn a_save_as_onto_its_own_file_with_no_edits_writes_nothing_and_leaves_it_clean(
     let f = fixture();
     let browser = FakeBrowser::default();
     let own = f.dir.path().join("own.silico");
-    std::fs::write(&own, EXAMPLE).unwrap();
+    std::fs::write(&own, A_BOX).unwrap();
     let mut h = f.app(&browser);
     h.state_mut().open(own.to_str().unwrap(), false);
     step_until(&mut h, "its timeline", |h| {
@@ -515,6 +497,6 @@ fn a_save_as_onto_its_own_file_with_no_edits_writes_nothing_and_leaves_it_clean(
     let tab = tab_named(&h, "own.silico");
     assert_eq!(tab.message, None);
     assert!(!tab.unsaved());
-    assert_eq!(std::fs::read_to_string(&own).unwrap(), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&own).unwrap(), A_BOX);
     assert_eq!(never_waits::waits(), 0);
 }
