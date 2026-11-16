@@ -273,6 +273,7 @@ Refused:
 - a point and an axis: "an axis has no middle: Midpoint takes a point and a line";
 - two lines: "Midpoint takes a point and a line: select the end you mean and the other line" (§1: SolidWorks' "two lines" is an end and a line);
 - the line's own end: "point pe000001 is an end of line ne000001 itself" (the gate's rule);
+- a point that's an end of a curve an edge `tangent` makes tangent to the line: the gate refuses the `midpoint` ("a curve ending on another is tangent where it ends"), as it refuses Coincident's `on` there (C5), suggesting the tangent be made a `tangent_on`, keeping the midpoint (#498);
 - more than one point or line: "Midpoint takes one point and one line".
 
 A point already held `on` the line gets the `midpoint`, and the `on` stays, reading `redundant` (C5).
@@ -420,7 +421,7 @@ SolidWorks' relation group, one numbered relation for all, survives either. Free
 *Recommended:*
 
 - The selection becomes an ordered set in pick order (`IndexSet`, which CLAUDE.md admits). It is deterministic, being the person's own input. Open item 24's rules stay: a plain click replaces, a Ctrl-click toggles, and empty space or Esc clears.
-- Its members become `Reference`s, and the origin and the axes are hit as Smart Dimension picks them (`sketch_tools::pick`, crates/silico-core/src/sketch_tools/mod.rs, which Smart Dimension's picks go through too): a point or the origin, whichever is nearer (the point on a tie), else the nearest curve, an axis anywhere along it.
+- Its members become `Reference`s, and the origin and the axes are hit as Smart Dimension picks them (`sketch_tools::pick`, crates/silico-core/src/sketch_tools/mod.rs, which Smart Dimension's picks go through too): a point or the origin, whichever is nearer (the point on a tie), else the nearest curve, an axis anywhere along it where the viewport draws it within the pick's points of the pointer on the screen (#481 and #484: one allowance, `sketch_tools::Axes`, for the selection, Smart Dimension, and the drawing tools' snaps).
 - This amends M5.7's selection in sketch mode, so it is named here as a decision, not an implementation detail.
 
 ## 6. The interaction
@@ -713,7 +714,7 @@ This is the tool's rule only. `sketch_add` still adds whatever it's sent (SD7).
 
 - An ordered set in place of the `BTreeSet`. Open item 24's rules are unchanged: a plain click replaces, a Ctrl-click toggles (a member toggled back in joins at the end), and empty space or Esc clears.
 - Members that join together, as a box's would, join in ID order.
-- The origin and the axes are hit as `sketch_tools::pick` ranks them (Smart Dimension's rule, one function for both): a point or the origin, whichever is nearer, then the nearest curve, an axis anywhere along it. The sketch's own member wins a tie.
+- The origin and the axes are hit as `sketch_tools::pick` ranks them (Smart Dimension's rule, one function for both): a point or the origin, whichever is nearer, then the nearest curve, an axis anywhere along it that's drawn within the pick's points of the pointer on the screen. The sketch's own member wins a tie.
 - Delete ignores the origin and the axes.
 
 **Why.** C1's survivor, C4's mirror, and C8's first each need pick order, and pick order is the person's own input, so it's deterministic. Symmetric about an axis and Coincident with the origin need the two to be selectable, and the forms and the gate already take them.
@@ -815,7 +816,7 @@ The study's separate Fix step, with its form, schema, and oracle case, is gone.
 - **I read the gate as taking a `tangent_on` beside an `on` of the same point and curve** (its tangent rule pairs an edge `tangent` with either). I didn't run it; test 7 proves it. If it's refused, the order becomes remove, then add, with an undo to the revision when the add is refused.
 - **Which member moves** when a relation is added is the solver's choice, and isn't promised.
 - **A pin on an unsolved sketch** is taken at the coordinates the read shows. The same is true of Smart Dimension.
-- **A `tangent_on` beside a `midpoint`** of the same point and line reads redundant. Loud and harmless, and the same whichever was added first. The gate's tangent rule doesn't yet count a `midpoint` hold as it counts an `on`'s; it should, by the same list, in a PR of its own.
+- **A `tangent_on` beside a `midpoint`** of the same point and line reads redundant. Loud and harmless, and the same whichever was added first. The gate's tangent rule counts a `midpoint` hold as it counts an `on`'s, by the same list (`Form::hold`), since #498: an edge `tangent` beside the midpoint is refused at whichever of the two comes later, and its suggestion is this `tangent_on`, keeping the midpoint.
 
 ## Method
 

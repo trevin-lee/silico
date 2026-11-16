@@ -23,7 +23,7 @@ use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
-use crate::pane_widths::{KeptWidths, Widths};
+use crate::pane_widths::{KeptLayout, Widths};
 use crate::panes::{self, Pane, Panes};
 use crate::properties;
 use crate::recent::Recents;
@@ -567,23 +567,30 @@ impl<P: Clients + 'static> App<P> {
         self
     }
 
-    /// The app, laying its side panes out at the widths `widths` keeps once it has read them,
-    /// and keeping there those each drag of a border leaves.
+    /// The app, laying its side panes out as `layout` keeps them (their widths, and whether
+    /// the browser is collapsed) once it has read them, and keeping there what each drag of
+    /// a border, and each collapse or show of the browser, leaves.
     #[must_use]
-    pub fn keeping_widths(mut self, widths: KeptWidths) -> Self {
-        self.columns.keeping(widths);
+    pub fn keeping_layout(mut self, layout: KeptLayout) -> Self {
+        self.columns.keeping(layout);
         self
     }
 
     /// The side panes' widths, as dragged (or read, or the prototype's), each its border
-    /// included: what [`keeping_widths`](Self::keeping_widths)' file keeps.
+    /// included: what [`keeping_layout`](Self::keeping_layout)' file keeps.
     pub fn pane_widths(&self) -> Widths {
         self.columns.chosen()
     }
 
+    /// Whether the browser is collapsed to its strip (its chevrons, Collapse browser and Show
+    /// browser): kept with the widths, in [`keeping_layout`](Self::keeping_layout)' file.
+    pub fn browser_collapsed(&self) -> bool {
+        self.columns.collapsed()
+    }
+
     /// Where the side panes' widths are kept: nowhere (read at once, the prototype's) unless
-    /// [`keeping_widths`](Self::keeping_widths) gave a file.
-    pub fn kept_widths(&self) -> &KeptWidths {
+    /// [`keeping_layout`](Self::keeping_layout) gave a file.
+    pub fn kept_layout(&self) -> &KeptLayout {
         self.columns.kept()
     }
 
@@ -930,6 +937,7 @@ impl<P: Clients + 'static> App<P> {
                 columns,
                 ..
             } = self;
+            let mut browser_toggled = false;
             let area = ui.available_rect_before_wrap();
             let laid = columns.laid(area.width());
             panes::fit(tree, &laid);
@@ -946,11 +954,17 @@ impl<P: Clients + 'static> App<P> {
                     dialog_key,
                     remembered,
                     fade,
+                    browser_collapsed: columns.collapsed(),
+                    browser_toggled: &mut browser_toggled,
                 };
                 tree.ui(&mut panes, ui);
             });
             // Over the panes' borders, after them, so a press there drags the border.
             columns.handles(ui, area, laid);
+            // The browser's chevron: collapsed or shown, laid out so from the next frame.
+            if browser_toggled {
+                columns.toggle_browser(ui.ctx());
+            }
             // Over the canvas, drawn after it, so it takes the pointer over its place.
             let canvas = tree
                 .tiles
@@ -1644,8 +1658,14 @@ impl<P: Clients + 'static> App<P> {
         }
         let selected = tab.selection().feature().cloned();
         // Each only where its menu item would be on: else its reason is said, as the item's
-        // hover says it.
-        let place = tab.selected_in;
+        // hover says it. A row selected in a browser collapsed since is renamed in the
+        // timeline, where its field can be seen.
+        let place = match tab.selected_in {
+            crate::feature_menu::Place::Browser if self.columns.collapsed() => {
+                crate::feature_menu::Place::Timeline
+            }
+            place => place,
+        };
         let can = |tab: &Tab, id: &silico_core::document::FeatureId, item| {
             let entry = tab.entry(id.as_str())?;
             Some(crate::feature_menu::off(tab, entry, item, place))
@@ -1700,7 +1720,7 @@ impl<P: Clients + 'static> App<P> {
             tab.sketch_toggle(choice);
         }
         if construction {
-            tab.sketch_toggle_construction();
+            tab.sketch_construction(sessions);
         }
         if sketch_enter {
             tab.sketch_enter(sessions);
@@ -1767,6 +1787,7 @@ impl<P: Clients + 'static> App<P> {
                 || rebuild_all
                 || deleted
                 || sketch_delete
+                || construction
                 || finish
                 || sketch_enter,
             dialog_key,
@@ -2395,7 +2416,8 @@ impl<P: Clients + 'static> App<P> {
     /// sketch's profile (those that cut, only with a body to cut), solids being made
     /// sketch-first (Trevin's decision of 2026-11-09), never as primitives; and
     /// SELECT's Clear selection. In a sketch, SKETCH's: a tool chosen, or left if it's on,
-    /// Construction turned on or off, as their keys do, and Finish Sketch.
+    /// Construction turned on or off, as their keys do, a relation made of the selection, and
+    /// Finish Sketch.
     fn toolbar(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let mut tab = self
             .active
@@ -2450,7 +2472,14 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
-            Some(toolbar::Act::Construction) => tab.sketch_toggle_construction(),
+            Some(toolbar::Act::Construction) => {
+                tab.sketch_construction(&self.sessions);
+                *next_frame = true;
+            }
+            Some(toolbar::Act::Relate(relation)) => {
+                tab.sketch_relate(&self.sessions, relation);
+                *next_frame = true;
+            }
             None => {}
         }
     }

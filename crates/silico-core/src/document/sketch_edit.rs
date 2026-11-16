@@ -766,7 +766,7 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
                 // both ends. A split meets one only at a curve's end held tangent on it,
                 // whose tangent_on becomes that tangent_at, so it's refused, repeating it:
                 // never from a checked sketch, since the gate refuses an edge tangency beside
-                // an `on` or a `tangent_on` of an end (#258).
+                // an `on`, a `tangent_on` (#258), or a `midpoint` (#498) of an end.
                 let shared = match (a.element(), b.element()) {
                     (Some(a), Some(b)) => ends
                         .get(a)
@@ -783,19 +783,29 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
                         vec![a.to_string(), b.to_string(), point.to_string()],
                     );
                 }
-                // An end of one held on the other: the gate takes that as a tangent_on.
-                for on in &sketch.constraints {
-                    if let Form::On { point, curve } = &on.form
-                        && ((curve == b && of(point, a, &ends))
-                            || (curve == a && of(point, b, &ends)))
-                    {
+                // An end of one held on the other, by an `on` or at the other's middle by a
+                // `midpoint`: the gate takes that as a tangent_on, beside the midpoint. One
+                // beside a tangent_on is the gate's to refuse, in #290's words.
+                for hold in &sketch.constraints {
+                    let (point, curve, held) = match &hold.form {
+                        Form::On { point, curve } => {
+                            (point, curve, "on the other: that's a tangent_on")
+                        }
+                        Form::Midpoint { point, line } => (
+                            point,
+                            line,
+                            "at the other's middle: that's a tangent_on beside the midpoint",
+                        ),
+                        _ => continue,
+                    };
+                    if (curve == b && of(point, a, &ends)) || (curve == a && of(point, b, &ends)) {
                         return refuse(
                             id,
                             format!(
-                                "an edge tangency of {a} and {b} where {on_id} holds an end of one on the other: that's a tangent_on",
-                                on_id = on.id
+                                "an edge tangency of {a} and {b} where {hold_id} holds an end of one {held}",
+                                hold_id = hold.id
                             ),
-                            vec![on.id.to_string(), a.to_string(), b.to_string()],
+                            vec![hold.id.to_string(), a.to_string(), b.to_string()],
                         );
                     }
                 }

@@ -472,6 +472,10 @@ pub(super) struct Pointer<'v, 's> {
     /// newest read's member states mark them: which of the relations it infers the sketch
     /// already implies ([`Implied`]).
     pub(super) classes: &'v ViewClasses,
+    /// Which of the axes it may take ([`super::Axes`]): an axis it doesn't allow is no curve
+    /// near it, so nothing is placed on it, nor where it crosses a curve, nor given an `on`
+    /// of it beside a line's middle.
+    pub(super) axes: super::Axes,
 }
 
 /// What a click at `at` picks of `view`, within `tolerance` millimetres, the axes `axes`
@@ -501,8 +505,9 @@ pub(super) fn pick_in(
         infer: true,
         woken: &[],
         classes: &classes,
+        axes,
     };
-    pointer.pick(at, axes)
+    pointer.pick(at)
 }
 
 /// IDs for a gesture's point or line not named yet, none a point or curve of the view: what
@@ -640,7 +645,7 @@ impl Pointer<'_, '_> {
             Some(_) => return Placed::new([0.0, 0.0], Target::Origin),
             None => {}
         }
-        let near = self.curves_near(at, super::Axes::BOTH);
+        let near = self.curves_near(at);
         if let Some((mid, line)) = self.midpoint_near(at) {
             // Each other curve through the middle exactly, as where it crosses the line, but
             // one the sketch already holds the middle on (#278's G as amended).
@@ -715,14 +720,14 @@ impl Pointer<'_, '_> {
     /// ([`point_or_origin`](Self::point_or_origin)); else the curve nearest, within the
     /// tolerance, as `snap` finds curves (a line or an arc where it's drawn, a circle all
     /// round, an axis `axes` allows anywhere along it but where a line of the sketch lies
-    /// along it), ties as `snap`'s (in [`Reference`]'s order); else nothing. An axis `axes`
-    /// doesn't allow is no candidate, so the nearest of the rest is taken. Whether relations
-    /// are inferred plays no part: a pick is no relation.
-    fn pick(&self, at: Xy, axes: super::Axes) -> Option<Reference> {
+    /// along it), ties as `snap`'s (in [`Reference`]'s order); else nothing. An axis the
+    /// pointer's `axes` doesn't allow is no candidate, so the nearest of the rest is taken.
+    /// Whether relations are inferred plays no part: a pick is no relation.
+    fn pick(&self, at: Xy) -> Option<Reference> {
         if let Some(found) = self.point_or_origin(at) {
             return Some(found);
         }
-        let near = self.curves_near(at, axes);
+        let near = self.curves_near(at);
         nearest(near.iter().map(|n| (n.off, &n.reference, n))).map(|n| n.reference.clone())
     }
 
@@ -753,11 +758,12 @@ impl Pointer<'_, '_> {
     }
 
     /// The curves within the tolerance of `at`: lines as drawn, circles, arcs where they're
-    /// drawn, and the axes `axes` allows, infinite, but where a line of the sketch lies along
-    /// one ([`covers`](Self::covers)).
-    fn curves_near(&self, at: Xy, axes: super::Axes) -> Vec<Near> {
+    /// drawn, and the axes the pointer's `axes` allows, infinite, but where a line of the
+    /// sketch lies along one ([`covers`](Self::covers)).
+    fn curves_near(&self, at: Xy) -> Vec<Near> {
         let mut near = Vec::new();
         let tolerance = self.tolerance;
+        let axes = self.axes;
         for (allowed, reference, foot) in [
             (axes.x, Reference::XAxis, [at[0], 0.0]),
             (axes.y, Reference::YAxis, [0.0, at[1]]),

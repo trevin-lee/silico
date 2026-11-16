@@ -57,7 +57,7 @@
 //! starting a rebuild each frame (`Tab::arrow_held_back`). The drag's end sends the value it
 //! held back in the release's frame, its tab shown or not (`Tab::arrows_frame`); OK, and a save
 //! that closes the tab, end a drag still under way by sending it first (`Tab::close_dialog`,
-//! `Tab::flush_arrow`). Esc ends a drag where it began (section 3's chain, an open drag first:
+//! `Tab::flush_held`). Esc ends a drag where it began (section 3's chain, an open drag first:
 //! `Tab::escape_first`), as the stream's cancel does, but the cancel a modal coming over the
 //! window gives it (`Grip::modal_over`), which keeps the value it was dragged to; a dialog
 //! closed, or its tab beginning to close, mid-drag leaves the rest of its stream doing nothing.

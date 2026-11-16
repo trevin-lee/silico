@@ -97,9 +97,8 @@ pub fn layout() -> Tree<Pane> {
 /// edge, where the property panel is cut off.
 ///
 /// `egui_tiles` shares its width out in proportion to each child's share, so each share
-/// is the pane's width itself: shares that sum to the width shared give each its own.
-// SEAM: the browser collapsed to a 28px strip (`#main.browser-collapsed`, interact.js's
-// `toggleBrowser`; design section 8), once its strip and chevron are built.
+/// is the pane's width itself: shares that sum to the width shared give each its own. A
+/// collapsed browser's column is its strip (`crate::columns::fit_strip`), laid out so too.
 pub(crate) fn fit(tree: &mut Tree<Pane>, laid: &crate::columns::Laid) {
     use crate::columns::BORDER;
     tree.set_width(laid.browser + laid.canvas + laid.properties);
@@ -142,6 +141,11 @@ pub struct Panes<'a, P: Clients + 'static> {
     /// egui's fade of a disabled `Ui`, as the style has it: what's off of its own in a pane
     /// fades by, behind a modal too (`crate::modal::unfaded`).
     pub fade: f32,
+    /// Whether the browser is collapsed to its strip (`#main.browser-collapsed`).
+    pub browser_collapsed: bool,
+    /// Whether the browser's chevron was clicked this frame, to collapse it or show it
+    /// (interact.js's `toggleBrowser`).
+    pub browser_toggled: &'a mut bool,
 }
 
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
@@ -213,21 +217,38 @@ pub(crate) fn building(tab: &Tab) -> &'static str {
 }
 
 impl<P: Clients + 'static> Panes<'_, P> {
-    /// The browser (section 8, *The browser*; DESIGN.md, *egui mapping*): the document's
-    /// row, and under it Origin, Bodies, and Sketches, by type as Fusion groups them, each
-    /// under a header with its caret; each row with its eye (the tab's visibility, never
-    /// saved), its icon, its name, its meta at its right, and its mark, from the rows the
-    /// tab worked out as its timeline was read ([`crate::tab::browser`]).
+    /// The browser (section 8, *The browser*; DESIGN.md, *egui mapping*): its title with
+    /// its chevron, Collapse browser; then the document's row, and under it Origin, Bodies,
+    /// and Sketches, by type as Fusion groups them, each under a header with its caret; each
+    /// row with its eye (the tab's visibility, never saved), its icon, its name, its meta at
+    /// its right, and its mark, from the rows the tab worked out as its timeline was read
+    /// ([`crate::tab::browser`]). Collapsed, its strip and the one chevron there, Show
+    /// browser ([`Self::strip`]).
     fn browser(&mut self, ui: &mut Ui) {
+        if self.browser_collapsed {
+            self.strip(ui);
+            return;
+        }
         // `.panel-body` straight under `.panel-title`, as each row under the last.
         ui.spacing_mut().item_spacing = Vec2::ZERO;
-        properties::title(ui, None, "Browser", None);
+        // app.js's `renderBrowser`: `aria-label="Collapse browser" data-tip="Collapse"`, the
+        // chevron as it's drawn, unturned.
+        let collapse = properties::PanelButton {
+            icon: Icon::Chevron,
+            label: "Collapse browser",
+            tip: "Collapse".to_owned(),
+        };
+        if properties::title_with(ui, None, "Browser", Some(collapse)) {
+            *self.browser_toggled = true;
+        }
         let Some(tab) = self.tab.as_deref_mut() else {
             padded(ui, |ui| {
                 ui.weak("No document open");
             });
             return;
         };
+        // Shown: a Find in browser's row is scrolled to below, as it is.
+        tab.reveal_browser = false;
         let mut asked = Asked::default();
         let browsers = |renaming: &crate::feature_menu::Renaming| {
             renaming.place == crate::feature_menu::Place::Browser
@@ -310,6 +331,51 @@ impl<P: Clients + 'static> Panes<'_, P> {
             } else {
                 tab.selection_mut().clear();
             }
+        }
+    }
+
+    /// The browser collapsed to its strip (`#main.browser-collapsed`; app.js's
+    /// `renderBrowser`): its one button, Show browser (`.ab-btn`, `margin: 2px`), its chevron
+    /// as the title's; nothing of the tree, which shows again with the browser. A body
+    /// picked in the canvas meanwhile isn't scrolled to later: its row is "scrolled to once,
+    /// whether its row was there or not". Find in browser shows it again, its row scrolled
+    /// to once it's shown, as SolidWorks and Fusion reveal their tree. A name being typed
+    /// over a row goes, sending nothing, as it goes with a row that's gone.
+    fn strip(&mut self, ui: &mut Ui) {
+        let side = theme::APP_BAR_BUTTON_SIZE;
+        let place = egui::Rect::from_min_size(
+            ui.max_rect().min + Vec2::splat(theme::BROWSER_STRIP_BUTTON_MARGIN),
+            Vec2::splat(side),
+        );
+        let show = properties::PanelButton {
+            icon: Icon::Chevron,
+            label: "Show browser",
+            tip: "Show browser".to_owned(),
+        };
+        let shown = ui
+            .scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                properties::panel_button(ui, side, &show)
+            })
+            .inner;
+        if shown.clicked() {
+            *self.browser_toggled = true;
+        }
+        let Some(tab) = self.tab.as_deref_mut() else {
+            return;
+        };
+        if tab
+            .renaming
+            .as_ref()
+            .is_some_and(|renaming| renaming.place == crate::feature_menu::Place::Browser)
+        {
+            tab.renaming = None;
+        }
+        if tab.reveal_browser {
+            // Shown from the next frame, which scrolls to the row.
+            tab.reveal_browser = false;
+            *self.browser_toggled = true;
+        } else {
+            tab.selection_mut().scrolled();
         }
     }
 
@@ -1252,6 +1318,20 @@ fn sketch_prefix(tab: &Tab, id: &FeatureId) -> Option<&'static str> {
     tab.sketch_reads.prefix(id)
 }
 
+/// A sketch row's meta, its plane (app.js's `renderBrowser`, `meta: f.plane`): an origin
+/// plane by its name, as the prototype's `XY`, `XZ`, and `YZ`; a planar face as `Face`, the
+/// prototype's sketch on a face before it names one (sketch.js's `plane: opts.plane ||
+/// 'Face'`), since the name it stores (`k7f2qx3m.box.Face6`) is no word for a row's right.
+fn plane_meta(plane: &silico_core::document::Plane) -> &'static str {
+    use silico_core::document::{OriginPlane, Plane};
+    match plane {
+        Plane::Origin(OriginPlane::Xy) => "XY",
+        Plane::Origin(OriginPlane::Xz) => "XZ",
+        Plane::Origin(OriginPlane::Yz) => "YZ",
+        Plane::Face(_) => "Face",
+    }
+}
+
 /// Whether a sketch's row asks for Edit Sketch by a double-click (its context menu's is the
 /// feature's menu's).
 fn sketch_edit_asked(tab: &Tab, row: &egui::Response) -> bool {
@@ -1444,7 +1524,13 @@ fn tree(
                         },
                         name: &each.name,
                         selected: Some(tab.selection().marks_body(&each.id)),
-                        meta: None,
+                        // app.js's `renderBrowser`: a body's the last healthy feature of
+                        // its chain, a sketch's its plane.
+                        meta: if sketches {
+                            tab.sketch_plane(&each.id).map(plane_meta)
+                        } else {
+                            each.last_healthy.as_deref()
+                        },
                         mark: marked.then_some((each.health, text)),
                         // A sketch's own failure reddens its name (`.row.err`); a body's
                         // mark is its chain's.
@@ -1847,11 +1933,16 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         } else {
             theme::BROWSER_META
         };
-        let galley = ui.painter().layout_no_wrap(
+        // At most half the room between the name's start and the mark, cut short with an
+        // ellipsis past it, so a long feature's name in it never hides the row's own name,
+        // nor runs out of the row's left (the prototype's `.r-meta` doesn't shrink).
+        let mut job = egui::text::LayoutJob::simple_singleline(
             meta.to_owned(),
             egui::FontId::proportional(theme::HEADER_SIZE),
             colour,
         );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(((right - x) / 2.0).max(0.0));
+        let galley = ui.painter().layout_job(job);
         let width = galley.size().x;
         ui.painter().galley(
             egui::pos2(right - width, centre - galley.size().y / 2.0),
@@ -2017,7 +2108,11 @@ mod tests {
             entry("a91cw0de", "cylinder", &[], Health::Healthy),
             entry("m3tq8v0z", "cut", &["k7f2qx3m", "a91cw0de"], Health::Error),
         ];
-        let failed = crate::tab::browser(&timeline(&entries, &["k7f2qx3m", "a91cw0de"]), &[]);
+        let failed = crate::tab::browser(
+            &timeline(&entries, &["k7f2qx3m", "a91cw0de"]),
+            &[],
+            &crate::tab::Browser::default(),
+        );
         assert_eq!(
             rows(failed.bodies()),
             [
@@ -2030,7 +2125,14 @@ mod tests {
         let mut built = entries.clone();
         built[2].health = Health::Healthy;
         let body = |entries: &[Entry]| {
-            rows(crate::tab::browser(&timeline(entries, &["m3tq8v0z"]), &[]).bodies())
+            rows(
+                crate::tab::browser(
+                    &timeline(entries, &["m3tq8v0z"]),
+                    &[],
+                    &crate::tab::Browser::default(),
+                )
+                .bodies(),
+            )
         };
         assert_eq!(
             body(&built),
@@ -2230,6 +2332,7 @@ mod tests {
         next_frame: bool,
         drawing: crate::viewport::Drawing,
         remembered: crate::dialog::Remembered,
+        toggled: bool,
     }
 
     fn fid(id: &str) -> FeatureId {
@@ -2245,6 +2348,7 @@ mod tests {
             marked_by: matches!(health, Health::Error | Health::Warning).then(|| fid(id)),
             consumers: Default::default(),
             suppressed: false,
+            last_healthy: None,
         }
     }
 
@@ -2318,6 +2422,7 @@ mod tests {
             next_frame: false,
             drawing: crate::viewport::Drawing::default(),
             remembered: crate::dialog::Remembered::default(),
+            toggled: false,
         };
         let mut h = Harness::builder()
             .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
@@ -2334,6 +2439,8 @@ mod tests {
                             dialog_key: None,
                             remembered: &shown.remembered,
                             fade: ui.visuals().disabled_alpha,
+                            browser_collapsed: false,
+                            browser_toggled: &mut shown.toggled,
                         }
                         .browser(ui);
                     });
@@ -3404,6 +3511,7 @@ mod property_panel_drawn {
         next_frame: bool,
         drawing: crate::viewport::Drawing,
         remembered: crate::dialog::Remembered,
+        toggled: bool,
     }
 
     fn fid(id: &str) -> FeatureId {
@@ -3473,6 +3581,7 @@ mod property_panel_drawn {
             next_frame: false,
             drawing: crate::viewport::Drawing::default(),
             remembered: crate::dialog::Remembered::default(),
+            toggled: false,
         };
         let mut h = Harness::builder()
             .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
@@ -3489,6 +3598,8 @@ mod property_panel_drawn {
                             dialog_key: None,
                             remembered: &shown.remembered,
                             fade: ui.visuals().disabled_alpha,
+                            browser_collapsed: false,
+                            browser_toggled: &mut shown.toggled,
                         }
                         .properties(ui);
                     });
@@ -5002,6 +5113,7 @@ mod property_panel_drawn {
                 marked_by: None,
                 consumers: Default::default(),
                 suppressed: false,
+                last_healthy: None,
             }],
             tab.browser.sketches().to_vec(),
         );
@@ -5439,6 +5551,7 @@ mod property_panel_drawn {
                 marked_by: None,
                 consumers: Default::default(),
                 suppressed: false,
+                last_healthy: None,
             },
         );
         tab.browser = crate::tab::Browser::new(bodies, tab.browser.sketches().to_vec());

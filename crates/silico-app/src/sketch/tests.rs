@@ -2506,6 +2506,181 @@ fn from_thirty_degrees_up_a_click_beside_a_line_takes_it_though_an_axis_is_neare
     assert_eq!(mode.selection.references(), [Reference::YAxis]);
 }
 
+/// One frame of `events` on the screen through `placed`, the pointer at `pointer`.
+fn frame_through(
+    mode: &mut SketchMode,
+    placed: &Placed,
+    events: &[PointerEvent],
+    pointer: Option<Pos2>,
+) {
+    let project = |p: [f64; 2]| placed.project(p);
+    let to_plane = |q: Pos2| placed.to_plane(q);
+    with_painter(|painter| {
+        let input = FrameInput {
+            events,
+            pointer,
+            project: &project,
+            to_plane: &to_plane,
+        };
+        mode.frame(painter, &input, &mut None);
+    });
+}
+
+/// The relations each `sketch_add` the tools asked for adds, in order.
+fn added_forms(mode: &mut SketchMode) -> Vec<Vec<Form>> {
+    mode.tools
+        .take_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            tools::Request::Add { members, .. } => {
+                Some(members.constraints.into_iter().map(|c| c.form).collect())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `forms` hold an `on` of `curve`.
+fn has_on(forms: &[Form], curve: &Reference) -> bool {
+    forms
+        .iter()
+        .any(|form| matches!(form, Form::On { curve: c, .. } if c == curve))
+}
+
+#[test]
+fn in_an_oblique_view_smart_dimension_and_the_line_tool_take_no_axis_far_off_on_the_screen() {
+    // #484's proof. From 5° above (looking along +y at (0, 100), 100 mm on 600 pixels), a
+    // click 20 pixels right of the middle is at (3.33, 100): 3.33 mm from the y axis, but
+    // 20 pixels off it on the screen, past the pick's 7; the line (−25, 103.82) to
+    // (30, 103.82) is 3.82 mm off, 2 pixels above. Both are within the pick's 7.28 mm, the
+    // axis nearer in millimetres.
+    let placed = looking_along_y(5.0);
+    let middle = placed.project([0.0, 100.0]).unwrap();
+    let at = middle + vec2(20.0, 0.0);
+    let issue = || one_line([-25.0, 103.82], [30.0, 103.82]);
+    let line = element("na000001");
+    // The selection takes the line (#481).
+    let mut mode = mode_at(issue());
+    click_through(&mut mode, &placed, at, false);
+    assert_eq!(mode.selection.references(), std::slice::from_ref(&line));
+    // Smart Dimension: hovered there, the line. A hover is the pointer alone, with no event,
+    // as the viewport sends one with no button held, on a mode whose allowance is still
+    // both axes'. And a read that comes with no pointer event works the hover out again with
+    // the allowance the pointer had, so still the line (with both axes allowed, it would be
+    // the axis, the nearer in millimetres). Clicked, the line is picked.
+    let mut mode = mode_at(issue());
+    mode.tools.choose(Some(tools::Choice::Dimension));
+    frame_through(&mut mode, &placed, &[], Some(at));
+    let hover = |mode: &SketchMode| mode.tools.dimension_preview().unwrap().hover.clone();
+    assert_eq!(hover(&mode), Some(line.clone()));
+    mode.took(Read {
+        model: Revision::OPENED.next().and_then(Revision::next),
+        result: Ok(issue()),
+    });
+    assert_eq!(hover(&mode), Some(line.clone()));
+    frame_through(&mut mode, &placed, &press(at, false), Some(at));
+    assert_eq!(
+        mode.tools.dimension_preview().unwrap().picks,
+        vec![line.clone()]
+    );
+    // The hover follows the pointer, not the last click. Clicked on the line 2 pixels from
+    // the y axis, at (0.33, 103.82), the line is picked, the axis allowed there; hovered
+    // then at the click 20 pixels off, the line (picked) isn't shown again and the axis,
+    // 20 pixels off there, isn't taken: nothing. With the click's allowance, the axis.
+    let mut mode = mode_at(issue());
+    mode.tools.choose(Some(tools::Choice::Dimension));
+    let beside = middle + vec2(2.0, -2.0);
+    frame_through(&mut mode, &placed, &press(beside, false), Some(beside));
+    let preview = mode.tools.dimension_preview().unwrap();
+    assert_eq!(preview.picks, vec![line.clone()]);
+    frame_through(&mut mode, &placed, &[], Some(at));
+    let preview = mode.tools.dimension_preview().unwrap();
+    assert_eq!(preview.pointer, placed.to_plane(at));
+    assert_eq!(preview.hover, None);
+    // The line tool, started there: the line's middle, (2.5, 103.82), is 3.91 mm off
+    // (√(0.83² + 3.82²)), within the pick, and taken first, with no `on` of the y axis,
+    // which doesn't pass through it. Ended far off, at (33.3, 386.8).
+    let far = middle + vec2(200.0, -150.0);
+    let mut mode = mode_at(issue());
+    mode.tools.choose(Some(tools::Choice::Draw(
+        silico_core::sketch_tools::ToolKind::Line,
+    )));
+    frame_through(&mut mode, &placed, &[], Some(at));
+    frame_through(&mut mode, &placed, &press(at, false), Some(at));
+    frame_through(&mut mode, &placed, &press(far, false), Some(far));
+    let adds = added_forms(&mut mode);
+    assert_eq!(adds.len(), 1, "{adds:?}");
+    assert!(
+        adds[0]
+            .iter()
+            .any(|f| matches!(f, Form::Midpoint { line: l, .. } if *l == line)),
+        "{adds:?}"
+    );
+    assert!(!has_on(&adds[0], &Reference::YAxis), "{adds:?}");
+    // A longer line, (−50, 103.82) to (80, 103.82): its middle, (15, 103.82), is 12.3 mm off,
+    // past the pick, and it crosses the y axis at (0, 103.82), 5.07 mm off (√(3.33² +
+    // 3.82²)), within it. With the y axis allowed, the start would be where the two cross,
+    // on both; it isn't, so the start is on the line alone, and the hover (the pointer
+    // alone, on a fresh mode) showed it so.
+    let mut mode = mode_at(one_line([-50.0, 103.82], [80.0, 103.82]));
+    mode.tools.choose(Some(tools::Choice::Draw(
+        silico_core::sketch_tools::ToolKind::Line,
+    )));
+    frame_through(&mut mode, &placed, &[], Some(at));
+    let shown: Vec<Relation> = mode
+        .tools
+        .preview()
+        .shown
+        .iter()
+        .map(|s| s.relation.clone())
+        .collect();
+    assert_eq!(shown, [Relation::On(line.clone())]);
+    frame_through(&mut mode, &placed, &press(at, false), Some(at));
+    frame_through(&mut mode, &placed, &press(far, false), Some(far));
+    let adds = added_forms(&mut mode);
+    assert_eq!(adds.len(), 1, "{adds:?}");
+    assert!(has_on(&adds[0], &line), "{adds:?}");
+    assert!(!has_on(&adds[0], &Reference::YAxis), "{adds:?}");
+}
+
+#[test]
+fn smart_dimensions_hover_after_its_modify_box_keeps_the_pointers_allowance() {
+    // #484's view and line, as above: from 5° above, the pointer 20 pixels right of the
+    // middle, at (3.33, 100), is 3.33 mm and 20 pixels from the y axis and 3.82 mm and 2
+    // pixels from the line (−25, 103.82) to (30, 103.82), both within the pick's millimetres
+    // (7.28 at the pointer, 7 or more at the view's middle, which the box's step is given).
+    // The line picked there, a click far off, at (33.3, 386.8), opens its Modify box; the
+    // pointer hovers back there, and the box is accepted: the length placed, the tool
+    // afresh, and its hover worked out again at the pointer with the allowance the pointer
+    // had, the line (with both axes allowed, the axis, nearer in millimetres).
+    let placed = looking_along_y(5.0);
+    let middle = placed.project([0.0, 100.0]).unwrap();
+    let at = middle + vec2(20.0, 0.0);
+    let far = middle + vec2(200.0, -150.0);
+    let line = element("na000001");
+    let mut mode = mode_at(one_line([-25.0, 103.82], [30.0, 103.82]));
+    mode.tools.choose(Some(tools::Choice::Dimension));
+    frame_through(&mut mode, &placed, &[], Some(at));
+    frame_through(&mut mode, &placed, &press(at, false), Some(at));
+    frame_through(&mut mode, &placed, &press(far, false), Some(far));
+    let preview = mode.tools.dimension_preview().unwrap();
+    assert_eq!(preview.picks, vec![line.clone()]);
+    assert!(preview.modify.is_some(), "{preview:?}");
+    frame_through(&mut mode, &placed, &[], Some(at));
+    mode.modify(ModifyAction::Accept);
+    let preview = mode.tools.dimension_preview().unwrap();
+    assert_eq!(preview.modify, None, "{preview:?}");
+    assert!(preview.picks.is_empty(), "{preview:?}");
+    assert_eq!(preview.pointer, placed.to_plane(at));
+    assert_eq!(preview.hover, Some(line.clone()));
+    let adds = added_forms(&mut mode);
+    assert!(
+        matches!(adds.as_slice(), [forms] if matches!(forms.as_slice(),
+            [Form::Length { line: l, .. }] if *l == line)),
+        "{adds:?}"
+    );
+}
+
 #[test]
 fn the_palette_says_a_refused_read_of_the_tabs_revision_and_waits_on_an_older_ones() {
     let r = |n| silico_core::command::Revision::from_number(n).unwrap();
@@ -7304,4 +7479,96 @@ fn the_scale_at_a_place_is_the_mean_step_of_a_point_right_and_a_point_down_or_no
     // A ray that misses the plane: none.
     let misses = |_: Pos2| -> Option<[f64; 2]> { None };
     assert_eq!(scale_at(&misses, pos2(10.0, 0.0)), None);
+}
+
+/// [`rectangle`] with its top, na000003, construction; a circle ca000001 about pa000001 and
+/// an arc aa000001 about pa000002, both profile; and a horizontal, ka000001, of the bottom.
+fn switching() -> Sketch {
+    let mut sketch = rectangle(vec![horizontal("ka000001", "na000001")]);
+    sketch.lines[2].construction = true;
+    sketch.circles.push(SketchCircle {
+        id: id("ca000001"),
+        center: id("pa000001"),
+        radius: Coordinate::new(5.0).unwrap(),
+        construction: false,
+    });
+    sketch.arcs.push(SketchArc {
+        id: id("aa000001"),
+        center: id("pa000002"),
+        start: id("pa000003"),
+        end: id("pa000004"),
+        construction: false,
+    });
+    sketch
+}
+
+/// Construction's switch of `picks` in `sketch`: the value, and the fields set to it.
+fn switched(sketch: &Sketch, picks: &[Reference]) -> Option<(bool, Vec<String>)> {
+    selection::construction_switch(sketch, picks).map(|switch| {
+        let fields = std::iter::once(switch.first).chain(switch.rest).collect();
+        (switch.construction, fields)
+    })
+}
+
+/// `construction` and `fields`, as [`switched`] gives them.
+fn switch(construction: bool, fields: &[&str]) -> Option<(bool, Vec<String>)> {
+    Some((
+        construction,
+        fields.iter().map(|f| (*f).to_owned()).collect(),
+    ))
+}
+
+#[test]
+fn construction_sets_every_selected_curve_one_way_and_leaves_out_what_isnt_a_curve() {
+    let sketch = switching();
+    // Two profile lines: both made construction, in pick order.
+    assert_eq!(
+        switched(&sketch, &[element("na000002"), element("na000001")]),
+        switch(
+            true,
+            &["lines.na000002.construction", "lines.na000001.construction"]
+        )
+    );
+    // A construction line and a profile one: all made construction, so only the profile one
+    // changes (each flipped on its own would make the top profile).
+    assert_eq!(
+        switched(&sketch, &[element("na000003"), element("na000001")]),
+        switch(true, &["lines.na000001.construction"])
+    );
+    // Only construction: all made profile.
+    assert_eq!(
+        switched(&sketch, &[element("na000003")]),
+        switch(false, &["lines.na000003.construction"])
+    );
+    // A circle and an arc, by their own lists.
+    assert_eq!(
+        switched(&sketch, &[element("aa000001"), element("ca000001")]),
+        switch(
+            true,
+            &[
+                "arcs.aa000001.construction",
+                "circles.ca000001.construction"
+            ]
+        )
+    );
+    // Points, constraints, the origin, and the axes are left out; with nothing else, no
+    // switch (the palette's setting turns instead).
+    let not_curves = [
+        element("pa000001"),
+        element("ka000001"),
+        Reference::Origin,
+        Reference::XAxis,
+        Reference::YAxis,
+    ];
+    assert_eq!(switched(&sketch, &not_curves), None);
+    assert_eq!(switched(&sketch, &[]), None);
+    // With a curve among them, only the curve; a curve picked twice counts once.
+    let mut picks = not_curves.to_vec();
+    picks.extend([element("na000004"), element("na000004")]);
+    assert_eq!(
+        switched(&sketch, &picks),
+        switch(true, &["lines.na000004.construction"])
+    );
+    // A curve the read doesn't hold is left out.
+    assert_eq!(switched(&sketch, &[element("nz000001")]), None);
 }

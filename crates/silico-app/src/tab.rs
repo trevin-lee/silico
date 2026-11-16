@@ -16,11 +16,11 @@ use silico_core::command::{
     SketchJoined, Status, StepState, Stepped, Suppressed, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
-use silico_core::document::json::{Node, Plain};
+use silico_core::document::json::{At, Node, Plain, Value};
 use silico_core::document::{ElementId, FeatureId, Reference};
 use silico_core::extend::End;
 use silico_core::kernel::Clients;
-use silico_core::sketch_tools::{AddToken, OfferChoice, OfferRequest};
+use silico_core::sketch_tools::{AddToken, OfferChoice, OfferRequest, RelateEdit, RelationTool};
 use silico_core::timeline::{Entry, Health};
 
 use crate::changes::{self, Changes};
@@ -209,7 +209,8 @@ enum Queued {
     /// asked after it is sent after the read, and a later revert drops it.
     Reload,
     /// An undo or a redo; one asked in sketch mode carries the state it goes no further back
-    /// than (`floor`), and takes one step, never a dialog's group.
+    /// than (`floor`), and takes one step, never a dialog's group (a click's chain of edits
+    /// is one: a constraint tool's add and the remove after it, or Construction's fields).
     Step {
         undo: bool,
         floor: Option<Revision>,
@@ -304,6 +305,26 @@ enum Queued {
         serial: u64,
         request: OfferRequest,
     },
+    /// A constraint tool's click, or Construction's, to plan when it comes up
+    /// ([`Tab::plan`]): what's queued
+    /// after it waits till it's planned and its edit sent, or it's let go. Planned on a read
+    /// newer than `after`, the revision a plan of it refused as stale was made on, if one
+    /// was; on any read otherwise.
+    Click {
+        click: Click,
+        after: Option<Revision>,
+    },
+    /// An edit of a click's chain, of `click`: its first sent against the revision of the
+    /// read it was planned on, never the tab's (`sketch_tools::relate`, or Construction's
+    /// switch); each after it (the remove that follows a constraint tool's add, Construction's
+    /// next field) against the revision the one before made, with the state the chain's
+    /// first edit was made from (`pair`), so the chain is one step.
+    Relate {
+        click: Click,
+        revision: Revision,
+        relating: Relating,
+        pair: Option<Revision>,
+    },
     /// Edit Feature's read of the feature `feature`, of `kind`, for the dialog numbered
     /// `serial`: sent once everything asked before it has answered, so the values it loads
     /// are those the edits before it left.
@@ -338,6 +359,101 @@ enum Queued {
         text: String,
     },
 }
+
+/// A constraint tool's click in sketch mode numbered `serial`, or Construction's of the
+/// curves selected, on the sketch `sketch`: what it applies, and the selection it was made
+/// on, in pick order. Kept to be planned again on a newer read if its plan was stale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Click {
+    serial: u64,
+    sketch: FeatureId,
+    applies: Applies,
+    picks: Vec<Reference>,
+}
+
+/// What a click in sketch mode applies to the selection: a constraint tool's relation, or
+/// Construction's switch of the curves selected between profile and construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Applies {
+    Relation(RelationTool),
+    Construction,
+}
+
+impl Applies {
+    /// Its name, as its button names it, and the step it makes: "Horizontal",
+    /// "Construction".
+    fn name(self) -> &'static str {
+        match self {
+            Applies::Relation(relation) => relation.name(),
+            Applies::Construction => "Construction",
+        }
+    }
+
+    /// What's said when it's let go unsent, and `why`: "Horizontal wasn't added: …",
+    /// "Construction wasn't applied: …".
+    fn unmade(self, why: &str) -> String {
+        match self {
+            Applies::Relation(relation) => format!("{} wasn't added: {why}", relation.name()),
+            Applies::Construction => format!("Construction wasn't applied: {why}"),
+        }
+    }
+}
+
+/// What a constraint tool's click sends, one command at a time: a `sketch_add`, and after
+/// it, once it's taken, the `sketch_remove` of the `on`s it implies (C5), if any; a
+/// `sketch_merge`; or a `sketch_remove` alone. Construction's sends a `set_field` of each
+/// curve's `construction`, the first, then each next once the one before is taken.
+#[derive(Debug, Clone, PartialEq)]
+enum Relating {
+    Add {
+        members: NewMembers,
+        then_remove: Vec<Reference>,
+    },
+    Merge(Vec<ElementId>),
+    Remove(Vec<Reference>),
+    /// Construction's: each curve's `construction` field set to `construction`, `first`,
+    /// then each of `rest` in turn.
+    Fields {
+        construction: bool,
+        first: String,
+        rest: Vec<String>,
+    },
+}
+
+/// What a click (a constraint tool's, or Construction's) come up in the queue does
+/// ([`Tab::plan`]): waits for the read it's planned on; sends its chain's first edit,
+/// against that read's revision; has said why it sends nothing (toasted); or is let go, its
+/// sketch mode gone, its read refused, or its curves gone, saying so.
+#[derive(Debug, Clone, PartialEq)]
+enum Planned {
+    Wait,
+    Send(Revision, Box<Relating>),
+    Said,
+    Gone(String),
+}
+
+/// Why a click (a constraint tool's, or Construction's) is let go once its sketch mode has
+/// gone unread.
+const SKETCH_CLOSED: &str = "the sketch closed before it was read";
+
+/// Why a click (a constraint tool's, or Construction's) can't be planned while the tab's
+/// revision's rebuild is
+/// stopped and nothing of it is published: the read it needs won't come unasked, and a click
+/// never starts the rebuild again (the stop is the person's).
+const REBUILD_STOPPED: &str =
+    "the rebuild was stopped before the sketch was read; Rebuild, then try again";
+
+/// Why, while the tab's revision's recompute has failed and nothing of it is published.
+const REBUILD_FAILED: &str =
+    "the rebuild failed before the sketch was read; Rebuild, then try again";
+
+/// Why Construction's click is let go unsent: none of the curves it was pressed on is in
+/// the read it's planned on (an edit queued before it removed them).
+const CURVES_GONE: &str = "the curves selected are no longer in the sketch";
+
+/// Why a click (a constraint tool's, or Construction's) waiting to be planned is let go at its
+/// sketch mode's Cancel, which takes back its edits anyway.
+const SKETCH_CANCELLED: &str = "the sketch was cancelled first";
 
 /// A new sweep's body: not yet read, or read from the document at a revision (its base,
 /// [`base_of`]: its sketch's face's body, or the tip; none if it has none), which the add is
@@ -474,8 +590,8 @@ pub enum Sent {
     Commit,
     Rollback,
     /// A sketch edit, by its command's name (`sketch_remove`, `sketch_join`, `sketch_add`,
-    /// `sketch_trim`, `sketch_split`, `sketch_extend`), or a drag's (`drag_begin`,
-    /// `drag_end`).
+    /// `sketch_merge`, `sketch_trim`, `sketch_split`, `sketch_extend`), or a drag's
+    /// (`drag_begin`, `drag_end`).
     SketchEdit(&'static str),
 }
 
@@ -503,12 +619,15 @@ struct Group {
 }
 
 /// An edit in flight: its feature and field, and its value, as it was sent, and its answer
-/// to come.
+/// to come; and whether it's a plain edit whose own `begin` was sent for it, outside a dialog
+/// or sketch mode, decided as it's sent (its transaction rolled back if it's refused, so no
+/// empty transaction stays open: #475).
 struct Flying {
     field: (FeatureId, String),
     value: Node,
     sending: Sending,
     running: Running<FieldSet>,
+    plain: bool,
 }
 
 /// A tab's edits and what waits with them: at most one edit in flight, the rest queued
@@ -585,6 +704,8 @@ impl Edits {
                 | Queued::SketchExtend { .. }
                 | Queued::DimensionValue { .. }
                 | Queued::Offer { .. }
+                | Queued::Click { .. }
+                | Queued::Relate { .. }
                 | Queued::Load { .. }
                 | Queued::Closed { .. }
                 | Queued::Restore { .. }
@@ -592,6 +713,34 @@ impl Edits {
             }
         }
         self.queue.push_back(Queued::Edit(edit, step));
+    }
+}
+
+/// A constraint tool's sketch edit under way, or Construction's `set_field`: its answer,
+/// once it comes, taken as one (what it made, or its refusal), whatever it answers with.
+enum RelateRunning {
+    Sketch(Running<SketchEdited>),
+    Field(Running<FieldSet>),
+}
+
+impl RelateRunning {
+    /// The answer, if it has come, its result's value let go, or the handle back to wait on.
+    fn try_take(self) -> Result<Response<()>, Self> {
+        fn plain<T>(response: Response<T>) -> Response<()> {
+            Response {
+                session: response.session,
+                model: response.model,
+                result: response.result.map(|_| ()),
+            }
+        }
+        match self {
+            RelateRunning::Sketch(running) => {
+                running.try_take().map(plain).map_err(RelateRunning::Sketch)
+            }
+            RelateRunning::Field(running) => {
+                running.try_take().map(plain).map_err(RelateRunning::Field)
+            }
+        }
     }
 }
 
@@ -612,6 +761,9 @@ enum Under {
         running: Running<RolledBack>,
         then_close: bool,
         lands: Lands,
+        /// Whether the fields keep what was typed: a refused plain edit's own transaction
+        /// rolled back (#475), its field showing the text refused, as any refusal leaves it.
+        keep_fields: bool,
     },
     /// An undo or a redo, the sketch mode it was asked in, if it was, and whether it's an
     /// over-defining dimension's Cancel (SD7), whose `conflict` is said as overtaken; and
@@ -690,6 +842,16 @@ enum Under {
         sending: Sending,
         running: Running<SketchEdited>,
     },
+    /// A constraint tool's edit, of `click`, or Construction's, as it was sent: what to send
+    /// once it's taken, if anything (an add's remove, Construction's next fields), and, if
+    /// it follows another edit of the click, the state the click's first edit was made from.
+    Relate {
+        click: Click,
+        then: Option<Box<Relating>>,
+        pair: Option<Revision>,
+        sending: Sending,
+        running: RelateRunning,
+    },
     /// Trim's or split's edit, as it was sent.
     SketchCut {
         sending: Sending,
@@ -752,6 +914,7 @@ impl Under {
             | Under::SketchEdit { sending, .. }
             | Under::SketchJoin { sending, .. }
             | Under::SketchAdd { sending, .. }
+            | Under::Relate { sending, .. }
             | Under::SketchCut { sending, .. }
             | Under::DimensionValue { sending, .. }
             | Under::OfferField { sending, .. } => Some(sending.state),
@@ -846,6 +1009,20 @@ pub struct Row {
     pub consumers: std::collections::BTreeSet<FeatureId>,
     /// Whether its feature is suppressed (a sketch's: then nothing of it is drawn).
     pub suppressed: bool,
+    /// A body's meta (app.js's `renderBrowser`): the last healthy feature of its chain. The
+    /// app names a body after its tip, as SolidWorks names a solid body after the feature
+    /// that last changed it, where the prototype names it `Body1`; so the meta adds the last
+    /// healthy feature only when the tip isn't it, which is when the tip is in error (built,
+    /// but drifted): then it's the name of the last feature before the tip in its chain, in
+    /// timeline order, that's healthy, a sketch's never counted. Healthy is the prototype's
+    /// word for built and shown, which a feature built with warnings is too (Fusion's yellow,
+    /// "a feature that still shows", `silico_core::timeline`); one in error, suppressed, or
+    /// not built (`unknown`) isn't. While the tip is `unknown` (an edit's reach, rebuilding;
+    /// or built but not measured, a kernel fault leaving its fingerprint unchecked), the
+    /// meta the last read gave is kept, so the row doesn't change till its health is known.
+    /// Otherwise none: for a sketch, and a body whose tip is healthy or warned, which shows
+    /// none rather than its name twice.
+    pub last_healthy: Option<String>,
 }
 
 /// An eye clicked away from its row's default (docs/design/m5.0-app.md, decision 29: "kept
@@ -1134,6 +1311,10 @@ pub struct Tab {
     pub renaming: Option<crate::feature_menu::Renaming>,
     /// Where the person last selected a feature: F2 renames it there.
     pub selected_in: crate::feature_menu::Place,
+    /// Find in browser asked while the browser may be collapsed: the browser's strip shows
+    /// it again before its row is scrolled to, as SolidWorks and Fusion reveal their tree;
+    /// the browser shown lets it go.
+    pub reveal_browser: bool,
     /// A save or a revert that was to close the tab was refused: the tab stays, and a quit
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
     close_refused: bool,
@@ -1172,6 +1353,18 @@ pub struct Tab {
     oked: Option<Dialog>,
     /// The dialogs' edits OK'd in this transaction, each one step for undo and redo.
     groups: Vec<Group>,
+    /// A click's chain of edits (a constraint tool's add and the remove after it, C5;
+    /// Construction's fields), one step for sketch mode's undo and redo: the sketch mode's
+    /// number, and the state the chain's first edit was made from and the state its last
+    /// left (or, for a chain refused part way, the state its last taken edit made).
+    sketch_pairs: Vec<(u64, Revision, Revision)>,
+    /// Each sketch mode closed (Finish, Cancel) while a click of it (a constraint tool's, or
+    /// Construction's) was unsettled: its reads polled still, so the click is planned, and
+    /// let go once none is.
+    leaving: Vec<SketchMode>,
+    /// The click (a constraint tool's, or Construction's) being pressed, while its press's
+    /// call runs: let go in it, it's toasted as well as said.
+    pressed: Option<Click>,
     /// Each state the tab's changes made in this transaction, by its first revision
     /// ([`state_of`](Self::state_of)), with the step that made it: what the Undo and Redo
     /// tooltips name, and the status bar counts. In order, those up to the session's state its
@@ -1252,6 +1445,15 @@ pub struct Tab {
     /// as they may in any frame. For the crate's tests only; None otherwise.
     #[doc(hidden)]
     pub after_status: Option<AfterStatus>,
+}
+
+/// Whether `problems` refuse a change as stale: made against a revision the session has
+/// moved on from (a `conflict` on the revision).
+fn stale(problems: &Problems) -> bool {
+    problems
+        .errors()
+        .iter()
+        .any(|error| error.code() == ErrorCode::Conflict && error.parameter() == Some("revision"))
 }
 
 /// What an over-defining dimension's refused choice says: [`OVERTAKEN`] for a `conflict`,
@@ -1414,6 +1616,7 @@ impl Tab {
             told: None,
             renaming: None,
             selected_in: crate::feature_menu::Place::Timeline,
+            reveal_browser: false,
             close_refused: false,
             replace_asked: None,
             roll_back: false,
@@ -1429,6 +1632,9 @@ impl Tab {
             before_dialog: None,
             oked: None,
             groups: Vec::new(),
+            sketch_pairs: Vec::new(),
+            leaving: Vec::new(),
+            pressed: None,
             steps: BTreeMap::new(),
             names: BTreeMap::new(),
             held_count: 0,
@@ -1784,14 +1990,23 @@ impl Tab {
         }
     }
 
-    /// An arrow's drag under way let go of and what it held back sent, before a save or a
-    /// Save As that closes the tab is queued (#480's review, R2-1): so what the save writes
-    /// is what the field shows, which then stays as it is while the tab closes, the rest of
-    /// the stream asking nothing.
-    fn flush_arrow<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if self.grip.holding() {
+    /// Everything the dialog holds back sent, before a save or a Save As that closes the tab
+    /// is queued: an arrow's drag under way let go of and the value it held (#480's review,
+    /// R2-1), and a box of one body's waiting behind an edit of its feature (#483), queued
+    /// behind that edit and ahead of the save. So what the save writes is what the dialog
+    /// shows, which then stays as it is while the tab closes, the rest of the stream asking
+    /// nothing.
+    fn flush_held<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let arrow = self.grip.holding();
+        if arrow {
             self.grip.let_go();
-            self.dialog_changed(sessions);
+        }
+        let bodies = self
+            .dialog
+            .as_ref()
+            .is_some_and(crate::dialog::Dialog::holding);
+        if arrow || bodies {
+            self.send_dialog(sessions, false);
         }
     }
 
@@ -2442,7 +2657,9 @@ impl Tab {
             | Queued::SketchSplit { .. }
             | Queued::SketchExtend { .. }
             | Queued::DimensionValue { .. }
-            | Queued::Offer { .. } => true,
+            | Queued::Offer { .. }
+            | Queued::Click { .. }
+            | Queued::Relate { .. } => true,
             // An edit is `edits.idle`'s; a save, a revert, Reload's rebuild, a step, a load, a
             // dialog's or sketch mode's opening or closing, and Restore's read change nothing
             // of their own.
@@ -2468,6 +2685,7 @@ impl Tab {
             | Under::SketchEdit { .. }
             | Under::SketchJoin { .. }
             | Under::SketchAdd { .. }
+            | Under::Relate { .. }
             | Under::SketchCut { .. }
             | Under::DimensionValue { .. }
             | Under::OfferField { .. } => true,
@@ -2500,7 +2718,7 @@ impl Tab {
     ) {
         self.hush();
         if then_close {
-            self.flush_arrow(sessions);
+            self.flush_held(sessions);
         }
         self.edits.queue.push_back(Queued::SaveAs {
             path,
@@ -2616,6 +2834,7 @@ impl Tab {
         self.sketch_requests(sessions);
         self.drive_drag(sessions);
         self.read_sketches(sessions);
+        self.relate_waiting(sessions);
         self.measure(sessions);
         // The unsaved edits, counted while every answer of the tab's is taken: what the bar
         // holds while the next is under way.
@@ -2635,6 +2854,9 @@ impl Tab {
             if let Some(drag) = self.drag.as_mut() {
                 drag.read(mode.read.as_ref().and_then(|read| read.model));
             }
+        }
+        for mode in &mut self.leaving {
+            mode.poll(sessions, &self.id, self.published);
         }
         let (overrides, browser) = (&self.overrides, &self.browser);
         self.sketch_reads.poll(
@@ -2809,6 +3031,7 @@ impl Tab {
                 running: sessions.rollback(&self.id),
                 then_close: false,
                 lands: Lands::Nothing,
+                keep_fields: false,
             });
         }
         self.advance(sessions);
@@ -3090,13 +3313,14 @@ impl Tab {
                 running,
                 then_close,
                 lands,
+                keep_fields,
             } => match running.try_take() {
                 Ok(response) => {
                     self.landed(lands, response.session.as_ref());
                     self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
                     // Typing queued after it is applied next: the field keeps it.
-                    if response.result.is_ok() && self.edits.idle() {
+                    if response.result.is_ok() && self.edits.idle() && !keep_fields {
                         self.resets += 1;
                     }
                     self.ended(response.result.map(|_| ()), then_close, close);
@@ -3106,6 +3330,7 @@ impl Tab {
                     running,
                     then_close,
                     lands,
+                    keep_fields,
                 }),
             },
             Under::Step {
@@ -3361,6 +3586,77 @@ impl Tab {
                     running,
                 }),
             },
+            Under::Relate {
+                click,
+                then,
+                pair,
+                sending,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.took_session(&response);
+                    self.applied(&sending, &response);
+                    // The revision the edit made, as the session gave it.
+                    let made = response
+                        .session
+                        .as_ref()
+                        .map_or(self.revision, |session| session.revision);
+                    match (&response.result, then) {
+                        // An add taken: the remove of the `on`s it implies next; a field of
+                        // Construction's taken: its next fields. Before anything asked after
+                        // it, against the revision it made, and from the state the click's
+                        // first edit was made from.
+                        (Ok(_), Some(then)) => {
+                            self.edits.queue.push_front(Queued::Relate {
+                                click,
+                                revision: made,
+                                relating: *then,
+                                pair: Some(pair.unwrap_or(sending.state)),
+                            });
+                        }
+                        // The last edit of a chain taken (the remove after an add,
+                        // Construction's last field): the chain one step, from the state its
+                        // first edit was made from to the state this one left, though this one
+                        // changed nothing.
+                        (Ok(_), None) => {
+                            if let Some(start) = pair {
+                                let end = self.state_of(made);
+                                if start != end {
+                                    self.sketch_pairs.push((click.serial, start, end));
+                                }
+                            }
+                        }
+                        // Planned on a read the session has moved on from (the click before
+                        // it, its read not in yet): planned again on a newer read, in its
+                        // place, before anything asked after it, the conflict never said. A
+                        // refused add sends no remove, and a refused field of Construction's
+                        // none of the fields after it.
+                        (Err(problems), _) if stale(problems) => {
+                            self.edits.queue.push_front(Queued::Click {
+                                click,
+                                after: Some(sending.against),
+                            });
+                        }
+                        // Refused, said in the status bar, as every sent edit's refusal is. A
+                        // chain refused part way: what it had made, from the state its first
+                        // edit was made from to the state this one was sent from, one step.
+                        (Err(problems), _) => {
+                            if let Some(start) = pair.filter(|start| *start != sending.state) {
+                                self.sketch_pairs.push((click.serial, start, sending.state));
+                            }
+                            self.message = Some(said(problems));
+                        }
+                    }
+                    None
+                }
+                Err(running) => Some(Under::Relate {
+                    click,
+                    then,
+                    pair,
+                    sending,
+                    running,
+                }),
+            },
             Under::SketchCut { sending, running } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
@@ -3605,6 +3901,7 @@ impl Tab {
     /// counted.
     fn stack_gone(&mut self) {
         self.groups.clear();
+        self.sketch_pairs.clear();
         self.steps.clear();
         self.restored.clear();
         // Names are never carried across it: the state it came to has none till a timeline
@@ -3649,6 +3946,7 @@ impl Tab {
             value,
             sending,
             running,
+            plain,
         }) = self.edits.in_flight.take()
         {
             match running.try_take() {
@@ -3680,6 +3978,24 @@ impl Tab {
                             } else {
                                 self.refused.insert(field);
                             }
+                            // A plain edit's own transaction, begun for it outside a
+                            // dialog or sketch mode, holds nothing once it's refused (its
+                            // begin reloading the file, the edit sent against the revision
+                            // before; or a value refused): ended now, as Restore's and Save
+                            // As's are, so no transaction stays open the person didn't open
+                            // (#475), and the session follows its file again. The field keeps
+                            // what was typed (#298's review); an edit queued after it begins
+                            // its own.
+                            if plain {
+                                self.supersede_preview();
+                                self.record(Sent::Rollback);
+                                self.under.push(Under::Rollback {
+                                    running: sessions.rollback(&self.id),
+                                    then_close: false,
+                                    lands: Lands::Nothing,
+                                    keep_fields: true,
+                                });
+                            }
                         }
                     }
                 }
@@ -3689,6 +4005,7 @@ impl Tab {
                         value,
                         sending,
                         running,
+                        plain,
                     });
                     return;
                 }
@@ -3704,7 +4021,10 @@ impl Tab {
             let step = self.step_words(&queued);
             match queued {
                 Queued::Edit(edit, _) => {
-                    self.begin_if_none(sessions);
+                    let plain = self.begin_if_none(sessions)
+                        && self.dialog_base.is_none()
+                        && !self.in_dialog()
+                        && !self.in_sketch();
                     self.supersede_preview();
                     self.edits.sent += 1;
                     self.record(Sent::Edit(edit.field.clone()));
@@ -3723,6 +4043,7 @@ impl Tab {
                         value,
                         sending,
                         running,
+                        plain,
                     });
                 }
                 // A sweep's body read at another revision than the session's now: read again.
@@ -3900,6 +4221,93 @@ impl Tab {
                         running,
                     });
                 }
+                Queued::Click { click, after } => match self.plan(&click, after) {
+                    // Its read not there yet: it keeps its place, and what's after it waits.
+                    Planned::Wait => {
+                        self.edits.queue.push_front(Queued::Click { click, after });
+                        return;
+                    }
+                    Planned::Send(revision, relating) => {
+                        self.edits.queue.push_front(Queued::Relate {
+                            click,
+                            revision,
+                            relating: *relating,
+                            pair: None,
+                        });
+                    }
+                    Planned::Said => {}
+                    Planned::Gone(said) => {
+                        if self.pressed.as_ref() == Some(&click) {
+                            self.toast = Some(said.clone());
+                        }
+                        self.message = Some(said);
+                    }
+                },
+                Queued::Relate {
+                    click,
+                    revision,
+                    relating,
+                    pair,
+                } => {
+                    self.begin_if_none(sessions);
+                    self.supersede_preview();
+                    let sending = Sending {
+                        against: revision,
+                        state: self.state_of(revision),
+                        step,
+                    };
+                    let (id, sketch) = (self.id, click.sketch.clone());
+                    let (running, then) = match relating {
+                        Relating::Add {
+                            members,
+                            then_remove,
+                        } => {
+                            self.record(Sent::SketchEdit("sketch_add"));
+                            let running = sessions.sketch_add(&id, revision, sketch, members);
+                            let then = (!then_remove.is_empty())
+                                .then(|| Box::new(Relating::Remove(then_remove)));
+                            (RelateRunning::Sketch(running), then)
+                        }
+                        Relating::Merge(points) => {
+                            self.record(Sent::SketchEdit("sketch_merge"));
+                            let running = sessions.sketch_merge(&id, revision, sketch, points);
+                            (RelateRunning::Sketch(running), None)
+                        }
+                        Relating::Remove(members) => {
+                            self.record(Sent::SketchEdit("sketch_remove"));
+                            let running = sessions.sketch_remove(&id, revision, sketch, members);
+                            (RelateRunning::Sketch(running), None)
+                        }
+                        Relating::Fields {
+                            construction,
+                            first,
+                            rest,
+                        } => {
+                            self.record(Sent::Edit(first.clone()));
+                            let value = Node {
+                                at: At::UNPLACED,
+                                value: Value::Bool(construction),
+                            };
+                            let running = sessions.set_field(&id, revision, sketch, first, value);
+                            let mut rest = rest.into_iter();
+                            let then = rest.next().map(|first| {
+                                Box::new(Relating::Fields {
+                                    construction,
+                                    first,
+                                    rest: rest.collect(),
+                                })
+                            });
+                            (RelateRunning::Field(running), then)
+                        }
+                    };
+                    self.under.push(Under::Relate {
+                        click,
+                        then,
+                        pair,
+                        sending,
+                        running,
+                    });
+                }
                 Queued::SketchTrim {
                     sketch,
                     curve,
@@ -4070,6 +4478,7 @@ impl Tab {
                             running: sessions.rollback(&self.id),
                             then_close: false,
                             lands,
+                            keep_fields: false,
                         });
                     } else if unchanged {
                         // Nothing of the dialog's changed the document.
@@ -4114,6 +4523,7 @@ impl Tab {
                         running: sessions.rollback(&self.id),
                         then_close,
                         lands: Lands::Everything,
+                        keep_fields: false,
                     });
                 }
                 Queued::SaveAs {
@@ -4153,9 +4563,18 @@ impl Tab {
                     }
                     // At a dialog's OK'd edits' end (undo) or start (redo): all of them at
                     // once, to its other side (section 9). Never in sketch mode, whose steps
-                    // are its own edits', one at a time.
+                    // are its own edits', one at a time, but for a click's chain of edits (a
+                    // constraint tool's add and the remove after it, C5; Construction's
+                    // fields), one step.
                     let to = match sketch {
-                        Some(_) => None,
+                        Some(serial) => {
+                            self.sketch_pairs
+                                .iter()
+                                .find_map(|&(of, start, end)| match undo {
+                                    true => (of == serial && end == state).then_some(start),
+                                    false => (of == serial && start == state).then_some(end),
+                                })
+                        }
                         None => self.groups.iter().find_map(|group| match undo {
                             true => (group.end == state).then_some(group.start),
                             false => (group.start == state).then_some(group.end),
@@ -4222,6 +4641,7 @@ impl Tab {
                         | Under::SketchEdit { .. }
                         | Under::SketchJoin { .. }
                         | Under::SketchAdd { .. }
+                        | Under::Relate { .. }
                         | Under::SketchCut { .. }
                         | Under::DimensionValue { .. }
                         | Under::OfferField { .. }
@@ -4540,7 +4960,7 @@ impl Tab {
     pub fn save<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
         self.hush();
         if then_close {
-            self.flush_arrow(sessions);
+            self.flush_held(sessions);
         }
         match self.edits.queue.back_mut() {
             Some(Queued::Save { then_close: last }) => *last |= then_close,
@@ -4589,6 +5009,18 @@ impl Tab {
                 .queue
                 .range(kept..)
                 .any(|queued| matches!(queued, Queued::Revert { then_close: true }));
+        // A constraint tool's click it drops, or Construction's, unplanned or unsent, said.
+        if let Some(applies) = self
+            .edits
+            .queue
+            .range(kept..)
+            .find_map(|queued| match queued {
+                Queued::Click { click, .. } | Queued::Relate { click, .. } => Some(click.applies),
+                _ => None,
+            })
+        {
+            self.message = Some(applies.unmade("the part was reverted first"));
+        }
         self.edits.queue.truncate(kept);
         self.edits.queue.push_back(Queued::Revert { then_close });
         self.advance(sessions);
@@ -5229,6 +5661,7 @@ impl Tab {
         {
             let from = sending.state;
             self.groups.retain(|group| group.end <= from);
+            self.sketch_pairs.retain(|&(_, _, end)| end <= from);
             self.steps.retain(|state, _| *state <= from);
             self.steps.insert(
                 made,
@@ -5341,6 +5774,9 @@ impl Tab {
                     },
                 ..
             } => Some(Words::Of("Edit", sketch.clone())),
+            // By the relation, as its button names it ("Horizontal"), or "Construction": a
+            // click's chain of edits one step of that name.
+            Queued::Relate { click, .. } => Some(Words::Text(click.applies.name().to_owned())),
             // As its banner's button names it (Fable's decision of 2026-11-04: by the revision
             // it puts back, never the prototype's "my version").
             Queued::Replace { revision, .. } => Some(Words::Text(format!(
@@ -5363,6 +5799,8 @@ impl Tab {
             | Queued::Load { .. }
             | Queued::Closed { .. }
             | Queued::Restore { .. } => None,
+            // Its edit, once planned, says it.
+            Queued::Click { .. } => None,
         }
     }
 
@@ -5470,6 +5908,20 @@ impl Tab {
             .map(|problem| format!("Not drawn: {}", problem.message()))
     }
 
+    /// The plane the sketch `id` is on, as the document stores it (an origin plane, or a
+    /// planar face by its name), once it's read: sketch mode's newest read for the sketch
+    /// open there, else its held read ([`SketchReads::held`]). None until one is read, and
+    /// for a sketch no read holds (a suppressed one, which is never read).
+    pub fn sketch_plane(&self, id: &FeatureId) -> Option<&silico_core::document::Plane> {
+        let open = self
+            .sketch
+            .as_ref()
+            .filter(|mode| mode.sketch.as_ref() == Some(id))
+            .and_then(SketchMode::drawable);
+        open.or_else(|| self.sketch_reads.held(id).map(|held| &*held.read))
+            .map(|read| &read.members.plane)
+    }
+
     /// The features no sketch counts among its consumers yet ("a feature the open dialog
     /// is making counts from its OK", decision 29): the one the open dialog is making, till
     /// its OK; and each cancelled one's kept in `unmade`.
@@ -5537,7 +5989,7 @@ impl Tab {
             None => false,
         };
         let editing = self.dialog.as_ref().is_some_and(|dialog| !dialog.made);
-        let rows = browser(timeline, &self.making());
+        let rows = browser(timeline, &self.making(), &self.browser);
         self.browser = rows;
         if editing || edit_undone {
             return;
@@ -5826,6 +6278,7 @@ impl Tab {
             self.opens_at(to, Owner::Opened, None);
         }
         let Some(dialog) = self.dialog.take() else {
+            self.read_again_past(to);
             return;
         };
         match (dialog.made, dialog.feature.clone()) {
@@ -5847,6 +6300,32 @@ impl Tab {
                     dialog.kind.title()
                 ));
             }
+        }
+    }
+
+    /// A dialog still being read as the session reloaded its file to `to`: if its read was
+    /// sent before that reload, what it reads is the file's before, so it's read again,
+    /// queued, opening at `to`, and the first read's answer let go (#475: a second reload
+    /// while a dialog's re-read is out left it on the first one's base). A read still queued
+    /// is sent after the reload, reading it.
+    fn read_again_past(&mut self, to: Revision) {
+        let Some(serial) = self.loading else {
+            return;
+        };
+        let stale = self.under.iter().find_map(|under| match under {
+            Under::Load {
+                serial: s,
+                kind,
+                feature,
+                sent_at,
+                ..
+            } if *s == serial && *sent_at < to => Some((*kind, feature.clone())),
+            _ => None,
+        });
+        if let Some((kind, feature)) = stale {
+            let serial = self.new_dialog();
+            self.opens_at(to, Owner::Opened, None);
+            self.queue_read(serial, kind, feature);
         }
     }
 
@@ -6189,12 +6668,24 @@ impl Tab {
     /// an edit of each field that changed, coalesced as the property panel's are. Whether
     /// anything was.
     pub fn dialog_changed<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        self.send_dialog(sessions, true)
+    }
+
+    /// [`dialog_changed`](Self::dialog_changed); its boxes of one body held back while an
+    /// edit of its feature is still to answer only if `hold_bodies` (else queued behind that
+    /// edit, as a closing save needs them: [`flush_held`](Self::flush_held)).
+    fn send_dialog<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        hold_bodies: bool,
+    ) -> bool {
         // An edit of its feature still to answer: its boxes of one body wait for it.
-        let waiting = self
-            .dialog
-            .as_ref()
-            .and_then(|dialog| dialog.feature.as_ref())
-            .is_some_and(|feature| self.edits.pending_for(feature));
+        let waiting = hold_bodies
+            && self
+                .dialog
+                .as_ref()
+                .and_then(|dialog| dialog.feature.as_ref())
+                .is_some_and(|feature| self.edits.pending_for(feature));
         let held_back = self.arrow_held_back();
         let Some(dialog) = self.dialog.as_mut() else {
             return false;
@@ -6295,14 +6786,22 @@ impl Tab {
         }
         let changed = !changes.is_empty();
         for (field, value) in changes {
-            self.edit(
-                sessions,
-                Edit {
-                    feature: feature.clone(),
-                    field: field.to_owned(),
-                    value,
-                },
-            );
+            let edit = Edit {
+                feature: feature.clone(),
+                field: field.to_owned(),
+                value,
+            };
+            if hold_bodies {
+                self.edit(sessions, edit);
+            } else {
+                // Flushed for a closing save: at the back, never in place of an edit of the
+                // same field that waits, which would move it ahead of the other box's and
+                // undo the order `Dialog::changes` planned (#501's review).
+                let step = self.edit_words(&edit);
+                self.hush();
+                self.edits.queue.push_back(Queued::Edit(edit, step));
+                self.advance(sessions);
+            }
         }
         // Its base sent after its sketch, in the dialog's transaction, so OK keeps both and
         // Cancel undoes both.
@@ -6576,7 +7075,28 @@ impl Tab {
         }
         // Its close waits for a drag's end (the queue waits while one is under way).
         self.leave_drag();
-        self.sketch = None;
+        // And, for Finish, for a click of it (a constraint tool's, or Construction's) still to
+        // plan: its reads go
+        // on. Cancel takes back what it adds anyway: a click still waiting to be planned is let
+        // go, said, and an edit already planned is sent and taken back with the rest.
+        if let Some(mode) = self.sketch.take() {
+            if !ok {
+                let serial = mode.serial;
+                let mut dropped = None;
+                self.edits.queue.retain(|queued| match queued {
+                    Queued::Click { click, .. } if click.serial == serial => {
+                        dropped.get_or_insert(click.applies);
+                        false
+                    }
+                    _ => true,
+                });
+                if let Some(applies) = dropped {
+                    self.message = Some(applies.unmade(SKETCH_CANCELLED));
+                }
+            } else if self.relating(mode.serial) {
+                self.leaving.push(mode);
+            }
+        }
         self.drive_drag(sessions);
         self.edits.queue.push_back(Queued::Closed {
             ok,
@@ -6614,10 +7134,25 @@ impl Tab {
         }
     }
 
-    /// Construction's button or X in sketch mode: the palette's Construction turned on or
-    /// off. Nothing outside sketch mode.
-    pub fn sketch_toggle_construction(&mut self) {
-        if let Some(mode) = self.sketch.as_mut() {
+    /// Construction's button or X in sketch mode (the approved prototype's "Toggles the
+    /// selected curves between profile and construction"): with curves selected (lines,
+    /// circles, arcs, as the read drawn holds them), a click, as a constraint tool's is,
+    /// that sets them all to one value, construction unless all of them are already
+    /// ([`construction_switch`](sketch::selection::construction_switch)), one step for undo
+    /// named "Construction", the palette's setting and the selection left as they are. With
+    /// none, the palette's Construction turned on or off, for the curves drawn next.
+    /// Nothing outside sketch mode.
+    pub fn sketch_construction<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let Some(mode) = self.sketch.as_mut() else {
+            return;
+        };
+        let picks = mode.selection.references();
+        let curves = mode.drawable().is_some_and(|read| {
+            sketch::selection::construction_switch(&read.members, &picks).is_some()
+        });
+        if curves {
+            self.sketch_click(sessions, Applies::Construction);
+        } else {
             mode.settings.construction = !mode.settings.construction;
         }
     }
@@ -6880,6 +7415,217 @@ impl Tab {
         self.advance(sessions);
     }
 
+    /// A constraint tool's button in sketch mode (C7): `relation` made of the selection, in
+    /// pick order, queued as a click, planned when it comes up ([`plan`](Self::plan)), so
+    /// nothing asked after it goes first. The selection stays. Nothing while the tab closes,
+    /// before the sketch is known, or outside sketch mode.
+    pub fn sketch_relate<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        relation: RelationTool,
+    ) {
+        self.sketch_click(sessions, Applies::Relation(relation));
+    }
+
+    /// A click in sketch mode that `applies` to the selection, in pick order (a constraint
+    /// tool's, or Construction's), queued, as [`sketch_relate`](Self::sketch_relate) has it.
+    fn sketch_click<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        applies: Applies,
+    ) {
+        if self.closing() {
+            return;
+        }
+        let Some(mode) = self.sketch.as_ref() else {
+            return;
+        };
+        let Some(sketch) = mode.sketch.clone() else {
+            return;
+        };
+        let click = Click {
+            serial: mode.serial,
+            sketch,
+            applies,
+            picks: mode.selection.references(),
+        };
+        self.hush();
+        // With nothing ahead of it, it's planned now, and a read it can't be planned on (none
+        // newer to come) lets it go in this call: said in the toast as well as the status
+        // bar, as a refusal at the press is, nothing sent, the selection kept. Behind an
+        // edit still going out, it's planned once that has answered.
+        self.pressed = Some(click.clone());
+        self.edits
+            .queue
+            .push_back(Queued::Click { click, after: None });
+        self.advance(sessions);
+        self.pressed = None;
+    }
+
+    /// Why a sketch read of the revision `read` (none: no read yet) can't be followed by a
+    /// newer one unasked, if it can't: it's older than the tab's revision, whose rebuild, as
+    /// `status` gives it for that revision, was stopped or its recompute failed, with nothing
+    /// of that revision or newer published. A click never starts that rebuild again.
+    fn unreadable(&self, read: Option<Revision>) -> Option<&'static str> {
+        let current = |revision: Revision| revision >= self.revision;
+        if read.is_some_and(current) || self.published.is_some_and(current) {
+            return None;
+        }
+        let status = self
+            .status
+            .as_ref()
+            .filter(|status| status.rebuild.revision == self.revision)?;
+        match status.rebuild.state {
+            RebuildState::Stopped => Some(REBUILD_STOPPED),
+            RebuildState::Faulted => Some(REBUILD_FAILED),
+            RebuildState::Idle | RebuildState::Running | RebuildState::Done => None,
+        }
+    }
+
+    /// `click`, come up in the queue, planned on the newest read of the sketch mode it was
+    /// made in (open, or closed with it still to plan), of its sketch, if that read is newer
+    /// than `after`, the revision a stale plan of it was made on (any read, if none was), at
+    /// that read's revision, with the IDs as its tools take them (`sketch_tools::relate`):
+    /// its refusal or its message toasted; its edit, if it has one, to send now, against that
+    /// revision. Waits, if the read isn't there yet. Let go, said in the status bar, if its
+    /// sketch mode has gone, or the read the plan needs is refused.
+    fn plan(&mut self, click: &Click, after: Option<Revision>) -> Planned {
+        let gone = |why: &str| Planned::Gone(click.applies.unmade(why));
+        let read = self
+            .sketch
+            .iter()
+            .chain(self.leaving.iter())
+            .find(|mode| mode.serial == click.serial)
+            .map(|mode| mode.read.as_ref().and_then(|read| read.model));
+        let Some(read) = read else {
+            return gone(SKETCH_CLOSED);
+        };
+        // The read it needs won't come unasked: let go now, in the frame the stop or the
+        // failure is seen, so nothing queued after it waits on it.
+        if let Some(why) = self.unreadable(read) {
+            return gone(why);
+        }
+        let Some(mode) = self
+            .sketch
+            .iter_mut()
+            .chain(self.leaving.iter_mut())
+            .find(|mode| mode.serial == click.serial)
+        else {
+            return gone(SKETCH_CLOSED);
+        };
+        let Some(read) = mode.read.as_ref() else {
+            return Planned::Wait;
+        };
+        let older = read
+            .model
+            .is_some_and(|model| after.is_some_and(|after| model <= after));
+        let (revision, drawn) = match (&read.result, read.model) {
+            _ if older => return Planned::Wait,
+            // A refusal of an older model (from before the sketch was added) waits for the
+            // next, as the palette does.
+            (Err(_), Some(model)) if model < self.revision => return Planned::Wait,
+            (Err(problems), _) => return gone(&said(problems)),
+            (Ok(drawn), Some(model)) if drawn.sketch == click.sketch => (model, drawn),
+            _ => return Planned::Wait,
+        };
+        let relation = match click.applies {
+            Applies::Relation(relation) => relation,
+            // Each curve picked that the read holds set to the one value, those already at
+            // it left out; none picked now (gone since the press) said, nothing sent.
+            Applies::Construction => {
+                let Some(switch) =
+                    sketch::selection::construction_switch(&drawn.members, &click.picks)
+                else {
+                    return gone(CURVES_GONE);
+                };
+                let relating = Relating::Fields {
+                    construction: switch.construction,
+                    first: switch.first,
+                    rest: switch.rest,
+                };
+                mode.undone = 0;
+                return Planned::Send(revision, Box::new(relating));
+            }
+        };
+        let planned = silico_core::sketch_tools::relate(
+            &drawn.members,
+            revision,
+            relation,
+            &click.picks,
+            &mut *mode.tools.ids,
+        );
+        let related = match planned {
+            Ok(related) => related,
+            Err(error) => {
+                self.toast = Some(said(&Problems::from(error)));
+                return Planned::Said;
+            }
+        };
+        if let Some(message) = related.message() {
+            self.toast = Some(message.text());
+        }
+        let elements = |ids: &[ElementId]| -> Vec<Reference> {
+            ids.iter().cloned().map(Reference::Element).collect()
+        };
+        let relating = match related.edit() {
+            None => return Planned::Said,
+            Some(RelateEdit::Add(add)) => NewMembers::of(add).map(|members| Relating::Add {
+                members,
+                then_remove: Vec::new(),
+            }),
+            Some(RelateEdit::AddThenRemove { add, remove }) => {
+                NewMembers::of(add).map(|members| Relating::Add {
+                    members,
+                    then_remove: elements(remove),
+                })
+            }
+            Some(RelateEdit::Merge(points)) => Ok(Relating::Merge(points.clone())),
+            Some(RelateEdit::Remove(ons)) => Ok(Relating::Remove(elements(ons))),
+        };
+        match relating {
+            Ok(relating) => {
+                // A new edit drops what was undone: Redo has nothing of sketch mode's to give
+                // back.
+                mode.undone = 0;
+                Planned::Send(related.revision(), Box::new(relating))
+            }
+            Err(error) => {
+                self.toast = Some(said(&Problems::from(error)));
+                Planned::Said
+            }
+        }
+    }
+
+    /// How many sketch modes closed with a click (a constraint tool's, or Construction's)
+    /// still unsettled are kept for it: what a test counts.
+    pub fn leaving(&self) -> usize {
+        self.leaving.len()
+    }
+
+    /// Whether a click (a constraint tool's, or Construction's) of sketch mode numbered
+    /// `serial` is unsettled: queued to be planned, or an edit of its chain queued or under
+    /// way.
+    fn relating(&self, serial: u64) -> bool {
+        self.edits.queue.iter().any(|queued| {
+            matches!(queued, Queued::Click { click, .. } | Queued::Relate { click, .. } if click.serial == serial)
+        }) || self
+            .under
+            .iter()
+            .any(|under| matches!(under, Under::Relate { click, .. } if click.serial == serial))
+    }
+
+    /// A click waiting at the queue's front for its read, given another chance once a read
+    /// may have come; and each sketch mode closed with a click still unsettled, its read
+    /// polled meanwhile, let go once none is.
+    fn relate_waiting<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let mut leaving = std::mem::take(&mut self.leaving);
+        leaving.retain(|mode| self.relating(mode.serial));
+        self.leaving = leaving;
+        if matches!(self.edits.queue.front(), Some(Queued::Click { .. })) {
+            self.advance(sessions);
+        }
+    }
+
     /// The browser's row of the feature `id` chosen while the open dialog's boxes hold the
     /// selection as bodies (`Dialog::boxes_hold_bodies`): taken into its active box, if it's a
     /// body's row (one the dialog's own feature isn't built into), or refused, said under it;
@@ -6993,10 +7739,7 @@ impl Tab {
     /// Any other refusal leaves it unsent till an input changes; either way OK stays off
     /// while no feature is made ([`ok_for`](Self::ok_for)).
     fn add_refused(&mut self, serial: u64, problems: &Problems) {
-        let stale = problems.errors().iter().any(|error| {
-            error.code() == silico_core::ErrorCode::Conflict
-                && error.parameter() == Some("revision")
-        });
+        let stale = stale(problems);
         if let Some(dialog) = self
             .dialog
             .as_mut()
@@ -7532,12 +8275,14 @@ fn marked(timeline: &TimelineAnswer) -> bool {
 /// The browser's rows of `timeline` (section 8): its bodies, the model's (`bodies`; a chain
 /// whose last feature failed built no body there, and the core's timeline doesn't report
 /// one, so none is listed for it), each marked by the worst of its chain's features (the
-/// first in error, else the first with a warning); and its sketches, each marked by its own,
+/// first in error, else the first with a warning), with the last healthy one for its meta
+/// ([`Row::last_healthy`]; kept from `before`, the rows of the last read, while its tip is
+/// rebuilding); and its sketches, each marked by its own,
 /// with its consumers (decision 29): each feature that lists it among its `inputs`, but those
 /// of `making`, the feature the open dialog is making, which counts from its OK, and any
 /// cancelled one not yet undone in what's read. Each feature found by its ID once, through a
 /// map.
-pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
+pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId], before: &Browser) -> Browser {
     let entries = timeline.features.as_deref().unwrap_or_default();
     let place: BTreeMap<&FeatureId, usize> = entries
         .iter()
@@ -7558,6 +8303,7 @@ pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
         marked_by: worst.map(|at| entries[at].id.clone()),
         consumers: std::collections::BTreeSet::new(),
         suppressed: entry.suppressed,
+        last_healthy: None,
     };
     let bodies = timeline
         .bodies
@@ -7575,7 +8321,29 @@ pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
                         .copied()
                         .find(|&i| entries[i].health == Health::Warning)
                 });
-            row(&entries[at], worst)
+            let tip = &entries[at];
+            let last_healthy = match tip.health {
+                Health::Error => chain
+                    .iter()
+                    .rev()
+                    .map(|&i| &entries[i])
+                    .filter(|entry| entry.id != tip.id)
+                    .find(|entry| {
+                        entry.kind != "sketch"
+                            && matches!(entry.health, Health::Healthy | Health::Warning)
+                    })
+                    .map(|entry| entry.name.clone()),
+                Health::Unknown => before
+                    .bodies
+                    .iter()
+                    .find(|row| row.id == tip.id)
+                    .and_then(|row| row.last_healthy.clone()),
+                Health::Healthy | Health::Warning | Health::Suppressed => None,
+            };
+            Row {
+                last_healthy,
+                ..row(&entries[at], worst)
+            }
         })
         .collect();
     let sketches = entries
@@ -8267,7 +9035,7 @@ mod tests {
             let of = of.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
             (sketch.to_owned(), of)
         };
-        let all = browser(&read, &[]);
+        let all = browser(&read, &[], &Browser::default());
         assert_eq!(
             consumers(&all),
             [
@@ -8279,7 +9047,7 @@ mod tests {
         assert_eq!(all.bodies.len(), 1);
         assert!(all.bodies[0].consumers.is_empty());
         assert_eq!(
-            consumers(&browser(&read, &[&id("c0000001")])),
+            consumers(&browser(&read, &[&id("c0000001")], &Browser::default())),
             [
                 row("s0000001", &["p0000001"]),
                 row("s0000002", &[]),
@@ -8965,6 +9733,68 @@ mod tests {
     }
 
     #[test]
+    fn a_closing_flush_puts_a_dialogs_held_bodies_after_what_waits_never_in_its_place() {
+        // #501's review: a union's base edit waiting in the queue (dddddddd), then its tool
+        // (eeeeeeee) and its base again (bbbbbbbb, the document's tool), both held. The flush
+        // adds both at the back, in the order the dialog plans (the tool first, so the base
+        // never names the tool's body), never the base in place of the one queued, which
+        // would send it ahead of the tool.
+        use crate::dialog::Standing;
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let (_dir, sessions, mut tab) = session_tab();
+        let node = silico_core::document::json::read(
+            br#"{"id": "n0000001", "type": "fuse", "v": 1, "name": "U", "base": "aaaaaaaa", "tool": "bbbbbbbb"}"#,
+        )
+        .unwrap();
+        let mut dialog = Dialog::load(Kind::Union, fid("n0000001"), &node, 1).unwrap();
+        dialog.activate(0);
+        dialog.took_row(&fid("dddddddd"), true, Standing::Before);
+        let queued = dialog.changes(false);
+        assert_eq!(queued.len(), 1);
+        tab.edits.queue.push_back(Queued::Edit(
+            Edit {
+                feature: fid("n0000001"),
+                field: "base".to_owned(),
+                value: queued[0].1.clone(),
+            },
+            None,
+        ));
+        dialog.activate(1);
+        dialog.took_row(&fid("eeeeeeee"), true, Standing::Before);
+        dialog.activate(0);
+        dialog.took_row(&fid("bbbbbbbb"), true, Standing::Before);
+        assert!(dialog.holding());
+        tab.dialog = Some(dialog);
+        // A begin still out holds what's queued (`blocked`), so the base edit still waits
+        // where the flush finds it, as it would behind another feature's edit in flight.
+        tab.beginning = true;
+        tab.flush_held(&sessions);
+        let id = |value: &Node| match &value.value {
+            silico_core::document::json::Value::String(id) => id.clone(),
+            _ => panic!("not an ID"),
+        };
+        let in_flight = tab
+            .edits
+            .in_flight
+            .iter()
+            .map(|flying| (flying.field.1.clone(), id(&flying.value)));
+        let waiting = tab.edits.queue.iter().filter_map(|queued| match queued {
+            Queued::Edit(edit, _) => Some((edit.field.clone(), id(&edit.value))),
+            _ => None,
+        });
+        let order: Vec<(String, String)> = in_flight.chain(waiting).collect();
+        let want: Vec<(String, String)> = [
+            ("base", "dddddddd"),
+            ("tool", "eeeeeeee"),
+            ("base", "bbbbbbbb"),
+        ]
+        .into_iter()
+        .map(|(field, id)| (field.to_owned(), id.to_owned()))
+        .collect();
+        assert_eq!(order, want);
+    }
+
+    #[test]
     fn a_base_edit_in_flight_holds_a_sweeps_ok_and_one_of_another_field_or_feature_doesnt() {
         // #443's mutants (tab.rs:425): an edit in flight counts as one queued does. The
         // Pocket's own `base` in flight holds its OK; its `sketch`, or another feature's
@@ -8997,6 +9827,7 @@ mod tests {
                     field.to_owned(),
                     value(),
                 ),
+                plain: false,
             });
             assert_eq!(tab.base_held(), held, "{feature}'s {field}");
             assert_eq!(tab.can_ok(), !held, "{feature}'s {field}");
@@ -9004,12 +9835,12 @@ mod tests {
     }
 
     #[test]
-    fn the_canvas_sends_none_of_a_dialogs_changes_but_the_arrows_own() {
+    fn canvas_frames_with_no_arrow_drag_ending_send_nothing() {
         // #480's mutants (`arrows_frame`'s `holding && !self.grip.holding() && !closing`, its
-        // `&&`s as `||`): frames of the canvas in which no arrow's drag ends send nothing the
-        // arrows didn't ask, a Pocket's Length typed to 7 among it. That's the property
-        // panel's to send, for the tab shown alone (`Panes::dialog`), so a tab hidden as a
-        // click on its canvas ends there (`viewport::end_unshown`) sends none of it.
+        // `&&`s as `||`): frames of the canvas in which no arrow's drag ends send nothing. A
+        // Pocket's Length is set to 7 and left unsent on purpose, as something those frames
+        // could send and mustn't: the app never holds one so (the property panel sends a
+        // shown tab's every frame, `Panes::dialog`), but the mutants would send it here.
         use crate::viewport::{LeftEvent, LeftKind, ViewFrame};
         use eframe::egui;
         let fid = |text: &str| FeatureId::new(text).unwrap();
@@ -9907,6 +10738,7 @@ mod tests {
             marked_by: None,
             consumers: Default::default(),
             suppressed: false,
+            last_healthy: None,
         };
         tab.timeline = Some(TimelineAnswer {
             revision: Revision::OPENED,
@@ -10006,6 +10838,74 @@ mod tests {
         tab.read_restored_from(false, three);
         tab.selection.published(unnamed(), 2);
         assert!(!found(&tab), "not read from the Cancel's undo");
+    }
+
+    /// A chain's edit (Construction's third field, say) refused by the core, not as stale:
+    /// the session's `set_field` of a field the box hasn't, answered as `take` polls it,
+    /// `sending` from the state `state`, the chain begun from `start`. What `take` leaves.
+    fn chain_refused(start: Option<Revision>, state: Revision) -> (Tab, String) {
+        let (_dir, sessions, mut tab) = session_tab();
+        let feature = FeatureId::new("k7f2qx3m").unwrap();
+        let field = "lines.nz000003.construction".to_owned();
+        let value = || Node {
+            at: At::UNPLACED,
+            value: Value::Bool(true),
+        };
+        // What the core says of that edit, asked on its own.
+        let refused = sessions
+            .set_field(
+                &tab.id,
+                tab.revision,
+                feature.clone(),
+                field.clone(),
+                value(),
+            )
+            .wait()
+            .result
+            .unwrap_err();
+        assert!(!stale(&refused), "{refused:?}");
+        let running = sessions.set_field(&tab.id, tab.revision, feature.clone(), field, value());
+        let mut under = Some(Under::Relate {
+            click: Click {
+                serial: 7,
+                sketch: feature,
+                applies: Applies::Construction,
+                picks: Vec::new(),
+            },
+            then: None,
+            pair: start,
+            sending: Sending {
+                against: state,
+                state,
+                step: None,
+            },
+            running: RelateRunning::Field(running),
+        });
+        let mut close = false;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while let Some(waiting) = under.take() {
+            assert!(std::time::Instant::now() < deadline, "no answer");
+            under = tab.take(&sessions, waiting, &mut close);
+        }
+        (tab, said(&refused))
+    }
+
+    #[test]
+    fn a_chain_refused_part_way_keeps_what_it_made_as_one_step_and_says_the_refusal() {
+        let revision = |n: u64| Revision::from_number(n).unwrap();
+        // Begun from state 1; its first two fields made states 2 and 3; the third, sent from
+        // 3, refused: 1 to 3 one step for sketch mode numbered 7, and the refusal said.
+        let (tab, refusal) = chain_refused(Some(revision(1)), revision(3));
+        assert_eq!(tab.sketch_pairs, [(7, revision(1), revision(3))]);
+        assert_eq!(tab.message, Some(refusal));
+        // Refused at its first edit's follow-up with nothing made since the start: no step.
+        let (tab, refusal) = chain_refused(Some(revision(3)), revision(3));
+        assert!(tab.sketch_pairs.is_empty());
+        assert_eq!(tab.message, Some(refusal));
+        // A click's only edit refused: no chain, no step.
+        let (tab, refusal) = chain_refused(None, revision(3));
+        assert!(tab.sketch_pairs.is_empty());
+        assert_eq!(tab.message, Some(refusal));
     }
 
     #[test]
@@ -11396,6 +12296,7 @@ mod tests {
                     marked_by: None,
                     consumers: Default::default(),
                     suppressed: false,
+                    last_healthy: None,
                 }],
                 Vec::new(),
             );
@@ -12211,6 +13112,170 @@ mod tests {
         let (open, text) = closed_after_the_reload(&dir, &sessions, tab, false);
         assert!(!open, "Cancel left a transaction open");
         assert_eq!(text, pin_radius_six_tenths());
+    }
+
+    #[test]
+    fn a_plain_edit_whose_begin_reloads_the_file_leaves_no_transaction_open() {
+        // #475's second: PinA (2), saved (3), no transaction; another program names the pin
+        // Bolt; a rename typed, no dialog, its begin reloading the file (4), the rename, sent
+        // against 3, refused. Its transaction, begun for it, holds nothing: rolled back, none
+        // left open; the refusal said, and the reload announced once, from 3 to 4.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert!(!tab.transaction);
+        pin_named_at(&dir.path().join("part.silico"), "Bolt");
+        tab.rename(&sessions, pin, "PinC");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(said.contains("revision"), "the refusal said: {said:?}");
+        assert_eq!(banner(&tab), Some((rev(3), rev(4))));
+        let open = sessions.status(&tab.id).session.unwrap().transaction;
+        assert!(!open, "an empty transaction left open");
+        assert!(!tab.transaction);
+        assert_eq!(tab.unsaved_edits(), 0);
+        assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    }
+
+    #[test]
+    fn a_plain_edit_queued_after_a_refused_one_is_applied_in_its_own_transaction() {
+        // The same, but another rename queued behind the refused one: sent after the empty
+        // transaction is rolled back, it begins its own, and is applied, nothing lost.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        pin_named_at(&dir.path().join("part.silico"), "Bolt");
+        tab.rename(&sessions, pin.clone(), "PinC");
+        tab.rename(&sessions, FeatureId::new("k7f2qx3m").unwrap(), "Base");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        let session = sessions.status(&tab.id).session.unwrap();
+        assert!(
+            session.transaction,
+            "the second rename's transaction rolled back"
+        );
+        let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
+        assert!(text.contains(r#""name": "Base""#), "{text}");
+        let name = || Sent::Edit("name".to_owned());
+        let tail = &tab.sent[tab.sent.len() - 5..];
+        assert_eq!(
+            tail,
+            [Sent::Begin, name(), Sent::Rollback, Sent::Begin, name()],
+            "{:?}",
+            tab.sent
+        );
+        assert_eq!(tab.unsaved_edits(), 1);
+    }
+
+    #[test]
+    fn a_plain_edit_refused_after_a_dialog_opened_behind_it_still_leaves_no_transaction() {
+        // #504's review: a radius of -1 typed for the pin (refused by the gate), then the
+        // block's dialog asked before any answer is taken. The edit was plain as it was sent,
+        // so its refusal rolls back its own transaction, and the dialog opens at no
+        // transaction, its own: its Cancel leaves none open.
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        tab.edit(&sessions, field_set(&pin, "radius", "-1"));
+        tab.edit_feature(&sessions, &FeatureId::new("k7f2qx3m").unwrap());
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet() && tab.dialog.is_some()
+        });
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(
+            said.contains("radius"),
+            "the radius wasn't refused: {said:?}"
+        );
+        assert!(
+            tab.dialog_began,
+            "the dialog took the refused edit's transaction"
+        );
+        tab.close_dialog(&sessions, false);
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        let open = sessions.status(&tab.id).session.unwrap().transaction;
+        assert!(!open, "a transaction left open");
+    }
+
+    #[test]
+    fn a_dialogs_refused_edit_keeps_its_transaction_and_its_ok_undoes_as_one_step() {
+        // #504's second review: the pin's dialog open with no transaction, its first edit's
+        // begin its own. That edit isn't plain: refused (a radius of -1), it rolls nothing
+        // back, so the dialog's next edit lands in the same transaction, and Undo after OK
+        // takes the dialog's edits back as one step, to the document byte for byte.
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        let before = sessions.text(&tab.id, None).wait().result.unwrap().text;
+        tab.edit_feature(&sessions, &pin);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet() && tab.dialog.is_some()
+        });
+        let from = tab.sent.len();
+        tab.edit(&sessions, field_set(&pin, "radius", "-1"));
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(
+            said.contains("radius"),
+            "the radius wasn't refused: {said:?}"
+        );
+        tab.edit(&sessions, field_set(&pin, "radius", "0.75"));
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        tab.close_dialog(&sessions, true);
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        assert!(
+            !tab.sent[from..].contains(&Sent::Rollback),
+            "a dialog's edit rolled back: {:?}",
+            &tab.sent[from..]
+        );
+        let edited = sessions.text(&tab.id, None).wait().result.unwrap().text;
+        assert_ne!(edited, before);
+        tab.step(&sessions, true);
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        let undone = sessions.text(&tab.id, None).wait().result.unwrap().text;
+        assert_eq!(undone, before, "{:?} {:?}", tab.message, &tab.sent[from..]);
+    }
+
+    #[test]
+    fn a_reload_past_a_dialogs_read_in_flight_reads_it_again_at_the_reload() {
+        // #475's third: the pin's dialog read sent at the tab's revision, still out, when the
+        // tab sees the session reload its file past it (a begin's answer taken first): what
+        // that read reads is the file's before the reload, so it's read again, queued, the
+        // dialog opening at the reload, and the first read's answer opens nothing.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        tab.edit_feature(&sessions, &pin);
+        let first = tab.loading.unwrap();
+        let at = tab.revision;
+        assert!(
+            tab.under.iter().any(|under| matches!(
+                under,
+                Under::Load { serial, sent_at, .. } if *serial == first && *sent_at == at
+            )),
+            "the read wasn't sent"
+        );
+        let past = Revision::from_number(at.number() + 1).unwrap();
+        tab.reloaded_under_dialog(past);
+        let second = tab.loading.unwrap();
+        assert_ne!(second, first);
+        assert_eq!(tab.dialog_base, Some(past));
+        assert!(tab.dialog_began);
+        assert!(tab.edits.queue.iter().any(|queued| matches!(
+            queued,
+            Queued::Load { serial, feature, .. } if *serial == second && *feature == pin
+        )));
+        taken_until(&mut tab, &sessions, |tab| tab.dialog.is_some());
+        assert_eq!(tab.dialog.as_ref().unwrap().serial, second);
+        // A reload the read was sent after: nothing read again.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        tab.edit_feature(&sessions, &pin);
+        let only = tab.loading.unwrap();
+        tab.reloaded_under_dialog(tab.revision);
+        assert_eq!(
+            tab.loading,
+            Some(only),
+            "read again for a reload it was sent after"
+        );
     }
 
     #[test]
@@ -13127,6 +14192,7 @@ mod tests {
             marked_by: None,
             consumers: Default::default(),
             suppressed: false,
+            last_healthy: None,
         };
         let mut tab = tab();
         tab.browser = Browser::new(

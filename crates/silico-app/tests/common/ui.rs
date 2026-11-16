@@ -2,9 +2,10 @@
 //! control found by its role and label in the accessibility tree and clicked or typed into,
 //! keys pressed, and the canvas given the pointer's own events; and reads of what the window
 //! and the tab show, which act on nothing. Every frame is stepped on a thread marked so that
-//! a wait on a command there is counted. Last, the stand-ins more than one file uses: the
+//! a wait on a command there is counted. Then the stand-ins more than one file uses: the
 //! native file dialog ([`FakeBrowser`]), the fake kernel's meshes counted, a file's bytes
-//! read plainly, and a clock moved by hand.
+//! read plainly, and a clock moved by hand; the lavapipe runner ([`on_lavapipe`]); and last
+//! the fixtures' base and the shared documents, below.
 //!
 //! tests/app.rs, the hostile-input tests, and the slice take from here the helpers that more
 //! than one of them had a copy of, the ones those call, and the twins below. How long a wait
@@ -13,21 +14,24 @@
 //!
 //! Three clicks and two ways of typing over a field do one job differently, and are kept
 //! apart because the events each sends are what its tests have checked the app against:
-//! - [`click_at`] gives the press and the release in one frame, as the harness's own clicks
-//!   do; [`click_canvas`] gives the press, held keys and all, in the pointer's first frame
-//!   there and the release in the next; [`click_as_a_person`] waits out egui's double-click
-//!   delay first, so that no click is read as another's second, and gives the move, the
-//!   press, and the release a frame each;
+//! - [`click_in_one_frame`] gives the press and the release in one frame, as the harness's
+//!   own clicks do; [`click_over_two_frames`] gives the press, the keys it's given held and
+//!   all, in the pointer's first frame there and the release in the next;
+//!   [`click_as_a_person`] waits out egui's double-click delay first, so that no click is
+//!   read as another's second, and gives the move, the press, and the release a frame each;
 //! - [`retype`] takes a field's characters away a Backspace a frame and reads `text` back at
 //!   once; [`type_over`] takes them in one frame (Home, and a Delete each) and waits for the
-//!   field to read `text`.
+//!   field to read `text`. Typing after what a field holds is [`type_in`]'s alone.
 //!
-//! What stays in each file is its own, not a copy:
-//! - each file's `fixture` and `Fixture`, since each sets its sessions up as its tests need
+//! Each fixture on the fake kernel starts from [`stand_in_sessions`], and the documents more
+//! than one file opens are here ([`EXAMPLE`], [`SKETCHED_EXAMPLE`], [`TWO_BOXES`],
+//! [`A_BOX`]). What stays in each file is its own, not a copy:
+//! - each file's `fixture` and `Fixture`, since each layers on that base what its tests need
 //!   (app.rs's write STEP through the fake kernel, and compare the disk through a test's
 //!   reader when one is given; adversarial_undo_names.rs's compare it through
 //!   [`plain_read`] with no interval, and write no STEP; the untitled and viewport tests' are
-//!   the stand-ins alone) and has its own methods for opening the app;
+//!   the base alone, the viewport's watching the disk when asked) and has its own methods
+//!   for opening the app;
 //! - app.rs's and adversarial_viewport.rs's renderer stand-ins (`Told`, `FakeRenderer`,
 //!   `Recorder`), which record different things and answer picks differently: app.rs's give
 //!   the pick a test sets, or hold, drop, or never give it; the viewport's give the
@@ -37,13 +41,10 @@
 //! - helpers that share a name but not a job: app.rs's `renamed` (the name typed and its edit
 //!   landed) and adversarial_undo_names.rs's (the feature selected, the name typed, and
 //!   everything settled); app.rs's and slice.rs's `fully_defined` and `seen`.
-//!
-//! The next layer is #470's: the fixtures' common base, the documents each file writes out
-//! again, steps written inline where a helper here does them, app.rs's `type_into`, and the
-//! click helpers' names.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -56,14 +57,18 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
 use silico_app::browse::{Answer, Ask, Browse};
+use silico_core::cache::Cache;
 use silico_core::command::Sessions;
 use silico_core::disk::{Clock, Found};
 use silico_core::document::FeatureId;
 use silico_core::document::json::{self, Plain};
-use silico_core::fake::{FakeKernel, never_waits};
+use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use silico_core::kernel::{Clients, Op};
 use silico_core::pool::KernelPool;
+use silico_core::sketch::SketchSolver;
+use silico_core::{Error, ErrorCode};
 use silico_protocol::{Camera, Projection};
+use tempfile::TempDir;
 
 /// The app in a harness.
 pub type AppUi<P> = Harness<'static, App<P>>;
@@ -578,19 +583,24 @@ pub fn select<P: AppKernel>(h: &mut AppUi<P>, name: &str) {
 
 /// The property panel's Name field.
 pub fn name_field<P: AppKernel>(h: &AppUi<P>) -> egui_kittest::Node<'_> {
-    h.get_by_role_and_label(Role::Pane, "Properties")
-        .get_by_role(Role::TextInput)
+    field(h, In::Node(Role::Pane, "Properties"), "Name")
 }
 
-/// Typed into the property panel's Name field, one keystroke a frame: focused, the field's
-/// cursor is at its end, so what's typed comes after the name.
-pub fn type_name<P: AppKernel>(h: &mut AppUi<P>, text: &str) {
-    name_field(h).focus();
+/// Typed into the text field labelled `label` (where `within` says), one keystroke a frame:
+/// focused, the field's cursor is at its end, so what's typed comes after what it holds.
+pub fn type_in<P: AppKernel>(h: &mut AppUi<P>, within: In<'_>, label: &str, text: &str) {
+    field(h, within, label).focus();
     step(h);
     for c in text.chars() {
-        name_field(h).type_text(&c.to_string());
+        field(h, within, label).type_text(&c.to_string());
         step(h);
     }
+}
+
+/// Typed into the property panel's Name field ([`name_field`]), one keystroke a frame, after
+/// the name ([`type_in`]).
+pub fn type_name<P: AppKernel>(h: &mut AppUi<P>, text: &str) {
+    type_in(h, In::Node(Role::Pane, "Properties"), "Name", text);
 }
 
 /// The rename field of the feature `name`, if it's open.
@@ -819,15 +829,10 @@ pub fn pause<P: AppKernel>(h: &mut AppUi<P>) {
     }
 }
 
-/// A left click at `at`, Ctrl (Cmd) held if `ctrl`, after a [`pause`]: the pointer moved
-/// there a frame, then its press one frame and its release the next.
-pub fn click_as_a_person<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
+/// A left click at `at`, `held` held through it, after a [`pause`]: the pointer moved there
+/// a frame, then its press one frame and its release the next.
+pub fn click_as_a_person<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, held: Modifiers) {
     pause(h);
-    let held = if ctrl {
-        Modifiers::COMMAND
-    } else {
-        Modifiers::NONE
-    };
     h.event(Event::ModifiersChanged(held));
     move_to(h, at);
     button_event(h, at, PointerButton::Primary, true, held);
@@ -839,7 +844,7 @@ pub fn click_as_a_person<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
 
 /// A left click at `at` as the harness gives one: the pointer there, and the press and the
 /// release in one frame, then a frame more.
-pub fn click_at<P: AppKernel>(h: &mut AppUi<P>, at: Pos2) {
+pub fn click_in_one_frame<P: AppKernel>(h: &mut AppUi<P>, at: Pos2) {
     h.hover_at(at);
     for pressed in [true, false] {
         button_event(h, at, PointerButton::Primary, pressed, Modifiers::NONE);
@@ -848,14 +853,9 @@ pub fn click_at<P: AppKernel>(h: &mut AppUi<P>, at: Pos2) {
     step(h);
 }
 
-/// A left click at `at`, Ctrl (Cmd) held if `ctrl`: the pointer there and the press in one
+/// A left click at `at`, `held` held through it: the pointer there and the press in one
 /// frame, the release in the next.
-pub fn click_canvas<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
-    let held = if ctrl {
-        Modifiers::COMMAND
-    } else {
-        Modifiers::NONE
-    };
+pub fn click_over_two_frames<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, held: Modifiers) {
     h.event(Event::ModifiersChanged(held));
     h.hover_at(at);
     button_event(h, at, PointerButton::Primary, true, held);
@@ -1359,3 +1359,94 @@ pub fn lavapipe_render_state() -> eframe::egui_wgpu::RenderState {
     );
     state
 }
+
+// --- Fixtures ------------------------------------------------------------------------------
+
+/// Sessions on the fake kernel `kernel` and the sketch solver `sketches`, the rebuild cache
+/// sealed with a secret kept in `dir`: every fake-kernel fixture's base, on which each file
+/// layers its own builder steps (STEP written through the fake, the disk compared).
+pub fn stand_in_sessions(
+    dir: &TempDir,
+    kernel: &Arc<FakeKernel>,
+    sketches: &FakeSketches,
+) -> Sessions<Arc<FakeKernel>> {
+    let secret = dir.path().join("secret");
+    let solver = sketches.clone();
+    Sessions::with_stand_ins(
+        Arc::clone(kernel),
+        move |cache| Cache::with_secret(cache, &secret),
+        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
+    )
+}
+
+/// The kernel refusing to mesh while the flag given back is set.
+pub fn failing_kernel(kernel: &FakeKernel) -> Arc<AtomicBool> {
+    let failing = Arc::new(AtomicBool::new(false));
+    let refusing = Arc::clone(&failing);
+    kernel.refuse(move |op| {
+        (matches!(op, Op::Tessellate { .. }) && refusing.load(Ordering::SeqCst))
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the worker crashed meshing"))
+    });
+    failing
+}
+
+// --- Documents ---------------------------------------------------------------------------
+
+/// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
+/// the hole the pin cuts in it.
+pub const EXAMPLE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"}
+  ]
+}
+"#;
+
+/// The M2.1 example with a triangle sketched on XY, not yet swept: a part to make a feature
+/// in sketch-first, as SolidWorks makes solids (Trevin's decision of 2026-11-09: the app
+/// makes no primitive). The triangle, (30, 0), (50, 0), (30, 10), lies half on the block's
+/// floor and half past its end (x = 40), so its pad, 10 up from z = 0, is one solid with the
+/// hole's body and changes it. The hole, the tip, is a Pad's base.
+pub const SKETCHED_EXAMPLE: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
+    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 30, "y": 0, "construction": false}, {"id": "pb000000", "x": 50, "y": 0, "construction": false}, {"id": "pc000000", "x": 30, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+/// Two boxes, each a body: a 50 mm cube at the origin, and a 1 m cube 2 m along x. The
+/// fake meshes a box at its floor, its box's diagonal × 1e-4 (`mesh_floor`): the small
+/// one's 0.00866 mm, under every level these tests view it at; the large one's
+/// 1000√3 × 1e-4 = 0.173205 mm, over all of them, so it's meshed at its floor, which
+/// serves every half pixel under 2 · 0.125 (its floor's level, 2⁻³).
+pub const TWO_BOXES: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Small", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50},
+    {"id": "a91cw0de", "type": "box", "v": 1, "name": "Large", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
+  ]
+}
+"#;
+
+/// A block alone: its box is its body.
+pub const A_BOX: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
+  ]
+}
+"#;
