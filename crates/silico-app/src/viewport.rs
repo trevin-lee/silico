@@ -1785,6 +1785,11 @@ fn pixels(length: f32) -> u32 {
     length.round().max(0.0) as u32
 }
 
+/// The box of `plane`'s corners.
+fn plane_box(plane: &silico_render::render::Plane) -> Option<[[f64; 3]; 2]> {
+    silico_protocol::box_of(plane.corners().iter()).map(|(low, high)| [low, high])
+}
+
 /// The canvas behind the bodies over `rect`: a vertical gradient from
 /// [`theme::VIEWPORT_BG_TOP`] along its top to [`theme::VIEWPORT_BG_BOTTOM`] along its
 /// bottom, its colours blended as egui blends a mesh's (in sRGB, as CSS's `linear-gradient`
@@ -1885,8 +1890,8 @@ pub fn show<P: Clients + 'static>(
         .chain(
             planes
                 .iter()
-                .filter_map(|plane| silico_protocol::box_of(plane.corners().iter()))
-                .map(|(low, high)| [low, high]),
+                .filter(|drawn| drawn.shown)
+                .filter_map(|drawn| plane_box(&drawn.plane)),
         )
         .collect();
     let view = &mut tab.view;
@@ -2029,6 +2034,24 @@ pub fn show<P: Clients + 'static>(
         }
         None => drawing.frames,
     };
+    // A plane its eye shows is in the view's reach; one shown for a moment (its row hovered,
+    // Create Sketch's planes open) is drawn only if the view as it is holds it, never
+    // zooming it out.
+    let planes: Vec<silico_render::render::Plane> = planes
+        .into_iter()
+        .filter(|drawn| {
+            drawn.shown
+                || plane_box(&drawn.plane).is_some_and(|its| {
+                    navigate::drawable(
+                        &view.camera,
+                        view.rows,
+                        view.drawn_boxes().chain(std::iter::once(its)),
+                    )
+                })
+        })
+        .map(|drawn| drawn.plane)
+        .collect();
+    crate::planes::frame_took(ui.ctx(), planes_menu);
     let frame = FrameData {
         serial,
         camera: view.camera.clone(),
@@ -2080,11 +2103,6 @@ pub fn show<P: Clients + 'static>(
         frame.left.clear();
         frame.secondary.clear();
         tab.view.frame = Some(frame);
-    }
-    // Create Sketch's planes opened, closed, or lit otherwise since the frame was built (the
-    // canvas's menu is drawn after it): the next frame draws them as they are.
-    if crate::planes::menu_changed(ui.ctx(), planes_menu) {
-        ui.ctx().request_repaint();
     }
     // The canvas's hover now over what another feature made than the timeline rang (or over
     // nothing now, or something now): the timeline, drawn before the canvas, rings it in

@@ -3,9 +3,11 @@
 //! prototype draws them (docs/design/m5-ui/js/viewport.js, `buildPlanes`: a fill of
 //! `MeshBasicMaterial`, transparent, double-sided, writing no depth, and an outline).
 //!
-//! **The fill** is a mesh of two triangles, unlit (its normals zero, so `re_renderer` shades
-//! it with its colour alone, as a basic material is), its colour's alpha in its material, so
-//! `re_renderer` draws it in its transparent phase: after every opaque face, tested against
+//! **The fill** is a unit square of two triangles, uploaded once for each fill colour and
+//! placed for each plane by its instance's transform, as a body's faces are ([`Meshes`]):
+//! unlit (its normals zero, so `re_renderer` shades it with its colour alone, as a basic
+//! material is), its colour's alpha in its material, so `re_renderer` draws it in its
+//! transparent phase: after every opaque face, tested against
 //! their depth and writing none, double-sided, premultiplied over what's there. A body in
 //! front of a plane hides it; a plane in front of a body tints it, and hides nothing. Drawn
 //! after the edges and lines (re_renderer draws its lines first among what's transparent),
@@ -38,14 +40,15 @@ use re_renderer::{
     Color32, DrawPhase, DrawableCollector, GpuRenderPipelinePoolAccessor, LineDrawableBuilder,
     PickingLayerInstanceId, PickingLayerObjectId, RenderContext, Rgba, Rgba32Unmul, Size,
 };
+use silico_protocol::vec3::{cross, dot};
 use silico_protocol::{Class, InvalidParameter, MAX_RENDER_COORDINATE};
 
 use super::{
     EDGE_DEPTH_OFFSET, MAX_LINE_WIDTH, Strips, View, add_edge_strips, drawn_stroke_fraction, vec3,
 };
 
-/// The most planes a frame may draw: each is a mesh made and uploaded with the frame, on
-/// the caller's thread, and drawn on its own (a transparent mesh isn't batched).
+/// The most planes a frame may draw: each is placed and drawn on its own, each frame, on the
+/// caller's thread (a transparent mesh isn't batched).
 pub const MAX_FRAME_PLANES: usize = 64;
 
 /// A flat four-sided panel a frame draws among its bodies, translucent, and in no picking
@@ -120,12 +123,25 @@ pub(super) fn check(planes: &[Plane]) -> Result<(), InvalidParameter> {
     Ok(())
 }
 
-/// `planes`, each with its outline ([`Plane::outline`]), drawn in `view`: their fills, a
-/// mesh each, and their outlines, a batch each, as the module says, each [`Unpicked`]; none
-/// for a plane whose outline's stroke can't reach the image. How many were drawn, and the
-/// draw data to queue: the fills', if any, and the outlines', if any.
+/// The most fill meshes kept ([`Meshes`]): one for each fill colour drawn, so a frame's few
+/// colours (the app's two) are uploaded once; past it, every one kept is let go and those
+/// drawn uploaded again.
+pub(super) const MAX_FILL_MESHES: usize = 16;
+
+/// The planes' fill meshes, by fill colour: each the unit square (corners (0, 0, 0),
+/// (1, 0, 0), (1, 1, 0), (0, 1, 0)) in that colour, uploaded the first time a frame draws a
+/// plane of it, and placed for each plane by its instance's transform ([`fill`]), as a body's
+/// faces are: so a frame of the same colours uploads nothing.
+pub(super) type Meshes = std::collections::BTreeMap<[u8; 4], Arc<GpuMesh>>;
+
+/// `planes`, each with its outline ([`Plane::outline`]), drawn in `view`: their fills, an
+/// instance each of its colour's mesh in `meshes` (uploaded if it has none), and their
+/// outlines, a batch each, as the module says, each [`Unpicked`]; none for a plane whose
+/// outline's stroke can't reach the image. How many were drawn, and the draw data to queue:
+/// the fills', if any, and the outlines', if any.
 pub(super) fn draw(
     ctx: &RenderContext,
+    meshes: &mut Meshes,
     planes: &[(Plane, Strips)],
     view: &View,
     pixels_per_point: f32,
@@ -144,7 +160,7 @@ pub(super) fn draw(
         }
         drawn += 1;
         if plane.fill[3] > 0 {
-            fills.push(fill(ctx, i, plane, view)?);
+            fills.push(fill(ctx, meshes, plane, view)?);
         }
         if plane.outline[3] > 0 {
             let mut batch = outlines
@@ -181,26 +197,67 @@ pub(super) fn draw(
     Ok((drawn, queued))
 }
 
-/// Plane `i`'s fill as a mesh instance: its corners about the camera in f64, then f32
-/// ([`View::about_camera`], as edges are placed), two triangles, unlit (normals zero), in
-/// its colour, its alpha the material's (premultiplied: the colour in linear light times
-/// the alpha, so `re_renderer`'s premultiplied blend takes it as it is), drawn from both
-/// sides.
+/// A plane's fill as an instance of its colour's unit square ([`Meshes`], uploaded here if
+/// `meshes` has none), placed by its transform: the plane's `u`, `v`, and their unit normal
+/// rotated into the view, and its origin about the camera, each in f64 and then f32
+/// ([`View::about_camera`], as a body's faces and edges are placed), so the square's corners
+/// are the plane's. Unlit (normals zero), its alpha the material's (premultiplied: the colour
+/// in linear light times the alpha, so `re_renderer`'s premultiplied blend takes it as it is),
+/// drawn from both sides.
 fn fill(
     ctx: &RenderContext,
-    i: usize,
+    meshes: &mut Meshes,
     plane: &Plane,
     view: &View,
 ) -> Result<GpuMeshInstance, String> {
-    let positions: Vec<glam::Vec3> = plane
-        .corners()
-        .iter()
-        .map(|p| vec3(view.about_camera(*p)))
-        .collect();
-    let [red, green, blue, alpha] = plane.fill;
+    let mesh = match meshes.get(&plane.fill) {
+        Some(mesh) => Arc::clone(mesh),
+        None => {
+            if meshes.len() >= MAX_FILL_MESHES {
+                meshes.clear();
+            }
+            let mesh = Arc::new(unit_square(ctx, plane.fill)?);
+            meshes.insert(plane.fill, Arc::clone(&mesh));
+            mesh
+        }
+    };
+    let rotated = |d: [f64; 3]| {
+        let f = &view.frame;
+        [dot(f.right, d), dot(f.up, d), dot(f.back, d)]
+    };
+    let (u, v) = (rotated(plane.u), rotated(plane.v));
+    let n = cross(u, v);
+    let length = dot(n, n).sqrt();
+    let normal = if length > 0.0 {
+        n.map(|c| c / length)
+    } else {
+        [0.0; 3]
+    };
+    let mut instance = GpuMeshInstance::new(mesh);
+    instance.world_from_mesh = glam::Affine3A::from_cols(
+        vec3(u).into(),
+        vec3(v).into(),
+        vec3(normal).into(),
+        vec3(view.about_camera(plane.origin)).into(),
+    );
+    // Both sides, as the prototype's `DoubleSide`: GpuMeshInstance::new's, said here.
+    instance.cull_mode = None;
+    Ok(instance)
+}
+
+/// The unit square in `fill` (sRGB, its alpha unmultiplied), as a GPU mesh.
+fn unit_square(ctx: &RenderContext, fill: [u8; 4]) -> Result<GpuMesh, String> {
+    let _span = tracing::debug_span!("plane_mesh", fill = ?fill).entered();
+    let positions = vec![
+        glam::Vec3::ZERO,
+        glam::Vec3::X,
+        glam::Vec3::new(1.0, 1.0, 0.0),
+        glam::Vec3::Y,
+    ];
+    let [red, green, blue, alpha] = fill;
     let a = f32::from(alpha) / 255.0;
     let cpu = CpuMesh {
-        label: format!("Plane{i}").into(),
+        label: "Plane".into(),
         materials: smallvec::smallvec![Material {
             label: "plane".into(),
             index_range: re_renderer::Span { start: 0, len: 6 },
@@ -214,11 +271,7 @@ fn fill(
         bbox: macaw::BoundingBox::from_points(positions.iter().copied()),
         vertex_positions: positions,
     };
-    let gpu = GpuMesh::new(ctx, &cpu).map_err(|e| format!("Plane{i}: {e}"))?;
-    let mut instance = GpuMeshInstance::new(Arc::new(gpu));
-    // Both sides, as the prototype's `DoubleSide`: GpuMeshInstance::new's, said here.
-    instance.cull_mode = None;
-    Ok(instance)
+    GpuMesh::new(ctx, &cpu).map_err(|e| format!("a plane's mesh: {e}"))
 }
 
 /// The renderers [`Unpicked`] draw data needs, registered with `ctx`'s: a context draws

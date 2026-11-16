@@ -6935,21 +6935,26 @@ fn strips_say_whether_they_hold_none_and_print_their_counts_and_box_not_their_po
 
 /// The `sets` and `strips` of each `lines` event `f` logs, in order.
 fn lines_events(f: impl FnOnce()) -> Vec<(u64, u64)> {
+    logged("lines", ["sets", "strips"], f)
+}
+
+/// The two fields `names` of each event `f` logs whose message is `message`, in order (each
+/// `u64::MAX` if it hasn't it).
+fn logged(message: &'static str, names: [&'static str; 2], f: impl FnOnce()) -> Vec<(u64, u64)> {
     use std::sync::Mutex;
     use tracing_subscriber::layer::{Context, SubscriberExt};
 
-    #[derive(Default)]
     struct Fields {
+        names: [&'static str; 2],
         message: String,
-        sets: Option<u64>,
-        strips: Option<u64>,
+        values: [Option<u64>; 2],
     }
     impl tracing::field::Visit for Fields {
         fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
-            match field.name() {
-                "sets" => self.sets = Some(value),
-                "strips" => self.strips = Some(value),
-                _ => {}
+            for (name, slot) in self.names.iter().zip(&mut self.values) {
+                if field.name() == *name {
+                    *slot = Some(value);
+                }
             }
         }
         fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
@@ -6958,21 +6963,31 @@ fn lines_events(f: impl FnOnce()) -> Vec<(u64, u64)> {
             }
         }
     }
-    struct Events(Arc<Mutex<Vec<(u64, u64)>>>);
+    struct Events {
+        message: &'static str,
+        names: [&'static str; 2],
+        seen: Arc<Mutex<Vec<(u64, u64)>>>,
+    }
     impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
         fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
-            let mut fields = Fields::default();
+            let mut fields = Fields {
+                names: self.names,
+                message: String::new(),
+                values: [None; 2],
+            };
             event.record(&mut fields);
-            if fields.message == "lines" {
-                self.0.lock().unwrap().push((
-                    fields.sets.unwrap_or(u64::MAX),
-                    fields.strips.unwrap_or(u64::MAX),
-                ));
+            if fields.message == self.message {
+                let [a, b] = fields.values.map(|v| v.unwrap_or(u64::MAX));
+                self.seen.lock().unwrap().push((a, b));
             }
         }
     }
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let subscriber = tracing_subscriber::registry().with(Events(Arc::clone(&seen)));
+    let subscriber = tracing_subscriber::registry().with(Events {
+        message,
+        names,
+        seen: Arc::clone(&seen),
+    });
     tracing::subscriber::with_default(subscriber, f);
     seen.lock().unwrap().clone()
 }
@@ -7687,6 +7702,214 @@ fn a_camera_far_from_the_planes_draws_them_or_refuses_a_view_too_small_for_their
                     ..frame(&camera, &[], &[], None)
                 },
             );
+        },
+    );
+}
+
+// The council's round 1 on #507.
+
+/// [`facing`], its sides swapped: v × u, so it faces away from [`front`]'s eye (+y), where
+/// [`facing`]'s u × v faces it (−y).
+fn facing_away(y: f64, fill: [u8; 4], outline: [u8; 4]) -> super::Plane {
+    let plane = facing(y, fill, outline);
+    super::Plane {
+        u: plane.v,
+        v: plane.u,
+        ..plane
+    }
+}
+
+#[test]
+fn a_plane_is_filled_alike_from_either_side() {
+    on_lavapipe(
+        "render::frame_tests::a_plane_is_filled_alike_from_either_side",
+        |r| {
+            // The prototype's `DoubleSide`: the same plane seen from its back (its normal
+            // away from the eye) and its front, over the background and over the box's front
+            // face behind it, each pixel tinted as by hand.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            assert!(dot_toward_eye(&facing(-5.0, CLEAR, CLEAR)) > 0.0);
+            assert!(dot_toward_eye(&facing_away(-5.0, CLEAR, CLEAR)) < 0.0);
+            for bodies in [&[][..], &[1][..]] {
+                let without = image(r, &frame(&camera, bodies, &[], None));
+                for plane in [
+                    facing(-5.0, HALF_MAGENTA, CLEAR),
+                    facing_away(-5.0, HALF_MAGENTA, CLEAR),
+                ] {
+                    let planes = [plane];
+                    let with = image(
+                        r,
+                        &Frame {
+                            planes: &planes,
+                            ..frame(&camera, bodies, &[], None)
+                        },
+                    );
+                    for (x, y) in [(22, 19), (32, 26), (24, 23), (42, 28)] {
+                        let under = pixel(&without, x, y);
+                        assert_colour(
+                            pixel(&with, x, y),
+                            over(under, HALF_MAGENTA),
+                            3.0,
+                            &format!("({x}, {y}) of {plane:?} over {bodies:?}"),
+                        );
+                    }
+                }
+            }
+        },
+    );
+}
+
+/// Which way `plane`'s u × v points against [`front`]'s view (+y, from the eye): above 0
+/// toward the eye.
+fn dot_toward_eye(plane: &super::Plane) -> f64 {
+    let n = silico_protocol::vec3::cross(plane.u, plane.v);
+    -n[1]
+}
+
+#[test]
+fn a_translucent_outline_is_blended_over_the_background_and_a_face_as_by_hand() {
+    on_lavapipe(
+        "render::frame_tests::a_translucent_outline_is_blended_over_the_background_and_a_face_as_by_hand",
+        |r| {
+            // Green at alpha 128, 3 points wide, its fill clear: its left side through the
+            // centre of column 20 covers that column whole (a stroke's coverage is 1 within
+            // its half width less half a pixel), each pixel green over what's there as by
+            // hand, `(1 − a) · under + a · green` in linear light: over the background, and,
+            // the plane in front of the box, over its front face.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            const HALF_GREEN: [u8; 4] = [0, 255, 0, 128];
+            let plane = super::Plane {
+                width: 3.0,
+                ..facing(-5.0, CLEAR, HALF_GREEN)
+            };
+            let planes = [plane];
+            for bodies in [&[][..], &[1][..]] {
+                let without = image(r, &frame(&camera, bodies, &[], None));
+                let with = image(
+                    r,
+                    &Frame {
+                        planes: &planes,
+                        ..frame(&camera, bodies, &[], None)
+                    },
+                );
+                for y in 23..=28 {
+                    let under = pixel(&without, 20, y);
+                    assert_colour(
+                        pixel(&with, 20, y),
+                        over(under, HALF_GREEN),
+                        3.0,
+                        &format!("(20, {y}) over {under:?}, bodies {bodies:?}"),
+                    );
+                }
+                if bodies.is_empty() {
+                    assert_eq!(pixel(&without, 20, 25), BLACK);
+                } else {
+                    assert!(!within(pixel(&without, 20, 25), BLACK, 8), "the face");
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn a_plane_off_the_view_is_logged_but_not_drawn() {
+    on_lavapipe(
+        "render::frame_tests::a_plane_off_the_view_is_logged_but_not_drawn",
+        |r| {
+            // Two planes: one before the box, and one 300 mm off along x (the view is 58.67 mm
+            // wide about x = 21), which isn't drawn. Logged once: 2 planes, 1 drawn. A frame of
+            // none logs none.
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let seen = facing(-5.0, HALF_MAGENTA, GREEN);
+            let off = super::Plane {
+                origin: [300.0, -5.0, 0.0],
+                ..seen
+            };
+            let planes = [seen, off];
+            let events = logged("planes", ["planes", "drawn"], || {
+                draw(
+                    r,
+                    &Frame {
+                        planes: &planes,
+                        ..frame(&camera, &[1], &[], None)
+                    },
+                );
+            });
+            assert_eq!(events, [(2, 1)]);
+            let none = logged("planes", ["planes", "drawn"], || {
+                draw(r, &frame(&camera, &[1], &[], None));
+            });
+            assert!(none.is_empty(), "{none:?}");
+        },
+    );
+}
+
+#[test]
+fn a_planes_fill_is_uploaded_once_for_its_colour_and_placed_for_every_frame() {
+    on_lavapipe(
+        "render::frame_tests::a_planes_fill_is_uploaded_once_for_its_colour_and_placed_for_every_frame",
+        |r| {
+            // The three origin planes, plain, then one lit: a mesh for each colour, the same
+            // one frame after frame from every camera, and the bodies' count untouched.
+            r.upload(1, &the_box()).unwrap();
+            let plain = origin_planes(None);
+            let cameras = [
+                front(),
+                front_in_perspective(),
+                from_the_corner(Projection::Orthographic { view_height: 60.0 }),
+            ];
+            draw(
+                r,
+                &Frame {
+                    planes: &plain,
+                    ..frame(&cameras[0], &[1], &[], None)
+                },
+            );
+            assert_eq!(r.plane_meshes.len(), 1);
+            let made = Arc::clone(r.plane_meshes.values().next().unwrap());
+            let bodies = r.uploads();
+            for camera in &cameras {
+                for _ in 0..3 {
+                    draw(
+                        r,
+                        &Frame {
+                            planes: &plain,
+                            ..frame(camera, &[1], &[], None)
+                        },
+                    );
+                }
+            }
+            assert_eq!(r.plane_meshes.len(), 1);
+            assert!(Arc::ptr_eq(r.plane_meshes.values().next().unwrap(), &made));
+            let lit = origin_planes(Some(2));
+            draw(
+                r,
+                &Frame {
+                    planes: &lit,
+                    ..frame(&cameras[2], &[1], &[], None)
+                },
+            );
+            assert_eq!(r.plane_meshes.len(), 2);
+            assert_eq!(r.uploads(), bodies);
+            // Past the most colours kept, those kept let go and the colours drawn made
+            // again: never more than the most.
+            for alpha in 0..=u8::try_from(super::planes::MAX_FILL_MESHES).unwrap() {
+                let tinted = [super::Plane {
+                    fill: [10, 20, 30, alpha + 1],
+                    ..plain[0]
+                }];
+                draw(
+                    r,
+                    &Frame {
+                        planes: &tinted,
+                        ..frame(&cameras[0], &[1], &[], None)
+                    },
+                );
+                assert!(r.plane_meshes.len() <= super::planes::MAX_FILL_MESHES);
+            }
         },
     );
 }

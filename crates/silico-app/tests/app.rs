@@ -47108,3 +47108,190 @@ fn the_context_menus_create_sketch_planes_show_the_origin_planes_and_close_with_
     planes_become(&mut h, &record, &[]);
     assert_eq!(never_waits::waits(), 0);
 }
+
+// The council's round 1 on #507.
+
+#[test]
+fn a_plane_shown_raises_the_least_view_but_one_hovered_never_moves_it() {
+    // From −y onto (20, 10, 5), zoomed to the least the body allows (its box, 40 by 20 by 10
+    // from the origin, reaches √525 = 22.9 mm from there). XY's square reaches √1997 = 44.69
+    // mm (to its corner (46, 46, 0)), so at 48 … rows its least is rows · 44.69 / 2^19 · 1.01,
+    // past the body's. Hovering YZ's row there (its square reaching √3377 mm) leaves the view
+    // as it is, and draws no plane, the view too small for it; XY's eye opened raises the view
+    // to XY's least, every frame drawn at it or above.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "the body drawn", |_| {
+        record
+            .lock()
+            .unwrap()
+            .frames
+            .last()
+            .is_some_and(|frame| !frame.bodies.is_empty())
+    });
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 1e-5 },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    // The body hidden and shown again: the view raised to the least it allows.
+    click_browser_eye(&mut h, "Hide Hole");
+    click_browser_eye(&mut h, "Show Hole");
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let rows = f64::from(record.lock().unwrap().frames.last().unwrap().size_px[1]);
+    let least = |squared: f64| rows * squared.sqrt() / 524_288.0 * 1.01;
+    let at_body = view(&h).camera().clone();
+    let body = ortho_height(&at_body);
+    assert!(body > 1e-5, "raised to the body's least: {body}");
+    assert!(
+        body < least(1997.0) * 0.99,
+        "{body} under XY's {}",
+        least(1997.0)
+    );
+    // YZ's row hovered: nothing moves, nothing drawn.
+    let at = browser(&h).get_by_label("YZ").rect().center();
+    h.hover_at(at);
+    for _ in 0..5 {
+        step(&mut h);
+        assert_eq!(*view(&h).camera(), at_body);
+        assert!(last_planes(&record).is_empty());
+    }
+    pointer_away(&mut h);
+    assert_eq!(*view(&h).camera(), at_body);
+    // XY's eye opened: raised to XY's least, and XY drawn.
+    click_browser_eye(&mut h, "Show XY");
+    planes_become(&mut h, &record, &[("XY", false)]);
+    let record = record.lock().unwrap();
+    let frame = record.frames.last().unwrap();
+    let height = ortho_height(&frame.camera);
+    assert!(
+        height >= least(1997.0) * (1.0 - 1e-12),
+        "{height} under {}",
+        least(1997.0)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn create_sketchs_planes_left_open_with_the_pointer_still_ask_for_no_frame() {
+    // Open from the canvas's menu (drawn after the viewport's frame) and from the toolbar's
+    // button, the pointer resting on a plane's item: once the frames catch up, each asks for
+    // the next at the idle interval, not at once.
+    use eframe::egui::{Key, Modifiers};
+    let idle = |h: &AppHarness| {
+        let frame = Duration::from_millis(250);
+        let delay = repaint_delay(h);
+        assert!(
+            delay.is_some_and(|delay| delay >= IDLE_FRAME - frame && delay <= IDLE_FRAME),
+            "{delay:?}"
+        );
+    };
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    let at = h
+        .get_by_role_and_label(Role::Button, "XZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", true), ("YZ", false)],
+    );
+    for _ in 0..5 {
+        step(&mut h);
+        idle(&h);
+    }
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    planes_become(&mut h, &record, &[]);
+    // The toolbar's.
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "YZ plane")
+            .is_some()
+    });
+    let at = h
+        .get_by_role_and_label(Role::Button, "YZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", true)],
+    );
+    for _ in 0..5 {
+        step(&mut h);
+        idle(&h);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_plane_whose_item_has_the_keys_focus_is_lit() {
+    // The toolbar's Create Sketch planes, the pointer off them, Tab stepping the focus: each
+    // plane's item focused lights its plane, the other two plain. (The canvas's menu holds
+    // the keys for its own items, its planes the pointer's: canvas_menu.rs's SEAM.)
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "Create Sketch on", |h| {
+        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_label("Create Sketch")
+            .accesskit_node()
+            .is_disabled()
+    });
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "XZ plane")
+            .is_some()
+    });
+    pointer_away(&mut h);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", false)],
+    );
+    let names = [("XY plane", "XY"), ("XZ plane", "XZ"), ("YZ plane", "YZ")];
+    let mut visited = Vec::new();
+    for _ in 0..40 {
+        if h.query_by_role_and_label(Role::Button, "XY plane")
+            .is_none()
+        {
+            break;
+        }
+        h.key_press(Key::Tab);
+        step(&mut h);
+        step(&mut h);
+        let focused = names.iter().find(|(label, _)| {
+            h.query_by_role_and_label(Role::Button, label)
+                .is_some_and(|node| node.accesskit_node().is_focused())
+        });
+        if let Some((_, lit)) = focused {
+            let want: Vec<(&str, bool)> = ["XY", "XZ", "YZ"]
+                .iter()
+                .map(|name| (*name, name == lit))
+                .collect();
+            planes_become(&mut h, &record, &want);
+            if !visited.contains(lit) {
+                visited.push(*lit);
+            }
+        }
+    }
+    assert_eq!(visited, ["XY", "XZ", "YZ"]);
+    assert_eq!(never_waits::waits(), 0);
+}

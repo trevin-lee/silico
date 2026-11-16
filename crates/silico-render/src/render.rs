@@ -794,6 +794,8 @@ pub struct Renderer {
     generations: u64,
     /// How [`Renderer::prepare`] backs off after the GPU fails a frame.
     backoff: Backoff,
+    /// The planes' fill meshes, one for each fill colour drawn ([`planes::Meshes`]).
+    plane_meshes: planes::Meshes,
     /// How many of the next frames fail as the GPU fails one, once built: a stand-in for
     /// out of memory or a lost device, which lavapipe can't be made to give.
     #[cfg(test)]
@@ -869,6 +871,7 @@ impl Renderer {
             picked: None,
             generations: 0,
             backoff: Backoff::NONE,
+            plane_meshes: planes::Meshes::new(),
             #[cfg(test)]
             fail_frames: 0,
         })
@@ -1062,8 +1065,8 @@ impl Renderer {
     }
 
     /// What a frame the GPU failed leaves: its picking request (`request`, its readback's
-    /// identifier) dropped, and every body's GPU meshes, which nothing vouches for, to be
-    /// uploaded again when they're next drawn; the bodies themselves kept; and the next
+    /// identifier) dropped, and every body's GPU meshes and the planes', which nothing
+    /// vouches for, to be uploaded again when they're next drawn; the bodies themselves kept; and the next
     /// frames refused for a while ([`Backoff`]).
     fn failed(&mut self, request: Option<u64>) {
         if let Some(id) = request {
@@ -1073,6 +1076,7 @@ impl Renderer {
         for body in self.bodies.values_mut() {
             body.drop_gpu_meshes();
         }
+        self.plane_meshes.clear();
     }
 
     /// The last frame [`Renderer::prepare`] built, composited into `pass` (egui's, in its
@@ -1349,6 +1353,7 @@ impl Renderer {
             bodies,
             uploads,
             placed,
+            plane_meshes,
             ..
         } = self;
         let placing = std::time::Instant::now();
@@ -1433,7 +1438,7 @@ impl Renderer {
         let (planes_drawn, plane_draws) = if planes.is_empty() {
             (0, Vec::new())
         } else {
-            planes::draw(ctx, planes, view, pixels_per_point)?
+            planes::draw(ctx, plane_meshes, planes, view, pixels_per_point)?
         };
         if !planes.is_empty() {
             tracing::debug!(planes = planes.len(), drawn = planes_drawn, "planes");
