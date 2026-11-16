@@ -31,7 +31,7 @@ use crate::sheet::{self, Sheet};
 use crate::shortcuts::{self, Command};
 use crate::sketch::{self, bar::BarAction};
 use crate::start::{self, Warm};
-use crate::tab::{DiskChoice, Tab, said};
+use crate::tab::{DiskChoice, Tab, TimelineStep, said};
 use crate::theme::{self, FieldKind};
 use crate::toolbar;
 
@@ -73,12 +73,12 @@ pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
 }
 
 /// The timeline's arrows pressed this frame (interact.js's `keydown`: → and ←), each taken,
-/// in the order pressed, `true` for →: a press and each repeat of one held down, as a
-/// browser's list walks; with Shift too, as the prototype takes them, but never with Alt,
-/// Ctrl or Command (the prototype's `altKey` and `isMod` go elsewhere).
-fn timeline_walks(ui: &mut Ui) -> Vec<bool> {
+/// in the order pressed: a press and each repeat of one held down, as a browser's list
+/// walks; with Shift too, as the prototype takes them, but never with Alt, Ctrl or Command
+/// (the prototype's `altKey` and `isMod` go elsewhere).
+fn timeline_steps(ui: &mut Ui) -> Vec<TimelineStep> {
     ui.input_mut(|input| {
-        let mut walks = Vec::new();
+        let mut steps = Vec::new();
         input.events.retain(|event| match event {
             egui::Event::Key {
                 key: key @ (Key::ArrowRight | Key::ArrowLeft),
@@ -86,12 +86,16 @@ fn timeline_walks(ui: &mut Ui) -> Vec<bool> {
                 modifiers,
                 ..
             } if !modifiers.alt && !modifiers.ctrl && !modifiers.command && !modifiers.mac_cmd => {
-                walks.push(*key == Key::ArrowRight);
+                steps.push(if *key == Key::ArrowRight {
+                    TimelineStep::Next
+                } else {
+                    TimelineStep::Previous
+                });
                 false
             }
             _ => true,
         });
-        walks
+        steps
     })
 }
 
@@ -1229,9 +1233,9 @@ impl<P: Clients + 'static> App<P> {
     /// (SolidWorks' numbering); Ctrl+Shift+B rebuilds everything, ignoring the cache; and,
     /// with a feature selected, F2 types its name over in its own field, Del (or ⌫)
     /// deletes it, and → and ← select the timeline's next or previous feature, clamped at
-    /// its ends, with no menu open (the prototype's `keydown`), Esc dropping a name being
-    /// typed and the document's commands (Save, Close, Undo, and the rest) sending it
-    /// before they act.
+    /// its ends, with no menu open nor a widget focused (the prototype's `keydown`), Esc
+    /// dropping a name being typed and the document's commands (Save, Close, Undo, and the
+    /// rest) sending it before they act.
     /// In sketch mode, Del (or ⌫) deletes the sketch's selection instead, never a feature,
     /// the arrows walk nothing,
     /// F2 says why it renames nothing (as its menu item is off), and Ctrl+Enter finishes
@@ -1452,11 +1456,13 @@ impl<P: Clients + 'static> App<P> {
             !typing && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::F5));
         // → and ←: the timeline's next or previous feature (the prototype's, no command of
         // the registry's), never a field's keys, nor a menu's (which step its items), nor
-        // in sketch mode (whose keys go no further, as the prototype's sketch takes them).
-        let walks = if typing || in_sketch || egui::Popup::is_any_open(ui.ctx()) {
+        // with a widget focused (egui moves the focus by them), nor in sketch mode (whose
+        // keys go no further, as the prototype's sketch takes them).
+        let focused = ui.ctx().memory(|memory| memory.focused()).is_some();
+        let steps = if typing || focused || in_sketch || egui::Popup::is_any_open(ui.ctx()) {
             Vec::new()
         } else {
-            timeline_walks(ui)
+            timeline_steps(ui)
         };
         // No document shown (the start page): nothing below acts, but an Esc taken asks for
         // its frame, as one with a document shown does.
@@ -1502,8 +1508,8 @@ impl<P: Clients + 'static> App<P> {
                 None => {}
             }
         }
-        for forward in walks {
-            tab.select_beside(forward);
+        for step in steps {
+            tab.select_beside(step);
         }
         // Whether Esc goes on down its chain (section 3's order, the prototype's `escChain`):
         // a dialog's Esc, or `Tab::escape`. Not with a feature's name being typed: the name

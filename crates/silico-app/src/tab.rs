@@ -1041,6 +1041,13 @@ enum OwnRead {
     Check,
 }
 
+/// A step along the timeline's order ([`Tab::select_beside`]): → or ←.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineStep {
+    Next,
+    Previous,
+}
+
 /// One open document.
 pub struct Tab {
     pub id: SessionId,
@@ -6204,12 +6211,13 @@ impl Tab {
         self.timeline_scroll = Some(id);
     }
 
-    /// → (`forward`) or ← (interact.js's `keydown`): the feature after or before the one
+    /// → or ← (interact.js's `keydown`), `step`: the feature after or before the one
     /// selected as itself, in the timeline's order, selected alone as a click on its item
     /// selects it, and the timeline scrolled to it. The first and the last stay as they are
     /// (the prototype's clamp). Nothing without a feature selected as itself (a body's row,
-    /// elements, or nothing selected), or with the timeline unread.
-    pub fn select_beside(&mut self, forward: bool) {
+    /// elements, or nothing selected), with the timeline unread, or while the gate refuses
+    /// the document (its timeline may list an ID used twice, twice).
+    pub fn select_beside(&mut self, step: TimelineStep) {
         let Some(id) = self.selection.feature().filter(|id| {
             self.selection
                 .selected_as(id, crate::selection::SelectedAs::Itself)
@@ -6219,6 +6227,7 @@ impl Tab {
         let Some(entries) = self
             .timeline
             .as_ref()
+            .filter(|timeline| timeline.problems == 0)
             .and_then(|timeline| timeline.features.as_ref())
         else {
             return;
@@ -6226,10 +6235,9 @@ impl Tab {
         let Some(at) = entries.iter().position(|entry| &entry.id == id) else {
             return;
         };
-        let to = if forward {
-            at.saturating_add(1)
-        } else {
-            at.saturating_sub(1)
+        let to = match step {
+            TimelineStep::Next => at.saturating_add(1),
+            TimelineStep::Previous => at.saturating_sub(1),
         };
         let Some(next) = entries.get(to).filter(|_| to != at) else {
             return;

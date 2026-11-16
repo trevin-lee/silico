@@ -1052,7 +1052,7 @@ fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
 /// a click on one closes the menu, and is the plane a sketch is started on. The one menu of
 /// them, which Create Sketch's button opens, and its item in CREATE's drop-down, the
 /// canvas's context menu over nothing (`crate::canvas_menu`), and the empty part's hint
-/// (`crate::canvas_hint`). Drawn, it's open ([`planes_open`]).
+/// (`crate::canvas_hint`), marking the pass it's drawn in ([`planes_drawn_this_pass`]).
 pub(crate) fn planes(ui: &mut Ui) -> Option<OriginPlane> {
     let pass = ui.ctx().cumulative_pass_nr();
     ui.ctx()
@@ -1075,18 +1075,17 @@ fn planes_drawn() -> egui::Id {
     egui::Id::new("create-sketch-planes-drawn")
 }
 
-/// Whether Create Sketch's planes are open (the prototype's plane pick, `S.pickPlane`):
-/// drawn in this pass or the one before, wherever their menu hangs from, as a menu drawn
-/// after its reader in a pass is read in the next.
-pub(crate) fn planes_open(ctx: &egui::Context) -> bool {
+/// Whether Create Sketch's planes were drawn in this pass so far (the prototype's plane
+/// pick, `S.pickPlane`): the toolbar's and the canvas's menu's, each drawn before the
+/// canvas's hint reads it.
+pub(crate) fn planes_drawn_this_pass(ctx: &egui::Context) -> bool {
     let pass = ctx.cumulative_pass_nr();
     ctx.data(|data| data.get_temp::<u64>(planes_drawn()))
-        .is_some_and(|drawn| drawn.saturating_add(1) >= pass)
+        .is_some_and(|drawn| drawn == pass)
 }
 
-/// Create Sketch's planes taken as not open, whatever drew them last: their reader's own
-/// menu of them, which it doesn't hide from.
-pub(crate) fn planes_not_open(ctx: &egui::Context) {
+/// The planes' drawing forgotten: the hint's own menu of them, which it doesn't hide from.
+pub(crate) fn forget_planes_drawn(ctx: &egui::Context) {
     ctx.data_mut(|data| data.remove::<u64>(planes_drawn()));
 }
 

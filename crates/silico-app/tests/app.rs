@@ -38,14 +38,14 @@ use ui::{
     FakeBrowser, In, PLATE, PLATE_END, SKETCHED_EXAMPLE, TRIAD_DOT, TWO_BOXES, added, advance,
     answer_question, anywhere, arrow_dots, arrow_shafts, begin_sketch_on, body_of, boxed,
     button_event, choose, chosen, click_in_one_frame, click_over_two_frames, close_window, create,
-    create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag, every_face,
-    everything, f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front,
-    hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state, leave_sketch,
-    leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
-    modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
-    pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away, press, prompt,
-    redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of, select,
-    selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
+    create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag, edit_plates_pad,
+    every_face, everything, f2_typed, faces_made_by, failing_kernel, field, fields_of,
+    from_the_front, hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state,
+    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
+    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
+    open_export, pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away,
+    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
+    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
     stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
     tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
     view_label, view_label_node, view_mut, wheel, window_told, written,
@@ -47237,6 +47237,257 @@ fn the_timelines_arrows_walk_nothing_in_sketch_mode() {
         pressed_with(&mut h, Modifiers::NONE, key);
         assert_eq!(feature_selected(&h).as_deref(), Some("s0000001"), "{key:?}");
         assert!(sketch_mode(&h).is_some());
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_empty_parts_hint_paints_its_shadow_its_frame_and_the_sketch_icon() {
+    // `.canvas-hint`: `box-shadow: 0 4px 14px rgba(0,0,0,.5)` painted under `background:
+    // var(--g200); border: 1px solid var(--g250); border-radius: var(--r)` (6), both over the
+    // hint's rect, the shadow 4 lower; then `icon('sketch')`, 14 square in `currentColor`
+    // (the page's `--g750`), 1 + 12 = 13 in from the hint's left and centred on its 22-high
+    // row, 1 + 6 under its top: 1 + 6 + 11 − 7 = 11 down.
+    use eframe::egui::{Color32, CornerRadius, Shape, Stroke, StrokeKind, vec2};
+    let f = fixture();
+    let (mut h, _seen) = hinted(&f);
+    let chip = hint(&h).unwrap().rect();
+    let icon = eframe::egui::Rect::from_min_size(chip.min + vec2(13.0, 11.0), vec2(14.0, 14.0));
+    let near = |a: eframe::egui::Rect, b: eframe::egui::Rect| {
+        (a.min - b.min).length() <= 0.5 && (a.max - b.max).length() <= 0.5
+    };
+    // The icon's image, once loaded: a rectangle filled with its texture.
+    step_until(&mut h, "the icon painted", |h| {
+        shapes_painted(h)
+            .iter()
+            .any(|shape| matches!(shape, Shape::Rect(r) if r.brush.is_some() && near(r.rect, icon)))
+    });
+    let shapes = shapes_painted(&h);
+    let frame = shapes
+        .iter()
+        .position(|shape| {
+            matches!(shape, Shape::Rect(r) if r.fill == G200
+                && r.stroke == Stroke::new(1.0, G250)
+                && r.stroke_kind == StrokeKind::Inside
+                && r.corner_radius == CornerRadius::same(6)
+                && r.brush.is_none()
+                && near(r.rect, chip))
+        })
+        .unwrap_or_else(|| panic!("no frame at {chip:?}"));
+    let shadow = shapes
+        .iter()
+        .position(|shape| {
+            matches!(shape, Shape::Rect(r) if r.fill == Color32::from_rgba_unmultiplied(0, 0, 0, 128)
+                && r.blur_width == 14.0
+                && r.corner_radius == CornerRadius::same(6)
+                && near(r.rect, chip.translate(vec2(0.0, 4.0))))
+        })
+        .unwrap_or_else(|| panic!("no shadow under {chip:?}"));
+    assert!(shadow < frame, "the shadow under the frame");
+    let Some(Shape::Rect(image)) = shapes
+        .iter()
+        .find(|shape| matches!(shape, Shape::Rect(r) if r.brush.is_some() && near(r.rect, icon)))
+    else {
+        panic!("no icon at {icon:?}");
+    };
+    assert_eq!(image.fill, Color32::from_rgb(0xcf, 0xcf, 0xcf), "its tint");
+    let texture = image.brush.as_ref().unwrap().fill_texture_id;
+    let named = h
+        .ctx
+        .tex_manager()
+        .read()
+        .meta(texture)
+        .map(|meta| meta.name.clone());
+    assert_eq!(named.as_deref(), Some("bytes://silico/icons/sketch.svg"));
+    assert!(
+        shapes.iter().position(
+            |shape| matches!(shape, Shape::Rect(r) if r.brush.is_some() && near(r.rect, icon))
+        ) > Some(frame),
+        "the icon over the frame"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_empty_parts_hint_stays_hidden_with_only_a_failed_feature() {
+    // The prototype's `!d.features.length`: a feature that failed, and made no body, is a
+    // feature all the same.
+    let f = fixture();
+    f.kernel
+        .refuse(|op| is_box(op).then(|| Error::new(ErrorCode::KernelFailed, "the box came apart")));
+    let (mut h, _) = f.opened("block.silico", A_BOX);
+    step_until(&mut h, "the box's failure", |h| {
+        shows(h, "Timeline", "Block")
+            && timeline(h)
+                .query_all_by_label_contains("error")
+                .next()
+                .is_some()
+    });
+    assert!(h.state().tabs()[0].browser.bodies().is_empty());
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(hint(&h).is_none());
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_timelines_arrows_walk_nothing_while_a_widget_has_the_keyboard() {
+    // egui moves the keyboard's focus by the arrows (its `begin_pass`): with a button focused
+    // (Tab's, here the navigation bar's Fit), → and ← move that focus, and select nothing.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Pin");
+    assert!(h.ctx.memory(|memory| memory.focused()).is_none());
+    bar_node(&h).get_by_label("Fit").focus();
+    step(&mut h);
+    assert!(h.ctx.memory(|memory| memory.focused()).is_some());
+    for key in [Key::ArrowRight, Key::ArrowLeft] {
+        h.key_press_modifiers(Modifiers::NONE, key);
+        step(&mut h);
+        assert_eq!(feature_selected(&h).as_deref(), Some(PIN_ID), "{key:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// What a step along the timeline leaves with a dialog open, to compare: the feature
+/// selected, the dialog's inputs' values and its active box, whether it's open, and how many
+/// requests the tab has sent.
+fn after_a_step(h: &AppHarness) -> (Option<String>, Option<String>, bool, usize) {
+    let tab = &h.state().tabs()[0];
+    let dialog = tab.dialog.as_ref().map(|dialog| {
+        let values: Vec<_> = dialog.inputs.iter().map(|input| &input.value).collect();
+        format!("{values:?} active {:?}", dialog.active)
+    });
+    (feature_selected(h), dialog, dialog_open(h), tab.sent.len())
+}
+
+/// With a dialog open, the timeline's item `from` clicked (which takes the keyboard from the
+/// dialog's field), → pressed: what that leaves is what `from` clicked, then `to` clicked,
+/// leaves, `to` the item after `from`. What both leave.
+fn arrow_as_click(
+    h: &mut AppHarness,
+    from: &str,
+    to: &str,
+) -> (Option<String>, Option<String>, bool, usize) {
+    timeline(h).get_by_label(from).click();
+    step(h);
+    step(h);
+    assert!(
+        h.ctx.memory(|memory| memory.focused()).is_none(),
+        "nothing focused"
+    );
+    h.key_press(eframe::egui::Key::ArrowRight);
+    step(h);
+    step(h);
+    let walked = after_a_step(h);
+    timeline(h).get_by_label(from).click();
+    step(h);
+    step(h);
+    timeline(h).get_by_label(to).click();
+    step(h);
+    step(h);
+    let clicked = after_a_step(h);
+    assert_eq!(walked, clicked);
+    assert!(dialog_open(h));
+    walked
+}
+
+#[test]
+fn with_an_edit_dialog_open_an_arrow_does_what_a_click_on_its_item_does() {
+    // The prototype's arrows take no account of a dialog (its `keydown` reaches them with one
+    // open, no field typed in), and `selectFeature` is what a click on the item does: the
+    // plate's pad's dialog open, the sketch's item clicked, → leaves what a click on the
+    // pad's item leaves: the pad selected, the dialog as it was, nothing sent.
+    let f = fixture();
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    edit_plates_pad(&mut h);
+    settled(&mut h);
+    let sent = h.state().tabs()[0].sent.len();
+    let left = arrow_as_click(&mut h, "Plate", "Pad");
+    assert_eq!(left.0.as_deref(), Some("p0000001"));
+    assert_eq!(left.3, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_a_pads_sketch_box_active_an_arrow_onto_a_sketch_does_what_a_click_on_its_item_does() {
+    // A new pad's dialog, its sketch's box active and empty: a click on the triangle's
+    // timeline item selects it and leaves the box as it was (the browser's row fills it, the
+    // timeline's item doesn't); → onto it from the plate does the same.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
+    let before = after_a_step(&h).1;
+    let left = arrow_as_click(&mut h, "Plate", "Triangle");
+    assert_eq!(left.0.as_deref(), Some("s0000001"));
+    assert_eq!(left.1, before, "the box as it was");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_arrow_walks_from_a_sketchs_browser_row_and_onto_a_suppressed_feature() {
+    // A sketch's browser row selects it as itself (the prototype's `featureRow`), so the
+    // arrows walk from it, and the timeline is then where it was selected (F2's field opens
+    // there). A suppressed feature is in the timeline's order as any other: → stops on it.
+    use eframe::egui::{Key, Modifiers};
+    use silico_app::feature_menu::Place;
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    browser(&h).get_by_label("Triangle").click();
+    step_until(&mut h, "the sketch selected", |h| {
+        feature_selected(h).as_deref() == Some("s0000001")
+    });
+    assert_eq!(h.state().tabs()[0].selected_in, Place::Browser);
+    pressed_with(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(feature_selected(&h).as_deref(), Some(HOLE_ID));
+    assert_eq!(h.state().tabs()[0].selected_in, Place::Timeline);
+    let ghost = r#"    {"id": "g0000001", "type": "box", "v": 1, "name": "Ghost", "suppressed": true, "position": [0, 0, 0], "length": 1, "width": 1, "height": 1},"#;
+    let text = EXAMPLE.replacen(
+        "    {\"id\": \"a91cw0de\"",
+        &format!("{ghost}\n    {{\"id\": \"a91cw0de\""),
+        1,
+    );
+    let (mut h, _) = f.opened("ghost.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Ghost"));
+    select(&mut h, "Block");
+    pressed_with(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(feature_selected(&h).as_deref(), Some("g0000001"));
+    assert!(toggled(&timeline(&h).get_by_label("Ghost")) == Some(true));
+    pressed_with(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(feature_selected(&h).as_deref(), Some(PIN_ID));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_timelines_arrows_walk_nothing_while_the_gate_refuses_the_document() {
+    // While the gate refuses the document its timeline may list an ID used twice, twice
+    // (`timeline`'s schema): here Block and Pin are both k7f2qx3m. Walked by ID, ← from Hole
+    // would find the first k7f2qx3m and → from there never pass Pin; so the arrows walk
+    // nothing until the document is mended.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let twice = EXAMPLE.replace("\"id\": \"a91cw0de\"", "\"id\": \"k7f2qx3m\"");
+    let (mut h, _) = f.opened("twice.silico", &twice);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    assert!(
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0)
+    );
+    timeline(&h).get_by_label("Hole").click();
+    step_until(&mut h, "Hole selected", |h| {
+        feature_selected(h).as_deref() == Some(HOLE_ID)
+    });
+    for key in [Key::ArrowLeft, Key::ArrowLeft, Key::ArrowRight] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert_eq!(feature_selected(&h).as_deref(), Some(HOLE_ID), "{key:?}");
     }
     assert_eq!(never_waits::waits(), 0);
 }
