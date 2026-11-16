@@ -9,6 +9,10 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use silico_protocol::{BooleanOp, ElementKind, ElementRef, Primitive};
 
 use super::fingerprint::Fingerprint;
+use super::pattern::{
+    AxisReference, AxisReferenceSchema, Copies, LinearDirection, MirrorPlane, MirrorPlaneSchema,
+    PatternFeature, PolarDistribution, Skipped,
+};
 use super::quantity::{Angle, Length};
 use super::sketch::{ElementId, Reference, Sketch};
 
@@ -480,20 +484,27 @@ impl JsonSchema for Name {
 }
 
 /// Where a feature stores an element's name ([`Operation::stored_names`]): a fillet's or
-/// chamfer's `edges`, by place, or a sketch's face, `plane.face`. Written as the field's path
-/// (`edges.3`, `plane.face`), as an error's `parameter` names it.
+/// chamfer's `edges`, by place, a sketch's face, `plane.face`, a linear pattern's direction,
+/// `directions.N.along`, a polar pattern's `axis`, or a mirror's `plane`. Written as the
+/// field's path (`edges.3`, `plane.face`, `directions.1.along`), as an error's `parameter`
+/// names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NameField {
     Edge(usize),
     Face,
+    Along(usize),
+    Axis,
+    Plane,
 }
 
 impl NameField {
-    /// The kind of element a name stored there names.
-    pub fn kind(self) -> ElementKind {
+    /// The kinds of element a name stored there may name: a direction an edge or a face
+    /// (docs/design/m6.0-patterns.md, section 6), an axis an edge, a mirror's plane a face.
+    pub fn kinds(self) -> &'static [ElementKind] {
         match self {
-            NameField::Edge(_) => ElementKind::Edge,
-            NameField::Face => ElementKind::Face,
+            NameField::Edge(_) | NameField::Axis => &[ElementKind::Edge],
+            NameField::Face | NameField::Plane => &[ElementKind::Face],
+            NameField::Along(_) => &[ElementKind::Edge, ElementKind::Face],
         }
     }
 }
@@ -503,6 +514,9 @@ impl fmt::Display for NameField {
         match self {
             NameField::Edge(i) => write!(f, "edges.{i}"),
             NameField::Face => f.write_str("plane.face"),
+            NameField::Along(i) => write!(f, "directions.{i}.along"),
+            NameField::Axis => f.write_str("axis"),
+            NameField::Plane => f.write_str("plane"),
         }
     }
 }
@@ -599,6 +613,39 @@ pub enum Operation {
         sketch: FeatureId,
         axis: Axis,
         extent: TurnExtent,
+    },
+    /// `base`'s solid with copies of `copies` placed along one or two `directions`, each
+    /// instance's steps along them by place, `skip`'s instances left out
+    /// (docs/design/m6.0-patterns.md, section 2).
+    #[serde(rename = "linear_pattern")]
+    LinearPattern {
+        base: FeatureId,
+        copies: Copies,
+        #[schemars(length(min = 1, max = 2))]
+        directions: Vec<LinearDirection>,
+        skip: Vec<Skipped>,
+    },
+    /// `base`'s solid with copies of `copies` turned about `axis`, right-handed, or
+    /// left-handed when `reversed`, `count` instances the original included, `skip`'s left
+    /// out.
+    #[serde(rename = "polar_pattern")]
+    PolarPattern {
+        base: FeatureId,
+        copies: Copies,
+        #[schemars(with = "AxisReferenceSchema")]
+        axis: AxisReference,
+        reversed: bool,
+        distribution: PolarDistribution,
+        #[schemars(range(min = 1, max = 1000))]
+        count: u32,
+        skip: Vec<Skipped>,
+    },
+    /// `base`'s solid with `copies` mirrored about `plane`, merged into it.
+    Mirror {
+        base: FeatureId,
+        copies: Copies,
+        #[schemars(with = "MirrorPlaneSchema")]
+        plane: MirrorPlane,
     },
 }
 
@@ -803,6 +850,9 @@ pub enum Made {
     Chamfer { distance: f64 },
     /// A sketch's profile swept, and fused with or cut from its `base`, if it has one.
     Sweep(SweepFeature),
+    /// Copies of originals' tools, or of its base's whole solid, placed and fused with or
+    /// cut from its `base` (built from M6.3).
+    Pattern(PatternFeature),
 }
 
 impl Operation {
@@ -812,8 +862,33 @@ impl Operation {
     pub fn canonically_eq(&self, other: &Operation) -> bool {
         match (self, other) {
             (Operation::Sketch(a), Operation::Sketch(b)) => a.canonically_eq(b),
+            // `copies.features` and `skip` are sets, written sorted.
+            (a, b) if a.type_name() == b.type_name() && a.copies().is_some() => {
+                a.in_written_order() == b.in_written_order()
+            }
             _ => self == other,
         }
+    }
+
+    /// A pattern's, or a mirror's, `copies.features` and `skip` in the order canonical form
+    /// writes them, sorted; any other operation as it is.
+    pub(crate) fn in_written_order(&self) -> Operation {
+        let mut sorted = self.clone();
+        match &mut sorted {
+            Operation::LinearPattern { copies, skip, .. }
+            | Operation::PolarPattern { copies, skip, .. } => {
+                skip.sort();
+                if let Copies::Features { features } = copies {
+                    features.sort();
+                }
+            }
+            Operation::Mirror {
+                copies: Copies::Features { features },
+                ..
+            } => features.sort(),
+            _ => {}
+        }
+        sorted
     }
 
     /// What the feature makes its solid with: a primitive from nothing, a boolean of two
@@ -869,6 +944,9 @@ impl Operation {
             Operation::Pocket { .. } => Made::Sweep(SweepFeature::Pocket),
             Operation::Revolve { .. } => Made::Sweep(SweepFeature::Revolve),
             Operation::Groove { .. } => Made::Sweep(SweepFeature::Groove),
+            Operation::LinearPattern { .. } => Made::Pattern(PatternFeature::Linear),
+            Operation::PolarPattern { .. } => Made::Pattern(PatternFeature::Polar),
+            Operation::Mirror { .. } => Made::Pattern(PatternFeature::Mirror),
         }
     }
 
@@ -881,7 +959,8 @@ impl Operation {
             | Made::Fillet { .. }
             | Made::Chamfer { .. }
             | Made::Sketch
-            | Made::Sweep(_) => None,
+            | Made::Sweep(_)
+            | Made::Pattern(_) => None,
         }
     }
 
@@ -902,7 +981,10 @@ impl Operation {
             | Operation::Pad { .. }
             | Operation::Pocket { .. }
             | Operation::Revolve { .. }
-            | Operation::Groove { .. } => None,
+            | Operation::Groove { .. }
+            | Operation::LinearPattern { .. }
+            | Operation::PolarPattern { .. }
+            | Operation::Mirror { .. } => None,
         }
     }
 
@@ -934,14 +1016,18 @@ impl Operation {
             | Operation::Pad { .. }
             | Operation::Pocket { .. }
             | Operation::Revolve { .. }
-            | Operation::Groove { .. } => parameter,
+            | Operation::Groove { .. }
+            | Operation::LinearPattern { .. }
+            | Operation::PolarPattern { .. }
+            | Operation::Mirror { .. } => parameter,
         }
     }
 
     /// The features this one consumes, by field: a boolean's `base` then `tool`, a fillet's,
-    /// chamfer's, pocket's, or groove's `base`, and a pad's or revolve's if it has one; none
-    /// for a primitive or a sketch. (A sketch a feature sweeps is used, not consumed:
-    /// [`sketch`](Self::sketch).)
+    /// chamfer's, pocket's, groove's, pattern's, or mirror's `base`, and a pad's or revolve's
+    /// if it has one; none for a primitive or a sketch. (A sketch a feature sweeps is used,
+    /// not consumed: [`sketch`](Self::sketch); nor is an original a pattern copies:
+    /// [`copies`](Self::copies).)
     pub fn inputs(&self) -> Vec<(&'static str, &FeatureId)> {
         match self {
             Operation::Fuse { base, tool }
@@ -950,7 +1036,10 @@ impl Operation {
             Operation::Fillet { base, .. }
             | Operation::Chamfer { base, .. }
             | Operation::Pocket { base, .. }
-            | Operation::Groove { base, .. } => {
+            | Operation::Groove { base, .. }
+            | Operation::LinearPattern { base, .. }
+            | Operation::PolarPattern { base, .. }
+            | Operation::Mirror { base, .. } => {
                 vec![("base", base)]
             }
             Operation::Pad { base, .. } | Operation::Revolve { base, .. } => {
@@ -968,7 +1057,8 @@ impl Operation {
     /// Every feature this one uses: those it consumes ([`inputs`](Self::inputs)), then the
     /// sketch it sweeps ([`sketch`](Self::sketch)), then, for a sketch on a face, the face's
     /// own feature ([`FacePlane::feature`](super::FacePlane::feature)), whose edit moves the
-    /// face and so the sketch. What an edit of one of them reaches.
+    /// face and so the sketch, then the originals a pattern copies, in the order held, whose
+    /// edits move or change its copies. What an edit of one of them reaches.
     pub fn uses(&self) -> impl Iterator<Item = FeatureId> + '_ {
         let face = match self {
             Operation::Sketch(sketch) => sketch.plane.face().and_then(|face| face.feature()),
@@ -979,25 +1069,72 @@ impl Operation {
             .map(|(_, id)| id.clone())
             .chain(self.sketch().cloned())
             .chain(face)
+            .chain(self.originals().iter().cloned())
+    }
+
+    /// What a pattern or mirror copies; none for another feature.
+    pub fn copies(&self) -> Option<&Copies> {
+        match self {
+            Operation::LinearPattern { copies, .. }
+            | Operation::PolarPattern { copies, .. }
+            | Operation::Mirror { copies, .. } => Some(copies),
+            _ => None,
+        }
+    }
+
+    /// The originals a pattern or mirror copies (`copies.features`), in the order held; none
+    /// for one that copies its whole base, or another feature.
+    pub fn originals(&self) -> &[FeatureId] {
+        self.copies().map_or(&[], Copies::features)
+    }
+
+    /// The instances a pattern leaves out (`skip`), in the order held; none for a mirror or
+    /// another feature.
+    pub fn skip(&self) -> &[Skipped] {
+        match self {
+            Operation::LinearPattern { skip, .. } | Operation::PolarPattern { skip, .. } => skip,
+            _ => &[],
+        }
     }
 
     /// Every element name this feature stores, with where it stores it, in the order its
-    /// fields come: a fillet's or chamfer's `edges`, and a sketch's face (`plane.face`). Every
-    /// reader of the names a feature stores reads them here, so a name stored in a field
-    /// added later can't be missed.
+    /// fields come: a fillet's or chamfer's `edges`, a sketch's face (`plane.face`), a linear
+    /// pattern's directions that are names (`directions.N.along`), a polar pattern's `axis`,
+    /// and a mirror's `plane`, where they're names. Every reader of the names a feature
+    /// stores reads them here, so a name stored in a field added later can't be missed.
     pub fn stored_names(&self) -> impl Iterator<Item = (NameField, &ElementName)> {
-        let face = match self {
-            Operation::Sketch(sketch) => sketch
-                .plane
-                .face()
-                .map(|face| (NameField::Face, &face.face)),
-            _ => None,
-        };
-        self.edges()
+        let mut found: Vec<(NameField, &ElementName)> = self
+            .edges()
             .iter()
             .enumerate()
             .map(|(i, edge)| (NameField::Edge(i), edge))
-            .chain(face)
+            .collect();
+        match self {
+            Operation::Sketch(sketch) => {
+                found.extend(
+                    sketch
+                        .plane
+                        .face()
+                        .map(|face| (NameField::Face, &face.face)),
+                );
+            }
+            Operation::LinearPattern { directions, .. } => {
+                found.extend(directions.iter().enumerate().filter_map(|(i, direction)| {
+                    direction
+                        .along
+                        .name()
+                        .map(|name| (NameField::Along(i), name))
+                }));
+            }
+            Operation::PolarPattern { axis, .. } => {
+                found.extend(axis.name().map(|name| (NameField::Axis, name)));
+            }
+            Operation::Mirror { plane, .. } => {
+                found.extend(plane.name().map(|name| (NameField::Plane, name)));
+            }
+            _ => {}
+        }
+        found.into_iter()
     }
 
     /// The elements a fillet or chamfer names, by name; none for another feature.
@@ -1016,7 +1153,10 @@ impl Operation {
             | Operation::Pad { .. }
             | Operation::Pocket { .. }
             | Operation::Revolve { .. }
-            | Operation::Groove { .. } => &[],
+            | Operation::Groove { .. }
+            | Operation::LinearPattern { .. }
+            | Operation::PolarPattern { .. }
+            | Operation::Mirror { .. } => &[],
         }
     }
 
@@ -1037,7 +1177,10 @@ impl Operation {
             | Operation::Common { .. }
             | Operation::Sketch(_)
             | Operation::Fillet { .. }
-            | Operation::Chamfer { .. } => None,
+            | Operation::Chamfer { .. }
+            | Operation::LinearPattern { .. }
+            | Operation::PolarPattern { .. }
+            | Operation::Mirror { .. } => None,
         }
     }
 
@@ -1057,7 +1200,10 @@ impl Operation {
             | Operation::Fillet { .. }
             | Operation::Chamfer { .. }
             | Operation::Pad { .. }
-            | Operation::Pocket { .. } => None,
+            | Operation::Pocket { .. }
+            | Operation::LinearPattern { .. }
+            | Operation::PolarPattern { .. }
+            | Operation::Mirror { .. } => None,
         }
     }
 
@@ -1079,7 +1225,10 @@ impl Operation {
             | Operation::Common { .. }
             | Operation::Sketch(_)
             | Operation::Fillet { .. }
-            | Operation::Chamfer { .. } => None,
+            | Operation::Chamfer { .. }
+            | Operation::LinearPattern { .. }
+            | Operation::PolarPattern { .. }
+            | Operation::Mirror { .. } => None,
         }
     }
 
@@ -1107,14 +1256,33 @@ impl Operation {
             Operation::Pocket { .. } => "pocket",
             Operation::Revolve { .. } => "revolve",
             Operation::Groove { .. } => "groove",
+            Operation::LinearPattern { .. } => "linear_pattern",
+            Operation::PolarPattern { .. } => "polar_pattern",
+            Operation::Mirror { .. } => "mirror",
         }
     }
 }
 
 /// Every feature type, as the file writes it.
-pub const FEATURE_TYPES: [&str; 15] = [
-    "box", "cylinder", "sphere", "cone", "torus", "fuse", "cut", "common", "sketch", "fillet",
-    "chamfer", "pad", "pocket", "revolve", "groove",
+pub const FEATURE_TYPES: [&str; 18] = [
+    "box",
+    "cylinder",
+    "sphere",
+    "cone",
+    "torus",
+    "fuse",
+    "cut",
+    "common",
+    "sketch",
+    "fillet",
+    "chamfer",
+    "pad",
+    "pocket",
+    "revolve",
+    "groove",
+    "linear_pattern",
+    "polar_pattern",
+    "mirror",
 ];
 
 #[cfg(test)]

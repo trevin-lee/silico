@@ -296,6 +296,17 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                 });
             }
         }
+        // A pattern's or mirror's counts, lengths, angles, originals, and instances skipped
+        // (docs/design/m6.0-patterns.md, section 4.1).
+        super::pattern_gate::check(
+            index,
+            &super::pattern_gate::Around {
+                features,
+                holder: &holder,
+            },
+            &refuse,
+            &mut |error| problems.add(|| error),
+        );
         // The edges a fillet or chamfer names: at least one, each an edge's name, by
         // features before it, none twice.
         if matches!(
@@ -322,18 +333,43 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             std::collections::BTreeMap::new();
         for (field, stored) in feature.operation.stored_names() {
             let parameter = field.to_string();
-            let kind = field.kind();
-            let word = kind.word();
-            let advice = match field {
-                NameField::Edge(_) => {
+            let kinds = field.kinds();
+            let wanted: Vec<&str> = kinds.iter().map(|kind| kind.a_word()).collect();
+            let wanted = wanted.join(" or ");
+            let pattern = PatternField::of(field);
+            let advice = match (field, &pattern) {
+                (NameField::Edge(_), _) => {
                     "write the edge's name as Silico names it (feature.type.Edge(...)), of a feature before this one"
                 }
-                NameField::Face => {
+                (NameField::Face, _) => {
                     "write the face's name as Silico names it (feature.type.Face...), of a feature before this sketch"
                 }
+                (_, Some(pattern)) => pattern.kind_advice,
+                (_, None) => "",
             };
+            // An origin word of the wrong kind: a plane as a direction or an axis, an axis
+            // as a mirror plane.
+            if let Some(pattern) = &pattern
+                && let Some((message, suggestion)) = pattern.misplaced(&parameter, stored.as_str())
+            {
+                problems.add(|| refuse(&parameter, message, suggestion));
+                continue;
+            }
             match Name::parse(stored.as_str(), &makers) {
                 Err(error) => problems.add(|| {
+                    if let Some(pattern) = &pattern {
+                        return refuse(
+                            &parameter,
+                            format!(
+                                "{parameter}, {}, is neither {} nor an element's name: {}, at column {}",
+                                shown(stored.as_str()),
+                                pattern.origin_words,
+                                error.why,
+                                error.column
+                            ),
+                            pattern.parse_advice.to_owned(),
+                        );
+                    }
                     // Where an edge names a sketch's edge whole, what to write instead.
                     let instead = match field {
                         NameField::Edge(_) => made_of_sketch(
@@ -342,28 +378,26 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                             features,
                             &makers,
                         ),
-                        NameField::Face => String::new(),
+                        _ => String::new(),
                     };
                     refuse(
                         &parameter,
                         format!(
-                            "{parameter}, {}, isn't {}'s name: {}{instead}, at column {}",
+                            "{parameter}, {}, isn't {wanted}'s name: {}{instead}, at column {}",
                             shown(stored.as_str()),
-                            kind.a_word(),
                             error.why,
                             error.column
                         ),
                         advice.to_owned(),
                     )
                 }),
-                Ok(name) if name.kind() != kind => problems.add(|| {
+                Ok(name) if !kinds.contains(&name.kind()) => problems.add(|| {
                     refuse(
                         &parameter,
                         format!(
-                            "{parameter}, {}, names {}, not {}",
+                            "{parameter}, {}, names {}, not {wanted}",
                             shown(stored.as_str()),
                             name.kind().a_word(),
-                            kind.a_word()
                         ),
                         advice.to_owned(),
                     )
@@ -388,7 +422,8 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                             op.word()
                         ),
                         format!(
-                            "name the {word} as {named}'s solid names it now (a {primitive}'s elements are `{named}.{primitive}.` and their numbers)"
+                            "name the {} as {named}'s solid names it now (a {primitive}'s elements are `{named}.{primitive}.` and their numbers)",
+                            element.kind.word()
                         ),
                     )
                 }),
@@ -400,9 +435,12 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                         format!(
                             "{parameter}, {}, names {} by a name that doesn't say which: a duplicate (~n) or an operation's element by its number",
                             shown(stored.as_str()),
-                            kind.a_word()
+                            name.kind().a_word()
                         ),
-                        format!("name the {word} by how it came about, as Silico names it now"),
+                        format!(
+                            "name the {} by how it came about, as Silico names it now",
+                            name.kind().word()
+                        ),
                     )
                 }),
                 Ok(_) => {}
@@ -663,6 +701,91 @@ fn made_of_sketch(
             }
         }
         _ => String::new(),
+    }
+}
+
+/// What a pattern's reference field says of a stored name it can't take: the origin words it
+/// takes beside a name, and the advice for a name it can't read and for one of the wrong
+/// kind (docs/design/m6.0-patterns.md, section 4.1).
+struct PatternField {
+    origin_words: &'static str,
+    parse_advice: &'static str,
+    kind_advice: &'static str,
+    /// The origin words of the other kind, and what's said of one: a plane as a direction
+    /// or an axis, an axis as a mirror plane.
+    misplaced: fn(&str, &str) -> Option<(String, String)>,
+}
+
+impl PatternField {
+    fn of(field: NameField) -> Option<Self> {
+        Some(match field {
+            NameField::Along(_) => PatternField {
+                origin_words: "x, y, or z",
+                parse_advice: "give x, y, or z (the model's axes; a revolve's x_axis is its sketch's, and +x is a face sketch's x), or name an edge or a face",
+                kind_advice: "name a straight edge or a planar face, as elements or query gives it, or give x, y, or z",
+                misplaced: |parameter, text| {
+                    let normal = plane_normal(text)?;
+                    Some((
+                        format!(
+                            "{parameter}, {}, is an origin plane: a direction is x, y, or z, or a straight edge or a planar face by its name",
+                            shown(text)
+                        ),
+                        format!("give the plane's normal, {normal}, or name an edge or a face"),
+                    ))
+                },
+            },
+            NameField::Axis => PatternField {
+                origin_words: "x, y, or z",
+                parse_advice: "give x, y, or z (the model's axes; a revolve's x_axis is its sketch's, and +x is a face sketch's x), or name an edge",
+                kind_advice: "name a straight or circular edge, or give x, y, or z; a face's normal is a linear pattern's direction",
+                misplaced: |parameter, text| {
+                    let normal = plane_normal(text)?;
+                    Some((
+                        format!(
+                            "{parameter}, {}, is an origin plane: an axis is x, y, or z, or a straight or circular edge by its name",
+                            shown(text)
+                        ),
+                        format!("give the plane's normal, {normal}, or name an edge"),
+                    ))
+                },
+            },
+            NameField::Plane => PatternField {
+                origin_words: "xy, xz, or yz",
+                parse_advice: "give xy, xz, or yz (the origin's planes), or name a planar face",
+                kind_advice: "name a planar face, as elements or query gives it, or give xy, xz, or yz",
+                misplaced: |parameter, text| {
+                    let square = match super::OriginAxis::new(text)? {
+                        super::OriginAxis::X => "yz",
+                        super::OriginAxis::Y => "xz",
+                        super::OriginAxis::Z => "xy",
+                    };
+                    Some((
+                        format!(
+                            "{parameter}, {}, is an origin axis: a mirror plane is xy, xz, yz, or a planar face by its name",
+                            shown(text)
+                        ),
+                        format!("give the plane square to it, {square}, or name a planar face"),
+                    ))
+                },
+            },
+            NameField::Edge(_) | NameField::Face => return None,
+        })
+    }
+
+    /// What's said of `text`, stored at `parameter`, if it's an origin word of the other
+    /// kind.
+    fn misplaced(&self, parameter: &str, text: &str) -> Option<(String, String)> {
+        (self.misplaced)(parameter, text)
+    }
+}
+
+/// The origin axis an origin plane, `text`, is square to, if it's one: `xy`'s is `z`.
+fn plane_normal(text: &str) -> Option<&'static str> {
+    match text {
+        "xy" => Some("z"),
+        "xz" => Some("y"),
+        "yz" => Some("x"),
+        _ => None,
     }
 }
 

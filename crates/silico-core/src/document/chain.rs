@@ -879,7 +879,10 @@ fn input_fields(operation: &Operation) -> Vec<(&'static str, Option<&FeatureId>)
         Operation::Fillet { base, .. }
         | Operation::Chamfer { base, .. }
         | Operation::Pocket { base, .. }
-        | Operation::Groove { base, .. } => vec![("base", Some(base))],
+        | Operation::Groove { base, .. }
+        | Operation::LinearPattern { base, .. }
+        | Operation::PolarPattern { base, .. }
+        | Operation::Mirror { base, .. } => vec![("base", Some(base))],
         Operation::Pad { base, .. } | Operation::Revolve { base, .. } => {
             vec![("base", base.as_ref())]
         }
@@ -903,7 +906,10 @@ fn set_input(operation: &mut Operation, field: &str, to: Option<FeatureId>) {
             | Operation::Fillet { base, .. }
             | Operation::Chamfer { base, .. }
             | Operation::Pocket { base, .. }
-            | Operation::Groove { base, .. },
+            | Operation::Groove { base, .. }
+            | Operation::LinearPattern { base, .. }
+            | Operation::PolarPattern { base, .. }
+            | Operation::Mirror { base, .. },
             "base",
         ) => {
             if let Some(to) = to {
