@@ -5029,10 +5029,10 @@ impl Tab {
     /// closed at once.
     fn send_close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let built = sessions.published(&self.id).result.ok().map(|p| p.revision);
-        if self.draws_on_close
-            && self.path.is_some()
-            && !self.transaction
-            && built == Some(self.revision)
+        if let Some(path) = self
+            .path
+            .clone()
+            .filter(|_| self.draws_on_close && !self.transaction && built == Some(self.revision))
         {
             // Gone at once: the app's thumbnails draw it and close its session, which can't
             // refuse (there's no transaction), so the tab never waits on its picture.
@@ -5040,6 +5040,7 @@ impl Tab {
                 sessions,
                 self.id,
                 self.revision,
+                path,
             ));
             self.closed = true;
             return;

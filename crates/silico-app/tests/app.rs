@@ -48449,3 +48449,43 @@ fn a_quit_draws_nothing() {
     assert_eq!(thumbs(&h).renders_written, 0);
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn reopening_a_part_whose_session_is_still_closing_waits_for_the_close_and_then_opens() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    all_settled(&mut h);
+    frames(&mut h, 10);
+    // Its render's meshing held: its session stays open, drawing, after its tab has gone.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    closed(&mut h, "block.silico");
+    step_until(&mut h, "listed in Recent", |h| {
+        recent_names(h) == ["block.silico"]
+    });
+    // Clicked in Recent at once: held, not refused, and nothing opened yet.
+    h.get_by_role_and_label(Role::Button, "block.silico")
+        .click();
+    // Long enough for a refusal, which the core gives at once, to be said.
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs().is_empty(),
+        "opened before its session closed"
+    );
+    assert_eq!(h.state().message(), None, "the reopen was refused");
+    assert!(f.thumb_files().is_empty());
+    hold.release();
+    step_until(&mut h, "reopened", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .any(|tab| tab.name() == "block.silico")
+    });
+    assert_eq!(f.thumb_files(), [thumb_of(EXAMPLE.as_bytes())]);
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}

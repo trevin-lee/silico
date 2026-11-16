@@ -354,6 +354,8 @@ enum Waiting<T> {
 pub struct Closing {
     session: SessionId,
     revision: Revision,
+    /// Its document's path, as its tab had it: an open of it waits for the close.
+    path: String,
     stage: Stage,
 }
 
@@ -378,10 +380,12 @@ impl Closing {
         sessions: &Arc<Sessions<P>>,
         session: SessionId,
         revision: Revision,
+        path: String,
     ) -> Self {
         Closing {
             session,
             revision,
+            path,
             stage: Stage::Drawing(Box::new(Out {
                 text: Waiting::Out(sessions.text_at(
                     &session,
@@ -550,6 +554,18 @@ impl Thumbs {
     /// tab gone.
     pub(crate) fn closing(&mut self, closing: Closing) {
         self.closing.push(closing);
+    }
+
+    /// Whether the document at `path` is held by a session still closing, its tab gone: an
+    /// open of it would be refused until the close answers, which it always does. Paths are
+    /// compared as text made absolute, as an open tab's are, never by the file system.
+    pub fn still_closing(&self, path: &str) -> bool {
+        let Ok(path) = std::path::absolute(path) else {
+            return false;
+        };
+        self.closing
+            .iter()
+            .any(|closing| std::path::absolute(&closing.path).is_ok_and(|at| at == path))
     }
 
     /// One frame's worth, never waiting: what the thread told taken (pictures uploaded to
@@ -748,6 +764,7 @@ impl Thumbs {
         for Closing {
             session,
             revision,
+            path,
             stage,
         } in std::mem::take(&mut self.closing)
         {
@@ -795,6 +812,7 @@ impl Thumbs {
                 self.closing.push(Closing {
                     session,
                     revision,
+                    path,
                     stage,
                 });
             }

@@ -375,6 +375,9 @@ pub struct App<P: Clients + 'static> {
     recents: Option<Recents>,
     /// The start page's thumbnails, if the app keeps them.
     thumbs: Option<Thumbs>,
+    /// Opens asked of documents whose sessions the thumbnails are still closing (their tabs
+    /// gone), each path with `create`: sent once that close has answered.
+    held_opens: Vec<(String, bool)>,
     /// The side panes' widths, as dragged, and where they're kept, if anywhere.
     columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
@@ -486,6 +489,7 @@ impl<P: Clients + 'static> App<P> {
             tab_in_view: None,
             recents: None,
             thumbs: None,
+            held_opens: Vec::new(),
             columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
@@ -682,8 +686,19 @@ impl<P: Clients + 'static> App<P> {
         &mut self.tabs
     }
 
-    /// Opens the document at `path`, as the Open dialog does: a tab once it has opened.
+    /// Opens the document at `path`, as the Open dialog does: a tab once it has opened. Of a
+    /// document whose tab just closed while its session is still closing (its picture
+    /// drawn first, `crate::thumbs`), once that close has answered, since the core refuses
+    /// an open of a file another session holds.
     pub fn open(&mut self, path: &str, create: bool) {
+        if self
+            .thumbs
+            .as_ref()
+            .is_some_and(|thumbs| thumbs.still_closing(path))
+        {
+            self.held_opens.push((path.to_owned(), create));
+            return;
+        }
         let running = self.sessions.open(path, create);
         self.opening(Part::File(path.to_owned()), running);
     }
@@ -751,6 +766,11 @@ impl<P: Clients + 'static> App<P> {
                 // could be written. Its question counts, since its answer closes tabs at once.
                 self.quitting || matches!(self.asking, Some(Asking::Quit)),
             );
+        }
+        // An open held for a session closing: sent once it has closed.
+        let held = std::mem::take(&mut self.held_opens);
+        for (path, create) in held {
+            self.open(&path, create);
         }
         // The candidate a card's row was hovered on last frame, lit in the canvas from now.
         for tab in &mut self.tabs {
@@ -953,6 +973,7 @@ impl<P: Clients + 'static> App<P> {
             .opening
             .iter()
             .any(|opening| opening.part.path().is_some_and(same))
+            || self.held_opens.iter().any(|(held, _)| same(held))
         {
             return false;
         }
