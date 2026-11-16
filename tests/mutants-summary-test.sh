@@ -35,9 +35,9 @@ awk '/^      - name: Summary$/ { step = 1 } step && /^        run: \|$/ { body =
   "$repo/.github/workflows/mutants.yml" >"$summary"
 grep -q 'all/incomplete.txt' "$summary" || fail "couldn't cut the Summary step from mutants.yml"
 
-# A run of the summary over the shards made in $tmp/case/home, in GitHub's bash (-eo
-# pipefail): its exit status in $status, what it printed in $said. The environment is the
-# case's.
+# A run of the summary over the shards made in $tmp/case/home, in the bash GitHub runs it in
+# (`bash -e {0}`, as run 43831530760's log shows): its exit status in $status, what it
+# printed in $said. The environment is the case's.
 run=0
 summarize() {
   run=$((run + 1))
@@ -49,7 +49,7 @@ summarize() {
     GITHUB_STEP_SUMMARY="$tmp/case/step-summary.md" SHARDS="${SHARDS:-1}" \
     SHARD_RESULT="${SHARD_RESULT:-success}" REF=abc BASE="${BASE-main}" PACKAGES="" \
     FILES="${FILES-}" RE="${RE-}" TESTS="" TESTS_WHY="" FILLER="" \
-    bash -eo pipefail "$summary" 2>&1) || status=$?
+    bash -e "$summary" 2>&1) || status=$?
 }
 
 # A fresh case: no shards kept yet.
@@ -129,17 +129,40 @@ summarize
 expect pass "No mutants: cargo-mutants found nothing to mutate (the change since main)" "a change with nothing to mutate"
 pass
 
-# 6. Two shards that found none, one by sharding (an empty list), one by cargo-mutants finding
-# none in its share: it passes, saying so.
+# 6. Two shards that had none, one with an empty list, one with none at all, each having
+# checked the files: it passes, saying so.
 fresh
 d=$(shard 0)
 echo 0 >"$d/shard"
 echo '[]' >"$d/mutants.json"
+: >"$d/none"
 d=$(shard 1)
 echo 1 >"$d/shard"
 : >"$d/none"
 SHARDS=2 FILES="crates/a.rs" summarize
 expect pass "No mutants" "two shards with none"
+pass
+
+# 6b. With no base, cargo-mutants writes an empty list when the files given hold no mutants:
+# one that checked them and found each passes, saying so; one that found a file missing
+# fails, naming it; and one with no marker (it didn't check) fails as before, since a
+# misspelt file must never pass.
+fresh
+d=$(shard 0)
+echo 0 >"$d/shard"
+echo '[]' >"$d/mutants.json"
+: >"$d/none"
+BASE="" FILES="crates/silico-core/src/cache.rs" summarize
+expect pass "No mutants: cargo-mutants found nothing to mutate in crates/silico-core/src/cache.rs" "no base, nothing to mutate"
+case $said in *"the change since"*) fail "no base: it speaks of a change: $said" ;; esac
+pass
+echo "no file in the tree matches crates/silico-core/src/cahce.rs" >"$d/none"
+BASE="" FILES="crates/silico-core/src/cahce.rs" summarize
+expect fail "no file in the tree matches crates/silico-core/src/cahce.rs" "no base, a misspelt file"
+pass
+rm "$d/none"
+BASE="" FILES="crates/silico-core/src/cahce.rs" summarize
+expect fail "the files matched no mutants" "no base, an empty list, unchecked"
 pass
 
 # 7. And one of two shards that found none while the other stopped before listing: INCOMPLETE.
@@ -168,12 +191,13 @@ FILES="crates/a.rs" summarize
 expect fail "1 mutants missed" "one missed"
 pass
 
-# .github/mutants-none.sh, against a tree of two files.
+# .github/mutants-none.sh, against a tree of three files.
 git -C "$tmp" init -q tree
 mkdir -p "$tmp/tree/crates/a/src"
 echo "fn f() {}" >"$tmp/tree/crates/a/src/lib.rs"
 echo "data" >"$tmp/tree/crates/a/src/data.rs"
-git -C "$tmp/tree" add crates
+echo "fn g() {}" >"$tmp/tree/top.rs"
+git -C "$tmp/tree" add crates top.rs
 git -C "$tmp/tree" -c user.name=t -c user.email=t@t commit -qm tree
 commit=$(git -C "$tmp/tree" rev-parse HEAD)
 none() { # out, then the files given
@@ -213,12 +237,29 @@ none "$out" src/lib.rs
 [ "$(cat "$out/none")" = "no file in the tree matches src/lib.rs" ] || fail "mutants-none, a partial path: $(cat "$out/none")"
 pass
 
-# A list written (cargo-mutants found mutants, or sharding left this shard none): no `none`.
+# `**` as no directory at all, as globset matches it: crates/a/src/**/lib.rs is
+# crates/a/src/lib.rs, and **/top.rs the root's top.rs.
+none "$out" "crates/a/src/**/lib.rs" "**/top.rs" "crates/**/lib.rs"
+[ -f "$out/none" ] && [ ! -s "$out/none" ] || fail "mutants-none, \`**\` as no directory: $(cat "$out/none")"
+pass
+
+# A list of mutants written: no `none`. An empty list (no base, the files holding none): a
+# `none`, with the files checked. A list that can't be read: no `none`, left to the summary.
 rm -rf "$out"
 mkdir -p "$out"
-echo '[]' >"$out/mutants.json"
+echo '[{"name": "a.rs:1:1"}]' >"$out/mutants.json"
 (cd "$tmp/tree" && bash "$repo/.github/mutants-none.sh" "$out" "$commit" crates/a/src/typo.rs)
-[ ! -e "$out/none" ] || fail "mutants-none: wrote none beside a list"
+[ ! -e "$out/none" ] || fail "mutants-none: wrote none beside a list of mutants"
+pass
+echo '[]' >"$out/mutants.json"
+(cd "$tmp/tree" && bash "$repo/.github/mutants-none.sh" "$out" "$commit" crates/a/src/typo.rs data.rs)
+[ "$(cat "$out/none")" = "no file in the tree matches crates/a/src/typo.rs" ] ||
+  fail "mutants-none, an empty list: $(cat "$out/none" 2>/dev/null)"
+pass
+rm "$out/none"
+echo 'not json' >"$out/mutants.json"
+(cd "$tmp/tree" && bash "$repo/.github/mutants-none.sh" "$out" "$commit" crates/a/src/typo.rs)
+[ ! -e "$out/none" ] || fail "mutants-none: wrote none beside a list it couldn't read"
 pass
 
 # A commit that isn't there: it fails (the shard then reads as incomplete), writing nothing.

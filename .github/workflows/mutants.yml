@@ -404,15 +404,16 @@ jobs:
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0
           "${priority[@]}" pixi run mutants -- "${args[@]}" || status=$?
-          # A shard that sharding left no mutants writes an empty list; it still reports. (After
-          # the run, which moves a mutants.out it finds aside.)
+          # A shard with no mutants to test writes an empty list, or none at all (below); it
+          # still reports. (After the run, which moves a mutants.out it finds aside.)
           mkdir -p "$RUNNER_TEMP/out/mutants.out"
           echo "$chosen" >"$RUNNER_TEMP/out/mutants.out/threads"
           case $status in 0 | 2 | 3) ;; *) exit "$status" ;; esac
           echo "$SHARD" >"$RUNNER_TEMP/out/mutants.out/shard"
-          # A run that finds no mutants at all writes no list: say so, with each file given
-          # that matches nothing in the tree (.github/mutants-none.sh). If that fails, the
-          # summary reads the shard as stopped before it listed its mutants, so incomplete.
+          # A shard with no mutants to test (no list, or an empty one) says so, with each file
+          # given that matches nothing in the tree (.github/mutants-none.sh). If that fails,
+          # the summary reads a shard with no list as stopped before it listed its mutants
+          # (incomplete), and one with an empty list as unchecked, so files given fail it.
           if [ "$status" -eq 0 ]; then
             set -f
             # shellcheck disable=SC2086 # FILES is a list of globs, split but not expanded
@@ -516,11 +517,12 @@ jobs:
               python3 -I -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$1" 2>/dev/null
           }
           : >all/incomplete.txt
-          # The files given that match nothing in the tree, by each shard that found no mutants.
+          # The files given that match nothing in the tree, by each shard that had no mutants.
           : >all/unmatched.txt
-          # The shards that had no mutants to test: cargo-mutants found none at all, or
-          # sharding left one none.
+          # The shards that had no mutants to test (no list, or an empty one), and of them those
+          # whose files given were checked against the tree (.github/mutants-none.sh).
           none=0
+          checked=0
           # Every planned shard, not only those that uploaded: one cancelled while queued, or
           # whose runner was lost, uploads nothing, and one that failed before cargo-mutants
           # (a build, OCCT) uploads only its threads.
@@ -530,15 +532,20 @@ jobs:
               echo "shard $n reported nothing (never started, its runner was lost, or its outcomes were let go: a run's are kept on the VM a week, so dispatch a new run)" >>all/incomplete.txt
               continue
             fi
-            # A run that finds no mutants at all writes no list; its shard says so once
-            # cargo-mutants has ended well (.github/mutants-none.sh), never one that stopped.
-            if [ ! -s "$dir/mutants.json" ] && [ -f "$dir/none" ]; then
+            # A shard with no mutants to test says so once its cargo-mutants has ended well
+            # (.github/mutants-none.sh), never one that stopped, naming each file given that
+            # isn't in the tree.
+            if [ -f "$dir/none" ]; then
               cat "$dir/none" >>all/unmatched.txt
+              checked=$((checked + 1))
+            fi
+            # With --in-diff, cargo-mutants writes no list when the change holds no mutants:
+            # the marker says that shard ended well.
+            if [ ! -s "$dir/mutants.json" ] && [ -f "$dir/none" ]; then
               none=$((none + 1))
               continue
             fi
-            # cargo-mutants writes its list (an empty one for a shard sharding left none)
-            # before it tests.
+            # Otherwise it writes its list (an empty one for no mutants) before it tests.
             if [ ! -s "$dir/mutants.json" ]; then
               echo "shard $n stopped before cargo-mutants listed its mutants (see the shard's log)" >>all/incomplete.txt
               continue
@@ -669,11 +676,12 @@ jobs:
             exit 1
           fi
           # cargo-mutants passes a run that finds no mutants: a misspelt file or regex would
-          # pass having tested nothing. Each shard that found none checked the files given
+          # pass having tested nothing. Each shard that had none checked the files given
           # against the tree (.github/mutants-none.sh), so a file that isn't there fails, while
           # files that are there and hold nothing to mutate pass, the summary saying so: a
           # change to data only (run 43831530760), or, with a base, one that touches none of
-          # them. A regex can't be checked so, and one that matches nothing fails.
+          # them. A shard that didn't check (no marker) can't waive it. A regex can't be
+          # checked so, and one that matches nothing fails.
           if [ -s all/unmatched.txt ]; then
             sort -u all/unmatched.txt | while read -r line; do echo "::error::$line"; done
             echo "::error::the files given matched no mutants: check each is a path from the repository's root"
@@ -683,7 +691,7 @@ jobs:
             echo "::error::the regex matched no mutants${BASE:+ changed since $BASE}: check it matches mutants' names (file:line:column: what was replaced) in the files and packages given"
             exit 1
           fi
-          if [ -n "$FILES" ] && [ "$tested" -eq 0 ] && [ "$none" -ne "$SHARDS" ]; then
+          if [ -n "$FILES" ] && [ "$tested" -eq 0 ] && [ "$checked" -ne "$SHARDS" ]; then
             echo "::error::the files matched no mutants${BASE:+ changed since $BASE}: check each file is a path from the repository's root in the packages given"
             exit 1
           fi
