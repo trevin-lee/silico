@@ -1,18 +1,28 @@
 //! Running `silico serve` in the CLI's tests as an MCP client starts it: its stdin and
 //! stdout piped, its stdout's lines as they come, each checked to be one JSON-RPC message,
 //! requests sent and their replies waited for, and its end waited for, each failing past
-//! [`DEADLINE`](crate::run::DEADLINE) rather than hanging.
+//! [`SERVE_DEADLINE`] rather than hanging.
 // Each test program that includes this uses only some of it.
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::run::DEADLINE;
+/// How long a test waits on `silico serve` for one thing it asserts, a reply or its end:
+/// there only so a server that's hung fails the test, saying what it waited for, rather
+/// than hanging it. A server answers `initialize` in about 0.2 s, and in 4 s with twenty
+/// times as many busy threads as CPUs; but on CI's runner the CLI's tests stalled together
+/// for about a minute, twice (#513's and #514's gates, 2026-11-16: a copy of `silico` and
+/// a run of it taking 42 s, 0.14 s on other runs), and the servers started then had no
+/// reply to `initialize` in the 60 s these waited. So well past that, and under the
+/// 300 s nextest gives the tests that run a server (.config/nextest.toml), so a hang is
+/// said here rather than killed with nothing to say.
+pub const SERVE_DEADLINE: Duration = Duration::from_secs(240);
 
 /// A 40 × 20 × 10 box.
 pub const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
@@ -99,16 +109,33 @@ pub fn ask(stdin: &mut ChildStdin, lines: &Receiver<String>, line: &str, id: &st
 
 /// [`ask`], the reply as written.
 pub fn ask_line(stdin: &mut ChildStdin, lines: &Receiver<String>, line: &str, id: &str) -> String {
+    let method = serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|sent| sent["method"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "no method".to_owned());
     writeln!(stdin, "{line}").unwrap();
     let id: Value = serde_json::from_str(id).unwrap();
+    let asked = Instant::now();
+    let mut before = 0;
     loop {
-        let line = lines
-            .recv_timeout(DEADLINE)
-            .unwrap_or_else(|e| panic!("no reply to {id} in {DEADLINE:?}: {e}"));
+        let line = match lines.recv_timeout(SERVE_DEADLINE.saturating_sub(asked.elapsed())) {
+            Ok(line) => line,
+            Err(RecvTimeoutError::Timeout) => panic!(
+                "silico serve sent no reply to request {id} ({method}) in {:?}, the most a test \
+                 waits for one ({SERVE_DEADLINE:?}): it's hung; {before} other messages came meanwhile",
+                asked.elapsed()
+            ),
+            Err(RecvTimeoutError::Disconnected) => panic!(
+                "silico serve's stdout closed {:?} after request {id} ({method}), with no reply \
+                 to it: the server ended; {before} other messages came meanwhile",
+                asked.elapsed()
+            ),
+        };
         let message = json_rpc(&line);
         if message.get("id") == Some(&id) {
             return line;
         }
+        before += 1;
     }
 }
 
@@ -126,15 +153,17 @@ pub fn json_rpc(line: &str) -> Value {
     message
 }
 
-/// How `child` ended, failing if it doesn't within [`DEADLINE`].
+/// How `child` ended, failing if it doesn't within [`SERVE_DEADLINE`].
 pub fn exited(mut child: Child) -> ExitStatus {
     let (done, exited) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = done.send(child.wait());
     });
-    match exited.recv_timeout(DEADLINE) {
+    match exited.recv_timeout(SERVE_DEADLINE) {
         Ok(status) => status.unwrap(),
-        Err(_) => panic!("silico serve didn't end in {DEADLINE:?}"),
+        Err(_) => panic!(
+            "silico serve didn't end in {SERVE_DEADLINE:?}, the most a test waits for it: it's hung"
+        ),
     }
 }
 
