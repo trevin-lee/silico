@@ -7329,7 +7329,10 @@ fn switching() -> Sketch {
 
 /// Construction's switch of `picks` in `sketch`: the value, and the fields set to it.
 fn switched(sketch: &Sketch, picks: &[Reference]) -> Option<(bool, Vec<String>)> {
-    selection::construction_switch(sketch, picks).map(|switch| (switch.construction, switch.fields))
+    selection::construction_switch(sketch, picks).map(|switch| {
+        let fields = std::iter::once(switch.first).chain(switch.rest).collect();
+        (switch.construction, fields)
+    })
 }
 
 /// `construction` and `fields`, as [`switched`] gives them.

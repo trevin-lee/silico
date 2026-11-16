@@ -82,11 +82,13 @@ impl SketchSelection {
 /// What Construction (its button, or X) does to the curves selected (the approved
 /// prototype's "Toggles the selected curves between profile and construction"): the value
 /// they all take, and each field to set to it (`lines.<id>.construction`, and the circles'
-/// and arcs' the same), for the curves that don't hold it already, in pick order.
+/// and arcs' the same), for the curves that don't hold it already, in pick order: `first`,
+/// then `rest`. There's always one, since the value is the one some curve doesn't hold.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstructionSwitch {
     pub construction: bool,
-    pub fields: Vec<String>,
+    pub first: String,
+    pub rest: Vec<String>,
 }
 
 /// Construction's switch of the curves among `picks`, each a line, circle, or arc of
@@ -118,13 +120,14 @@ pub fn construction_switch(members: &Sketch, picks: &[Reference]) -> Option<Cons
         return None;
     }
     let construction = !curves.iter().all(|&(_, _, construction)| construction);
-    let fields = curves
+    let mut fields = curves
         .iter()
         .filter(|&&(_, _, held)| held != construction)
-        .map(|(id, kind, _)| format!("{}.{id}.construction", kind.list()))
-        .collect();
+        .map(|(id, kind, _)| format!("{}.{id}.construction", kind.list()));
+    let first = fields.next()?;
     Some(ConstructionSwitch {
         construction,
-        fields,
+        first,
+        rest: fields.collect(),
     })
 }

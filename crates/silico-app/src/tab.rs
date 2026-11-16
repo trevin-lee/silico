@@ -209,8 +209,8 @@ enum Queued {
     /// asked after it is sent after the read, and a later revert drops it.
     Reload,
     /// An undo or a redo; one asked in sketch mode carries the state it goes no further back
-    /// than (`floor`), and takes one step, never a dialog's group (a constraint tool's add
-    /// and the remove after it are one).
+    /// than (`floor`), and takes one step, never a dialog's group (a click's chain of edits
+    /// is one: a constraint tool's add and the remove after it, or Construction's fields).
     Step {
         undo: bool,
         floor: Option<Revision>,
@@ -305,7 +305,8 @@ enum Queued {
         serial: u64,
         request: OfferRequest,
     },
-    /// A constraint tool's click, to plan when it comes up ([`Tab::plan`]): what's queued
+    /// A constraint tool's click, or Construction's, to plan when it comes up
+    /// ([`Tab::plan`]): what's queued
     /// after it waits till it's planned and its edit sent, or it's let go. Planned on a read
     /// newer than `after`, the revision a plan of it refused as stale was made on, if one
     /// was; on any read otherwise.
@@ -313,10 +314,11 @@ enum Queued {
         click: Click,
         after: Option<Revision>,
     },
-    /// A constraint tool's edit, of `click`, sent against the revision of the read it was
-    /// planned on, never the tab's (`sketch_tools::relate`); for the remove that follows an
-    /// add, the revision the add made, and the state the add was made from (`pair`), so the
-    /// two are one step.
+    /// An edit of a click's chain, of `click`: its first sent against the revision of the
+    /// read it was planned on, never the tab's (`sketch_tools::relate`, or Construction's
+    /// switch); each after it (the remove that follows a constraint tool's add, Construction's
+    /// next field) against the revision the one before made, with the state the chain's
+    /// first edit was made from (`pair`), so the chain is one step.
     Relate {
         click: Click,
         revision: Revision,
@@ -400,8 +402,7 @@ impl Applies {
 /// What a constraint tool's click sends, one command at a time: a `sketch_add`, and after
 /// it, once it's taken, the `sketch_remove` of the `on`s it implies (C5), if any; a
 /// `sketch_merge`; or a `sketch_remove` alone. Construction's sends a `set_field` of each
-/// curve's `construction`, the first, then each next once the one before is taken (never
-/// empty).
+/// curve's `construction`, the first, then each next once the one before is taken.
 #[derive(Debug, Clone, PartialEq)]
 enum Relating {
     Add {
@@ -410,12 +411,19 @@ enum Relating {
     },
     Merge(Vec<ElementId>),
     Remove(Vec<Reference>),
-    Fields(Vec<(String, Node)>),
+    /// Construction's: each curve's `construction` field set to `construction`, `first`,
+    /// then each of `rest` in turn.
+    Fields {
+        construction: bool,
+        first: String,
+        rest: Vec<String>,
+    },
 }
 
-/// What a constraint tool's click come up in the queue does ([`Tab::plan`]): waits for the
-/// read it's planned on; sends its edit, against that read's revision; has said why it sends
-/// nothing (toasted); or is let go, its sketch mode gone or its read refused, saying so.
+/// What a click (a constraint tool's, or Construction's) come up in the queue does
+/// ([`Tab::plan`]): waits for the read it's planned on; sends its chain's first edit,
+/// against that read's revision; has said why it sends nothing (toasted); or is let go, its
+/// sketch mode gone, its read refused, or its curves gone, saying so.
 #[derive(Debug, Clone, PartialEq)]
 enum Planned {
     Wait,
@@ -424,10 +432,12 @@ enum Planned {
     Gone(String),
 }
 
-/// Why a constraint tool's click is let go once its sketch mode has gone unread.
+/// Why a click (a constraint tool's, or Construction's) is let go once its sketch mode has
+/// gone unread.
 const SKETCH_CLOSED: &str = "the sketch closed before it was read";
 
-/// Why a constraint tool's click can't be planned while the tab's revision's rebuild is
+/// Why a click (a constraint tool's, or Construction's) can't be planned while the tab's
+/// revision's rebuild is
 /// stopped and nothing of it is published: the read it needs won't come unasked, and a click
 /// never starts the rebuild again (the stop is the person's).
 const REBUILD_STOPPED: &str =
@@ -437,12 +447,12 @@ const REBUILD_STOPPED: &str =
 const REBUILD_FAILED: &str =
     "the rebuild failed before the sketch was read; Rebuild, then try again";
 
-/// Why Construction's click, planned, sends nothing: none of the curves it was pressed on is
-/// in the sketch's read any more (an edit queued before it removed them).
+/// Why Construction's click is let go unsent: none of the curves it was pressed on is in
+/// the read it's planned on (an edit queued before it removed them).
 const CURVES_GONE: &str = "the curves selected are no longer in the sketch";
 
-/// Why a constraint tool's click waiting to be planned is let go at its sketch mode's Cancel,
-/// which takes back its edits anyway.
+/// Why a click (a constraint tool's, or Construction's) waiting to be planned is let go at its
+/// sketch mode's Cancel, which takes back its edits anyway.
 const SKETCH_CANCELLED: &str = "the sketch was cancelled first";
 
 /// A new sweep's body: not yet read, or read from the document at a revision (its base,
@@ -1319,15 +1329,17 @@ pub struct Tab {
     oked: Option<Dialog>,
     /// The dialogs' edits OK'd in this transaction, each one step for undo and redo.
     groups: Vec<Group>,
-    /// A constraint tool's add and the remove after it (C5), one step for sketch mode's undo
-    /// and redo: the sketch mode's number, and the state the add was made from and the state
-    /// the remove made.
+    /// A click's chain of edits (a constraint tool's add and the remove after it, C5;
+    /// Construction's fields), one step for sketch mode's undo and redo: the sketch mode's
+    /// number, and the state the chain's first edit was made from and the state its last
+    /// left (or, for a chain refused part way, the state its last taken edit made).
     sketch_pairs: Vec<(u64, Revision, Revision)>,
-    /// Each sketch mode closed (Finish, Cancel) while a constraint tool's click of it was
-    /// unsettled: its reads polled still, so the click is planned, and let go once none is.
+    /// Each sketch mode closed (Finish, Cancel) while a click of it (a constraint tool's, or
+    /// Construction's) was unsettled: its reads polled still, so the click is planned, and
+    /// let go once none is.
     leaving: Vec<SketchMode>,
-    /// The constraint tool's click being pressed, while its press's call runs: let go in it,
-    /// it's toasted as well as said.
+    /// The click (a constraint tool's, or Construction's) being pressed, while its press's
+    /// call runs: let go in it, it's toasted as well as said.
     pressed: Option<Click>,
     /// Each state the tab's changes made in this transaction, by its first revision
     /// ([`state_of`](Self::state_of)), with the step that made it: what the Undo and Redo
@@ -3565,12 +3577,16 @@ impl Tab {
                                 pair: Some(pair.unwrap_or(sending.state)),
                             });
                         }
-                        // The last edit of several taken (the remove after an add,
-                        // Construction's last field): all of them one step.
+                        // The last edit of a chain taken (the remove after an add,
+                        // Construction's last field): the chain one step, from the state its
+                        // first edit was made from to the state this one left, though this one
+                        // changed nothing.
                         (Ok(_), None) => {
-                            if let Some(start) = pair.filter(|_| made != sending.against) {
+                            if let Some(start) = pair {
                                 let end = self.state_of(made);
-                                self.sketch_pairs.push((click.serial, start, end));
+                                if start != end {
+                                    self.sketch_pairs.push((click.serial, start, end));
+                                }
                             }
                         }
                         // Planned on a read the session has moved on from (the click before
@@ -3584,11 +3600,12 @@ impl Tab {
                                 after: Some(sending.against),
                             });
                         }
-                        // Construction's refusal said in the toast too, as its press is
-                        // answered there.
+                        // Refused, said in the status bar, as every sent edit's refusal is. A
+                        // chain refused part way: what it had made, from the state its first
+                        // edit was made from to the state this one was sent from, one step.
                         (Err(problems), _) => {
-                            if click.applies == Applies::Construction {
-                                self.toast = Some(said(problems));
+                            if let Some(start) = pair.filter(|start| *start != sending.state) {
+                                self.sketch_pairs.push((click.serial, start, sending.state));
                             }
                             self.message = Some(said(problems));
                         }
@@ -4200,16 +4217,25 @@ impl Tab {
                             let running = sessions.sketch_remove(&id, revision, sketch, members);
                             (RelateRunning::Sketch(running), None)
                         }
-                        Relating::Fields(fields) => {
-                            let mut fields = fields.into_iter();
-                            // Never empty, as it's planned; nothing to send if it were.
-                            let Some((field, value)) = fields.next() else {
-                                continue;
+                        Relating::Fields {
+                            construction,
+                            first,
+                            rest,
+                        } => {
+                            self.record(Sent::Edit(first.clone()));
+                            let value = Node {
+                                at: At::UNPLACED,
+                                value: Value::Bool(construction),
                             };
-                            self.record(Sent::Edit(field.clone()));
-                            let running = sessions.set_field(&id, revision, sketch, field, value);
-                            let rest: Vec<(String, Node)> = fields.collect();
-                            let then = (!rest.is_empty()).then(|| Box::new(Relating::Fields(rest)));
+                            let running = sessions.set_field(&id, revision, sketch, first, value);
+                            let mut rest = rest.into_iter();
+                            let then = rest.next().map(|first| {
+                                Box::new(Relating::Fields {
+                                    construction,
+                                    first,
+                                    rest: rest.collect(),
+                                })
+                            });
                             (RelateRunning::Field(running), then)
                         }
                     };
@@ -4474,8 +4500,9 @@ impl Tab {
                     }
                     // At a dialog's OK'd edits' end (undo) or start (redo): all of them at
                     // once, to its other side (section 9). Never in sketch mode, whose steps
-                    // are its own edits', one at a time, but for a constraint tool's add and
-                    // the remove after it, one step (C5).
+                    // are its own edits', one at a time, but for a click's chain of edits (a
+                    // constraint tool's add and the remove after it, C5; Construction's
+                    // fields), one step.
                     let to = match sketch {
                         Some(serial) => {
                             self.sketch_pairs
@@ -5684,8 +5711,8 @@ impl Tab {
                     },
                 ..
             } => Some(Words::Of("Edit", sketch.clone())),
-            // By the relation, as its button names it ("Horizontal"): an add and the remove
-            // after it one step of that name.
+            // By the relation, as its button names it ("Horizontal"), or "Construction": a
+            // click's chain of edits one step of that name.
             Queued::Relate { click, .. } => Some(Words::Text(click.applies.name().to_owned())),
             // As its banner's button names it (Fable's decision of 2026-11-04: by the revision
             // it puts back, never the prototype's "my version").
@@ -6944,7 +6971,8 @@ impl Tab {
         }
         // Its close waits for a drag's end (the queue waits while one is under way).
         self.leave_drag();
-        // And, for Finish, for a constraint tool's click of it still to plan: its reads go
+        // And, for Finish, for a click of it (a constraint tool's, or Construction's) still to
+        // plan: its reads go
         // on. Cancel takes back what it adds anyway: a click still waiting to be planned is let
         // go, said, and an edit already planned is sent and taken back with the rest.
         if let Some(mode) = self.sketch.take() {
@@ -7404,20 +7432,15 @@ impl Tab {
                 let Some(switch) =
                     sketch::selection::construction_switch(&drawn.members, &click.picks)
                 else {
-                    self.toast = Some(click.applies.unmade(CURVES_GONE));
-                    return Planned::Said;
+                    return gone(CURVES_GONE);
                 };
-                let value = Node {
-                    at: At::UNPLACED,
-                    value: Value::Bool(switch.construction),
+                let relating = Relating::Fields {
+                    construction: switch.construction,
+                    first: switch.first,
+                    rest: switch.rest,
                 };
-                let fields = switch
-                    .fields
-                    .into_iter()
-                    .map(|field| (field, value.clone()))
-                    .collect();
                 mode.undone = 0;
-                return Planned::Send(revision, Box::new(Relating::Fields(fields)));
+                return Planned::Send(revision, Box::new(relating));
             }
         };
         let planned = silico_core::sketch_tools::relate(
@@ -7469,14 +7492,15 @@ impl Tab {
         }
     }
 
-    /// How many sketch modes closed with a constraint tool's click still unsettled are kept
-    /// for it: what a test counts.
+    /// How many sketch modes closed with a click (a constraint tool's, or Construction's)
+    /// still unsettled are kept for it: what a test counts.
     pub fn leaving(&self) -> usize {
         self.leaving.len()
     }
 
-    /// Whether a constraint tool's click of sketch mode numbered `serial` is unsettled:
-    /// queued to be planned, or its edit queued or under way.
+    /// Whether a click (a constraint tool's, or Construction's) of sketch mode numbered
+    /// `serial` is unsettled: queued to be planned, or an edit of its chain queued or under
+    /// way.
     fn relating(&self, serial: u64) -> bool {
         self.edits.queue.iter().any(|queued| {
             matches!(queued, Queued::Click { click, .. } | Queued::Relate { click, .. } if click.serial == serial)
