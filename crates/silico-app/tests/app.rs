@@ -51010,3 +51010,21 @@ fn s_opens_nothing_over_the_over_define_prompt_and_an_offer_closes_the_search() 
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn behind_the_command_search_the_window_takes_no_click_until_esc_closes_it() {
+    // #487's rule for the search too, one of the modals: the window behind it inert, the
+    // timeline's items off in the accessibility tree and an agent's click on one selecting
+    // nothing, until it closes.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    open_search(&mut h);
+    item_takes_no_click(&mut h, "Block", false);
+    assert!(search_open(&h));
+    assert!(search_focused(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the search closed", |h| !search_open(h));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(never_waits::waits(), 0);
+}
