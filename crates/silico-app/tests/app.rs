@@ -5371,6 +5371,11 @@ fn a_one_letter_name_emptied_is_refused_and_the_field_keeps_it_empty() {
         step(&mut h);
     }
     assert_eq!(name_field(&h).value().as_deref(), Some(""));
+    // The transaction its begin opened, holding nothing, is rolled back (#475): none open.
+    assert!(
+        !h.state().tabs()[0].transaction,
+        "an empty transaction left open"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
