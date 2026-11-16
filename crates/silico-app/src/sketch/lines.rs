@@ -448,9 +448,11 @@ pub const MAX_CURVE_DASHES: usize = super::draw::MAX_CURVE_SEGMENTS;
 /// `polyline` cut into dashes `on` long with gaps `off` long between them, measured along
 /// it from its start, each dash a polyline of its own (its ends on the polyline, and every
 /// vertex between them): how a construction curve is drawn. Where that would make more than
-/// [`MAX_CURVE_DASHES`], both are lengthened by one factor to make that many. A polyline of
-/// no length, or a dash or gap that isn't a finite length above 0 (the dash) or at least 0
-/// (the gap), makes none.
+/// [`MAX_CURVE_DASHES`], both are lengthened by one factor to make that many (however many
+/// periods the line holds, past f64's range too). A dash and gap whose sum overflows f64 are
+/// a period longer than the line: one dash, from its start. A polyline of no length, or a
+/// dash or gap that isn't a finite length above 0 (the dash) or at least 0 (the gap), makes
+/// none.
 pub fn dashes(polyline: &[[f64; 2]], on: f64, off: f64) -> Vec<Vec<[f64; 2]>> {
     let mut dashes = Vec::new();
     if !(on.is_finite() && off.is_finite() && on > 0.0 && off >= 0.0) {
@@ -469,8 +471,19 @@ pub fn dashes(polyline: &[[f64; 2]], on: f64, off: f64) -> Vec<Vec<[f64; 2]>> {
         return dashes;
     }
     let most = MAX_CURVE_DASHES as f64;
-    let stretch = (total / (on + off) / most).max(1.0);
-    let (on, period) = (on * stretch, (on + off) * stretch);
+    // A period at least the line's length makes one dash, so one past f64's range (whose sum
+    // overflows) is taken as the line's length: the same dashes, with a period of a number.
+    let period = (on + off).min(total);
+    let stretch = total / period / most;
+    let (on, period) = if stretch.is_infinite() {
+        // More periods than f64 counts (a tiny period on a long line): `most` of them, each
+        // the line's length over `most`, its dash the same share of it as before.
+        let period_stretched = total / most;
+        (period_stretched * (on / period), period_stretched)
+    } else {
+        let stretch = stretch.max(1.0);
+        (on * stretch, period * stretch)
+    };
     // The point `s` along, on the segment from point `k` (whose length along is at most
     // `s`, and the next's at least).
     let at = |k: usize, s: f64| -> [f64; 2] {
@@ -1646,9 +1659,9 @@ mod tests {
     #[test]
     fn a_pattern_whose_period_overflows_makes_no_point_that_isnt_finite() {
         // Dashes and gaps of 10³⁰⁸, whose sum overflows; or dashes of 10⁻³⁰⁰ along 10¹⁰,
-        // whose count of periods overflows, so its stretch: either way an infinite period,
-        // whose first dash's start, 0 · ∞, is no number. No dash has a point that isn't
-        // finite.
+        // whose count of periods overflows, so its stretch: either way once an infinite
+        // period, whose first dash's start, 0 · ∞, was no number. No dash has a point that
+        // isn't finite.
         for made in [
             dashes(&[[0.0, 0.0], [1.0, 0.0]], 1e308, 1e308),
             dashes(&[[0.0, 0.0], [1e10, 0.0]], 1e-300, 0.0),
@@ -1657,6 +1670,40 @@ mod tests {
                 made.iter().flatten().flatten().all(|c| c.is_finite()),
                 "{made:?}"
             );
+        }
+    }
+
+    #[test]
+    fn a_period_past_f64s_range_or_counted_past_it_still_makes_dashes() {
+        // Dashes of 10³⁰⁸ and gaps of 10³⁰⁸ along a unit line: their sum overflows, but a
+        // period longer than the line is one dash covering it.
+        assert_eq!(
+            dashes(&[[0.0, 0.0], [1.0, 0.0]], 1e308, 1e308),
+            vec![vec![[0.0, 0.0], [1.0, 0.0]]]
+        );
+        // Dashes of 2¹⁰²² and gaps of 3 · 2¹⁰²² (a sum of 2¹⁰²⁴, past f64's range) along a
+        // line 2¹⁰²³ long: one dash, the first half of it, and then the gap past its end.
+        let (half, whole) = (libm::ldexp(1.0, 1022), libm::ldexp(1.0, 1023));
+        assert_eq!(
+            dashes(&[[0.0, 0.0], [whole, 0.0]], half, 3.0 * half),
+            vec![vec![[0.0, 0.0], [half, 0.0]]]
+        );
+        // Dashes of 2⁻¹⁰⁷⁴ (f64's least) and no gap along 1,024: 2¹⁰⁸⁴ periods, a count past
+        // f64's range, so 1,024 periods of 1, each all dash: from k to k + 1.
+        let tiny = libm::ldexp(1.0, -1074);
+        let solid = dashes(&[[0.0, 0.0], [1024.0, 0.0]], tiny, 0.0);
+        assert_eq!(solid.len(), MAX_CURVE_DASHES);
+        for (k, dash) in solid.iter().enumerate() {
+            let k = k as f64;
+            assert_eq!(dash, &vec![[k, 0.0], [k + 1.0, 0.0]]);
+        }
+        // Dashes of 2⁻¹⁰⁷⁴ and gaps three times as long along 1,024: periods of 2⁻¹⁰⁷², 2¹⁰⁸²
+        // of them, so 1,024 periods of 1, each a quarter dash: from k to k + 0.25.
+        let quarter = dashes(&[[0.0, 0.0], [1024.0, 0.0]], tiny, 3.0 * tiny);
+        assert_eq!(quarter.len(), MAX_CURVE_DASHES);
+        for (k, dash) in quarter.iter().enumerate() {
+            let k = k as f64;
+            assert_eq!(dash, &vec![[k, 0.0], [k + 0.25, 0.0]]);
         }
     }
 }

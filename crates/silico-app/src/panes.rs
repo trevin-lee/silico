@@ -1468,29 +1468,47 @@ fn tree(
         None if any_features => "No body: nothing builds one yet".to_owned(),
         _ => "None yet. A pad makes one.".to_owned(),
     };
-    // Each group with how its rows select their features: a body's whole, a sketch as itself.
+    // Each group with how its rows select their features (a body's whole, a sketch as
+    // itself) and whether they're sketches, together so they can't drift apart.
+    struct Group<'a> {
+        name: &'static str,
+        rows: &'a [crate::tab::Row],
+        icon: Icon,
+        empty: String,
+        how: SelectedAs,
+        sketches: bool,
+    }
     let groups = [
-        (
-            "Bodies",
-            tab.browser.bodies(),
-            Icon::Body,
-            no_body,
-            SelectedAs::Body,
-        ),
-        (
-            "Sketches",
-            tab.browser.sketches(),
-            Icon::Sketch,
-            "None yet. Create Sketch starts one.".to_owned(),
-            SelectedAs::Itself,
-        ),
+        Group {
+            name: "Bodies",
+            rows: tab.browser.bodies(),
+            icon: Icon::Body,
+            empty: no_body,
+            how: SelectedAs::Body,
+            sketches: false,
+        },
+        Group {
+            name: "Sketches",
+            rows: tab.browser.sketches(),
+            icon: Icon::Sketch,
+            empty: "None yet. Create Sketch starts one.".to_owned(),
+            how: SelectedAs::Itself,
+            sketches: true,
+        },
     ];
-    for (group_name, rows, icon, empty, how) in groups {
+    for Group {
+        name: group_name,
+        rows,
+        icon,
+        empty,
+        how,
+        sketches,
+    } in groups
+    {
         let count = rows.is_empty().then_some("0");
         if !header(ui, group_name, count) {
             continue;
         }
-        let sketches = group_name == "Sketches";
         group(ui, group_name, |ui| {
             if rows.is_empty() {
                 empty_words(ui, &empty);
