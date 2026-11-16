@@ -14,6 +14,9 @@ set -euo pipefail
 # marker kept saying the gate's attempt where a case wants the default's. Nor does a case
 # write the gate's own summary (GITHUB_STEP_SUMMARY).
 unset GITHUB_RUN_ATTEMPT GITHUB_STEP_SUMMARY
+# Whether this is the run the test makes of itself below: an argument, so no environment
+# skips that case.
+inner=${1:-}
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/silico-mutants-keep.XXXXXX")
@@ -142,10 +145,11 @@ pass
 
 # Run as a re-run of the gate runs it, the job's attempt and summary set: it passes, and its
 # cases leave that summary as it was. (Once, from the outer run only.)
-if [ -z "${SILICO_KEEP_TEST_INNER:-}" ]; then
+if [ -z "$inner" ]; then
   echo "the gate's own summary" >"$tmp/gate-summary.md"
-  SILICO_KEEP_TEST_INNER=1 GITHUB_RUN_ATTEMPT=2 GITHUB_STEP_SUMMARY=$tmp/gate-summary.md \
-    bash "${BASH_SOURCE[0]}" >"$tmp/inner.log" 2>&1 || fail "run as a gate's re-run (attempt 2), it failed: $(cat "$tmp/inner.log")"
+  GITHUB_RUN_ATTEMPT=2 GITHUB_STEP_SUMMARY=$tmp/gate-summary.md \
+    "$BASH" "${BASH_SOURCE[0]}" --inner >"$tmp/inner.log" 2>&1 || fail "run as a gate's re-run (attempt 2), it failed: $(cat "$tmp/inner.log")"
+  grep -q "cases passed" "$tmp/inner.log" || fail "run as a gate's re-run, it ran no cases: $(cat "$tmp/inner.log")"
   [ "$(cat "$tmp/gate-summary.md")" = "the gate's own summary" ] || fail "run as a gate's job, it wrote the job's summary"
   pass
 fi
