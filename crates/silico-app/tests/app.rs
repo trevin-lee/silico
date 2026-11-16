@@ -50046,6 +50046,66 @@ fn undo_in_the_frame_a_click_opens_export_is_dropped_and_export_stays_up() {
 }
 
 #[test]
+fn close_then_a_line_let_go_in_one_frame_closes_the_clean_tab() {
+    // #535's review: ⌘W, then the release, in one frame: Close, before the release, finds
+    // the tab clean and closes it at once, the line held cut short, the file as it was.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    let path = f.dir.path().join("example.silico");
+    let on_disk = std::fs::read(&path).unwrap();
+    assert!(!h.state().tabs()[0].unsaved());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::W, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), on_disk);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_then_a_line_let_go_in_one_frame_redoes_the_line_before_and_adds_the_line() {
+    // #535's review: a line drawn and undone; then ⌘⇧Z, then the release of another, in
+    // one frame: Redo, before the release, puts the undone line back, and the release then
+    // adds its own (decided after the release, the new line would have left nothing to
+    // redo).
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    line_held(&mut h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Z, command | Modifiers::SHIFT));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    assert!(line_near(&sketch, [40.0, 50.0], [45.0, 60.0]), "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn the_toast_stays_over_the_modify_box_and_the_palette_after_a_press_on_the_palette() {
     // #497's review, round 4: the prototype's `#toasts` (z 650) are over `.modify-box` (40),
     // `.sketch-bar` (26) and `.palette` (22); all of one egui order here, the toast is
