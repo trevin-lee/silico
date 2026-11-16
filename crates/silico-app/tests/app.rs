@@ -48352,3 +48352,100 @@ fn an_untitled_part_is_never_drawn() {
     assert!(f.thumb_files().is_empty());
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// Frames stepped until every tab's model is built at its revision, nothing of it under way.
+fn all_settled(h: &mut AppHarness) {
+    step_until(h, "every tab settled", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .all(|tab| tab.edits.idle() && !tab.unsettled() && tab.published == Some(tab.revision))
+    });
+}
+
+#[test]
+fn closed_tabs_go_at_once_and_their_pictures_and_closes_follow() {
+    let (f, renderer) = thumbnailed();
+    let names = ["a.silico", "b.silico", "c.silico"];
+    let texts: Vec<String> = names
+        .iter()
+        .map(|name| EXAMPLE.replace("Clearance for an M5 bolt", name))
+        .collect();
+    let paths: Vec<PathBuf> = names
+        .iter()
+        .zip(&texts)
+        .map(|(name, text)| f.file(name, text))
+        .collect();
+    let mut h = f.thumbnailing();
+    for path in &paths {
+        open_and_wait(&mut h, path);
+    }
+    all_settled(&mut h);
+    frames(&mut h, 10);
+    // Every render's meshing held, so no picture can be drawn.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    for name in names {
+        h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
+            .click();
+        // Gone by the next frame, its picture still to draw.
+        step(&mut h);
+        step(&mut h);
+        assert!(
+            h.state().tabs().iter().all(|tab| tab.name() != name),
+            "{name} waited on its picture"
+        );
+    }
+    frames(&mut h, 10);
+    assert!(f.thumb_files().is_empty());
+    assert!(renderer.sent().is_empty());
+    hold.release();
+    let mut want: Vec<String> = texts.iter().map(|text| thumb_of(text.as_bytes())).collect();
+    want.sort();
+    step_until(&mut h, "every picture written", |_| f.thumb_files() == want);
+    assert_eq!(renderer.sent().len(), 3);
+    // And each session closed: each file opens again, which a session holding it refuses.
+    for path in &paths {
+        step_until(&mut h, "its session closed", |_| {
+            let opened = f.sessions.open(path, false).wait();
+            let closes = opened.result.is_ok();
+            if let Ok(opened) = opened.result {
+                f.sessions.close(&opened.session).wait().result.unwrap();
+            }
+            closes
+        });
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_quit_draws_nothing() {
+    let (f, renderer) = thumbnailed();
+    let saved = f.file("saved.silico", EXAMPLE);
+    let edited = f.file(
+        "edited.silico",
+        &EXAMPLE.replace("Clearance for an M5 bolt", "Edited"),
+    );
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &saved);
+    open_and_wait(&mut h, &edited);
+    all_settled(&mut h);
+    step_until(&mut h, "its timeline", |h| shows(h, "Timeline", "Hole"));
+    // The second edited, so the quit asks; the first saved and built.
+    f2_typed(&mut h, "Hole", "Bore");
+    h.key_press(Key::Enter);
+    step_until(&mut h, "renamed", |h| {
+        tab_named(h, "edited.silico").transaction && shows(h, "Timeline", "Bore")
+    });
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step_until(&mut h, "every tab closed", |h| h.state().tabs().is_empty());
+    frames(&mut h, 20);
+    assert!(renderer.sent().is_empty(), "a quit drew a picture");
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert_eq!(never_waits::waits(), 0);
+}

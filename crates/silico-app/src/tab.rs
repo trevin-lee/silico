@@ -5023,9 +5023,10 @@ impl Tab {
         self.advance(sessions);
     }
 
-    /// `close` sent: first, if it [`draws_on_close`](Self::draws_on_close) and has a file,
-    /// no transaction, and its model built at its revision, its text and its picture asked
-    /// (`crate::thumbs::Closing`), queued ahead of the close, which runs them first.
+    /// `close` sent: or, if it [`draws_on_close`](Self::draws_on_close) and has a file, no
+    /// transaction, and its model built at its revision, its picture asked
+    /// (`crate::thumbs::Closing`), which closes the session once it's drawn, and the tab
+    /// closed at once.
     fn send_close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let built = sessions.published(&self.id).result.ok().map(|p| p.revision);
         if self.draws_on_close
@@ -5033,11 +5034,15 @@ impl Tab {
             && !self.transaction
             && built == Some(self.revision)
         {
+            // Gone at once: the app's thumbnails draw it and close its session, which can't
+            // refuse (there's no transaction), so the tab never waits on its picture.
             self.closing_picture = Some(crate::thumbs::Closing::sent(
                 sessions,
                 self.id,
                 self.revision,
             ));
+            self.closed = true;
+            return;
         }
         self.under.push(Under::Close(sessions.close(&self.id)));
     }

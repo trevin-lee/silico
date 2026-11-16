@@ -7,8 +7,9 @@
 //! [`HEIGHT`], drawn only when the start page will show it: as a tab closes, and each time
 //! the start page is shown, once for each open tab. Either way only for a tab with a file,
 //! outside a transaction, whose model is built at its revision: the document as its file
-//! holds it. As a tab closes, its text and its render are queued on its session ahead of the
-//! close, which runs them first ([`Closing`]); on the start page, an open tab's text is read
+//! holds it. As a tab closes, it goes at once, and its text and a render of its published
+//! model are asked, its session closed once they've answered ([`Closing`]); on the start
+//! page, an open tab's text is read
 //! first, and its render asked only if its bytes have no picture. Never on a publish
 //! otherwise, so an agent's edits reloaded every few seconds, or saves, draw nothing while
 //! the start page is hidden. A render is never cancelled (a cancel kills the shared render
@@ -39,7 +40,7 @@ use sha2::{Digest as _, Sha256};
 use silico_core::command::render::{Render, Rendering};
 use silico_core::command::wire::Named;
 use silico_core::command::{
-    ModelChoice, Response, Revision, Running, SessionId, Sessions, TextAnswer,
+    Closed, ModelChoice, Response, Revision, Running, SessionId, Sessions, TextAnswer,
 };
 use silico_core::kernel::Clients;
 
@@ -344,18 +345,35 @@ enum Waiting<T> {
     Taken(Response<T>),
 }
 
-/// A tab's picture asked as it closes: its text at its revision and its render (the
-/// current model, queued, so its revision's), both queued on its session ahead of the close,
-/// which runs them first; taken by the app's thumbnails, which outlive the tab.
+/// A tab's picture asked as it closes, and then its session's close: taken by the app's
+/// thumbnails, which finish it after the tab has gone. Its text at its revision and a render
+/// of its published model (its revision's, or the picture is dropped: a close never waits
+/// on a rebuild) are sent at once; the close only once both have answered, since a session
+/// closing stops its published reads, and a render stopped stops the render worker every
+/// session shares. Its close can't be refused: a picture is asked only outside a transaction.
 pub struct Closing {
     session: SessionId,
     revision: Revision,
+    stage: Stage,
+}
+
+/// A [`Closing`]'s text and render, while either is out.
+struct Out {
     text: Waiting<TextAnswer>,
-    rendering: Running<Rendering>,
+    rendering: Waiting<Rendering>,
+}
+
+/// How far a [`Closing`] has come.
+enum Stage {
+    /// Its text and its render out (boxed: a render's answer holds its PNG's handle).
+    Drawing(Box<Out>),
+    /// Its session's close sent.
+    Closing(Running<Closed>),
 }
 
 impl Closing {
-    /// The text and the render of `session`'s model at `revision`, sent: before its close.
+    /// The text and the render of `session`'s model at `revision`, sent; its close sent once
+    /// they've answered ([`Thumbs::closing`]).
     pub(crate) fn sent<P: Clients + 'static>(
         sessions: &Arc<Sessions<P>>,
         session: SessionId,
@@ -364,8 +382,31 @@ impl Closing {
         Closing {
             session,
             revision,
-            text: Waiting::Out(sessions.text_at(&session, None, Some(Named::Revision(revision)))),
-            rendering: sessions.render(&session, ModelChoice::Current, request()),
+            stage: Stage::Drawing(Box::new(Out {
+                text: Waiting::Out(sessions.text_at(
+                    &session,
+                    None,
+                    Some(Named::Revision(revision)),
+                )),
+                rendering: Waiting::Out(sessions.render(
+                    &session,
+                    ModelChoice::Published,
+                    request(),
+                )),
+            })),
+        }
+    }
+}
+
+impl<T> Waiting<T> {
+    /// Its answer taken, if it has come.
+    fn polled(self) -> Self {
+        match self {
+            Waiting::Out(running) => match running.try_take() {
+                Ok(response) => Waiting::Taken(response),
+                Err(running) => Waiting::Out(running),
+            },
+            taken => taken,
         }
     }
 }
@@ -505,7 +546,8 @@ impl Thumbs {
         }
     }
 
-    /// A tab's picture asked as it closed: polled from now on, whatever becomes of the tab.
+    /// A tab's picture asked as it closed, and its session's close: finished from now on, the
+    /// tab gone.
     pub(crate) fn closing(&mut self, closing: Closing) {
         self.closing.push(closing);
     }
@@ -535,7 +577,7 @@ impl Thumbs {
             return;
         };
         self.take_told(ctx, sessions);
-        self.poll_closing();
+        self.poll_closing(sessions);
         let sessions_drawing: Vec<SessionId> = self.drawing.keys().copied().collect();
         for session in sessions_drawing {
             self.poll_drawing(session);
@@ -699,43 +741,62 @@ impl Thumbs {
         }
     }
 
-    /// Each picture asked as its tab closed, once its text and its render have answered:
-    /// written if both are its revision's.
-    fn poll_closing(&mut self) {
-        for mut closing in std::mem::take(&mut self.closing) {
-            if let Waiting::Out(running) = closing.text {
-                closing.text = match running.try_take() {
-                    Ok(response) => Waiting::Taken(response),
-                    Err(running) => Waiting::Out(running),
-                };
-            }
-            let Waiting::Taken(text) = closing.text else {
-                self.closing.push(closing);
-                continue;
-            };
-            match closing.rendering.try_take() {
-                Ok(response) => match text.result {
-                    Ok(answer) => self.took_render(
-                        closing.session,
-                        closing.revision,
-                        Of::Text(answer.text),
-                        response,
-                    ),
-                    Err(problems) => {
-                        tracing::info!(
-                            session = %closing.session,
-                            "no thumbnail: the text of revision {} wasn't read: {}",
-                            closing.revision.number(),
-                            crate::tab::said(&problems)
-                        );
-                        self.renders_dropped += 1;
+    /// Each picture asked as its tab closed: once its text and its render have answered,
+    /// written if both are its revision's, and its session's close sent; once that has
+    /// answered, done.
+    fn poll_closing<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        for Closing {
+            session,
+            revision,
+            stage,
+        } in std::mem::take(&mut self.closing)
+        {
+            let stage = match stage {
+                Stage::Drawing(out) => match (out.text.polled(), out.rendering.polled()) {
+                    (Waiting::Taken(text), Waiting::Taken(rendering)) => {
+                        match text.result {
+                            Ok(answer) => {
+                                self.took_render(
+                                    session,
+                                    revision,
+                                    Of::Text(answer.text),
+                                    rendering,
+                                );
+                            }
+                            Err(problems) => {
+                                tracing::info!(
+                                    %session,
+                                    "no thumbnail: the text of revision {} wasn't read: {}",
+                                    revision.number(),
+                                    crate::tab::said(&problems)
+                                );
+                                self.renders_dropped += 1;
+                            }
+                        }
+                        Some(Stage::Closing(sessions.close(&session)))
                     }
+                    (text, rendering) => Some(Stage::Drawing(Box::new(Out { text, rendering }))),
                 },
-                Err(running) => self.closing.push(Closing {
-                    text: Waiting::Taken(text),
-                    rendering: running,
-                    ..closing
-                }),
+                Stage::Closing(running) => match running.try_take() {
+                    Ok(response) => {
+                        if let Err(problems) = response.result {
+                            tracing::warn!(
+                                %session,
+                                "a closed tab's session didn't close: {}",
+                                crate::tab::said(&problems)
+                            );
+                        }
+                        None
+                    }
+                    Err(running) => Some(Stage::Closing(running)),
+                },
+            };
+            if let Some(stage) = stage {
+                self.closing.push(Closing {
+                    session,
+                    revision,
+                    stage,
+                });
             }
         }
     }
