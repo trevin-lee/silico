@@ -47954,3 +47954,285 @@ fn a_drags_release_sends_the_value_it_held_back_in_the_releases_own_frame() {
     assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- The start page's thumbnails (`silico_app::thumbs`) ----
+
+/// Sessions on the fake kernel that render through the core's stand-in renderer, which
+/// answers each render with `PNG {width}x{height}` and records its scene.
+fn thumbnailed() -> (Fixture, Arc<silico_core::fake::FakeRenderer>) {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let sketches = FakeSketches::new();
+    let renderer = Arc::new(silico_core::fake::FakeRenderer::new());
+    let sessions = stand_in_sessions(&dir, &kernel, &sketches).rendering(Arc::clone(&renderer));
+    let f = Fixture {
+        dir,
+        kernel,
+        sketches,
+        sessions: Arc::new(sessions),
+    };
+    (f, renderer)
+}
+
+impl Fixture {
+    /// Where these tests keep the thumbnails: beside the recent documents, not yet made.
+    fn thumbs_folder(&self) -> PathBuf {
+        self.dir.path().join("app-data").join("thumbnails")
+    }
+
+    /// The app keeping its recent documents and their thumbnails, the list read.
+    fn thumbnailing(&self) -> AppHarness {
+        let (file, folder) = (self.recents_file(), self.thumbs_folder());
+        let mut h = self.app_made(|app| {
+            app.remembering(Recents::at(file))
+                .thumbnailing(silico_app::thumbs::Thumbs::at(folder))
+        });
+        recents_read(&mut h);
+        h
+    }
+
+    /// The names of the files in the thumbnails' folder, sorted: none before it's made.
+    fn thumb_files(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.thumbs_folder()) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+/// The name a thumbnail of `bytes` is kept by: their SHA-256 in lower-case hex, `.png`.
+fn thumb_of(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(bytes);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{hex}.png")
+}
+
+/// The app's thumbnails.
+fn thumbs(h: &AppHarness) -> &silico_app::thumbs::Thumbs {
+    h.state().thumbs().unwrap()
+}
+
+/// A PNG, 260 by 160, of one colour, as the png crate encodes it.
+fn plain_png(rgb: [u8; 3]) -> Vec<u8> {
+    let (width, height) = (260, 160);
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    let data: Vec<u8> = (0..width * height).flat_map(|_| rgb).collect();
+    writer.write_image_data(&data).unwrap();
+    writer.finish().unwrap();
+    out
+}
+
+/// The picture in the thumbnail's place of the recent document `name`'s row, if one is drawn
+/// there: the texture of a rectangle filling the place inside its 1-point border.
+fn thumb_drawn(h: &AppHarness, name: &str) -> Option<eframe::egui::TextureId> {
+    use silico_app::theme;
+    let row = h.get_by_role_and_label(Role::Button, name).rect();
+    // `.recent-row`'s 6 in from its left, 52 by 40 on its middle; its border 1 wide.
+    let thumb = eframe::egui::Rect::from_min_size(
+        eframe::egui::pos2(row.left() + 6.0, row.center().y - 20.0),
+        eframe::egui::vec2(52.0, 40.0),
+    );
+    let inside = thumb.shrink(1.0);
+    assert_eq!(
+        (theme::START_RECENT_PADDING_LEFT, theme::START_THUMB_WIDTH),
+        (6.0, 52.0)
+    );
+    shapes_painted(h).into_iter().find_map(|shape| match shape {
+        eframe::egui::Shape::Rect(rect)
+            if (rect.rect.min - inside.min).length() < 1e-3
+                && (rect.rect.max - inside.max).length() < 1e-3 =>
+        {
+            rect.brush.map(|brush| brush.fill_texture_id)
+        }
+        _ => None,
+    })
+}
+
+#[test]
+fn a_parts_thumbnail_is_drawn_once_it_opens_and_again_once_it_is_saved_keyed_to_its_bytes() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    // Its model built, the file's bytes keyed: a picture drawn and kept by them.
+    let opened = thumb_of(EXAMPLE.as_bytes());
+    step_until(&mut h, "the opened part's thumbnail kept", |_| {
+        f.thumb_files() == [opened.clone()]
+    });
+    // The stand-in renderer's PNG says the size asked: the prototype's 260 by 160.
+    assert_eq!(
+        std::fs::read(f.thumbs_folder().join(&opened)).unwrap(),
+        b"PNG 260x160"
+    );
+    let sent = renderer.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].width, sent[0].height), (260, 160));
+    // Home's view, the top, front, right corner: the eye on (1, -1, 1) from the target.
+    let camera = &sent[0].camera;
+    let toward: Vec<f64> = (0..3).map(|i| camera.eye[i] - camera.target[i]).collect();
+    let length = toward.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let corner = 1.0 / 3.0f64.sqrt();
+    for (got, want) in toward.iter().zip([corner, -corner, corner]) {
+        assert!((got / length - want).abs() < 1e-12, "{toward:?}");
+    }
+    // Renamed and saved: its new bytes drawn and kept, the picture of its old bytes, which
+    // no listed document has now, removed.
+    f2_typed(&mut h, "Hole", "Bore");
+    h.key_press(Key::Enter);
+    step_until(&mut h, "renamed", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "Bore")
+    });
+    settled(&mut h);
+    assert_eq!(renderer.sent().len(), 1, "nothing drawn while it's unsaved");
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, Key::S);
+    step_until(&mut h, "saved", |h| {
+        h.state().tabs()[0].saves == 1 && !h.state().tabs()[0].unsettled()
+    });
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("Bore"));
+    let saved = thumb_of(&bytes);
+    assert_ne!(saved, opened);
+    step_until(&mut h, "the saved part's thumbnail kept", |_| {
+        f.thumb_files() == [saved.clone()]
+    });
+    assert_eq!(renderer.sent().len(), 2);
+    assert_eq!(thumbs(&h).kept, 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_part_whose_bytes_have_a_picture_is_not_drawn_again() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    let picture = plain_png([200, 40, 40]);
+    let kept = f.thumbs_folder().join(thumb_of(EXAMPLE.as_bytes()));
+    std::fs::write(&kept, &picture).unwrap();
+    // Listed in Recent, so the start page's look keeps its picture.
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{}\n", path.to_str().unwrap()),
+    )
+    .unwrap();
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "its picture shown", |h| {
+        thumbs(h).picture(path.to_str().unwrap()).is_some()
+    });
+    open_and_wait(&mut h, &path);
+    step_until(&mut h, "its picture found", |h| thumbs(h).had == 1);
+    assert!(renderer.sent().is_empty());
+    assert_eq!(thumbs(&h).kept, 0);
+    assert_eq!(std::fs::read(&kept).unwrap(), picture);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_shows_a_parts_picture_only_for_the_bytes_it_was_drawn_from() {
+    let (f, renderer) = thumbnailed();
+    let drawn = f.file("drawn.silico", EXAMPLE);
+    let corrupt = f.file("corrupt.silico", TWO_BOXES);
+    let bare = f.file("bare.silico", A_BOX);
+    let gone = f.dir.path().join("gone.silico");
+    let folder = f.thumbs_folder();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join(thumb_of(EXAMPLE.as_bytes())),
+        plain_png([200, 40, 40]),
+    )
+    .unwrap();
+    // A corrupt picture: a PNG's signature, then nothing a PNG is.
+    std::fs::write(
+        folder.join(thumb_of(TWO_BOXES.as_bytes())),
+        b"\x89PNG\r\n\x1a\nnot the rest of one",
+    )
+    .unwrap();
+    // A picture of bytes no listed document has, and a file that isn't one of the folder's.
+    let stale = thumb_of(b"what drawn.silico was once");
+    std::fs::write(folder.join(&stale), plain_png([0, 0, 0])).unwrap();
+    std::fs::write(folder.join("notes.txt"), b"").unwrap();
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    let listed = [&drawn, &corrupt, &bare, &gone]
+        .map(|path| path.to_str().unwrap().to_owned())
+        .join("\n");
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{listed}\n"),
+    )
+    .unwrap();
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "the drawn part's picture", |h| {
+        thumbs(h).picture(drawn.to_str().unwrap()).is_some()
+    });
+    step(&mut h);
+    let texture = thumbs(&h).picture(drawn.to_str().unwrap()).unwrap();
+    // The cell inside its border, 50 by 38, at two pixels a point.
+    assert_eq!(texture.size(), [100, 76]);
+    let id = texture.id();
+    assert_eq!(thumb_drawn(&h, "drawn.silico"), Some(id));
+    // The others' icons: a corrupt picture, none, and a document not found.
+    for name in ["corrupt.silico", "bare.silico", "gone.silico"] {
+        assert_eq!(thumb_drawn(&h, name), None, "{name}");
+    }
+    // The folder pruned to the listed documents' bytes: the stale picture gone, the corrupt
+    // one's kept (it's a listed document's), anything else left.
+    let mut want = vec![
+        thumb_of(EXAMPLE.as_bytes()),
+        thumb_of(TWO_BOXES.as_bytes()),
+        "notes.txt".to_owned(),
+    ];
+    want.sort();
+    assert_eq!(f.thumb_files(), want);
+    assert!(renderer.sent().is_empty(), "nothing opened, nothing drawn");
+    assert_eq!(never_waits::waits(), 0);
+    drop(h);
+    // Changed by another program: its picture is of bytes it no longer has. The next start
+    // shows its icon, and the picture is removed.
+    std::fs::write(&drawn, SKETCHED_EXAMPLE).unwrap();
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "the pictures looked for", |h| {
+        thumbs(h).looks >= 1 && !f.thumb_files().contains(&thumb_of(EXAMPLE.as_bytes()))
+    });
+    step(&mut h);
+    assert!(thumbs(&h).picture(drawn.to_str().unwrap()).is_none());
+    assert_eq!(thumb_drawn(&h, "drawn.silico"), None);
+    // Opened, it's drawn again for the bytes it has now.
+    open_and_wait(&mut h, &drawn);
+    step_until(&mut h, "drawn again", |_| {
+        f.thumb_files()
+            .contains(&thumb_of(SKETCHED_EXAMPLE.as_bytes()))
+    });
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_render_refused_leaves_the_icon_and_says_nothing() {
+    let (f, renderer) = thumbnailed();
+    renderer.fail_with(Error::new(
+        ErrorCode::WorkerCrashed,
+        "the render worker crashed",
+    ));
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    step_until(&mut h, "the render asked", |_| renderer.sent().len() == 1);
+    // Its answer taken: nothing kept, nothing said.
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(thumbs(&h).kept, 0);
+    assert!(f.thumb_files().is_empty());
+    assert!(!anywhere(&h, "render worker"));
+    assert!(h.state().tabs()[0].message.is_none());
+    assert_eq!(never_waits::waits(), 0);
+}

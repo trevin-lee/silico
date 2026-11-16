@@ -43,6 +43,7 @@ pub mod start;
 pub mod status;
 pub mod tab;
 pub mod theme;
+pub mod thumbs;
 pub mod timeline;
 pub mod toolbar;
 pub mod triad;

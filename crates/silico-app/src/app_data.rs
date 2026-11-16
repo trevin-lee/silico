@@ -1,8 +1,8 @@
 //! The app's own files in the platform's app-data folder ([`folder`]): the recent documents
-//! (`crate::recent`) and the side panes' widths (`crate::pane_widths`), each kept by a thread
-//! of its own. What they share is here: where the folder is, a capped read that never hangs
-//! on what isn't a regular file ([`read_capped`]), and a write a reader never sees half of
-//! ([`write`]).
+//! (`crate::recent`), the side panes' widths (`crate::pane_widths`), and the start page's
+//! thumbnails (`crate::thumbs`), each kept by a thread of its own. What they share is here:
+//! where the folder is, a capped read that never hangs on what isn't a regular file
+//! ([`read_capped`]), and a write a reader never sees half of ([`write`], [`write_bytes`]).
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -46,10 +46,15 @@ pub(crate) fn read_capped(file: &Path, max: usize) -> Option<Vec<u8>> {
 /// other write, in this instance of the app or another, uses at once.
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
-/// `text` written to `file`, its folder made if it isn't there: to a file of its own beside
+/// `text` written to `file`, as [`write_bytes`] writes it.
+pub(crate) fn write(file: &Path, text: &str) -> std::io::Result<()> {
+    write_bytes(file, text.as_bytes())
+}
+
+/// `bytes` written to `file`, its folder made if it isn't there: to a file of its own beside
 /// it first, flushed to the disk, then moved over it, so a reader never sees half of it;
 /// that file removed if the write fails.
-pub(crate) fn write(file: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_bytes(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(folder) = file.parent() {
         std::fs::create_dir_all(folder)?;
     }
@@ -62,7 +67,7 @@ pub(crate) fn write(file: &Path, text: &str) -> std::io::Result<()> {
     let beside = PathBuf::from(beside);
     let written = (|| {
         let mut new = std::fs::File::create(&beside)?;
-        new.write_all(text.as_bytes())?;
+        new.write_all(bytes)?;
         new.sync_all()?;
         std::fs::rename(&beside, file)
     })();

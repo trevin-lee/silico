@@ -33,6 +33,7 @@ use crate::sketch::{self, bar::BarAction};
 use crate::start::{self, Warm};
 use crate::tab::{DiskChoice, Tab, said};
 use crate::theme::{self, FieldKind};
+use crate::thumbs::Thumbs;
 use crate::toolbar;
 
 /// How long past [`DISK_CHECK_INTERVAL`] the idle frame comes: a comparison is due once the
@@ -372,6 +373,8 @@ pub struct App<P: Clients + 'static> {
     tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
+    /// The start page's thumbnails, if the app keeps them.
+    thumbs: Option<Thumbs>,
     /// The side panes' widths, as dragged, and where they're kept, if anywhere.
     columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
@@ -482,6 +485,7 @@ impl<P: Clients + 'static> App<P> {
             home: false,
             tab_in_view: None,
             recents: None,
+            thumbs: None,
             columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
@@ -513,6 +517,19 @@ impl<P: Clients + 'static> App<P> {
     pub fn remembering(mut self, recents: Recents) -> Self {
         self.recents = Some(recents);
         self
+    }
+
+    /// The app, drawing a thumbnail of each document it opens or saves for its start page's
+    /// Recent (`crate::thumbs`), kept by `thumbs`.
+    #[must_use]
+    pub fn thumbnailing(mut self, thumbs: Thumbs) -> Self {
+        self.thumbs = Some(thumbs);
+        self
+    }
+
+    /// The start page's thumbnails, if the app keeps them.
+    pub fn thumbs(&self) -> Option<&Thumbs> {
+        self.thumbs.as_ref()
     }
 
     /// The app, laying its side panes out as `layout` keeps them (their widths, and whether
@@ -712,6 +729,9 @@ impl<P: Clients + 'static> App<P> {
             if let Some(recents) = &self.recents {
                 recents.waking(ui.ctx());
             }
+            if let Some(thumbs) = &self.thumbs {
+                thumbs.waking(ui.ctx());
+            }
             self.columns.waking(ui.ctx());
             if let Some(warm) = &self.warm {
                 warm.waking(ui.ctx());
@@ -719,6 +739,16 @@ impl<P: Clients + 'static> App<P> {
             self.waker_set = true;
         }
         self.poll();
+        let start_shown = self.start_shown();
+        if let Some(thumbs) = &mut self.thumbs {
+            thumbs.frame(
+                ui.ctx(),
+                &self.sessions,
+                &self.tabs,
+                self.recents.as_ref(),
+                start_shown,
+            );
+        }
         // The candidate a card's row was hovered on last frame, lit in the canvas from now.
         for tab in &mut self.tabs {
             if tab.take_candidate_hover() {
@@ -759,6 +789,7 @@ impl<P: Clients + 'static> App<P> {
                     }
                     let shown = start::Shown {
                         recents: self.recents.as_ref(),
+                        thumbs: self.thumbs.as_ref(),
                         workspace_known: self.workspace().is_some(),
                     };
                     start::page(ui, &shown)
