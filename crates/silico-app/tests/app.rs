@@ -24762,6 +24762,80 @@ fn extend_clicked_near_a_lines_start_takes_it_back_to_the_wall_behind() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// Stepped until sketch mode's newest read holds `point` at (x, y).
+fn read_with_point_at(h: &mut AppHarness, point: &str, x: f64, y: f64) {
+    step_until(h, "the read of the extend", |h| {
+        sketch_mode(h)
+            .and_then(|mode| mode.drawable())
+            .is_some_and(|read| {
+                read.members
+                    .points
+                    .iter()
+                    .any(|p| p.id.as_str() == point && p.x.mm() == x && p.y.mm() == y)
+            })
+    });
+}
+
+#[test]
+fn extend_clicks_again_once_the_read_of_its_first_extend_has_come() {
+    // On [`WALLED_BOTH`]: a click at (8, 0.2) takes na000001's end to the wall at x = 30.
+    // Once the read holds it, the line runs from (0, 0) to (30, 0), its midpoint (15, 0), so
+    // a click at (2, 0) is its start's: on to the wall at x = −20.
+    let f = fixture();
+    let mut h = walled_sketch_of(&f, WALLED_BOTH);
+    extend_button(&mut h);
+    sketch_events(&f, &mut h, &clicked(8.0, 0.2));
+    settled(&mut h);
+    read_with_point_at(&mut h, "pa000002", 30.0, 0.0);
+    sketch_events(&f, &mut h, &clicked(2.0, 0.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(point_at(&sketch, 30.0, 0.0), "pa000002");
+    assert_eq!(point_at(&sketch, -20.0, 0.0), "pa000001");
+    assert_eq!(sketch_sends(&h), ["sketch_extend", "sketch_extend"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn extend_clicks_again_after_the_core_refuses_its_extend() {
+    // The solver holds na000001's end, pa000002, where it is, as a lock would: the fake's
+    // move toward the wall at x = 30 leaves every value as it began (a move elsewhere goes
+    // as the fake's moves go). The preview finds the wall, so a click at (8, 0.2) asks the
+    // extend, and the core refuses it, the end unmoved, in its words.
+    let f = fixture();
+    f.sketches.answer_moves(|begin, to| {
+        Ok(if to[0] > 20.0 {
+            silico_protocol::Moved {
+                status: silico_protocol::SolveStatus::Success,
+                values: Some(begin.system.values.clone()),
+            }
+        } else {
+            silico_core::fake::FakeSketches::dragged(begin, to)
+        })
+    });
+    let mut h = walled_sketch_of(&f, WALLED_BOTH);
+    let before = text_of(&f.sessions, &h);
+    extend_button(&mut h);
+    sketch_events(&f, &mut h, &clicked(8.0, 0.2));
+    settled(&mut h);
+    let said = h.state().tabs()[0].message.clone().unwrap_or_default();
+    assert!(
+        said.contains("changes nothing: its constraints hold its end pa000002 where it is"),
+        "{said}"
+    );
+    assert!(anywhere(&h, &said));
+    assert_eq!(text_of(&f.sessions, &h), before);
+    // The refusal lets the tool click again, on the read it has: the free start, at (2, 0),
+    // goes on to the wall at x = −20.
+    sketch_events(&f, &mut h, &clicked(2.0, 0.0));
+    settled(&mut h);
+    assert_eq!(sketch_sends(&h), ["sketch_extend", "sketch_extend"]);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(point_at(&sketch, -20.0, 0.0), "pa000001");
+    assert_eq!(point_at(&sketch, 10.0, 0.0), "pa000002");
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn extend_clicked_on_the_half_that_meets_nothing_sends_nothing_and_says_the_cores_words() {
     let f = fixture();
