@@ -4770,7 +4770,7 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
 fn a_long_named_sketchs_bar_keeps_cancel_and_finish_in_the_window_and_finish_finishes_it() {
     // #466: the triangle named 400 W's, open in sketch mode with a line deleted, at the
     // window's least size (888 by 336) and at a usual one (1280 by 800). The bar's Cancel and
-    // Finish Sketch lie inside the window; at 1280 the bar inside the canvas less 10 at its
+    // Finish Sketch lie inside the window, its left and its tag inside the canvas; at 1280 the bar inside the canvas less 10 at its
     // left and 148 at its right, clear of the ViewCube (1280 − 248 − 296 = 736, so at most
     // 578 wide); its name whole in the tree,
     // the painted one cut with an ellipsis. Finish, clicked at its middle, keeps the edit:
@@ -4797,8 +4797,22 @@ fn a_long_named_sketchs_bar_keeps_cancel_and_finish_in_the_window_and_finish_fin
             let rect = bar.get_by_label(word).rect();
             assert!(window.contains_rect(rect), "{word} at {rect:?}, {width}");
         }
+        let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+        // Its left at least 10 inside the canvas, and its tag in the canvas, at each size: at
+        // 888 the canvas is 888 − 248 − 296 = 344 (the panes at the prototype's widths),
+        // narrower than the bar, which runs right from its 10 past the canvas's right, inside
+        // the window.
+        assert!(
+            bar.rect().left() >= canvas.left() + 10.0,
+            "{:?} in {canvas:?}, {width}",
+            bar.rect()
+        );
+        let tag = bar.get_by_label("SKETCH").rect();
+        assert!(canvas.contains_rect(tag), "{tag:?} in {canvas:?}, {width}");
+        if width == least.0 {
+            assert_eq!(canvas.width(), 344.0);
+        }
         if width == 1280.0 {
-            let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
             assert_eq!(canvas.width(), 736.0);
             let inside = eframe::egui::Rect::from_x_y_ranges(
                 canvas.left() + 10.0..=canvas.right() - 148.0,

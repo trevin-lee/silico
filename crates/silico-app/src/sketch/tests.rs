@@ -3750,8 +3750,8 @@ fn bar_parts(h: &egui_kittest::Harness<'_>) -> (egui::Rect, egui::Rect, egui::Re
 fn a_long_sketch_name_is_cut_with_an_ellipsis_so_the_bar_keeps_to_its_width() {
     // #466: 400 W's, with no state, a short one, and the widest the bar shows (an under
     // defined sketch's, with a four-figure count), at 300 (less than all but the name), 440
-    // (the canvas at the window's least with the panes at theirs, 888 − 200 − 232 = 456,
-    // less 10 at each side), 578 (1280's canvas, 736, less 10 and the ViewCube's 148), and
+    // (the canvas at the window's least with the panes at their leasts, 888 − 200 − 232 =
+    // 456, less 10 at each side), 578 (1280's canvas, 736, less 10 and the ViewCube's 148), and
     // 716. The bar no wider than it's given, or than the bar of no name and 96 for the name
     // (`NAME_LEAST`) where that's wider, and narrower by less than a W (the name cut at a
     // whole letter); as wide as `bar_width` says, which places it; Cancel and Finish Sketch
