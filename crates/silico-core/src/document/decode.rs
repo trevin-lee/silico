@@ -8,9 +8,9 @@ use std::fmt;
 use super::fingerprint::{Fingerprint, MEASURE_DECIMALS, Measure};
 use super::json::{At, Member, Node, SHOWN_CHARS, SyntaxError, Value, shown};
 use super::model::{
-    Axis, ChamferSize, Document, ElementName, FEATURE_TYPES, Feature, FeatureId, FeatureVersion,
-    FormatVersion, ID_LENGTH, Name, NamingScheme, Operation, PadExtent, PocketExtent, Position,
-    SweepFeature, TurnExtent, Units,
+    Axis, ChamferSize, Document, ElementName, Extent, FEATURE_TYPES, Feature, FeatureId,
+    FeatureVersion, FormatVersion, ID_LENGTH, Name, NamingScheme, Operation, PadExtent,
+    PocketExtent, Position, SweepFeature, TurnExtent, Units,
 };
 use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 use super::sketch::{
@@ -787,6 +787,29 @@ fn extent_form(
     ))
 }
 
+/// A `kind` feature's `extent`, `node`, read by the same readers a feature's `extent` is read
+/// by (and so `set_field`'s), which take it as their feature's member: so it's put in an
+/// object of its own, as that member, for them to take.
+pub fn extent(kind: SweepFeature, node: Node) -> Result<Extent, Error> {
+    let at = node.at;
+    let feature = Node {
+        at,
+        value: Value::Object(vec![Member {
+            key: "extent".to_owned(),
+            at,
+            value: node,
+        }]),
+    };
+    let mut fields = Fields::of(feature, None, None, "the feature")?;
+    Ok(match kind {
+        SweepFeature::Pad => Extent::Pad(pad_extent(&mut fields)?),
+        SweepFeature::Pocket => Extent::Pocket(pocket_extent(&mut fields)?),
+        SweepFeature::Revolve | SweepFeature::Groove => {
+            Extent::Turn(turn_extent(&mut fields, kind)?)
+        }
+    })
+}
+
 /// A pad's `extent`: one side, symmetric, or two sides.
 fn pad_extent(fields: &mut Fields) -> Result<PadExtent, Error> {
     let (mut extent, form) = extent_form(
@@ -1512,5 +1535,99 @@ mod tests {
         }
         let every: BTreeSet<String> = FEATURE_TYPES.iter().map(|t| (*t).to_owned()).collect();
         assert_eq!(sampled, every);
+    }
+
+    #[test]
+    fn an_extent_read_alone_is_the_one_its_feature_reads_and_refused_as_it_would_be() {
+        use crate::document::read_extent;
+        let mm = Length::from_nm;
+        // Each kind's forms, alone and in a feature, the same.
+        let cases = [
+            (
+                SweepFeature::Pad,
+                "pad",
+                r#"{"type": "two_sides", "length": 10, "length2": 4.5}"#,
+                Extent::Pad(PadExtent::TwoSides {
+                    length: mm(10_000_000),
+                    length2: mm(4_500_000),
+                }),
+            ),
+            (
+                SweepFeature::Pocket,
+                "pocket",
+                r#"{"type": "through_all", "reversed": true}"#,
+                Extent::Pocket(PocketExtent::ThroughAll { reversed: true }),
+            ),
+            (
+                SweepFeature::Pocket,
+                "pocket",
+                r#"{"type": "symmetric", "length": 1.25e1}"#,
+                Extent::Pocket(PocketExtent::Symmetric {
+                    length: mm(12_500_000),
+                }),
+            ),
+            (
+                SweepFeature::Groove,
+                "groove",
+                r#"{"type": "symmetric", "angle": 90}"#,
+                Extent::Turn(TurnExtent::Symmetric {
+                    angle: Angle::parse("90").unwrap(),
+                }),
+            ),
+        ];
+        for (kind, word, text, expected) in cases {
+            assert_eq!(read_extent(kind, text).unwrap(), expected, "{text}");
+            let axis = if word == "groove" {
+                r#""axis": "x_axis", "#
+            } else {
+                ""
+            };
+            let feature = format!(
+                r#"{{"id": "b0000001", "type": "{word}", "v": 1, "name": "F", "base": "b0000002", "sketch": "b0000003", {axis}"extent": {text}}}"#
+            );
+            let read = super::feature(0, tree(feature.as_bytes()).unwrap()).unwrap();
+            assert_eq!(read.operation.extent(), Some(expected), "{feature}");
+        }
+        // Refused as a feature's extent is: a pocket's form for a pad, a key a form hasn't, a
+        // member missing, a length that isn't a number, and text that isn't JSON.
+        let refused = [
+            (
+                SweepFeature::Pad,
+                r#"{"type": "through_all", "reversed": false}"#,
+                "extent.type",
+            ),
+            (
+                SweepFeature::Pad,
+                r#"{"type": "symmetric", "length": 1, "reversed": false}"#,
+                "extent.reversed",
+            ),
+            (
+                SweepFeature::Pad,
+                r#"{"type": "two_sides", "length": 1}"#,
+                "extent.length2",
+            ),
+            (
+                SweepFeature::Revolve,
+                r#"{"type": "one_side", "angle": "90", "reversed": false}"#,
+                "extent.angle",
+            ),
+        ];
+        for (kind, text, parameter) in refused {
+            let error = read_extent(kind, text).unwrap_err();
+            assert_eq!(error.code(), ErrorCode::InvalidInput, "{text}");
+            assert_eq!(error.parameter(), Some(parameter), "{text}: {error:?}");
+        }
+        for text in [
+            "",
+            "{",
+            "10",
+            r#"{"type": "one_side", "length": 1, "reversed": false} 1"#,
+        ] {
+            assert_eq!(
+                read_extent(SweepFeature::Pad, text).unwrap_err().code(),
+                ErrorCode::InvalidInput,
+                "{text:?}"
+            );
+        }
     }
 }

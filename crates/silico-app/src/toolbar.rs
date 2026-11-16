@@ -331,17 +331,14 @@ const POINT: Command = keyed(
     ),
     shortcuts::Command::Point,
 );
-/// The drawing tools' curves drawn as construction, the palette's Construction.
-///
-/// SEAM: the prototype's Construction toggles the selected curves between profile and
-/// construction (its line: "Toggles the selected curves between profile and
-/// construction"), once a selection's curves can be set so; till then it's the palette's
-/// setting, and its line says that.
+/// Construction, as the prototype has it: the selected curves switched between profile and
+/// construction (`Tab::sketch_construction`); with no curve selected, the palette's setting
+/// for the curves drawn next. Shown pressed while that setting is on.
 const CONSTRUCTION: Command = keyed(
     command(
         "Construction",
         Icon::Construction,
-        Some("Draws the tools' curves as construction, or as profile again"),
+        Some(shortcuts::CONSTRUCTION_HELP),
         Does::Construction,
     ),
     shortcuts::Command::Construction,
@@ -848,6 +845,7 @@ fn tool_button(
     // Painted at the toolbar's opacity, not faded further when off: `.tb-btn:disabled` is
     // Gray.400 itself.
     let opacity = ui.opacity();
+    let own = enabled;
     ui.add_enabled(enabled, |ui: &mut Ui| {
         ui.set_opacity(opacity);
         let size = Vec2::splat(theme::TOOLBAR_BUTTON_SIZE);
@@ -862,8 +860,10 @@ fn tool_button(
         }
         let corners = theme::TOOLBAR_BUTTON_CORNER_RADIUS;
         // `.tb-btn:hover:not(:disabled)` outweighs `.on`'s and `.toggle-on`'s background and
-        // colour, and leaves `.toggle-on`'s box-shadow as it is.
-        let (fill, color) = match (enabled, response.hovered(), pressed) {
+        // colour, and leaves `.toggle-on`'s box-shadow as it is. Behind a modal, drawn as
+        // its own flag has it (#487).
+        let on = crate::modal::looks_on(ui, own);
+        let (fill, color) = match (on, response.hovered(), pressed) {
             (false, _, _) => (None, theme::TOOLBAR_BUTTON_DISABLED_ICON),
             (true, true, _) => (
                 Some(theme::TOOLBAR_BUTTON_HOVER_BG),
@@ -1165,6 +1165,19 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
+
+    #[test]
+    fn a_tool_button_behind_a_modal_keeps_its_own_look_on_or_off_and_pressed() {
+        for pressed in [
+            None,
+            Some((Pressed::Tool, true)),
+            Some((Pressed::Toggle, true)),
+        ] {
+            crate::modal::tests::drawn_alike_behind(|ui, on| {
+                tool_button(ui, Icon::Pad, "Pad", on, pressed);
+            });
+        }
+    }
 
     /// A dialog's command is labelled with its kind's title, which the dialog's heading
     /// and the tests find it by; each sweep is in CREATE's drop-down once and in its row
