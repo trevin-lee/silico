@@ -72,6 +72,11 @@ pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
     .collect()
 }
 
+/// The toast's layer: of the order under the modals ([`modal::UNDER_MODALS`]).
+fn toast_layer() -> egui::LayerId {
+    egui::LayerId::new(modal::UNDER_MODALS, egui::Id::new("toast"))
+}
+
 /// A toast saying `text` over `canvas`'s bottom right (the prototype's `.toast`): drawn in
 /// its own area, above the panes and under any modal ([`modal::UNDER_MODALS`]; the
 /// prototype's `#toasts`, z 650, under `.backdrop`, 700), so one asked while a modal is open
@@ -80,7 +85,7 @@ pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
 fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
     let corner =
         canvas.right_bottom() - egui::vec2(theme::TOAST_MARGIN_RIGHT, theme::TOAST_MARGIN_BOTTOM);
-    egui::Area::new(egui::Id::new("toast"))
+    egui::Area::new(toast_layer().id)
         .order(modal::UNDER_MODALS)
         .pivot(egui::Align2::RIGHT_BOTTOM)
         .fixed_pos(corner)
@@ -391,6 +396,10 @@ pub struct App<P: Clients + 'static> {
     /// top as it did, the earliest first: given it back once that modal has gone, as
     /// SolidWorks' and Windows' dialogs give the focus back to the control that held it.
     focus_behind: Vec<(egui::Id, OnTop)>,
+    /// The tab ⌘W (Ctrl+W) asked to close this frame: closed, or asked about, once the canvas
+    /// has had the frame's events (`after_drawing`), so an edit a release before the key made
+    /// (a line's) is asked about, as an edit made before the frame is.
+    close_key: Option<SessionId>,
     /// The canvas's place in the window, as the panes last laid it out: where sketch mode's
     /// palette floats.
     canvas: Option<egui::Rect>,
@@ -516,6 +525,7 @@ impl<P: Clients + 'static> App<P> {
             waker_set: false,
             modal_key: None,
             focus_behind: Vec::new(),
+            close_key: None,
             canvas: None,
             drawing: crate::viewport::Drawing::default(),
             browser: None,
@@ -829,13 +839,14 @@ impl<P: Clients + 'static> App<P> {
                 self.focus_behind.retain(|(taken, _)| *taken != id);
                 self.focus_behind.push((id, top));
             }
-            let sessions = Arc::clone(&self.sessions);
             if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
-                // A dialog's arrow dragged keeps the value it was dragged to, the rest of its
-                // stream doing nothing, before the canvas cancels what the pointer holds
-                // (`crate::viewport`): a sketch drag ends from its begin state, a box selects
-                // nothing, a tool's gesture adds nothing.
-                tab.flush_arrow(&sessions);
+                // A dialog's arrow held takes the frame's events as ever (a release before the
+                // modal's key finishes its click, a move its drag), and keeps the value it was
+                // dragged to when the canvas cancels what the pointer still holds after them
+                // (`crate::viewport`), its stream ending there; while what else the canvas
+                // held ends undone: a sketch drag from its begin state, a box selecting
+                // nothing, a tool's gesture adding nothing.
+                tab.arrow_under_modal();
                 tab.close_select_other(ui.ctx());
                 // And sketch mode's canvas menu, so the next Esc is the modal's, never the
                 // menu's behind it (`Tab::escape_first` closes a menu first).
@@ -951,7 +962,8 @@ impl<P: Clients + 'static> App<P> {
             self.disk_banner(ui, canvas, &mut next_frame);
             self.show_toast(ui, canvas);
         });
-        self.sketch_canvas(ui, &mut next_frame);
+        let modify_layer = self.sketch_canvas(ui, &mut next_frame);
+        self.raise_toast(ui.ctx(), modify_layer);
         // A toast the tab shown asked for this frame (a box's), drawn from the next; one a tab
         // not shown asked for (its drag ended as it was left) dropped, never shown later out
         // of its context.
@@ -974,18 +986,25 @@ impl<P: Clients + 'static> App<P> {
     /// with the modal it was taken under gone (`top`, the modal the frame was drawn under, is
     /// below it): as SolidWorks' and Windows' dialogs give it back to the control that held
     /// it, so what's typed after the modal reaches the field it went to before. Only to one
-    /// drawn this frame, and on: drawn inert under the modal, it's off in what egui read of it
-    /// last frame, so one not drawn now (its tab closed, or not shown) is let go; egui would
-    /// otherwise hold the focus on a widget that isn't there. At the frame's end, after the
-    /// widgets are drawn: egui keeps the focus off what's under the modal it drew the frame
-    /// before, so a focus asked for at the frame's top would be given up as its widget is
-    /// drawn; asked for now, the widget has it from the next frame.
+    /// drawn this frame, and on. One drawn inert under a lower modal still open (an
+    /// over-define offer that waited under a question shows once it has gone) waits for it
+    /// to go too, kept with what's under it. One not drawn now (its tab closed, or not shown)
+    /// is let go: drawn inert under the modal, it's off in what egui read of it last frame,
+    /// and egui would otherwise hold the focus on a widget that isn't there. At the frame's
+    /// end, after the widgets are drawn: egui keeps the focus off what's under the modal it
+    /// drew the frame before, so a focus asked for at the frame's top would be given up as
+    /// its widget is drawn; asked for now, the widget has it from the next frame.
     fn give_focus_back(&mut self, ctx: &egui::Context, top: OnTop) {
         while let Some(&(id, under)) = self.focus_behind.last()
             && top < under
         {
+            let drawn = ctx.read_response(id);
+            let on = drawn.as_ref().is_some_and(egui::Response::enabled);
+            if !on && drawn.is_some() && top > OnTop::Window {
+                break;
+            }
             self.focus_behind.pop();
-            if ctx.read_response(id).is_some_and(|drawn| drawn.enabled()) {
+            if on {
                 ctx.memory_mut(|memory| memory.request_focus(id));
             }
         }
@@ -1097,6 +1116,16 @@ impl<P: Clients + 'static> App<P> {
                     next_frame |= tab.card_asked(&sessions, asked);
                 }
             }
+        }
+        // ⌘W's Close (`command_keys`), decided now the canvas has had the frame's events:
+        // a release among them before the key (a line's, a dimension's) has made its edit,
+        // which the close then asks about, as one made in an earlier frame. Not over a
+        // question asked meanwhile (a click's), as no key acts under one; an over-define
+        // offer come meanwhile waits under the close's question.
+        if let Some(id) = self.close_key.take()
+            && self.on_top() <= OnTop::Offer
+        {
+            self.close(id);
         }
         self.ask(ui, &mut next_frame);
         next_frame |= self.next_quit_save(ui.ctx());
@@ -1723,8 +1752,9 @@ impl<P: Clients + 'static> App<P> {
             let now = ui.input(|input| input.time);
             self.reload(id, now);
         }
-        if close && let Some(id) = self.active {
-            self.close(id);
+        if close {
+            // Asked once the canvas has had the frame's events (`after_drawing`).
+            self.close_key = self.active;
         }
         (
             save || undo
@@ -1741,6 +1771,25 @@ impl<P: Clients + 'static> App<P> {
                 || sketch_enter,
             dialog_key,
         )
+    }
+
+    /// The toast shown this frame, if one is, raised over everything else of its order
+    /// (egui's `Middle`, under every modal): over sketch mode's bar and palette and the
+    /// timeline's rename field, as the prototype's `#toasts` (z 650) are over `.sketch-bar`
+    /// (26) and `.palette` (22), so a press that raises one of them (egui raises an area
+    /// clicked) never stands it over the toast; and right over the Modify box (`.modify-box`,
+    /// 40), if it's drawn (`modify`), which raises itself each frame too: egui's end-of-pass
+    /// sort keeps the order of the layers that each ask to be on top, so a box first shown
+    /// after the toast would stay over it, but a layer's sublayer is placed straight after it.
+    fn raise_toast(&self, ctx: &egui::Context, modify: Option<egui::LayerId>) {
+        if self.toast.is_none() {
+            return;
+        }
+        let layer = toast_layer();
+        ctx.move_to_top(layer);
+        if let Some(modify) = modify {
+            ctx.set_sublayer(modify, layer);
+        }
     }
 
     /// The toast, if one is shown, over `canvas`'s bottom right, until
@@ -2453,8 +2502,9 @@ impl<P: Clients + 'static> App<P> {
 
     /// Sketch mode's panels in the canvas while a sketch is open in the tab shown (the
     /// prototype's): the sketch bar at the canvas's top centre, its Finish Sketch and Cancel
-    /// taken, and the Sketch Palette at its right.
-    fn sketch_canvas(&mut self, ui: &mut Ui, next_frame: &mut bool) {
+    /// taken, and the Sketch Palette at its right, each of the order under the modals
+    /// ([`modal::UNDER_MODALS`]). The Modify box's layer, if it's drawn.
+    fn sketch_canvas(&mut self, ui: &mut Ui, next_frame: &mut bool) -> Option<egui::LayerId> {
         // A tab not shown has no menu open: it closes as the tab is hidden.
         let shown_at = self.active_place();
         for (at, tab) in self.tabs.iter_mut().enumerate() {
@@ -2473,14 +2523,10 @@ impl<P: Clients + 'static> App<P> {
         let top = self.on_top();
         let (behind, offer_waits) = (top > OnTop::Window, top > OnTop::Offer);
         let sessions = &self.sessions;
-        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-            return;
-        };
+        let tab = self.active_place().and_then(|at| self.tabs.get_mut(at))?;
         let name = tab.sketch_name();
         let (revision, enabled, id) = (tab.revision, !tab.closing(), tab.id);
-        let Some(mode) = tab.sketch.as_mut() else {
-            return;
-        };
+        let mode = tab.sketch.as_mut()?;
         let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
         let bar = mode.bar_view(&name, enabled);
         let view = mode.palette_view(revision, tab.drag.as_ref());
@@ -2490,6 +2536,10 @@ impl<P: Clients + 'static> App<P> {
         // Known by the tab's session and the sketch mode's opening, so each sketch mode's
         // boxes are its own.
         let owner = sketch::dimension::modify_owner(&id, mode.serial);
+        let modify_layer = modify.as_ref().map(|view| {
+            let area = sketch::dimension::modify_area(owner, view.opened);
+            egui::LayerId::new(modal::UNDER_MODALS, area)
+        });
         let offer = mode.offer_view(&name).filter(|_| !offer_waits);
         if behind {
             mode.menu_at = None;
@@ -2497,6 +2547,7 @@ impl<P: Clients + 'static> App<P> {
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
         let area = egui::Area::new(sketch::dimension::bar_area(&id))
+            .order(modal::UNDER_MODALS)
             .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
             .pivot(egui::Align2::CENTER_TOP);
         let bar_drawn = modal::area(ui.ctx(), area, behind, |ui| {
@@ -2509,7 +2560,9 @@ impl<P: Clients + 'static> App<P> {
         // doesn't fit.
         let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
         let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
-        let area = egui::Area::new(sketch::dimension::palette_area(&id)).fixed_pos(palette_at);
+        let area = egui::Area::new(sketch::dimension::palette_area(&id))
+            .order(modal::UNDER_MODALS)
+            .fixed_pos(palette_at);
         let shown = modal::area(ui.ctx(), area, behind, |ui| {
             sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
         });
@@ -2583,6 +2636,7 @@ impl<P: Clients + 'static> App<P> {
             tab.sketch_offer(sessions, choice);
             *next_frame = true;
         }
+        modify_layer
     }
 
     /// The banner over the canvas (section 4; DESIGN.md's 6c and 6d): a file changed on

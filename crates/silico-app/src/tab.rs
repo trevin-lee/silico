@@ -1787,14 +1787,21 @@ impl Tab {
     /// An arrow's drag under way let go of and what it held back sent, before a save or a
     /// Save As that closes the tab is queued (#480's review, R2-1): so what the save writes
     /// is what the field shows, which then stays as it is while the tab closes, the rest of
-    /// the stream asking nothing. And as a modal comes over the window (#487), before the
-    /// canvas cancels the stream: the drag keeps the value it was dragged to, as when the
-    /// tab begins to close mid-drag (#480's review, RL1).
-    pub(crate) fn flush_arrow<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+    /// the stream asking nothing.
+    fn flush_arrow<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if self.grip.holding() {
             self.grip.let_go();
             self.dialog_changed(sessions);
         }
+    }
+
+    /// A modal over the window (#487), each frame it is, before the canvas reads the frame's
+    /// events ([`crate::arrow::Grip::modal_over`]): an arrow's stream held takes them as
+    /// ever, so a release before the modal's key finishes its click and a move its drag, and
+    /// the cancel the canvas then gives what's still held keeps the drag's value, sent as
+    /// the stream ends ([`arrows_frame`](Self::arrows_frame)).
+    pub(crate) fn arrow_under_modal(&mut self) {
+        self.grip.modal_over();
     }
 
     /// Esc given to an arrow's stream held, if one is and still acts in the open dialog: a
