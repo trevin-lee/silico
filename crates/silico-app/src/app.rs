@@ -3061,8 +3061,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        Answered, App, Opening, Part, held_list, mine_row, sketch_bar_left, sketch_bar_room,
-        sketch_inset, split_answered, theirs_row,
+        Answered, App, Opening, Part, held_list, mine_row, sketch_bar_left, sketch_bar_place,
+        sketch_bar_room, sketch_inset, split_answered, theirs_row,
     };
     use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
@@ -3125,6 +3125,42 @@ mod tests {
                 bar <= width - 158.0,
                 "{width}, {bar}: {right}"
             );
+        }
+    }
+
+    #[test]
+    fn the_sketch_bars_left_is_rounded_down_to_a_whole_pixel() {
+        use crate::sketch::bar::{BarView, StateShown};
+        use eframe::egui::{Rect, pos2};
+        use std::sync::Mutex;
+        // A canvas from x = 200.8, 340 wide, and a sketch named 400 W's: too long for the
+        // room clear of the ViewCube, so the bar stands 10 from the canvas's left, 210.8.
+        // Rounded down to a whole pixel: at 1 pixel a point, 210; at 1.5, pixel 316.2 down to
+        // 316, 316 / 1.5; at 2, pixel 421.6 down to 421, 210.5. Its top 10 below the canvas's.
+        for (ppp, left) in [(1.0, 210.0), (1.5, 316.0 / 1.5), (2.0, 210.5)] {
+            let placed = Arc::new(Mutex::new(None));
+            let into = Arc::clone(&placed);
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(eframe::egui::vec2(1000.0, 400.0))
+                .with_pixels_per_point(ppp)
+                .build_ui(move |ui| {
+                    let canvas = Rect::from_min_max(pos2(200.8, 100.0), pos2(540.8, 380.0));
+                    let bar = BarView {
+                        name: "W".repeat(400),
+                        plane: "XY".to_owned(),
+                        state: Some(StateShown {
+                            words: "Fully defined".to_owned(),
+                            colour: theme::TEXT_DEFAULT,
+                        }),
+                        enabled: true,
+                    };
+                    *into.lock().unwrap() = Some(sketch_bar_place(ui.ctx(), canvas, &bar).0);
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(2);
+            let at = placed.lock().unwrap().unwrap();
+            assert_eq!(at, pos2(left, 110.0), "{ppp}");
+            assert_eq!((at.x * ppp).fract(), 0.0, "{ppp}: {at:?}");
         }
     }
 

@@ -79,60 +79,51 @@ pub struct BarView {
 pub fn sketch_bar(ui: &mut Ui, view: &BarView, width: f32) -> BarAction {
     let mut action = BarAction::None;
     dark(ui);
-    let (fill, accent, strong, weak) = (FLOATING_BG, SELECTION_BG, TEXT_STRONG, TEXT_SUBDUED);
+    let (accent, strong, weak) = (SELECTION_BG, TEXT_STRONG, TEXT_SUBDUED);
     // One row, whatever room the canvas leaves: its words are never wrapped away.
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-    let shown = egui::Frame::new()
-        .fill(fill)
-        .stroke(Stroke::new(BORDER, accent))
-        .corner_radius(CornerRadius::same(BAR_RADIUS))
-        .inner_margin(BAR_MARGIN)
-        .show(ui, |ui| {
-            ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
-                node.set_role(egui::accesskit::Role::Toolbar);
-                node.set_label("Sketch bar");
-            });
-            ui.horizontal(|ui| {
-                egui::Frame::new()
-                    .fill(accent)
-                    .corner_radius(CornerRadius::same(TAG_RADIUS))
-                    .inner_margin(TAG_MARGIN)
-                    .show(ui, |ui| {
-                        ui.label(RichText::new(TAG).size(HEAD_SIZE).color(ON_SELECTION));
-                    });
-                let rest = rest_width(ui.ctx(), ui.style(), view);
-                let room = name_room(rest, width);
-                let name = name_galley(ui.ctx(), ui.style(), &view.name, strong, room);
-                ui.add(egui::Label::new(name).show_tooltip_when_elided(true));
-                let plane = plane_words(view);
-                ui.label(RichText::new(plane).color(weak));
-                if let Some(state) = &view.state {
-                    state_dot(ui, state.colour);
-                    ui.label(RichText::new(&state.words).color(state.colour));
-                }
-                if ui
-                    .add_enabled(
-                        view.enabled,
-                        egui::Button::new(CANCEL).fill(Color32::TRANSPARENT),
-                    )
-                    .clicked()
-                {
-                    action = BarAction::Cancel;
-                }
-                // Its name, keys, and line the registry's, as the toolbar's Finish Sketch
-                // and the shortcut sheet give them.
-                let command = Command::FinishSketch;
-                let finish = egui::Button::new(RichText::new(command.label()).color(ON_SELECTION))
-                    .fill(accent);
-                let response = ui.add_enabled(view.enabled, finish);
-                let keys = command.shown(ui.ctx());
-                let line = command.entry().description;
-                if crate::bar::tooltip(response, command.label(), keys, line).clicked() {
-                    action = BarAction::Finish;
-                }
-            });
-            ui.unique_id()
+    let shown = bar_frame().show(ui, |ui| {
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(egui::accesskit::Role::Toolbar);
+            node.set_label("Sketch bar");
         });
+        ui.horizontal(|ui| {
+            tag_frame().show(ui, |ui| {
+                ui.label(RichText::new(TAG).size(HEAD_SIZE).color(ON_SELECTION));
+            });
+            let rest = rest_width(ui.ctx(), ui.style(), view);
+            let room = name_room(rest, width);
+            let name = name_galley(ui.ctx(), ui.style(), &view.name, strong, room);
+            ui.add(egui::Label::new(name).show_tooltip_when_elided(true));
+            let plane = plane_words(view);
+            ui.label(RichText::new(plane).color(weak));
+            if let Some(state) = &view.state {
+                state_dot(ui, state.colour);
+                ui.label(RichText::new(&state.words).color(state.colour));
+            }
+            if ui
+                .add_enabled(
+                    view.enabled,
+                    egui::Button::new(CANCEL).fill(Color32::TRANSPARENT),
+                )
+                .clicked()
+            {
+                action = BarAction::Cancel;
+            }
+            // Its name, keys, and line the registry's, as the toolbar's Finish Sketch
+            // and the shortcut sheet give them.
+            let command = Command::FinishSketch;
+            let finish =
+                egui::Button::new(RichText::new(command.label()).color(ON_SELECTION)).fill(accent);
+            let response = ui.add_enabled(view.enabled, finish);
+            let keys = command.shown(ui.ctx());
+            let line = command.entry().description;
+            if crate::bar::tooltip(response, command.label(), keys, line).clicked() {
+                action = BarAction::Finish;
+            }
+        });
+        ui.unique_id()
+    });
     bounded(ui, shown.inner, shown.response.rect);
     action
 }
@@ -169,8 +160,8 @@ pub fn rest_width(ctx: &egui::Context, style: &egui::Style, view: &BarView) -> f
         .size()
         .x
     };
-    let frame = f32::from(BAR_MARGIN.left + BAR_MARGIN.right) + 2.0 * BORDER;
-    let tag = f32::from(TAG_MARGIN.left + TAG_MARGIN.right)
+    let frame = bar_frame().total_margin().sum().x;
+    let tag = tag_frame().total_margin().sum().x
         + words(RichText::new(TAG).size(HEAD_SIZE).into())
         + spacing;
     let plane = spacing + words(plane_words(view).into());
@@ -179,6 +170,25 @@ pub fn rest_width(ctx: &egui::Context, style: &egui::Style, view: &BarView) -> f
     });
     let button = |text: &str| spacing + words(text.into()) + 2.0 * padding;
     frame + tag + plane + state + button(CANCEL) + button(Command::FinishSketch.label())
+}
+
+/// The sketch bar's frame (`.sketch-bar`): the floating panels' fill, bordered in the
+/// selection's blue, round at its corners, inside its padding.
+fn bar_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(FLOATING_BG)
+        .stroke(Stroke::new(BORDER, SELECTION_BG))
+        .corner_radius(CornerRadius::same(BAR_RADIUS))
+        .inner_margin(BAR_MARGIN)
+}
+
+/// The bar's tag's frame (`.sketch-bar .tag`): filled in the selection's blue, inside its
+/// padding.
+fn tag_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(SELECTION_BG)
+        .corner_radius(CornerRadius::same(TAG_RADIUS))
+        .inner_margin(TAG_MARGIN)
 }
 
 /// What the bar says of the sketch's plane.
