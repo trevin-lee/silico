@@ -17,7 +17,7 @@ use silico_core::command::{
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::{Node, Plain};
-use silico_core::document::{ElementId, FeatureId, Reference};
+use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
 use silico_core::extend::End;
 use silico_core::kernel::Clients;
 use silico_core::sketch_tools::{AddToken, OfferChoice, OfferRequest, RelateEdit, RelationTool};
@@ -420,9 +420,10 @@ const SKETCH_CANCELLED: &str = "the sketch was cancelled first";
 /// `finish` does (docs/design/m5-ui/js/sketch.js).
 const EMPTY_SKETCH_DISCARDED: &str = "Empty sketch discarded. Nothing was added.";
 
-/// Whether `text`, a sketch's feature as `text` gives it, holds no points, lines, circles,
-/// or arcs: each of them there and an empty array. Anything else (a text that doesn't read,
-/// a member missing) holds something, so a Finish judged on it keeps the sketch.
+/// Whether `text`, a sketch's feature as `text` gives it, holds no geometry: each list of
+/// a kind that counts ([`is_geometry`]) there and empty, construction geometry counting as
+/// any other. Anything else (a text that doesn't read, a list missing) holds something, so a
+/// Finish judged on it keeps the sketch.
 fn holds_nothing(text: &str) -> bool {
     use silico_core::document::json::{Value, read};
     let Ok(node) = read(text.as_bytes()) else {
@@ -431,12 +432,26 @@ fn holds_nothing(text: &str) -> bool {
     let Value::Object(members) = node.value else {
         return false;
     };
-    ["points", "lines", "circles", "arcs"].iter().all(|kind| {
-        members.iter().any(|member| {
-            member.key == *kind
-                && matches!(&member.value.value, Value::Array(items) if items.is_empty())
+    ElementKind::ALL
+        .into_iter()
+        .filter(|kind| is_geometry(*kind))
+        .all(|kind| {
+            members.iter().any(|member| {
+                member.key == kind.list()
+                    && matches!(&member.value.value, Value::Array(items) if items.is_empty())
+            })
         })
-    })
+}
+
+/// Whether a sketch's members of `kind` are what a new sketch's Finish keeps it for. Every
+/// curve and point is. Constraints aren't: each relates the sketch's own geometry, so a
+/// sketch with none has nothing for them to hold, but for the origin and its axes, which
+/// every sketch has. A new kind of member is decided here before it compiles.
+fn is_geometry(kind: ElementKind) -> bool {
+    match kind {
+        ElementKind::Point | ElementKind::Line | ElementKind::Circle | ElementKind::Arc => true,
+        ElementKind::Constraint => false,
+    }
 }
 
 /// A new sweep's body: not yet read, or read from the document at a revision (its base,
@@ -2387,10 +2402,13 @@ impl Tab {
     /// press to its end's answer, [`Drag::under_way`]), whose end lands an edit of its own;
     /// once that has answered, its edit is undone as any other's, whether or not the read of
     /// it ever comes (its rebuild stopped, or failing). In sketch mode,
-    /// as SolidWorks allows, but never past the state it opened at.
+    /// as SolidWorks allows, but never past the state it opened at. Never while a dialog's or
+    /// sketch mode's close is still to be taken (Create Sketch's Finish being judged among
+    /// them), whose undo or rollback, if it's a Cancel's, a step queued now would go past.
     pub fn undoable(&self) -> bool {
         self.transaction
             && !self.in_dialog()
+            && !self.close_queued()
             && !self.drag.as_ref().is_some_and(Drag::under_way)
             && self.sketch_lets_undo()
             && !self.stepping()
@@ -2405,10 +2423,12 @@ impl Tab {
     /// tab's newest revision counts them; never while a step is under way, nor while a
     /// dialog is open or a drag is under way. In sketch mode, only what it undid itself;
     /// never at a state Redo is fenced off at (a sketch mode's Finish or Cancel, or an
-    /// over-defining dimension's Cancel, which leave nothing to redo).
+    /// over-defining dimension's Cancel, which leave nothing to redo), nor while a close is
+    /// still to be taken, as for Undo.
     pub fn redoable(&self) -> bool {
         self.transaction
             && !self.in_dialog()
+            && !self.close_queued()
             && !self.drag.as_ref().is_some_and(Drag::under_way)
             && self.sketch.as_ref().is_none_or(|mode| mode.undone > 0)
             && self
@@ -3793,6 +3813,23 @@ impl Tab {
                     let empty = response
                         .result
                         .is_ok_and(|answer| holds_nothing(&answer.text));
+                    // A Revert asked meanwhile, no save before it, drops the close as it
+                    // drops what's queued: the part goes back to its file, and nothing is
+                    // discarded to say.
+                    let reverted = self
+                        .edits
+                        .queue
+                        .iter()
+                        .find(|queued| {
+                            matches!(
+                                queued,
+                                Queued::Save { .. } | Queued::SaveAs { .. } | Queued::Revert { .. }
+                            )
+                        })
+                        .is_some_and(|queued| matches!(queued, Queued::Revert { .. }));
+                    if reverted {
+                        return None;
+                    }
                     if empty {
                         self.toast = Some(EMPTY_SKETCH_DISCARDED.to_owned());
                         // The count its Finish held is a Cancel's.
@@ -14160,5 +14197,31 @@ mod tests {
         assert!(!holds_nothing("{"));
         assert!(!holds_nothing("[]"));
         assert!(!holds_nothing(""));
+        // A construction line holds something, as any line does.
+        let construction = empty.replace(
+            r#""lines": []"#,
+            r#""lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": true}]"#,
+        );
+        assert!(!holds_nothing(&sketch(&construction)));
+        // Constraints alone (on the origin and its axes) aren't what a Finish keeps it for.
+        let constrained = sketch(empty).replace(
+            r#""constraints": []"#,
+            r#""constraints": [{"id": "ca000000", "type": "perpendicular", "a": "x_axis", "b": "y_axis"}]"#,
+        );
+        assert!(holds_nothing(&constrained));
+        // The kinds that count, by hand: every curve and point, never a constraint.
+        let counted: Vec<ElementKind> = ElementKind::ALL
+            .into_iter()
+            .filter(|kind| is_geometry(*kind))
+            .collect();
+        assert_eq!(
+            counted,
+            [
+                ElementKind::Point,
+                ElementKind::Line,
+                ElementKind::Circle,
+                ElementKind::Arc
+            ]
+        );
     }
 }
