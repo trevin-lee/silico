@@ -2506,6 +2506,181 @@ fn from_thirty_degrees_up_a_click_beside_a_line_takes_it_though_an_axis_is_neare
     assert_eq!(mode.selection.references(), [Reference::YAxis]);
 }
 
+/// One frame of `events` on the screen through `placed`, the pointer at `pointer`.
+fn frame_through(
+    mode: &mut SketchMode,
+    placed: &Placed,
+    events: &[PointerEvent],
+    pointer: Option<Pos2>,
+) {
+    let project = |p: [f64; 2]| placed.project(p);
+    let to_plane = |q: Pos2| placed.to_plane(q);
+    with_painter(|painter| {
+        let input = FrameInput {
+            events,
+            pointer,
+            project: &project,
+            to_plane: &to_plane,
+        };
+        mode.frame(painter, &input, &mut None);
+    });
+}
+
+/// The relations each `sketch_add` the tools asked for adds, in order.
+fn added_forms(mode: &mut SketchMode) -> Vec<Vec<Form>> {
+    mode.tools
+        .take_requests()
+        .into_iter()
+        .filter_map(|request| match request {
+            tools::Request::Add { members, .. } => {
+                Some(members.constraints.into_iter().map(|c| c.form).collect())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether `forms` hold an `on` of `curve`.
+fn has_on(forms: &[Form], curve: &Reference) -> bool {
+    forms
+        .iter()
+        .any(|form| matches!(form, Form::On { curve: c, .. } if c == curve))
+}
+
+#[test]
+fn in_an_oblique_view_smart_dimension_and_the_line_tool_take_no_axis_far_off_on_the_screen() {
+    // #484's proof. From 5° above (looking along +y at (0, 100), 100 mm on 600 pixels), a
+    // click 20 pixels right of the middle is at (3.33, 100): 3.33 mm from the y axis, but
+    // 20 pixels off it on the screen, past the pick's 7; the line (−25, 103.82) to
+    // (30, 103.82) is 3.82 mm off, 2 pixels above. Both are within the pick's 7.28 mm, the
+    // axis nearer in millimetres.
+    let placed = looking_along_y(5.0);
+    let middle = placed.project([0.0, 100.0]).unwrap();
+    let at = middle + vec2(20.0, 0.0);
+    let issue = || one_line([-25.0, 103.82], [30.0, 103.82]);
+    let line = element("na000001");
+    // The selection takes the line (#481).
+    let mut mode = mode_at(issue());
+    click_through(&mut mode, &placed, at, false);
+    assert_eq!(mode.selection.references(), std::slice::from_ref(&line));
+    // Smart Dimension: hovered there, the line. A hover is the pointer alone, with no event,
+    // as the viewport sends one with no button held, on a mode whose allowance is still
+    // both axes'. And a read that comes with no pointer event works the hover out again with
+    // the allowance the pointer had, so still the line (with both axes allowed, it would be
+    // the axis, the nearer in millimetres). Clicked, the line is picked.
+    let mut mode = mode_at(issue());
+    mode.tools.choose(Some(tools::Choice::Dimension));
+    frame_through(&mut mode, &placed, &[], Some(at));
+    let hover = |mode: &SketchMode| mode.tools.dimension_preview().unwrap().hover.clone();
+    assert_eq!(hover(&mode), Some(line.clone()));
+    mode.took(Read {
+        model: Revision::OPENED.next().and_then(Revision::next),
+        result: Ok(issue()),
+    });
+    assert_eq!(hover(&mode), Some(line.clone()));
+    frame_through(&mut mode, &placed, &press(at, false), Some(at));
+    assert_eq!(
+        mode.tools.dimension_preview().unwrap().picks,
+        vec![line.clone()]
+    );
+    // The hover follows the pointer, not the last click. Clicked on the line 2 pixels from
+    // the y axis, at (0.33, 103.82), the line is picked, the axis allowed there; hovered
+    // then at the click 20 pixels off, the line (picked) isn't shown again and the axis,
+    // 20 pixels off there, isn't taken: nothing. With the click's allowance, the axis.
+    let mut mode = mode_at(issue());
+    mode.tools.choose(Some(tools::Choice::Dimension));
+    let beside = middle + vec2(2.0, -2.0);
+    frame_through(&mut mode, &placed, &press(beside, false), Some(beside));
+    let preview = mode.tools.dimension_preview().unwrap();
+    assert_eq!(preview.picks, vec![line.clone()]);
+    frame_through(&mut mode, &placed, &[], Some(at));
+    let preview = mode.tools.dimension_preview().unwrap();
+    assert_eq!(preview.pointer, placed.to_plane(at));
+    assert_eq!(preview.hover, None);
+    // The line tool, started there: the line's middle, (2.5, 103.82), is 3.91 mm off
+    // (√(0.83² + 3.82²)), within the pick, and taken first, with no `on` of the y axis,
+    // which doesn't pass through it. Ended far off, at (33.3, 386.8).
+    let far = middle + vec2(200.0, -150.0);
+    let mut mode = mode_at(issue());
+    mode.tools.choose(Some(tools::Choice::Draw(
+        silico_core::sketch_tools::ToolKind::Line,
+    )));
+    frame_through(&mut mode, &placed, &[], Some(at));
+    frame_through(&mut mode, &placed, &press(at, false), Some(at));
+    frame_through(&mut mode, &placed, &press(far, false), Some(far));
+    let adds = added_forms(&mut mode);
+    assert_eq!(adds.len(), 1, "{adds:?}");
+    assert!(
+        adds[0]
+            .iter()
+            .any(|f| matches!(f, Form::Midpoint { line: l, .. } if *l == line)),
+        "{adds:?}"
+    );
+    assert!(!has_on(&adds[0], &Reference::YAxis), "{adds:?}");
+    // A longer line, (−50, 103.82) to (80, 103.82): its middle, (15, 103.82), is 12.3 mm off,
+    // past the pick, and it crosses the y axis at (0, 103.82), 5.07 mm off (√(3.33² +
+    // 3.82²)), within it. With the y axis allowed, the start would be where the two cross,
+    // on both; it isn't, so the start is on the line alone, and the hover (the pointer
+    // alone, on a fresh mode) showed it so.
+    let mut mode = mode_at(one_line([-50.0, 103.82], [80.0, 103.82]));
+    mode.tools.choose(Some(tools::Choice::Draw(
+        silico_core::sketch_tools::ToolKind::Line,
+    )));
+    frame_through(&mut mode, &placed, &[], Some(at));
+    let shown: Vec<Relation> = mode
+        .tools
+        .preview()
+        .shown
+        .iter()
+        .map(|s| s.relation.clone())
+        .collect();
+    assert_eq!(shown, [Relation::On(line.clone())]);
+    frame_through(&mut mode, &placed, &press(at, false), Some(at));
+    frame_through(&mut mode, &placed, &press(far, false), Some(far));
+    let adds = added_forms(&mut mode);
+    assert_eq!(adds.len(), 1, "{adds:?}");
+    assert!(has_on(&adds[0], &line), "{adds:?}");
+    assert!(!has_on(&adds[0], &Reference::YAxis), "{adds:?}");
+}
+
+#[test]
+fn smart_dimensions_hover_after_its_modify_box_keeps_the_pointers_allowance() {
+    // #484's view and line, as above: from 5° above, the pointer 20 pixels right of the
+    // middle, at (3.33, 100), is 3.33 mm and 20 pixels from the y axis and 3.82 mm and 2
+    // pixels from the line (−25, 103.82) to (30, 103.82), both within the pick's millimetres
+    // (7.28 at the pointer, 7 or more at the view's middle, which the box's step is given).
+    // The line picked there, a click far off, at (33.3, 386.8), opens its Modify box; the
+    // pointer hovers back there, and the box is accepted: the length placed, the tool
+    // afresh, and its hover worked out again at the pointer with the allowance the pointer
+    // had, the line (with both axes allowed, the axis, nearer in millimetres).
+    let placed = looking_along_y(5.0);
+    let middle = placed.project([0.0, 100.0]).unwrap();
+    let at = middle + vec2(20.0, 0.0);
+    let far = middle + vec2(200.0, -150.0);
+    let line = element("na000001");
+    let mut mode = mode_at(one_line([-25.0, 103.82], [30.0, 103.82]));
+    mode.tools.choose(Some(tools::Choice::Dimension));
+    frame_through(&mut mode, &placed, &[], Some(at));
+    frame_through(&mut mode, &placed, &press(at, false), Some(at));
+    frame_through(&mut mode, &placed, &press(far, false), Some(far));
+    let preview = mode.tools.dimension_preview().unwrap();
+    assert_eq!(preview.picks, vec![line.clone()]);
+    assert!(preview.modify.is_some(), "{preview:?}");
+    frame_through(&mut mode, &placed, &[], Some(at));
+    mode.modify(ModifyAction::Accept);
+    let preview = mode.tools.dimension_preview().unwrap();
+    assert_eq!(preview.modify, None, "{preview:?}");
+    assert!(preview.picks.is_empty(), "{preview:?}");
+    assert_eq!(preview.pointer, placed.to_plane(at));
+    assert_eq!(preview.hover, Some(line.clone()));
+    let adds = added_forms(&mut mode);
+    assert!(
+        matches!(adds.as_slice(), [forms] if matches!(forms.as_slice(),
+            [Form::Length { line: l, .. }] if *l == line)),
+        "{adds:?}"
+    );
+}
+
 #[test]
 fn the_palette_says_a_refused_read_of_the_tabs_revision_and_waits_on_an_older_ones() {
     let r = |n| silico_core::command::Revision::from_number(n).unwrap();
@@ -3632,7 +3807,7 @@ fn the_bar_and_the_palette_are_drawn_dark_on_a_window_showing_the_light_theme() 
     let view = mode.palette_view(silico_core::command::Revision::OPENED, None);
     let mut settings = bar::Settings::default();
     let mut texts = texts_on_light(|ui| {
-        bar::sketch_bar(ui, &bar);
+        bar::sketch_bar(ui, &bar, f32::INFINITY);
     });
     texts.extend(texts_on_light(|ui| {
         bar::palette(ui, &view, &mut settings, f32::INFINITY);
@@ -3654,7 +3829,7 @@ fn the_bars_finish_sketch_tooltip_is_the_registrys_its_name_keys_and_line() {
     let mut h = egui_kittest::Harness::builder()
         .with_size(vec2(800.0, 300.0))
         .build_ui(move |ui| {
-            bar::sketch_bar(ui, &bar);
+            bar::sketch_bar(ui, &bar, f32::INFINITY);
         });
     h.ctx.set_os(egui::os::OperatingSystem::Nix);
     h.run_steps(2);
@@ -3684,6 +3859,293 @@ fn the_bars_finish_sketch_tooltip_is_the_registrys_its_name_keys_and_line() {
     let texts = painted(&h);
     for want in ["Keeps your changes and rebuilds", "Ctrl", "↵"] {
         assert!(texts.iter().any(|text| text == want), "{want}: {texts:?}");
+    }
+}
+
+/// The sketch bar showing `view` at most `width` wide, in the app's look, laid out.
+fn bar_at(view: bar::BarView, width: f32) -> egui_kittest::Harness<'static> {
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(vec2(1200.0, 300.0))
+        .build_ui(move |ui| {
+            bar::sketch_bar(ui, &view, width);
+        });
+    crate::theme::apply(&h.ctx);
+    h.run_steps(3);
+    h
+}
+
+/// A bar's view of the sketch `name` on XY, its state `state`'s words, if any.
+fn bar_view(name: &str, state: Option<&str>) -> bar::BarView {
+    bar::BarView {
+        name: name.to_owned(),
+        plane: "XY".to_owned(),
+        state: state.map(|words| bar::StateShown {
+            words: words.to_owned(),
+            colour: SKETCH_UNDER_DEFINED,
+        }),
+        enabled: true,
+    }
+}
+
+/// The rows painted of each text whose whole text is `text` (a label's galley keeps the text
+/// it cut), each galley's rows joined, with whether it was cut and how many rows it has.
+fn painted_rows(h: &egui_kittest::Harness<'_>, text: &str) -> Vec<(String, bool, usize)> {
+    let mut shapes: Vec<egui::Shape> = h.output().shapes.iter().map(|c| c.shape.clone()).collect();
+    let mut found = Vec::new();
+    while let Some(shape) = shapes.pop() {
+        match shape {
+            egui::Shape::Vec(inner) => shapes.extend(inner),
+            egui::Shape::Text(shown) if shown.galley.text() == text => {
+                let rows: String = shown.galley.rows.iter().map(|row| row.text()).collect();
+                found.push((rows, shown.galley.elided, shown.galley.rows.len()));
+            }
+            _ => {}
+        }
+    }
+    found
+}
+
+/// The bar's rectangle, its Cancel's and Finish Sketch's, and its labels' texts.
+fn bar_parts(h: &egui_kittest::Harness<'_>) -> (egui::Rect, egui::Rect, egui::Rect, Vec<String>) {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    let bar = h.get_by_role_and_label(Role::Toolbar, "Sketch bar");
+    let cancel = bar.get_by_role_and_label(Role::Button, "Cancel").rect();
+    let finish = bar
+        .get_by_role_and_label(Role::Button, "Finish Sketch")
+        .rect();
+    let labels = bar
+        .query_all_by_role(Role::Label)
+        .filter_map(|node| node.accesskit_node().value())
+        .collect();
+    (bar.rect(), cancel, finish, labels)
+}
+
+#[test]
+fn a_long_sketch_name_is_cut_with_an_ellipsis_so_the_bar_keeps_to_its_width() {
+    // #466: 400 W's, with no state, a short one, and the widest the bar shows (an under
+    // defined sketch's, with a four-figure count), at 300 (less than all but the name), 440
+    // (the canvas at the window's least with the panes at their leasts, 888 − 200 − 232 =
+    // 456, less 10 at each side), 578 (1280's canvas, 736, less 10 and the ViewCube's 148), and
+    // 716. The bar no wider than it's given, or than the bar of no name and 96 for the name
+    // (`NAME_LEAST`) where that's wider, and narrower by less than a W (the name cut at a
+    // whole letter); as wide as `bar_width` says, which places it; Cancel and Finish Sketch
+    // inside it; the name whole in the tree and painted as W's and an ellipsis.
+    let name = "W".repeat(400);
+    for state in [None, Some("Empty"), Some("Under defined · 1234 DOF")] {
+        let rest = bar_parts(&bar_at(bar_view("", state), f32::INFINITY))
+            .0
+            .width();
+        for width in [300.0, 440.0, 578.0, 716.0] {
+            let most = f32::max(width, rest + 96.0);
+            let h = bar_at(bar_view(&name, state), width);
+            let letter = h.ctx.fonts_mut(|fonts| {
+                fonts
+                    .layout_no_wrap(
+                        "W".to_owned(),
+                        egui::FontId::proportional(crate::theme::BODY_SIZE),
+                        egui::Color32::WHITE,
+                    )
+                    .size()
+                    .x
+            });
+            let (rect, cancel, finish, labels) = bar_parts(&h);
+            let at = format!("{state:?} at {width}: {rect:?}");
+            let placed = bar::bar_width(
+                &h.ctx,
+                &h.ctx.global_style(),
+                &bar_view(&name, state),
+                width,
+            );
+            assert!(
+                (rect.width() - placed).abs() < 1e-3,
+                "{at}: placed {placed}"
+            );
+            assert!(rect.width() <= most, "{at}, at most {most}");
+            assert!(
+                rect.width() > most - letter,
+                "{at}, at most {most}, a W {letter}"
+            );
+            assert!(
+                rect.contains_rect(cancel) && rect.contains_rect(finish),
+                "{at}"
+            );
+            assert!(cancel.right() <= finish.left(), "{at}");
+            assert!(labels.contains(&name), "{at}: {labels:?}");
+            let painted = painted_rows(&h, &name);
+            let [(shown, true, 1)] = painted.as_slice() else {
+                panic!("{at}: {painted:?}");
+            };
+            let ws = shown.trim_end_matches('…');
+            assert_eq!(shown.chars().count(), ws.chars().count() + 1, "{shown}");
+            assert!(!ws.is_empty() && ws.chars().all(|c| c == 'W'), "{shown}");
+        }
+    }
+}
+
+#[test]
+fn the_bars_frame_and_its_tags_are_the_prototypes() {
+    // styles.css: `.sketch-bar` `--g200` (#212121) in a 1 border of `--blue` (#186add), its
+    // corners `--r` (6), its padding `4px 4px 4px 10px`; `.sketch-bar .tag` `--blue`, its
+    // padding `1px 6px`, its corners 3, no border. The tag's rectangle is its words' with
+    // that padding at each side, as high as the bar's row, and stands the border and the
+    // padding in from the bar's top left.
+    let (blue, g200) = (
+        egui::Color32::from_rgb(0x18, 0x6a, 0xdd),
+        egui::Color32::from_rgb(0x21, 0x21, 0x21),
+    );
+    let h = bar_at(bar_view("Sketch1", Some("Fully defined")), f32::INFINITY);
+    let mut shapes: Vec<egui::Shape> = h.output().shapes.iter().map(|c| c.shape.clone()).collect();
+    let (mut rects, mut words) = (Vec::new(), Vec::new());
+    while let Some(shape) = shapes.pop() {
+        match shape {
+            egui::Shape::Vec(inner) => shapes.extend(inner),
+            egui::Shape::Rect(rect) => rects.push(rect),
+            egui::Shape::Text(text) if text.galley.text() == "SKETCH" => {
+                words.push(egui::Rect::from_min_size(text.pos, text.galley.size()));
+            }
+            _ => {}
+        }
+    }
+    let [words] = words.as_slice() else {
+        panic!("{words:?}");
+    };
+    let frames: Vec<_> = rects.iter().filter(|rect| rect.fill == g200).collect();
+    let [frame] = frames.as_slice() else {
+        panic!("{rects:?}");
+    };
+    assert_eq!(frame.stroke, egui::Stroke::new(1.0, blue));
+    assert_eq!(frame.corner_radius, egui::CornerRadius::same(6));
+    // The tag: the leftmost blue rectangle (Finish Sketch is blue too, at the right).
+    let tag = rects
+        .iter()
+        .filter(|rect| rect.fill == blue)
+        .min_by(|a, b| a.rect.left().total_cmp(&b.rect.left()))
+        .unwrap();
+    assert_eq!(tag.corner_radius, egui::CornerRadius::same(3));
+    assert_eq!(tag.stroke.width, 0.0);
+    // As wide as its words and the padding at each side; as high as the bar's row (egui's
+    // least, `interact_size`'s height: the padding inside it, about the words centred in
+    // what's left); the words in its middle.
+    let row = h.ctx.global_style().spacing.interact_size.y;
+    assert!(
+        (tag.rect.width() - (words.width() + 6.0 + 6.0)).abs() < 1e-3,
+        "{:?} about {words:?}",
+        tag.rect
+    );
+    assert!(
+        (tag.rect.height() - row).abs() < 1e-3 && words.height() <= row - 1.0 - 1.0,
+        "{:?} about {words:?}, its row {row}",
+        tag.rect
+    );
+    assert!(
+        (tag.rect.center() - words.center()).length() < 1e-3,
+        "{:?} about {words:?}",
+        tag.rect
+    );
+    let (bar, ..) = bar_parts(&h);
+    assert_eq!(
+        tag.rect.left() - bar.left(),
+        1.0 + 10.0,
+        "{tag:?} in {bar:?}"
+    );
+    assert_eq!(tag.rect.top() - bar.top(), 1.0 + 4.0, "{tag:?} in {bar:?}");
+}
+
+#[test]
+fn a_short_sketch_name_is_shown_whole_and_the_bar_as_wide_as_it_needs() {
+    // Sketch1 at 716: whole, uncut; the bar as wide as at no limit at all.
+    let view = bar_view("Sketch1", Some("Fully defined"));
+    let free = bar_parts(&bar_at(view.clone(), f32::INFINITY)).0;
+    let h = bar_at(view, 716.0);
+    let (rect, _, _, labels) = bar_parts(&h);
+    assert_eq!(rect, free);
+    assert!(rect.width() < 716.0, "{rect:?}");
+    assert!(labels.contains(&"Sketch1".to_owned()), "{labels:?}");
+    assert_eq!(
+        painted_rows(&h, "Sketch1"),
+        [("Sketch1".to_owned(), false, 1)]
+    );
+}
+
+#[test]
+fn a_usual_sketch_name_is_whole_where_the_rest_of_the_bar_is_wider_than_its_room() {
+    // Sketch12 at 200, less than the rest of the bar: whole, the bar as at no limit.
+    let view = bar_view("Sketch12", Some("Under defined · 12 DOF"));
+    let free = bar_parts(&bar_at(view.clone(), f32::INFINITY)).0;
+    let h = bar_at(view, 200.0);
+    assert_eq!(bar_parts(&h).0, free);
+    assert_eq!(
+        painted_rows(&h, "Sketch12"),
+        [("Sketch12".to_owned(), false, 1)]
+    );
+}
+
+#[test]
+fn a_cut_sketch_names_tooltip_is_the_whole_name() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::Queryable;
+    let name = format!("{}END", "W".repeat(400));
+    let mut h = bar_at(bar_view(&name, None), 600.0);
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+        .get_by_value(&name)
+        .hover();
+    // The tooltip's galley, one: the whole name, wrapped, never cut.
+    for _ in 0..60 {
+        h.run_steps(1);
+        if painted_rows(&h, &name).iter().any(|(_, cut, _)| !cut) {
+            break;
+        }
+    }
+    let painted = painted_rows(&h, &name);
+    let whole: Vec<_> = painted.iter().filter(|(_, cut, _)| !cut).collect();
+    let [(rows, false, lines)] = whole.as_slice() else {
+        panic!("{painted:?}");
+    };
+    assert_eq!(*rows, name);
+    assert!(*lines > 1, "{painted:?}");
+}
+
+#[test]
+fn hostile_sketch_names_keep_the_bar_one_row_within_its_width_and_whole_in_the_tree() {
+    // Emoji, combining marks (one letter with 500 of them), right-to-left words, no name,
+    // one long word, newlines and tabs, and zero-width joiners: each bar one row, as high as
+    // Sketch1's, no wider than 500 (all but the name is narrower), Cancel and Finish Sketch
+    // inside it, and the name whole in the tree.
+    let one_row = bar_parts(&bar_at(bar_view("Sketch1", Some("Fully defined")), 500.0)).0;
+    let names = [
+        "🛠️📐🔩".repeat(60),
+        format!("e{}", "\u{301}".repeat(500)),
+        "e\u{301}".repeat(300),
+        "שרטוט ".repeat(80),
+        "رسم تخطيطي ".repeat(40),
+        String::new(),
+        "a-b_c.d".repeat(80),
+        "Sketch\nTwo\r\nThree\tFour".to_owned(),
+        "\n".repeat(50),
+        "👩\u{200d}🔧".repeat(100),
+    ];
+    for name in names {
+        let h = bar_at(bar_view(&name, Some("Fully defined")), 500.0);
+        let (rect, cancel, finish, labels) = bar_parts(&h);
+        let at = format!("{name:?}: {rect:?}");
+        assert_eq!(rect.height(), one_row.height(), "{at}");
+        assert!(rect.width() <= 500.0, "{at}");
+        assert!(
+            rect.contains_rect(cancel) && rect.contains_rect(finish),
+            "{at}"
+        );
+        assert_eq!(
+            labels.iter().filter(|label| **label == name).count(),
+            1,
+            "{at}: {labels:?}"
+        );
+        // The bar's own, on one row: a newline is a letter there, as in the browser's rows.
+        let painted = painted_rows(&h, &name);
+        assert!(
+            painted.iter().all(|(_, _, rows)| *rows <= 1),
+            "{at}: {painted:?}"
+        );
     }
 }
 
@@ -7304,4 +7766,96 @@ fn the_scale_at_a_place_is_the_mean_step_of_a_point_right_and_a_point_down_or_no
     // A ray that misses the plane: none.
     let misses = |_: Pos2| -> Option<[f64; 2]> { None };
     assert_eq!(scale_at(&misses, pos2(10.0, 0.0)), None);
+}
+
+/// [`rectangle`] with its top, na000003, construction; a circle ca000001 about pa000001 and
+/// an arc aa000001 about pa000002, both profile; and a horizontal, ka000001, of the bottom.
+fn switching() -> Sketch {
+    let mut sketch = rectangle(vec![horizontal("ka000001", "na000001")]);
+    sketch.lines[2].construction = true;
+    sketch.circles.push(SketchCircle {
+        id: id("ca000001"),
+        center: id("pa000001"),
+        radius: Coordinate::new(5.0).unwrap(),
+        construction: false,
+    });
+    sketch.arcs.push(SketchArc {
+        id: id("aa000001"),
+        center: id("pa000002"),
+        start: id("pa000003"),
+        end: id("pa000004"),
+        construction: false,
+    });
+    sketch
+}
+
+/// Construction's switch of `picks` in `sketch`: the value, and the fields set to it.
+fn switched(sketch: &Sketch, picks: &[Reference]) -> Option<(bool, Vec<String>)> {
+    selection::construction_switch(sketch, picks).map(|switch| {
+        let fields = std::iter::once(switch.first).chain(switch.rest).collect();
+        (switch.construction, fields)
+    })
+}
+
+/// `construction` and `fields`, as [`switched`] gives them.
+fn switch(construction: bool, fields: &[&str]) -> Option<(bool, Vec<String>)> {
+    Some((
+        construction,
+        fields.iter().map(|f| (*f).to_owned()).collect(),
+    ))
+}
+
+#[test]
+fn construction_sets_every_selected_curve_one_way_and_leaves_out_what_isnt_a_curve() {
+    let sketch = switching();
+    // Two profile lines: both made construction, in pick order.
+    assert_eq!(
+        switched(&sketch, &[element("na000002"), element("na000001")]),
+        switch(
+            true,
+            &["lines.na000002.construction", "lines.na000001.construction"]
+        )
+    );
+    // A construction line and a profile one: all made construction, so only the profile one
+    // changes (each flipped on its own would make the top profile).
+    assert_eq!(
+        switched(&sketch, &[element("na000003"), element("na000001")]),
+        switch(true, &["lines.na000001.construction"])
+    );
+    // Only construction: all made profile.
+    assert_eq!(
+        switched(&sketch, &[element("na000003")]),
+        switch(false, &["lines.na000003.construction"])
+    );
+    // A circle and an arc, by their own lists.
+    assert_eq!(
+        switched(&sketch, &[element("aa000001"), element("ca000001")]),
+        switch(
+            true,
+            &[
+                "arcs.aa000001.construction",
+                "circles.ca000001.construction"
+            ]
+        )
+    );
+    // Points, constraints, the origin, and the axes are left out; with nothing else, no
+    // switch (the palette's setting turns instead).
+    let not_curves = [
+        element("pa000001"),
+        element("ka000001"),
+        Reference::Origin,
+        Reference::XAxis,
+        Reference::YAxis,
+    ];
+    assert_eq!(switched(&sketch, &not_curves), None);
+    assert_eq!(switched(&sketch, &[]), None);
+    // With a curve among them, only the curve; a curve picked twice counts once.
+    let mut picks = not_curves.to_vec();
+    picks.extend([element("na000004"), element("na000004")]);
+    assert_eq!(
+        switched(&sketch, &picks),
+        switch(true, &["lines.na000004.construction"])
+    );
+    // A curve the read doesn't hold is left out.
+    assert_eq!(switched(&sketch, &[element("nz000001")]), None);
 }

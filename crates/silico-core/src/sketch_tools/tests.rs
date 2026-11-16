@@ -181,6 +181,9 @@ struct Drive {
     states: SketchStates,
     /// Where the last pointer event was.
     last_at: Option<Xy>,
+    /// Which axes the pointer may take: both, as in a view square to the plane, unless a
+    /// test says otherwise.
+    axes: Axes,
 }
 
 /// A read's states for a sketch of free points: none fully defined, nothing flagged.
@@ -203,6 +206,7 @@ impl Drive {
             tool: SketchTool::new(kind),
             states: no_states().clone(),
             last_at: None,
+            axes: Axes::BOTH,
             sketch,
             revision: Revision::OPENED,
             tolerance: TOLERANCE,
@@ -227,6 +231,7 @@ impl Drive {
             automatic_relations: self.automatic,
             construction: self.construction,
             states: &self.states,
+            axes: self.axes,
         };
         let shown: Vec<Relation> = self
             .tool
@@ -2068,6 +2073,7 @@ fn a_cancel_after_the_add_its_chain_names_was_refused_starts_afresh() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut ids = Counter::after(0);
     let keys = Modifiers::default();
@@ -2180,6 +2186,7 @@ fn a_cancel_after_another_sketchs_read_cancels_nothing() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let out = d
         .tool
@@ -2583,6 +2590,7 @@ fn clicks_on_a_stale_read(tool: &mut SketchTool, sketch: &Sketch, at: &[[f64; 2]
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut ids = Counter::after(0);
     let keys = Modifiers::default();
@@ -2666,6 +2674,7 @@ fn a_source_with_no_ids_adds_nothing_and_says_why() {
         automatic_relations: true,
         construction: false,
         states: no_states(),
+        axes: Axes::BOTH,
     };
     let mut tool = SketchTool::new(ToolKind::Line);
     let keys = Modifiers::default();

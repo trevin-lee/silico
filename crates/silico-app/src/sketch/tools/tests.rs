@@ -2090,6 +2090,7 @@ fn input<'a>(read: &'a SketchRead, sketch: &'a FeatureId, tolerance: f64) -> Inp
         sketch,
         revision: Revision::OPENED,
         tolerance,
+        axes: Axes::BOTH,
         automatic_relations: true,
         construction: false,
         trim: TrimMode::Power,

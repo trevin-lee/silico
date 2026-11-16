@@ -331,17 +331,14 @@ const POINT: Command = keyed(
     ),
     shortcuts::Command::Point,
 );
-/// The drawing tools' curves drawn as construction, the palette's Construction.
-///
-/// SEAM: the prototype's Construction toggles the selected curves between profile and
-/// construction (its line: "Toggles the selected curves between profile and
-/// construction"), once a selection's curves can be set so; till then it's the palette's
-/// setting, and its line says that.
+/// Construction, as the prototype has it: the selected curves switched between profile and
+/// construction (`Tab::sketch_construction`); with no curve selected, the palette's setting
+/// for the curves drawn next. Shown pressed while that setting is on.
 const CONSTRUCTION: Command = keyed(
     command(
         "Construction",
         Icon::Construction,
-        Some("Draws the tools' curves as construction, or as profile again"),
+        Some(shortcuts::CONSTRUCTION_HELP),
         Does::Construction,
     ),
     shortcuts::Command::Construction,

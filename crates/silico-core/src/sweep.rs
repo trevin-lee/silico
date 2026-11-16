@@ -7,10 +7,16 @@
 //! booleans' one-solid rule (D2), which keeps every base one solid. Recompute asks the
 //! result's checks of each feature when its outcome is decided, from its solid's stored
 //! measures, however the solid was had (made, kept, or read from the cache).
+//!
+//! And where a pad or pocket sweeps from its sketch's plane ([`prism`]): its prism step's
+//! start and vector, and where each of its lengths ends, so the rebuild's step and the app's
+//! arrows on the canvas read one rule.
 
 use silico_protocol::{EndAtStart, MEASURE_PRECISION, format_number, no_distance};
 
-use crate::document::{Axis, Checked, FeatureId, Operation, PROBLEMS_LISTED, SweepFeature};
+use crate::document::{
+    Axis, Checked, Extent, FeatureId, Length, Operation, PROBLEMS_LISTED, SweepFeature,
+};
 use crate::profile::Profile;
 use crate::sketch::SketchSolution;
 use crate::{Error, ErrorCode};
@@ -937,6 +943,124 @@ fn pieces(n: u32) -> String {
     }
 }
 
+/// `value`, a zero of either sign as +0: the requests' zeros are all +0 (design S3).
+pub(crate) fn plus_zero(value: f64) -> f64 {
+    value + 0.0
+}
+
+/// Where a pad or pocket sweeps from its sketch's plane, each place from the profile on the
+/// plane ([`prism`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Prism {
+    /// The way it sweeps, a unit vector for a unit normal: along the sketch's normal for a
+    /// pad, against it for a pocket, the other way when the extent is `reversed`.
+    pub direction: [f64; 3],
+    /// Its prism step's start and vector; none for `through_all`, which sweeps from the
+    /// plane through all of its base.
+    pub span: Option<Span>,
+    /// Each length the extent holds, in the order the file writes them: where it ends.
+    pub ends: Vec<LengthEnd>,
+}
+
+/// A prism's start, from the profile on the plane, and the vector it sweeps.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Span {
+    pub start: [f64; 3],
+    pub vector: [f64; 3],
+}
+
+/// Where one of an extent's lengths ends: the end of the sweep the length sets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LengthEnd {
+    /// The extent's field: `length`, or `length2`.
+    pub field: &'static str,
+    /// What it holds.
+    pub length: Length,
+    /// The end, from the profile on the plane.
+    pub offset: [f64; 3],
+    /// The way the end moves as the length grows: the sweep's direction, or against it for
+    /// `length2`.
+    pub way: [f64; 3],
+    /// How far the length grows for each millimetre its end moves: 1, or 2 for a
+    /// `symmetric` extent's, half of which lies each side of the plane.
+    pub per_mm: f64,
+}
+
+/// The way a pad (`kind` adding) or a pocket sweeps from a plane whose normal is `normal`:
+/// along it for a pad, against it for a pocket, and either the other way when `reversed`
+/// (docs/design/m3.6-sketch-features.md, *Directions*).
+pub fn prism_direction(kind: SweepFeature, reversed: bool, normal: [f64; 3]) -> [f64; 3] {
+    let sign = if kind.adds() != reversed { 1.0 } else { -1.0 };
+    normal.map(|c| plus_zero(c * sign))
+}
+
+/// Where the pad or pocket of `extent` sweeps from its sketch's plane, whose normal is
+/// `normal`; none for a revolve's or groove's extent. Each value is from the document's
+/// integers, exact or rounded once (design S3): `one_side` starts on the plane; `symmetric`
+/// half its length back (halving is exact), its end half its length on; `two_sides`
+/// `length2` back, swept their sum, taken in nanometres, `length` ending on the sweep and
+/// `length2` against it. `through_all` has no length.
+pub fn prism(extent: Extent, normal: [f64; 3]) -> Option<Prism> {
+    use crate::document::{PadExtent, PocketExtent};
+    let kind = match extent {
+        Extent::Pad(_) => SweepFeature::Pad,
+        Extent::Pocket(_) => SweepFeature::Pocket,
+        Extent::Turn(_) => return None,
+    };
+    let along = |d: [f64; 3], length: f64| d.map(|c| plus_zero(c * length));
+    let swept = |direction: [f64; 3], back: f64, length: f64, ends: Vec<LengthEnd>| Prism {
+        direction,
+        span: Some(Span {
+            start: along(direction, -back),
+            vector: along(direction, length),
+        }),
+        ends,
+    };
+    let end = |field, length: Length, offset: f64, way: [f64; 3], per_mm| LengthEnd {
+        field,
+        length,
+        offset: along(way, offset),
+        way,
+        per_mm,
+    };
+    Some(match extent {
+        Extent::Pad(PadExtent::OneSide { length, reversed })
+        | Extent::Pocket(PocketExtent::OneSide { length, reversed }) => {
+            let d = prism_direction(kind, reversed, normal);
+            let ends = vec![end("length", length, length.mm(), d, 1.0)];
+            swept(d, 0.0, length.mm(), ends)
+        }
+        Extent::Pad(PadExtent::Symmetric { length })
+        | Extent::Pocket(PocketExtent::Symmetric { length }) => {
+            let d = prism_direction(kind, false, normal);
+            let half = length.mm() / 2.0;
+            swept(
+                d,
+                half,
+                length.mm(),
+                vec![end("length", length, half, d, 2.0)],
+            )
+        }
+        Extent::Pad(PadExtent::TwoSides { length, length2 })
+        | Extent::Pocket(PocketExtent::TwoSides { length, length2 }) => {
+            let d = prism_direction(kind, false, normal);
+            let total = Length::from_nm(length.nm().saturating_add(length2.nm()));
+            let against = d.map(|c| plus_zero(-c));
+            let ends = vec![
+                end("length", length, length.mm(), d, 1.0),
+                end("length2", length2, length2.mm(), against, 1.0),
+            ];
+            swept(d, length2.mm(), total.mm(), ends)
+        }
+        Extent::Pocket(PocketExtent::ThroughAll { reversed }) => Prism {
+            direction: prism_direction(kind, reversed, normal),
+            span: None,
+            ends: Vec::new(),
+        },
+        Extent::Turn(_) => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1084,5 +1208,239 @@ mod tests {
         });
         within("checking the axes' lengths", compared, looked_up, 2 * pairs);
         assert!(lengths.iter().all(Result::is_ok));
+    }
+
+    /// Whether every zero of `v` is +0, as the requests' are (design S3).
+    fn plus_zeros(v: [f64; 3]) -> bool {
+        v.iter().all(|c| *c != 0.0 || c.to_bits() == 0)
+    }
+
+    #[test]
+    fn a_prism_sweeps_each_form_as_worked_by_hand_and_each_length_ends_where_it_does() {
+        use crate::document::{Angle, PadExtent, PocketExtent, TurnExtent};
+        let mm = |n: i64| Length::from_nm(n * 1_000_000);
+        let up = [0.0, 0.0, 1.0];
+        let span = |p: &Prism| p.span.unwrap();
+        let end = |field, length, offset, way, per_mm| LengthEnd {
+            field,
+            length,
+            offset,
+            way,
+            per_mm,
+        };
+        // A pad's one side, 10, on +Z: from the plane up to 10; reversed, down.
+        let p = prism(
+            Extent::Pad(PadExtent::OneSide {
+                length: mm(10),
+                reversed: false,
+            }),
+            up,
+        )
+        .unwrap();
+        assert_eq!(p.direction, [0.0, 0.0, 1.0]);
+        assert_eq!(
+            span(&p),
+            Span {
+                start: [0.0, 0.0, 0.0],
+                vector: [0.0, 0.0, 10.0]
+            }
+        );
+        assert_eq!(p.ends, [end("length", mm(10), [0.0, 0.0, 10.0], up, 1.0)]);
+        let p = prism(
+            Extent::Pad(PadExtent::OneSide {
+                length: mm(10),
+                reversed: true,
+            }),
+            up,
+        )
+        .unwrap();
+        assert_eq!(span(&p).vector, [0.0, 0.0, -10.0]);
+        assert_eq!(p.ends[0].offset, [0.0, 0.0, -10.0]);
+        assert_eq!(p.ends[0].way, [0.0, 0.0, -1.0]);
+        // A pocket's goes against the normal, the other way reversed.
+        let p = prism(
+            Extent::Pocket(PocketExtent::OneSide {
+                length: mm(5),
+                reversed: false,
+            }),
+            up,
+        )
+        .unwrap();
+        assert_eq!(p.direction, [0.0, 0.0, -1.0]);
+        assert_eq!(span(&p).vector, [0.0, 0.0, -5.0]);
+        let p = prism(
+            Extent::Pocket(PocketExtent::OneSide {
+                length: mm(5),
+                reversed: true,
+            }),
+            up,
+        )
+        .unwrap();
+        assert_eq!(p.ends[0].offset, [0.0, 0.0, 5.0]);
+        // Symmetric 10 on XZ, whose normal is −Y: from +5 to −5, its end at −5, each
+        // millimetre the end moves two of the length.
+        let p = prism(
+            Extent::Pad(PadExtent::Symmetric { length: mm(10) }),
+            [0.0, -1.0, 0.0],
+        )
+        .unwrap();
+        assert_eq!(
+            span(&p),
+            Span {
+                start: [0.0, 5.0, 0.0],
+                vector: [0.0, -10.0, 0.0]
+            }
+        );
+        assert_eq!(
+            p.ends,
+            [end(
+                "length",
+                mm(10),
+                [0.0, -5.0, 0.0],
+                [0.0, -1.0, 0.0],
+                2.0
+            )]
+        );
+        // A pocket's two sides, 10 and 4, on +Z: from +4 down 14; `length` ends at −10 along
+        // the sweep, `length2` at +4 against it.
+        let p = prism(
+            Extent::Pocket(PocketExtent::TwoSides {
+                length: mm(10),
+                length2: mm(4),
+            }),
+            up,
+        )
+        .unwrap();
+        assert_eq!(
+            span(&p),
+            Span {
+                start: [0.0, 0.0, 4.0],
+                vector: [0.0, 0.0, -14.0]
+            }
+        );
+        assert_eq!(
+            p.ends,
+            [
+                end("length", mm(10), [0.0, 0.0, -10.0], [0.0, 0.0, -1.0], 1.0),
+                end("length2", mm(4), [0.0, 0.0, 4.0], up, 1.0),
+            ]
+        );
+        // Through all: its way alone.
+        let p = prism(
+            Extent::Pocket(PocketExtent::ThroughAll { reversed: true }),
+            up,
+        )
+        .unwrap();
+        assert_eq!(
+            p,
+            Prism {
+                direction: up,
+                span: None,
+                ends: Vec::new()
+            }
+        );
+        // A turn has no prism.
+        let angle = Angle::parse("90").unwrap();
+        assert_eq!(
+            prism(Extent::Turn(TurnExtent::Symmetric { angle }), up),
+            None
+        );
+    }
+
+    #[test]
+    fn each_length_ends_at_its_prisms_start_or_end_and_every_zero_is_plus() {
+        use crate::document::{PadExtent, PocketExtent};
+        // On a tilted face's normal, whose products round: `length` ends where the prism
+        // does, `length2` where it starts, and a symmetric end halfway, each exactly as the
+        // prism's own arithmetic places it.
+        let n = silico_protocol::vec3::normalize([1.0, -2.0, 3.0]);
+        let mm = |text: &str| Length::parse(text).unwrap();
+        let (l, l2) = (mm("10.3"), mm("0.7"));
+        let forms = [
+            Extent::Pad(PadExtent::OneSide {
+                length: l,
+                reversed: true,
+            }),
+            Extent::Pocket(PocketExtent::OneSide {
+                length: l,
+                reversed: false,
+            }),
+            Extent::Pad(PadExtent::Symmetric { length: l }),
+            Extent::Pocket(PocketExtent::Symmetric { length: l }),
+            Extent::Pad(PadExtent::TwoSides {
+                length: l,
+                length2: l2,
+            }),
+            Extent::Pocket(PocketExtent::TwoSides {
+                length: l,
+                length2: l2,
+            }),
+        ];
+        for extent in forms {
+            let p = prism(extent, n).unwrap();
+            let Span { start, vector } = p.span.unwrap();
+            for end in &p.ends {
+                let (expected, way) = match (end.field, extent.type_name()) {
+                    ("length2", _) => (start, p.direction.map(|c| -c)),
+                    ("length", "symmetric") => {
+                        (p.direction.map(|c| c * (l.mm() / 2.0)), p.direction)
+                    }
+                    _ => (p.direction.map(|c| c * l.mm()), p.direction),
+                };
+                assert_eq!(end.offset, expected, "{extent:?} {}", end.field);
+                assert_eq!(end.way, way, "{extent:?} {}", end.field);
+            }
+            // The sweep's far end is `length`'s for one side and two sides (start + vector,
+            // to within the one rounding of the sum).
+            if extent.type_name() != "symmetric" {
+                let far: [f64; 3] = std::array::from_fn(|k| start[k] + vector[k]);
+                let at = p.ends[0].offset;
+                for k in 0..3 {
+                    assert!(
+                        (far[k] - at[k]).abs() <= 1e-14,
+                        "{extent:?}: {far:?} {at:?}"
+                    );
+                }
+            }
+            assert!(plus_zeros(start) && plus_zeros(vector) && plus_zeros(p.direction));
+        }
+        // On an origin plane, the zeros are +0 whichever way it goes.
+        let p = prism(
+            Extent::Pocket(PocketExtent::TwoSides {
+                length: l,
+                length2: l2,
+            }),
+            [0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        let Span { start, vector } = p.span.unwrap();
+        assert!(plus_zeros(start) && plus_zeros(vector) && plus_zeros(p.direction));
+        assert!(
+            p.ends
+                .iter()
+                .all(|e| plus_zeros(e.offset) && plus_zeros(e.way))
+        );
+    }
+
+    #[test]
+    fn two_sides_sweep_their_sum_taken_in_nanometres_not_millimetres() {
+        // 0.1 + 0.2 in f64 is 0.30000000000000004; 300000 nm is 0.3.
+        use crate::document::PadExtent;
+        let mm = |t: &str| Length::parse(t).unwrap();
+        let p = prism(
+            Extent::Pad(PadExtent::TwoSides {
+                length: mm("0.1"),
+                length2: mm("0.2"),
+            }),
+            [0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        assert_eq!(
+            p.span.unwrap(),
+            Span {
+                start: [0.0, 0.0, -0.2],
+                vector: [0.0, 0.0, 0.3]
+            }
+        );
     }
 }

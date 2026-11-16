@@ -527,14 +527,19 @@ const DIMENSION: Entry = entry(
     &[letter(Key::D)],
     Some("Pick a line, a circle, or two entities, then type the value"),
 );
-/// The palette's Construction. SEAM: the prototype's X toggles the selected curves between
-/// profile and construction, once a selection's curves can be set so.
+/// Construction's help line, the button's and the shortcut sheet's: the approved
+/// prototype's (app.js), and a clause for no curve selected, which it doesn't cover.
+pub const CONSTRUCTION_HELP: &str = "Toggles the selected curves between profile and \
+    construction; with none selected, whether the next curves are drawn as construction";
+
+/// Construction: X switches the selected curves between profile and construction, or, with
+/// none selected, the palette's setting for the curves drawn next.
 const CONSTRUCTION: Entry = entry(
     Command::Construction,
     "Construction",
     Group::Sketch,
     &[letter(Key::X)],
-    Some("Draws the tools' curves as construction, or as profile again"),
+    Some(CONSTRUCTION_HELP),
 );
 const FINISH_SKETCH: Entry = entry(
     Command::FinishSketch,

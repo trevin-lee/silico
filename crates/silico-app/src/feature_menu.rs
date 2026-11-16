@@ -387,6 +387,7 @@ pub fn act<P: silico_core::kernel::Clients + 'static>(
         }
         Act::FindInBrowser(id) => {
             tab.selected_in = Place::Browser;
+            tab.reveal_browser = true;
             tab.selection_mut().find_in_browser(id);
             false
         }
