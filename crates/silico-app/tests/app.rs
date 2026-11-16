@@ -32166,12 +32166,7 @@ fn a_sweep_from(h: &mut AppHarness, name: &str, kind: &str) {
         "{kind} is on"
     );
     create(h, kind);
-    step_until(h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(h);
     settled(h);
 }
 
@@ -33217,16 +33212,8 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
             let seen = |x: f32, z: f32| {
                 rect.center() + eframe::egui::vec2((x - 20.0) * mm, -(z - 5.0) * mm)
             };
-            let select_at = |h: &mut AppHarness, at, ctrl, want: &[&str]| {
-                click_over_two_frames(
-                    h,
-                    at,
-                    if ctrl {
-                        Modifiers::COMMAND
-                    } else {
-                        Modifiers::NONE
-                    },
-                );
+            let select_at = |h: &mut AppHarness, at, held: Modifiers, want: &[&str]| {
+                click_over_two_frames(h, at, held);
                 for _ in 0..12 {
                     if selected_names(h) == want {
                         break;
@@ -33236,7 +33223,12 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
                 assert_eq!(selected_names(h), want, "at {at:?}");
             };
             // The face at (30, 0, 3): Face3, by the name the element map gives it.
-            select_at(&mut h, seen(30.0, 3.0), false, &["k7f2qx3m.box.Face3"]);
+            select_at(
+                &mut h,
+                seen(30.0, 3.0),
+                Modifiers::NONE,
+                &["k7f2qx3m.box.Face3"],
+            );
             // Its top edge, z = 10 (drawn 2 points wide about its line), from the face 2
             // points below its line: inside the 6-point band, the edge, not the face. It's
             // Edge3 in the fixture's numbering (`silico_render::bench::box_mesh`: the front
@@ -33245,19 +33237,24 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
             // Edge10. The name is the fixture's, not OCCT's.
             let edge = seen(30.0, 10.0);
             let below = |points: f32| edge + eframe::egui::vec2(0.0, points);
-            select_at(&mut h, below(2.0), false, &["k7f2qx3m.box.Edge3"]);
+            select_at(&mut h, below(2.0), Modifiers::NONE, &["k7f2qx3m.box.Edge3"]);
             // 9 points below it, past the band and the stroke's half (6 and 1): the face
             // under the pointer.
-            select_at(&mut h, below(9.0), false, &["k7f2qx3m.box.Face3"]);
+            select_at(&mut h, below(9.0), Modifiers::NONE, &["k7f2qx3m.box.Face3"]);
             // Above the box (z = 14, clear of the ViewCube at the top right), the
             // background: a click there clears.
-            select_at(&mut h, seen(10.0, 14.0), false, &[]);
+            select_at(&mut h, seen(10.0, 14.0), Modifiers::NONE, &[]);
             // The face and the edge, for the screenshot, with the properties panel's view.
-            select_at(&mut h, seen(30.0, 3.0), false, &["k7f2qx3m.box.Face3"]);
+            select_at(
+                &mut h,
+                seen(30.0, 3.0),
+                Modifiers::NONE,
+                &["k7f2qx3m.box.Face3"],
+            );
             select_at(
                 &mut h,
                 below(2.0),
-                true,
+                Modifiers::COMMAND,
                 &["k7f2qx3m.box.Face3", "k7f2qx3m.box.Edge3"],
             );
             // The pointer on the face, hovered: its answer a few frames on, on lavapipe.
@@ -34709,21 +34706,13 @@ fn x_e_and_v_filter_the_selection_once_the_sketch_is_left() {
 // ---- The fillet dialog (M5.8): its edges from the canvas selection ----
 
 /// Edge `n` of body `body` found under the canvas's centre from now on, and clicked there,
-/// Ctrl held if `ctrl`.
-fn click_edge(h: &mut AppHarness, record: &Record, body: u32, n: u32, ctrl: bool) {
+/// `held` held through it.
+fn click_edge(h: &mut AppHarness, record: &Record, body: u32, n: u32, held: Modifiers) {
     use silico_app::renderer::Element::Edge;
     let at = the_viewport(h).center();
     let centre = pixel_at(h, at);
     answering(record, None, Some((body, Edge(n), centre)));
-    click_over_two_frames(
-        h,
-        at,
-        if ctrl {
-            Modifiers::COMMAND
-        } else {
-            Modifiers::NONE
-        },
-    );
+    click_over_two_frames(h, at, held);
 }
 
 #[track_caller]
@@ -34788,9 +34777,9 @@ fn a_fillet_dialog_fed_the_selection_of_two_edges_writes_a_fillet_naming_them() 
     let (mut h, record) = f.drawn("box.silico", A_BOX);
     meshes_settled(&mut h);
     let before = text_of(&f.sessions, &h);
-    click_edge(&mut h, &record, 1, 3, false);
+    click_edge(&mut h, &record, 1, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
-    click_edge(&mut h, &record, 1, 5, true);
+    click_edge(&mut h, &record, 1, 5, Modifiers::COMMAND);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     modify(&mut h, "Fillet");
     added(&mut h);
@@ -34866,15 +34855,15 @@ fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_r
     meshes_a_real_box(&f);
     let (mut h, record) = f.drawn("box.silico", A_BOX);
     meshes_settled(&mut h);
-    click_edge(&mut h, &record, 1, 3, false);
+    click_edge(&mut h, &record, 1, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
-    click_edge(&mut h, &record, 1, 5, true);
+    click_edge(&mut h, &record, 1, 5, Modifiers::COMMAND);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     modify(&mut h, "Fillet");
     added(&mut h);
     settled(&mut h);
     // Ctrl-click a third: added to the box and the selection, and written.
-    click_edge(&mut h, &record, 1, 7, true);
+    click_edge(&mut h, &record, 1, 7, Modifiers::COMMAND);
     boxed_until(
         &mut h,
         &[
@@ -34892,7 +34881,7 @@ fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_r
     );
     assert!(dialog(&h).query_by_label("3 edges").is_some());
     // A plain click on a listed edge: removed from both, as SolidWorks' box takes a click.
-    click_edge(&mut h, &record, 1, 5, false);
+    click_edge(&mut h, &record, 1, 5, Modifiers::NONE);
     boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
     settled(&mut h);
@@ -34936,7 +34925,7 @@ fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_r
     // Closed, the canvas picks as before: a plain click replaces the selection.
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-    click_edge(&mut h, &record, 1, 3, false);
+    click_edge(&mut h, &record, 1, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -34947,7 +34936,7 @@ fn in_the_fillet_dialog_a_box_over_faces_and_edges_toggles_only_the_edges_into_i
     use silico_app::renderer::Element::Edge;
     let f = fixture();
     let (mut h, record) = box_from_the_front(&f);
-    click_edge(&mut h, &record, 1, 3, false);
+    click_edge(&mut h, &record, 1, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
     modify(&mut h, "Fillet");
     added(&mut h);
@@ -35021,7 +35010,7 @@ fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothi
     let before = text_of(&f.sessions, &h);
     // The fuse's Edge1, which the fuse's history doesn't report (the base's first edge
     // isn't kept, the tool's none): named by its number, unstable, and selectable.
-    click_edge(&mut h, &record, body, 1, false);
+    click_edge(&mut h, &record, body, 1, Modifiers::NONE);
     selected_until(&mut h, &["rrrrrrrr.fuse.Edge1"]);
     // Refused as a fillet's reference refuses it, in references.rs's words (N3, by hand),
     // at its place in the selection; and its suggestion after it, in brackets, as the tab
@@ -35055,7 +35044,7 @@ fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothi
     assert_eq!(text_of(&f.sessions, &h), before);
     // Clicked again with the dialog open: refused the same way, at its place in the pick,
     // and let go from the selection again.
-    click_edge(&mut h, &record, body, 1, true);
+    click_edge(&mut h, &record, body, 1, Modifiers::COMMAND);
     step_until(&mut h, "the refusal in the dialog", |h| {
         dialog(h).query_by_label(said).is_some()
     });
@@ -35067,7 +35056,7 @@ fn a_fillet_dialog_refuses_an_unstable_selected_name_saying_why_and_writes_nothi
     assert_eq!(h.state().tabs()[0].sent, []);
     assert_eq!(text_of(&f.sessions, &h), before);
     // A stable edge, the base's Edge2, kept by the fuse: taken, the refusal gone.
-    click_edge(&mut h, &record, body, 2, true);
+    click_edge(&mut h, &record, body, 2, Modifiers::COMMAND);
     boxed_until(&mut h, &["aaaaaaaa.box.Edge2"]);
     assert!(dialog(&h).query_by_label(said).is_none());
     added(&mut h);
@@ -35149,13 +35138,13 @@ fn a_fillet_dialogs_cancel_after_earlier_unsaved_edits_leaves_the_text_as_before
     let before = text_of(&f.sessions, &h);
     assert!(before.contains(r#""name": "BlockK""#));
     let opened_at = h.state().tabs()[0].revision;
-    click_edge(&mut h, &record, 1, 3, false);
+    click_edge(&mut h, &record, 1, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
     modify(&mut h, "Fillet");
     added(&mut h);
     // Its radius typed (a 2 after the 1: 12), and a second edge taken: both written.
     type_in(&mut h, In::Dialog, "Radius", "2");
-    click_edge(&mut h, &record, 1, 5, true);
+    click_edge(&mut h, &record, 1, 5, Modifiers::COMMAND);
     boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     settled(&mut h);
     assert_eq!(
@@ -35227,7 +35216,7 @@ fn a_fillet_too_large_shows_the_kernels_refusal_naming_its_edge_and_the_rest_sti
     let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
     meshes_settled(&mut h);
     let block = body_of(&h, "k7f2qx3m");
-    click_edge(&mut h, &record, block, 3, false);
+    click_edge(&mut h, &record, block, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
     modify(&mut h, "Fillet");
     added(&mut h);
@@ -35315,16 +35304,8 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
             let seen = |x: f32, z: f32| {
                 rect.center() + eframe::egui::vec2((x - 20.0) * mm, -(z - 5.0) * mm)
             };
-            let select_at = |h: &mut AppHarness, at, ctrl, want: &[&str]| {
-                click_over_two_frames(
-                    h,
-                    at,
-                    if ctrl {
-                        Modifiers::COMMAND
-                    } else {
-                        Modifiers::NONE
-                    },
-                );
+            let select_at = |h: &mut AppHarness, at, held: Modifiers, want: &[&str]| {
+                click_over_two_frames(h, at, held);
                 for _ in 0..12 {
                     if selected_names(h) == want {
                         break;
@@ -35341,13 +35322,13 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
             select_at(
                 &mut h,
                 seen(30.0, 10.0) + eframe::egui::vec2(0.0, 2.0),
-                false,
+                Modifiers::NONE,
                 &["k7f2qx3m.box.Edge3"],
             );
             select_at(
                 &mut h,
                 seen(30.0, 0.0) - eframe::egui::vec2(0.0, 2.0),
-                true,
+                Modifiers::COMMAND,
                 &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge1"],
             );
             modify(&mut h, "Fillet");
@@ -35415,7 +35396,7 @@ fn a_fillets_radius_opens_at_the_last_okd_cancel_leaves_it_and_edit_feature_show
     let (mut h, record) = f.drawn("round.silico", BOX_ROUND);
     meshes_settled(&mut h);
     let body = body_of(&h, "f0000001");
-    click_edge(&mut h, &record, body, 5, false);
+    click_edge(&mut h, &record, body, 5, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge5"]);
     modify(&mut h, "Fillet");
     added(&mut h);
@@ -35509,7 +35490,7 @@ fn edit_feature_on_a_fillet_a_later_feature_builds_on_takes_its_bases_edges_from
     assert_eq!(box_body(&h).as_deref(), Some("k7f2qx3m"));
     // The box's Edge5, picked on Joined's body (kept by the fillet and the fuse): taken,
     // written, the base the box still.
-    click_edge(&mut h, &record, body, 5, false);
+    click_edge(&mut h, &record, body, 5, Modifiers::NONE);
     boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     settled(&mut h);
     assert_eq!(box_said(&h), None);
@@ -35525,7 +35506,7 @@ fn edit_feature_on_a_fillet_a_later_feature_builds_on_takes_its_bases_edges_from
     // base's 12): not on the box, so refused, said, and let go from the selection again.
     let after = "a91cw0de.box.Edge1 isn't on k7f2qx3m, which this fillet is built on: select \
                  one of k7f2qx3m's edges";
-    click_edge(&mut h, &record, body, 13, true);
+    click_edge(&mut h, &record, body, 13, Modifiers::COMMAND);
     step_until(&mut h, "the refusal in the dialog", |h| {
         dialog(h).query_by_label(after).is_some()
     });
@@ -35548,7 +35529,7 @@ fn edit_feature_on_a_fillet_a_later_feature_builds_on_takes_its_bases_edges_from
         step(&mut h);
     }
     assert!(boxed(&h).is_empty());
-    click_edge(&mut h, &record, body, 7, true);
+    click_edge(&mut h, &record, body, 7, Modifiers::COMMAND);
     boxed_until(&mut h, &["k7f2qx3m.box.Edge7"]);
     settled(&mut h);
     assert_eq!(box_body(&h).as_deref(), Some("k7f2qx3m"));
@@ -35586,7 +35567,7 @@ fn the_fillet_dialog_opened_on_a_face_and_an_edge_takes_the_edge_and_notes_the_f
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
     click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
-    click_edge(&mut h, &record, 1, 3, true);
+    click_edge(&mut h, &record, 1, 3, Modifiers::COMMAND);
     selected_until(&mut h, &["k7f2qx3m.box.Face3", "k7f2qx3m.box.Edge3"]);
     modify(&mut h, "Fillet");
     added(&mut h);
@@ -35610,9 +35591,9 @@ fn the_fillet_dialog_opened_on_two_bodies_edges_takes_none_says_why_and_clears_t
     let (mut h, record) = f.drawn("blocks.silico", TWO_BLOCKS);
     meshes_settled(&mut h);
     let (block, other) = (body_of(&h, "k7f2qx3m"), body_of(&h, "a91cw0de"));
-    click_edge(&mut h, &record, block, 3, false);
+    click_edge(&mut h, &record, block, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
-    click_edge(&mut h, &record, other, 1, true);
+    click_edge(&mut h, &record, other, 1, Modifiers::COMMAND);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3", "a91cw0de.box.Edge1"]);
     modify(&mut h, "Fillet");
     let why = "The selected edges are on 2 bodies, k7f2qx3m and a91cw0de: a fillet takes one \
@@ -35637,9 +35618,9 @@ fn a_click_on_an_edge_the_box_lists_removes_it_though_the_timeline_replaced_the_
     meshes_a_real_box(&f);
     let (mut h, record) = f.drawn("box.silico", A_BOX);
     meshes_settled(&mut h);
-    click_edge(&mut h, &record, 1, 3, false);
+    click_edge(&mut h, &record, 1, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
-    click_edge(&mut h, &record, 1, 5, true);
+    click_edge(&mut h, &record, 1, 5, Modifiers::COMMAND);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     modify(&mut h, "Fillet");
     added(&mut h);
@@ -35655,7 +35636,7 @@ fn a_click_on_an_edge_the_box_lists_removes_it_though_the_timeline_replaced_the_
     assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     // One click on Edge5, which the box lists and the selection doesn't hold: removed from
     // the box, and not left in the selection.
-    click_edge(&mut h, &record, 1, 5, false);
+    click_edge(&mut h, &record, 1, 5, Modifiers::NONE);
     boxed_until(&mut h, &["k7f2qx3m.box.Edge3"]);
     for _ in 0..6 {
         step(&mut h);
@@ -35682,7 +35663,7 @@ fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distanc
     meshes_a_real_box(&f);
     let (mut h, record) = f.drawn("box.silico", A_BOX);
     meshes_settled(&mut h);
-    click_edge(&mut h, &record, 1, 3, false);
+    click_edge(&mut h, &record, 1, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
     modify(&mut h, "Chamfer");
     added(&mut h);
@@ -35896,7 +35877,7 @@ fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them()
     assert!(!ok_enabled(&h));
     assert_eq!(h.state().tabs()[0].sent, []);
     // A click on the other block's edge takes it, the tool: the union is added and previewed.
-    click_edge(&mut h, &record, other, 5, false);
+    click_edge(&mut h, &record, other, 5, Modifiers::NONE);
     bodies_boxed_until(&mut h, &[Some("k7f2qx3m"), Some("a91cw0de")]);
     added(&mut h);
     settled(&mut h);
@@ -40166,7 +40147,7 @@ fn select_other_lists_every_kind_whatever_the_filters_and_none_of_a_hidden_body(
 fn in_the_fillet_dialog_a_row_chosen_toggles_into_its_box_as_a_click_does_and_a_face_is_refused() {
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
-    click_edge(&mut h, &record, 1, 3, false);
+    click_edge(&mut h, &record, 1, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
     modify(&mut h, "Fillet");
     added(&mut h);
@@ -42414,9 +42395,9 @@ fn with_a_fillet_open_a_click_on_the_timelines_empty_space_keeps_its_edges_selec
     meshes_a_real_box(&f);
     let (mut h, record) = f.drawn("box.silico", A_BOX);
     meshes_settled(&mut h);
-    click_edge(&mut h, &record, 1, 3, false);
+    click_edge(&mut h, &record, 1, 3, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3"]);
-    click_edge(&mut h, &record, 1, 5, true);
+    click_edge(&mut h, &record, 1, 5, Modifiers::COMMAND);
     selected_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     modify(&mut h, "Fillet");
     added(&mut h);
@@ -42965,12 +42946,7 @@ fn pad_on_loose(h: &mut AppHarness) {
     step(h);
     step(h);
     create(h, "Pad");
-    step_until(h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(h);
     settled(h);
 }
 

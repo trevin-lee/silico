@@ -2,9 +2,11 @@
 //! control found by its role and label in the accessibility tree and clicked or typed into,
 //! keys pressed, and the canvas given the pointer's own events; and reads of what the window
 //! and the tab show, which act on nothing. Every frame is stepped on a thread marked so that
-//! a wait on a command there is counted. Last, the stand-ins more than one file uses: the
+//! a wait on a command there is counted. Then the stand-ins more than one file uses: the
 //! native file dialog ([`FakeBrowser`]), the fake kernel's meshes counted, a file's bytes
-//! read plainly, and a clock moved by hand.
+//! read plainly, and a clock moved by hand. Last, the fixtures' base on the fake kernel
+//! ([`stand_in_sessions`], and [`failing_kernel`], its meshing refused at will) and the
+//! documents more than one file opens.
 //!
 //! tests/app.rs, the hostile-input tests, and the slice take from here the helpers that more
 //! than one of them had a copy of, the ones those call, and the twins below. How long a wait
@@ -582,8 +584,7 @@ pub fn select<P: AppKernel>(h: &mut AppUi<P>, name: &str) {
 
 /// The property panel's Name field.
 pub fn name_field<P: AppKernel>(h: &AppUi<P>) -> egui_kittest::Node<'_> {
-    h.get_by_role_and_label(Role::Pane, "Properties")
-        .get_by_role(Role::TextInput)
+    field(h, In::Node(Role::Pane, "Properties"), "Name")
 }
 
 /// Typed into the text field labelled `label` (where `within` says), one keystroke a frame:
@@ -597,8 +598,8 @@ pub fn type_in<P: AppKernel>(h: &mut AppUi<P>, within: In<'_>, label: &str, text
     }
 }
 
-/// Typed into the property panel's Name field, one keystroke a frame, after the name
-/// ([`type_in`]).
+/// Typed into the property panel's Name field ([`name_field`]), one keystroke a frame, after
+/// the name ([`type_in`]).
 pub fn type_name<P: AppKernel>(h: &mut AppUi<P>, text: &str) {
     type_in(h, In::Node(Role::Pane, "Properties"), "Name", text);
 }
@@ -829,15 +830,10 @@ pub fn pause<P: AppKernel>(h: &mut AppUi<P>) {
     }
 }
 
-/// A left click at `at`, Ctrl (Cmd) held if `ctrl`, after a [`pause`]: the pointer moved
-/// there a frame, then its press one frame and its release the next.
-pub fn click_as_a_person<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, ctrl: bool) {
+/// A left click at `at`, `held` held through it, after a [`pause`]: the pointer moved there
+/// a frame, then its press one frame and its release the next.
+pub fn click_as_a_person<P: AppKernel>(h: &mut AppUi<P>, at: Pos2, held: Modifiers) {
     pause(h);
-    let held = if ctrl {
-        Modifiers::COMMAND
-    } else {
-        Modifiers::NONE
-    };
     h.event(Event::ModifiersChanged(held));
     move_to(h, at);
     button_event(h, at, PointerButton::Primary, true, held);
