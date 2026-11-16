@@ -2574,6 +2574,9 @@ fn only_a_read_at_or_past_the_revision_an_extend_made_lets_it_go() {
     desk.publish();
     desk.revision = r0;
     desk.publish();
+    // A click on that late read before the answer: still held.
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 3);
     desk.mode.tools.extend_made(r4);
     desk.frame(&click(8.0, 0.2));
     assert_eq!(desk.edits.len(), 4, "{:?}", desk.edits);
