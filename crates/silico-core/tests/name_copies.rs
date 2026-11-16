@@ -985,96 +985,6 @@ fn a_copy_counts_a_level_on_top_of_its_names_duplicates_and_under_its_own() {
 }
 
 #[test]
-fn a_tools_copy_of_a_sweep_features_last_map_wraps_only_the_sweeps_names() {
-    // A pad's last step keeps its base's elements under their own names (a box's here),
-    // which no tool's copy may wrap (the parser refuses `(C1 k7f2qx3m.box.Face1)`): so the
-    // copy's map leaves them out, holding only names the parser reads back.
-    let cube = ElementMap::primitive(
-        id("k7f2qx3m"),
-        &silico_core::kernel::Primitive::Box {
-            dx: 1.0,
-            dy: 1.0,
-            dz: 1.0,
-        },
-    );
-    let kept = |n: u32| ElementFate {
-        kept: Some(n),
-        modified: Vec::new(),
-        generated: Vec::new(),
-    };
-    // The box's six faces kept as 1 to 6, the pad's sweep's two faces as 7 and 8.
-    let history = History {
-        inputs: vec![
-            InputHistory {
-                faces: (1..=6).map(kept).collect(),
-                edges: Vec::new(),
-                vertices: Vec::new(),
-            },
-            InputHistory {
-                faces: vec![kept(7), kept(8)],
-                edges: Vec::new(),
-                vertices: Vec::new(),
-            },
-        ],
-        result: ElementCounts {
-            faces: 8,
-            edges: 0,
-            vertices: 0,
-            ..ElementCounts::default()
-        },
-        ..History::default()
-    };
-    let last = ElementMap::operation(id("p0000001"), OpCode::Pad, &[&cube, &pad()], &history);
-    assert_eq!(last.made(), TypeWord::Operation(OpCode::Pad));
-    assert_eq!(
-        last.name(face(1)).unwrap().to_string(),
-        "k7f2qx3m.box.Face1"
-    );
-    let one = Instance::new(&[1]).unwrap();
-    let copies = ElementMap::copy(
-        &last,
-        id("t0000001"),
-        OpCode::LinearPattern,
-        Copied::Tool,
-        &one,
-    )
-    .unwrap();
-    for n in 1..=6 {
-        assert_eq!(copies.name(face(n)), None, "Face{n}");
-    }
-    assert_eq!(
-        copies.name(face(7)).unwrap().to_string(),
-        "t0000001.linear_pattern.Face(C1 p0000001.pad.Face(M s0000001.sketch.Face1))"
-    );
-    assert_eq!(
-        copies.name(face(8)).unwrap().to_string(),
-        "t0000001.linear_pattern.Face(C1 p0000001.pad.Face2)"
-    );
-    let pad_makers = |feature: &FeatureId| match feature.as_str() {
-        "s0000001" => Some(Maker::By(OpCode::Sketch)),
-        "p0000001" => Some(Maker::By(OpCode::Pad)),
-        "t0000001" => Some(Maker::By(OpCode::LinearPattern)),
-        "k7f2qx3m" => Some(Maker::Itself(PrimitiveKind::Box)),
-        _ => None,
-    };
-    for (_, names) in copies.iter() {
-        for name in names {
-            assert!(
-                Name::parse(&name.to_string(), &pad_makers).is_ok(),
-                "{name}"
-            );
-        }
-    }
-    // A solid's copy of the same map wraps every name, the box's among them.
-    let whole =
-        ElementMap::copy(&last, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
-    assert_eq!(
-        whole.name(face(1)).unwrap().to_string(),
-        "m0000001.mirror.Face(S1 k7f2qx3m.box.Face1)"
-    );
-}
-
-#[test]
 fn a_pattern_steps_freecad_op_code_is_fus_until_m6_3_settles_a_cuts() {
     // N10's open item: an `OpCode` carries no boolean, so the three write `FUS`; M6.3
     // changes this with a test of the cut case.
@@ -1140,21 +1050,9 @@ fn a_tools_copy_of_a_sweeps_name_from_above_or_below_reads_and_of_a_cuts_is_refu
     }
 }
 
-#[test]
-fn a_tools_copy_of_a_pad_on_a_cut_leaves_out_the_cuts_names() {
-    // The sweep arm of the rule (`Copied::wraps`): a pad on a cut keeps the cut's names
-    // in its last step's map, an operation's that isn't a sweep's, which no tool's copy may
-    // wrap (the parser refuses `(C1 cccccccc.cut.Face1)`); the pad's own are wrapped.
-    let base = ElementMap::by_number(
-        id("cccccccc"),
-        OpCode::Cut,
-        ElementCounts {
-            faces: 6,
-            edges: 0,
-            vertices: 0,
-            ..ElementCounts::default()
-        },
-    );
+/// A pad's last step on `base`, whose six faces it keeps as 1 to 6 under their own names,
+/// and the pad's sweep's two faces ([`pad`]) as 7 and 8.
+fn pad_on(base: &ElementMap) -> ElementMap {
     let kept = |n: u32| ElementFate {
         kept: Some(n),
         modified: Vec::new(),
@@ -1181,25 +1079,81 @@ fn a_tools_copy_of_a_pad_on_a_cut_leaves_out_the_cuts_names() {
         },
         ..History::default()
     };
-    let last = ElementMap::operation(id("p0000001"), OpCode::Pad, &[&base, &pad()], &history);
-    assert_eq!(
-        last.name(face(1)).unwrap().to_string(),
-        "cccccccc.cut.Face1"
+    ElementMap::operation(id("p0000001"), OpCode::Pad, &[base, &pad()], &history)
+}
+
+#[test]
+fn a_tools_copy_given_a_sweep_features_last_map_leaves_out_its_bases_names() {
+    // The filter's fallback, not the map M6.3 gives a tool's copy (the sweep step's, N10's
+    // open item): a pad's last step keeps its base's names, which no tool's copy may wrap
+    // (`Copied::wraps`), whether the base's word is a primitive's (a box's) or an
+    // operation's that isn't a sweep's (a cut's); the parser refuses `(C1
+    // k7f2qx3m.box.Face1)` and `(C1 cccccccc.cut.Face1)` alike. The pad's own are wrapped,
+    // and every name kept reads back.
+    let cube = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
     );
+    let cut = ElementMap::by_number(
+        id("cccccccc"),
+        OpCode::Cut,
+        ElementCounts {
+            faces: 6,
+            edges: 0,
+            vertices: 0,
+            ..ElementCounts::default()
+        },
+    );
+    let pad_makers = |feature: &FeatureId| match feature.as_str() {
+        "s0000001" => Some(Maker::By(OpCode::Sketch)),
+        "p0000001" => Some(Maker::By(OpCode::Pad)),
+        "t0000001" => Some(Maker::By(OpCode::LinearPattern)),
+        "k7f2qx3m" => Some(Maker::Itself(PrimitiveKind::Box)),
+        "cccccccc" => Some(Maker::By(OpCode::Cut)),
+        _ => None,
+    };
     let one = Instance::new(&[1]).unwrap();
-    let copies = ElementMap::copy(
-        &last,
-        id("t0000001"),
-        OpCode::LinearPattern,
-        Copied::Tool,
-        &one,
-    )
-    .unwrap();
-    for n in 1..=6 {
-        assert_eq!(copies.name(face(n)), None, "Face{n}");
+    for (base, first) in [(&cube, "k7f2qx3m.box.Face1"), (&cut, "cccccccc.cut.Face1")] {
+        let last = pad_on(base);
+        assert_eq!(last.made(), TypeWord::Operation(OpCode::Pad));
+        assert_eq!(last.name(face(1)).unwrap().to_string(), first);
+        let copies = ElementMap::copy(
+            &last,
+            id("t0000001"),
+            OpCode::LinearPattern,
+            Copied::Tool,
+            &one,
+        )
+        .unwrap();
+        for n in 1..=6 {
+            assert_eq!(copies.name(face(n)), None, "{first}: Face{n}");
+        }
+        assert_eq!(
+            copies.name(face(7)).unwrap().to_string(),
+            "t0000001.linear_pattern.Face(C1 p0000001.pad.Face(M s0000001.sketch.Face1))"
+        );
+        assert_eq!(
+            copies.name(face(8)).unwrap().to_string(),
+            "t0000001.linear_pattern.Face(C1 p0000001.pad.Face2)"
+        );
+        for (_, names) in copies.iter() {
+            for name in names {
+                assert!(
+                    Name::parse(&name.to_string(), &pad_makers).is_ok(),
+                    "{name}"
+                );
+            }
+        }
+        // A solid's copy of the same map wraps every name, the base's among them.
+        let whole =
+            ElementMap::copy(&last, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+        assert_eq!(
+            whole.name(face(1)).unwrap().to_string(),
+            format!("m0000001.mirror.Face(S1 {first})")
+        );
     }
-    assert_eq!(
-        copies.name(face(8)).unwrap().to_string(),
-        "t0000001.linear_pattern.Face(C1 p0000001.pad.Face2)"
-    );
 }
