@@ -27997,6 +27997,302 @@ fn sketch_modes_menu_is_never_open_with_smart_dimension_on() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- Construction (X): the selected curves switched between profile and construction ----
+
+/// Two profile lines, na000001 from pa000001 (10, 10) to pa000002 (50, 10) and na000002 from
+/// pa000003 (10, 30) to pa000004 (50, 30); a construction line, na000003, from pa000005
+/// (10, 50) to pa000006 (50, 50); a circle cc000001 about pc000001 (100, 20), radius 5; an
+/// arc ab000001 about pb000001 (100, 60), from pb000002 (110, 60) counter-clockwise to
+/// pb000003 (90, 60), so through (100, 70); a lone point pd000001 (70, 40); and kd000001, a
+/// horizontal of na000001.
+const CONSTRUCTING: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Construct", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 10, "y": 30, "construction": false}, {"id": "pa000004", "x": 50, "y": 30, "construction": false}, {"id": "pa000005", "x": 10, "y": 50, "construction": false}, {"id": "pa000006", "x": 50, "y": 50, "construction": false}, {"id": "pb000001", "x": 100, "y": 60, "construction": false}, {"id": "pb000002", "x": 110, "y": 60, "construction": false}, {"id": "pb000003", "x": 90, "y": 60, "construction": false}, {"id": "pc000001", "x": 100, "y": 20, "construction": false}, {"id": "pd000001", "x": 70, "y": 40, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000003", "from": "pa000005", "to": "pa000006", "construction": true}], "circles": [{"id": "cc000001", "center": "pc000001", "radius": 5, "construction": false}], "arcs": [{"id": "ab000001", "center": "pb000001", "start": "pb000002", "end": "pb000003", "construction": false}], "constraints": [{"id": "kd000001", "type": "horizontal", "line": "na000001"}]}
+  ]
+}
+"#;
+
+/// [`CONSTRUCTING`] opened in sketch mode (Edit Sketch from the browser), and read.
+fn constructing_sketch(f: &Fixture) -> AppHarness {
+    let (mut h, _) = f.opened("constructing.silico", CONSTRUCTING);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Construct"));
+    double_click(&mut h, "Browser", "Construct");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    h
+}
+
+/// Whether each curve of `sketch` is construction, by its ID, lines, circles, then arcs.
+fn construction_of(sketch: &silico_core::document::Sketch) -> Vec<(String, bool)> {
+    let lines = sketch.lines.iter().map(|l| (&l.id, l.construction));
+    let circles = sketch.circles.iter().map(|c| (&c.id, c.construction));
+    let arcs = sketch.arcs.iter().map(|a| (&a.id, a.construction));
+    lines
+        .chain(circles)
+        .chain(arcs)
+        .map(|(id, construction)| (id.as_str().to_owned(), construction))
+        .collect()
+}
+
+/// [`construction_of`] the file's text (`text`) and of sketch mode's newest read, once that
+/// read is of the tab's revision: they must agree.
+fn construction_now(f: &Fixture, h: &mut AppHarness) -> Vec<(String, bool)> {
+    settled_and_read(h);
+    let in_text = construction_of(&sketch_of_text(f, h, "s0000001"));
+    let in_read = sketch_mode(h)
+        .and_then(|mode| mode.drawable())
+        .map(|read| construction_of(&read.members));
+    assert_eq!(in_read.as_ref(), Some(&in_text), "the read and the text");
+    in_text
+}
+
+/// The curves of [`CONSTRUCTING`] with the construction of those `on` named, the rest
+/// profile.
+fn constructed(on: &[&str]) -> Vec<(String, bool)> {
+    ["na000001", "na000002", "na000003", "cc000001", "ab000001"]
+        .into_iter()
+        .map(|id| (id.to_owned(), on.contains(&id)))
+        .collect()
+}
+
+/// X pressed in sketch mode, as the person presses it.
+fn press_x(h: &mut AppHarness) {
+    h.key_press(eframe::egui::Key::X);
+    step(h);
+    step(h);
+}
+
+/// The palette's Construction, the setting for the curves drawn next.
+fn palette_construction(h: &AppHarness) -> bool {
+    sketch_mode(h).unwrap().settings.construction
+}
+
+/// The fields the first tab's `set_field`s named, in order.
+fn fields_sent(h: &AppHarness) -> Vec<String> {
+    h.state().tabs()[0]
+        .sent
+        .iter()
+        .filter_map(|sent| match sent {
+            Sent::Edit(field) => Some(field.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn construction_on_two_profile_lines_makes_both_construction_and_one_undo_and_redo_take_both() {
+    let f = fixture();
+    let mut h = constructing_sketch(&f);
+    // The bottom (30, 10), then the middle line (30, 30) with Ctrl.
+    sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    let picked = [element_ref("na000001"), element_ref("na000002")];
+    assert_eq!(sketch_picks(&h), picked);
+    press_x(&mut h);
+    assert_eq!(
+        construction_now(&f, &mut h),
+        constructed(&["na000001", "na000002", "na000003"])
+    );
+    // One `set_field` for each, in pick order; nothing else sent of sketch mode's.
+    assert_eq!(
+        fields_sent(&h),
+        ["lines.na000001.construction", "lines.na000002.construction"]
+    );
+    assert!(sketch_sends(&h).is_empty());
+    // The palette's setting left as it was, the selection kept.
+    assert!(!palette_construction(&h));
+    assert_eq!(sketch_picks(&h), picked);
+    assert_eq!(h.state().tabs()[0].message, None);
+    // One step, named by the button.
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Construction");
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), CONSTRUCTING);
+    assert_eq!(construction_now(&f, &mut h), constructed(&["na000003"]));
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo: Construction");
+    redo_by_key(&mut h);
+    assert_eq!(
+        construction_now(&f, &mut h),
+        constructed(&["na000001", "na000002", "na000003"])
+    );
+    // And Undo once more takes both back again.
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), CONSTRUCTING);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn construction_on_a_mixed_selection_makes_all_construction_and_on_all_construction_all_profile() {
+    let f = fixture();
+    let mut h = constructing_sketch(&f);
+    // The construction line (30, 50), then the bottom (30, 10): all made construction, so the
+    // construction line stays so (flipped on its own, it would be profile).
+    sketch_events(&f, &mut h, &clicked(30.0, 50.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 10.0));
+    press_x(&mut h);
+    assert_eq!(
+        construction_now(&f, &mut h),
+        constructed(&["na000001", "na000003"])
+    );
+    // Only the bottom changed.
+    assert_eq!(fields_sent(&h), ["lines.na000001.construction"]);
+    // Both construction now, both selected still: X makes both profile.
+    assert_eq!(
+        sketch_picks(&h),
+        [element_ref("na000003"), element_ref("na000001")]
+    );
+    press_x(&mut h);
+    assert_eq!(construction_now(&f, &mut h), constructed(&[]));
+    assert!(!palette_construction(&h));
+    // Each X its own step: one Undo takes back the second alone.
+    undo_by_key(&mut h);
+    assert_eq!(
+        construction_now(&f, &mut h),
+        constructed(&["na000001", "na000003"])
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn construction_switches_a_circle_and_an_arc_selected_with_a_line() {
+    let f = fixture();
+    let mut h = constructing_sketch(&f);
+    // The circle's edge (105, 20), the arc's top (100, 70), and the middle line (30, 30).
+    sketch_events(&f, &mut h, &clicked(105.0, 20.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(100.0, 70.0));
+    sketch_events(&f, &mut h, &ctrl_clicked(30.0, 30.0));
+    assert_eq!(
+        sketch_picks(&h),
+        [
+            element_ref("cc000001"),
+            element_ref("ab000001"),
+            element_ref("na000002")
+        ]
+    );
+    press_x(&mut h);
+    assert_eq!(
+        construction_now(&f, &mut h),
+        constructed(&["na000002", "na000003", "cc000001", "ab000001"])
+    );
+    assert_eq!(
+        fields_sent(&h),
+        [
+            "circles.cc000001.construction",
+            "arcs.ab000001.construction",
+            "lines.na000002.construction"
+        ]
+    );
+    // Three edits, one step.
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), CONSTRUCTING);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn construction_with_only_a_point_and_a_constraint_selected_turns_the_palettes_setting() {
+    use silico_core::document::ElementKind;
+    let f = fixture();
+    let mut h = constructing_sketch(&f);
+    // The lone point (70, 40), and the horizontal kd000001 with Ctrl, as a click on its glyph
+    // selects it.
+    sketch_events(&f, &mut h, &clicked(70.0, 40.0));
+    let hit = silico_app::sketch::hit::Hit {
+        id: silico_core::document::ElementId::new("kd000001").unwrap(),
+        kind: ElementKind::Constraint,
+    };
+    h.state_mut().tabs_mut()[0]
+        .sketch
+        .as_mut()
+        .unwrap()
+        .selection
+        .click(Some(hit.into()), true);
+    let picked = [element_ref("pd000001"), element_ref("kd000001")];
+    assert_eq!(sketch_picks(&h), picked);
+    press_x(&mut h);
+    settled(&mut h);
+    assert!(palette_construction(&h));
+    press_x(&mut h);
+    settled(&mut h);
+    assert!(!palette_construction(&h));
+    // Nothing sent, the document as it was, the selection kept.
+    assert!(h.state().tabs()[0].sent.is_empty());
+    assert_eq!(text_of(&f.sessions, &h), CONSTRUCTING);
+    assert_eq!(sketch_picks(&h), picked);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn construction_with_nothing_selected_turns_the_palettes_setting_and_the_next_line_is_construction()
+{
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = constructing_sketch(&f);
+    assert!(sketch_picks(&h).is_empty());
+    press_x(&mut h);
+    assert!(palette_construction(&h));
+    assert!(h.state().tabs()[0].sent.is_empty());
+    // A line from (10, 90) to (50, 90), away from the rest; Enter ends its chain.
+    h.state_mut().tabs_mut()[0].sketch_toggle(Choice::Draw(ToolKind::Line));
+    sketch_events(&f, &mut h, &clicked(10.0, 90.0));
+    sketch_events(&f, &mut h, &clicked(50.0, 90.0));
+    h.key_press(eframe::egui::Key::Enter);
+    step(&mut h);
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let new: Vec<bool> = sketch
+        .lines
+        .iter()
+        .filter(|l| !["na000001", "na000002", "na000003"].contains(&l.id.as_str()))
+        .map(|l| l.construction)
+        .collect();
+    assert_eq!(new, [true]);
+    // The curves there before untouched.
+    let before: Vec<(String, bool)> = construction_of(&sketch)
+        .into_iter()
+        .filter(|(id, _)| {
+            ["na000001", "na000002", "na000003", "cc000001", "ab000001"].contains(&id.as_str())
+        })
+        .collect();
+    assert_eq!(before, constructed(&["na000003"]));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn constructions_button_and_x_do_the_same_to_a_selection() {
+    // From the same selection, the bottom and the construction line: the button's
+    // edit and the key's, the same file, and one step each.
+    let by = |button: bool| {
+        let f = fixture();
+        let mut h = constructing_sketch(&f);
+        sketch_events(&f, &mut h, &clicked(30.0, 10.0));
+        sketch_events(&f, &mut h, &ctrl_clicked(30.0, 50.0));
+        if button {
+            sketch_button(&h, "Construction").click();
+            step(&mut h);
+            step(&mut h);
+        } else {
+            press_x(&mut h);
+        }
+        let now = construction_now(&f, &mut h);
+        let sent = fields_sent(&h);
+        let palette = palette_construction(&h);
+        let text = text_of(&f.sessions, &h);
+        undo_by_key(&mut h);
+        let undone = text_of(&f.sessions, &h);
+        assert_eq!(never_waits::waits(), 0);
+        (now, sent, palette, text, undone)
+    };
+    let (now, sent, palette, text, undone) = by(true);
+    assert_eq!(now, constructed(&["na000001", "na000003"]));
+    assert_eq!(sent, ["lines.na000001.construction"]);
+    assert!(!palette);
+    assert_eq!(undone, CONSTRUCTING);
+    assert_eq!(by(false), (now, sent, palette, text, undone));
+}
+
 // ---- The lean review of 453ccfd8 and f89d73c7 ----
 
 /// As [`counting`], but a length of 97 mm or 98 mm disagrees with the others (in conflict,
