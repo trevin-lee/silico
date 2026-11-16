@@ -1094,6 +1094,11 @@ pub const PANEL_TITLE_PADDING_RIGHT: f32 = 6.0;
 pub const PANEL_TITLE_GAP: f32 = 6.0;
 pub const PANEL_TITLE_BUTTON_SIZE: f32 = 20.0;
 
+/// The browser collapsed to its strip (`#main.browser-collapsed`, app.js's `renderBrowser`):
+/// its one button, Show browser, an `.ab-btn` ([`APP_BAR_BUTTON_SIZE`] square) with `margin:
+/// 2px`, so 2 in from the strip's top and left.
+pub const BROWSER_STRIP_BUTTON_MARGIN: f32 = 2.0;
+
 /// A row's padding at its left before its depth's indents (`6 + depth * 18`), at its right,
 /// and the gap between its parts (`.row`).
 pub const BROWSER_ROW_PADDING_LEFT: f32 = 6.0;
@@ -2649,6 +2654,9 @@ mod tests {
         };
         // `.panel-title`: `padding: 0 6px 0 var(--pad)`, `--pad: 12px`.
         assert_eq!(BROWSER_TITLE_PADDING, 12.0);
+        // The collapsed strip's button: `.ab-btn` (`--btn: 22px`) with `margin: 2px`.
+        assert_eq!(BROWSER_STRIP_BUTTON_MARGIN, 2.0);
+        assert_eq!(APP_BAR_BUTTON_SIZE, 22.0);
         // `.row`: `gap: 4px; padding-right: 6px`, `padding-left: 6 + depth * 18`.
         assert_eq!(BROWSER_ROW_PADDING_LEFT, 6.0);
         assert_eq!(BROWSER_ROW_PADDING_RIGHT, 6.0);

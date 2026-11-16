@@ -369,6 +369,7 @@ mod tests {
             marked_by: None,
             consumers: Default::default(),
             suppressed: false,
+            last_healthy: None,
         }
     }
 

@@ -22,43 +22,14 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use silico_app::App;
 use silico_app::tab::Sent;
-use silico_core::cache::Cache;
 use silico_core::command::{CheckModel, Sessions};
 use silico_core::disk::Clock;
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
-use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
 use ui::{
-    in_status_bar, plain_read, redo_by_key, settled, step, step_until, tooltip, tooltip_title,
-    type_name, undo_by_key,
+    EXAMPLE, SKETCHED_EXAMPLE, in_status_bar, plain_read, redo_by_key, settled, stand_in_sessions,
+    step, step_until, tooltip, tooltip_title, type_name, undo_by_key,
 };
-
-/// The M2.1 example: a block, a pin, and the hole the pin cuts in it.
-const EXAMPLE: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
-    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
-    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"}
-  ]
-}
-"#;
-
-/// The example with a triangle sketched on XY beside the block, to pad.
-const SKETCHED_EXAMPLE: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
-    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
-    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"},
-    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 30, "y": 0, "construction": false}, {"id": "pb000000", "x": 50, "y": 0, "construction": false}, {"id": "pc000000", "x": 30, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
-  ]
-}
-"#;
 
 type Fake = Arc<FakeKernel>;
 type AppHarness = Harness<'static, App<Fake>>;
@@ -72,17 +43,11 @@ struct Fixture {
 /// Sessions on the fake kernel, each file compared on disk by its bytes, at once.
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let solver = FakeSketches::new();
     let now: Clock = Arc::new(Instant::now);
-    let sessions = Sessions::with_stand_ins(
-        Arc::clone(&kernel),
-        move |cache| Cache::with_secret(cache, &secret),
-        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    )
-    .watching_disk(Duration::ZERO, Arc::new(plain_read), now)
-    .unwrap();
+    let sessions = stand_in_sessions(&dir, &kernel, &FakeSketches::new())
+        .watching_disk(Duration::ZERO, Arc::new(plain_read), now)
+        .unwrap();
     Fixture {
         dir,
         kernel,

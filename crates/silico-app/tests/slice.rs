@@ -231,7 +231,7 @@ fn sketch_click(h: &mut AppUi<KernelPool>, at: [f64; 2]) {
         "{at:?} at {place:?}, under {:?}",
         overlays(h)
     );
-    click_as_a_person(h, place, false);
+    click_as_a_person(h, place, Modifiers::NONE);
 }
 
 /// Stepped until sketch mode's newest read holds what `holds` asks of its members; failing,
@@ -792,7 +792,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             "the corner at {at:?}, under {:?}",
             overlays(h)
         );
-        click_as_a_person(h, at, false);
+        click_as_a_person(h, at, Modifiers::NONE);
         step_until(h, "the click on the corner answered", |h| {
             selected_names(h) != before
         });
