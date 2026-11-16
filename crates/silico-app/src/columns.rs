@@ -2,7 +2,10 @@
 //! side pane's border dragged to resize it (Trevin, 2026-11-09; docs/design/m5-ui/DESIGN.md,
 //! *Layout*), the canvas taking up the difference, and each laid out for the window's width
 //! ([`fit`]), the side panes giving back width toward their least before the canvas goes
-//! below its own. The widths dragged to are kept across restarts (`crate::pane_widths`).
+//! below its own. The browser collapses to a strip ([`BROWSER_STRIP_W`]: the prototype's
+//! `#main.browser-collapsed`, its border's handle gone), the canvas taking its width, and is
+//! shown again at the width it was dragged to. The widths dragged to, and whether the browser
+//! is collapsed, are kept across restarts (`crate::pane_widths`).
 //!
 //! The borders are dragged by handles of the app's own, over the tiles' 1-point gaps, not
 //! by `egui_tiles`' splitters: those share a drag with the column beyond the canvas once
@@ -12,7 +15,9 @@
 
 use eframe::egui::{self, CursorIcon, PointerButton, Rect, Sense, Ui};
 
-use crate::pane_widths::{BROWSER_MIN_W, KeptWidths, PROPERTIES_MIN_W, Widths};
+use crate::pane_widths::{
+    BROWSER_MIN_W, BROWSER_STRIP_W, Kept, KeptWidths, PROPERTIES_MIN_W, Widths,
+};
 use crate::theme::CANVAS_MIN_WIDTH;
 
 /// A side pane, whose column's inner border is dragged.
@@ -106,6 +111,26 @@ pub(crate) fn fit(chosen: Widths, width: f32) -> Laid {
     }
 }
 
+/// The columns for a window `width` wide, the browser collapsed to its strip
+/// ([`BROWSER_STRIP_W`]) and the property panel as `chosen` (clamped into its range),
+/// the canvas the rest: while that leaves the canvas at least [`CANVAS_MIN_WIDTH`], the
+/// property panel as chosen; else the property panel gives back what the canvas's least
+/// needs, down to its own least; and then the canvas goes below its own, down to nothing, as
+/// [`fit`] lays them out with the browser open. The strip never gives width back.
+pub(crate) fn fit_strip(chosen: Widths, width: f32) -> Laid {
+    let properties = chosen.clamped().properties;
+    // NaN's `max` is 0.
+    let width = width.max(0.0);
+    let properties = properties
+        .min(width - BROWSER_STRIP_W - CANVAS_MIN_WIDTH)
+        .max(PROPERTIES_MIN_W);
+    Laid {
+        browser: BROWSER_STRIP_W,
+        canvas: (width - BROWSER_STRIP_W - properties).max(0.0),
+        properties,
+    }
+}
+
 /// The width `side`'s column is dragged to: `start`, its width as the drag began, moved by
 /// `travel`, the pointer's way right since its press (the browser's border, its column's
 /// right edge, widening it; the property panel's, its left edge, narrowing it), to a whole
@@ -134,12 +159,15 @@ struct Drag {
 }
 
 /// The side panes' widths, as the person chose them by dragging their borders (the
-/// defaults till then, or what the kept file holds), and the drag under way.
+/// defaults till then, or what the kept file holds), whether the browser is collapsed to its
+/// strip, and the drag under way.
 pub(crate) struct Columns {
     chosen: Widths,
+    collapsed: bool,
     drag: Option<Drag>,
-    /// Whether a border has been dragged: the file's widths, read after, aren't taken.
-    dragged: bool,
+    /// Whether a border has been dragged, or the browser collapsed or shown: what the file
+    /// keeps, read after, isn't taken.
+    changed: bool,
     kept: KeptWidths,
 }
 
@@ -148,8 +176,9 @@ impl Columns {
     pub(crate) fn new() -> Self {
         Columns {
             chosen: Widths::default(),
+            collapsed: false,
             drag: None,
-            dragged: false,
+            changed: false,
             kept: KeptWidths::unkept(),
         }
     }
@@ -164,18 +193,44 @@ impl Columns {
         self.chosen
     }
 
+    /// Whether the browser is collapsed to its strip.
+    pub(crate) fn collapsed(&self) -> bool {
+        self.collapsed
+    }
+
+    /// The browser collapsed to its strip, or shown again at the width chosen for it: a drag
+    /// under way ended first (its widths kept, as a release keeps them), then the new state
+    /// kept, and the next frame laid out from it.
+    pub(crate) fn toggle_browser(&mut self, ctx: &egui::Context) {
+        self.end(ctx);
+        self.collapsed = !self.collapsed;
+        self.changed = true;
+        self.kept.save(self.keeps());
+        ctx.request_repaint();
+    }
+
+    /// What the file is to keep: the widths chosen, and whether the browser is collapsed.
+    fn keeps(&self) -> Kept {
+        Kept {
+            widths: self.chosen,
+            browser_collapsed: self.collapsed,
+        }
+    }
+
     /// Where the widths are kept.
     pub(crate) fn kept(&self) -> &KeptWidths {
         &self.kept
     }
 
-    /// The kept widths taken, if the file has been read since the last poll and no border
-    /// has been dragged before it was (the person's drag wins, and is written at its end).
+    /// What the file keeps taken, if it has been read since the last poll and no border has
+    /// been dragged, nor the browser collapsed or shown, before it was (the person's change
+    /// wins, and is written as it's made).
     pub(crate) fn poll(&mut self) {
         if let Some(read) = self.kept.poll()
-            && !self.dragged
+            && !self.changed
         {
-            self.chosen = read;
+            self.chosen = read.widths;
+            self.collapsed = read.browser_collapsed;
         }
     }
 
@@ -184,10 +239,12 @@ impl Columns {
         self.kept.waking(ctx);
     }
 
-    /// The columns for a window `width` wide ([`fit`]), from the widths chosen, but while a
-    /// border is dragged, the other column held at the width it was shown at as the drag
-    /// began: so the dragged one moves by the drag alone, even in a window narrow enough
-    /// that the panes give width back, and the other's choice is kept for a wider one.
+    /// The columns for a window `width` wide ([`fit`], or [`fit_strip`] while the browser is
+    /// collapsed), from the widths chosen, but while a border is dragged, the other column
+    /// held at the width it was shown at as the drag began: so the dragged one moves by the
+    /// drag alone, even in a window narrow enough that the panes give width back, and the
+    /// other's choice is kept for a wider one. A collapsed browser's strip is the strip
+    /// whatever is held, its chosen width kept for when it's shown.
     pub(crate) fn laid(&self, width: f32) -> Laid {
         let mut widths = self.chosen;
         if let Some(drag) = self.drag {
@@ -196,7 +253,11 @@ impl Columns {
                 Side::Properties => widths.browser = drag.other,
             }
         }
-        fit(widths, width)
+        if self.collapsed {
+            fit_strip(widths, width)
+        } else {
+            fit(widths, width)
+        }
     }
 
     /// Each side pane's border's handle, over the columns laid as `laid` in `area` (the
@@ -205,10 +266,14 @@ impl Columns {
     /// or dragged. A drag by the primary button moves its column by the pointer's way from
     /// its press, clamped ([`dragged`]), the other held as shown, from the next frame; its
     /// widths are kept as it ends. Drawn after the panes, so it's on top of what they sense
-    /// beside the border.
+    /// beside the border. A collapsed browser's strip has none (`#main.browser-collapsed
+    /// .sash.browser { display: none }`).
     pub(crate) fn handles(&mut self, ui: &Ui, area: Rect, laid: Laid) {
         let grab = ui.style().interaction.resize_grab_radius_side;
         for side in [Side::Browser, Side::Properties] {
+            if side == Side::Browser && self.collapsed {
+                continue;
+            }
             let x = match side {
                 Side::Browser => area.left() + laid.browser - BORDER,
                 Side::Properties => area.left() + laid.browser + laid.canvas,
@@ -255,7 +320,7 @@ impl Columns {
                     Side::Browser => self.chosen.browser = width,
                     Side::Properties => self.chosen.properties = width,
                 }
-                self.dragged = true;
+                self.changed = true;
                 ui.ctx().request_repaint();
             }
             if response.drag_stopped_by(PointerButton::Primary) {
@@ -286,7 +351,7 @@ impl Columns {
     /// choice as it was, and the next frame laid out from them.
     fn end(&mut self, ctx: &egui::Context) {
         if self.drag.take().is_some() {
-            self.kept.save(self.chosen);
+            self.kept.save(self.keeps());
             ctx.request_repaint();
         }
     }
@@ -507,6 +572,101 @@ mod tests {
     }
 
     #[test]
+    fn a_collapsed_browser_is_a_28_point_strip_and_the_canvas_takes_the_rest() {
+        // By hand: 1280 − 28 − 296 = 956; from a browser dragged to 400, the same (its width
+        // kept, not laid out); 1280 − 28 − 500 = 752.
+        assert_eq!(
+            fit_strip(widths(248.0, 296.0), 1280.0),
+            laid(28.0, 956.0, 296.0)
+        );
+        assert_eq!(
+            fit_strip(widths(400.0, 296.0), 1280.0),
+            laid(28.0, 956.0, 296.0)
+        );
+        assert_eq!(
+            fit_strip(widths(248.0, 500.0), 1280.0),
+            laid(28.0, 752.0, 500.0)
+        );
+        // At 664, 28 + 296 + 340 exactly: the canvas at its least. Under it the property
+        // panel gives back toward its least, 232: at 650, 650 − 28 − 340 = 282; at 600, 232
+        // (600 − 368 = 232 exactly); at 650.5, 282.5, the fraction the panel's.
+        assert_eq!(
+            fit_strip(widths(248.0, 296.0), 664.0),
+            laid(28.0, 340.0, 296.0)
+        );
+        assert_eq!(
+            fit_strip(widths(248.0, 296.0), 650.0),
+            laid(28.0, 340.0, 282.0)
+        );
+        assert_eq!(
+            fit_strip(widths(248.0, 296.0), 600.0),
+            laid(28.0, 340.0, 232.0)
+        );
+        assert_eq!(
+            fit_strip(widths(248.0, 296.0), 650.5),
+            laid(28.0, 340.0, 282.5)
+        );
+        // Then the canvas, down to nothing: 500 − 28 − 232 = 240; at 260, and under it, 0,
+        // the property panel past the window's edge; a width that isn't one as 0.
+        assert_eq!(
+            fit_strip(widths(248.0, 296.0), 500.0),
+            laid(28.0, 240.0, 232.0)
+        );
+        for width in [260.0, 100.0, 0.0, -5.0, f32::NAN] {
+            assert_eq!(
+                fit_strip(widths(248.0, 296.0), width),
+                laid(28.0, 0.0, 232.0),
+                "{width}"
+            );
+        }
+        // The property panel's choice clamped first: a NaN its least, an infinity the
+        // widest, 8192, which at 1280 gives back to 1280 − 368 = 912.
+        assert_eq!(
+            fit_strip(widths(248.0, f32::NAN), 1280.0),
+            laid(28.0, 1020.0, 232.0)
+        );
+        assert_eq!(
+            fit_strip(widths(248.0, f32::INFINITY), 1280.0),
+            laid(28.0, 340.0, 912.0)
+        );
+    }
+
+    #[test]
+    fn collapsing_keeps_the_widths_chosen_and_ends_a_drag_under_way() {
+        let ctx = egui::Context::default();
+        let mut columns = Columns::new();
+        columns.chosen = widths(330.0, 296.0);
+        // The browser's border held at 330 from 248.
+        columns.drag = Some(Drag {
+            side: Side::Browser,
+            start: 248.0,
+            origin: 0.0,
+            other: 296.0,
+        });
+        columns.toggle_browser(&ctx);
+        assert!(columns.collapsed());
+        assert!(columns.drag.is_none(), "the drag still held");
+        assert_eq!(columns.chosen(), widths(330.0, 296.0));
+        assert_eq!(columns.laid(1280.0), laid(28.0, 956.0, 296.0));
+        // The property panel's border held while it's collapsed: the strip stays the strip,
+        // never the 28 it's shown at taken as the browser's choice.
+        columns.chosen = widths(330.0, 320.0);
+        columns.drag = Some(Drag {
+            side: Side::Properties,
+            start: 296.0,
+            origin: 0.0,
+            other: 28.0,
+        });
+        assert_eq!(columns.laid(1280.0), laid(28.0, 932.0, 320.0));
+        columns.toggle_browser(&ctx);
+        // Shown: at the 330 it was dragged to, the property panel at its 320: 1280 − 650.
+        assert!(!columns.collapsed());
+        assert!(columns.drag.is_none());
+        assert_eq!(columns.chosen(), widths(330.0, 320.0));
+        assert_eq!(columns.laid(1280.0), laid(330.0, 630.0, 320.0));
+    }
+
+    #[test]
     fn a_drag_whose_release_goes_unseen_ends_once_the_button_is_up_and_is_kept() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join(crate::pane_widths::FILE_NAME);
@@ -519,7 +679,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         columns.chosen = widths(300.0, 296.0);
-        columns.dragged = true;
+        columns.changed = true;
         let held = Drag {
             side: Side::Browser,
             start: 248.0,

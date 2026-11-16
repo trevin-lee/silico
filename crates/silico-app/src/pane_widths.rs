@@ -1,14 +1,16 @@
 //! The side panes' widths (the browser's column and the property panel's), as the person
-//! last dragged their borders (`crate::columns`), kept in a file of the app's own in the
-//! platform's app-data folder, beside the recent documents ([`KeptWidths::default_file`]),
-//! so the window opens laid out as it was left.
+//! last dragged their borders (`crate::columns`), and whether the browser is collapsed to its
+//! strip, kept in a file of the app's own in the platform's app-data folder, beside the
+//! recent documents ([`KeptWidths::default_file`]), so the window opens laid out as it was
+//! left.
 //!
-//! The file is read on a thread of its own, which writes it at the end of each drag, so the
-//! UI thread never waits on it (invariant 4): the window asks the thread
-//! ([`KeptWidths::save`]) and takes what it read ([`KeptWidths::poll`]). Its form is a header
-//! line, then the browser's width and the property panel's, each on a line of its own in
-//! whole points (`text`); a file that isn't one (`parse`), or can't be read, is the
-//! defaults, never a failure; and a width out of range is clamped into it
+//! The file is read on a thread of its own, which writes it at the end of each drag and as
+//! the browser is collapsed or shown, so the UI thread never waits on it (invariant 4): the
+//! window asks the thread ([`KeptWidths::save`]) and takes what it read
+//! ([`KeptWidths::poll`]). Its form is a header line, then the browser's width and the
+//! property panel's, each on a line of its own in whole points, then, only while the browser
+//! is collapsed, `browser collapsed` (`text`); a file that isn't one (`parse`), or can't be
+//! read, is the defaults, never a failure; and a width out of range is clamped into it
 //! ([`Widths::clamped`]). At most [`MAX_FILE_BYTES`] of it is read.
 
 use std::path::{Path, PathBuf};
@@ -33,6 +35,11 @@ pub const MAX_FILE_BYTES: usize = 4096;
 /// `border-right`, `#right`'s `border-left`, `box-sizing: border-box`).
 pub(crate) const BROWSER_W: f32 = 248.0;
 pub(crate) const PROPERTIES_W: f32 = 296.0;
+
+/// The browser's column collapsed to its strip (`#main.browser-collapsed`:
+/// `grid-template-columns: 28px 1fr var(--right-w)`), its border inside it as the open
+/// column's is; whatever width it was dragged to is kept for when it's shown again.
+pub(crate) const BROWSER_STRIP_W: f32 = 28.0;
 
 /// The browser's least column (its border in it), from what its deepest row holds (`.row`,
 /// `crate::panes`' `row`): a body's or a sketch's, two levels in, 6 of padding and two
@@ -99,23 +106,45 @@ fn within(width: f32, min: f32) -> f32 {
     }
 }
 
-/// The widths of the file `bytes`, clamped ([`Widths::clamped`]): the defaults unless it's
-/// UTF-8, its first line [`HEADER`], and the two lines after it `browser N` and `properties
-/// N`, in that order, each `N` a whole number of points in decimal digits (the last line's
-/// break optional), and nothing after them.
-pub(crate) fn parse(bytes: &[u8]) -> Widths {
+/// What the file keeps: the side panes' widths, and whether the browser is collapsed to its
+/// strip ([`BROWSER_STRIP_W`]).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Kept {
+    pub widths: Widths,
+    pub browser_collapsed: bool,
+}
+
+/// The line that says the browser is collapsed, after the widths.
+const COLLAPSED: &str = "browser collapsed";
+
+/// What the file `bytes` keeps, its widths clamped ([`Widths::clamped`]): the defaults (the
+/// browser shown) unless it's UTF-8, its first line [`HEADER`], and the two lines after it
+/// `browser N` and `properties N`, in that order, each `N` a whole number of points in
+/// decimal digits, then either nothing, the browser shown (as every file was written before
+/// the browser collapsed), or `browser collapsed` and nothing after it (the last line's break
+/// optional).
+pub(crate) fn parse(bytes: &[u8]) -> Kept {
     let parsed = || {
         let text = std::str::from_utf8(bytes).ok()?;
         let body = text.strip_prefix(HEADER)?.strip_prefix('\n')?;
         let mut lines = body.split_terminator('\n');
         let browser = points(lines.next()?.strip_prefix("browser ")?)?;
         let properties = points(lines.next()?.strip_prefix("properties ")?)?;
-        lines.next().is_none().then_some(Widths {
-            browser,
-            properties,
+        let browser_collapsed = match lines.next() {
+            None => false,
+            Some(COLLAPSED) => true,
+            Some(_) => return None,
+        };
+        lines.next().is_none().then_some(Kept {
+            widths: Widths {
+                browser,
+                properties,
+            }
+            .clamped(),
+            browser_collapsed,
         })
     };
-    parsed().map_or_else(Widths::default, Widths::clamped)
+    parsed().unwrap_or_default()
 }
 
 /// `text` as a width, if it's decimal digits alone: a number past `u32`'s range is past
@@ -127,26 +156,31 @@ fn points(text: &str) -> Option<f32> {
     Some(text.parse::<u32>().map_or(WIDEST, |points| points as f32))
 }
 
-/// The file's text for `widths`: [`HEADER`], then each width, clamped, to the nearest whole
-/// point, on a line of its own.
-pub(crate) fn text(widths: Widths) -> String {
-    let widths = widths.clamped();
+/// The file's text for `kept`: [`HEADER`], then each width, clamped, to the nearest whole
+/// point, on a line of its own, then `browser collapsed` on one of its own if it is.
+pub(crate) fn text(kept: Kept) -> String {
+    let widths = kept.widths.clamped();
+    let collapsed = if kept.browser_collapsed {
+        format!("{COLLAPSED}\n")
+    } else {
+        String::new()
+    };
     format!(
-        "{HEADER}\nbrowser {}\nproperties {}\n",
+        "{HEADER}\nbrowser {}\nproperties {}\n{collapsed}",
         widths.browser.round(),
         widths.properties.round()
     )
 }
 
-/// The panes' widths as the file holds them, as the window last heard them from the thread
-/// that keeps them.
+/// The panes' widths, and whether the browser is collapsed, as the file holds them, as the
+/// window last heard them from the thread that keeps them.
 pub struct KeptWidths {
     /// Whether the file has been read (or found unreadable) yet.
     read: bool,
-    /// The file's widths, once read, until the window takes them.
-    widths: Option<Widths>,
-    asks: Option<Sender<Widths>>,
-    told: Option<Receiver<Widths>>,
+    /// What the file keeps, once read, until the window takes it.
+    kept: Option<Kept>,
+    asks: Option<Sender<Kept>>,
+    told: Option<Receiver<Kept>>,
     wake: Wake,
 }
 
@@ -172,7 +206,7 @@ impl KeptWidths {
         match started {
             Ok(_) => KeptWidths {
                 read: false,
-                widths: None,
+                kept: None,
                 asks: Some(asks),
                 told: Some(told),
                 wake,
@@ -189,7 +223,7 @@ impl KeptWidths {
     pub(crate) fn unkept() -> Self {
         KeptWidths {
             read: true,
-            widths: None,
+            kept: None,
             asks: None,
             told: None,
             wake: Wake::default(),
@@ -213,23 +247,23 @@ impl KeptWidths {
         self.asks.is_some()
     }
 
-    /// The widths read from the file, once, the first poll after the thread tells them,
-    /// never waited for.
-    pub(crate) fn poll(&mut self) -> Option<Widths> {
+    /// What was read from the file, once, the first poll after the thread tells it, never
+    /// waited for.
+    pub(crate) fn poll(&mut self) -> Option<Kept> {
         if let Some(told) = &self.told {
-            for widths in told.try_iter() {
-                self.widths = Some(widths);
+            for kept in told.try_iter() {
+                self.kept = Some(kept);
                 self.read = true;
             }
         }
-        self.widths.take()
+        self.kept.take()
     }
 
-    /// `widths` kept: written to the file by the thread.
-    pub(crate) fn save(&self, widths: Widths) {
+    /// `kept` kept: written to the file by the thread.
+    pub(crate) fn save(&self, kept: Kept) {
         if let Some(asks) = &self.asks {
-            // A thread that has ended keeps nothing more; the window keeps its widths.
-            let _ = asks.send(widths);
+            // A thread that has ended keeps nothing more; the window keeps its layout.
+            let _ = asks.send(kept);
         }
     }
 
@@ -239,14 +273,15 @@ impl KeptWidths {
     }
 }
 
-/// The thread that keeps the widths: `file` read once and its widths told (the defaults, if
-/// it can't be read); then each ask taken as it comes, the newest of those already waiting,
-/// and written, even what the file was last read or written with: another instance of the
-/// app may have written it since, and the last drag to end is what the file keeps.
-fn keep(file: &Path, read: Read, asked: &Receiver<Widths>, tell: &Sender<Widths>, wake: &Wake) {
+/// The thread that keeps the widths: `file` read once and what it keeps told (the defaults,
+/// if it can't be read); then each ask taken as it comes, the newest of those already
+/// waiting, and written, even what the file was last read or written with: another instance
+/// of the app may have written it since, and the last drag (or collapse) to end is what the
+/// file keeps.
+fn keep(file: &Path, read: Read, asked: &Receiver<Kept>, tell: &Sender<Kept>, wake: &Wake) {
     let _span = tracing::info_span!("pane widths", file = %file.display()).entered();
-    let widths = read(file).map_or_else(Widths::default, |bytes| parse(&bytes));
-    if tell.send(widths).is_err() {
+    let kept = read(file).map_or_else(Kept::default, |bytes| parse(&bytes));
+    if tell.send(kept).is_err() {
         return;
     }
     wake.wake();
@@ -262,6 +297,14 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Widths>, tell: &Sender<Widths>
 mod tests {
     use super::*;
 
+    /// `widths` with the browser shown.
+    fn shown(widths: Widths) -> Kept {
+        Kept {
+            widths,
+            browser_collapsed: false,
+        }
+    }
+
     #[test]
     fn widths_are_read_as_written() {
         let widths = Widths {
@@ -269,14 +312,14 @@ mod tests {
             properties: 260.0,
         };
         assert_eq!(
-            text(widths),
+            text(shown(widths)),
             "silico pane-widths 1\nbrowser 300\nproperties 260\n"
         );
-        assert_eq!(parse(text(widths).as_bytes()), widths);
+        assert_eq!(parse(text(shown(widths)).as_bytes()), shown(widths));
         // The last line's break is optional; leading zeros are the number's.
         assert_eq!(
             parse(b"silico pane-widths 1\nbrowser 0300\nproperties 260"),
-            widths
+            shown(widths)
         );
         // Written to the nearest whole point.
         let halves = Widths {
@@ -284,12 +327,12 @@ mod tests {
             properties: 260.4,
         };
         assert_eq!(
-            text(halves),
+            text(shown(halves)),
             "silico pane-widths 1\nbrowser 301\nproperties 260\n"
         );
         // The defaults, as the prototype's columns: 248 and 296.
         assert_eq!(
-            text(Widths::default()),
+            text(Kept::default()),
             "silico pane-widths 1\nbrowser 248\nproperties 296\n"
         );
     }
@@ -300,6 +343,7 @@ mod tests {
             browser: 248.0,
             properties: 296.0,
         };
+        let defaults = shown(defaults);
         for bytes in [
             &b""[..],
             b"\xff\xfe",
@@ -341,6 +385,55 @@ mod tests {
     }
 
     #[test]
+    fn a_collapsed_browser_is_a_line_of_its_own_after_the_widths() {
+        let collapsed = Kept {
+            widths: Widths {
+                browser: 320.0,
+                properties: 300.0,
+            },
+            browser_collapsed: true,
+        };
+        let written = "silico pane-widths 1\nbrowser 320\nproperties 300\nbrowser collapsed\n";
+        assert_eq!(text(collapsed), written);
+        assert_eq!(parse(written.as_bytes()), collapsed);
+        // Its break optional, as the last line's is.
+        assert_eq!(
+            parse(b"silico pane-widths 1\nbrowser 320\nproperties 300\nbrowser collapsed"),
+            collapsed
+        );
+        // The width it was dragged to kept under it, clamped as any is.
+        assert_eq!(
+            parse(b"silico pane-widths 1\nbrowser 10\nproperties 300\nbrowser collapsed\n"),
+            Kept {
+                widths: Widths {
+                    browser: 200.0,
+                    properties: 300.0,
+                },
+                browser_collapsed: true,
+            }
+        );
+        // Anything else after the widths, or after it, is no file of this form: the
+        // defaults, shown.
+        for bytes in [
+            &b"silico pane-widths 1\nbrowser 320\nproperties 300\nbrowser shown\n"[..],
+            b"silico pane-widths 1\nbrowser 320\nproperties 300\nbrowser collapsed \n",
+            b"silico pane-widths 1\nbrowser 320\nproperties 300\nBrowser collapsed\n",
+            b"silico pane-widths 1\nbrowser 320\nproperties 300\nbrowser collapsed\r\n",
+            b"silico pane-widths 1\nbrowser 320\nproperties 300\nbrowser collapsed\n\n",
+            b"silico pane-widths 1\nbrowser 320\nproperties 300\nbrowser collapsed\nbrowser collapsed\n",
+            b"silico pane-widths 1\nbrowser collapsed\nbrowser 320\nproperties 300\n",
+            b"silico pane-widths 1\nbrowser 320\nbrowser collapsed\nproperties 300\n",
+        ] {
+            assert_eq!(
+                parse(bytes),
+                Kept::default(),
+                "{:?}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+
+    #[test]
     fn a_width_out_of_range_is_clamped_into_it() {
         // By hand: the browser's least 200, the property panel's 232, the widest 8192.
         let read = |browser: &str, properties: &str| {
@@ -348,6 +441,7 @@ mod tests {
                 format!("silico pane-widths 1\nbrowser {browser}\nproperties {properties}\n")
                     .as_bytes(),
             )
+            .widths
         };
         let widths = |browser, properties| Widths {
             browser,
@@ -364,17 +458,17 @@ mod tests {
         assert_eq!(read(&"9".repeat(1000), "300"), widths(8192.0, 300.0));
         // And clamped when written.
         assert_eq!(
-            text(widths(10.0, f32::NAN)),
+            text(shown(widths(10.0, f32::NAN))),
             "silico pane-widths 1\nbrowser 200\nproperties 232\n"
         );
         assert_eq!(
-            text(widths(f32::INFINITY, -5.0)),
+            text(shown(widths(f32::INFINITY, -5.0))),
             "silico pane-widths 1\nbrowser 8192\nproperties 232\n"
         );
     }
 
     /// The thread's word polled until it's read.
-    fn polled_until_read(widths: &mut KeptWidths) -> Widths {
+    fn polled_until_read(widths: &mut KeptWidths) -> Kept {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
             if let Some(read) = widths.poll() {
@@ -404,23 +498,23 @@ mod tests {
         let file = dir.path().join("deep").join(FILE_NAME);
         // No file: the defaults, told once.
         let mut kept = KeptWidths::at(file.clone());
-        assert_eq!(polled_until_read(&mut kept), Widths::default());
+        assert_eq!(polled_until_read(&mut kept), Kept::default());
         assert_eq!(kept.poll(), None);
         assert!(!file.exists());
         // Asked twice: the file holds the newest.
-        kept.save(Widths {
+        kept.save(shown(Widths {
             browser: 500.0,
             properties: 500.0,
-        });
+        }));
         let wider = Widths {
             browser: 320.0,
             properties: 300.0,
         };
-        kept.save(wider);
+        kept.save(shown(wider));
         written(&file, "silico pane-widths 1\nbrowser 320\nproperties 300\n");
         // Another instance on the same file reads them.
         let mut again = KeptWidths::at(file.clone());
-        assert_eq!(polled_until_read(&mut again), wider);
+        assert_eq!(polled_until_read(&mut again), shown(wider));
         // No file but the widths' is left in its folder.
         let names: Vec<_> = std::fs::read_dir(file.parent().unwrap())
             .unwrap()
@@ -458,10 +552,10 @@ mod tests {
         }
         assert_eq!(
             polled_until_read(&mut kept),
-            Widths {
+            shown(Widths {
                 browser: 300.0,
                 properties: 260.0,
-            }
+            })
         );
     }
 
@@ -486,11 +580,11 @@ mod tests {
                 properties: 260.0,
             },
         );
-        first.save(one);
+        first.save(shown(one));
         written(&file, "silico pane-widths 1\nbrowser 320\nproperties 300\n");
-        second.save(other);
+        second.save(shown(other));
         written(&file, "silico pane-widths 1\nbrowser 400\nproperties 260\n");
-        first.save(one);
+        first.save(shown(one));
         written(&file, "silico pane-widths 1\nbrowser 320\nproperties 300\n");
     }
 
@@ -501,7 +595,7 @@ mod tests {
         assert!(!unkept.is_kept());
         assert_eq!(unkept.poll(), None);
         // Nothing to write to: asked, nothing happens.
-        unkept.save(Widths::default());
+        unkept.save(Kept::default());
         let dir = tempfile::tempdir().unwrap();
         assert!(KeptWidths::at(dir.path().join(FILE_NAME)).is_kept());
     }

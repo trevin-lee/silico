@@ -930,6 +930,12 @@ pub struct Row {
     pub consumers: std::collections::BTreeSet<FeatureId>,
     /// Whether its feature is suppressed (a sketch's: then nothing of it is drawn).
     pub suppressed: bool,
+    /// A body's meta (app.js's `renderBrowser`): the name of the last healthy feature of its
+    /// chain in timeline order, a sketch's never counted. Healthy is the prototype's word for
+    /// built and shown, which a feature built with warnings is too (Fusion's yellow, "a
+    /// feature that still shows", `silico_core::timeline`); one in error, suppressed, or
+    /// not built (`unknown`) isn't. None for a sketch, or a body none of whose chain is.
+    pub last_healthy: Option<String>,
 }
 
 /// An eye clicked away from its row's default (docs/design/m5.0-app.md, decision 29: "kept
@@ -5724,6 +5730,20 @@ impl Tab {
             .map(|problem| format!("Not drawn: {}", problem.message()))
     }
 
+    /// The plane the sketch `id` is on, as the document stores it (an origin plane, or a
+    /// planar face by its name), once it's read: sketch mode's newest read for the sketch
+    /// open there, else its held read ([`SketchReads::held`]). None until one is read, and
+    /// for a sketch no read holds (a suppressed one, which is never read).
+    pub fn sketch_plane(&self, id: &FeatureId) -> Option<&silico_core::document::Plane> {
+        let open = self
+            .sketch
+            .as_ref()
+            .filter(|mode| mode.sketch.as_ref() == Some(id))
+            .and_then(SketchMode::drawable);
+        open.or_else(|| self.sketch_reads.held(id).map(|held| &*held.read))
+            .map(|read| &read.members.plane)
+    }
+
     /// The features no sketch counts among its consumers yet ("a feature the open dialog
     /// is making counts from its OK", decision 29): the one the open dialog is making, till
     /// its OK; and each cancelled one's kept in `unmade`.
@@ -7988,7 +8008,8 @@ fn marked(timeline: &TimelineAnswer) -> bool {
 /// The browser's rows of `timeline` (section 8): its bodies, the model's (`bodies`; a chain
 /// whose last feature failed built no body there, and the core's timeline doesn't report
 /// one, so none is listed for it), each marked by the worst of its chain's features (the
-/// first in error, else the first with a warning); and its sketches, each marked by its own,
+/// first in error, else the first with a warning), with the last healthy one for its meta
+/// ([`Row::last_healthy`]); and its sketches, each marked by its own,
 /// with its consumers (decision 29): each feature that lists it among its `inputs`, but those
 /// of `making`, the feature the open dialog is making, which counts from its OK, and any
 /// cancelled one not yet undone in what's read. Each feature found by its ID once, through a
@@ -8014,6 +8035,7 @@ pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
         marked_by: worst.map(|at| entries[at].id.clone()),
         consumers: std::collections::BTreeSet::new(),
         suppressed: entry.suppressed,
+        last_healthy: None,
     };
     let bodies = timeline
         .bodies
@@ -8031,7 +8053,19 @@ pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
                         .copied()
                         .find(|&i| entries[i].health == Health::Warning)
                 });
-            row(&entries[at], worst)
+            let last_healthy = chain
+                .iter()
+                .rev()
+                .map(|&i| &entries[i])
+                .find(|entry| {
+                    entry.kind != "sketch"
+                        && matches!(entry.health, Health::Healthy | Health::Warning)
+                })
+                .map(|entry| entry.name.clone());
+            Row {
+                last_healthy,
+                ..row(&entries[at], worst)
+            }
         })
         .collect();
     let sketches = entries
@@ -10363,6 +10397,7 @@ mod tests {
             marked_by: None,
             consumers: Default::default(),
             suppressed: false,
+            last_healthy: None,
         };
         tab.timeline = Some(TimelineAnswer {
             revision: Revision::OPENED,
@@ -11852,6 +11887,7 @@ mod tests {
                     marked_by: None,
                     consumers: Default::default(),
                     suppressed: false,
+                    last_healthy: None,
                 }],
                 Vec::new(),
             );
@@ -13583,6 +13619,7 @@ mod tests {
             marked_by: None,
             consumers: Default::default(),
             suppressed: false,
+            last_healthy: None,
         };
         let mut tab = tab();
         tab.browser = Browser::new(

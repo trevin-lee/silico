@@ -529,6 +529,12 @@ impl<P: Clients + 'static> App<P> {
         self.columns.chosen()
     }
 
+    /// Whether the browser is collapsed to its strip (its chevrons, Collapse browser and Show
+    /// browser): kept with the widths, in [`keeping_widths`](Self::keeping_widths)' file.
+    pub fn browser_collapsed(&self) -> bool {
+        self.columns.collapsed()
+    }
+
     /// Where the side panes' widths are kept: nowhere (read at once, the prototype's) unless
     /// [`keeping_widths`](Self::keeping_widths) gave a file.
     pub fn kept_widths(&self) -> &KeptWidths {
@@ -802,6 +808,7 @@ impl<P: Clients + 'static> App<P> {
                 columns,
                 ..
             } = self;
+            let mut browser_toggled = false;
             let mut panes = Panes {
                 tab: active.and_then(|at| tabs.get_mut(at)),
                 sessions,
@@ -810,6 +817,8 @@ impl<P: Clients + 'static> App<P> {
                 drawing,
                 dialog_key,
                 remembered,
+                browser_collapsed: columns.collapsed(),
+                browser_toggled: &mut browser_toggled,
             };
             let area = ui.available_rect_before_wrap();
             let laid = columns.laid(area.width());
@@ -817,6 +826,10 @@ impl<P: Clients + 'static> App<P> {
             tree.ui(&mut panes, ui);
             // Over the panes' borders, after them, so a press there drags the border.
             columns.handles(ui, area, laid);
+            // The browser's chevron: collapsed or shown, laid out so from the next frame.
+            if browser_toggled {
+                columns.toggle_browser(ui.ctx());
+            }
             // Over the canvas, drawn after it, so it takes the pointer over its place.
             let canvas = tree
                 .tiles
@@ -1444,8 +1457,14 @@ impl<P: Clients + 'static> App<P> {
         }
         let selected = tab.selection().feature().cloned();
         // Each only where its menu item would be on: else its reason is said, as the item's
-        // hover says it.
-        let place = tab.selected_in;
+        // hover says it. A row selected in a browser collapsed since is renamed in the
+        // timeline, where its field can be seen.
+        let place = match tab.selected_in {
+            crate::feature_menu::Place::Browser if self.columns.collapsed() => {
+                crate::feature_menu::Place::Timeline
+            }
+            place => place,
+        };
         let can = |tab: &Tab, id: &silico_core::document::FeatureId, item| {
             let entry = tab.entry(id.as_str())?;
             Some(crate::feature_menu::off(tab, entry, item, place))

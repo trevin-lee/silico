@@ -103,6 +103,30 @@ pub(crate) fn title(
     text: &str,
     close: Option<(&str, crate::shortcuts::Command)>,
 ) -> bool {
+    let button = close.map(|(label, command)| PanelButton {
+        icon: Icon::Close,
+        label,
+        tip: format!("{} ({})", command.label(), command.keys_text(ui.ctx())),
+    });
+    title_with(ui, icon, text, button)
+}
+
+/// A button of a side panel's (`.ab-btn`, in `.panel-title` or the collapsed browser's
+/// strip): its icon, what it's labelled, and its tooltip (`data-tip`).
+pub(crate) struct PanelButton<'a> {
+    pub icon: Icon,
+    pub label: &'a str,
+    pub tip: String,
+}
+
+/// A side panel's title, as [`title`] draws it, with `button`, if it has one, at its right:
+/// whether that was clicked.
+pub(crate) fn title_with(
+    ui: &mut Ui,
+    icon: Option<Icon>,
+    text: &str,
+    button: Option<PanelButton<'_>>,
+) -> bool {
     let (rect, _) = ui.allocate_exact_size(
         vec2(ui.available_width(), theme::TITLE_BAR_HEIGHT),
         Sense::hover(),
@@ -115,20 +139,20 @@ pub(crate) fn title(
         ),
     );
     let mut clicked = false;
-    let words = match close {
-        Some((label, command)) => {
+    let words = match button {
+        Some(button) => {
             let side = theme::PANEL_TITLE_BUTTON_SIZE;
-            let button = Rect::from_min_size(
+            let place = Rect::from_min_size(
                 pos2(inner.right() - side, inner.center().y - side / 2.0),
                 Vec2::splat(side),
             );
-            clicked = within(ui, button, ("title-close", text), |ui| {
-                close_button(ui, label, command)
+            clicked = within(ui, place, ("title-close", text), |ui| {
+                panel_button(ui, side, &button)
             })
             .clicked();
             Rect::from_min_max(
                 inner.min,
-                pos2(button.left() - theme::PANEL_TITLE_GAP, inner.bottom()),
+                pos2(place.left() - theme::PANEL_TITLE_GAP, inner.bottom()),
             )
         }
         None => inner,
@@ -159,13 +183,11 @@ pub(crate) fn title(
     clicked
 }
 
-/// The title's close button (`.panel-title .ab-btn`): its × in Gray.750, white on Gray.300
-/// hovered, labelled `label`, its tooltip `command`'s words and keys (`data-tip`,
-/// `data-tipk`).
-fn close_button(ui: &mut Ui, label: &str, command: crate::shortcuts::Command) -> Response {
-    let side = theme::PANEL_TITLE_BUTTON_SIZE;
+/// A side panel's button (`.ab-btn`), `side` square: its icon in Gray.750, white on Gray.300
+/// hovered, labelled as `button` says, its tooltip `button`'s (`data-tip`, `data-tipk`).
+pub(crate) fn panel_button(ui: &mut Ui, side: f32, button: &PanelButton<'_>) -> Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(side), Sense::click());
-    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, label));
+    response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, button.label));
     let ink = if response.hovered() {
         ui.painter().rect_filled(
             rect,
@@ -183,12 +205,11 @@ fn close_button(ui: &mut Ui, label: &str, command: crate::shortcuts::Command) ->
         theme::SMALL_CORNER_RADIUS,
         StrokeKind::Outside,
     );
-    Icon::Close.image(IconSize::Small).tint(ink).paint_at(
+    button.icon.image(IconSize::Small).tint(ink).paint_at(
         ui,
         Rect::from_center_size(rect.center(), Vec2::splat(IconSize::Small.points())),
     );
-    let said = format!("{} ({})", command.label(), command.keys_text(ui.ctx()));
-    response.on_hover_text(said)
+    response.on_hover_text(button.tip.as_str())
 }
 
 /// The head (`.prop-head`): `icon` in its box, `title` over `sub`. Its title's line and its
