@@ -22535,6 +22535,96 @@ fn undo_and_redo_are_off_while_an_empty_new_sketchs_finish_is_judged() {
 }
 
 #[test]
+fn redo_is_off_while_an_empty_new_sketchs_finish_is_judged_though_its_line_was_undone() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, false);
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
+    read_with_lines(&mut h, 1);
+    // The line undone inside sketch mode: Redo would give it back.
+    undo_by_key(&mut h);
+    read_with_lines(&mut h, 0);
+    assert!(h.state().tabs()[0].redoable());
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.finish_sketch(&sessions, true);
+        // Till the close is taken, Redo would go past the discard's rollback.
+        assert!(!tab.redoable());
+    }
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert!(
+        !h.state().tabs()[0]
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, Sent::Redo(_)))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_then_a_revert_asked_while_an_empty_new_sketchs_finish_is_judged_keep_the_discard() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, false);
+    let path = f.dir.path().join("example.silico");
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.finish_sketch(&sessions, true);
+        // The save asked first saves what was asked before it, the Finish among them; the
+        // revert after it drops nothing of that.
+        tab.save(&sessions, false);
+        tab.revert(&sessions, false);
+    }
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert!(!h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_is_off_while_an_edit_sketchs_cancel_waits_behind_an_edit_in_flight() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    select(&mut h, "Plate");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let renamed = text_of(&f.sessions, &h);
+    assert!(renamed.contains(r#""name": "PlateK""#));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    settled(&mut h);
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        // An edit made in sketch mode, then its Cancel, queued behind it.
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: sketch_id("b0000002"),
+                field: "name".to_owned(),
+                value: json::read(br#""WasherK""#).unwrap(),
+            },
+        );
+        assert!(!tab.edits.idle());
+        tab.finish_sketch(&sessions, false);
+        // Its undo back to where sketch mode opened still to send: Undo now would come after
+        // it and take back the rename too.
+        assert!(!tab.undoable());
+    }
+    settled(&mut h);
+    // The Cancel took back the edit made in it, and only that.
+    assert_eq!(text_of(&f.sessions, &h), renamed);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Plate");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_revert_asked_while_an_empty_new_sketchs_finish_is_judged_drops_the_close_and_says_nothing() {
     let f = fixture();
     let (mut h, _) = new_empty_sketch(&f, true);
