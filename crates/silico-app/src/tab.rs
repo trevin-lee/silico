@@ -574,12 +574,14 @@ struct Group {
 }
 
 /// An edit in flight: its feature and field, and its value, as it was sent, and its answer
-/// to come.
+/// to come; and whether its `begin` was sent for it (rolled back if it's refused with
+/// nothing after it, so no empty transaction stays open: #475).
 struct Flying {
     field: (FeatureId, String),
     value: Node,
     sending: Sending,
     running: Running<FieldSet>,
+    began: bool,
 }
 
 /// A tab's edits and what waits with them: at most one edit in flight, the rest queued
@@ -3809,10 +3811,16 @@ impl Tab {
             value,
             sending,
             running,
+            began,
         }) = self.edits.in_flight.take()
         {
             match running.try_take() {
                 Ok(response) => {
+                    // The session moved before the edit ran: its `begin` reloaded the file.
+                    let moved = response
+                        .session
+                        .as_ref()
+                        .is_some_and(|session| session.revision != sending.against);
                     self.took_session(&response);
                     // A rename says the name it replaced, as the session answers it, and
                     // names the state it made with the one it gave.
@@ -3840,6 +3848,24 @@ impl Tab {
                             } else {
                                 self.refused.insert(field);
                             }
+                            // A plain edit's own transaction (no dialog's or sketch mode's,
+                            // whose close ends it), its `begin` reloading the file and the
+                            // edit refused as sent against the revision before (#475): it
+                            // holds nothing, so it's ended now, as Restore's and Save As's
+                            // are; an edit queued after it begins its own. Any other refusal
+                            // keeps it, the field keeping what was typed (#298's review).
+                            if began
+                                && moved
+                                && !self.in_dialog()
+                                && self.dialog_base.is_none()
+                                && !self.in_sketch()
+                            {
+                                self.under.push(Under::Rollback {
+                                    running: sessions.rollback(&self.id),
+                                    then_close: false,
+                                    lands: Lands::Nothing,
+                                });
+                            }
                         }
                     }
                 }
@@ -3849,6 +3875,7 @@ impl Tab {
                         value,
                         sending,
                         running,
+                        began,
                     });
                     return;
                 }
@@ -3864,7 +3891,7 @@ impl Tab {
             let step = self.step_words(&queued);
             match queued {
                 Queued::Edit(edit, _) => {
-                    self.begin_if_none(sessions);
+                    let began = self.begin_if_none(sessions);
                     self.supersede_preview();
                     self.edits.sent += 1;
                     self.record(Sent::Edit(edit.field.clone()));
@@ -3883,6 +3910,7 @@ impl Tab {
                         value,
                         sending,
                         running,
+                        began,
                     });
                 }
                 // A sweep's body read at another revision than the session's now: read again.
@@ -6080,6 +6108,7 @@ impl Tab {
             self.opens_at(to, Owner::Opened, None);
         }
         let Some(dialog) = self.dialog.take() else {
+            self.read_again_past(to);
             return;
         };
         match (dialog.made, dialog.feature.clone()) {
@@ -6101,6 +6130,32 @@ impl Tab {
                     dialog.kind.title()
                 ));
             }
+        }
+    }
+
+    /// A dialog still being read as the session reloaded its file to `to`: if its read was
+    /// sent before that reload, what it reads is the file's before, so it's read again,
+    /// queued, opening at `to`, and the first read's answer let go (#475: a second reload
+    /// while a dialog's re-read is out left it on the first one's base). A read still queued
+    /// is sent after the reload, reading it.
+    fn read_again_past(&mut self, to: Revision) {
+        let Some(serial) = self.loading else {
+            return;
+        };
+        let stale = self.under.iter().find_map(|under| match under {
+            Under::Load {
+                serial: s,
+                kind,
+                feature,
+                sent_at,
+                ..
+            } if *s == serial && *sent_at < to => Some((*kind, feature.clone())),
+            _ => None,
+        });
+        if let Some((kind, feature)) = stale {
+            let serial = self.new_dialog();
+            self.opens_at(to, Owner::Opened, None);
+            self.queue_read(serial, kind, feature);
         }
     }
 
@@ -9453,6 +9508,7 @@ mod tests {
                     field.to_owned(),
                     value(),
                 ),
+                began: false,
             });
             assert_eq!(tab.base_held(), held, "{feature}'s {field}");
             assert_eq!(tab.can_ok(), !held, "{feature}'s {field}");
@@ -12667,6 +12723,89 @@ mod tests {
         let (open, text) = closed_after_the_reload(&dir, &sessions, tab, false);
         assert!(!open, "Cancel left a transaction open");
         assert_eq!(text, pin_radius_six_tenths());
+    }
+
+    #[test]
+    fn a_plain_edit_whose_begin_reloads_the_file_leaves_no_transaction_open() {
+        // #475's second: PinA (2), saved (3), no transaction; another program names the pin
+        // Bolt; a rename typed, no dialog, its begin reloading the file (4), the rename, sent
+        // against 3, refused. Its transaction, begun for it, holds nothing: rolled back, none
+        // left open; the refusal said, and the reload announced once, from 3 to 4.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert!(!tab.transaction);
+        pin_named_at(&dir.path().join("part.silico"), "Bolt");
+        tab.rename(&sessions, pin, "PinC");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert!(tab.message.is_some(), "the refusal wasn't said");
+        assert_eq!(banner(&tab), Some((rev(3), rev(4))));
+        let open = sessions.status(&tab.id).session.unwrap().transaction;
+        assert!(!open, "an empty transaction left open");
+        assert!(!tab.transaction);
+    }
+
+    #[test]
+    fn a_refused_plain_edit_with_another_queued_after_it_keeps_the_transaction() {
+        // The same, but another rename queued behind the refused one: sent after the empty
+        // transaction is rolled back, it begins its own, and is applied, nothing lost.
+        let (dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        pin_named_at(&dir.path().join("part.silico"), "Bolt");
+        tab.rename(&sessions, pin.clone(), "PinC");
+        tab.rename(&sessions, FeatureId::new("k7f2qx3m").unwrap(), "Base");
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        let session = sessions.status(&tab.id).session.unwrap();
+        assert!(
+            session.transaction,
+            "the second rename's transaction rolled back"
+        );
+        let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
+        assert!(text.contains(r#""name": "Base""#), "{text}");
+    }
+
+    #[test]
+    fn a_reload_past_a_dialogs_read_in_flight_reads_it_again_at_the_reload() {
+        // #475's third: the pin's dialog read sent at the tab's revision, still out, when the
+        // tab sees the session reload its file past it (a begin's answer taken first): what
+        // that read reads is the file's before the reload, so it's read again, queued, the
+        // dialog opening at the reload, and the first read's answer opens nothing.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        tab.edit_feature(&sessions, &pin);
+        let first = tab.loading.unwrap();
+        let at = tab.revision;
+        assert!(
+            tab.under.iter().any(|under| matches!(
+                under,
+                Under::Load { serial, sent_at, .. } if *serial == first && *sent_at == at
+            )),
+            "the read wasn't sent"
+        );
+        let past = Revision::from_number(at.number() + 1).unwrap();
+        tab.reloaded_under_dialog(past);
+        let second = tab.loading.unwrap();
+        assert_ne!(second, first);
+        assert_eq!(tab.dialog_base, Some(past));
+        assert!(tab.edits.queue.iter().any(|queued| matches!(
+            queued,
+            Queued::Load { serial, feature, .. } if *serial == second && *feature == pin
+        )));
+        taken_until(&mut tab, &sessions, |tab| tab.dialog.is_some());
+        assert_eq!(tab.dialog.as_ref().unwrap().serial, second);
+        // A reload the read was sent after: nothing read again.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        tab.edit_feature(&sessions, &pin);
+        let only = tab.loading.unwrap();
+        tab.reloaded_under_dialog(tab.revision);
+        assert_eq!(
+            tab.loading,
+            Some(only),
+            "read again for a reload it was sent after"
+        );
     }
 
     #[test]
