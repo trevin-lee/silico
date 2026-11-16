@@ -16,7 +16,7 @@ use silico_core::command::{
     SketchJoined, Status, StepState, Stepped, Suppressed, TextAnswer, TimelineAnswer,
 };
 use silico_core::disk::Disk;
-use silico_core::document::json::{Node, Plain};
+use silico_core::document::json::{At, Node, Plain, Value};
 use silico_core::document::{ElementId, FeatureId, Reference};
 use silico_core::extend::End;
 use silico_core::kernel::Clients;
@@ -358,20 +358,50 @@ enum Queued {
     },
 }
 
-/// A constraint tool's click in sketch mode numbered `serial`, on the sketch `sketch`: the
-/// relation, and the selection it was made on, in pick order. Kept to be planned again on a
-/// newer read if its plan was stale.
+/// A constraint tool's click in sketch mode numbered `serial`, or Construction's of the
+/// curves selected, on the sketch `sketch`: what it applies, and the selection it was made
+/// on, in pick order. Kept to be planned again on a newer read if its plan was stale.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Click {
     serial: u64,
     sketch: FeatureId,
-    relation: RelationTool,
+    applies: Applies,
     picks: Vec<Reference>,
+}
+
+/// What a click in sketch mode applies to the selection: a constraint tool's relation, or
+/// Construction's switch of the curves selected between profile and construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Applies {
+    Relation(RelationTool),
+    Construction,
+}
+
+impl Applies {
+    /// Its name, as its button names it, and the step it makes: "Horizontal",
+    /// "Construction".
+    fn name(self) -> &'static str {
+        match self {
+            Applies::Relation(relation) => relation.name(),
+            Applies::Construction => "Construction",
+        }
+    }
+
+    /// What's said when it's let go unsent, and `why`: "Horizontal wasn't added: …",
+    /// "Construction wasn't applied: …".
+    fn unmade(self, why: &str) -> String {
+        match self {
+            Applies::Relation(relation) => format!("{} wasn't added: {why}", relation.name()),
+            Applies::Construction => format!("Construction wasn't applied: {why}"),
+        }
+    }
 }
 
 /// What a constraint tool's click sends, one command at a time: a `sketch_add`, and after
 /// it, once it's taken, the `sketch_remove` of the `on`s it implies (C5), if any; a
-/// `sketch_merge`; or a `sketch_remove` alone.
+/// `sketch_merge`; or a `sketch_remove` alone. Construction's sends a `set_field` of each
+/// curve's `construction`, the first, then each next once the one before is taken (never
+/// empty).
 #[derive(Debug, Clone, PartialEq)]
 enum Relating {
     Add {
@@ -380,6 +410,7 @@ enum Relating {
     },
     Merge(Vec<ElementId>),
     Remove(Vec<Reference>),
+    Fields(Vec<(String, Node)>),
 }
 
 /// What a constraint tool's click come up in the queue does ([`Tab::plan`]): waits for the
@@ -405,6 +436,10 @@ const REBUILD_STOPPED: &str =
 /// Why, while the tab's revision's recompute has failed and nothing of it is published.
 const REBUILD_FAILED: &str =
     "the rebuild failed before the sketch was read; Rebuild, then try again";
+
+/// Why Construction's click, planned, sends nothing: none of the curves it was pressed on is
+/// in the sketch's read any more (an edit queued before it removed them).
+const CURVES_GONE: &str = "the curves selected are no longer in the sketch";
 
 /// Why a constraint tool's click waiting to be planned is let go at its sketch mode's Cancel,
 /// which takes back its edits anyway.
@@ -668,6 +703,34 @@ impl Edits {
     }
 }
 
+/// A constraint tool's sketch edit under way, or Construction's `set_field`: its answer,
+/// once it comes, taken as one (what it made, or its refusal), whatever it answers with.
+enum RelateRunning {
+    Sketch(Running<SketchEdited>),
+    Field(Running<FieldSet>),
+}
+
+impl RelateRunning {
+    /// The answer, if it has come, its result's value let go, or the handle back to wait on.
+    fn try_take(self) -> Result<Response<()>, Self> {
+        fn plain<T>(response: Response<T>) -> Response<()> {
+            Response {
+                session: response.session,
+                model: response.model,
+                result: response.result.map(|_| ()),
+            }
+        }
+        match self {
+            RelateRunning::Sketch(running) => {
+                running.try_take().map(plain).map_err(RelateRunning::Sketch)
+            }
+            RelateRunning::Field(running) => {
+                running.try_take().map(plain).map_err(RelateRunning::Field)
+            }
+        }
+    }
+}
+
 /// A command a tab has under way, besides its reads and its edits.
 enum Under {
     /// A `begin`, sent at the tab's revision `sent_at`: the session reads its file first,
@@ -763,15 +826,15 @@ enum Under {
         sending: Sending,
         running: Running<SketchEdited>,
     },
-    /// A constraint tool's edit, of `click`, as it was sent: the remove to send once it's
-    /// taken, if it's an add that has one, and, if it's that remove, the state the add was
-    /// made from.
+    /// A constraint tool's edit, of `click`, or Construction's, as it was sent: what to send
+    /// once it's taken, if anything (an add's remove, Construction's next fields), and, if
+    /// it follows another edit of the click, the state the click's first edit was made from.
     Relate {
         click: Click,
-        then_remove: Vec<Reference>,
+        then: Option<Box<Relating>>,
         pair: Option<Revision>,
         sending: Sending,
-        running: Running<SketchEdited>,
+        running: RelateRunning,
     },
     /// Trim's or split's edit, as it was sent.
     SketchCut {
@@ -3476,7 +3539,7 @@ impl Tab {
             },
             Under::Relate {
                 click,
-                then_remove,
+                then,
                 pair,
                 sending,
                 running,
@@ -3489,19 +3552,22 @@ impl Tab {
                         .session
                         .as_ref()
                         .map_or(self.revision, |session| session.revision);
-                    match &response.result {
-                        // An add taken: the remove of the `on`s it implies next, before
-                        // anything asked after it, against the revision the add made.
-                        Ok(_) if !then_remove.is_empty() => {
+                    match (&response.result, then) {
+                        // An add taken: the remove of the `on`s it implies next; a field of
+                        // Construction's taken: its next fields. Before anything asked after
+                        // it, against the revision it made, and from the state the click's
+                        // first edit was made from.
+                        (Ok(_), Some(then)) => {
                             self.edits.queue.push_front(Queued::Relate {
                                 click,
                                 revision: made,
-                                relating: Relating::Remove(then_remove),
-                                pair: Some(sending.state),
+                                relating: *then,
+                                pair: Some(pair.unwrap_or(sending.state)),
                             });
                         }
-                        // The remove after an add taken: the two one step.
-                        Ok(_) => {
+                        // The last edit of several taken (the remove after an add,
+                        // Construction's last field): all of them one step.
+                        (Ok(_), None) => {
                             if let Some(start) = pair.filter(|_| made != sending.against) {
                                 let end = self.state_of(made);
                                 self.sketch_pairs.push((click.serial, start, end));
@@ -3510,20 +3576,28 @@ impl Tab {
                         // Planned on a read the session has moved on from (the click before
                         // it, its read not in yet): planned again on a newer read, in its
                         // place, before anything asked after it, the conflict never said. A
-                        // refused add sends no remove.
-                        Err(problems) if stale(problems) => {
+                        // refused add sends no remove, and a refused field of Construction's
+                        // none of the fields after it.
+                        (Err(problems), _) if stale(problems) => {
                             self.edits.queue.push_front(Queued::Click {
                                 click,
                                 after: Some(sending.against),
                             });
                         }
-                        Err(problems) => self.message = Some(said(problems)),
+                        // Construction's refusal said in the toast too, as its press is
+                        // answered there.
+                        (Err(problems), _) => {
+                            if click.applies == Applies::Construction {
+                                self.toast = Some(said(problems));
+                            }
+                            self.message = Some(said(problems));
+                        }
                     }
                     None
                 }
                 Err(running) => Some(Under::Relate {
                     click,
-                    then_remove,
+                    then,
                     pair,
                     sending,
                     running,
@@ -4105,29 +4179,43 @@ impl Tab {
                         step,
                     };
                     let (id, sketch) = (self.id, click.sketch.clone());
-                    let (running, then_remove) = match relating {
+                    let (running, then) = match relating {
                         Relating::Add {
                             members,
                             then_remove,
                         } => {
                             self.record(Sent::SketchEdit("sketch_add"));
                             let running = sessions.sketch_add(&id, revision, sketch, members);
-                            (running, then_remove)
+                            let then = (!then_remove.is_empty())
+                                .then(|| Box::new(Relating::Remove(then_remove)));
+                            (RelateRunning::Sketch(running), then)
                         }
                         Relating::Merge(points) => {
                             self.record(Sent::SketchEdit("sketch_merge"));
                             let running = sessions.sketch_merge(&id, revision, sketch, points);
-                            (running, Vec::new())
+                            (RelateRunning::Sketch(running), None)
                         }
                         Relating::Remove(members) => {
                             self.record(Sent::SketchEdit("sketch_remove"));
                             let running = sessions.sketch_remove(&id, revision, sketch, members);
-                            (running, Vec::new())
+                            (RelateRunning::Sketch(running), None)
+                        }
+                        Relating::Fields(fields) => {
+                            let mut fields = fields.into_iter();
+                            // Never empty, as it's planned; nothing to send if it were.
+                            let Some((field, value)) = fields.next() else {
+                                continue;
+                            };
+                            self.record(Sent::Edit(field.clone()));
+                            let running = sessions.set_field(&id, revision, sketch, field, value);
+                            let rest: Vec<(String, Node)> = fields.collect();
+                            let then = (!rest.is_empty()).then(|| Box::new(Relating::Fields(rest)));
+                            (RelateRunning::Field(running), then)
                         }
                     };
                     self.under.push(Under::Relate {
                         click,
-                        then_remove,
+                        then,
                         pair,
                         sending,
                         running,
@@ -4831,20 +4919,17 @@ impl Tab {
                 .queue
                 .range(kept..)
                 .any(|queued| matches!(queued, Queued::Revert { then_close: true }));
-        // A constraint tool's click it drops, unplanned or unsent, said.
-        if let Some(relation) = self
+        // A constraint tool's click it drops, or Construction's, unplanned or unsent, said.
+        if let Some(applies) = self
             .edits
             .queue
             .range(kept..)
             .find_map(|queued| match queued {
-                Queued::Click { click, .. } | Queued::Relate { click, .. } => Some(click.relation),
+                Queued::Click { click, .. } | Queued::Relate { click, .. } => Some(click.applies),
                 _ => None,
             })
         {
-            self.message = Some(format!(
-                "{} wasn't added: the part was reverted first",
-                relation.name()
-            ));
+            self.message = Some(applies.unmade("the part was reverted first"));
         }
         self.edits.queue.truncate(kept);
         self.edits.queue.push_back(Queued::Revert { then_close });
@@ -5601,7 +5686,7 @@ impl Tab {
             } => Some(Words::Of("Edit", sketch.clone())),
             // By the relation, as its button names it ("Horizontal"): an add and the remove
             // after it one step of that name.
-            Queued::Relate { click, .. } => Some(Words::Text(click.relation.name().to_owned())),
+            Queued::Relate { click, .. } => Some(Words::Text(click.applies.name().to_owned())),
             // As its banner's button names it (Fable's decision of 2026-11-04: by the revision
             // it puts back, never the prototype's "my version").
             Queued::Replace { revision, .. } => Some(Words::Text(format!(
@@ -6868,16 +6953,13 @@ impl Tab {
                 let mut dropped = None;
                 self.edits.queue.retain(|queued| match queued {
                     Queued::Click { click, .. } if click.serial == serial => {
-                        dropped.get_or_insert(click.relation);
+                        dropped.get_or_insert(click.applies);
                         false
                     }
                     _ => true,
                 });
-                if let Some(relation) = dropped {
-                    self.message = Some(format!(
-                        "{} wasn't added: {SKETCH_CANCELLED}",
-                        relation.name()
-                    ));
+                if let Some(applies) = dropped {
+                    self.message = Some(applies.unmade(SKETCH_CANCELLED));
                 }
             } else if self.relating(mode.serial) {
                 self.leaving.push(mode);
@@ -6920,10 +7002,25 @@ impl Tab {
         }
     }
 
-    /// Construction's button or X in sketch mode: the palette's Construction turned on or
-    /// off. Nothing outside sketch mode.
-    pub fn sketch_toggle_construction(&mut self) {
-        if let Some(mode) = self.sketch.as_mut() {
+    /// Construction's button or X in sketch mode (the approved prototype's "Toggles the
+    /// selected curves between profile and construction"): with curves selected (lines,
+    /// circles, arcs, as the read drawn holds them), a click, as a constraint tool's is,
+    /// that sets them all to one value, construction unless all of them are already
+    /// ([`construction_switch`](sketch::selection::construction_switch)), one step for undo
+    /// named "Construction", the palette's setting and the selection left as they are. With
+    /// none, the palette's Construction turned on or off, for the curves drawn next.
+    /// Nothing outside sketch mode.
+    pub fn sketch_construction<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let Some(mode) = self.sketch.as_mut() else {
+            return;
+        };
+        let picks = mode.selection.references();
+        let curves = mode.drawable().is_some_and(|read| {
+            sketch::selection::construction_switch(&read.members, &picks).is_some()
+        });
+        if curves {
+            self.sketch_click(sessions, Applies::Construction);
+        } else {
             mode.settings.construction = !mode.settings.construction;
         }
     }
@@ -7195,6 +7292,16 @@ impl Tab {
         sessions: &Arc<Sessions<P>>,
         relation: RelationTool,
     ) {
+        self.sketch_click(sessions, Applies::Relation(relation));
+    }
+
+    /// A click in sketch mode that `applies` to the selection, in pick order (a constraint
+    /// tool's, or Construction's), queued, as [`sketch_relate`](Self::sketch_relate) has it.
+    fn sketch_click<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        applies: Applies,
+    ) {
         if self.closing() {
             return;
         }
@@ -7207,7 +7314,7 @@ impl Tab {
         let click = Click {
             serial: mode.serial,
             sketch,
-            relation,
+            applies,
             picks: mode.selection.references(),
         };
         self.hush();
@@ -7251,8 +7358,7 @@ impl Tab {
     /// revision. Waits, if the read isn't there yet. Let go, said in the status bar, if its
     /// sketch mode has gone, or the read the plan needs is refused.
     fn plan(&mut self, click: &Click, after: Option<Revision>) -> Planned {
-        let gone =
-            |why: &str| Planned::Gone(format!("{} wasn't added: {why}", click.relation.name()));
+        let gone = |why: &str| Planned::Gone(click.applies.unmade(why));
         let read = self
             .sketch
             .iter()
@@ -7290,10 +7396,34 @@ impl Tab {
             (Ok(drawn), Some(model)) if drawn.sketch == click.sketch => (model, drawn),
             _ => return Planned::Wait,
         };
+        let relation = match click.applies {
+            Applies::Relation(relation) => relation,
+            // Each curve picked that the read holds set to the one value, those already at
+            // it left out; none picked now (gone since the press) said, nothing sent.
+            Applies::Construction => {
+                let Some(switch) =
+                    sketch::selection::construction_switch(&drawn.members, &click.picks)
+                else {
+                    self.toast = Some(click.applies.unmade(CURVES_GONE));
+                    return Planned::Said;
+                };
+                let value = Node {
+                    at: At::UNPLACED,
+                    value: Value::Bool(switch.construction),
+                };
+                let fields = switch
+                    .fields
+                    .into_iter()
+                    .map(|field| (field, value.clone()))
+                    .collect();
+                mode.undone = 0;
+                return Planned::Send(revision, Box::new(Relating::Fields(fields)));
+            }
+        };
         let planned = silico_core::sketch_tools::relate(
             &drawn.members,
             revision,
-            click.relation,
+            relation,
             &click.picks,
             &mut *mode.tools.ids,
         );

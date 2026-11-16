@@ -23792,13 +23792,22 @@ fn a_line_chain_ends_by_enter_esc_leaves_the_tool_then_the_selection_and_its_let
     step(&mut h);
     assert!(!sketch_mode(&h).unwrap().tools.busy());
     assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::Line)));
-    // X turns Construction on and off.
-    h.key_press(eframe::egui::Key::X);
-    step(&mut h);
-    assert!(sketch_mode(&h).unwrap().settings.construction);
-    h.key_press(eframe::egui::Key::X);
-    step(&mut h);
-    assert!(!sketch_mode(&h).unwrap().settings.construction);
+    // X, with the side nb000000 selected still, switches it to construction and back, the
+    // palette's Construction left off.
+    let side = |h: &AppHarness| {
+        sketch_of_text(&f, h, "s0000001")
+            .lines
+            .iter()
+            .find(|l| l.id.as_str() == "nb000000")
+            .map(|l| l.construction)
+    };
+    for construction in [true, false] {
+        h.key_press(eframe::egui::Key::X);
+        step(&mut h);
+        settled(&mut h);
+        assert_eq!(side(&h), Some(construction));
+        assert!(!sketch_mode(&h).unwrap().settings.construction);
+    }
     // Esc, the nearest thing first: the tool (the selection kept), then the selection.
     sketch_events(&f, &mut h, &clicked(60.0, 30.0));
     assert!(sketch_mode(&h).unwrap().tools.busy());

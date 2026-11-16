@@ -1500,7 +1500,7 @@ impl<P: Clients + 'static> App<P> {
             tab.sketch_toggle(choice);
         }
         if construction {
-            tab.sketch_toggle_construction();
+            tab.sketch_construction(sessions);
         }
         if sketch_enter {
             tab.sketch_enter(sessions);
@@ -1566,6 +1566,7 @@ impl<P: Clients + 'static> App<P> {
                 || rebuild_all
                 || deleted
                 || sketch_delete
+                || construction
                 || finish
                 || sketch_enter,
             dialog_key,
@@ -2231,7 +2232,10 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
-            Some(toolbar::Act::Construction) => tab.sketch_toggle_construction(),
+            Some(toolbar::Act::Construction) => {
+                tab.sketch_construction(&self.sessions);
+                *next_frame = true;
+            }
             Some(toolbar::Act::Relate(relation)) => {
                 tab.sketch_relate(&self.sessions, relation);
                 *next_frame = true;
