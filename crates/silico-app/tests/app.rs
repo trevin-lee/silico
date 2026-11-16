@@ -48636,11 +48636,14 @@ fn the_searchs_rows_are_off_by_their_buttons_menus_and_keys_rules_with_their_wor
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     open_pad_on_triangle(&mut h);
     added(&mut h);
+    // Its preview built and every answer in, so nothing takes the keyboard after this.
+    settled(&mut h);
     if h.ctx.text_edit_focused() {
         h.get_by_role_and_label(Role::Tab, "SOLID").click();
         step(&mut h);
         step(&mut h);
     }
+    assert!(!h.ctx.text_edit_focused());
     open_search(&mut h);
     search_retyped(&mut h, "reload", "Reload Rebuild");
     assert_eq!(
@@ -48747,12 +48750,17 @@ fn s_opens_nothing_over_the_over_define_prompt_and_an_offer_closes_the_search() 
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     fully_defined(&f, &mut h);
     // The search open while an over-defining dimension's edit is out: the offer that
-    // comes closes it.
+    // comes closes it. Every solve held from before the edit, so its offer, which comes of
+    // the solve's diagnosis, can't come before the search opens; then let go.
     dimension_at(&f, &mut h, [40.0, 10.0], [60.0, 10.0], "20");
     modify_dimension(&f, &mut h, ModifyAction::Typed("30".to_owned()));
+    f.sketches.hold();
     modify_dimension(&f, &mut h, ModifyAction::Accept);
     h.key_press(Key::S);
     step_until(&mut h, "the search", search_open);
+    assert!(prompt(&h).is_none());
+    assert!(sketch_mode(&h).is_some_and(|mode| mode.offer().is_none()));
+    f.sketches.release();
     settled(&mut h);
     read_with_constraints(&mut h, 9);
     step_until(&mut h, "the prompt, the search closed", |h| {
