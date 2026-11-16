@@ -653,21 +653,21 @@ mod tests {
         // Each group's height: its title's 16 line, 4, its 1 underline, 4, and 22 a row.
         let height =
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
-        // By hand: File 5 rows (135), Edit 4 (113: Undo, Redo, Rename, Delete), Rebuild 4
-        // (113: Rebuild, Rebuild everything, Reload, Stop), View 13 (311, Look At its last
-        // key's), Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1 (47). The least
-        // height that takes three columns, filled in order, is 460: below it View can't take
-        // Selection (311 + 14 + 135 = 460), and Selection to Help (135 + 14 + 69 + 14 + 223 +
-        // 14 + 47 = 516) take two more. At 460, File, Edit, and Rebuild (135 + 14 + 113 + 14 +
-        // 113 = 389); View and Selection (460); Dialogs, Sketch, and Help (69 + 14 + 223 + 14
-        // + 47 = 367).
+        // By hand: File 5 rows (135), Edit 5 (135: Undo, Redo, Search commands, Rename,
+        // Delete), Rebuild 4 (113: Rebuild, Rebuild everything, Reload, Stop), View 13 (311,
+        // Look At its last key's), Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1
+        // (47). The least height that takes three columns, filled in order, is 460: below it
+        // View can't take Selection (311 + 14 + 135 = 460), and Selection to Help (135 + 14 +
+        // 69 + 14 + 223 + 14 + 47 = 516) take two more. At 460, File, Edit, and Rebuild (135
+        // + 14 + 135 + 14 + 113 = 411); View and Selection (460); Dialogs, Sketch, and Help
+        // (69 + 14 + 223 + 14 + 47 = 367).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
             (
                 "REBUILD",
                 0,
-                height(5.0) + height(4.0) + 2.0 * css::GROUP_GAP,
+                height(5.0) + height(5.0) + 2.0 * css::GROUP_GAP,
             ),
             ("VIEW", 1, 0.0),
             ("SELECTION", 1, height(13.0) + css::GROUP_GAP),
@@ -975,9 +975,11 @@ mod tests {
         assert!(body.width() < 2.0 * css::COLUMN_MIN_W + css::COLUMN_GAP);
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
         let mut down = 0.0;
+        // Edit's five, as the prototype's `CMD` has them: Undo, Redo, Search commands (S),
+        // Rename, and Delete.
         for (name, rows) in [
             ("FILE", 5.0),
-            ("EDIT", 4.0),
+            ("EDIT", 5.0),
             ("REBUILD", 4.0),
             ("VIEW", 13.0),
             ("SELECTION", 5.0),

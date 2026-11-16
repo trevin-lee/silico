@@ -21413,6 +21413,19 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                     );
                 }
             }
+            // No button or menu item has it yet (the start page's waits on #522): its keys
+            // open the search, which its own tests cover (s_opens_the_command_search_…).
+            Command::Search => {
+                let f = fixture();
+                let mut h = f.app();
+                step(&mut h);
+                for chord in keys_of(command) {
+                    press_chord(&mut h, chord);
+                    step_until(&mut h, "the search", search_open);
+                    h.key_press(Key::Escape);
+                    step_until(&mut h, "the search closed", |h| !search_open(h));
+                }
+            }
             // Its own test: no button or menu item has it
             // (ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it).
             Command::RebuildAll => assert_eq!(
@@ -47952,5 +47965,486 @@ fn a_drags_release_sends_the_value_it_held_back_in_the_releases_own_frame() {
     hold.release();
     settled(&mut h);
     assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The command search (S; the prototype audit's item 22) ----
+
+use eframe::egui::{Event, PointerButton, Pos2, Rect};
+
+/// Whether the command search is open.
+fn search_open(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::Dialog, "Search commands")
+        .is_some()
+}
+
+/// The command search's field.
+fn search_field(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::TextInput, "Search commands")
+}
+
+/// Whether the command search's field has the keyboard.
+fn search_focused(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::TextInput, "Search commands")
+        .is_some_and(|field| field.accesskit_node().is_focused())
+}
+
+/// S pressed and the search open, its field with the keyboard.
+fn open_search(h: &mut AppHarness) {
+    h.key_press(Key::S);
+    step_until(h, "the search", search_open);
+    step_until(h, "its field focused", search_focused);
+}
+
+/// The search's rows, in order: each one's words (its name, then its group), whether the
+/// keys light it, and whether it's off.
+fn search_rows(h: &AppHarness) -> Vec<(String, bool, bool)> {
+    h.query_all_by_role(Role::ListBoxOption)
+        .map(|row| {
+            let node = row.accesskit_node();
+            (
+                node.label().unwrap_or_default(),
+                node.is_selected() == Some(true),
+                node.is_disabled(),
+            )
+        })
+        .collect()
+}
+
+/// The search's rows' words, in order.
+fn search_words(h: &AppHarness) -> Vec<String> {
+    search_rows(h)
+        .into_iter()
+        .map(|(words, ..)| words)
+        .collect()
+}
+
+/// The row lit by the keys, its words.
+fn search_lit(h: &AppHarness) -> Option<String> {
+    search_rows(h)
+        .into_iter()
+        .find(|(_, lit, _)| *lit)
+        .map(|(words, ..)| words)
+}
+
+/// `text` typed in the search's field, and the list read for it.
+fn search_for(h: &mut AppHarness, text: &str, first: &str) {
+    search_field(h).type_text(text);
+    step_until(h, first, |h| {
+        search_words(h).first().map(String::as_str) == Some(first)
+    });
+}
+
+/// The search's row whose words are `words`.
+fn search_row<'h>(h: &'h AppHarness, words: &'h str) -> egui_kittest::Node<'h> {
+    h.get_by_role_and_label(Role::ListBoxOption, words)
+}
+
+#[test]
+fn s_opens_the_command_search_with_its_field_focused_anywhere_but_while_typing() {
+    let f = fixture();
+    // On the start page.
+    let mut h = f.app();
+    step(&mut h);
+    open_search(&mut h);
+    // Its field's placeholder (the prototype's), and its foot.
+    assert_eq!(
+        search_field(&h).accesskit_node().placeholder(),
+        Some("Search commands")
+    );
+    for words in [
+        "↑↓ move",
+        "↵ run",
+        "Esc close",
+        "Agents reach the same commands over MCP",
+    ] {
+        assert!(
+            h.get_by_role_and_label(Role::Dialog, "Search commands")
+                .query_by_label(words)
+                .is_some(),
+            "{words}"
+        );
+    }
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    // In a document, and not while a field has the keyboard: the S is the field's.
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    name_field(&h).focus();
+    step(&mut h);
+    h.key_press(Key::S);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!search_open(&h), "opened while typing");
+    off_fields(&mut h, "SOLID");
+    open_search(&mut h);
+    // Under it, no shortcut acts: F6 moves no view, and what's typed is the field's (H
+    // hides nothing).
+    let camera = view(&h).camera().clone();
+    h.key_press(Key::F6);
+    search_field(&h).type_text("h");
+    h.key_press(Key::H);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &camera);
+    assert!(h.state().tabs()[0].overrides.is_empty());
+    assert!(search_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn s_opens_the_search_in_sketch_mode_and_leaves_sketch_modes_letters_their_own() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = triangle_opened(&f);
+    let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
+    assert_eq!(tool(&h), None);
+    open_search(&mut h);
+    // L typed in the field is the field's, not Line's.
+    search_field(&h).type_text("l");
+    h.key_press(Key::L);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tool(&h), None);
+    assert!(search_open(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    // Closed, its field let the keyboard go, and L is Line's again; and the sketch is still
+    // open (Esc closed the search alone).
+    step(&mut h);
+    assert!(!h.ctx.text_edit_focused());
+    assert!(sketch_mode(&h).is_some());
+    h.key_press(Key::L);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::Line)));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_search_lists_the_registry_narrowed_by_name_group_or_description() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    open_search(&mut h);
+    // Nothing typed: the registry's first 40 but OK, Cancel, Orbit, Pan, and Zoom, each
+    // its name and its group (app.js's CMD order, the app's registry's).
+    let all = search_words(&h);
+    assert_eq!(all.len(), 40, "{all:?}");
+    assert_eq!(
+        &all[..8],
+        [
+            "New part File",
+            "Open… File",
+            "Save File",
+            "Save As… File",
+            "Close File",
+            "Undo Edit",
+            "Redo Edit",
+            "Search commands Edit",
+        ]
+    );
+    assert_eq!(all[39], "Smart Dimension Sketch");
+    for left_out in ["OK Dialogs", "Cancel Dialogs", "Orbit View", "Pan View"] {
+        assert!(!all.iter().any(|words| words == left_out), "{left_out}");
+    }
+    assert!(!all.iter().any(|words| words.starts_with("Zoom")));
+    // Each row's keys, as the registry names them (kittest's is neither macOS nor Windows).
+    let keys = |h: &AppHarness, words: &str| {
+        search_row(h, words)
+            .accesskit_node()
+            .data()
+            .keyboard_shortcut()
+            .map(str::to_owned)
+    };
+    assert_eq!(keys(&h, "Save As… File").as_deref(), Some("Ctrl+Shift+S"));
+    assert_eq!(keys(&h, "Search commands Edit").as_deref(), Some("S"));
+    assert_eq!(keys(&h, "What's wrong Rebuild"), None);
+    // By name, its case aside: "FIT", Fit alone.
+    search_for(&mut h, "FIT", "Fit View");
+    assert_eq!(search_words(&h), ["Fit View"]);
+    assert_eq!(keys(&h, "Fit View").as_deref(), Some("F6"));
+    // By description alone: "cache" (Rebuild everything's "ignoring the cache").
+    retype(&mut h, In::Window, "Search commands", "cache");
+    step_until(&mut h, "by description", |h| {
+        search_words(h) == ["Rebuild everything Rebuild"]
+    });
+    // By group: Help's one.
+    retype(&mut h, In::Window, "Search commands", "help");
+    step_until(&mut h, "by group", |h| {
+        search_words(h) == ["Keyboard shortcuts Help"]
+    });
+    // Past the 40: Finish Sketch is found by name.
+    retype(&mut h, In::Window, "Search commands", "finish");
+    step_until(&mut h, "finish", |h| {
+        search_words(h) == ["Finish Sketch Sketch"]
+    });
+    // Only a left-out command's name: nothing, said as the prototype's `.mh` says it.
+    retype(&mut h, In::Window, "Search commands", "zoom");
+    step_until(&mut h, "nothing", |h| search_words(h).is_empty());
+    assert!(
+        h.get_by_role_and_label(Role::Dialog, "Search commands")
+            .query_by_label("NO COMMAND MATCHES")
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_arrows_move_the_highlight_held_to_the_list_and_typing_puts_it_back_on_the_first() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    open_search(&mut h);
+    assert_eq!(search_lit(&h).as_deref(), Some("New part File"));
+    // ↑ on the first stays there.
+    h.key_press(Key::ArrowUp);
+    step(&mut h);
+    assert_eq!(search_lit(&h).as_deref(), Some("New part File"));
+    // ↓ three times: the fourth.
+    for _ in 0..3 {
+        h.key_press(Key::ArrowDown);
+        step(&mut h);
+    }
+    assert_eq!(search_lit(&h).as_deref(), Some("Save As… File"));
+    h.key_press(Key::ArrowUp);
+    step(&mut h);
+    assert_eq!(search_lit(&h).as_deref(), Some("Save File"));
+    // Typing: the first again. "save" lists Save and Save As…; ↓ past the last stays on it.
+    search_for(&mut h, "save", "Save File");
+    assert_eq!(search_words(&h), ["Save File", "Save As… File"]);
+    assert_eq!(search_lit(&h).as_deref(), Some("Save File"));
+    for _ in 0..4 {
+        h.key_press(Key::ArrowDown);
+        step(&mut h);
+    }
+    assert_eq!(search_lit(&h).as_deref(), Some("Save As… File"));
+    // The field kept the keyboard throughout.
+    assert!(search_focused(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_runs_the_highlighted_command_as_its_keys_do_and_closes_the_search() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    // F6's view, from a view moved off.
+    panned(&mut h);
+    let moved = view(&h).camera().clone();
+    h.key_press(Key::F6);
+    step(&mut h);
+    let fitted = view(&h).camera().clone();
+    assert_ne!(fitted, moved, "F6 moved nothing");
+    // From the same view moved off, Fit run from the search: the same view, the search
+    // closed.
+    view_mut(&mut h).set_camera(moved.clone());
+    step(&mut h);
+    open_search(&mut h);
+    search_for(&mut h, "fit", "Fit View");
+    h.key_press(Key::Enter);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &fitted);
+    // The field let the keyboard go: a key after is a command's again (F6, from moved off).
+    assert!(!h.ctx.text_edit_focused());
+    view_mut(&mut h).set_camera(moved);
+    step(&mut h);
+    h.key_press(Key::F6);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &fitted);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_runs_a_row_a_command_with_no_keys_too() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let faces = |h: &AppHarness| h.state().tabs()[0].selection().filter.faces;
+    assert!(faces(&h));
+    // Faces, by a click: toggled as X toggles it.
+    open_search(&mut h);
+    search_for(&mut h, "faces", "Faces Selection");
+    search_row(&h, "Faces Selection").click();
+    step_until(&mut h, "closed", |h| !search_open(h));
+    step(&mut h);
+    step(&mut h);
+    assert!(!faces(&h));
+    // Suppress, which has no keys: the selected feature suppressed, as its menu item does.
+    select(&mut h, "Pin");
+    pointer_away(&mut h);
+    open_search(&mut h);
+    search_for(&mut h, "suppress", "Suppress Edit");
+    search_row(&h, "Suppress Edit").click();
+    step_until(&mut h, "closed", |h| !search_open(h));
+    step_until(&mut h, "suppressed", |h| {
+        said_done(h, "Suppressed").as_deref()
+            == Some("Suppressed Pin, and Hole, which depends on it")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_command_that_cant_run_is_listed_off_and_runs_neither_by_enter_nor_by_a_click() {
+    let f = fixture();
+    // The start page: New, Open, the search, and the sheet run; a document's are off, saying
+    // why.
+    let mut h = f.app();
+    step(&mut h);
+    open_search(&mut h);
+    let off = |h: &AppHarness, words: &str| search_row(h, words).accesskit_node().is_disabled();
+    let why = |h: &AppHarness, words: &str| search_row(h, words).accesskit_node().description();
+    assert!(!off(&h, "New part File"));
+    assert!(!off(&h, "Open… File"));
+    assert!(!off(&h, "Search commands Edit"));
+    assert!(off(&h, "Save File"));
+    assert_eq!(why(&h, "Save File").as_deref(), Some("No document open"));
+    assert!(off(&h, "Fit View"));
+    // Enter on New part, which runs: an untitled part, as Ctrl+N makes it.
+    h.key_press(Key::Enter);
+    step_until(&mut h, "the untitled part", |h| h.state().tabs().len() == 1);
+    assert!(!search_open(&h));
+    // In a document with nothing to undo, none wrong, and no sketch open: Undo is off
+    // (its button's look, no words), What's wrong off saying so, Line off.
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Undo")
+            .accesskit_node()
+            .is_disabled()
+    );
+    open_search(&mut h);
+    search_for(&mut h, "undo", "Undo Edit");
+    assert_eq!(search_rows(&h), [("Undo Edit".to_owned(), true, true)]);
+    assert_eq!(why(&h, "Undo Edit"), None);
+    // Enter on it: nothing run, the search still open.
+    h.key_press(Key::Enter);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(search_open(&h));
+    // A click on it: the same.
+    search_row(&h, "Undo Edit").click();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(search_open(&h));
+    // Find in browser for the pin, which the hole consumes: off, with its menu item's
+    // reason, and a click runs nothing.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    select(&mut h, "Pin");
+    pointer_away(&mut h);
+    open_search(&mut h);
+    search_for(&mut h, "find in", "Find in browser Edit");
+    assert!(off(&h, "Find in browser Edit"));
+    assert_eq!(
+        why(&h, "Find in browser Edit").as_deref(),
+        Some("It's inside a body: the browser lists bodies and sketches")
+    );
+    assert!(!off(&h, "Find in timeline Edit"));
+    let selected_in = h.state().tabs()[0].selected_in;
+    search_row(&h, "Find in browser Edit").click();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(search_open(&h));
+    assert_eq!(h.state().tabs()[0].selected_in, selected_in);
+    // "line": Find in timeline's name, Line's, and Smart Dimension's description ("Pick a
+    // line"); the sketch's two off with no sketch open.
+    retype(&mut h, In::Window, "Search commands", "line");
+    step_until(&mut h, "Line", |h| {
+        search_words(h)
+            == [
+                "Find in timeline Edit",
+                "Line Sketch",
+                "Smart Dimension Sketch",
+            ]
+    });
+    assert!(off(&h, "Line Sketch"));
+    assert!(off(&h, "Smart Dimension Sketch"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_or_a_click_on_the_backdrop_closes_the_search_running_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    open_search(&mut h);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed by Esc", |h| !search_open(h));
+    // Esc was the search's alone: the selection stays.
+    step(&mut h);
+    assert!(!h.state().tabs()[0].selection().is_empty());
+    assert!(!h.ctx.text_edit_focused());
+    open_search(&mut h);
+    // A click on the backdrop, 20 left of the box and 20 under it: over the browser, whose
+    // row there is never reached.
+    let rect = h
+        .get_by_role_and_label(Role::Dialog, "Search commands")
+        .rect();
+    let at = Pos2::new(rect.left() - 20.0, rect.bottom() + 20.0);
+    h.event(Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    step_until(&mut h, "closed by the backdrop", |h| !search_open(h));
+    step(&mut h);
+    assert!(!h.state().tabs()[0].selection().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_search_is_520_wide_96_from_the_top_centred_and_as_high_as_its_parts() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    open_search(&mut h);
+    search_for(&mut h, "fit", "Fit View");
+    step(&mut h);
+    // `.palette-modal` in the 1280 by 800 window: 520 wide, its border in it, at (1280 −
+    // 520) / 2 = 380, 96 down. One row: the 1 border, the field's 38, the list's 4 + 28 +
+    // 4, the foot's 1 + 6 + 16 + 6, and the 1 border: 105.
+    let rect = h
+        .get_by_role_and_label(Role::Dialog, "Search commands")
+        .rect();
+    assert_eq!(
+        rect,
+        Rect::from_min_size(Pos2::new(380.0, 96.0), eframe::egui::vec2(520.0, 105.0))
+    );
+    // Its row: 28 high, 4 in from the box's border, under the field's 38.
+    let row = search_row(&h, "Fit View").rect();
+    assert_eq!(
+        row,
+        Rect::from_min_size(Pos2::new(385.0, 139.0), eframe::egui::vec2(510.0, 28.0))
+    );
+    // Every row listed, opened again: the list held to 340, so 1 + 38 + 340 + 29 + 1 = 409.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    step(&mut h);
+    open_search(&mut h);
+    step_until(&mut h, "every row", |h| search_words(h).len() == 40);
+    step(&mut h);
+    let rect = h
+        .get_by_role_and_label(Role::Dialog, "Search commands")
+        .rect();
+    assert_eq!(
+        rect,
+        Rect::from_min_size(Pos2::new(380.0, 96.0), eframe::egui::vec2(520.0, 409.0))
+    );
     assert_eq!(never_waits::waits(), 0);
 }

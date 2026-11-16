@@ -27,6 +27,7 @@ use crate::pane_widths::{KeptLayout, Widths};
 use crate::panes::{self, Pane, Panes};
 use crate::properties;
 use crate::recent::Recents;
+use crate::search::{self, Search};
 use crate::sheet::{self, Sheet};
 use crate::shortcuts::{self, Command};
 use crate::sketch::{self, bar::BarAction};
@@ -56,8 +57,13 @@ pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload dr
 
 /// The selection filters' keys pressed this frame, X, E, and V (`crate::shortcuts`), each
 /// taken and its kind given, in that order; none taken while a sketch is open (`in_sketch`),
-/// whose X is Construction and whose picking is its own.
-pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
+/// whose X is Construction and whose picking is its own. `queued`, a command the search ran,
+/// counts as its keys pressed.
+pub fn filter_keys(
+    ui: &mut Ui,
+    in_sketch: bool,
+    queued: Option<Command>,
+) -> Vec<toolbar::FilterKind> {
     if in_sketch {
         return Vec::new();
     }
@@ -67,10 +73,36 @@ pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
         (Command::FilterVertex, toolbar::FilterKind::Vertices),
     ]
     .into_iter()
-    .filter(|(command, _)| shortcuts::take(ui, *command))
+    .filter(|(command, _)| shortcuts::take(ui, *command) | (queued == Some(*command)))
     .map(|(_, kind)| kind)
     .collect()
 }
+
+/// Whether Save is on for `tab` (the app bar's Save, its keys, and the search's): off while a
+/// dialog or a sketch is open, its OK or Finish, or its Cancel, ending its edits first; on
+/// for an untitled part with no edits too, its first save writing it, but not while it
+/// closes or a Save As of its runs.
+fn save_offered(tab: &Tab) -> bool {
+    !tab.editing()
+        && if tab.is_untitled() {
+            !tab.closing() && !tab.saving_as()
+        } else {
+            tab.unsaved()
+        }
+}
+
+/// Where F2 renames, and Del deletes, the feature selected in `tab`: where it was selected,
+/// but in the timeline for a row of a browser collapsed (`collapsed`) since, where its
+/// field can be seen.
+fn key_place(tab: &Tab, collapsed: bool) -> crate::feature_menu::Place {
+    match tab.selected_in {
+        crate::feature_menu::Place::Browser if collapsed => crate::feature_menu::Place::Timeline,
+        place => place,
+    }
+}
+
+/// What the search says of a document's command with no document shown (the start page).
+pub const NO_DOCUMENT: &str = "No document open";
 
 /// A toast saying `text` over `canvas`'s bottom right (the prototype's `.toast`): drawn in
 /// its own area, above the panes, taking no input. SEAM: the prototype's info icon and its
@@ -328,6 +360,11 @@ pub struct App<P: Clients + 'static> {
     export: Option<ExportForm>,
     /// The shortcut sheet, while it's open (DESIGN.md, state 7).
     sheet: Option<Sheet>,
+    /// The command search, while it's open (`S`).
+    search: Option<Search>,
+    /// A command the search ran that its keys do: done next frame by the keys' own code, as
+    /// a press of them is ([`command_keys`](Self::command_keys)).
+    queued: Option<Command>,
     tree: egui_tiles::Tree<Pane>,
     /// The property panel's name field, while it's typed in.
     name: Option<panes::NameField>,
@@ -464,6 +501,8 @@ impl<P: Clients + 'static> App<P> {
             save_as_path: String::new(),
             export: None,
             sheet: None,
+            search: None,
+            queued: None,
             tree: panes::layout(),
             name: None,
             message: None,
@@ -731,8 +770,10 @@ impl<P: Clients + 'static> App<P> {
         let (mut next_frame, dialog_key) = self.keys(ui);
         // The canvas's Select Other closed under a modal, the shortcut sheet, or What's
         // Wrong (one its keys just opened, `?`, too): the focus and the keys are theirs.
-        let over =
-            self.asking.is_some() || self.sheet.is_some() || self.whats_wrong_shown().is_some();
+        let over = self.asking.is_some()
+            || self.sheet.is_some()
+            || self.search.is_some()
+            || self.whats_wrong_shown().is_some();
         if over && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
             tab.close_select_other(ui.ctx());
         }
@@ -936,6 +977,18 @@ impl<P: Clients + 'static> App<P> {
         for tab in &mut self.tabs {
             if let Some(oked) = tab.take_oked() {
                 self.remembered.keep(&oked);
+            }
+        }
+        // The search, closed by a question asked meanwhile (a quit, a replace), which is
+        // over everything.
+        if self.asking.is_some() {
+            self.search = None;
+        }
+        if let Some(mut open) = self.search.take() {
+            match search::show(ui.ctx(), &mut open, &|command| self.search_can(command)) {
+                search::Asked::None => self.search = Some(open),
+                search::Asked::Close => search::let_go(ui.ctx()),
+                search::Asked::Run(command) => next_frame |= self.run_searched(ui.ctx(), command),
             }
         }
         // The sheet under a question asked over it meanwhile (a quit, a replace).
@@ -1215,7 +1268,8 @@ impl<P: Clients + 'static> App<P> {
     /// Ctrl+Z undoes and Ctrl+Y or Ctrl+Shift+Z redoes (docs/ux/solidworks.md, §6;
     /// DESIGN.md, *Keyboard*), Esc stops what's running and Ctrl+B rebuilds what was
     /// stopped (§5, *Rebuild*), and H hides or shows the selected body or sketch, outside a
-    /// text field. Outside a text field too, `?` opens the shortcut sheet; F6 fits the shown
+    /// text field. Outside a text field too, `?` opens the shortcut sheet, and S the command
+    /// search (outside a menu too); F6 fits the shown
     /// tab's view, Home gives its home view, and Ctrl+1 to Ctrl+7 its standard views
     /// (SolidWorks' numbering); Ctrl+Shift+B rebuilds everything, ignoring the cache; and,
     /// with a feature selected, F2 types its name over in its own field and Del (or ⌫)
@@ -1225,13 +1279,16 @@ impl<P: Clients + 'static> App<P> {
     /// F2 says why it renames nothing (as its menu item is off), and Ctrl+Enter finishes
     /// the sketch.
     /// With a modal open (the sheet too), none acts: Esc is the modal's Cancel (the sheet's
-    /// close), and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
+    /// close), and Enter its OK. With the search open, its keys are its own (`search::keys`). With a dialog open, Enter and Esc are the dialog's, taken
     /// here and given to it once its inputs have taken this frame's typing (`Panes::dialog`,
     /// in `crate::panes`). Whether the frame after is to be asked for (a command started, a
     /// modal's key taken, or an Esc [`command_keys`](Self::command_keys) takes; not the
     /// sheet's or What's Wrong's Esc, which closes it and asks nothing), and the dialog's key.
     fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         self.modal_key = None;
+        // A command the search ran last frame: let go if a modal or the like has come since,
+        // as a press would be.
+        let queued = self.queued.take();
         if self.asking.is_some() {
             // A modal open since the last frame: Esc is its Cancel, and Enter its OK unless
             // a button or a checkbox of its has focus, whose own click Enter then is. Taken
@@ -1245,6 +1302,21 @@ impl<P: Clients + 'static> App<P> {
                 (false, false) => None,
             };
             return (escape || enter, None);
+        }
+        if let Some(mut open) = self.search.take() {
+            // The search's keys: Esc closes it, the arrows move its highlight, and Enter runs
+            // it; no other command acts under it.
+            return match search::keys(ui, &mut open, &|command| self.search_can(command)) {
+                search::Asked::None => {
+                    self.search = Some(open);
+                    (false, None)
+                }
+                search::Asked::Close => {
+                    search::let_go(ui.ctx());
+                    (false, None)
+                }
+                search::Asked::Run(command) => (self.run_searched(ui.ctx(), command), None),
+            };
         }
         if self.sheet.is_some() {
             // The sheet is a modal too: Esc closes it, and no other command acts under it.
@@ -1260,8 +1332,8 @@ impl<P: Clients + 'static> App<P> {
             }
             return (false, None);
         }
-        let renamed = self.rename_before_command(ui.ctx());
-        let (next_frame, dialog_key) = self.command_keys(ui);
+        let renamed = self.rename_before_command(ui.ctx(), queued);
+        let (next_frame, dialog_key) = self.command_keys(ui, queued);
         (next_frame || renamed, dialog_key)
     }
 
@@ -1286,10 +1358,10 @@ impl<P: Clients + 'static> App<P> {
     /// [`COMMANDS_AFTER_RENAME`](Self::COMMANDS_AFTER_RENAME) was pressed this frame: its
     /// name sent there and then, through the path Enter takes, so the command acts on the
     /// renamed document. Whether the name was sent.
-    fn rename_before_command(&mut self, ctx: &egui::Context) -> bool {
+    fn rename_before_command(&mut self, ctx: &egui::Context, queued: Option<Command>) -> bool {
         let asked = Self::COMMANDS_AFTER_RENAME
             .iter()
-            .any(|&command| shortcuts::pressed(ctx, command));
+            .any(|&command| shortcuts::pressed(ctx, command) || queued == Some(command));
         asked && self.send_rename_if(crate::feature_menu::Renaming::focused)
     }
 
@@ -1298,17 +1370,32 @@ impl<P: Clients + 'static> App<P> {
     /// command started, or an Esc taken past Home and Select Other's menu (whose Esc leaves
     /// Home, or closes the menu, and asks nothing), whatever that Esc does, with a document
     /// shown or none; and the dialog's key.
-    fn command_keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
+    fn command_keys(&mut self, ui: &mut Ui, queued: Option<Command>) -> (bool, Option<Key>) {
+        // Each command's keys pressed this frame, taken, or the command the search ran
+        // (`queued`), which is done here as its keys are, never by a copy.
+        let take = |ui: &mut Ui, command: Command| {
+            shortcuts::take(ui, command) | (queued == Some(command))
+        };
         // Never a letter typed, nor a key a text field moves its cursor with (Home).
         let typing = ui.ctx().text_edit_focused();
-        if !typing && shortcuts::take(ui, Command::Shortcuts) {
+        if !typing && take(ui, Command::Shortcuts) {
             self.sheet = Some(Sheet::default());
+            return (false, None);
+        }
+        // S: the command search, anywhere (the start page, sketch mode, a dialog open), but
+        // in a field, or over a menu or Select Other's, which hold the keys.
+        let held = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .is_some_and(|tab| !self.home && tab.select_other().holds_keys());
+        if !typing && !held && !egui::Popup::is_any_open(ui.ctx()) && take(ui, Command::Search) {
+            self.search = Some(Search::default());
             return (false, None);
         }
         // Ctrl+N and Ctrl+O: a new untitled part and Open's panel, as the File menu's and
         // the start page's.
         for command in [Command::New, Command::Open] {
-            if shortcuts::take(ui, command) {
+            if take(ui, command) {
                 if command == Command::New {
                     self.new_part();
                     return (true, None);
@@ -1342,7 +1429,7 @@ impl<P: Clients + 'static> App<P> {
             return (false, None);
         }
         // Before Ctrl+S, which a Ctrl+Shift+S also is, its Shift aside.
-        let save_as = shortcuts::take(ui, Command::SaveAs);
+        let save_as = take(ui, Command::SaveAs);
         if save_as
             && self.save_as_offered()
             && let Some(id) = self.active
@@ -1361,18 +1448,18 @@ impl<P: Clients + 'static> App<P> {
         // the Shift aside): a Redo, as Ctrl+Y is, never an Undo. Rebuild everything before
         // Rebuild for the same reason, taken while typing too, so it's never a Rebuild; but
         // done only outside a text field.
-        let redo = shortcuts::take(ui, Command::Redo);
+        let redo = take(ui, Command::Redo);
         let (save, close, undo) = (
-            shortcuts::take(ui, Command::Save),
-            shortcuts::take(ui, Command::Close),
-            shortcuts::take(ui, Command::Undo),
+            take(ui, Command::Save),
+            take(ui, Command::Close),
+            take(ui, Command::Undo),
         );
-        let rebuild_all = shortcuts::take(ui, Command::RebuildAll) && !typing;
-        let rebuild = shortcuts::take(ui, Command::Rebuild);
+        let rebuild_all = take(ui, Command::RebuildAll) && !typing;
+        let rebuild = take(ui, Command::Rebuild);
         // ⌘R (Ctrl+R elsewhere) before sketch mode's letters, though R alone is Rectangle's
         // and an exact chord's. Done while typing too, as Save is: it's no key of a field's,
         // and what it would drop is asked about first.
-        let reload = shortcuts::take(ui, Command::Reload);
+        let reload = take(ui, Command::Reload);
         // Esc, pressed: with a menu open (a feature's right-click menu, a drop-down) it closes
         // the menu alone, as the prototype's `keydown` has it, left for the menu to take;
         // else it's taken here, and whatever it does below, the frame after is asked for
@@ -1380,11 +1467,11 @@ impl<P: Clients + 'static> App<P> {
         // drag's end) is polled at once.
         let esc = !egui::Popup::is_any_open(ui.ctx()) && shortcuts::take(ui, Command::Stop);
         // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
-        let hide = !typing && shortcuts::take(ui, Command::Hide);
+        let hide = !typing && take(ui, Command::Hide);
         // F2 renames the selected feature, and Del (or ⌫) deletes it: never a field's keys.
         // In sketch mode Del (or ⌫) is the sketch's, below.
-        let rename = !typing && shortcuts::take(ui, Command::Rename);
-        let delete = !typing && shortcuts::take(ui, Command::Delete);
+        let rename = !typing && take(ui, Command::Rename);
+        let delete = !typing && take(ui, Command::Delete);
         // The view's keys, never a field's (Home moves its cursor).
         let view = if typing {
             None
@@ -1392,22 +1479,21 @@ impl<P: Clients + 'static> App<P> {
             crate::viewport::VIEW_COMMANDS
                 .into_iter()
                 // Each taken, the last pressed given.
-                .fold(None, |asked, (command, ask)| {
-                    if shortcuts::take(ui, command) {
-                        Some(ask)
-                    } else {
-                        asked
-                    }
-                })
+                .fold(
+                    None,
+                    |asked, (command, ask)| {
+                        if take(ui, command) { Some(ask) } else { asked }
+                    },
+                )
         };
         // Look At (⌘8), never a field's: its view depends on the selection or the sketch.
-        let look_at = !typing && shortcuts::take(ui, Command::LookAt);
+        let look_at = !typing && take(ui, Command::LookAt);
         let in_sketch = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
             .is_some_and(Tab::in_sketch);
         // Ctrl+Enter (⌘↵) finishes the sketch, as the toolbar's Finish Sketch does.
-        let finish = in_sketch && shortcuts::take(ui, Command::FinishSketch);
+        let finish = in_sketch && take(ui, Command::FinishSketch);
         // Del (or ⌫) in sketch mode deletes the sketch's selection, never a feature (the
         // prototype's `keydown` gives a sketch its own keys and goes no further).
         let (sketch_delete, delete) = (delete && in_sketch, delete && !in_sketch);
@@ -1419,11 +1505,11 @@ impl<P: Clients + 'static> App<P> {
             .then(|| {
                 SKETCH_TOOLS
                     .iter()
-                    .find(|(command, _)| shortcuts::take(ui, *command))
+                    .find(|(command, _)| take(ui, *command))
                     .map(|(_, choice)| *choice)
             })
             .flatten();
-        let construction = sketch_keys && shortcuts::take(ui, Command::Construction);
+        let construction = sketch_keys && take(ui, Command::Construction);
         // Only a plain Enter: Shift or Alt with it is another key's.
         let sketch_enter = sketch_keys
             && ui.input(|input| !input.modifiers.shift && !input.modifiers.alt)
@@ -1433,7 +1519,7 @@ impl<P: Clients + 'static> App<P> {
         let filters = if typing {
             Vec::new()
         } else {
-            filter_keys(ui, in_sketch)
+            filter_keys(ui, in_sketch, queued)
         };
         // F5: where the filters are (the prototype's, no command of the registry's).
         let filters_said =
@@ -1460,12 +1546,7 @@ impl<P: Clients + 'static> App<P> {
         // Each only where its menu item would be on: else its reason is said, as the item's
         // hover says it. A row selected in a browser collapsed since is renamed in the
         // timeline, where its field can be seen.
-        let place = match tab.selected_in {
-            crate::feature_menu::Place::Browser if self.columns.collapsed() => {
-                crate::feature_menu::Place::Timeline
-            }
-            place => place,
-        };
+        let place = key_place(tab, self.columns.collapsed());
         let can = |tab: &Tab, id: &silico_core::document::FeatureId, item| {
             let entry = tab.entry(id.as_str())?;
             Some(crate::feature_menu::off(tab, entry, item, place))
@@ -1591,6 +1672,154 @@ impl<P: Clients + 'static> App<P> {
                 || sketch_enter,
             dialog_key,
         )
+    }
+
+    /// Whether the search can run `command` now, and if not, why: exactly where its button,
+    /// its menu item, or its keys would do it, the reason its button's or menu item's where
+    /// they give one. With no document shown (the start page) only New, Open, the search,
+    /// and the sheet run.
+    fn search_can(&self, command: Command) -> search::Can {
+        use crate::feature_menu::{Item, Place};
+        use search::Can;
+        let on = |on: bool| if on { Can::Run } else { Can::Off(None) };
+        if matches!(
+            command,
+            Command::New | Command::Open | Command::Search | Command::Shortcuts
+        ) {
+            return Can::Run;
+        }
+        let Some(tab) = self
+            .active_place()
+            .filter(|_| !self.start_shown())
+            .and_then(|at| self.tabs.get(at))
+        else {
+            return Can::Off(Some(NO_DOCUMENT.to_owned()));
+        };
+        let in_sketch = tab.in_sketch();
+        // A feature menu's item, for the feature selected: off with its reason, as the menu
+        // has it, or off with none selected (no menu is open for none).
+        let feature = |item: Item, place: Place| {
+            let Some(entry) = tab
+                .selection()
+                .feature()
+                .and_then(|id| tab.entry(id.as_str()))
+            else {
+                return Can::Off(None);
+            };
+            match crate::feature_menu::off(tab, entry, item, place) {
+                None => Can::Run,
+                Some(why) => Can::Off(Some(why)),
+            }
+        };
+        let place = key_place(tab, self.columns.collapsed());
+        match command {
+            Command::Save => on(save_offered(tab)),
+            Command::SaveAs => on(self.save_as_offered()),
+            Command::Undo => on(tab.undoable()),
+            Command::Redo => on(tab.redoable()),
+            Command::Rename => feature(Item::Rename, place),
+            // In sketch mode Del deletes the sketch's selection.
+            Command::Delete if in_sketch => Can::Run,
+            Command::Delete => feature(Item::Delete, place),
+            Command::Suppress => feature(Item::Suppress, place),
+            Command::FindInBrowser => feature(Item::Find, Place::Timeline),
+            Command::FindInTimeline => feature(Item::Find, Place::Browser),
+            Command::Rebuild => on(tab.can_rebuild()),
+            Command::RebuildAll => on(tab.can_rebuild_all()),
+            Command::Reload => on(!tab.closing() && !tab.in_dialog()),
+            Command::Stop => on(tab.stoppable()),
+            Command::WhatsWrong if tab.anything_wrong() => Can::Run,
+            Command::WhatsWrong => Can::Off(Some(crate::whats_wrong::NOTHING_WRONG.to_owned())),
+            // SELECT's, which a sketch's toolbar hasn't; Clear selection on with a selection,
+            // as its item is.
+            Command::FilterFace | Command::FilterEdge | Command::FilterVertex => on(!in_sketch),
+            Command::ClearSelection => {
+                on(!in_sketch && !tab.selection().is_empty() && !tab.in_dialog())
+            }
+            // The SKETCH tab's, while a sketch is open.
+            Command::Line
+            | Command::Rectangle
+            | Command::Circle
+            | Command::Arc
+            | Command::Point
+            | Command::Trim
+            | Command::Dimension
+            | Command::Construction
+            | Command::FinishSketch => on(in_sketch),
+            Command::Close
+            | Command::Fit
+            | Command::Home
+            | Command::Front
+            | Command::Back
+            | Command::Left
+            | Command::Right
+            | Command::Top
+            | Command::Bottom
+            | Command::Isometric
+            | Command::LookAt
+            | Command::Hide
+            | Command::New
+            | Command::Open
+            | Command::Search
+            | Command::Shortcuts => Can::Run,
+            // Never listed (`search::LEFT_OUT`).
+            Command::Orbit | Command::Pan | Command::Zoom | Command::Ok | Command::Cancel => {
+                Can::Off(None)
+            }
+        }
+    }
+
+    /// `command`, run from the search, the search closed and its field let go: as its keys
+    /// do it, by their own code next frame ([`queued`](Self::queued)); or, for those whose
+    /// key is Esc's chain (Stop rebuild, Clear selection) or that have none, as its button
+    /// or menu item does it, through the same function. Whether the frame after is to be
+    /// asked for.
+    fn run_searched(&mut self, ctx: &egui::Context, command: Command) -> bool {
+        search::let_go(ctx);
+        let shown = self
+            .active_place()
+            .filter(|_| !self.start_shown())
+            .and_then(|at| self.tabs.get_mut(at));
+        let sessions = &self.sessions;
+        match (command, shown) {
+            // The status bar's Stop.
+            (Command::Stop, Some(tab)) => tab.stop(sessions),
+            // SELECT's Clear selection.
+            (Command::ClearSelection, Some(tab)) => tab.selection_mut().clear(),
+            // The status bar's errors.
+            (Command::WhatsWrong, Some(tab)) => tab.whats_wrong = true,
+            // The feature menus' items, for the feature selected: the timeline's Find in
+            // browser, the browser's Find in timeline.
+            (Command::Suppress | Command::FindInBrowser | Command::FindInTimeline, Some(tab)) => {
+                use crate::feature_menu::Act;
+                let Some(entry) = tab
+                    .selection()
+                    .feature()
+                    .and_then(|id| tab.entry(id.as_str()))
+                else {
+                    return false;
+                };
+                let id = entry.id.clone();
+                let act = match command {
+                    Command::Suppress => Act::Suppress(id, !entry.suppressed),
+                    Command::FindInBrowser => Act::FindInBrowser(id),
+                    _ => Act::FindInTimeline(id),
+                };
+                crate::feature_menu::act(tab, sessions, act);
+            }
+            (
+                Command::Stop
+                | Command::ClearSelection
+                | Command::WhatsWrong
+                | Command::Suppress
+                | Command::FindInBrowser
+                | Command::FindInTimeline,
+                None,
+            ) => return false,
+            _ => self.queued = Some(command),
+        }
+        ctx.request_repaint();
+        true
     }
 
     /// The toast, if one is shown, over `canvas`'s bottom right, until
@@ -2004,14 +2233,7 @@ impl<P: Clients + 'static> App<P> {
         // Off while a dialog or a sketch is open: its OK or Finish, or its Cancel, ends its
         // edits first. On for an untitled part with no edits too, its first save writing it,
         // but not while it closes or a Save As of its runs.
-        let unsaved = tab.as_ref().is_some_and(|tab| {
-            !tab.editing()
-                && if tab.is_untitled() {
-                    !tab.closing() && !tab.saving_as()
-                } else {
-                    tab.unsaved()
-                }
-        });
+        let unsaved = tab.as_ref().is_some_and(|tab| save_offered(tab));
         let said = tab.as_ref().filter(|_| unsaved).map(|tab| match tab.path {
             Some(_) => format!("Writes your edits to {}", tab.name()),
             None => format!("Asks where to save {}, then writes it", tab.name()),
@@ -3419,7 +3641,7 @@ mod tests {
                 events: vec![ctrl_s],
                 ..Default::default()
             },
-            |ui| sent = Some(app.rename_before_command(ui.ctx())),
+            |ui| sent = Some(app.rename_before_command(ui.ctx(), None)),
         )
         .textures_delta
         .clear();
@@ -3449,7 +3671,7 @@ mod tests {
         }
         let mut h = Harness::builder().build_ui_state(
             |ui, seen: &mut Seen| {
-                let taken = super::filter_keys(ui, seen.in_sketch);
+                let taken = super::filter_keys(ui, seen.in_sketch, None);
                 let x = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::X));
                 seen.taken.extend(taken);
                 seen.x_left |= x;
