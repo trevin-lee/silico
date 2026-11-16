@@ -43,9 +43,9 @@ use ui::{
     hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state, leave_sketch,
     leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
     modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
-    pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away, press, prompt,
-    redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of, select,
-    selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
+    pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front, pointer_away,
+    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
+    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
     stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
     tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
     view_label, view_label_node, view_mut, wheel, window_told, written,
@@ -4911,10 +4911,11 @@ fn sketch_modes_own_edits_are_named_by_the_sketch_and_its_finish_makes_them_one_
     step_until(&mut h, "one counted", |h| {
         in_status_bar(h, "Unsaved · 1 edit")
     });
-    // Create Sketch, Finished: "Add" and the name its add gave it (`'Add ' + name`), the
-    // second sketch of the part.
+    // Create Sketch, a line drawn, Finished: "Add" and the name its add gave it (`'Add ' +
+    // name`), the second sketch of the part.
     create_sketch(&mut h, "XY plane");
     settled(&mut h);
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
     leave_sketch(&mut h, true);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Sketch2");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
@@ -22142,7 +22143,7 @@ fn empty_sketch(name: &str, plane: &str) -> Vec<(String, Plain)> {
 }
 
 #[test]
-fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_it_one_undo() {
+fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_a_line_one_undo() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
@@ -22175,12 +22176,18 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
             .accesskit_node()
             .is_disabled()
     );
-    leave_sketch(&mut h, true);
-    assert!(fields_of(&text_of(&f.sessions, &h), "Sketch1").is_some());
+    // A line drawn, so the sketch holds something: Finish keeps it, the add and the line
+    // one step, "Add" and its name, and no discard said.
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
+    assert_eq!(sketch_of_text(&f, &h, id.as_str()).lines.len(), 1);
     assert!(
         h.query_by_role_and_label(Role::Toolbar, "Sketch bar")
             .is_none()
     );
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Sketch1");
     // One undo takes the whole sketch back.
     h.get_by_role_and_label(Role::Button, "Undo").click();
     step(&mut h);
@@ -22234,6 +22241,226 @@ fn cancel_of_a_sketch_after_earlier_edits_undoes_to_where_it_opened_byte_for_byt
     let tab = &h.state().tabs()[0];
     assert!(tab.transaction);
     assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// What Finish of a new sketch holding nothing says, as the prototype's `finish` words it
+/// (docs/design/m5-ui/js/sketch.js).
+const DISCARDED: &str = "Empty sketch discarded. Nothing was added.";
+
+/// Stepped until everything of the first tab's has answered, as [`settled`]; each toast
+/// shown on the way, in order.
+fn toasts_till_settled(h: &mut AppHarness) -> Vec<String> {
+    let seen = std::cell::RefCell::new(Vec::<String>::new());
+    step_until(h, "everything answered", |h| {
+        if let Some((said, _)) = h.state().toast() {
+            let mut seen = seen.borrow_mut();
+            if seen.last().map(String::as_str) != Some(said) {
+                seen.push(said.to_owned());
+            }
+        }
+        let tab = &h.state().tabs()[0];
+        tab.edits.idle() && !tab.applying() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
+    });
+    seen.into_inner()
+}
+
+/// A line drawn in the open sketch by the Line tool (L), clicked at `from` then at `to`, and
+/// its add answered.
+fn draw_line(f: &Fixture, h: &mut AppHarness, from: [f64; 2], to: [f64; 2]) {
+    h.key_press(eframe::egui::Key::L);
+    step(h);
+    sketch_events(f, h, &clicked(from[0], from[1]));
+    sketch_events(f, h, &clicked(to[0], to[1]));
+    settled(h);
+}
+
+/// Whether the timeline or the browser lists `name`, once each has read the tab's revision.
+fn listed(h: &AppHarness, name: &str) -> bool {
+    shows(h, "Timeline", name) || shows(h, "Browser", name)
+}
+
+#[test]
+fn finish_of_a_new_sketch_with_nothing_drawn_is_its_cancel_said_and_frees_its_name() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    settled(&mut h);
+    step_until(&mut h, "Sketch1 listed", |h| listed(h, "Sketch1"));
+    leave_sketch_unsettled(&mut h, true);
+    // Said once, in the prototype's words.
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    // Its add began the transaction: rolled back, as Cancel's is, so the document is the
+    // file's bytes again, no transaction open, and nothing to undo.
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    assert_eq!(tab.unsaved_edits(), 0);
+    step_until(&mut h, "Sketch1 gone", |h| {
+        !listed(h, "Sketch1") && shows(h, "Timeline", "Hole")
+    });
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo");
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Undo")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // Its name free: the next Create Sketch's is Sketch1 again.
+    create_sketch(&mut h, "XY plane");
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f.sessions, &h), "Sketch1"),
+        Some(empty_sketch("Sketch1", r#""xy""#))
+    );
+    assert_eq!(fields_of(&text_of(&f.sessions, &h), "Sketch2"), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_of_a_new_empty_sketch_after_an_edit_undoes_to_the_edit_and_leaves_no_step() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let before = text_of(&f.sessions, &h);
+    assert!(before.contains(r#""name": "PinK""#));
+    let opened_at = h.state().tabs()[0].revision;
+    create_sketch(&mut h, "YZ plane");
+    settled(&mut h);
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    // Undone back to where sketch mode opened, as Cancel's is: the rename kept, the next
+    // Undo the rename's, nothing to redo, and the bar counting the rename alone.
+    assert_eq!(text_of(&f.sessions, &h), before);
+    let tab = &h.state().tabs()[0];
+    assert!(tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_of_a_new_sketch_whose_only_line_was_deleted_discards_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
+    let line = sketch_of_text(&f, &h, id.as_str()).lines[0]
+        .id
+        .as_str()
+        .to_owned();
+    read_with_lines(&mut h, 1);
+    // The tool left (Esc), the line deleted: its ends go
+    // with it, used by no other curve, so the sketch holds nothing again.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    delete_line(&mut h, &line);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!(
+        (sketch.points.len(), sketch.lines.len()),
+        (0, 0),
+        "{sketch:?}"
+    );
+    read_with_lines(&mut h, 0);
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert!(!h.state().tabs()[0].transaction);
+    step_until(&mut h, "Sketch1 gone", |h| {
+        !listed(h, "Sketch1") && shows(h, "Timeline", "Hole")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_drawn_in_the_frame_finish_is_pressed_keeps_the_new_sketch() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    settled(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(10.0, 10.0));
+    settled(&mut h);
+    // The line's second click and Finish in one frame: its add queued or under way, never
+    // answered, and sketch mode's last read of an empty sketch.
+    hand_camera(&mut h);
+    {
+        let _marked = never_waits::marked();
+        let ctx = eframe::egui::Context::default();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        let events = clicked(30.0, 20.0);
+        let pointer = events.last().map(|event| event.at);
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let input = silico_app::sketch::FrameInput {
+                events: &events,
+                pointer,
+                project: &to_screen,
+                to_plane: &to_sketch,
+            };
+            tab.sketch_frame(&sessions, &painter, &input);
+        });
+        output.textures_delta.clear();
+        let read = tab.sketch.as_ref().unwrap().drawable().unwrap();
+        assert!(read.members.lines.is_empty());
+        // Its add queued or sent, unanswered.
+        assert!(tab.unsettled());
+        tab.finish_sketch(&sessions, true);
+    }
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.points.len(), sketch.lines.len()), (2, 1));
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Sketch1");
+    step_until(&mut h, "Sketch1 listed", |h| listed(h, "Sketch1"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A box and an empty sketch, written by hand.
+const BLANK_SKETCHED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Blank", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn edit_sketch_of_an_empty_sketch_finished_keeps_it_and_says_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("blank.silico", BLANK_SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Blank"));
+    double_click(&mut h, "Browser", "Blank");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    assert_eq!(sketch_mode(&h).unwrap().sketch, Some(sketch_id("s0000001")));
+    let sent = h.state().tabs()[0].sent.len();
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
+    assert_eq!(text_of(&f.sessions, &h), BLANK_SKETCHED);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert!(listed(&h, "Blank"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -23220,6 +23447,27 @@ fn create_sketch_on_a_face_writes_the_face_and_the_core_fills_in_its_x() {
     assert!(sketch_mode(&h).unwrap().plane_problem().is_none());
     leave_sketch(&mut h, false);
     assert_eq!(text_of(&f.sessions, &h), BLOCK);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_of_a_new_sketch_on_a_face_with_nothing_drawn_discards_it() {
+    let f = fixture();
+    planar_boxes(&f.kernel);
+    let (mut h, _) = f.opened("block.silico", BLOCK);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let sessions = Arc::clone(h.state().sessions());
+    h.state_mut().tabs_mut()[0].create_sketch_on_face(&sessions, "b0000001.box.Face6");
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    settled(&mut h);
+    assert!(fields_of(&text_of(&f.sessions, &h), "Sketch1").is_some());
+    sketch_read(&mut h);
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), BLOCK);
+    assert!(!h.state().tabs()[0].transaction);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -30484,9 +30732,11 @@ fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
     begin_sketch_on(h, part, "XY plane");
 }
 
-/// Finish Sketch (⌘↵) in the part `part`, shown, which keeps its sketch: sketch mode
-/// closed, and the part's edits held, unsaved, its tab marked.
+/// A point placed in the part `part`'s new sketch, then Finish Sketch (⌘↵), which keeps
+/// the sketch, holding the point (one holding nothing it would discard): sketch mode closed,
+/// and the part's edits held, unsaved, its tab marked.
 fn finish_sketch_unsaved(h: &mut AppHarness, part: &str) {
+    place_point_in(h, part, 10.0, 10.0);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
     let marked = format!("{part} *");
     step_until(h, "sketch mode closed, unsaved", |h| {
@@ -43974,14 +44224,21 @@ fn sketch_mode_drops_nothing_and_an_absorbed_sketch_edited_stays_hidden() {
         leave_sketch(&mut h, finish);
         assert!(kept(&h), "{name}, finished: {finish}");
     }
-    // A new sketch cancelled was never listed: no new row, the eyes as they were. One
-    // finished is listed with nothing built from it: shown.
+    // A new sketch cancelled was never listed: no new row, the eyes as they were; nor one
+    // finished with nothing drawn, which is discarded. One finished with a line is listed
+    // with nothing built from it: shown.
     let rows = h.state().tabs()[0].browser.sketches().len();
     create_sketch(&mut h, "XY plane");
     leave_sketch(&mut h, false);
     assert_eq!(h.state().tabs()[0].browser.sketches().len(), rows);
     assert!(kept(&h), "a new sketch cancelled");
     create_sketch(&mut h, "XY plane");
+    leave_sketch(&mut h, true);
+    assert_eq!(h.state().tabs()[0].browser.sketches().len(), rows);
+    assert!(kept(&h), "a new empty sketch finished");
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
     leave_sketch(&mut h, true);
     step_until(&mut h, "the new sketch listed", |h| {
         h.state().tabs()[0].browser.sketches().len() == rows + 1

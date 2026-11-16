@@ -677,6 +677,70 @@ pub fn create_sketch<P: AppKernel>(h: &mut AppUi<P>, plane: &str) {
     });
 }
 
+/// A point placed at the sketch's (x, y) in the sketch mode of the tab `part`, by the Point
+/// tool: a click given to the tab's own sketch frame (`Tab::sketch_frame`, the overlay's way
+/// in), on a thread marked so a wait there counts, through a projection of ten points a
+/// millimetre about (100, 500); then frames stepped until its add has answered. A new
+/// sketch's Finish keeps it only if it holds something, so a part begun sketch-first draws
+/// this before its Finish.
+pub fn place_point_in<P: AppKernel>(h: &mut AppUi<P>, part: &str, x: f64, y: f64) {
+    use silico_app::sketch::{FrameInput, PointerAction, PointerEvent};
+    let project = |at: [f64; 2]| {
+        Some(Pos2::new(
+            (100.0 + 10.0 * at[0]) as f32,
+            (500.0 - 10.0 * at[1]) as f32,
+        ))
+    };
+    let to_plane = |at: Pos2| {
+        Some([
+            (f64::from(at.x) - 100.0) / 10.0,
+            (500.0 - f64::from(at.y)) / 10.0,
+        ])
+    };
+    let at = project([x, y]).unwrap();
+    let events = [PointerAction::Press, PointerAction::Release].map(|action| PointerEvent {
+        action,
+        at,
+        shift: false,
+        ctrl: false,
+    });
+    let place = h
+        .state()
+        .tabs()
+        .iter()
+        .position(|tab| tab.name() == part)
+        .unwrap_or_else(|| panic!("no tab {part}"));
+    let points = |h: &AppUi<P>| {
+        h.state().tabs()[place]
+            .sketch
+            .as_ref()
+            .and_then(|mode| mode.drawable())
+            .map(|read| read.members.points.len())
+    };
+    let before = points(h).unwrap_or_else(|| panic!("{part}'s sketch not read"));
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(h.state().sessions());
+        let tab = &mut h.state_mut().tabs_mut()[place];
+        tab.sketch_tool(Some(silico_core::sketch_tools::ToolKind::Point));
+        let ctx = eframe::egui::Context::default();
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let input = FrameInput {
+                events: &events,
+                pointer: Some(at),
+                project: &project,
+                to_plane: &to_plane,
+            };
+            tab.sketch_frame(&sessions, &painter, &input);
+        });
+        output.textures_delta.clear();
+    }
+    step_until(h, "the point added and read", |h| {
+        points(h).is_some_and(|now| now == before + 1)
+    });
+}
+
 /// Stepped until sketch mode's newest read holds a sketch.
 pub fn sketch_read<P: AppKernel>(h: &mut AppUi<P>) {
     step_until(h, "the sketch read", |h| {
