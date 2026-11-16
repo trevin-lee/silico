@@ -1,8 +1,9 @@
 //! The named views a render may ask for, and the camera each makes of the bodies in view
 //! (docs/design/m4.6-render.md, *Named views*): Fusion's ViewCube's six faces, eight
-//! corners, and twelve edges, in the document's Z-up axes (FreeCAD's), every one orthographic and fitted to
-//! the bodies' tight box. Computed in f64, in the order the design writes it, with no
-//! trigonometry, so a view's camera is the same on every platform: it's a result.
+//! corners, and twelve edges, in the document's Z-up axes (FreeCAD's), every one
+//! orthographic and fitted to the bodies' tight box. Computed in f64, in the order the
+//! design writes it, with no trigonometry, so a view's camera is the same on every
+//! platform: it's a result.
 
 use silico_protocol::vec3::{cross, dot, sub};
 use silico_protocol::{Camera, Class, Projection, ViewRegion};
@@ -143,12 +144,18 @@ impl NamedView {
         }
     }
 
+    /// How many of the ViewCube's faces it looks from between: 1 for a face, 2 for an
+    /// edge, 3 for a corner (its [`axes`](Self::axes) that aren't 0).
+    pub fn faces(self) -> usize {
+        self.axes().iter().filter(|part| **part != 0.0).count()
+    }
+
     /// The direction from the target to the eye, a unit vector: its [`axes`](Self::axes)
     /// made a unit, a face's as they are, an edge's times 1/√2 (`FRAC_1_SQRT_2`, the
     /// correctly rounded constant), a corner's times 1/√3 (`1.0 / 3.0f64.sqrt()`).
     pub fn direction(self) -> [f64; 3] {
         let axes = self.axes();
-        let unit = match axes.iter().filter(|part| **part != 0.0).count() {
+        let unit = match self.faces() {
             1 => 1.0,
             2 => std::f64::consts::FRAC_1_SQRT_2,
             _ => 1.0 / 3.0f64.sqrt(),
@@ -616,6 +623,31 @@ mod tests {
                 }
             }
         }
+        // And to the bit, as #471's ViewCube gave them (`t` its middle times `FRAC_1_SQRT_2`,
+        // up z − (z·t) t over its length), worked apart from the code in IEEE doubles: the
+        // parts of a top or bottom edge's up are not √2/2's double, 0.7071067811865476, but
+        // 0.7071067811865477 across and 0.7071067811865474 up, as `1 − s²` and `s²` round.
+        let (a, b) = (0.707_106_781_186_547_7, 0.707_106_781_186_547_4);
+        for (view, up) in [
+            (NamedView::TopFront, [0.0, a, b]),
+            (NamedView::TopBack, [0.0, -a, b]),
+            (NamedView::TopLeft, [a, 0.0, b]),
+            (NamedView::TopRight, [-a, 0.0, b]),
+            (NamedView::BottomFront, [0.0, -a, b]),
+            (NamedView::BottomBack, [0.0, a, b]),
+            (NamedView::BottomLeft, [-a, 0.0, b]),
+            (NamedView::BottomRight, [a, 0.0, b]),
+            (NamedView::FrontLeft, z),
+            (NamedView::FrontRight, z),
+            (NamedView::BackLeft, z),
+            (NamedView::BackRight, z),
+        ] {
+            assert_eq!(
+                view.up().map(f64::to_bits),
+                up.map(f64::to_bits),
+                "{view:?}"
+            );
+        }
         // The rule for every view, z made perpendicular to the direction or +y for the top
         // and the bottom, is `up_across`'s.
         for view in NAMED_VIEWS {
@@ -643,6 +675,34 @@ mod tests {
         let tipped = [0.0, -0.01, (1.0f64 - 1e-4).sqrt()];
         let up = up_across(tipped);
         assert!(up[1] > 0.99 && up[2] > 0.0, "{up:?}");
+    }
+
+    #[test]
+    fn the_blocks_top_front_view_at_800_by_600_is_its_camera_to_the_bit() {
+        // As the design's example pins top_front_right's: the block, top_front, 800 x 600.
+        // By hand, the width binds, 1.1 × 40 × 0.75 = 33 (exactly 33 in doubles); the eye is
+        // the box's diagonal, √2100, from its centre (20, 10, 5) along (0, −1, 1)/√2:
+        // (20, 10 − √1050, 5 + √1050). Its digits worked in IEEE doubles apart from the code,
+        // as `fit_along` orders them: the centre plus the direction's part times twice the
+        // half diagonal.
+        let (camera, side) = NamedView::TopFront.fit(BLOCK, 800, 600);
+        assert_eq!(side, "width");
+        assert_eq!(camera.target, [20.0, 10.0, 5.0]);
+        assert_eq!(
+            camera.eye.map(f64::to_bits),
+            [20.0, -22.403_703_492_039_3, 37.403_703_492_039_3].map(f64::to_bits)
+        );
+        let root = 1050f64.sqrt();
+        assert!((camera.eye[1] - (10.0 - root)).abs() <= 1e-13);
+        assert!((camera.eye[2] - (5.0 + root)).abs() <= 1e-13);
+        assert_eq!(
+            camera.projection,
+            Projection::Orthographic { view_height: 33.0 }
+        );
+        assert_eq!(
+            camera.up.map(f64::to_bits),
+            [0.0, 0.707_106_781_186_547_7, 0.707_106_781_186_547_4].map(f64::to_bits)
+        );
     }
 
     #[test]

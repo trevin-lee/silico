@@ -2401,15 +2401,10 @@ fn cube_edges() -> impl Iterator<Item = CubeEdge> {
 }
 
 /// The named views the ViewCube's edges and corners give, the edges' first: each between
-/// two of its faces or three ([`NamedView::axes`]), in [`NAMED_VIEWS`]' order within each.
+/// two of its faces or three ([`NamedView::faces`]), in [`NAMED_VIEWS`]' order within each.
 fn cube_points() -> impl Iterator<Item = NamedView> {
-    let between = |view: &NamedView| view.axes().iter().filter(|part| **part != 0.0).count();
-    let edges = NAMED_VIEWS
-        .into_iter()
-        .filter(move |view| between(view) == 2);
-    let corners = NAMED_VIEWS
-        .into_iter()
-        .filter(move |view| between(view) == 3);
+    let edges = NAMED_VIEWS.into_iter().filter(|view| view.faces() == 2);
+    let corners = NAMED_VIEWS.into_iter().filter(|view| view.faces() == 3);
     edges.chain(corners)
 }
 
@@ -3415,6 +3410,7 @@ mod tests {
 
     #[test]
     fn every_view_the_cube_offers_is_a_named_view_and_its_click_gives_that_views_camera() {
+        use silico_protocol::vec3::{dot, sub};
         // The cube's faces, its edges' middles and its corners, Home, and its menu's views:
         // each a `NamedView` asked for by itself, which parses back from its name, and
         // together all 26, each face, edge, and corner once.
@@ -3460,10 +3456,14 @@ mod tests {
             let (Some(view), None) = (found.next(), found.next()) else {
                 panic!("{middle:?}: no one view there");
             };
+            // #471's, written out: `t` the middle times 1/√2, its up z − (z·t) t made a unit.
             let toward = middle.map(|c| c * std::f64::consts::FRAC_1_SQRT_2);
+            let z = [0.0, 0.0, 1.0];
+            let across = sub(z, toward.map(|c| c * dot(z, toward)));
+            let length = dot(across, across).sqrt();
             let was = navigate::look_at(
                 toward,
-                silico_core::views::up_across(toward),
+                across.map(|c| c / length),
                 bounds,
                 1000,
                 800,
@@ -3480,10 +3480,7 @@ mod tests {
         }
         // The edges' points come first, so a corner's square, taken later, wins where they
         // meet: twelve two-face views, then eight three-face ones.
-        let between: Vec<usize> = points
-            .iter()
-            .map(|view| view.axes().iter().filter(|c| **c != 0.0).count())
-            .collect();
+        let between: Vec<usize> = points.iter().map(|view| view.faces()).collect();
         assert_eq!(between, [[2; 12].as_slice(), &[3; 8]].concat());
         // Its words, as the cube labels its parts: an edge's two faces, as a corner's three.
         let words: Vec<String> = points[..12]
