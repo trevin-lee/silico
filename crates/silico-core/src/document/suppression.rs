@@ -164,7 +164,7 @@ impl<'a> Links<'a> {
 /// Whether a place passes its elements on is told as its consumer's suppression is settled
 /// ([`settle`](Self::settle)): in timeline order, as [`dependents`] settles each feature, or
 /// all at once and then each unsuppression, as [`unsuppress`] does.
-pub(crate) struct Lineage {
+pub(crate) struct ConsumerForest {
     /// Each place's first position in the preorder.
     enter: Vec<usize>,
     /// How many places each place's subtree holds, itself among them: its span's length.
@@ -174,7 +174,7 @@ pub(crate) struct Lineage {
     skip: Vec<usize>,
 }
 
-impl Lineage {
+impl ConsumerForest {
     /// The forest `links` gives, no place's passing decided.
     pub(crate) fn of(links: &Links) -> Self {
         let n = links.consumers.len();
@@ -193,31 +193,24 @@ impl Lineage {
         // The next free position in each place's span, past itself.
         let mut free = vec![0_usize; n];
         let mut roots = 0;
-        for at in (0..n).rev() {
-            let own = size.get(at).copied().unwrap_or(1);
-            let start = match links.consumer(at) {
-                Some((parent, _)) => match free.get_mut(parent) {
-                    Some(next) => {
-                        let start = *next;
-                        *next += own;
-                        start
-                    }
-                    None => 0,
-                },
-                None => {
-                    let start = roots;
-                    roots += own;
-                    start
-                }
+        for (at, &own) in size.iter().enumerate().rev() {
+            // Its parent's next free position, or the roots' for a root.
+            let next = match links.consumer(at) {
+                Some((parent, _)) => free.get_mut(parent),
+                None => Some(&mut roots),
             };
-            if let Some(slot) = enter.get_mut(at) {
-                *slot = start;
-            }
-            if let Some(slot) = free.get_mut(at) {
-                *slot = start + 1;
+            if let Some(next) = next {
+                let start = *next;
+                *next += own;
+                if let Some(slot) = enter.get_mut(at) {
+                    *slot = start;
+                }
+                if let Some(slot) = free.get_mut(at) {
+                    *slot = start + 1;
+                }
             }
         }
-        Lineage {
+        ConsumerForest {
             enter,
             size,
             skip: (0..n).collect(),
@@ -231,11 +224,11 @@ impl Lineage {
         links: &Links,
         suppressed: &dyn Fn(usize) -> bool,
     ) -> Self {
-        let mut lineage = Lineage::of(links);
+        let mut forest = ConsumerForest::of(links);
         for at in 0..features.len() {
-            lineage.settle(features, links, at, suppressed(at));
+            forest.settle(features, links, at, suppressed(at));
         }
-        lineage
+        forest
     }
 
     /// The feature at `at` is settled as `suppressed` says: each solid it consumes (as its
@@ -256,7 +249,8 @@ impl Lineage {
             if suppressed && field == "tool" {
                 continue;
             }
-            if let Some(p) = links.place(input).filter(|&p| p < at)
+            // Its consumer is `at`, so it comes before `at`.
+            if let Some(p) = links.place(input)
                 && links.consumer(p) == Some((at, field))
                 && let Some(slot) = self.skip.get_mut(p)
                 && *slot == p
@@ -266,14 +260,16 @@ impl Lineage {
         }
     }
 
-    /// Whether `base` lies on the way down from `maker`, `maker` itself among it.
+    /// Whether `base` lies on the way down from `maker`, past `maker` itself: a maker that is
+    /// the base itself loses nothing on the way, as [`lost`] would find of it too (its first
+    /// stop is itself, the base, or past it).
     fn on_way(&self, maker: usize, base: usize) -> bool {
         match (
             self.enter.get(maker),
             self.enter.get(base),
             self.size.get(base),
         ) {
-            (Some(&m), Some(&b), Some(&size)) => b <= m && m < b + size,
+            (Some(&m), Some(&b), Some(&size)) => b < m && m < b + size,
             _ => false,
         }
     }
@@ -353,9 +349,9 @@ pub(crate) fn needs(operation: &Operation, field: &str) -> bool {
 /// The suppressed feature the feature at `at` is a dependent of, if it's one, by its place
 /// and why, the first in the order the feature's fields come: its sketch, its stored names
 /// (a suppressed maker, then a maker lost to a suppressed boolean, looked for only where
-/// `lineage` is given, as it is where one may be: [`any_tool_suppressed`]), its inputs.
+/// `forest` is given, as it is where one may be: [`any_tool_suppressed`]), its inputs.
 /// `suppressed` says which features are suppressed, by place; `standing` is theirs
-/// ([`standing`]); `links` finds a feature by ID and a solid's consumer; `lineage` knows each
+/// ([`standing`]); `links` finds a feature by ID and a solid's consumer; `forest` knows each
 /// feature before `at` as settled. For a chain's cause, the place is the input's, which names
 /// it; for a lost name, the boolean's.
 pub(crate) fn suppressed_parent(
@@ -364,7 +360,7 @@ pub(crate) fn suppressed_parent(
     at: usize,
     suppressed: &dyn Fn(usize) -> bool,
     standing: &[Option<usize>],
-    lineage: Option<&mut Lineage>,
+    forest: Option<&mut ConsumerForest>,
 ) -> Option<(usize, Cause)> {
     let feature = features.get(at)?;
     let before = |id: &FeatureId| links.place(id).filter(|&p| p < at);
@@ -379,8 +375,8 @@ pub(crate) fn suppressed_parent(
             return Some((maker, Cause::Names(i)));
         }
     }
-    if let Some(lineage) = lineage
-        && let Some(lost) = lost(features, links, at, &made, lineage)
+    if let Some(forest) = forest
+        && let Some(lost) = lost(features, links, at, &made, forest)
     {
         return Some(lost);
     }
@@ -405,14 +401,14 @@ pub(crate) fn suppressed_parent(
 /// boolean nearest the maker, and the cause. A maker whose consumers never reach the base
 /// was out of the base's lineage before any suppression (open item 2b): the rebuild's to
 /// report, not suppression's. A sketch's elements are named only in what a feature made of
-/// them, so its maker is a solid's too, which this takes. `lineage` answers for each way
-/// ([`Lineage`]), every feature down to the base settled.
+/// them, so its maker is a solid's too, which this takes. `forest` answers for each way
+/// ([`ConsumerForest`]), every feature down to the base settled.
 fn lost(
     features: &[Feature],
     links: &Links,
     at: usize,
     made: &[(NameField, usize)],
-    lineage: &mut Lineage,
+    forest: &mut ConsumerForest,
 ) -> Option<(usize, Cause)> {
     let base = features
         .get(at)
@@ -420,13 +416,13 @@ fn lost(
         .and_then(|b| links.place(b))
         .filter(|&b| b < at)?;
     made.iter().find_map(|&(field, maker)| {
-        if !lineage.on_way(maker, base) {
+        if !forest.on_way(maker, base) {
             return None;
         }
         // The first place from the maker that doesn't pass its elements on: with the base on
         // the way, one before it has a consumer at the base or before, settled, so it's
         // consumed as a suppressed boolean's tool, and that boolean is the one.
-        let stop = lineage.stop(maker);
+        let stop = forest.stop(maker);
         if stop >= base {
             return None;
         }
@@ -485,7 +481,7 @@ pub(crate) fn dependents(
     mut flags: Vec<bool>,
 ) -> (Vec<bool>, Vec<Dependent>) {
     let mut walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
-    let mut lineage = Lineage::of(links);
+    let mut forest = ConsumerForest::of(links);
     let mut origins: Vec<usize> = (0..features.len()).collect();
     let mut standing: Vec<Option<usize>> = Vec::with_capacity(features.len());
     let mut found = Vec::new();
@@ -498,7 +494,7 @@ pub(crate) fn dependents(
                 i,
                 &suppressed,
                 &standing,
-                walk.then_some(&mut lineage),
+                walk.then_some(&mut forest),
             )
         {
             let origin = origins.get(parent).copied().unwrap_or(parent);
@@ -519,7 +515,7 @@ pub(crate) fn dependents(
         // What stands for it, now that whether it's suppressed is settled: those before it
         // are.
         let now = flags.get(i).copied().unwrap_or(false);
-        lineage.settle(features, links, i, now);
+        forest.settle(features, links, i, now);
         let stands = if !feature.operation.makes_solid() {
             None
         } else if !now {
@@ -695,7 +691,7 @@ fn unsuppressing(
     // Unsuppressing only takes suppressions away, so a name can be lost only if one could
     // be before.
     let walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
-    let mut lineage = Lineage::settled(features, &links, &|p| {
+    let mut forest = ConsumerForest::settled(features, &links, &|p| {
         flags.get(p).copied().unwrap_or(false)
     });
     // Its sketch and its names' makers first, all the way up; then each name lost to a
@@ -710,7 +706,7 @@ fn unsuppressing(
                 Some(flag) if *flag => *flag = false,
                 _ => continue,
             }
-            lineage.settle(features, &links, w, false);
+            forest.settle(features, &links, w, false);
             chains.insert(w);
             let Some(feature) = features.get(w) else {
                 continue;
@@ -732,7 +728,7 @@ fn unsuppressing(
         if walk {
             let before = |id: &FeatureId| place(id).filter(|&p| p < w);
             let made = makers(features, feature, &before);
-            if let Some((boolean, _)) = lost(features, &links, w, &made, &mut lineage) {
+            if let Some((boolean, _)) = lost(features, &links, w, &made, &mut forest) {
                 direct.push(boolean);
                 chains.insert(w);
                 continue;
@@ -995,15 +991,15 @@ mod tests {
         );
     }
 
-    /// The lineage of `features` with each settled as `suppressed` says.
-    fn settled(features: &[Feature], suppressed: &dyn Fn(usize) -> bool) -> Lineage {
-        Lineage::settled(features, &Links::of(features), suppressed)
+    /// The consumer forest of `features` with each settled as `suppressed` says.
+    fn settled(features: &[Feature], suppressed: &dyn Fn(usize) -> bool) -> ConsumerForest {
+        ConsumerForest::settled(features, &Links::of(features), suppressed)
     }
 
     // -------------------------------------------------------------------------------------
     // The walk #304 made, step by step down each maker's consumers, kept as the reference the
-    // lineage is held to (issue #306): `lost`, `suppressed_parent`, `dependents`, and
-    // unsuppress's loop as they were before the lineage, word for word but for their names.
+    // consumer forest is held to (issue #306): `lost`, `suppressed_parent`, `dependents`, and
+    // unsuppress's loop as they were before the consumer forest, word for word but for their names.
 
     fn reference_lost(
         features: &[Feature],
@@ -1280,7 +1276,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lineage_judges_every_random_document_as_the_step_by_step_walk_does() {
+    fn the_consumer_forest_judges_every_random_document_as_the_step_by_step_walk_does() {
         // 20,000 random documents of 1 to 16 features: the gate's every dependent, with each
         // feature as the text has it and with each feature suppressed in turn, and every
         // unsuppression of each suppressed feature, as the reference walk gives them.
@@ -1331,13 +1327,13 @@ mod tests {
         );
     }
 
-    /// Whether the lineage says, for the feature at `at` of `d` and every place as its one
+    /// Whether the consumer forest says, for the feature at `at` of `d` and every place as its one
     /// name's maker, what the reference walk says with `suppressed`; how many names it found
     /// lost.
     fn every_way_agrees(
         d: &Document,
         links: &Links,
-        lineage: &mut Lineage,
+        forest: &mut ConsumerForest,
         suppressed: &dyn Fn(usize) -> bool,
         at: usize,
     ) -> usize {
@@ -1345,7 +1341,7 @@ mod tests {
         let mut lost_names = 0;
         for maker in 0..features.len() {
             let made = [(NameField::Edge(0), maker)];
-            let ours = lost(features, links, at, &made, lineage);
+            let ours = lost(features, links, at, &made, forest);
             let theirs = reference_lost(features, links, at, &made, suppressed);
             assert_eq!(
                 ours,
@@ -1359,7 +1355,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lineage_answers_every_way_as_the_step_by_step_walk_does() {
+    fn the_consumer_forest_answers_every_way_as_the_step_by_step_walk_does() {
         // 20,000 random documents of 1 to 16 features, each feature asked of every place as
         // its name's maker (whether before it, after it, itself, or its base): settled in
         // timeline order, each asked once those before it are, as the gate asks; and settled
@@ -1373,19 +1369,19 @@ mod tests {
             let features = &d.features;
             let links = Links::of(features);
             let mut flags: Vec<bool> = features.iter().map(|f| f.suppressed).collect();
-            let mut lineage = Lineage::of(&links);
+            let mut forest = ConsumerForest::of(&links);
             for at in 0..n {
-                in_order += every_way_agrees(&d, &links, &mut lineage, &|p| flags[p], at);
-                lineage.settle(features, &links, at, flags[at]);
+                in_order += every_way_agrees(&d, &links, &mut forest, &|p| flags[p], at);
+                forest.settle(features, &links, at, flags[at]);
             }
-            let mut lineage = settled(features, &|p| flags[p]);
+            let mut forest = settled(features, &|p| flags[p]);
             let mut order: Vec<usize> = (0..n).filter(|&p| flags[p]).collect();
             while !order.is_empty() {
                 let at = order.swap_remove(draws.below(order.len()));
                 flags[at] = false;
-                lineage.settle(features, &links, at, false);
+                forest.settle(features, &links, at, false);
                 for w in 0..n {
-                    unsuppressing += every_way_agrees(&d, &links, &mut lineage, &|p| flags[p], w);
+                    unsuppressing += every_way_agrees(&d, &links, &mut forest, &|p| flags[p], w);
                 }
             }
         }
