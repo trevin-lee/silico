@@ -23,48 +23,23 @@ use silico_app::App;
 use silico_app::navigate;
 use silico_app::renderer::{Change, FrameData, Picking, Present, ViewRenderer};
 use silico_app::viewport::{Navigation, read_size};
-use silico_core::cache::Cache;
 use silico_core::command::Sessions;
 use silico_core::document::FeatureId;
 use silico_core::document::json;
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use silico_core::kernel::Op;
-use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
 use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
 use ui::{
-    ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, In, PLATE, PLATE_END, TRIAD_DOT,
-    advance, arrow_dots, arrow_shafts, body_of, button_event, dialog_open, drag, edit_plates_pad,
-    field, from_the_front, hand_clock, hover_item, image_centre, left_down_at, left_up_at,
-    looks_from, meshes_settled, meshes_settled_in, move_to, near_point, pad_extent, pads_extent,
-    plates_pad_from_the_front, repaint_delay, reversed_ticked, settled, step, step_until,
-    tessellated, the_viewport, triad_origin, up, view, view_label, view_mut,
+    ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT, In, PLATE, PLATE_END,
+    TRIAD_DOT, TWO_BOXES, advance, arrow_dots, arrow_shafts, body_of, button_event, dialog_open,
+    drag, edit_plates_pad, failing_kernel, field, from_the_front, hand_clock, hover_item,
+    image_centre, left_down_at, left_up_at, looks_from, meshes_settled, meshes_settled_in, move_to,
+    near_point, pad_extent, pads_extent, plates_pad_from_the_front, repaint_delay, reversed_ticked,
+    settled, stand_in_sessions, step, step_until, tessellated, the_viewport, triad_origin, up,
+    view, view_label, view_mut,
 };
-
-const EXAMPLE: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
-    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
-    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"}
-  ]
-}
-"#;
-
-/// A 50 mm cube at the origin and a 1 m cube 2 m along x: bodies 1 and 2.
-const TWO_BOXES: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Small", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50},
-    {"id": "a91cw0de", "type": "box", "v": 1, "name": "Large", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
-  ]
-}
-"#;
 
 type Fake = Arc<FakeKernel>;
 type AppHarness = Harness<'static, App<Fake>>;
@@ -87,14 +62,8 @@ fn watching() -> Fixture {
 
 fn fixture_with(watch: bool) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let solver = FakeSketches::new();
-    let sessions = Sessions::with_stand_ins(
-        Arc::clone(&kernel),
-        move |cache| Cache::with_secret(cache, &secret),
-        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    );
+    let sessions = stand_in_sessions(&dir, &kernel, &FakeSketches::new());
     let sessions = if watch {
         let now: silico_core::disk::Clock = Arc::new(std::time::Instant::now);
         sessions
@@ -570,17 +539,6 @@ impl Fixture {
     }
 }
 
-/// The kernel refusing to mesh while the flag is set.
-fn failing_kernel(f: &Fixture) -> Arc<AtomicBool> {
-    let failing = Arc::new(AtomicBool::new(false));
-    let refusing = Arc::clone(&failing);
-    f.kernel.refuse(move |op| {
-        (matches!(op, Op::Tessellate { .. }) && refusing.load(Ordering::SeqCst))
-            .then(|| Error::new(ErrorCode::WorkerCrashed, "the worker crashed meshing"))
-    });
-    failing
-}
-
 /// The small cube from the front at a half pixel of 0.04 mm.
 fn the_small_cube_at_0_04(h: &AppHarness) -> Camera {
     let height = f64::from(view(h).frame().unwrap().size_px[1]);
@@ -599,7 +557,7 @@ fn a_read_refused_while_the_kernel_fails_is_asked_again_on_its_backoff_and_a_new
 {
     // The time the viewport waits by is the test's: frozen, then moved by hand.
     let f = fixture();
-    let failing = failing_kernel(&f);
+    let failing = failing_kernel(&f.kernel);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
     meshes_settled(&mut h);
@@ -688,7 +646,7 @@ fn a_refusal_said_is_cleared_by_the_next_answer_but_a_message_said_since_is_kept
     // refused edit, say), and the retry's answer leaves that be: it clears only its own
     // refusal.
     let f = fixture();
-    let failing = failing_kernel(&f);
+    let failing = failing_kernel(&f.kernel);
     failing.store(true, Ordering::SeqCst);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
@@ -753,7 +711,7 @@ fn a_due_retry_with_no_read_wanted_asks_for_no_frame_at_the_displays_rate() {
     // Refused, then the view set back where the last answer was: when the retry falls due,
     // no read is wanted, and the frame asked for is the idle one, never one at once.
     let f = fixture();
-    let failing = failing_kernel(&f);
+    let failing = failing_kernel(&f.kernel);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
     meshes_settled(&mut h);
@@ -1513,7 +1471,7 @@ fn a_view_moving_while_a_new_revision_is_refused_for_the_moment_reads_nothing_un
     // moving: no read; let go and settled, none either. At the retry's time, 250 ms on, one
     // (refused again, its next half a second off, the backoff going on).
     let f = fixture();
-    let failing = failing_kernel(&f);
+    let failing = failing_kernel(&f.kernel);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
     meshes_settled(&mut h);
@@ -1571,7 +1529,7 @@ fn wheel_notches_during_a_backoff_read_at_most_once() {
     // the view rests in (settled): no read before the retry's time, 250 ms on, and one at
     // it, of the view then.
     let f = fixture();
-    let failing = failing_kernel(&f);
+    let failing = failing_kernel(&f.kernel);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
     meshes_settled(&mut h);
@@ -1665,7 +1623,7 @@ fn a_body_shown_again_raises_a_view_under_the_least_its_reach_allows() {
     ));
     // No read lands across the show (its answer would clamp the view too): the kernel
     // refuses to mesh, and the read count is the same after.
-    let failing = failing_kernel(&f);
+    let failing = failing_kernel(&f.kernel);
     failing.store(true, Ordering::SeqCst);
     step_until(&mut h, "no read out", |h| !view(h).reading());
     let reads = view(&h).reads();
@@ -1692,7 +1650,7 @@ fn a_retry_falling_due_mid_pan_keeps_its_run_growing() {
     // pans, frame after frame: nothing is read, and the run isn't ended. Let go: the view
     // at rest is read, refused again, and the next waits 500 ms, not 250.
     let f = fixture();
-    let failing = failing_kernel(&f);
+    let failing = failing_kernel(&f.kernel);
     let (time, clock) = hand_clock();
     let (mut h, _record) = f.drawn_clocked("boxes.silico", TWO_BOXES, clock);
     meshes_settled(&mut h);
@@ -2927,7 +2885,7 @@ fn a_click_on_empty_canvas_after_a_feature_selected_lets_its_tint_go() {
     assert_eq!(tinted(&record), box_faces(large));
     finding(&record, None);
     let centre = the_viewport(&h).center();
-    ui::click_canvas(&mut h, centre, false);
+    ui::click_over_two_frames(&mut h, centre, Modifiers::NONE);
     step_until(&mut h, "the selection let go", |h| {
         h.state().tabs()[0].selection().is_empty()
     });

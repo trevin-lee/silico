@@ -24,7 +24,6 @@ use silico_app::app::IDLE_FRAME;
 use silico_app::recent::Recents;
 use silico_app::start::Warm;
 use silico_app::tab::Sent;
-use silico_core::cache::Cache;
 use silico_core::command::wire::Named;
 use silico_core::command::{CheckAnswer, CheckModel, ModelChoice, Revision, Running, Sessions};
 use silico_core::disk::{Clock, Reader};
@@ -32,39 +31,25 @@ use silico_core::document::json::{self, Plain};
 use silico_core::fake::never_waits;
 use silico_core::fake::{FakeKernel, FakeSketches, Hold};
 use silico_core::kernel::{Op, Primitive};
-use silico_core::sketch::SketchSolver;
 use silico_core::{Error, ErrorCode};
 use tempfile::TempDir;
 use ui::{
-    ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, FAKE_WAIT as WAIT, FakeBrowser, In, PLATE,
-    PLATE_END, TRIAD_DOT, added, advance, answer_question, anywhere, arrow_dots, arrow_shafts,
-    begin_sketch_on, body_of, boxed, button_event, choose, chosen, click_at, click_canvas,
-    close_window, create, create_sketch, cursor, dialog, dialog_length, dialog_open, double_click,
-    drag, every_face, everything, f2_typed, faces_made_by, field, fields_of, from_the_front,
+    A_BOX, ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT,
+    FakeBrowser, In, PLATE, PLATE_END, SKETCHED_EXAMPLE, TRIAD_DOT, TWO_BOXES, added, advance,
+    answer_question, anywhere, arrow_dots, arrow_shafts, begin_sketch_on, body_of, boxed,
+    button_event, choose, chosen, click_in_one_frame, click_over_two_frames, close_window, create,
+    create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag, every_face,
+    everything, f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front,
     hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state, leave_sketch,
     leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
     modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
     pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away, press, prompt,
     redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of, select,
-    selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields, step,
-    step_until, tab_named, tessellated, text_of, the_viewport, tooltip_title, triad_origin,
-    type_name, undo_by_key, up, view, view_direction, view_label, view_label_node, view_mut, wheel,
-    window_told, written,
+    selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
+    stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
+    tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
+    view_label, view_label_node, view_mut, wheel, window_told, written,
 };
-
-/// The M2.1 document's example (docs/design/m2.1-document-format.md): a block, a pin, and
-/// the hole the pin cuts in it.
-const EXAMPLE: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
-    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
-    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"}
-  ]
-}
-"#;
 
 type Fake = Arc<FakeKernel>;
 type AppHarness = Harness<'static, App<Fake>>;
@@ -85,17 +70,10 @@ fn fixture() -> Fixture {
 /// reader, to hold a comparison).
 fn fixture_reading(read: Option<Reader>) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
     let sketches = FakeSketches::new();
-    let solver = sketches.clone();
     // STEP written by the fake, as the STEP worker would (M5.12's export dialog).
-    let sessions = Sessions::with_stand_ins(
-        Arc::clone(&kernel),
-        move |cache| Cache::with_secret(cache, &secret),
-        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    )
-    .exporting_step(Arc::clone(&kernel));
+    let sessions = stand_in_sessions(&dir, &kernel, &sketches).exporting_step(Arc::clone(&kernel));
     let sessions = match read {
         None => sessions,
         Some(read) => {
@@ -2498,7 +2476,7 @@ fn show_changes_lists_their_radius_and_your_height_and_the_revision_never_moves(
         step(&mut h);
     }
     assert_eq!(field(&h, In::Dialog, "Height").value().as_deref(), Some(""));
-    type_into(&mut h, "Height", "12");
+    type_in(&mut h, In::Dialog, "Height", "12");
     settled(&mut h);
     assert_eq!(
         field(&h, In::Dialog, "Height").value().as_deref(),
@@ -2912,18 +2890,12 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
         std::thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(h.state().wakes(), held);
-    let delay = |h: &AppHarness| {
-        h.output()
-            .viewport_output
-            .get(&eframe::egui::ViewportId::ROOT)
-            .map(|viewport| viewport.repaint_delay)
-    };
     let idle = |delay: Option<Duration>| {
         delay.is_some_and(|delay| {
             delay > silico_core::disk::DISK_CHECK_INTERVAL && delay <= IDLE_FRAME
         })
     };
-    assert!(idle(delay(&h)), "{:?}", delay(&h));
+    assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
     // Released: the rebuild's steps and end, and the read's answer, each wake it.
     hold.release();
     step_until(&mut h, "woken", |h| h.state().wakes() > held);
@@ -2936,15 +2908,15 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
     // does), and then every frame no wake explains asks for a disk comparison's interval,
     // never the display's rate.
     quiet_wakes(&mut h);
-    step_until(&mut h, "idle again", |h| idle(delay(h)));
+    step_until(&mut h, "idle again", |h| idle(repaint_delay(h)));
     for _ in 0..10 {
         let woken = h.state().wakes();
         step(&mut h);
         std::thread::sleep(Duration::from_millis(2));
         assert!(
-            idle(delay(&h)) || h.state().wakes() != woken,
+            idle(repaint_delay(&h)) || h.state().wakes() != woken,
             "{:?}",
-            delay(&h)
+            repaint_delay(&h)
         );
     }
     assert_eq!(never_waits::waits(), 0);
@@ -4627,8 +4599,8 @@ fn a_dialogs_edits_okd_are_one_step_the_dialogs_words_name_and_the_bar_counts_on
         h.query_by_role_and_label(Role::Dialog, "Cylinder")
             .is_some()
     });
-    type_into(&mut h, "Height", "3");
-    type_into(&mut h, "Radius", "1");
+    type_in(&mut h, In::Dialog, "Height", "3");
+    type_in(&mut h, In::Dialog, "Radius", "1");
     settled(&mut h);
     // While it's open, its edits are its own: the bar says so, as before.
     assert!(in_status_bar(&h, "Unsaved · dialog open"));
@@ -4755,7 +4727,7 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
     step_until(&mut h, "its dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Box").is_some()
     });
-    type_into(&mut h, "Height", "1");
+    type_in(&mut h, In::Dialog, "Height", "1");
     settled(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -4822,7 +4794,7 @@ fn pin_dialog_edited(f: &Fixture, typed: &[(&str, &str)]) -> AppHarness {
             .is_some()
     });
     for (input, text) in typed {
-        type_into(&mut h, input, text);
+        type_in(&mut h, In::Dialog, input, text);
         settled(&mut h);
     }
     h
@@ -4842,7 +4814,7 @@ fn a_dialogs_ok_waiting_behind_its_last_edit_counts_its_edits_as_the_one_step_it
         let f = fixture();
         let mut h = pin_dialog_edited(&f, typed);
         let (hold, check) = hold_queue(&f, &h, 0);
-        type_into(&mut h, "Height", "4");
+        type_in(&mut h, In::Dialog, "Height", "4");
         {
             let sessions = Arc::clone(&f.sessions);
             h.state_mut().tabs_mut()[0].close_dialog(&sessions, true);
@@ -4959,10 +4931,10 @@ fn a_dialog_cancelled_before_its_opening_is_taken_leaves_the_count_the_last_ones
         h.query_by_role_and_label(Role::Dialog, "Cylinder")
             .is_some()
     });
-    type_into(&mut h, "Height", "3");
+    type_in(&mut h, In::Dialog, "Height", "3");
     settled(&mut h);
     let (hold, check) = hold_queue(&f, &h, 0);
-    type_into(&mut h, "Height", "4");
+    type_in(&mut h, In::Dialog, "Height", "4");
     let sessions = Arc::clone(&f.sessions);
     h.state_mut().tabs_mut()[0].close_dialog(&sessions, true);
     step(&mut h);
@@ -5939,24 +5911,6 @@ const SKETCHED: &str = r#"{
 }
 "#;
 
-/// The M2.1 example with a triangle sketched on XY, not yet swept: a part to make a feature
-/// in sketch-first, as SolidWorks makes solids (Trevin's decision of 2026-11-09: the app
-/// makes no primitive). The triangle, (30, 0), (50, 0), (30, 10), lies half on the block's
-/// floor and half past its end (x = 40), so its pad, 10 up from z = 0, is one solid with the
-/// hole's body and changes it. The hole, the tip, is a Pad's base.
-const SKETCHED_EXAMPLE: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
-    {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
-    {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"},
-    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 30, "y": 0, "construction": false}, {"id": "pb000000", "x": 50, "y": 0, "construction": false}, {"id": "pc000000", "x": 30, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
-  ]
-}
-"#;
-
 /// The primitives, which a file may hold and the app edits, but never makes (Trevin's
 /// decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes them).
 const PRIMITIVES: [&str; 5] = ["Box", "Cylinder", "Sphere", "Cone", "Torus"];
@@ -6036,16 +5990,6 @@ fn create_off(h: &mut AppHarness, kind: &str) -> bool {
         .is_disabled()
 }
 
-/// Typed into the dialog's input `label`, one keystroke a frame, at its end.
-fn type_into(h: &mut AppHarness, label: &str, text: &str) {
-    field(h, In::Dialog, label).focus();
-    step(h);
-    for c in text.chars() {
-        field(h, In::Dialog, label).type_text(&c.to_string());
-        step(h);
-    }
-}
-
 /// The fields `json` writes, as [`fields_of`] gives them.
 fn expected(json_text: &str) -> Vec<(String, Plain)> {
     let Plain::Object(fields) = Plain::of(&json::read(json_text.as_bytes()).unwrap()) else {
@@ -6098,12 +6042,7 @@ fn each_kinds_dialog_adds_its_feature_with_its_defaults_on_ok() {
             .click();
         step(&mut h);
         create(&mut h, kind);
-        step_until(&mut h, "its add answered", |h| {
-            h.state().tabs()[0]
-                .dialog
-                .as_ref()
-                .is_some_and(|dialog| dialog.feature.is_some())
-        });
+        added(&mut h);
         assert!(ok_enabled(&h), "{kind}");
         dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
         step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -6150,12 +6089,7 @@ fn a_sweeps_ok_waits_for_a_sketch_chosen_in_the_browser_and_adds_nothing_before(
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Triangle")
         .click();
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     assert!(dialog(&h).query_by_label("Triangle").is_some());
     assert!(ok_enabled(&h));
     h.key_press(eframe::egui::Key::Enter);
@@ -6186,12 +6120,7 @@ fn ok_clicked_in_the_frame_an_input_turns_invalid_leaves_the_dialog_open() {
         .click();
     step(&mut h);
     create(&mut h, "Pocket");
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     assert!(ok_enabled(&h));
     field(&h, In::Dialog, "Length").focus();
@@ -6288,12 +6217,7 @@ fn ok_clicked_in_the_frame_a_new_features_inputs_turn_valid_waits_for_its_add() 
         Some("5")
     );
     assert!(dialog_open(&h));
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     assert!(dialog_open(&h));
     assert_eq!(never_waits::waits(), 0);
@@ -6309,12 +6233,7 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
         .click();
     step(&mut h);
     create(&mut h, "Pocket");
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     assert!(
         dialog(&h)
             .query_by_role_and_label(Role::TextInput, "Length 2")
@@ -6327,7 +6246,7 @@ fn a_pockets_extent_form_shows_its_own_inputs_and_writes_only_its_own_values() {
             .is_some()
     });
     assert!(dialog(&h).query_by_label("Reversed").is_none());
-    type_into(&mut h, "Length 2", "1");
+    type_in(&mut h, In::Dialog, "Length 2", "1");
     settled(&mut h);
     assert_eq!(
         written(&f.sessions, &h, "Pocket", "extent"),
@@ -6358,19 +6277,14 @@ fn a_dialogs_value_typed_is_coalesced_into_one_edit_behind_the_one_in_flight() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     let sent = h.state().tabs()[0].edits.sent;
     // The session's queue held: the first keystroke's edit waits in it, and the next two
     // wait in the tab, the last replacing the one before. The pad's length is its extent's:
     // `set_field` sets the extent whole.
     let (hold, check) = hold_queue(&f, &h, 0);
-    type_into(&mut h, "Length", "123");
+    type_in(&mut h, In::Dialog, "Length", "123");
     hold.release();
     check.wait();
     settled(&mut h);
@@ -6400,15 +6314,10 @@ fn an_unparseable_value_is_red_sends_nothing_and_keeps_ok_off() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     let sent = h.state().tabs()[0].edits.sent;
-    type_into(&mut h, "Length", "x");
+    type_in(&mut h, In::Dialog, "Length", "x");
     for _ in 0..10 {
         step(&mut h);
     }
@@ -6431,12 +6340,7 @@ fn a_value_the_core_refuses_keeps_ok_off_until_one_it_takes() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     // "-10": a number, sent, and refused by the gate (a sweep's length is above 0).
     // The minus at the field's start, where a person puts it: Home, then "-".
@@ -6489,13 +6393,8 @@ fn cancel_undoes_to_where_the_dialog_opened_byte_for_byte_keeping_earlier_edits(
     assert!(before.contains(r#""name": "PinK""#));
     let opened_at = h.state().tabs()[0].revision;
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
-    type_into(&mut h, "Length", "2");
+    added(&mut h);
+    type_in(&mut h, In::Dialog, "Length", "2");
     settled(&mut h);
     assert_eq!(
         written(&f.sessions, &h, "Pad", "extent"),
@@ -6921,7 +6820,7 @@ fn a_value_typed_while_the_preview_rebuilds_is_applied_without_waiting_for_it() 
             && f.kernel.wait_running(1, Duration::ZERO)
     });
     // The rebuild still held: the edit lands all the same, the old preview's read stopped.
-    type_into(&mut h, "Length", "3");
+    type_in(&mut h, In::Dialog, "Length", "3");
     step_until(&mut h, "the length applied", |h| {
         h.state().tabs()[0].edits.idle() && !h.state().tabs()[0].unsettled()
     });
@@ -6949,12 +6848,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let before = text_of(&f.sessions, &h);
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     // One dialog at a time: CREATE's tools off.
     assert!(create_off(&mut h, "Pad"));
@@ -6984,12 +6878,7 @@ fn enter_is_ok_and_esc_is_cancel() {
     settled(&mut h);
     assert_eq!(text_of(&f.sessions, &h), before);
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
@@ -7008,14 +6897,9 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     let before = text_of(&f.sessions, &h);
     let opened_at = h.state().tabs()[0].revision;
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     // Two edits, each its own step on the stack: the add, the length, the direction.
-    type_into(&mut h, "Length", "1");
+    type_in(&mut h, In::Dialog, "Length", "1");
     settled(&mut h);
     let edits = h.state().tabs()[0].edits.sent;
     dialog(&h)
@@ -7093,7 +6977,7 @@ fn edit_feature_from_a_double_click_loads_the_features_values_and_ok_applies_a_c
         step(&mut h);
     }
     assert!(h.state().tabs()[0].sent.is_empty());
-    type_into(&mut h, "Height", "3");
+    type_in(&mut h, In::Dialog, "Height", "3");
     settled(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -7209,7 +7093,7 @@ fn edited(
         sent,
         "{name}'s loading sent"
     );
-    type_into(h, field, typed);
+    type_in(h, In::Dialog, field, typed);
     settled(h);
     dialog(h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(h, "the dialog closed", |h| !dialog_open(h));
@@ -7477,12 +7361,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     open_sweep_on_triangle(&mut h, "Pocket");
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     // And File > Revert with the pocket's preview rebuilding: its rollback lands too.
     rebuilding(&mut h);
     h.get_by_label("File").click();
@@ -7529,12 +7408,7 @@ fn a_dialog_and_create_are_off_while_the_tab_closes() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     let (hold, check) = hold_queue(&f, &h, 0);
     h.get_by_label("Close example.silico").click();
@@ -7612,7 +7486,7 @@ fn edit_feature_of_a_revolve_about_a_sketch_line_keeps_that_axis() {
         Some("90")
     );
     assert!(dialog(&h).query_by_label("Triangle").is_some());
-    type_into(&mut h, "Angle", ".5");
+    type_in(&mut h, In::Dialog, "Angle", ".5");
     settled(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -7658,12 +7532,7 @@ fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     h.get_by_label("File").click();
     step(&mut h);
@@ -7778,7 +7647,7 @@ fn esc_after_typing_coalesced_behind_a_held_preview_stays_stopped() {
     added(&mut h);
     // Two keystrokes, one a frame: the preview's read asked while an edit is in flight
     // runs at the revision that edit comes to.
-    type_into(&mut h, "Length", "12");
+    type_in(&mut h, In::Dialog, "Length", "12");
     answered_while_held(&mut h);
     step_until(&mut h, "the preview rebuilding", |h| {
         h.state().tabs()[0].preview_rebuilding()
@@ -7880,7 +7749,7 @@ fn typing_while_the_add_is_unanswered_makes_one_feature_and_edits_it() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let (hold, check) = hold_queue(&f, &h, 0);
     pad_until_add_sent(&mut h);
-    type_into(&mut h, "Length", "12");
+    type_in(&mut h, In::Dialog, "Length", "12");
     let typed = field(&h, In::Dialog, "Length").value().unwrap();
     hold.release();
     check.wait();
@@ -7919,7 +7788,7 @@ fn a_reload_under_edit_feature_reads_the_feature_again_and_cancel_undoes_from_th
     step_until(&mut h, "the reloaded radius", |h| {
         dialog_open(h) && field(h, In::Dialog, "Radius").value().as_deref() == Some("3")
     });
-    type_into(&mut h, "Height", "1");
+    type_in(&mut h, In::Dialog, "Height", "1");
     settled(&mut h);
     assert!(text_of(&f.sessions, &h).contains(r#""height": 121"#));
     h.key_press(eframe::egui::Key::Escape);
@@ -8002,7 +7871,7 @@ fn two_dialogs_okd_are_undone_and_redone_each_whole() {
     for (kind, label) in [("Pad", "Length"), ("Pocket", "Length")] {
         open_sweep_on_triangle(&mut h, kind);
         added(&mut h);
-        type_into(&mut h, label, "1");
+        type_in(&mut h, In::Dialog, label, "1");
         settled(&mut h);
         dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
         step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -8083,7 +7952,7 @@ fn edit_features_read_comes_after_the_edits_asked_before_it() {
     // The queue held: one radius in the session's queue, the next in the tab's, then OK and
     // Edit Feature again.
     let (hold, check) = hold_queue(&f, &h, 0);
-    type_into(&mut h, "Radius", "12");
+    type_in(&mut h, In::Dialog, "Radius", "12");
     let typed = field(&h, In::Dialog, "Radius").value().unwrap();
     h.key_press(eframe::egui::Key::Enter);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -8230,7 +8099,7 @@ fn a_suppressed_feature_whose_chain_stands_is_the_tip_and_a_consumed_one_never_i
 fn made(h: &mut AppHarness, kind: &str, label: &str) {
     open_sweep_on_triangle(h, kind);
     added(h);
-    type_into(h, label, "1");
+    type_in(h, In::Dialog, label, "1");
     settled(h);
     dialog(h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(h, "the dialog closed", |h| !dialog_open(h));
@@ -8289,7 +8158,7 @@ fn ok_and_enter_wait_for_the_add_so_what_was_typed_meanwhile_is_kept() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
     let (hold, check) = hold_queue(&f, &h, 0);
     pad_until_add_sent(&mut h);
-    type_into(&mut h, "Length", "12");
+    type_in(&mut h, In::Dialog, "Length", "12");
     let typed = field(&h, In::Dialog, "Length").value().unwrap();
     // The add unanswered: OK off, and Enter does nothing.
     assert!(!ok_enabled(&h));
@@ -8346,7 +8215,7 @@ fn edit_feature_opens_at_the_revision_its_read_found_when_the_session_moved_unde
     settled(&mut h);
     let moved = text_of(&f.sessions, &h);
     // A change, OK, then one undo: back to what the read found, not refused.
-    type_into(&mut h, "Radius", "1");
+    type_in(&mut h, In::Dialog, "Radius", "1");
     settled(&mut h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
@@ -8724,10 +8593,7 @@ fn esc_stops_a_rebuild_running_with_no_command_and_with_none_does_nothing() {
 
 /// Whether the last frame asked for the next at once (`request_repaint`), not the idle one.
 fn asked_at_once(h: &AppHarness) -> bool {
-    h.output()
-        .viewport_output
-        .get(&eframe::egui::ViewportId::ROOT)
-        .is_some_and(|viewport| viewport.repaint_delay == Duration::ZERO)
+    repaint_delay(h) == Some(Duration::ZERO)
 }
 
 /// Frames stepped until one asks for none at once (nothing pending answers into it).
@@ -8930,11 +8796,7 @@ fn a_stopped_rebuild_with_nothing_published_reads_nothing_more_and_asks_for_no_f
         std::thread::sleep(Duration::from_millis(2));
     }
     assert_eq!(h.state().wakes(), woken);
-    let delay = h
-        .output()
-        .viewport_output
-        .get(&eframe::egui::ViewportId::ROOT)
-        .map(|viewport| viewport.repaint_delay);
+    let delay = repaint_delay(&h);
     assert!(
         delay.is_some_and(|delay| {
             delay > silico_core::disk::DISK_CHECK_INTERVAL && delay <= IDLE_FRAME
@@ -10100,22 +9962,6 @@ fn the_format_chosen_is_the_one_marked_chosen() {
 }
 
 // ---- The viewport (M5.6) ----
-
-/// Two boxes, each a body: a 50 mm cube at the origin, and a 1 m cube 2 m along x. The
-/// fake meshes a box at its floor, its box's diagonal × 1e-4 (`mesh_floor`): the small
-/// one's 0.00866 mm, under every level these tests view it at; the large one's
-/// 1000√3 × 1e-4 = 0.173205 mm, over all of them, so it's meshed at its floor, which
-/// serves every half pixel under 2 · 0.125 (its floor's level, 2⁻³).
-const TWO_BOXES: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Small", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50},
-    {"id": "a91cw0de", "type": "box", "v": 1, "name": "Large", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
-  ]
-}
-"#;
 
 /// What the fake renderer was told: each upload, by body, with its mesh; each forget; each
 /// frame; and the picking answer to give once a frame asks for one.
@@ -12206,13 +12052,7 @@ fn a_pick_waiting_for_its_answer_asks_for_frames_until_it_comes() {
     for _ in 0..5 {
         step(&mut h);
     }
-    let delay = |h: &AppHarness| {
-        h.output()
-            .viewport_output
-            .get(&eframe::egui::ViewportId::ROOT)
-            .map(|viewport| viewport.repaint_delay)
-    };
-    assert!(delay(&h).is_some_and(|delay| delay > Duration::from_millis(500)));
+    assert!(repaint_delay(&h).is_some_and(|delay| delay > Duration::from_millis(500)));
     let rect = silico_app::renderer::PixelRect {
         min: [10, 10],
         size: [3, 3],
@@ -12220,11 +12060,11 @@ fn a_pick_waiting_for_its_answer_asks_for_frames_until_it_comes() {
     record.lock().unwrap().pick = None;
     assert!(view_mut(&mut h).pick(rect));
     step(&mut h);
-    assert_eq!(delay(&h), Some(Duration::ZERO));
+    assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
     step(&mut h);
     assert_eq!(view(&h).picked().map(|picking| picking.rect), Some(rect));
     step(&mut h);
-    assert!(delay(&h).is_some_and(|delay| delay > Duration::from_millis(500)));
+    assert!(repaint_delay(&h).is_some_and(|delay| delay > Duration::from_millis(500)));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -12253,16 +12093,6 @@ fn meshes_a_real_box(f: &Fixture) {
         _ => None,
     });
 }
-
-const A_BOX: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
-  ]
-}
-"#;
 
 #[test]
 fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_face_under_it() {
@@ -15131,7 +14961,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
             };
             assert_eq!(pixel(inside), [0x27, 0x26, 0x26, 0xff], "{field:?}");
             // A value that doesn't parse: the red border (`.field.bad`), focused or not.
-            type_into(&mut h, "Length", "x");
+            type_in(&mut h, In::Dialog, "Length", "x");
             for _ in 0..5 {
                 step(&mut h);
             }
@@ -16527,12 +16357,12 @@ fn a_click_beside_a_tabs_close_button_shows_its_document_and_on_it_closes_nothin
     ] {
         bar_button(&h, "other.silico").click();
         step_until(&mut h, "other shown", |h| shown(h, "other.silico"));
-        click_at(&mut h, at);
+        click_in_one_frame(&mut h, at);
         assert!(shown(&h, "example.silico"), "{at:?}");
         assert_eq!(h.state().tabs().len(), 2, "{at:?}");
     }
     // The close button itself closes it.
-    click_at(&mut h, x.center());
+    click_in_one_frame(&mut h, x.center());
     step_until(&mut h, "the tab closed", |h| h.state().tabs().len() == 1);
     assert_eq!(h.state().tabs()[0].name(), "other.silico");
     assert_eq!(never_waits::waits(), 0);
@@ -18249,11 +18079,7 @@ fn the_timeline_lists_each_feature_in_order_and_shows_the_rebuild_running_along_
     assert!(timeline(&h).query_by_label("error").is_none());
     // A frame at once, for the spinner, while a step runs.
     step(&mut h);
-    let delay = h
-        .output()
-        .viewport_output
-        .get(&eframe::egui::ViewportId::ROOT)
-        .map(|viewport| viewport.repaint_delay);
+    let delay = repaint_delay(&h);
     assert_eq!(delay, Some(Duration::ZERO));
     // Released: the rebuild ends with the pocket failed again, red and marked, and the rest
     // as their health is (the plate's and the pad's fingerprints aren't stored: warned).
@@ -18776,7 +18602,7 @@ fn a_face_selected_keeps_its_own_look_while_its_feature_is_hovered_in_the_timeli
     meshes_settled(&mut h);
     let at = the_viewport(&h).center();
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     hover_item(&mut h, "Block");
     {
@@ -19425,7 +19251,7 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             }
             // The face selected, then the block hovered in the timeline: the face keeps the
             // selection's look, its colour its own, not the tint.
-            click_canvas(&mut h, on_face, false);
+            click_over_two_frames(&mut h, on_face, Modifiers::NONE);
             step_until(&mut h, "the face selected", |h| {
                 selected_names(h) == ["k7f2qx3m.box.Face3"]
             });
@@ -21302,17 +21128,6 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// A block alone: its box is its body.
-const ONE_BLOCK: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
-  ]
-}
-"#;
-
 #[test]
 fn ctrl_shift_b_after_a_kept_fault_shows_the_model_it_built() {
     // The box's first build crashes its worker: a kernel fault, which the revision keeps as
@@ -21324,7 +21139,7 @@ fn ctrl_shift_b_after_a_kept_fault_shows_the_model_it_built() {
         (is_box(op) && !once.swap(true, Ordering::SeqCst))
             .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
     });
-    let (mut h, _record) = f.drawn("block.silico", ONE_BLOCK);
+    let (mut h, _record) = f.drawn("block.silico", A_BOX);
     step_until(&mut h, "faulted", |h| {
         h.state()
             .tabs()
@@ -31318,7 +31133,7 @@ fn a_click_selects_the_element_under_it_by_name_ctrl_adds_and_removes_and_empty_
     let centre = pixel_at(&h, at);
     // The box's front face under the pointer: selected by its name, highlighted.
     answering(&record, Some((1, Face(3), centre)), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     step(&mut h);
     assert_eq!(highlighted(&record), [(1, Face(3))]);
@@ -31329,13 +31144,13 @@ fn a_click_selects_the_element_under_it_by_name_ctrl_adds_and_removes_and_empty_
         Some((1, Face(3), centre)),
         Some((1, Edge(5), [centre[0], centre[1] - 2])),
     );
-    click_canvas(&mut h, at, true);
+    click_over_two_frames(&mut h, at, Modifiers::COMMAND);
     selected_until(&mut h, &["k7f2qx3m.box.Face3", "k7f2qx3m.box.Edge5"]);
     step(&mut h);
     assert_eq!(highlighted(&record), [(1, Face(3)), (1, Edge(5))]);
     // Ctrl on the face again: removed.
     answering(&record, Some((1, Face(3), centre)), None);
-    click_canvas(&mut h, at, true);
+    click_over_two_frames(&mut h, at, Modifiers::COMMAND);
     selected_until(&mut h, &["k7f2qx3m.box.Edge5"]);
     // Ctrl on nothing: nothing changes. A face found beside the pointer, not under it, is
     // nothing too: only an edge is taken from the square around it.
@@ -31344,22 +31159,22 @@ fn a_click_selects_the_element_under_it_by_name_ctrl_adds_and_removes_and_empty_
         Some((1, Face(3), [centre[0] + 2, centre[1]])),
         None,
     );
-    click_canvas(&mut h, at, true);
+    click_over_two_frames(&mut h, at, Modifiers::COMMAND);
     for _ in 0..4 {
         step(&mut h);
     }
     assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge5"]);
     // A plain click on it: cleared.
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &[]);
     step(&mut h);
     assert!(highlighted(&record).is_empty());
     // A plain click replaces: the face alone; Esc clears it.
     answering(&record, Some((1, Face(3), centre)), None);
-    click_canvas(&mut h, at, true);
+    click_over_two_frames(&mut h, at, Modifiers::COMMAND);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     answering(&record, Some((1, Face(1), centre)), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face1"]);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
@@ -31385,7 +31200,7 @@ fn a_clicks_pick_is_asked_again_until_answered_after_passes_that_were_discarded(
     // The next three passes that ask are discarded: their requests reach no renderer.
     record.lock().unwrap().discard = 3;
     let frames = record.lock().unwrap().frames.len();
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     // Asked in each frame from the click's until one was answered: the three discarded,
     // then the one answered, each of the same square about the pointer's pixel.
@@ -31484,7 +31299,7 @@ fn a_face_picked_marks_and_opens_its_bodys_row_and_a_row_selected_tints_its_body
     // the timeline's item isn't (the selection is a face, not the feature).
     let at = the_viewport(&h).center();
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     step_until(&mut h, "its row marked", |h| {
         toggled(h, "Browser") == Some(true)
@@ -31564,14 +31379,14 @@ fn the_browser_scrolls_to_a_picked_faces_body_row_and_to_no_other() {
     let centre = pixel_at(&h, at);
     let last = body_of(&h, "b0000040");
     answering(&record, Some((last, Face(3), centre)), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["b0000040.box.Face3"]);
     step_until(&mut h, "the last row shown", |h| row_shown(h, "Body40"));
     assert!(!row_shown(&h, "Body01"));
     // Then a face of the first: its row, and not another, scrolled to.
     let first = body_of(&h, "b0000001");
     answering(&record, Some((first, Face(3), centre)), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["b0000001.box.Face3"]);
     // Scrolled back as the browser's scroll eases, on state, not a count of frames.
     step_until(&mut h, "the first row shown", |h| row_shown(h, "Body01"));
@@ -31588,7 +31403,7 @@ fn a_picked_faces_row_is_scrolled_to_once_so_its_group_closed_after_stays_closed
     meshes_settled(&mut h);
     let at = the_viewport(&h).center();
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     step(&mut h);
     step(&mut h);
@@ -32653,12 +32468,7 @@ fn a_refusal_from_the_adds_own_read_is_said_and_stands_while_the_tabs_timeline_i
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label("Loose")
         .click();
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     assert!(dialog(&h).query_by_label(BLOCK_HELD_BY_JOINED).is_none());
     assert_eq!(
@@ -33156,7 +32966,7 @@ fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store()
     let centre = pixel_at(&h, at);
     // Its Face1, named by its number: selected, as an agent would name it, and drawn.
     answering(&record, Some((body, Face(1), centre)), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["rrrrrrrr.fuse.Face1"]);
     step(&mut h);
     assert_eq!(highlighted(&record), [(body, Face(1))]);
@@ -33205,7 +33015,7 @@ fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store()
     // Its Face2, kept from the base and stable, added: the store still refuses, for the
     // first; alone, the store takes it.
     answering(&record, Some((body, Face(2), centre)), None);
-    click_canvas(&mut h, at, true);
+    click_over_two_frames(&mut h, at, Modifiers::COMMAND);
     selected_until(&mut h, &["rrrrrrrr.fuse.Face1", "aaaaaaaa.box.Face2"]);
     assert_eq!(
         h.state().tabs()[0]
@@ -33215,7 +33025,7 @@ fn an_unstable_name_is_selectable_shown_with_its_reason_and_refused_by_a_store()
             .message(),
         why
     );
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["aaaaaaaa.box.Face2"]);
     let stored: Vec<String> = h.state().tabs()[0]
         .selection()
@@ -33293,14 +33103,14 @@ fn the_selection_survives_a_rebuild_that_keeps_its_names_waits_on_a_failure_and_
         Some((body_of(&h, "a91cw0de"), Face(3), centre)),
         None,
     );
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &[other]);
     answering(
         &record,
         Some((body_of(&h, "k7f2qx3m"), Face(1), centre)),
         None,
     );
-    click_canvas(&mut h, at, true);
+    click_over_two_frames(&mut h, at, Modifiers::COMMAND);
     selected_until(&mut h, &[other, block]);
     // A rebuild that keeps their names (the other box 12 long): both kept, found, nothing
     // said.
@@ -33408,7 +33218,15 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
                 rect.center() + eframe::egui::vec2((x - 20.0) * mm, -(z - 5.0) * mm)
             };
             let select_at = |h: &mut AppHarness, at, ctrl, want: &[&str]| {
-                click_canvas(h, at, ctrl);
+                click_over_two_frames(
+                    h,
+                    at,
+                    if ctrl {
+                        Modifiers::COMMAND
+                    } else {
+                        Modifiers::NONE
+                    },
+                );
                 for _ in 0..12 {
                     if selected_names(h) == want {
                         break;
@@ -33531,7 +33349,7 @@ fn a_model_published_before_its_meshes_are_read_names_no_pick_and_draws_no_eleme
     // The face numbered 2 under the pointer, in these meshes and in the next model's: the
     // base's Face2 now, its Face3 once the tool is 2 long.
     answering(&record, Some((body, Face(2), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["aaaaaaaa.box.Face2"]);
     step(&mut h);
     assert_eq!(highlighted(&record), [(body, Face(2))]);
@@ -33583,7 +33401,7 @@ fn a_model_published_before_its_meshes_are_read_names_no_pick_and_draws_no_eleme
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     assert!(selected_names(&h).is_empty());
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     for _ in 0..10 {
         step(&mut h);
         assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
@@ -33609,7 +33427,7 @@ fn an_unstable_name_picked_is_dropped_by_a_rebuild_saying_why_in_a_references_wo
     let body = body_of(&h, "rrrrrrrr");
     let at = the_viewport(&h).center();
     answering(&record, Some((body, Face(1), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["rrrrrrrr.fuse.Face1"]);
     // A rebuild through the core, the fuse's history the same: the text may name another
     // face now, so carried, it's gone, said in a reference's words (references.rs's, N3,
@@ -33674,7 +33492,7 @@ fn a_hover_answer_to_a_frame_before_a_click_is_not_the_clicks() {
     let before = record.lock().unwrap().frames.len();
     h.hover_at(hover);
     step(&mut h);
-    click_canvas(&mut h, click, false);
+    click_over_two_frames(&mut h, click, Modifiers::NONE);
     step(&mut h);
     let centres = |record: &Record| -> Vec<[u32; 2]> {
         record.lock().unwrap().frames[before..]
@@ -33801,7 +33619,7 @@ fn a_click_a_renderer_never_answers_is_let_go_after_its_frames() {
     }
     record.lock().unwrap().silent = true;
     let pressed = record.lock().unwrap().frames.len();
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     for _ in 0..CLICK_FRAMES + 20 {
         step(&mut h);
     }
@@ -33843,12 +33661,12 @@ fn esc_before_a_clicks_answer_lets_the_click_go_with_the_selection() {
     let at = the_viewport(&h).center();
     let centre = pixel_at(&h, at);
     answering(&record, Some((1, Face(1), centre)), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face1"]);
     // Another click, its pick asked as it's let go; Esc the next frame, before the answer
     // comes: the selection cleared, and the answer selects nothing after it.
     answering(&record, Some((1, Face(3), centre)), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     h.key_press(eframe::egui::Key::Escape);
     step(&mut h);
     for _ in 0..6 {
@@ -33973,14 +33791,14 @@ fn a_click_waiting_for_a_new_models_meshes_is_let_go_by_a_pan_and_the_selection_
     meshes_settled(&mut h);
     let at = the_viewport(&h).center();
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     // The box made 50 long, its meshes held: published, the view still holds the 40 mm
     // box's. A click on what the renderer now calls Face1 waits for the new meshes.
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     published_with_meshes_held(&f, &mut h, "length", "50");
     answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     for _ in 0..4 {
         step(&mut h);
         assert_eq!(selected_names(&h), ["k7f2qx3m.box.Face3"]);
@@ -34014,7 +33832,7 @@ fn a_click_waiting_for_a_slow_read_of_a_new_models_meshes_is_picked_on_them_howe
     answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     published_with_meshes_held(&f, &mut h, "length", "50");
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     // A slow read on a busy machine: 200 frames, its answer still held. Nothing the click
     // was aimed at changed, so it waits, asking for no frame of its own (the read's answer
     // wakes the app).
@@ -34052,13 +33870,13 @@ fn a_click_waiting_for_a_models_meshes_is_let_go_and_said_once_another_model_is_
     meshes_settled(&mut h);
     let at = the_viewport(&h).center();
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     // The box made 50 long, its meshes held; a click waits for them.
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     published_with_meshes_held(&f, &mut h, "length", "50");
     answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     assert_eq!(selection_said(&h), None);
     // Made 60 long before they come: what it would be picked on isn't what it waited for.
     published_with_meshes_held(&f, &mut h, "length", "60");
@@ -34093,7 +33911,7 @@ fn what_a_rebuild_left_gone_is_said_over_a_click_let_go_by_the_same_model() {
     // Found as a face on the tool 2 long, once the background has named it: so it's a face
     // that's gone, not an element the selection never had an answer for.
     found_as_faces_until(&mut h, &["rrrrrrrr.fuse.Face1"]);
-    click_canvas(&mut h, at, true);
+    click_over_two_frames(&mut h, at, Modifiers::COMMAND);
     // The tool 3 long, its frame taken once the background has named the fuse in it: in
     // that one frame, the click is let go and the face is gone; what's said is that, the
     // carry's word said over the click's.
@@ -34123,12 +33941,12 @@ fn a_click_waiting_for_a_new_models_meshes_is_let_go_by_a_filter_change() {
     meshes_settled(&mut h);
     let at = the_viewport(&h).center();
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     published_with_meshes_held(&f, &mut h, "length", "50");
     answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     // Edges no longer picked while it waits (it would pick Face1 still, but by another
     // filter than the one it was made under): let go, the person's own change, unsaid.
     h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
@@ -34147,12 +33965,7 @@ fn a_click_on_meshes_whose_read_was_refused_is_let_go_at_once_and_said() {
     use silico_app::viewport::RETRY_MOST;
     let f = fixture();
     meshes_a_real_box(&f);
-    let failing = Arc::new(AtomicBool::new(false));
-    let refusing = Arc::clone(&failing);
-    f.kernel.refuse(move |op| {
-        (matches!(op, Op::Tessellate { .. }) && refusing.load(Ordering::SeqCst))
-            .then(|| Error::new(ErrorCode::WorkerCrashed, "the worker crashed meshing"))
-    });
+    let failing = failing_kernel(&f.kernel);
     // The viewport's clock stopped: the retry its refusal sets can't come due between
     // the click's frames, however slow the machine.
     let (time, clock) = hand_clock();
@@ -34160,7 +33973,7 @@ fn a_click_on_meshes_whose_read_was_refused_is_let_go_at_once_and_said() {
     meshes_settled(&mut h);
     let at = the_viewport(&h).center();
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     // The box made 50 long, its meshes refused: none are coming (till a retry).
     failing.store(true, Ordering::SeqCst);
@@ -34185,7 +33998,7 @@ fn a_click_on_meshes_whose_read_was_refused_is_let_go_at_once_and_said() {
     assert!(!meshes_current(&h));
     // A click on the old meshes: let go at once, and said.
     answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     assert_eq!(selection_said(&h).as_deref(), Some(CLICK_UNREAD));
     // Read once the kernel meshes again and the retry is due: the click is gone, the
     // selection kept.
@@ -34209,7 +34022,7 @@ fn a_click_waiting_on_a_read_that_never_answers_is_let_go_at_its_backstop_and_sa
     answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
     let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
     published_with_meshes_held(&f, &mut h, "length", "50");
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     // Its clock frozen, nothing's let go however many frames go by; a frame is asked for
     // at the backstop, not before.
     for _ in 0..10 {
@@ -34262,7 +34075,7 @@ fn a_clicks_answer_that_comes_once_a_new_model_is_published_names_nothing_till_i
     });
     record.lock().unwrap().hold = true;
     let before = record.lock().unwrap().frames.len();
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     step(&mut h);
     let held = record.lock().unwrap().picking.map(|(serial, _)| serial);
     let asked: Vec<u64> = record.lock().unwrap().frames[before..]
@@ -34902,7 +34715,15 @@ fn click_edge(h: &mut AppHarness, record: &Record, body: u32, n: u32, ctrl: bool
     let at = the_viewport(h).center();
     let centre = pixel_at(h, at);
     answering(record, None, Some((body, Edge(n), centre)));
-    click_canvas(h, at, ctrl);
+    click_over_two_frames(
+        h,
+        at,
+        if ctrl {
+            Modifiers::COMMAND
+        } else {
+            Modifiers::NONE
+        },
+    );
 }
 
 #[track_caller]
@@ -35084,14 +34905,14 @@ fn in_the_fillet_dialog_a_ctrl_click_adds_an_edge_and_a_click_on_a_listed_edge_r
     // the box would refuse, said); nor does a click on nothing clear the box.
     let at = the_viewport(&h).center();
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     for _ in 0..4 {
         step(&mut h);
     }
     assert_eq!(boxed(&h), ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge7"]);
     assert_eq!(box_said(&h), None);
     answering(&record, None, None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     for _ in 0..6 {
         step(&mut h);
     }
@@ -35333,7 +35154,7 @@ fn a_fillet_dialogs_cancel_after_earlier_unsaved_edits_leaves_the_text_as_before
     modify(&mut h, "Fillet");
     added(&mut h);
     // Its radius typed (a 2 after the 1: 12), and a second edge taken: both written.
-    type_into(&mut h, "Radius", "2");
+    type_in(&mut h, In::Dialog, "Radius", "2");
     click_edge(&mut h, &record, 1, 5, true);
     boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"]);
     settled(&mut h);
@@ -35418,7 +35239,7 @@ fn a_fillet_too_large_shows_the_kernels_refusal_naming_its_edge_and_the_rest_sti
     // its suggestion (refusal.rs's and worker.rs's words, by hand). The fake kernel's
     // errors name an edge by its number in the base (`Edge3`), as FreeCAD does; a worker's
     // name it as the document does (`KernelRequest::with_edge_names`).
-    type_into(&mut h, "Radius", "3");
+    type_in(&mut h, In::Dialog, "Radius", "3");
     let lines = [
         "Fillet failed",
         "OCCT couldn't fillet Edge3",
@@ -35495,7 +35316,15 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
                 rect.center() + eframe::egui::vec2((x - 20.0) * mm, -(z - 5.0) * mm)
             };
             let select_at = |h: &mut AppHarness, at, ctrl, want: &[&str]| {
-                click_canvas(h, at, ctrl);
+                click_over_two_frames(
+                    h,
+                    at,
+                    if ctrl {
+                        Modifiers::COMMAND
+                    } else {
+                        Modifiers::NONE
+                    },
+                );
                 for _ in 0..12 {
                     if selected_names(h) == want {
                         break;
@@ -35755,7 +35584,7 @@ fn the_fillet_dialog_opened_on_a_face_and_an_edge_takes_the_edge_and_notes_the_f
     meshes_settled(&mut h);
     let at = the_viewport(&h).center();
     answering(&record, Some((1, Face(3), pixel_at(&h, at))), None);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
     click_edge(&mut h, &record, 1, 3, true);
     selected_until(&mut h, &["k7f2qx3m.box.Face3", "k7f2qx3m.box.Edge3"]);
@@ -35870,7 +35699,7 @@ fn a_chamfer_dialog_fed_the_selection_of_an_edge_writes_a_chamfer_of_its_distanc
             r#"{"type": "chamfer", "name": "Chamfer", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "size": {"distance": 1}}"#
         ))
     );
-    type_into(&mut h, "Distance", "2");
+    type_in(&mut h, In::Dialog, "Distance", "2");
     settled(&mut h);
     let id = dialog_feature(&h);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
@@ -35978,7 +35807,7 @@ fn click_face(h: &mut AppHarness, record: &Record, body: u32, n: u32) {
     let at = the_viewport(h).center();
     let centre = pixel_at(h, at);
     answering(record, Some((body, Face(n), centre)), None);
-    click_canvas(h, at, false);
+    click_over_two_frames(h, at, Modifiers::NONE);
 }
 
 /// Vertex `n` of body `body` found under the canvas's centre from now on, and clicked there.
@@ -35987,7 +35816,7 @@ fn click_vertex(h: &mut AppHarness, record: &Record, body: u32, n: u32) {
     let at = the_viewport(h).center();
     let centre = pixel_at(h, at);
     answering(record, Some((body, Vertex(n), centre)), None);
-    click_canvas(h, at, false);
+    click_over_two_frames(h, at, Modifiers::NONE);
 }
 
 /// The open dialog's box labelled `label` clicked, so it's the active one.
@@ -39052,7 +38881,7 @@ fn remove_clicked_anyway(h: &mut AppHarness) {
         .get_by_role_and_label(Role::Button, "Remove the edge")
         .rect()
         .center();
-    click_at(h, at);
+    click_in_one_frame(h, at);
 }
 
 #[test]
@@ -39791,12 +39620,12 @@ fn with_edges_filtered_out_a_click_or_hover_on_an_edges_stroke_takes_the_face_ca
     let stroke = |h: &AppHarness, at| Some((1, Edge(11), pixel_at(h, at)));
     answering(&record, stroke(&h, inside), stroke(&h, inside));
     // Edges picked, as the filter starts: the edge.
-    click_canvas(&mut h, inside, false);
+    click_over_two_frames(&mut h, inside, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge11"]);
     // Edges filtered out: the face under the stroke.
     h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
     step(&mut h);
-    click_canvas(&mut h, inside, false);
+    click_over_two_frames(&mut h, inside, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
     // The hover takes it alike.
     h.hover_at(inside + eframe::egui::vec2(0.0, 30.0));
@@ -39807,7 +39636,7 @@ fn with_edges_filtered_out_a_click_or_hover_on_an_edges_stroke_takes_the_face_ca
     });
     // Past the box, no face under the stroke: a click there selects nothing, so clears.
     answering(&record, stroke(&h, outside), stroke(&h, outside));
-    click_canvas(&mut h, outside, false);
+    click_over_two_frames(&mut h, outside, Modifiers::NONE);
     selected_until(&mut h, &[]);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -39894,7 +39723,7 @@ fn with_edges_filtered_out_a_stroke_pixel_takes_whats_under_its_centre_either_si
                 answering(&record, stroke, stroke);
                 let at = at_pixel(&h, pixel);
                 assert_eq!(pixel_at(&h, at), pixel);
-                click_canvas(&mut h, at, false);
+                click_over_two_frames(&mut h, at, Modifiers::NONE);
                 selected_until(&mut h, want);
             }
         }
@@ -39923,7 +39752,7 @@ fn with_edges_filtered_out_a_stroke_takes_a_face_of_a_body_drawn_never_of_one_hi
     let stroke = Some((*high, Edge(11), pixel_at(&h, inside)));
     answering(&record, stroke, stroke);
     // Both drawn: the lower-numbered body's top.
-    click_canvas(&mut h, inside, false);
+    click_over_two_frames(&mut h, inside, Modifiers::NONE);
     selected_until(&mut h, &[format!("{low_id}.box.Face6").as_str()]);
     // The lower-numbered hidden in the browser: the top of the body drawn, not the hidden one's.
     h.state_mut().tabs_mut()[0].toggle_shown(silico_app::tab::Hideable::Feature(low_id.clone()));
@@ -39931,7 +39760,7 @@ fn with_edges_filtered_out_a_stroke_takes_a_face_of_a_body_drawn_never_of_one_hi
         step(&mut h);
     }
     assert_eq!(view(&h).frame().unwrap().drawn, [*high]);
-    click_canvas(&mut h, inside, false);
+    click_over_two_frames(&mut h, inside, Modifiers::NONE);
     selected_until(&mut h, &[format!("{high_id}.box.Face6").as_str()]);
     assert_ne!(low, high);
     assert_eq!(never_waits::waits(), 0);
@@ -39949,13 +39778,13 @@ fn with_edges_filtered_out_a_click_on_a_stroke_waits_for_its_boxes_clearing_noth
     let stroke = Some((1, Edge(11), pixel_at(&h, inside)));
     answering(&record, stroke, stroke);
     // Edges picked: the edge, nothing cast.
-    click_canvas(&mut h, inside, false);
+    click_over_two_frames(&mut h, inside, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge11"]);
     // Edges filtered out: the click waits for the boxes, past a click's frames, the selection
     // as it was every frame.
     h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
     step(&mut h);
-    click_canvas(&mut h, inside, false);
+    click_over_two_frames(&mut h, inside, Modifiers::NONE);
     for _ in 0..silico_app::selection::CLICK_FRAMES + 10 {
         step(&mut h);
         assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge11"]);
@@ -40003,13 +39832,13 @@ fn with_edges_filtered_out_a_stroke_takes_nothing_where_no_box_can_be_made() {
     let stroke = Some((1, Edge(11), pixel_at(&h, inside)));
     answering(&record, stroke, stroke);
     // Edges picked: the edge.
-    click_canvas(&mut h, inside, false);
+    click_over_two_frames(&mut h, inside, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Edge11"]);
     // Edges filtered out: no face can be cast for, so the stroke takes nothing and the plain
     // click clears: it waits only while the thread might make them, not once it's ended.
     h.state_mut().tabs_mut()[0].selection_mut().filter.edges = false;
     step(&mut h);
-    click_canvas(&mut h, inside, false);
+    click_over_two_frames(&mut h, inside, Modifiers::NONE);
     selected_until(&mut h, &[]);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -40160,13 +39989,13 @@ fn esc_a_press_off_it_and_a_rebuild_each_close_select_other_and_change_nothing_e
     let off = above_at(&h, 5.0, 10.0, [0.0, 0.0]);
     answering(&record, Some((1, Face(6), pixel_at(&h, off))), None);
     list_at(&mut h, at, "4 under the pointer");
-    click_canvas(&mut h, off, false);
+    click_over_two_frames(&mut h, off, Modifiers::NONE);
     for _ in 0..6 {
         step(&mut h);
     }
     assert!(!select_other(&h).is_open());
     assert!(selected_names(&h).is_empty());
-    click_canvas(&mut h, off, false);
+    click_over_two_frames(&mut h, off, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
     // Another model published (the box made taller by another client): closed.
     list_at(&mut h, at, "4 under the pointer");
@@ -41232,7 +41061,7 @@ fn over_nothing_the_context_menu_fits_homes_and_clears_as_their_keys_do() {
     }
     let top = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
     answering(&record, Some((1, Face(6), pixel_at(&h, top))), None);
-    click_canvas(&mut h, top, false);
+    click_over_two_frames(&mut h, top, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
     answering(&record, None, None);
     h.hover_at(off);
@@ -41494,7 +41323,7 @@ fn a_right_click_waiting_for_its_boxes_is_let_go_by_esc_or_a_press_and_never_ope
     // changes nothing a press does.
     right_click(&mut h, at, at, Modifiers::NONE);
     assert!(select_other(&h).is_waiting());
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     for _ in 0..6 {
         step(&mut h);
     }
@@ -41507,7 +41336,7 @@ fn a_right_click_waiting_for_its_boxes_is_let_go_by_esc_or_a_press_and_never_ope
         step(&mut h);
     }
     assert!(!select_other(&h).is_open());
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -42061,7 +41890,7 @@ fn a_click_on_the_timelines_empty_space_deselects_its_feature() {
         .fold(f32::MIN, f32::max);
     let at = eframe::egui::pos2(last + 30.0, items[1].center().y);
     assert!(timeline.rect().contains(at));
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     deselected(
         &mut h,
         "deselected by a click on the timeline's empty space",
@@ -42079,7 +41908,7 @@ fn a_ctrl_or_cmd_click_on_a_selected_feature_takes_it_out_of_the_selection() {
         .get_by_label("Pin")
         .rect()
         .center();
-    click_canvas(&mut h, pin, true);
+    click_over_two_frames(&mut h, pin, Modifiers::COMMAND);
     deselected(&mut h, "Pin taken out by a Cmd-click");
     assert_eq!(never_waits::waits(), 0);
 }
@@ -42113,7 +41942,7 @@ fn a_click_on_the_canvas_where_nothing_is_clears_a_feature_selected_on_the_timel
     // the feature.
     answering(&record, None, None);
     let at = the_viewport(&h).center();
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     deselected(&mut h, "Pin cleared by a click on the empty canvas");
     assert_eq!(never_waits::waits(), 0);
 }
@@ -42360,19 +42189,19 @@ fn a_cmd_click_on_a_selected_browser_row_takes_it_out_and_on_an_unselected_item_
     };
     // The browser's Hole selected, then Cmd-clicked: out.
     let at = hole(&h);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     step_until(&mut h, "Hole selected", |h| {
         selected_features(h) == ["m3tq8v0z"]
     });
     // A plain click on it, selected: it stays selected (only Cmd takes it out).
     let at = hole(&h);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     for _ in 0..3 {
         step(&mut h);
     }
     assert_eq!(selected_features(&h), ["m3tq8v0z"]);
     let at = hole(&h);
-    click_canvas(&mut h, at, true);
+    click_over_two_frames(&mut h, at, Modifiers::COMMAND);
     deselected(&mut h, "Hole taken out by a Cmd-click in the browser");
     // A Cmd-click on an item not selected selects it, alone (several features aren't
     // selected together outside a dialog's boxes).
@@ -42382,7 +42211,7 @@ fn a_cmd_click_on_a_selected_browser_row_takes_it_out_and_on_an_unselected_item_
         .get_by_label("Block")
         .rect()
         .center();
-    click_canvas(&mut h, block, true);
+    click_over_two_frames(&mut h, block, Modifiers::COMMAND);
     step_until(&mut h, "Block selected alone", |h| {
         selected_features(h) == ["k7f2qx3m"]
     });
@@ -42566,7 +42395,7 @@ fn with_a_union_open_a_cmd_click_on_a_boxed_body_goes_to_its_box_and_the_selecti
     assert_eq!(boxed_bodies(&h), held(&[Some("b0000001"), None]));
     assert_eq!(selected_features(&h), ["b0000001"]);
     let plate = browser(&h).get_by_label("Plate").rect().center();
-    click_canvas(&mut h, plate, true);
+    click_over_two_frames(&mut h, plate, Modifiers::COMMAND);
     for _ in 0..5 {
         step(&mut h);
     }
@@ -42597,7 +42426,7 @@ fn with_a_fillet_open_a_click_on_the_timelines_empty_space_keeps_its_edges_selec
     let block = timeline.get_by_label("Block").rect();
     let at = eframe::egui::pos2(timeline.rect().center().x, block.center().y);
     assert!(at.x > block.right() + 100.0);
-    click_canvas(&mut h, at, false);
+    click_over_two_frames(&mut h, at, Modifiers::NONE);
     for _ in 0..5 {
         step(&mut h);
     }
@@ -43083,7 +42912,7 @@ fn a_cancel_that_rolls_back_ends_the_edit_features_freeze() {
             .is_some_and(|dialog| dialog.feature.is_some())
     });
     settled(&mut h);
-    type_into(&mut h, "Length", "12");
+    type_in(&mut h, In::Dialog, "Length", "12");
     settled(&mut h);
     assert!(h.state().tabs()[0].transaction);
     dialog(&h)
@@ -43485,12 +43314,7 @@ fn a_sketch_on_a_face_gone_is_shown_by_default_and_its_eye_says_why_it_isnt_draw
     step(&mut h);
     step(&mut h);
     create(&mut h, "Pad");
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     assert!(eye_says(&h, "Hide", "Top"));
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
@@ -45818,7 +45642,7 @@ fn where_an_edges_square_meets_a_corners_the_corner_takes_the_click() {
         overlap.width() > 0.0 && overlap.height() > 0.0,
         "{overlap:?}"
     );
-    click_at(&mut h, overlap.center());
+    click_in_one_frame(&mut h, overlap.center());
     let (d, six) = (1.0 / 3f64.sqrt(), 6f64.sqrt());
     assert!(
         looks(&h, [d, -d, d], [-1.0 / six, 1.0 / six, 2.0 / six]),
@@ -46018,12 +45842,7 @@ fn a_value_typed_into_an_open_dialog_asks_for_the_next_frame_at_once() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     field(&h, In::Dialog, "Length").focus();
     step(&mut h);
@@ -46045,12 +45864,7 @@ fn a_dialogs_cancel_clicked_asks_for_the_next_frame_at_once() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
     open_pad_on_triangle(&mut h);
-    step_until(&mut h, "its add answered", |h| {
-        h.state().tabs()[0]
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
+    added(&mut h);
     settled(&mut h);
     let at = dialog(&h)
         .get_by_role_and_label(Role::Button, "Cancel")
@@ -46154,7 +45968,7 @@ fn a_click_on_the_flip_arrow_reverses_the_pad_and_changes_no_other_field() {
     let c = plates_pad_from_the_front(&mut h);
     let before = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
     // On the flip arrow's shaft, 30 below the end: 30 from the distance arrow's base.
-    click_canvas(&mut h, up(c, -30.0), false);
+    click_over_two_frames(&mut h, up(c, -30.0), Modifiers::NONE);
     step_until(&mut h, "Reversed ticked", reversed_ticked);
     settled(&mut h);
     let after = fields_of(&text_of(&f.sessions, &h), "Pad").unwrap();
@@ -46184,7 +45998,7 @@ fn a_click_on_the_flip_arrow_reverses_the_pad_and_changes_no_other_field() {
     assert!(shaft(up(c, -80.0), up(c, -136.0)), "{shafts:?}");
     assert!(shaft(up(c, -40.0), up(c, -68.0)), "{shafts:?}");
     // Clicked again: back.
-    click_canvas(&mut h, up(c, -50.0), false);
+    click_over_two_frames(&mut h, up(c, -50.0), Modifiers::NONE);
     step_until(&mut h, "Reversed let go", |h| !reversed_ticked(h));
     settled(&mut h);
     assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
