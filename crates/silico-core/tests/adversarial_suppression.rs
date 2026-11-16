@@ -9,11 +9,13 @@
 //! the invariant the port note states: "A feature that can't build is suppressed, not left
 //! failing", and "a hand edit or a merge can't leave a feature failing for a suppression".
 
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 
 use super::bracket::*;
+use super::cpu_work;
 use super::model::{id, published};
 
 use silico_core::ErrorCode;
@@ -526,6 +528,62 @@ fn a_chain_of_two_thousand_chamfers_suppresses_and_unsuppresses_promptly() {
         start.elapsed() < Duration::from_secs(20),
         "{:?}",
         start.elapsed()
+    );
+}
+
+/// The bound on the long chain's CPU over the probe's: the step-by-step walk read 35.7, 35.7,
+/// and 19.95 (a slow probe before it) on the Linux VM; the lineage 1.5. Near the middle of
+/// them, about 3.3 times from either.
+const BOUND: f64 = 6.0;
+
+#[test]
+fn a_long_chain_after_a_suppressed_fuse_is_judged_in_linear_work() {
+    // Boxes a and t, their fuse m, and 20,000 chamfers, each on the one before (the first on
+    // m), each of a's edge 1 + i % 12, and a last naming t's edge 1. Suppressing m: by hand,
+    // every chamfer naming a's edge reaches its base through m as m's base, which m passes
+    // through, so it stays; the last's t reaches its base only as m's tool, so it goes with
+    // m (issue #306). Each chamfer's name is walked down the chain to its base: a walk
+    // step by step costs n^2 / 2 steps, about 2 * 10^8, at each of the suppression's and the
+    // gate's passes.
+    let n = 20_000;
+    let mut features = vec![
+        a_box("b0000001", 0, 10),
+        a_box("t0000001", 5, 10),
+        boolean("m0000001", "fuse", "b0000001", "t0000001"),
+    ];
+    let mut base = "m0000001".to_owned();
+    for i in 0..n {
+        let c = format!("c{i:07}");
+        features.push(chamfer(
+            &c,
+            &base,
+            &format!("b0000001.box.Edge{}", 1 + i % 12),
+        ));
+        base = c;
+    }
+    features.push(chamfer("z0000001", &base, "t0000001.box.Edge1"));
+    let refs: Vec<&str> = features.iter().map(String::as_str).collect();
+    let c = checked(&document(&refs));
+    let before = cpu_work::cost();
+    let cpu = cpu_time::ThreadTime::now();
+    let done = suppression::suppress(&c, &id("m0000001")).unwrap();
+    validate(&done.document).unwrap();
+    let took = cpu.elapsed();
+    let after = cpu_work::cost();
+    assert_eq!(done.suppressed, ids(&["m0000001", "z0000001"]));
+    // Its CPU over what a fixed piece of work costs this machine now, the slower of before
+    // and after (cpu_work, #292), so a loaded runner doesn't fail it.
+    let probe = before.max(after);
+    let ratio = took.as_secs_f64() / probe.as_secs_f64();
+    let _ = writeln!(
+        std::io::stderr(),
+        "the suppression and the gate took {took:?} of CPU, {ratio:.2} times the probe's \
+         {probe:?} (before {before:?}, after {after:?})"
+    );
+    assert!(
+        ratio < BOUND,
+        "the suppression and the gate took {took:?} of CPU, {ratio:.2} times the probe's \
+         {probe:?}, past {BOUND}"
     );
 }
 
