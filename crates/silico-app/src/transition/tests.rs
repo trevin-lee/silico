@@ -2,11 +2,11 @@
 //! the azimuth's short way round, and each camera between from its azimuth, elevation, roll,
 //! target, distance, and height moved by hand.
 
-use std::f64::consts::{FRAC_1_SQRT_2, PI};
+use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, FRAC_PI_6, PI, TAU};
 
 use silico_protocol::{Camera, Projection};
 
-use super::{Motion, Step, Transition, between, ease, short_turn};
+use super::{Motion, Step, Transition, between, ease, least_twist, pose, short_turn, swing};
 
 #[track_caller]
 fn near(a: [f64; 3], b: [f64; 3], within: f64) {
@@ -319,4 +319,89 @@ fn from_just_over_the_top_to_the_top_the_image_hardly_turns() {
         let turned = twist(start, &top);
         assert!(turned.abs() < 3.0, "{turned}° from {start:?}");
     }
+}
+
+#[test]
+fn the_ease_is_the_same_either_side_of_the_middle_and_at_it() {
+    // Just either side of ½ and at it: 2t² below, 1 − (2 − 2t)²/2 above, both ½ at ½. At
+    // 0.4, 2 · 0.16 = 0.32; at 0.6, 1 − 0.8²/2 = 0.68; at 0.9, 1 − 0.2²/2 = 0.98; at 0.1,
+    // 0.02.
+    assert_eq!(ease(0.5), 0.5);
+    near1(ease(0.4), 0.32, 1e-15);
+    near1(ease(0.6), 0.68, 1e-15);
+    near1(ease(0.1), 0.02, 1e-15);
+    near1(ease(0.9), 0.98, 1e-15);
+}
+
+#[test]
+fn a_turn_of_more_than_a_whole_turn_either_way_is_brought_round_short() {
+    // 5.5 half turns back is 0.5 of one on (−5.5π + 6π); 5.5 on is 0.5 back; 7 on is π
+    // round to −π, and 7 back too.
+    near1(short_turn(5.5 * PI, 0.0), 0.5 * PI, 1e-12);
+    near1(short_turn(0.0, 5.5 * PI), -0.5 * PI, 1e-12);
+    near1(short_turn(0.0, -5.5 * PI), 0.5 * PI, 1e-12);
+    near1(short_turn(7.0 * PI, 0.0).abs(), PI, 1e-12);
+}
+
+#[test]
+fn the_image_swings_by_the_integral_of_sin_el_over_the_azimuths_turn() {
+    // turn (cos a − cos b)/(b − a): from level to the top, (1 − 0)/(π/2) = 2/π a radian of
+    // the azimuth's; from 30° up to the top, twice, 2 (√3/2 − 0)/(π/3) = 3√3/π; from the
+    // bottom to level, back a radian, −(0 − 1)/(π/2) = 2/π; from the top to level, (0 −
+    // 1)/(−π/2) = 2/π; and level at 30°, three radians, 3 sin 30° = 1.5; at the top, as much
+    // as the turn; level at 0, none.
+    near1(swing(1.0, 0.0, FRAC_PI_2), 2.0 / PI, 1e-15);
+    near1(
+        swing(2.0, FRAC_PI_6, FRAC_PI_2),
+        3.0 * 3f64.sqrt() / PI,
+        1e-15,
+    );
+    near1(swing(-1.0, -FRAC_PI_2, 0.0), 2.0 / PI, 1e-15);
+    near1(swing(1.0, FRAC_PI_2, 0.0), 2.0 / PI, 1e-15);
+    near1(swing(3.0, FRAC_PI_6, FRAC_PI_6), 1.5, 1e-15);
+    near1(swing(-0.5, FRAC_PI_2, FRAC_PI_2), -0.5, 1e-16);
+    assert_eq!(swing(2.0, 0.0, 0.0), 0.0);
+    // A nanoradian's rise from level: the integral is half a nanoradian (its middle's sine,
+    // 5e-10, to 1e-19), which (cos 0 − cos 1e-9)/1e-9 loses whole, 1 − cos 1e-9 rounding
+    // to 0; and 1e-12 up from 30°, sin 30° to 1e-12.
+    near1(swing(1.0, 0.0, 1e-9), 5e-10, 1e-24);
+    near1(swing(1.0, FRAC_PI_6, FRAC_PI_6 + 1e-12), 0.5, 1e-12);
+}
+
+#[test]
+fn the_roll_takes_the_turn_that_with_the_swing_turns_the_image_least() {
+    // Each candidate's total twist, swing plus roll, by hand: (3, 3): 6, 6 − 2π = −0.283…,
+    // 6 + 2π: a whole turn back, 3 − 2π. (−3, −3): −6, −6 − 2π, −6 + 2π = 0.283…: a whole
+    // turn on, −3 + 2π. (3, −2.5): 0.5, 0.5 − 2π, 0.5 + 2π: the roll as it is. (0, −π): −π
+    // and π as little, the first, −π.
+    assert_eq!(least_twist(3.0, 3.0), 3.0 - TAU);
+    near1(3.0 + least_twist(3.0, 3.0), 6.0 - TAU, 1e-15);
+    assert_eq!(least_twist(-3.0, -3.0), -3.0 + TAU);
+    near1(-3.0 + least_twist(-3.0, -3.0), TAU - 6.0, 1e-15);
+    assert_eq!(least_twist(3.0, -2.5), -2.5);
+    assert_eq!(least_twist(0.0, -PI), -PI);
+    assert_eq!(least_twist(0.1, 0.2), 0.2);
+}
+
+#[test]
+fn a_view_a_nanoradian_off_the_pole_reads_its_azimuth_from_its_direction_and_closer_from_its_right()
+{
+    // Looking down from (0, −1e-9, 1) onto the origin, +x up: across the world's z by 1e-9
+    // exactly, which isn't under the pole's 1e-9, so its azimuth is its direction's,
+    // atan2(0, 1e-9) = 0, and its up, +x, is the prototype's there, (0, sin el, cos el) ≈
+    // +y, turned by −90°: atan2(−x·(1, 0, 0), x·(0, 1, 0)). At half that, under it: the
+    // azimuth its right's, up × back = (1, 0, 0) × (0, −5e-10, 1) ≈ (0, −1, 0), −90°, and no
+    // roll.
+    let looking = |across: f64| Camera {
+        projection: Projection::Orthographic { view_height: 80.0 },
+        eye: [0.0, -across, 1.0],
+        target: [0.0; 3],
+        up: [1.0, 0.0, 0.0],
+    };
+    let off = pose(&looking(1e-9)).unwrap();
+    assert_eq!(off.azimuth, 0.0);
+    near1(off.roll, -FRAC_PI_2, 1e-12);
+    let on = pose(&looking(5e-10)).unwrap();
+    near1(on.azimuth, -FRAC_PI_2, 1e-12);
+    assert_eq!(on.roll, 0.0);
 }

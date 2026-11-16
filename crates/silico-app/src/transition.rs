@@ -35,14 +35,13 @@ use silico_protocol::{Camera, Projection};
 use crate::{navigate, theme};
 
 /// The prototype's ease (viewport.js's `ease`), quadratic in and out: `2t²` to the middle,
-/// `1 − (2 − 2t)²/2` after it, from 0 at 0 to 1 at 1 through ½ at ½.
+/// `1 − (2 − 2t)²/2` after it, from 0 at 0 to 1 at 1 through ½ at ½. Written as one
+/// expression, `2t² − max(0, 2t − 1)²`, which is the same (past the middle, `2t² −
+/// (1 − (2 − 2t)²/2) = 4t² − 4t + 1 = (2t − 1)²`), so no test of which half `t` is in has to
+/// agree with the halves meeting at ½.
 pub fn ease(t: f64) -> f64 {
-    if t < 0.5 {
-        2.0 * t * t
-    } else {
-        let u = -2.0 * t + 2.0;
-        1.0 - u * u / 2.0
-    }
+    let past = (2.0 * t - 1.0).max(0.0);
+    2.0 * t * t - past * past
 }
 
 /// The turn from angle `from` to angle `to` the short way round, in radians, in [−π, π):
@@ -127,15 +126,18 @@ fn least_twist(swing: f64, roll: f64) -> f64 {
 
 /// How far the image turns about the view's axis with the azimuth's turn `turn`, the
 /// elevation moving straight from `from` to `to` meanwhile: the integral of `sin el` times
-/// the azimuth's step, `turn (cos from − cos to) / (to − from)`, or `turn sin from` where the
-/// elevation keeps still.
+/// the azimuth's step, `turn (cos from − cos to) / (to − from)`, written as `turn sin m ·
+/// sin h / h` (`m` the elevations' middle, `h` half their difference: `cos a − cos b = 2 sin
+/// ((a + b)/2) sin ((b − a)/2)`), which keeps its precision however near the two are, and is
+/// `turn sin from` where the elevation keeps still.
 fn swing(turn: f64, from: f64, to: f64) -> f64 {
-    let rise = to - from;
-    if rise.abs() < 1e-9 {
-        turn * libm::sin((from + to) / 2.0)
+    let half = (to - from) / 2.0;
+    let shrink = if half == 0.0 {
+        1.0
     } else {
-        turn * (libm::cos(from) - libm::cos(to)) / rise
-    }
+        libm::sin(half) / half
+    };
+    turn * libm::sin((from + to) / 2.0) * shrink
 }
 
 /// The camera `along` of the way from `from` to `to` (0 at `from`, 1 at `to`, both as
