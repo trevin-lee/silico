@@ -244,7 +244,7 @@ pub struct Arrow {
     pub unit: [f64; 2],
     /// Its points a millimetre along the sweep at its base, measured over [`PROBE_MM`]
     /// (`ppu`).
-    pub per_mm: f64,
+    pub points_per_mm: f64,
     /// Its shaft's end, its length past its base.
     pub tip: Pos2,
     /// Its head: its point, [`theme::ARROW_HEAD_LENGTH`] past the shaft's end, then its
@@ -254,9 +254,9 @@ pub struct Arrow {
 }
 
 impl Arrow {
-    /// The arrow from `base` along `unit` on the screen (a unit vector), `per_mm` points a
+    /// The arrow from `base` along `unit` on the screen (a unit vector), `points_per_mm` points a
     /// millimetre, its shaft `length` points; none where a place of it isn't finite.
-    fn new(base: [f64; 2], unit: [f64; 2], per_mm: f64, length: f32) -> Option<Arrow> {
+    fn new(base: [f64; 2], unit: [f64; 2], points_per_mm: f64, length: f32) -> Option<Arrow> {
         let along = |from: [f64; 2], by: f32| add(from, mul(unit, f64::from(by)));
         let tip = along(base, length);
         let across = [-unit[1], unit[0]];
@@ -269,7 +269,7 @@ impl Arrow {
         Some(Arrow {
             base: point(base)?,
             unit,
-            per_mm,
+            points_per_mm,
             tip: point(tip)?,
             head: [
                 point(along(tip, theme::ARROW_HEAD_LENGTH))?,
@@ -481,12 +481,12 @@ pub fn cursor(hit: Hit) -> CursorIcon {
 
 /// The value a drag of `distance`'s arrow gives, the arrow as `arrow` was at the press at
 /// `press`, the pointer now at `at` (`onPointerDrag`): the pointer's move along the arrow's way
-/// on the screen over its points a millimetre is how far the end moved, in mm; times the
-/// arrow's `per_mm`, that's how far the value moves, to the nanometre, to `t`; and the value is
+/// on the screen over its `points_per_mm` is how far the end moved, in mm; times `distance`'s
+/// `per_mm`, that's how far the value moves, to the nanometre, to `t`; and the value is
 /// [`stepped`]'s from the value at the press to `t`. None where that isn't a length (a move
 /// past what one holds, or one that isn't a number).
 pub fn dragged(distance: &Distance, arrow: &Arrow, press: Pos2, at: Pos2) -> Option<Length> {
-    let moved = dot(sub(wide(at), wide(press)), arrow.unit) / arrow.per_mm;
+    let moved = dot(sub(wide(at), wide(press)), arrow.unit) / arrow.points_per_mm;
     let by = distance.per_mm * moved * crate::properties::NM_PER_MM as f64;
     if !by.is_finite() {
         return None;

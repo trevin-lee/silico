@@ -758,8 +758,25 @@ fn a_length_that_doesnt_read_takes_every_arrow_of_its_extent_with_it_but_the_fli
 }
 
 #[test]
+fn two_sides_with_one_length_not_above_zero_keeps_the_others_arrow() {
+    // A length at 0 still reads as an extent, so the other length keeps
+    // its arrow, as `Handles::distances` says.
+    for (zero, kept, base_z) in [(LENGTH, LENGTH2, -4.0), (LENGTH2, LENGTH, 10.0)] {
+        let mut dialog = dialog_of(Kind::Pad);
+        set_form(&mut dialog, "two_sides");
+        set_text(&mut dialog, LENGTH, "10");
+        set_text(&mut dialog, LENGTH2, "4");
+        set_text(&mut dialog, zero, "0");
+        let h = pad_handles(&dialog, SketchPlane::Xy);
+        let parts: Vec<Part> = h.distances.iter().map(|d| d.part).collect();
+        assert_eq!(parts, [kept], "{zero:?} at 0: {h:?}");
+        near3(h.distances[0].base, [20.0, 10.0, base_z]);
+    }
+}
+
+#[test]
 fn an_extent_that_doesnt_read_keeps_the_way_its_plane_and_reversed_give() {
-    // #511's review: Reversed off, the length cleared: a pad still points along +Z, a pocket
+    // Reversed off, the length cleared: a pad still points along +Z, a pocket
     // against it.
     for (kind, up) in [(Kind::Pad, 1.0), (Kind::Pocket, -1.0)] {
         let mut dialog = dialog_of(kind);
@@ -801,7 +818,11 @@ fn from_the_front_the_arrow_points_up_56_points_from_its_end_as_worked_by_hand()
     let d = &a.distances[0];
     at(d.arrow.base, [140.0, 80.0]);
     near(d.arrow.unit, [0.0, -1.0], 1e-6);
-    assert!((d.arrow.per_mm - 2.0).abs() < 1e-5, "{}", d.arrow.per_mm);
+    assert!(
+        (d.arrow.points_per_mm - 2.0).abs() < 1e-5,
+        "{}",
+        d.arrow.points_per_mm
+    );
     at(d.arrow.tip, [140.0, 24.0]);
     at(d.arrow.head[0], [140.0, 12.0]);
     at(d.arrow.head[1], [146.0, 24.0]);
@@ -834,7 +855,7 @@ fn on_a_tilted_face_the_arrow_points_along_its_normal_on_the_screen() {
     let d = &a.distances[0];
     at(d.arrow.base, [140.0, 80.0]);
     near(d.arrow.unit, [r, -r], 1e-6);
-    assert!((d.arrow.per_mm - 2.0).abs() < 1e-5);
+    assert!((d.arrow.points_per_mm - 2.0).abs() < 1e-5);
     at(d.arrow.tip, [140.0 + 56.0 * r, 80.0 - 56.0 * r]);
     at(d.arrow.head[0], [140.0 + 68.0 * r, 80.0 - 68.0 * r]);
     at(d.arrow.head[1], [140.0 + 62.0 * r, 80.0 - 50.0 * r]);
@@ -855,7 +876,11 @@ fn from_45_degrees_above_the_sweep_is_foreshortened_by_its_cosine() {
     let d = &a.distances[0];
     at(d.arrow.base, [140.0, 80.0]);
     near(d.arrow.unit, [0.0, -1.0], 1e-6);
-    assert!((d.arrow.per_mm - SQRT_2).abs() < 1e-5, "{}", d.arrow.per_mm);
+    assert!(
+        (d.arrow.points_per_mm - SQRT_2).abs() < 1e-5,
+        "{}",
+        d.arrow.points_per_mm
+    );
     at(d.arrow.tip, [140.0, 24.0]);
     // The flip arrow's base, 10 mm down Z: 10/√2 mm down the view, 10√2 points.
     at(a.flip.unwrap().base, [140.0, 80.0 + 10.0 * SQRT_2]);
@@ -883,7 +908,11 @@ fn in_perspective_the_arrow_is_measured_at_its_end() {
     let d = &a.distances[0];
     at(d.arrow.base, [100.0, 100.0]);
     near(d.arrow.unit, [0.0, -1.0], 1e-6);
-    assert!((d.arrow.per_mm - 1.0).abs() < 1e-5, "{}", d.arrow.per_mm);
+    assert!(
+        (d.arrow.points_per_mm - 1.0).abs() < 1e-5,
+        "{}",
+        d.arrow.points_per_mm
+    );
     at(d.arrow.tip, [100.0, 44.0]);
     // The eye 5 mm past the end, looking away from it: neither arrow can be shown.
     let behind = Camera {
@@ -915,7 +944,7 @@ fn seen_end_on_or_under_six_tenths_of_a_point_a_millimetre_no_arrow_is_drawn() {
         assert_eq!(a.distances.len(), usize::from(drawn), "{s}");
         assert_eq!(a.flip.is_some(), drawn, "{s}");
         if drawn {
-            assert!((a.distances[0].arrow.per_mm - 2.0 * s).abs() < 1e-5);
+            assert!((a.distances[0].arrow.points_per_mm - 2.0 * s).abs() < 1e-5);
         }
     }
     // Zoomed out to 0.5 points a millimetre (200 mm on 200 pixels at 2 a point): flat too,

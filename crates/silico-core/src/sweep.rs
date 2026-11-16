@@ -1424,7 +1424,7 @@ mod tests {
 
     #[test]
     fn two_sides_sweep_their_sum_taken_in_nanometres_not_millimetres() {
-        // #511's review: 0.1 + 0.2 in f64 is 0.30000000000000004; 300000 nm is 0.3.
+        // 0.1 + 0.2 in f64 is 0.30000000000000004; 300000 nm is 0.3.
         use crate::document::PadExtent;
         let mm = |t: &str| Length::parse(t).unwrap();
         let p = prism(
