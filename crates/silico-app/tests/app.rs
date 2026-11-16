@@ -18188,6 +18188,42 @@ fn each_rows_meta_is_its_bodys_last_healthy_feature_or_its_sketchs_plane() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// While a sketch is open in sketch mode, sketch mode's newest read stands for that sketch
+/// alone (`Tab::sketch_plane`): Side, open on XZ, shows XZ, and End and Triangle, each held
+/// read's, keep YZ and XY.
+#[test]
+fn a_sketch_open_in_sketch_mode_leaves_each_other_sketchs_meta_its_own_plane() {
+    let f = fixture();
+    let (mut h, _) = f.opened("metas.silico", METAS);
+    step_until(&mut h, "every sketch's plane", |h| {
+        ["Triangle", "Notch", "Side", "End"]
+            .iter()
+            .all(|name| shows(h, "Browser", name) && row_texts(h, name).len() >= 2)
+    });
+    step_until(&mut h, "the model published", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.published == Some(tab.revision)
+    });
+    double_click(&mut h, "Browser", "Side");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    let mode = sketch_mode(&h).unwrap();
+    assert_eq!(mode.sketch, Some(sketch_id("s0000003")));
+    assert!(mode.drawable().is_some(), "Side's read isn't drawable");
+    let ends = |name: &str| {
+        row_texts(&h, name)
+            .into_iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ends("Side"), ["Side", "XZ"]);
+    assert_eq!(ends("End"), ["End", "YZ"]);
+    assert_eq!(ends("Triangle"), ["Triangle", "XY"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// A pocket the kernel refuses builds nothing, so its body is the pad's, as the model has
 /// it: the pad's row, named after its tip, Raised, which is the last healthy feature of its
 /// chain too, so no meta; the failed pocket no body of its own. (A tip built but in error,
