@@ -28,7 +28,7 @@ use crate::dialog::{Dialog, Kind, Standing, feature_node, quoted};
 use crate::sketch::dimension::{Ask, ModifyAction};
 use crate::sketch::drag::{Drag, News};
 use crate::sketch::screen::Screen;
-use crate::sketch::tools::{Choice, Request};
+use crate::sketch::tools::{Choice, ExtendFrom, Request};
 use crate::sketch::{self, Deletion, FrameInput, SketchMode, SketchReads};
 
 /// What's said when an over-defining dimension's choice is refused as a `conflict`: the
@@ -284,14 +284,14 @@ enum Queued {
         curve: ElementId,
         at: Vec<[f64; 2]>,
     },
-    /// Trim's or Extend's extend (`sketch_extend`) of `curve`'s `end` `by`; its undo step
-    /// saying `step` (Extend's "Extend"), or, with none, "Edit" and the sketch.
+    /// Trim's or Extend's extend (`sketch_extend`) of `curve`'s `end` `by`, its undo step
+    /// named by the tool it's `from`.
     SketchExtend {
         sketch: FeatureId,
         curve: ElementId,
         end: End,
         by: ExtendBy,
-        step: Option<&'static str>,
+        from: ExtendFrom,
     },
     /// A placed dimension's value, of sketch mode numbered `serial`: `set_field` of the
     /// sketch's `constraints.ID.value` to `value`, as the Modify box's text read.
@@ -826,10 +826,12 @@ enum Under {
         sending: Sending,
         running: Running<Added>,
     },
-    /// Sketch mode's Delete, a removal, as it was sent.
+    /// Sketch mode's Delete, a removal, or an extend, as it was sent; Extend's click's
+    /// if `extend_click`, whose refusal lets the tool click again.
     SketchEdit {
         sending: Sending,
         running: Running<SketchEdited>,
+        extend_click: bool,
     },
     /// Sketch mode's Delete of a split point, a join, as it was sent.
     SketchJoin {
@@ -3520,16 +3522,27 @@ impl Tab {
                     running,
                 }),
             },
-            Under::SketchEdit { sending, running } => match running.try_take() {
+            Under::SketchEdit {
+                sending,
+                running,
+                extend_click,
+            } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(&sending, &response);
                     if let Err(problems) = response.result {
                         self.message = Some(said(&problems));
+                        if extend_click && let Some(mode) = self.sketch.as_mut() {
+                            mode.tools.extend_refused();
+                        }
                     }
                     None
                 }
-                Err(running) => Some(Under::SketchEdit { sending, running }),
+                Err(running) => Some(Under::SketchEdit {
+                    sending,
+                    running,
+                    extend_click,
+                }),
             },
             Under::SketchJoin { sending, running } => match running.try_take() {
                 Ok(response) => {
@@ -4186,7 +4199,11 @@ impl Tab {
                     self.record(Sent::SketchEdit("sketch_remove"));
                     let sending = self.sending(step);
                     let running = sessions.sketch_remove(&self.id, self.revision, sketch, members);
-                    self.under.push(Under::SketchEdit { sending, running });
+                    self.under.push(Under::SketchEdit {
+                        sending,
+                        running,
+                        extend_click: false,
+                    });
                 }
                 Queued::SketchJoin { sketch, point } => {
                     self.begin_if_none(sessions);
@@ -4328,7 +4345,7 @@ impl Tab {
                     curve,
                     end,
                     by,
-                    step: _,
+                    from,
                 } => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
@@ -4336,7 +4353,11 @@ impl Tab {
                     let sending = self.sending(step);
                     let running =
                         sessions.sketch_extend(&self.id, self.revision, sketch, curve, end, by);
-                    self.under.push(Under::SketchEdit { sending, running });
+                    self.under.push(Under::SketchEdit {
+                        sending,
+                        running,
+                        extend_click: from == ExtendFrom::Extend,
+                    });
                 }
                 Queued::DimensionValue {
                     serial,
@@ -5760,7 +5781,9 @@ impl Tab {
             | Queued::SketchTrim { sketch, .. }
             | Queued::SketchSplit { sketch, .. }
             | Queued::SketchExtend {
-                sketch, step: None, ..
+                sketch,
+                from: ExtendFrom::Trim,
+                ..
             }
             | Queued::DimensionValue { sketch, .. }
             | Queued::Offer {
@@ -5772,8 +5795,11 @@ impl Tab {
             } => Some(Words::Of("Edit", sketch.clone())),
             // By its tool, as its button names it: Extend's click.
             Queued::SketchExtend {
-                step: Some(step), ..
-            } => Some(Words::Text((*step).to_owned())),
+                from: ExtendFrom::Extend,
+                ..
+            } => Some(Words::Text(
+                sketch::bar::choice_name(Choice::Extend).to_owned(),
+            )),
             // By the relation, as its button names it ("Horizontal"), or "Construction": a
             // click's chain of edits one step of that name.
             Queued::Relate { click, .. } => Some(Words::Text(click.applies.name().to_owned())),
@@ -7376,13 +7402,13 @@ impl Tab {
                     curve,
                     end,
                     by,
-                    step,
+                    from,
                 } => Queued::SketchExtend {
                     sketch: sketch.clone(),
                     curve,
                     end,
                     by,
-                    step,
+                    from,
                 },
             };
             if !queued {

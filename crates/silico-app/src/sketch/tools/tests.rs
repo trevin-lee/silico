@@ -679,7 +679,7 @@ fn trim_to_closest_trims_the_curve_clicked_at_the_click_and_extends_the_way_a_dr
             curve: id("na000001"),
             end: End::Start,
             by: ExtendBy::NextCurve,
-            step: None,
+            from: ExtendFrom::Trim,
         }]
     );
     // And toward its end: at its end.
@@ -743,7 +743,7 @@ fn power_trim_trims_each_curve_a_drag_crosses_in_order_and_extends_one_dragged_a
             curve: id("na000001"),
             end: End::End,
             by: ExtendBy::Point([x, y]),
-            step: None,
+            from: ExtendFrom::Trim,
         }]
     );
     // A drag from on the circle out across nothing else: a circle has no end to extend,
@@ -1361,7 +1361,7 @@ fn a_power_trim_sweep_pressed_near_a_line_trims_it_where_it_crosses_and_extends_
             curve: id("na000001"),
             end: End::Start,
             by: ExtendBy::Point([x, y]),
-            step: None,
+            from: ExtendFrom::Trim,
         }]
     );
     // Past its end but off its line on the way, through (45, 3): a sweep, which crosses
@@ -1451,7 +1451,7 @@ fn trim_and_split_take_an_arc_where_its_clicked_crossed_or_dragged_past_its_end(
             curve,
             end: End::End,
             by: ExtendBy::Point([x, y]),
-            step: None,
+            from: ExtendFrom::Trim,
         },
     ] = desk.edits.as_slice()
     else {
@@ -2357,7 +2357,7 @@ fn extend_previews_the_half_hovered_and_a_click_asks_that_end_to_the_next_curve(
             curve: id("na000001"),
             end: End::End,
             by: ExtendBy::NextCurve,
-            step: Some(EXTEND_STEP),
+            from: ExtendFrom::Extend,
         }]
     );
     assert_eq!(desk.mode.tools.choice(), Some(Choice::Extend));
@@ -2432,8 +2432,10 @@ fn extend_previews_an_arc_round_its_circle_from_the_end_hovered() {
         [Request::Extend { curve, end: End::End, by: ExtendBy::NextCurve, .. }] if *curve == id("aa000001")
     ));
     // At 10°, before it: the start, clockwise 210° round to the same place, drawn
-    // counter-clockwise from there on to (10, 0).
+    // counter-clockwise from there on to (10, 0). (The first extend refused, so the tool
+    // clicks again on the read it has.)
     desk.edits.clear();
+    desk.mode.tools.extend_refused();
     let [x, y] = on_ten(10.0);
     desk.frame(&hover(x, y));
     let arcs = desk.mode.tools.preview().arcs.clone();
@@ -2496,4 +2498,47 @@ fn a_second_click_before_the_read_of_the_first_extend_asks_nothing() {
     desk.frame(&click(9.0, 0.0));
     desk.frame(&click(9.0, 0.0));
     assert_eq!(desk.edits.len(), 1, "{:?}", desk.edits);
+}
+
+#[test]
+fn a_newer_read_or_the_extends_refusal_lets_extend_click_again() {
+    let mut desk = Desk::new(Choice::Extend, walled());
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 1);
+    // A read of the same revision again (one already asked) doesn't let it go.
+    desk.publish();
+    desk.frame(&click(8.0, 0.3));
+    assert_eq!(desk.edits.len(), 1, "{:?}", desk.edits);
+    // The core's refusal does: the next click asks again.
+    desk.mode.tools.extend_refused();
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 2, "{:?}", desk.edits);
+    // And so does a newer read: the session one on, its sketch as it was (another client's
+    // edit elsewhere), so the click plans the same extend again.
+    desk.revision = desk.revision.next().unwrap();
+    desk.publish();
+    desk.frame(&click(8.0, 0.3));
+    assert_eq!(desk.edits.len(), 3, "{:?}", desk.edits);
+    // Hovering went on all the while.
+    assert_eq!(desk.mode.tools.preview().lines.len(), 1);
+}
+
+#[test]
+fn an_extend_press_released_past_the_pick_sends_nothing_and_escape_clears_its_preview() {
+    let mut desk = Desk::new(Choice::Extend, walled());
+    // Pressed at (8, 0.2) and released at (8, 2): 1.8 mm off, past the 0.7 mm pick, so no
+    // click. The hover at the release is off every curve: nothing drawn.
+    desk.frame(&[
+        ev(PointerAction::Press, 8.0, 0.2),
+        ev(PointerAction::Release, 8.0, 2.0),
+    ]);
+    assert!(desk.edits.is_empty());
+    assert!(!desk.mode.tools.busy());
+    // Hovered over the line, its extension drawn; Esc leaves the tool, and the preview with
+    // it.
+    desk.frame(&hover(8.0, 0.2));
+    assert_eq!(desk.mode.tools.preview().lines.len(), 1);
+    assert!(desk.mode.escape_tool());
+    assert_eq!(desk.mode.tools.choice(), None);
+    assert_eq!(desk.mode.tools.preview(), &Preview::default());
 }
