@@ -17125,7 +17125,6 @@ fn recents_arrows_are_not_taken_under_a_question_or_with_a_menu_open() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_file_dropped_under_the_shortcut_sheet_isnt_opened_until_it_closes() {
     // No input acts behind a modal (#487), the sheet's too: the drop is said, and opens
@@ -17152,6 +17151,7 @@ fn a_file_dropped_under_the_shortcut_sheet_isnt_opened_until_it_closes() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[cfg(unix)]
 #[test]
 fn a_file_dropped_by_another_path_to_an_open_one_is_refused_as_the_core_says() {
     let f = fixture();
