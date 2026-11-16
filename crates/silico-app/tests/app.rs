@@ -4974,22 +4974,13 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
     // characters with an ellipsis (`changes::SHOWN_CHARS`).
     let f = fixture();
     let (plate, triangle) = ("W".repeat(400), "V".repeat(400));
-    let text = SKETCHED
-        .replace(r#""name": "Plate""#, &format!(r#""name": "{plate}""#))
-        .replace(r#""name": "Triangle""#, &format!(r#""name": "{triangle}""#));
-    let (mut h, _) = f.opened("long.silico", &text);
+    let (mut h, _) = f.opened("long.silico", &sketched_named(&triangle, Some(&plate)));
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", &triangle));
-    let edit = |h: &mut AppHarness, id: &str, sketch: bool| {
+    {
         let sessions = Arc::clone(&f.sessions);
-        let id = silico_core::document::FeatureId::new(id).unwrap();
-        let tab = &mut h.state_mut().tabs_mut()[0];
-        if sketch {
-            tab.edit_sketch(&sessions, &id);
-        } else {
-            tab.edit_feature(&sessions, &id);
-        }
-    };
-    edit(&mut h, "b0000001", false);
+        let plate = silico_core::document::FeatureId::new("b0000001").unwrap();
+        h.state_mut().tabs_mut()[0].edit_feature(&sessions, &plate);
+    }
     step_until(&mut h, "its dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Box").is_some()
     });
@@ -5002,22 +4993,187 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
         tooltip_title(&mut h, "Undo"),
         format!("Undo: Edit {}…", "W".repeat(60))
     );
-    edit(&mut h, "s0000001", true);
-    sketch_read(&mut h);
-    settled(&mut h);
+    triangle_edited(&f, &mut h);
     delete_line(&mut h, "na000000");
-    // Finished through the tab: the sketch bar draws the whole name, its Finish past the
-    // window's edge.
-    {
-        let sessions = Arc::clone(&f.sessions);
-        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, true);
-    }
-    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
-    settled(&mut h);
+    // Finished through the sketch bar, whose name is cut to fit (#466).
+    leave_sketch(&mut h, true);
     assert_eq!(
         tooltip_title(&mut h, "Undo"),
         format!("Undo: Edit {}…", "V".repeat(60))
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_long_named_sketchs_bar_keeps_cancel_and_finish_in_the_window_and_finish_finishes_it() {
+    // #466: the triangle named 400 W's, open in sketch mode with a line deleted, at the
+    // window's least size (888 by 336) and at a usual one (1280 by 800). The bar's Cancel and
+    // Finish Sketch lie inside the window, its left and its tag inside the canvas; at 1280 the bar inside the canvas less 10 at its
+    // left and 148 at its right, clear of the ViewCube (1280 − 248 − 296 = 736, so at most
+    // 578 wide); its name whole in the tree,
+    // the painted one cut with an ellipsis. Finish, clicked at its middle, keeps the edit:
+    // one step named for the sketch, cut at 60 characters.
+    let triangle = "W".repeat(400);
+    let text = sketched_named(&triangle, None);
+    let least = (
+        silico_app::theme::WINDOW_MIN_WIDTH,
+        silico_app::theme::WINDOW_MIN_HEIGHT,
+    );
+    assert_eq!(least, (888.0, 336.0));
+    for (width, height) in [least, (1280.0, 800.0)] {
+        let f = fixture();
+        let size = (width + 2.0 * MARGIN, height + 2.0 * MARGIN);
+        let mut h = opened_sized(&f, "long.silico", &text, size);
+        triangle_edited(&f, &mut h);
+        delete_line(&mut h, "na000000");
+        let window = eframe::egui::Rect::from_min_size(
+            eframe::egui::pos2(MARGIN, MARGIN),
+            eframe::egui::vec2(width, height),
+        );
+        let bar = h.get_by_role_and_label(Role::Toolbar, "Sketch bar");
+        for word in ["Cancel", "Finish Sketch"] {
+            let rect = bar.get_by_label(word).rect();
+            assert!(window.contains_rect(rect), "{word} at {rect:?}, {width}");
+        }
+        let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+        // Its left at least 10 inside the canvas, and its tag in the canvas, at each size: at
+        // 888 the canvas is 888 − 248 − 296 = 344 (the panes at the prototype's widths),
+        // narrower than the bar, which runs right from its 10 past the canvas's right, inside
+        // the window.
+        assert!(
+            bar.rect().left() >= canvas.left() + 10.0,
+            "{:?} in {canvas:?}, {width}",
+            bar.rect()
+        );
+        let tag = bar.get_by_label("SKETCH").rect();
+        assert!(canvas.contains_rect(tag), "{tag:?} in {canvas:?}, {width}");
+        if width == least.0 {
+            assert_eq!(canvas.width(), 344.0);
+        }
+        if width == 1280.0 {
+            assert_eq!(canvas.width(), 736.0);
+            let inside = eframe::egui::Rect::from_x_y_ranges(
+                canvas.left() + 10.0..=canvas.right() - 148.0,
+                canvas.y_range(),
+            );
+            assert_eq!(inside.width(), 578.0);
+            assert!(
+                inside.contains_rect(bar.rect()),
+                "{:?} in {canvas:?}",
+                bar.rect()
+            );
+        }
+        let names: Vec<String> = bar
+            .query_all_by_role(Role::Label)
+            .filter_map(|node| node.accesskit_node().value())
+            .collect();
+        assert!(names.contains(&triangle), "{names:?}");
+        // The bar's own (the browser and the timeline paint it too).
+        let painted: Vec<String> = painted_in(&h, bar.rect())
+            .into_iter()
+            .filter_map(|shape| match shape {
+                eframe::egui::Shape::Text(text) if text.galley.text() == triangle => {
+                    Some(text.galley.rows.iter().map(|row| row.text()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        let [shown] = painted.as_slice() else {
+            panic!("{painted:?}");
+        };
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(shown.starts_with('W') && shown.len() < 400, "{shown}");
+        leave_sketch(&mut h, true);
+        assert_eq!(
+            tooltip_title(&mut h, "Undo"),
+            format!("Undo: Edit {}…", "W".repeat(60))
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// [`SKETCHED`] with its triangle named `triangle`, and its plate `plate` if given.
+fn sketched_named(triangle: &str, plate: Option<&str>) -> String {
+    let text = SKETCHED.replace(r#""name": "Triangle""#, &format!(r#""name": "{triangle}""#));
+    match plate {
+        Some(plate) => text.replace(r#""name": "Plate""#, &format!(r#""name": "{plate}""#)),
+        None => text,
+    }
+}
+
+/// [`SKETCHED`]'s triangle opened in sketch mode through the tab, read, and everything
+/// answered.
+fn triangle_edited(f: &Fixture, h: &mut AppHarness) {
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let id = silico_core::document::FeatureId::new("s0000001").unwrap();
+        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &id);
+    }
+    sketch_read(h);
+    settled(h);
+}
+
+#[test]
+fn a_sketch_bar_with_a_usual_long_name_keeps_clear_of_the_viewcube_and_home_view_works() {
+    // #466's review: the triangle named "Mounting bracket base profile" (29 characters) at
+    // 1280 by 800. Centred, the bar would reach the ViewCube's Home view (its column 24 wide,
+    // its right 4 left of the cube, which is 16 in from the canvas's right and 92 wide); it's
+    // kept at least 148 from the canvas's right (`theme::BANNER_MARGIN_RIGHT`, as a banner
+    // is), shifted left, clear of Home view, its ▾, and the cube, its name whole. Front, then
+    // Home view, each clicked at its middle, give their views: from −y, then from
+    // (1, −1, 1)/√3.
+    let f = fixture();
+    let name = "Mounting bracket base profile";
+    assert_eq!(name.chars().count(), 29);
+    let (mut h, _record) = f.drawn("bracket.silico", &sketched_named(name, None));
+    meshes_settled(&mut h);
+    triangle_edited(&f, &mut h);
+    let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+    let bar = h.get_by_role_and_label(Role::Toolbar, "Sketch bar").rect();
+    assert!(
+        bar.right() <= canvas.right() - 148.0,
+        "{bar:?} in {canvas:?}"
+    );
+    assert!(bar.left() >= canvas.left() + 10.0, "{bar:?} in {canvas:?}");
+    // Centred it would reach past the 148: so it's moved left, its right at the 148 (to
+    // within the pixel its left is rounded down to).
+    assert!(canvas.center().x + bar.width() / 2.0 > canvas.right() - 148.0);
+    assert!(
+        bar.right() > canvas.right() - 149.0,
+        "{bar:?} in {canvas:?}"
+    );
+    let cube = h.get_by_role_and_label(Role::Group, "ViewCube");
+    let controls = [
+        cube.get_by_label("Home view").rect(),
+        cube.get_by_label("View cube options").rect(),
+        silico_app::viewport::view_cube_rect(canvas),
+    ];
+    for control in controls {
+        assert!(!bar.intersects(control), "{bar:?} over {control:?}");
+    }
+    let rows = painted_in(&h, bar)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) if text.galley.text() == name => {
+                Some((text.galley.elided, text.galley.rows.len()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows, [(false, 1)]);
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Front")
+        .click();
+    step(&mut h);
+    let front = view(&h).camera().clone();
+    near(view_direction(&front), [0.0, -1.0, 0.0], 1e-12);
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Home view")
+        .click();
+    step(&mut h);
+    let d = 1.0 / 3f64.sqrt();
+    near(view_direction(view(&h).camera()), [d, -d, d], 1e-12);
+    assert!(sketch_mode(&h).is_some());
     assert_eq!(never_waits::waits(), 0);
 }
 
