@@ -23,7 +23,7 @@ use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
-use crate::pane_widths::{KeptWidths, Widths};
+use crate::pane_widths::{KeptLayout, Widths};
 use crate::panes::{self, Pane, Panes};
 use crate::properties;
 use crate::recent::Recents;
@@ -515,29 +515,30 @@ impl<P: Clients + 'static> App<P> {
         self
     }
 
-    /// The app, laying its side panes out at the widths `widths` keeps once it has read them,
-    /// and keeping there those each drag of a border leaves.
+    /// The app, laying its side panes out as `layout` keeps them (their widths, and whether
+    /// the browser is collapsed) once it has read them, and keeping there what each drag of
+    /// a border, and each collapse or show of the browser, leaves.
     #[must_use]
-    pub fn keeping_widths(mut self, widths: KeptWidths) -> Self {
-        self.columns.keeping(widths);
+    pub fn keeping_layout(mut self, layout: KeptLayout) -> Self {
+        self.columns.keeping(layout);
         self
     }
 
     /// The side panes' widths, as dragged (or read, or the prototype's), each its border
-    /// included: what [`keeping_widths`](Self::keeping_widths)' file keeps.
+    /// included: what [`keeping_layout`](Self::keeping_layout)' file keeps.
     pub fn pane_widths(&self) -> Widths {
         self.columns.chosen()
     }
 
     /// Whether the browser is collapsed to its strip (its chevrons, Collapse browser and Show
-    /// browser): kept with the widths, in [`keeping_widths`](Self::keeping_widths)' file.
+    /// browser): kept with the widths, in [`keeping_layout`](Self::keeping_layout)' file.
     pub fn browser_collapsed(&self) -> bool {
         self.columns.collapsed()
     }
 
     /// Where the side panes' widths are kept: nowhere (read at once, the prototype's) unless
-    /// [`keeping_widths`](Self::keeping_widths) gave a file.
-    pub fn kept_widths(&self) -> &KeptWidths {
+    /// [`keeping_layout`](Self::keeping_layout) gave a file.
+    pub fn kept_layout(&self) -> &KeptLayout {
         self.columns.kept()
     }
 

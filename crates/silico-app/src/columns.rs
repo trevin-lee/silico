@@ -16,7 +16,7 @@
 use eframe::egui::{self, CursorIcon, PointerButton, Rect, Sense, Ui};
 
 use crate::pane_widths::{
-    BROWSER_MIN_W, BROWSER_STRIP_W, Kept, KeptWidths, PROPERTIES_MIN_W, Widths,
+    BROWSER_MIN_W, BROWSER_STRIP_W, Kept, KeptLayout, PROPERTIES_MIN_W, Widths,
 };
 use crate::theme::CANVAS_MIN_WIDTH;
 
@@ -168,7 +168,7 @@ pub(crate) struct Columns {
     /// Whether a border has been dragged, or the browser collapsed or shown: what the file
     /// keeps, read after, isn't taken.
     changed: bool,
-    kept: KeptWidths,
+    kept: KeptLayout,
 }
 
 impl Columns {
@@ -179,12 +179,12 @@ impl Columns {
             collapsed: false,
             drag: None,
             changed: false,
-            kept: KeptWidths::unkept(),
+            kept: KeptLayout::unkept(),
         }
     }
 
     /// The widths kept in `kept`, taken once it's read, each drag's written to it.
-    pub(crate) fn keeping(&mut self, kept: KeptWidths) {
+    pub(crate) fn keeping(&mut self, kept: KeptLayout) {
         self.kept = kept;
     }
 
@@ -218,7 +218,7 @@ impl Columns {
     }
 
     /// Where the widths are kept.
-    pub(crate) fn kept(&self) -> &KeptWidths {
+    pub(crate) fn kept(&self) -> &KeptLayout {
         &self.kept
     }
 
@@ -671,7 +671,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join(crate::pane_widths::FILE_NAME);
         let mut columns = Columns::new();
-        columns.keeping(KeptWidths::at(file.clone()));
+        columns.keeping(KeptLayout::at(file.clone()));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while !columns.kept().is_read() {
             columns.poll();

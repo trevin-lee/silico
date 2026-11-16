@@ -243,6 +243,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
             });
             return;
         };
+        // Shown: a Find in browser's row is scrolled to below, as it is.
+        tab.reveal_browser = false;
         let mut asked = Asked::default();
         let browsers = |renaming: &crate::feature_menu::Renaming| {
             renaming.place == crate::feature_menu::Place::Browser
@@ -332,7 +334,9 @@ impl<P: Clients + 'static> Panes<'_, P> {
     /// `renderBrowser`): its one button, Show browser (`.ab-btn`, `margin: 2px`), its chevron
     /// as the title's; nothing of the tree, which shows again with the browser. A body
     /// picked in the canvas meanwhile isn't scrolled to later: its row is "scrolled to once,
-    /// whether its row was there or not".
+    /// whether its row was there or not". Find in browser shows it again, its row scrolled
+    /// to once it's shown, as SolidWorks and Fusion reveal their tree. A name being typed
+    /// over a row goes, sending nothing, as it goes with a row that's gone.
     fn strip(&mut self, ui: &mut Ui) {
         let side = theme::APP_BAR_BUTTON_SIZE;
         let place = egui::Rect::from_min_size(
@@ -352,7 +356,21 @@ impl<P: Clients + 'static> Panes<'_, P> {
         if shown.clicked() {
             *self.browser_toggled = true;
         }
-        if let Some(tab) = self.tab.as_deref_mut() {
+        let Some(tab) = self.tab.as_deref_mut() else {
+            return;
+        };
+        if tab
+            .renaming
+            .as_ref()
+            .is_some_and(|renaming| renaming.place == crate::feature_menu::Place::Browser)
+        {
+            tab.renaming = None;
+        }
+        if tab.reveal_browser {
+            // Shown from the next frame, which scrolls to the row.
+            tab.reveal_browser = false;
+            *self.browser_toggled = true;
+        } else {
             tab.selection_mut().scrolled();
         }
     }
@@ -2086,7 +2104,11 @@ mod tests {
             entry("a91cw0de", "cylinder", &[], Health::Healthy),
             entry("m3tq8v0z", "cut", &["k7f2qx3m", "a91cw0de"], Health::Error),
         ];
-        let failed = crate::tab::browser(&timeline(&entries, &["k7f2qx3m", "a91cw0de"]), &[]);
+        let failed = crate::tab::browser(
+            &timeline(&entries, &["k7f2qx3m", "a91cw0de"]),
+            &[],
+            &crate::tab::Browser::default(),
+        );
         assert_eq!(
             rows(failed.bodies()),
             [
@@ -2099,7 +2121,14 @@ mod tests {
         let mut built = entries.clone();
         built[2].health = Health::Healthy;
         let body = |entries: &[Entry]| {
-            rows(crate::tab::browser(&timeline(entries, &["m3tq8v0z"]), &[]).bodies())
+            rows(
+                crate::tab::browser(
+                    &timeline(entries, &["m3tq8v0z"]),
+                    &[],
+                    &crate::tab::Browser::default(),
+                )
+                .bodies(),
+            )
         };
         assert_eq!(
             body(&built),

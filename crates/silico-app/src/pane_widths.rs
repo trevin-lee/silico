@@ -1,13 +1,13 @@
 //! The side panes' widths (the browser's column and the property panel's), as the person
 //! last dragged their borders (`crate::columns`), and whether the browser is collapsed to its
 //! strip, kept in a file of the app's own in the platform's app-data folder, beside the
-//! recent documents ([`KeptWidths::default_file`]), so the window opens laid out as it was
+//! recent documents ([`KeptLayout::default_file`]), so the window opens laid out as it was
 //! left.
 //!
 //! The file is read on a thread of its own, which writes it at the end of each drag and as
 //! the browser is collapsed or shown, so the UI thread never waits on it (invariant 4): the
-//! window asks the thread ([`KeptWidths::save`]) and takes what it read
-//! ([`KeptWidths::poll`]). Its form is a header line, then the browser's width and the
+//! window asks the thread ([`KeptLayout::save`]) and takes what it read
+//! ([`KeptLayout::poll`]). Its form is a header line, then the browser's width and the
 //! property panel's, each on a line of its own in whole points, then, only while the browser
 //! is collapsed, `browser collapsed` (`text`); a file that isn't one (`parse`), or can't be
 //! read, is the defaults, never a failure; and a width out of range is clamped into it
@@ -174,7 +174,7 @@ pub(crate) fn text(kept: Kept) -> String {
 
 /// The panes' widths, and whether the browser is collapsed, as the file holds them, as the
 /// window last heard them from the thread that keeps them.
-pub struct KeptWidths {
+pub struct KeptLayout {
     /// Whether the file has been read (or found unreadable) yet.
     read: bool,
     /// What the file keeps, once read, until the window takes it.
@@ -184,7 +184,7 @@ pub struct KeptWidths {
     wake: Wake,
 }
 
-impl KeptWidths {
+impl KeptLayout {
     /// The widths kept in `file`, read on a thread of its own (`app_data::read_capped`: a
     /// regular file, never a pipe that could hang it, and at most [`MAX_FILE_BYTES`] of it).
     pub fn at(file: PathBuf) -> Self {
@@ -204,7 +204,7 @@ impl KeptWidths {
             .name("silico-pane-widths".to_owned())
             .spawn(move || keep(&file, read, &asked, &tell, &waking));
         match started {
-            Ok(_) => KeptWidths {
+            Ok(_) => KeptLayout {
                 read: false,
                 kept: None,
                 asks: Some(asks),
@@ -221,7 +221,7 @@ impl KeptWidths {
     /// Widths that aren't kept, their thread not started: read, the defaults, and no drag's
     /// written anywhere.
     pub(crate) fn unkept() -> Self {
-        KeptWidths {
+        KeptLayout {
             read: true,
             kept: None,
             asks: None,
@@ -468,7 +468,7 @@ mod tests {
     }
 
     /// The thread's word polled until it's read.
-    fn polled_until_read(widths: &mut KeptWidths) -> Kept {
+    fn polled_until_read(widths: &mut KeptLayout) -> Kept {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
             if let Some(read) = widths.poll() {
@@ -497,7 +497,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("deep").join(FILE_NAME);
         // No file: the defaults, told once.
-        let mut kept = KeptWidths::at(file.clone());
+        let mut kept = KeptLayout::at(file.clone());
         assert_eq!(polled_until_read(&mut kept), Kept::default());
         assert_eq!(kept.poll(), None);
         assert!(!file.exists());
@@ -513,7 +513,7 @@ mod tests {
         kept.save(shown(wider));
         written(&file, "silico pane-widths 1\nbrowser 320\nproperties 300\n");
         // Another instance on the same file reads them.
-        let mut again = KeptWidths::at(file.clone());
+        let mut again = KeptLayout::at(file.clone());
         assert_eq!(polled_until_read(&mut again), shown(wider));
         // No file but the widths' is left in its folder.
         let names: Vec<_> = std::fs::read_dir(file.parent().unwrap())
@@ -538,7 +538,7 @@ mod tests {
             released.recv().ok()?;
             Some(b"silico pane-widths 1\nbrowser 300\nproperties 260\n".to_vec())
         });
-        let mut kept = KeptWidths::reading(dir.path().join(FILE_NAME), read);
+        let mut kept = KeptLayout::reading(dir.path().join(FILE_NAME), read);
         kept.waking(&ctx);
         // Held: nothing told, and the window not asked.
         assert_eq!(kept.poll(), None);
@@ -566,8 +566,8 @@ mod tests {
         // last drag to end, never skipped as what it already wrote.
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join(FILE_NAME);
-        let mut first = KeptWidths::at(file.clone());
-        let mut second = KeptWidths::at(file.clone());
+        let mut first = KeptLayout::at(file.clone());
+        let mut second = KeptLayout::at(file.clone());
         polled_until_read(&mut first);
         polled_until_read(&mut second);
         let (one, other) = (
@@ -590,20 +590,20 @@ mod tests {
 
     #[test]
     fn widths_not_kept_are_read_at_once_as_the_defaults_and_written_nowhere() {
-        let mut unkept = KeptWidths::unkept();
+        let mut unkept = KeptLayout::unkept();
         assert!(unkept.is_read());
         assert!(!unkept.is_kept());
         assert_eq!(unkept.poll(), None);
         // Nothing to write to: asked, nothing happens.
         unkept.save(Kept::default());
         let dir = tempfile::tempdir().unwrap();
-        assert!(KeptWidths::at(dir.path().join(FILE_NAME)).is_kept());
+        assert!(KeptLayout::at(dir.path().join(FILE_NAME)).is_kept());
     }
 
     #[test]
     fn the_widths_are_kept_beside_the_recent_documents() {
         let recents = crate::recent::Recents::default_file();
-        let widths = KeptWidths::default_file();
+        let widths = KeptLayout::default_file();
         assert_eq!(recents.is_some(), widths.is_some());
         if let (Some(recents), Some(widths)) = (recents, widths) {
             assert_eq!(recents.parent(), widths.parent());
