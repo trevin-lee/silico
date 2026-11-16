@@ -91,9 +91,23 @@ struct Watched {
 }
 
 fn watched(text: &str) -> Watched {
+    watched_in(text, None)
+}
+
+/// [`watched`], but with the file in `workspace`, a directory of that name made in the
+/// test's directory, if one is given, the sessions confined to it.
+fn watched_in(text: &str, workspace: Option<&str>) -> Watched {
     let dir = tempfile::tempdir().unwrap();
     let secret = dir.path().join("secret");
-    let path = dir.path().join("a.silico");
+    let root = match workspace {
+        Some(name) => {
+            let root = dir.path().join(name);
+            std::fs::create_dir(&root).unwrap();
+            root
+        }
+        None => dir.path().to_owned(),
+    };
+    let path = root.join("a.silico");
     std::fs::write(&path, text).unwrap();
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
     let clock = TestClock::new();
@@ -105,6 +119,10 @@ fn watched(text: &str) -> Watched {
     )
     .watching_disk(DISK_CHECK_INTERVAL, reader.reader(), clock.clock())
     .unwrap();
+    let sessions = match workspace {
+        Some(_) => sessions.in_workspace(&root).unwrap(),
+        None => sessions,
+    };
     let id = sessions.open(&path, false).wait().session.unwrap().id;
     Watched {
         f: Fixture {
