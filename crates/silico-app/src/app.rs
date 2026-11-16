@@ -311,6 +311,27 @@ impl OnTop {
     }
 }
 
+/// The document's keys taken this frame ([`App::command_keys`]), and the tab shown as they
+/// came: each acted on once the canvas has had the frame's events ([`App::document_keys`]),
+/// so an edit a release before the key made (a line let go, a Finish clicked) is saved,
+/// undone, finished, or asked about, as an edit made before the frame is (#523).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DocumentKeys {
+    tab: SessionId,
+    /// ⌘S (Ctrl+S): Save, or an untitled part's Save panel.
+    save: bool,
+    /// ⌘↵ (Ctrl+Enter): Finish Sketch.
+    finish: bool,
+    /// ⌘Z: Undo.
+    undo: bool,
+    /// ⌘⇧Z or Ctrl+Y: Redo.
+    redo: bool,
+    /// ⌘R: Reload.
+    reload: bool,
+    /// ⌘W: Close.
+    close: bool,
+}
+
 /// What a native dialog's answer goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Browsed {
@@ -441,10 +462,11 @@ pub struct App<P: Clients + 'static> {
     /// top as it did, the earliest first: given it back once that modal has gone, as
     /// SolidWorks' and Windows' dialogs give the focus back to the control that held it.
     focus_behind: Vec<(egui::Id, OnTop)>,
-    /// The tab ⌘W (Ctrl+W) asked to close this frame: closed, or asked about, once the canvas
-    /// has had the frame's events (`after_drawing`), so an edit a release before the key made
-    /// (a line's) is asked about, as an edit made before the frame is.
-    close_key: Option<SessionId>,
+    /// The document's keys pressed this frame, Save, Finish, Undo, Redo, Reload, and Close:
+    /// acted on once the canvas has had the frame's events (`after_drawing`), so an edit a
+    /// release before the key made (a line's) is in what they act on, as an edit made before
+    /// the frame is.
+    document_keys: Option<DocumentKeys>,
     /// The canvas's place in the window, as the panes last laid it out: where sketch mode's
     /// palette floats.
     canvas: Option<egui::Rect>,
@@ -570,7 +592,7 @@ impl<P: Clients + 'static> App<P> {
             waker_set: false,
             modal_key: None,
             focus_behind: Vec::new(),
-            close_key: None,
+            document_keys: None,
             canvas: None,
             drawing: crate::viewport::Drawing::default(),
             browser: None,
@@ -1176,16 +1198,7 @@ impl<P: Clients + 'static> App<P> {
                 }
             }
         }
-        // ⌘W's Close (`command_keys`), decided now the canvas has had the frame's events:
-        // a release among them before the key (a line's, a dimension's) has made its edit,
-        // which the close then asks about, as one made in an earlier frame. Not over a
-        // question asked meanwhile (a click's), as no key acts under one; an over-define
-        // offer come meanwhile waits under the close's question.
-        if let Some(id) = self.close_key.take()
-            && self.on_top() <= OnTop::Offer
-        {
-            self.close(id);
-        }
+        self.document_keys(ui);
         self.ask(ui, &mut next_frame);
         next_frame |= self.next_quit_save(ui.ctx());
         if self.quitting && self.tabs.is_empty() {
@@ -1538,6 +1551,61 @@ impl<P: Clients + 'static> App<P> {
         asked && self.send_rename_if(crate::feature_menu::Renaming::focused)
     }
 
+    /// The document's keys taken this frame ([`DocumentKeys`]), acted on now the canvas has
+    /// had the frame's events: a release among them before the key (a line's, a dimension's,
+    /// a Finish's click) has made its edit, which each then acts on, as on one made in an
+    /// earlier frame. On the tab shown as they came, in the order they always were: Save,
+    /// Finish, Undo, Redo, an untitled part's Save panel, Reload, and Close. None over a
+    /// question asked meanwhile (a click's, or one a key before it asked), as no key acts
+    /// under one; an over-define offer come meanwhile (a click on another tab's button shows
+    /// a tab whose offer came while it was hidden) waits under a question asked.
+    fn document_keys(&mut self, ui: &Ui) {
+        let Some(keys) = self.document_keys.take() else {
+            return;
+        };
+        let sessions = Arc::clone(&self.sessions);
+        let id = keys.tab;
+        let free = |app: &Self| app.on_top() <= OnTop::Offer;
+        // An untitled part's Save asks where, through the Save panel, once the tab is let go:
+        // with no edits too, as its first save writes the document all the same.
+        let mut save_panel = false;
+        if keys.save
+            && free(self)
+            && let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
+        {
+            if tab.is_untitled() {
+                // Not while a Save As of its runs: its answer gives it its file.
+                save_panel = !tab.editing() && !tab.closing() && !tab.saving_as();
+            } else if tab.unsaved() && !tab.editing() {
+                tab.save(&sessions, false);
+            }
+        }
+        if free(self)
+            && let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
+        {
+            if keys.finish {
+                tab.finish_sketch(&sessions, true);
+            }
+            if keys.undo && tab.undoable() {
+                tab.step(&sessions, true);
+            }
+            if keys.redo && tab.redoable() {
+                tab.step(&sessions, false);
+            }
+        }
+        if save_panel && free(self) {
+            let ctx = ui.ctx().clone();
+            self.ask_save_as(id, false, &ctx);
+        }
+        if keys.reload && free(self) {
+            let now = ui.input(|input| input.time);
+            self.reload(id, now);
+        }
+        if keys.close && free(self) {
+            self.close(id);
+        }
+    }
+
     /// The keyboard's commands with no modal open: [`keys`](Self::keys)'s, a name being
     /// typed already sent where one asks it. Whether the frame after is to be asked for: a
     /// command started, or an Esc taken past Home and Select Other's menu (whose Esc leaves
@@ -1770,28 +1838,8 @@ impl<P: Clients + 'static> App<P> {
         if sketch_enter {
             tab.sketch_enter(sessions);
         }
-        // An untitled part's Save asks where, through the Save panel, once the tab is let go:
-        // with no edits too, as its first save writes the document all the same.
-        let mut save_panel = None;
-        if save && tab.is_untitled() {
-            // Not while a Save As of its runs: its answer gives it its file.
-            if !tab.editing() && !tab.closing() && !tab.saving_as() {
-                save_panel = Some(tab.id);
-            }
-        } else if save && tab.unsaved() && !tab.editing() {
-            tab.save(sessions, false);
-        }
         if sketch_delete {
             tab.sketch_delete(sessions);
-        }
-        if finish {
-            tab.finish_sketch(sessions, true);
-        }
-        if undo && tab.undoable() {
-            tab.step(sessions, true);
-        }
-        if redo && tab.redoable() {
-            tab.step(sessions, false);
         }
         if rebuild_all {
             tab.rebuild_all(sessions);
@@ -1809,17 +1857,20 @@ impl<P: Clients + 'static> App<P> {
         if chain && !in_dialog {
             tab.escape(sessions);
         }
-        if let Some(id) = save_panel {
-            let ctx = ui.ctx().clone();
-            self.ask_save_as(id, false, &ctx);
-        }
-        if reload && let Some(id) = self.active {
-            let now = ui.input(|input| input.time);
-            self.reload(id, now);
-        }
-        if close {
-            // Asked once the canvas has had the frame's events (`after_drawing`).
-            self.close_key = self.active;
+        // Save, Finish, Undo, Redo, Reload, and Close: acted on once the canvas has had the
+        // frame's events (`after_drawing`).
+        if let Some(tab) = self.active
+            && (save || finish || undo || redo || reload || close)
+        {
+            self.document_keys = Some(DocumentKeys {
+                tab,
+                save,
+                finish,
+                undo,
+                redo,
+                reload,
+                close,
+            });
         }
         (
             save || undo
