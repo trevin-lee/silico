@@ -1890,14 +1890,23 @@ impl Tab {
         }
     }
 
-    /// An arrow's drag under way let go of and what it held back sent, before a save or a
-    /// Save As that closes the tab is queued (#480's review, R2-1): so what the save writes
-    /// is what the field shows, which then stays as it is while the tab closes, the rest of
-    /// the stream asking nothing.
-    fn flush_arrow<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if self.grip.holding() {
+    /// Everything the dialog holds back sent, before a save or a Save As that closes the tab
+    /// is queued: an arrow's drag under way let go of and the value it held (#480's review,
+    /// R2-1), and a box of one body's waiting behind an edit of its feature (#483), queued
+    /// behind that edit and ahead of the save. So what the save writes is what the dialog
+    /// shows, which then stays as it is while the tab closes, the rest of the stream asking
+    /// nothing.
+    fn flush_held<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let arrow = self.grip.holding();
+        if arrow {
             self.grip.let_go();
-            self.dialog_changed(sessions);
+        }
+        let bodies = self
+            .dialog
+            .as_ref()
+            .is_some_and(crate::dialog::Dialog::holding);
+        if arrow || bodies {
+            self.send_dialog(sessions, false);
         }
     }
 
@@ -2600,7 +2609,7 @@ impl Tab {
     ) {
         self.hush();
         if then_close {
-            self.flush_arrow(sessions);
+            self.flush_held(sessions);
         }
         self.edits.queue.push_back(Queued::SaveAs {
             path,
@@ -4773,7 +4782,7 @@ impl Tab {
     pub fn save<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
         self.hush();
         if then_close {
-            self.flush_arrow(sessions);
+            self.flush_held(sessions);
         }
         match self.edits.queue.back_mut() {
             Some(Queued::Save { then_close: last }) => *last |= then_close,
@@ -6443,12 +6452,24 @@ impl Tab {
     /// an edit of each field that changed, coalesced as the property panel's are. Whether
     /// anything was.
     pub fn dialog_changed<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) -> bool {
+        self.send_dialog(sessions, true)
+    }
+
+    /// [`dialog_changed`](Self::dialog_changed); its boxes of one body held back while an
+    /// edit of its feature is still to answer only if `hold_bodies` (else queued behind that
+    /// edit, as a closing save needs them: [`flush_held`](Self::flush_held)).
+    fn send_dialog<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        hold_bodies: bool,
+    ) -> bool {
         // An edit of its feature still to answer: its boxes of one body wait for it.
-        let waiting = self
-            .dialog
-            .as_ref()
-            .and_then(|dialog| dialog.feature.as_ref())
-            .is_some_and(|feature| self.edits.pending_for(feature));
+        let waiting = hold_bodies
+            && self
+                .dialog
+                .as_ref()
+                .and_then(|dialog| dialog.feature.as_ref())
+                .is_some_and(|feature| self.edits.pending_for(feature));
         let held_back = self.arrow_held_back();
         let Some(dialog) = self.dialog.as_mut() else {
             return false;

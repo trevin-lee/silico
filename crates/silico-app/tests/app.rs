@@ -46546,6 +46546,60 @@ fn a_value_held_back_when_the_tab_begins_to_close_is_saved_as_its_field_shows() 
 }
 
 #[test]
+fn a_body_box_held_back_behind_an_edit_when_the_tab_begins_to_close_is_saved_as_it_shows() {
+    // #483: Edit Feature on Joined, the union of Second and Third, the session's queue held
+    // so each edit stays out. Joined renamed Merged (an edit of its feature, sent,
+    // unanswered); the tool box then takes First, held back behind that edit (a box of one
+    // body waits for its feature's edit). Close, then Save: the save writes what the boxes
+    // show, Second and First, and the name.
+    let f = fixture();
+    let (mut h, record) = union_between(&f);
+    let path = f.dir.path().join("between.silico");
+    edit_from_the_timeline(&mut h, "Joined");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Union").is_some()
+    });
+    let (hold, _check) = hold_queue(&f, &h, 0);
+    let sessions = Arc::clone(h.state().sessions());
+    let joined = silico_core::document::FeatureId::new("n0000001").unwrap();
+    h.state_mut().tabs_mut()[0].rename(&sessions, joined, "Merged");
+    step(&mut h);
+    let first = body_of(&h, "c0000001");
+    click_box(&mut h, "Tool Body");
+    click_face(&mut h, &record, first, 1);
+    step_until(&mut h, "First in the tool box", |h| {
+        boxed_bodies(h) == held(&[Some("a0000001"), Some("c0000001")])
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        [Sent::Begin, Sent::Edit("name".to_owned())],
+        "the tool box wasn't held back"
+    );
+    h.get_by_label("Close between.silico").click_accesskit();
+    step_until(&mut h, "the question", |h| {
+        anywhere(h, "Save changes to between.silico before closing?")
+    });
+    h.query_all_by_role_and_label(Role::Button, "Save")
+        .last()
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "closing", |h| h.state().tabs()[0].closing());
+    hold.release();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains(r#""name": "Merged""#)
+            && saved.contains(r#""base": "a0000001""#)
+            && saved.contains(r#""tool": "c0000001""#),
+        "saved: {saved}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_drags_release_in_the_frame_another_tab_is_shown_is_saved_as_its_field_shows() {
     // #480's post-approval review: with 17 held back behind 16's preview, another file's
     // open is answered and the button let go in the same frame, so the plate's tab is hidden
