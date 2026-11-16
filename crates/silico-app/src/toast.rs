@@ -19,6 +19,14 @@ use eframe::egui::{self, Align, Layout, RichText};
 use crate::icons::{ICON_SIZE, Icon, IconSize};
 use crate::theme;
 
+/// The toasts' layer: of the order under the modals ([`crate::modal::UNDER_MODALS`], as the
+/// prototype's `#toasts`, z 650, are under `.backdrop`, 700), so one asked while a modal is
+/// open is drawn at once under it, dimmed, its time running; raised each frame over the rest
+/// of its order by the app (docs/design/m5.0-app.md, *Modals*).
+pub(crate) fn layer() -> egui::LayerId {
+    egui::LayerId::new(crate::modal::UNDER_MODALS, egui::Id::new("toasts"))
+}
+
 /// A toast's icon, as the prototype's `toast(text, ic)` names it: those the app's toasts use.
 /// The prototype's `'warn'` and its class `err` wait for a message of the app's that the
 /// prototype gives them.
@@ -121,8 +129,8 @@ impl Toasts {
         let fade = f64::from(ctx.global_style().animation_time);
         let corner = canvas.right_bottom()
             - egui::vec2(theme::TOAST_MARGIN_RIGHT, theme::TOAST_MARGIN_BOTTOM);
-        egui::Area::new(egui::Id::new("toasts"))
-            .order(egui::Order::Foreground)
+        egui::Area::new(layer().id)
+            .order(crate::modal::UNDER_MODALS)
             .pivot(egui::Align2::RIGHT_BOTTOM)
             .fixed_pos(corner)
             .interactable(false)

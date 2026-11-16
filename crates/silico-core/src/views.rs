@@ -1,8 +1,9 @@
 //! The named views a render may ask for, and the camera each makes of the bodies in view
-//! (docs/design/m4.6-render.md, *Named views*): Fusion's ViewCube's six faces and eight
-//! corners, in the document's Z-up axes (FreeCAD's), every one orthographic and fitted to
-//! the bodies' tight box. Computed in f64, in the order the design writes it, with no
-//! trigonometry, so a view's camera is the same on every platform: it's a result.
+//! (docs/design/m4.6-render.md, *Named views*): Fusion's ViewCube's six faces, eight
+//! corners, and twelve edges, in the document's Z-up axes (FreeCAD's), every one
+//! orthographic and fitted to the bodies' tight box. Computed in f64, in the order the
+//! design writes it, with no trigonometry, so a view's camera is the same on every
+//! platform: it's a result.
 
 use silico_protocol::vec3::{cross, dot, sub};
 use silico_protocol::{Camera, Class, Projection, ViewRegion};
@@ -24,10 +25,22 @@ pub enum NamedView {
     BottomFrontRight,
     BottomBackLeft,
     BottomBackRight,
+    TopFront,
+    TopBack,
+    TopLeft,
+    TopRight,
+    BottomFront,
+    BottomBack,
+    BottomLeft,
+    BottomRight,
+    FrontLeft,
+    FrontRight,
+    BackLeft,
+    BackRight,
 }
 
 /// Every named view, in the order above.
-pub const NAMED_VIEWS: [NamedView; 14] = [
+pub const NAMED_VIEWS: [NamedView; 26] = [
     NamedView::Front,
     NamedView::Back,
     NamedView::Left,
@@ -42,10 +55,24 @@ pub const NAMED_VIEWS: [NamedView; 14] = [
     NamedView::BottomFrontRight,
     NamedView::BottomBackLeft,
     NamedView::BottomBackRight,
+    NamedView::TopFront,
+    NamedView::TopBack,
+    NamedView::TopLeft,
+    NamedView::TopRight,
+    NamedView::BottomFront,
+    NamedView::BottomBack,
+    NamedView::BottomLeft,
+    NamedView::BottomRight,
+    NamedView::FrontLeft,
+    NamedView::FrontRight,
+    NamedView::BackLeft,
+    NamedView::BackRight,
 ];
 
 impl NamedView {
-    /// Its name, as a request spells it: `front`, `top_front_right`, ...
+    /// Its name, as a request spells it: `front`, `top_front_right`, `top_front`, ...: a
+    /// corner's or an edge's its faces', top or bottom first, then front or back, then left
+    /// or right.
     pub fn name(self) -> &'static str {
         match self {
             NamedView::Front => "front",
@@ -62,6 +89,18 @@ impl NamedView {
             NamedView::BottomFrontRight => "bottom_front_right",
             NamedView::BottomBackLeft => "bottom_back_left",
             NamedView::BottomBackRight => "bottom_back_right",
+            NamedView::TopFront => "top_front",
+            NamedView::TopBack => "top_back",
+            NamedView::TopLeft => "top_left",
+            NamedView::TopRight => "top_right",
+            NamedView::BottomFront => "bottom_front",
+            NamedView::BottomBack => "bottom_back",
+            NamedView::BottomLeft => "bottom_left",
+            NamedView::BottomRight => "bottom_right",
+            NamedView::FrontLeft => "front_left",
+            NamedView::FrontRight => "front_right",
+            NamedView::BackLeft => "back_left",
+            NamedView::BackRight => "back_right",
         }
     }
 
@@ -70,12 +109,11 @@ impl NamedView {
         NAMED_VIEWS.into_iter().find(|v| v.name() == name)
     }
 
-    /// The direction from the target to the eye, a unit vector: a face's axis, or a
-    /// corner's diagonal, whose 1/√3 is `1.0 / 3.0f64.sqrt()` (`right` is +x, `back` +y,
-    /// `top` +z).
-    pub fn direction(self) -> [f64; 3] {
-        let d = 1.0 / 3.0f64.sqrt();
-        let corner = |x: f64, y: f64, z: f64| [x * d, y * d, z * d];
+    /// The sum of the axes of the ViewCube's faces it looks from between (`right` is +x,
+    /// `back` +y, `top` +z): a face's axis, an edge's two, a corner's three, each part −1, 0,
+    /// or 1. On the cube of side 2 about the origin, it's the face's centre, the edge's
+    /// middle, or the corner.
+    pub fn axes(self) -> [f64; 3] {
         match self {
             NamedView::Front => [0.0, -1.0, 0.0],
             NamedView::Back => [0.0, 1.0, 0.0],
@@ -83,39 +121,55 @@ impl NamedView {
             NamedView::Right => [1.0, 0.0, 0.0],
             NamedView::Top => [0.0, 0.0, 1.0],
             NamedView::Bottom => [0.0, 0.0, -1.0],
-            NamedView::TopFrontLeft => corner(-1.0, -1.0, 1.0),
-            NamedView::TopFrontRight => corner(1.0, -1.0, 1.0),
-            NamedView::TopBackLeft => corner(-1.0, 1.0, 1.0),
-            NamedView::TopBackRight => corner(1.0, 1.0, 1.0),
-            NamedView::BottomFrontLeft => corner(-1.0, -1.0, -1.0),
-            NamedView::BottomFrontRight => corner(1.0, -1.0, -1.0),
-            NamedView::BottomBackLeft => corner(-1.0, 1.0, -1.0),
-            NamedView::BottomBackRight => corner(1.0, 1.0, -1.0),
+            NamedView::TopFrontLeft => [-1.0, -1.0, 1.0],
+            NamedView::TopFrontRight => [1.0, -1.0, 1.0],
+            NamedView::TopBackLeft => [-1.0, 1.0, 1.0],
+            NamedView::TopBackRight => [1.0, 1.0, 1.0],
+            NamedView::BottomFrontLeft => [-1.0, -1.0, -1.0],
+            NamedView::BottomFrontRight => [1.0, -1.0, -1.0],
+            NamedView::BottomBackLeft => [-1.0, 1.0, -1.0],
+            NamedView::BottomBackRight => [1.0, 1.0, -1.0],
+            NamedView::TopFront => [0.0, -1.0, 1.0],
+            NamedView::TopBack => [0.0, 1.0, 1.0],
+            NamedView::TopLeft => [-1.0, 0.0, 1.0],
+            NamedView::TopRight => [1.0, 0.0, 1.0],
+            NamedView::BottomFront => [0.0, -1.0, -1.0],
+            NamedView::BottomBack => [0.0, 1.0, -1.0],
+            NamedView::BottomLeft => [-1.0, 0.0, -1.0],
+            NamedView::BottomRight => [1.0, 0.0, -1.0],
+            NamedView::FrontLeft => [-1.0, -1.0, 0.0],
+            NamedView::FrontRight => [1.0, -1.0, 0.0],
+            NamedView::BackLeft => [-1.0, 1.0, 0.0],
+            NamedView::BackRight => [1.0, 1.0, 0.0],
         }
     }
 
-    /// Which way is up in the image, a unit vector across the view: +z for the side views;
-    /// +y for `top` and `bottom` (so `top` shows the front at the image's bottom, as Fusion's
-    /// and FreeCAD's do); for a corner, +z made perpendicular to its direction.
+    /// How many of the ViewCube's faces it looks from between: 1 for a face, 2 for an
+    /// edge, 3 for a corner (its [`axes`](Self::axes) that aren't 0).
+    pub fn faces(self) -> usize {
+        self.axes().iter().filter(|part| **part != 0.0).count()
+    }
+
+    /// The direction from the target to the eye, a unit vector: its [`axes`](Self::axes)
+    /// made a unit, a face's as they are, an edge's times 1/√2 (`FRAC_1_SQRT_2`, the
+    /// correctly rounded constant), a corner's times 1/√3 (`1.0 / 3.0f64.sqrt()`).
+    pub fn direction(self) -> [f64; 3] {
+        let axes = self.axes();
+        let unit = match self.faces() {
+            1 => 1.0,
+            2 => std::f64::consts::FRAC_1_SQRT_2,
+            _ => 1.0 / 3.0f64.sqrt(),
+        };
+        axes.map(|part| part * unit)
+    }
+
+    /// Which way is up in the image, a unit vector across the view: [`up_across`] its
+    /// direction. So +z for the side faces and the edges between them; +y for `top` and
+    /// `bottom` (so `top` shows the front at the image's bottom, as Fusion's and FreeCAD's
+    /// do); and for a corner, or an edge of the top or the bottom, +z made perpendicular to
+    /// its direction.
     pub fn up(self) -> [f64; 3] {
-        match self {
-            NamedView::Front | NamedView::Back | NamedView::Left | NamedView::Right => {
-                [0.0, 0.0, 1.0]
-            }
-            NamedView::Top | NamedView::Bottom => [0.0, 1.0, 0.0],
-            _ => {
-                let dir = self.direction();
-                let z = [0.0, 0.0, 1.0];
-                let along = dot(z, dir);
-                let up = [
-                    z[0] - along * dir[0],
-                    z[1] - along * dir[1],
-                    z[2] - along * dir[2],
-                ];
-                let length = dot(up, up).sqrt();
-                [up[0] / length, up[1] / length, up[2] / length]
-            }
-        }
+        up_across(self.direction())
     }
 
     /// The camera that fits a tight box, `[low, high]`, into an image `width` by `height`:
@@ -135,6 +189,25 @@ impl NamedView {
     pub fn fit(self, bounds: [[f64; 3]; 2], width: u32, height: u32) -> (Camera, &'static str) {
         fit_along(self.direction(), self.up(), bounds, width, height)
     }
+}
+
+/// Which way is up looking from `toward`, a unit vector from the target to the eye, as every
+/// named view has it ([`NamedView::up`]) and the app's Look At at a face: +z made
+/// perpendicular to it (z − (z·toward) toward, made a unit); or +y when its part across the
+/// view is under a millionth, too short to steer by, as for `top` and `bottom`.
+pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
+    let z = [0.0, 0.0, 1.0];
+    let along = dot(z, toward);
+    let across = [
+        z[0] - along * toward[0],
+        z[1] - along * toward[1],
+        z[2] - along * toward[2],
+    ];
+    let length = dot(across, across).sqrt();
+    if length < 1e-6 {
+        return [0.0, 1.0, 0.0];
+    }
+    across.map(|part| part / length)
 }
 
 /// The orthographic camera that fits a tight box, `[low, high]`, into an image `width` by
@@ -320,7 +393,7 @@ pub fn sees(camera: &Camera, width: u32, height: u32, [low, high]: [[f64; 3]; 2]
 mod tests {
     use super::{
         NAMED_VIEWS, NamedView, cross, depth_of_box, dot, fit_along, half_pixel_at, joined,
-        least_view_height, meshing_depth, reach, sees,
+        least_view_height, meshing_depth, reach, sees, up_across,
     };
     use silico_protocol::{Camera, Projection};
 
@@ -472,14 +545,17 @@ mod tests {
                 ),
                 NamedView::Bottom => assert_eq!((up, right), ([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0])),
                 _ => {
-                    // A corner's name says its direction's signs; its up has +z.
+                    // A corner's or an edge's name says its direction's signs, 0 along an
+                    // axis it names neither end of; its up has +z.
                     let name = view.name();
                     let sign = |yes: &str, no: &str| {
                         if name.contains(yes) {
+                            assert!(!name.contains(no));
                             1.0
-                        } else {
-                            assert!(name.contains(no));
+                        } else if name.contains(no) {
                             -1.0
+                        } else {
+                            0.0
                         }
                     };
                     let want = [
@@ -488,8 +564,11 @@ mod tests {
                         sign("top", "bottom"),
                     ];
                     for k in 0..3 {
-                        assert_eq!(dir[k].signum(), want[k], "{view:?}");
+                        let got = if dir[k] == 0.0 { 0.0 } else { dir[k].signum() };
+                        assert_eq!(got, want[k], "{view:?}");
                     }
+                    // Two faces' or three: an edge or a corner, never a face again.
+                    assert!(want.iter().filter(|w| **w != 0.0).count() >= 2, "{view:?}");
                     assert!(up[2] > 0.0, "{view:?}");
                 }
             }
@@ -497,6 +576,192 @@ mod tests {
         }
         assert_eq!(NamedView::named("front_top"), None);
         assert_eq!(NamedView::named("Front"), None);
+        assert_eq!(NamedView::named("left_front"), None);
+        assert_eq!(NamedView::named("top_bottom"), None);
+        assert_eq!(NamedView::named("top_front_"), None);
+        // Each named once: 26 names, none twice.
+        let names: std::collections::BTreeSet<&str> =
+            NAMED_VIEWS.iter().map(|view| view.name()).collect();
+        assert_eq!(names.len(), 26);
+    }
+
+    #[test]
+    fn each_edges_view_is_between_its_two_faces_with_z_made_perpendicular_up() {
+        // By hand: an edge's direction is its two faces' axes over √2. Its up is
+        // z − (z·d) d made a unit: for d = (a, b, c)/√2, z·d = c/√2, so z − (c/2)(a, b, c)
+        // = (−ca/2, −cb/2, 1 − c²/2): for a horizontal edge (c = 0), z itself; for a top
+        // or bottom edge (c = ±1, one of a and b 0), (−ca, −cb, 1)/2, whose length is
+        // 1/√2, so (−ca, −cb, 1)/√2. Each written here as numerators over √2.
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let z = [0.0, 0.0, 1.0];
+        for (name, direction, up) in [
+            ("top_front", [0.0, -1.0, 1.0], Some([0.0, 1.0, 1.0])),
+            ("top_back", [0.0, 1.0, 1.0], Some([0.0, -1.0, 1.0])),
+            ("top_left", [-1.0, 0.0, 1.0], Some([1.0, 0.0, 1.0])),
+            ("top_right", [1.0, 0.0, 1.0], Some([-1.0, 0.0, 1.0])),
+            ("bottom_front", [0.0, -1.0, -1.0], Some([0.0, -1.0, 1.0])),
+            ("bottom_back", [0.0, 1.0, -1.0], Some([0.0, 1.0, 1.0])),
+            ("bottom_left", [-1.0, 0.0, -1.0], Some([-1.0, 0.0, 1.0])),
+            ("bottom_right", [1.0, 0.0, -1.0], Some([1.0, 0.0, 1.0])),
+            ("front_left", [-1.0, -1.0, 0.0], None),
+            ("front_right", [1.0, -1.0, 0.0], None),
+            ("back_left", [-1.0, 1.0, 0.0], None),
+            ("back_right", [1.0, 1.0, 0.0], None),
+        ] {
+            let view = NamedView::named(name).unwrap();
+            assert_eq!(view.name(), name);
+            assert_eq!(view.axes(), direction, "{name}");
+            // The direction exactly the axes times 1/√2's double: ±1 · s is exact.
+            assert_eq!(view.direction(), direction.map(|k| k * s), "{name}");
+            match up {
+                // A horizontal edge's up is z exactly: z·d is 0.
+                None => assert_eq!(view.up(), z, "{name}"),
+                Some(up) => {
+                    for (got, want) in view.up().iter().zip(up.map(|k| k * s)) {
+                        assert!((got - want).abs() <= 1e-15, "{name}: {:?}", view.up());
+                    }
+                }
+            }
+        }
+        // And to the bit, as #471's ViewCube gave them (`t` its middle times `FRAC_1_SQRT_2`,
+        // up z − (z·t) t over its length), worked apart from the code in IEEE doubles: the
+        // parts of a top or bottom edge's up are not √2/2's double, 0.7071067811865476, but
+        // 0.7071067811865477 across and 0.7071067811865474 up, as `1 − s²` and `s²` round.
+        let (a, b) = (0.707_106_781_186_547_7, 0.707_106_781_186_547_4);
+        for (view, up) in [
+            (NamedView::TopFront, [0.0, a, b]),
+            (NamedView::TopBack, [0.0, -a, b]),
+            (NamedView::TopLeft, [a, 0.0, b]),
+            (NamedView::TopRight, [-a, 0.0, b]),
+            (NamedView::BottomFront, [0.0, -a, b]),
+            (NamedView::BottomBack, [0.0, a, b]),
+            (NamedView::BottomLeft, [-a, 0.0, b]),
+            (NamedView::BottomRight, [a, 0.0, b]),
+            (NamedView::FrontLeft, z),
+            (NamedView::FrontRight, z),
+            (NamedView::BackLeft, z),
+            (NamedView::BackRight, z),
+        ] {
+            assert_eq!(
+                view.up().map(f64::to_bits),
+                up.map(f64::to_bits),
+                "{view:?}"
+            );
+        }
+        // The rule for every view, z made perpendicular to the direction or +y for the top
+        // and the bottom, is `up_across`'s.
+        for view in NAMED_VIEWS {
+            assert_eq!(view.up(), up_across(view.direction()), "{view:?}");
+        }
+    }
+
+    #[test]
+    fn up_across_a_face_is_z_made_square_to_its_normal_or_y_for_a_face_along_z() {
+        assert_eq!(up_across([0.0, 0.0, 1.0]), [0.0, 1.0, 0.0]);
+        assert_eq!(up_across([0.0, 0.0, -1.0]), [0.0, 1.0, 0.0]);
+        assert_eq!(up_across([1.0, 0.0, 0.0]), [0.0, 0.0, 1.0]);
+        // (1, 1, 1) / √3: z less its part along it, (−1/3, −1/3, 2/3), made a unit:
+        // (−1, −1, 2) / √6.
+        let corner = [1.0 / 3f64.sqrt(); 3];
+        let s = 6f64.sqrt();
+        for (got, want) in up_across(corner).iter().zip([-1.0 / s, -1.0 / s, 2.0 / s]) {
+            assert!((got - want).abs() <= 1e-15, "{got} against {want}");
+        }
+        // Within a millionth of z, still z's; a face a hundredth off it turns z with it.
+        assert_eq!(up_across([0.0, 1e-7, 1.0]), [0.0, 1.0, 0.0]);
+        // At exactly a millionth (from (0, 1e-6, 1), +z's part across is (0, −1e-6, 0), its
+        // length 1e-6 to the bit, as √(x²) is x), it steers by that part: −y, not +y.
+        assert_eq!(up_across([0.0, 1e-6, 1.0]), [0.0, -1.0, 0.0]);
+        let tipped = [0.0, -0.01, (1.0f64 - 1e-4).sqrt()];
+        let up = up_across(tipped);
+        assert!(up[1] > 0.99 && up[2] > 0.0, "{up:?}");
+    }
+
+    #[test]
+    fn the_blocks_top_front_view_at_800_by_600_is_its_camera_to_the_bit() {
+        // As the design's example pins top_front_right's: the block, top_front, 800 x 600.
+        // By hand, the width binds, 1.1 × 40 × 0.75 = 33 (exactly 33 in doubles); the eye is
+        // the box's diagonal, √2100, from its centre (20, 10, 5) along (0, −1, 1)/√2:
+        // (20, 10 − √1050, 5 + √1050). Its digits worked in IEEE doubles apart from the code,
+        // as `fit_along` orders them: the centre plus the direction's part times twice the
+        // half diagonal.
+        let (camera, side) = NamedView::TopFront.fit(BLOCK, 800, 600);
+        assert_eq!(side, "width");
+        assert_eq!(camera.target, [20.0, 10.0, 5.0]);
+        assert_eq!(
+            camera.eye.map(f64::to_bits),
+            [20.0, -22.403_703_492_039_3, 37.403_703_492_039_3].map(f64::to_bits)
+        );
+        let root = 1050f64.sqrt();
+        assert!((camera.eye[1] - (10.0 - root)).abs() <= 1e-13);
+        assert!((camera.eye[2] - (5.0 + root)).abs() <= 1e-13);
+        assert_eq!(
+            camera.projection,
+            Projection::Orthographic { view_height: 33.0 }
+        );
+        assert_eq!(
+            camera.up.map(f64::to_bits),
+            [0.0, 0.707_106_781_186_547_7, 0.707_106_781_186_547_4].map(f64::to_bits)
+        );
+    }
+
+    #[test]
+    fn the_blocks_edge_views_fit_it_as_worked_by_hand() {
+        // The 40 x 20 x 10 block about (20, 10, 5), at 800 x 600, so the right's extent
+        // counts 0.75 of itself against the up's. Its eye √2100, the box's diagonal, from
+        // its centre along the direction.
+        // top_front: up (0, 1, 1)/√2, right up × dir = (1, 0, 0). Along up the corners
+        // (y + z)/√2 span 30/√2 = 21.213; along the right x spans 40, × 0.75 = 30: the
+        // width binds, 1.1 × 30 = 33.
+        // top_left: up (1, 0, 1)/√2, right (0, −1, 0). Along up (x + z)/√2 spans 50/√2 =
+        // 35.355; along the right y spans 20, × 0.75 = 15: the height, 1.1 × 50/√2.
+        // front_right: up z, right (1, 1, 0)/√2. Along up z spans 10; along the right
+        // (x + y)/√2 spans 60/√2 = 42.426, × 0.75 = 31.820: the width, 1.1 × 0.75 × 60/√2.
+        let r2 = 2f64.sqrt();
+        for (view, right, height, side) in [
+            (NamedView::TopFront, [1.0, 0.0, 0.0], 33.0, "width"),
+            (
+                NamedView::TopLeft,
+                [0.0, -1.0, 0.0],
+                1.1 * 50.0 / r2,
+                "height",
+            ),
+            (
+                NamedView::FrontRight,
+                [1.0 / r2, 1.0 / r2, 0.0],
+                1.1 * 0.75 * 60.0 / r2,
+                "width",
+            ),
+        ] {
+            let (camera, bound) = view.fit(BLOCK, 800, 600);
+            assert_eq!(bound, side, "{view:?}");
+            assert_eq!(camera.target, [20.0, 10.0, 5.0]);
+            let Projection::Orthographic { view_height } = camera.projection else {
+                panic!("{view:?}: {:?}", camera.projection);
+            };
+            assert!(
+                (view_height - height).abs() <= 1e-12,
+                "{view:?}: {view_height}"
+            );
+            let got_right = cross(camera.up, view.direction());
+            for (got, want) in got_right.iter().zip(right) {
+                assert!((got - want).abs() <= 1e-15, "{view:?}: {got_right:?}");
+            }
+            let d = [
+                camera.eye[0] - 20.0,
+                camera.eye[1] - 10.0,
+                camera.eye[2] - 5.0,
+            ];
+            let away = 2100f64.sqrt();
+            for (got, axis) in d.iter().zip(view.axes()) {
+                let want = axis / r2 * away;
+                assert!(
+                    (got - want).abs() <= 1e-12,
+                    "{view:?}: eye {:?}",
+                    camera.eye
+                );
+            }
+        }
     }
 
     #[test]
@@ -659,14 +924,29 @@ mod tests {
     fn a_named_views_depth_is_its_eyes_distance_less_how_far_the_nearest_corner_reaches() {
         // Each view's eye is the block's diagonal, √2100, from its centre along its
         // direction. By hand, the nearest corner reaches toward the eye by half the block
-        // along a face's axis (y 10, x 20, z 5), or by (20 + 10 + 5)/√3 along a corner's
-        // diagonal; each view's nearest corner is another of the eight, so every one counts.
+        // along a face's axis (y 10, x 20, z 5), by the two halves' sum over √2 along an
+        // edge's (the top's and the front's, (5 + 10)/√2), or by (20 + 10 + 5)/√3 along a
+        // corner's diagonal; each view's nearest corner is another of the eight, so every
+        // one counts.
         let diagonal = 2100f64.sqrt();
+        let r2 = 2f64.sqrt();
         for view in NAMED_VIEWS {
             let reach = match view {
                 NamedView::Front | NamedView::Back => 10.0,
                 NamedView::Left | NamedView::Right => 20.0,
                 NamedView::Top | NamedView::Bottom => 5.0,
+                NamedView::TopFront
+                | NamedView::TopBack
+                | NamedView::BottomFront
+                | NamedView::BottomBack => 15.0 / r2,
+                NamedView::TopLeft
+                | NamedView::TopRight
+                | NamedView::BottomLeft
+                | NamedView::BottomRight => 25.0 / r2,
+                NamedView::FrontLeft
+                | NamedView::FrontRight
+                | NamedView::BackLeft
+                | NamedView::BackRight => 30.0 / r2,
                 _ => 35.0 / 3f64.sqrt(),
             };
             let depth = depth_of_box(&view.camera(BLOCK, 800, 600), BLOCK);
