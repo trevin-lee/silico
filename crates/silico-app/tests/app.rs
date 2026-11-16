@@ -46635,20 +46635,24 @@ fn a_drag_back_to_its_press_cancelled_as_another_tab_is_shown_sends_the_value_it
         "the open wasn't taken in that frame"
     );
     assert_eq!(dialog_length(&h.state().tabs()[0]).as_deref(), Some("10"));
+    assert_eq!(
+        h.state().tabs()[0].edits.sent,
+        sent + 2,
+        "10 sent in the frame its tab was hidden"
+    );
     hold.release();
-    step_until(&mut h, "10 sent and answered", |h| {
+    step_until(&mut h, "10 answered, nothing unsaved", |h| {
         let tab = &h.state().tabs()[0];
-        tab.edits.sent == sent + 2 && tab.edits.idle()
+        tab.edits.sent == sent + 2 && tab.edits.idle() && !tab.unsaved()
     });
     assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
-    assert!(!h.state().tabs()[0].unsaved());
     left_up_at(&mut h, up(c, 56.0));
     h.get_by_label("Close plate.silico").click_accesskit();
     step_until(&mut h, "the plate's tab closed", |h| {
         h.state().tabs().len() == 1
     });
     let saved = std::fs::read_to_string(&path).unwrap();
-    assert!(saved.contains(r#""length": 10,"#), "saved: {saved}");
+    assert_eq!(saved, PLATE, "the file as it was");
     assert_eq!(never_waits::waits(), 0);
 }
 
