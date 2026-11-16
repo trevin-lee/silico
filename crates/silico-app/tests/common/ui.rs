@@ -4,9 +4,8 @@
 //! and the tab show, which act on nothing. Every frame is stepped on a thread marked so that
 //! a wait on a command there is counted. Then the stand-ins more than one file uses: the
 //! native file dialog ([`FakeBrowser`]), the fake kernel's meshes counted, a file's bytes
-//! read plainly, and a clock moved by hand. Last, the fixtures' base on the fake kernel
-//! ([`stand_in_sessions`], and [`failing_kernel`], its meshing refused at will) and the
-//! documents more than one file opens.
+//! read plainly, and a clock moved by hand; the lavapipe runner ([`on_lavapipe`]); and last
+//! the fixtures' base and the shared documents, below.
 //!
 //! tests/app.rs, the hostile-input tests, and the slice take from here the helpers that more
 //! than one of them had a copy of, the ones those call, and the twins below. How long a wait
