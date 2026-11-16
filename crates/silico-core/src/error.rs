@@ -144,6 +144,11 @@ codes! {
         /// `constraints_redundant`, whose advice is to remove them: removing one of these frees
         /// what only it fixes (approved at M4's close, 2026-10-29).
         ConstraintsPartiallyRedundant = "constraints_partially_redundant",
+        /// A feature built, but its stored fingerprint doesn't record a measure a later
+        /// Silico added (today its centre of mass, which fingerprints written before #389
+        /// don't hold), so a change there isn't caught as drift (Fable's decision of
+        /// 2026-11-09): compared once `format` or a commit writes it in.
+        FingerprintIncomplete = "fingerprint_incomplete",
     }
 }
 
@@ -394,6 +399,37 @@ pub struct Nearest {
 struct WorkerFailure {
     op: String,
     failure: silico_protocol::Failure,
+}
+
+/// Items as a message lists them: "a", "a and b", "a, b, and c" (the serial comma, as
+/// [`Error`]'s own "elements a, b, and 2 more").
+pub(crate) fn listed(items: &[String]) -> String {
+    joined(items, "and")
+}
+
+/// The first of `total` items, `first`, as a message lists them, the rest counted: "a, b,
+/// and c" where they're all, "a, b, c, and 7 more" where there are ten, "a and 1 more" (the
+/// serial comma, as [`Error`]'s own elements read).
+pub(crate) fn listed_first(first: &[String], total: usize) -> String {
+    match (total.checked_sub(first.len()), first) {
+        (Some(more), [one]) if more > 0 => format!("{one} and {more} more"),
+        (Some(more), [_, ..]) if more > 0 => format!("{}, and {more} more", first.join(", ")),
+        _ => listed(first),
+    }
+}
+
+/// Items as a message offers a choice of them: "a", "a or b", "a, b, or c".
+pub(crate) fn either(items: &[String]) -> String {
+    joined(items, "or")
+}
+
+fn joined(items: &[String], word: &str) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [one, two] => format!("{one} {word} {two}"),
+        [rest @ .., last] => format!("{}, {word} {last}", rest.join(", ")),
+    }
 }
 
 impl Error {
@@ -829,5 +865,27 @@ impl fmt::Display for Warning {
 impl Serialize for Warning {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.0.serialize(serializer)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{either, listed, listed_first};
+
+    #[test]
+    fn a_list_reads_with_and_or_or_and_a_serial_comma() {
+        let items = |n: usize| (1..=n).map(|i| i.to_string()).collect::<Vec<_>>();
+        assert_eq!(listed(&items(0)), "");
+        assert_eq!(listed(&items(1)), "1");
+        assert_eq!(listed(&items(2)), "1 and 2");
+        assert_eq!(listed(&items(3)), "1, 2, and 3");
+        assert_eq!(listed(&items(4)), "1, 2, 3, and 4");
+        assert_eq!(either(&items(1)), "1");
+        assert_eq!(either(&items(2)), "1 or 2");
+        assert_eq!(either(&items(3)), "1, 2, or 3");
+        assert_eq!(listed_first(&items(3), 3), "1, 2, and 3");
+        assert_eq!(listed_first(&items(3), 10), "1, 2, 3, and 7 more");
+        assert_eq!(listed_first(&items(1), 2), "1 and 1 more");
+        assert_eq!(listed_first(&items(2), 1), "1 and 2");
     }
 }

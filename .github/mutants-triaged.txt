@@ -347,13 +347,12 @@ crates/silico-app/src/main.rs | options | delete field viewport from struct efra
 crates/silico-app/src/app.rs | <impl eframe::App for App<P>>::ui | replace <impl eframe::App for App<P>>::ui with () | #298
 crates/silico-app/src/missing.rs | <impl eframe::App for Missing>::ui | replace <impl eframe::App for Missing>::ui with () | #298
 # The app bar as macOS's title bar (#361): `TITLE_BAR_IS_APP_BAR` is false off macOS, where
-# CI runs these, so `inset` never reads full screen and `move_window` returns before its
-# body (its other `delete !`, of that return's test, sends commands, and is killed there).
-# On macOS bar.rs's tests kill each: the inset full screen or not, and the window's drag,
-# zoom, and unzoom.
+# CI runs these, so `inset` never reads full screen and `move_window` calls nothing (its
+# title bar's interaction, `title_bar`, is tested on every platform since #455). On macOS
+# bar.rs's tests kill each: the inset full screen or not, and the window's drag, zoom, and
+# unzoom.
 crates/silico-app/src/bar.rs | inset | delete ! | #361
 crates/silico-app/src/bar.rs | move_window | replace move_window with () | #361
-crates/silico-app/src/bar.rs | move_window | delete ! | #361
 # `keys`' answer only asks egui for the next frame at once, which egui asks for itself
 # after any input event (each key press is one), so no frame comes later for it (#298).
 crates/silico-app/src/app.rs | App<P>::keys | replace || with && | #298
@@ -694,8 +693,41 @@ crates/silico-app/src/feature_menu.rs | first_edit | replace match guard modifie
 # A boolean's base and tool sent tool first when the base takes the tool's body (#412):
 # `base` and `tool` are the places of two different fields in one list, never equal, so
 # `<` and `<=` agree.
-crates/silico-app/src/dialog.rs | Dialog::changes | replace < with <= in Dialog::changes | #412
+crates/silico-app/src/dialog.rs | Dialog::changes | replace < with <= | #412
 # Where a body stands to a dialog's feature (#412): the same place in the timeline is the
 # same feature, which `built_through` answers first (a feature is built through itself),
 # so `>` and `>=` agree where the places are compared.
-crates/silico-app/src/tab.rs | standing | replace > with >= in standing | #412
+crates/silico-app/src/tab.rs | standing | replace > with >= | #412
+# A column border's sense (#436): `Sense::CLICK` and `Sense::DRAG` are different bits, so
+# `^` gives the same sense as `|`.
+crates/silico-app/src/columns.rs | Columns::handles | replace | with ^ | #436
+# The window's least width (#436), theme.rs's WINDOW_MIN_WIDTH, a const with no function:
+# the larger of the toolbar's 888 and the panes' 200 + 232 + 340 = 772. Either `+` made `-`
+# gives 308 or 92, smaller still, so the width stays 888.
+crates/silico-app/src/theme.rs |  | replace + with - | #436
+crates/silico-app/src/theme.rs |  | replace + with - | #436
+crates/silico-app/src/sketch/lines.rs | scale_at | replace || with && | #457
+crates/silico-app/src/sketch/lines.rs | scale_at | replace == with != | #457
+crates/silico-app/src/sketch/lines.rs | count_points | replace < with <= | #457
+crates/silico-app/src/sketch/lines.rs | box_of | replace && with || | #457
+crates/silico-app/src/sketch/lines.rs | ShownLines::frame_within | replace match guard counted_at == bucket with false | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace > with >= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace > with >= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace && with || | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace - with + | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace - with / | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace < with <= | #457
+crates/silico-app/src/sketch/lines.rs | dashes | replace + with * | #457
+crates/silico-app/src/tab.rs | Tab::count_to | replace < with <= | #464
+crates/silico-app/src/tab.rs | Tab::reloaded_under_dialog | replace && with || | #474
+crates/silico-app/src/navigate.rs | at_view | replace % with + | #476
+crates/silico-app/src/navigate.rs | at_view | replace < with <= | #476
+crates/silico-app/src/navigate.rs | at_view | replace > with >= | #476
+crates/silico-app/src/arrow.rs | profile_centroid | replace * with / | #480
+crates/silico-app/src/arrow.rs | profile_centroid | replace > with >= | #480
+crates/silico-app/src/arrow.rs | handles | replace * with / | #480
+crates/silico-app/src/arrow.rs | handles | replace * with / | #480
+crates/silico-app/src/arrow.rs | arrows | replace > with >= | #480
+crates/silico-app/src/arrow.rs | Grip::centroid | replace match guard Arc::ptr_eq(kept, read) with false | #480

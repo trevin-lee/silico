@@ -102,8 +102,10 @@
 
   VP.init = function (wrapEl, canvasEl, overlayEl) {
     wrap = wrapEl; canvas = canvasEl; overlay = overlayEl;
-    renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: false });
-    renderer.setClearColor(0x000000, 1);
+    // Transparent: the canvas's gradient (styles.css's #canvas-wrap, Trevin's change of
+    // 2026-11-09) shows behind the part, as egui's painter under re_renderer's frame.
+    renderer = new T.WebGLRenderer({ canvas, antialias: true, alpha: true });
+    renderer.setClearColor(0x000000, 0);
     renderer.autoClear = false;
     scene = new T.Scene();
     ocam = new T.OrthographicCamera(-1, 1, 1, -1, 1, 8000);
@@ -593,8 +595,9 @@
 
   // ── Thumbnails for the start page (rendered once, as the app would cache them) ──
   VP.thumb = function (kind, w, h) {
-    const r = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: false });
-    r.setPixelRatio(2); r.setSize(w, h, false); r.setClearColor(0x000000, 1);
+    // Transparent, over the thumbnail's own gradient (styles.css's .thumb and .sthumb).
+    const r = new T.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
+    r.setPixelRatio(2); r.setSize(w, h, false); r.setClearColor(0x000000, 0);
     const sc = new T.Scene(); let geo, edgesG;
     const grp = new T.Group();
     if (kind === 'bracket') {

@@ -546,16 +546,18 @@ pub(crate) mod tests {
         pub const BANNER_SUB_TOP: f32 = 2.0;
         pub const BANNER_SUB_OPACITY: f32 = 0.85;
         pub const BANNER_ACTIONS_GAP: f32 = 6.0;
-        /// `.canvas-banner.warn`, `.info`, `.err`: fill, border, words (`--alert-warn-text`).
+        /// `.canvas-banner.warn`, `.info`, `.err`: fill, border, words (`--alert-warn-text`;
+        /// `.info`'s `--info-card-bg`, `--info-card-border`, `--info-card-text`, Trevin's
+        /// change of 2026-11-09 from purple).
         pub const WARN: (Color32, Color32, Color32) = (
             Color32::from_rgb(0x2a, 0x1d, 0x0b),
             Color32::from_rgb(0x6b, 0x43, 0x10),
             Color32::from_rgb(0xff, 0xd2, 0x8a),
         );
         pub const INFO: (Color32, Color32, Color32) = (
-            Color32::from_rgb(0x17, 0x14, 0x2a),
-            Color32::from_rgb(0x46, 0x33, 0x75),
-            Color32::from_rgb(0xe4, 0xd6, 0xff),
+            Color32::from_rgb(0x11, 0x1a, 0x2d),
+            Color32::from_rgb(0x2b, 0x3c, 0x66),
+            Color32::from_rgb(0xdc, 0xe3, 0xff),
         );
         pub const ERR: (Color32, Color32, Color32) = (
             Color32::from_rgb(0x2a, 0x0a, 0x12),

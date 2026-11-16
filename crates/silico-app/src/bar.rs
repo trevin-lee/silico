@@ -3,6 +3,12 @@
 //! documents' tabs, and the tooltips that name a button's shortcut. What each does is the
 //! app's (`app`); this draws them, each with the label a test or a screen reader finds it by.
 //!
+//! Its button (`.ab-btn`) and separator (`.ab-sep`) are the prototype's wherever they stand,
+//! and are drawn here for the canvas's controls too, each in its own [`ButtonStyle`]: the
+//! navigation bar's (`.nav-bar .ab-btn`, `.nav-bar .ab-sep`) and the ViewCube's Home and ▾
+//! (`crate::viewport`). So are the drop-down menus they open ([`menu`], [`as_menu`]) and
+//! their tooltips ([`tooltip`]).
+//!
 //! On macOS the window's title bar is the app bar, as Rerun's is: the window's content runs
 //! under the title bar ([`TITLE_BAR_IS_APP_BAR`]), the bar leaves room at its left for the
 //! window's buttons ([`inset`]), and its empty space moves the window ([`move_window`]).
@@ -10,7 +16,7 @@
 use std::sync::Arc;
 
 use eframe::egui::{
-    self, FontId, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
+    self, Color32, FontId, Pos2, Rect, Response, RichText, Sense, Stroke, StrokeKind, Ui, Vec2,
     ViewportCommand, WidgetInfo, WidgetType, text::LayoutJob, text::TextWrapping,
 };
 
@@ -40,12 +46,18 @@ pub(crate) fn inset(ui: &mut Ui) {
 /// bar's items, so they take the pointer first. Never focused: the keyboard's first stop is
 /// Home.
 pub(crate) fn move_window(ui: &Ui, rect: Rect) {
-    if !TITLE_BAR_IS_APP_BAR {
-        return;
+    if TITLE_BAR_IS_APP_BAR {
+        title_bar(ui, rect);
     }
+}
+
+/// [`move_window`]'s, on any platform (so its tests run on each): the empty space at `rect`
+/// dragged moves the window, and double-clicked zooms it.
+fn title_bar(ui: &Ui, rect: Rect) {
     // `Sense::CLICK`, not `Sense::click()`, which is focusable too.
     let background = ui.interact(rect, ui.id().with("move_window"), Sense::CLICK);
-    if background.double_clicked() {
+    // Its own double-click (`crate::clicks`), whatever was clicked just before.
+    if crate::clicks::double_clicked(&background) {
         let maximized = ui.input(|input| input.viewport().maximized.unwrap_or(false));
         ui.ctx()
             .send_viewport_cmd(ViewportCommand::Maximized(!maximized));
@@ -64,6 +76,53 @@ pub(crate) fn border(ui: &Ui, rect: Rect) {
     );
 }
 
+/// A bar button's (`.ab-btn`'s) style where it stands: its height and least width, and its
+/// own fill, if where it stands gives it one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ButtonStyle {
+    pub height: f32,
+    pub least_width: f32,
+    /// A fill at rest and hovered alike, which where it stands sets inline over `.ab-btn`'s
+    /// own (`:hover`'s and `.on`'s): the ViewCube's Home and ▾.
+    pub fill: Option<Color32>,
+}
+
+impl ButtonStyle {
+    /// The app bar's (`.ab-btn`: `--btn`, 22, each way).
+    pub(crate) const APP_BAR: ButtonStyle = ButtonStyle {
+        height: theme::APP_BAR_BUTTON_SIZE,
+        least_width: theme::APP_BAR_BUTTON_SIZE,
+        fill: None,
+    };
+
+    /// The navigation bar's (`.nav-bar .ab-btn`: 24 high, 26 wide at least).
+    pub(crate) const NAVIGATION_BAR: ButtonStyle = ButtonStyle {
+        height: theme::NAVIGATION_BAR_BUTTON_HEIGHT,
+        least_width: theme::NAVIGATION_BAR_BUTTON_WIDTH,
+        fill: None,
+    };
+
+    /// The ViewCube's Home and ▾ (the app bar's size, Gray.200 at rest and hovered).
+    pub(crate) const VIEW_CUBE: ButtonStyle = ButtonStyle {
+        fill: Some(theme::VIEW_CUBE_BUTTON_BG),
+        ..ButtonStyle::APP_BAR
+    };
+
+    /// How wide a button is here whose content is `content` wide: 5 of padding at each side
+    /// (`.ab-btn { padding: 0 5px }`), and its least width at least.
+    pub(crate) fn width(self, content: f32) -> f32 {
+        (content + 2.0 * theme::APP_BAR_BUTTON_PADDING).max(self.least_width)
+    }
+}
+
+/// How wide a button's content is: `icons` icons and a text `text` wide (if it has one), 4
+/// apart (`.ab-btn { gap: 4px }`).
+pub(crate) fn content_width(icons: usize, text: Option<f32>) -> f32 {
+    let items = icons + usize::from(text.is_some());
+    let gaps = items.saturating_sub(1) as f32 * theme::APP_BAR_BUTTON_GAP;
+    icons as f32 * ICON_SIZE + text.unwrap_or(0.0) + gaps
+}
+
 /// A bar button (`.ab-btn`): `icon`, and `text` after it if given, labelled `label`; `on`
 /// for one that shows a state, as Home does. Off unless `enabled`.
 pub(crate) fn button(
@@ -73,6 +132,20 @@ pub(crate) fn button(
     label: &str,
     enabled: bool,
     on: Option<bool>,
+) -> Response {
+    styled_button(ui, &[icon], text, label, enabled, on, ButtonStyle::APP_BAR)
+}
+
+/// A bar button (`.ab-btn`) in `style`: `icons` in a row, 4 apart, and `text` after them if
+/// given, labelled `label`; `on` for one that shows a state. Off unless `enabled`.
+pub(crate) fn styled_button(
+    ui: &mut Ui,
+    icons: &[Icon],
+    text: Option<&str>,
+    label: &str,
+    enabled: bool,
+    on: Option<bool>,
+    style: ButtonStyle,
 ) -> Response {
     // Painted at the bar's opacity, not faded further when off: `.ab-btn:disabled` is
     // Gray.400 itself.
@@ -86,14 +159,8 @@ pub(crate) fn button(
                 theme::TEXT_DEFAULT,
             )
         });
-        let content = ICON_SIZE
-            + galley
-                .as_ref()
-                .map_or(0.0, |galley| theme::APP_BAR_BUTTON_GAP + galley.size().x);
-        let size = Vec2::new(
-            (content + 2.0 * theme::APP_BAR_BUTTON_PADDING).max(theme::APP_BAR_BUTTON_SIZE),
-            theme::APP_BAR_BUTTON_SIZE,
-        );
+        let content = content_width(icons.len(), galley.as_ref().map(|g| g.size().x));
+        let size = Vec2::new(style.width(content), style.height);
         let (rect, response) = ui.allocate_exact_size(size, Sense::click());
         let enabled = ui.is_enabled();
         response.widget_info(|| match on {
@@ -114,7 +181,8 @@ pub(crate) fn button(
         } else {
             (None, theme::TEXT_DEFAULT)
         };
-        if let Some(fill) = fill {
+        // A fill set inline outweighs every rule's.
+        if let Some(fill) = style.fill.or(fill) {
             ui.painter()
                 .rect_filled(rect, theme::SMALL_CORNER_RADIUS, fill);
         }
@@ -125,19 +193,19 @@ pub(crate) fn button(
             theme::SMALL_CORNER_RADIUS,
             StrokeKind::Outside,
         );
-        let left = rect.center().x - content / 2.0;
-        let icon_rect = Rect::from_min_size(
-            Pos2::new(left, rect.center().y - ICON_SIZE / 2.0),
-            Vec2::splat(ICON_SIZE),
-        );
-        icon.image(IconSize::Small)
-            .tint(color)
-            .paint_at(ui, icon_rect);
-        if let Some(galley) = galley {
-            let at = Pos2::new(
-                icon_rect.right() + theme::APP_BAR_BUTTON_GAP,
-                rect.center().y - galley.size().y / 2.0,
+        let mut left = rect.center().x - content / 2.0;
+        for icon in icons {
+            let icon_rect = Rect::from_min_size(
+                Pos2::new(left, rect.center().y - ICON_SIZE / 2.0),
+                Vec2::splat(ICON_SIZE),
             );
+            icon.image(IconSize::Small)
+                .tint(color)
+                .paint_at(ui, icon_rect);
+            left = icon_rect.right() + theme::APP_BAR_BUTTON_GAP;
+        }
+        if let Some(galley) = galley {
+            let at = Pos2::new(left, rect.center().y - galley.size().y / 2.0);
             ui.painter()
                 .galley_with_override_text_color(at, galley, color);
         }
@@ -148,23 +216,37 @@ pub(crate) fn button(
 /// The drop-down menu `add` fills, opened and closed by clicks on `response` (`.menu`):
 /// the File menu, and the toolbar's.
 pub(crate) fn menu(response: &Response, add: impl FnOnce(&mut Ui)) {
+    as_menu(egui::Popup::menu(response)).show(add);
+}
+
+/// `popup` as the app's drop-down menus are: egui's menu, in its style, closed by a click on
+/// an item or off it, and by `Ui::close`.
+pub(crate) fn as_menu(popup: egui::Popup<'_>) -> egui::Popup<'_> {
     let config = egui::containers::menu::MenuConfig::new();
-    egui::Popup::menu(response)
+    popup
+        .kind(egui::PopupKind::Menu)
+        .layout(egui::Layout::top_down_justified(egui::Align::Min))
         .close_behavior(config.close_behavior)
         .style(config.style.clone())
         .info(
             egui::UiStackInfo::new(egui::UiKind::Menu)
                 .with_tag_value(egui::containers::menu::MenuConfig::MENU_CONFIG_TAG, config),
         )
-        .show(add);
 }
 
 /// The separator between the bar's buttons and the documents' tabs (`.ab-sep`).
 pub(crate) fn separator(ui: &mut Ui) {
-    let size = Vec2::new(
-        theme::BORDER_WIDTH + 2.0 * theme::APP_BAR_SEPARATOR_MARGIN,
+    separator_of(
+        ui,
         theme::APP_BAR_SEPARATOR_HEIGHT,
+        theme::APP_BAR_SEPARATOR_MARGIN,
     );
+}
+
+/// A bar's separator (`.ab-sep`), `height` high with `margin` at each side: the app bar's,
+/// and the navigation bar's (`.nav-bar .ab-sep`).
+pub(crate) fn separator_of(ui: &mut Ui, height: f32, margin: f32) {
+    let size = Vec2::new(theme::BORDER_WIDTH + 2.0 * margin, height);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     ui.painter().vline(
         rect.center().x,
@@ -228,6 +310,58 @@ pub(crate) struct DocTab<'a> {
     pub active: bool,
     /// Whether it's the first tab, which has a border at its left too.
     pub first: bool,
+    /// Whether its timeline counts errors: the red mark, and "Has errors." in its tooltip.
+    pub errors: bool,
+    /// Whether another program changed features of it, in a reload the session made itself,
+    /// that the person hasn't marked seen ([`crate::tab::Tab::outside`], the prototype's
+    /// `d.outside`, DESIGN.md 6c): the changed-outside mark, unless it has errors, and
+    /// "Changed on disk since you opened it." either way. Not while edits are held over a
+    /// change on disk (6d), which its banner and chip say.
+    pub changed: bool,
+}
+
+impl DocTab<'_> {
+    /// Its mark, if it has one ([`TabMark::of`]).
+    fn mark(&self) -> Option<TabMark> {
+        TabMark::of(self.errors, self.changed)
+    }
+}
+
+/// A document tab's mark (`.doc-tab .mark`): a dot before its name, for errors (red), or,
+/// with none, for features another program changed, not yet marked seen (`.mark.outside`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabMark {
+    Errors,
+    ChangedOutside,
+}
+
+impl TabMark {
+    /// The mark for a document with `errors` and its file changed on disk or not: errors
+    /// first, as the prototype's `renderAppbar` chooses.
+    pub(crate) fn of(errors: bool, changed: bool) -> Option<TabMark> {
+        if errors {
+            Some(TabMark::Errors)
+        } else if changed {
+            Some(TabMark::ChangedOutside)
+        } else {
+            None
+        }
+    }
+
+    fn colour(self) -> Color32 {
+        match self {
+            TabMark::Errors => theme::DOC_TAB_MARK_ERRORS,
+            TabMark::ChangedOutside => theme::DOC_TAB_MARK_OUTSIDE,
+        }
+    }
+
+    /// What it says to a screen reader (the prototype's `aria-label`).
+    fn said(self) -> &'static str {
+        match self {
+            TabMark::Errors => "has errors",
+            TabMark::ChangedOutside => "changed outside",
+        }
+    }
 }
 
 /// What a tab answered: a click on it (show the document), and on its close button; and
@@ -254,13 +388,14 @@ impl DocTabResponse {
 }
 
 /// A document's tab (`.doc-tab`), the bar's height less its border, which the shown one's
-/// fill covers: its name, ending in an ellipsis past [`theme::DOC_TAB_MAX_WIDTH`]; an
-/// asterisk if it holds edits; and its close button, at its right, drawn while the tab is
-/// hovered or shown (`.x`'s `opacity`), or either has the keyboard's focus, though there,
-/// and clickable, always, as the prototype's is. A click anywhere else on the tab shows
-/// the document. Labelled
-/// with its name, and the asterisk, and selected while shown; its close button labelled
-/// "Close" and its name.
+/// fill covers: its mark, if it has one ([`TabMark`]), a dot before its name; its name,
+/// ending in an ellipsis past [`theme::DOC_TAB_MAX_WIDTH`]; an asterisk if it holds edits;
+/// and its close button, at its right, drawn while the tab is hovered or shown (`.x`'s
+/// `opacity`), or either has the keyboard's focus, though there, and clickable, always, as
+/// the prototype's is. A click anywhere else on the tab shows the document. Labelled with
+/// its name, and the asterisk, and selected while shown, its mark's words its description;
+/// its close button labelled "Close" and its name. Its tooltip, its path, says what the
+/// mark and the asterisk say (the prototype's `data-tipd`).
 pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
     let font = FontId::proportional(theme::BODY_SIZE);
     let dirty = tab.unsaved.then(|| {
@@ -268,8 +403,14 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
             .layout_no_wrap(" *".to_owned(), font.clone(), theme::DOC_TAB_DIRTY)
     });
     let borders = theme::BORDER_WIDTH * if tab.first { 2.0 } else { 1.0 };
+    let marked = if tab.mark().is_some() {
+        theme::DOC_TAB_MARK_SIZE + theme::DOC_TAB_GAP
+    } else {
+        0.0
+    };
     let fixed = borders
         + theme::DOC_TAB_PADDING_LEFT
+        + marked
         + dirty.as_ref().map_or(0.0, |dirty| dirty.size().x)
         + theme::DOC_TAB_GAP
         + theme::DOC_TAB_CLOSE_SIZE
@@ -307,28 +448,47 @@ pub(crate) fn doc_tab(ui: &mut Ui, tab: &DocTab<'_>) -> DocTabResponse {
     // the close button's.
     let named = Rect::from_min_max(rect.min, Pos2::new(close_rect.left(), rect.bottom()));
     ui.ctx().accesskit_node_builder(response.id, |node| {
-        node.set_bounds(egui::accesskit::Rect {
-            x0: named.min.x.into(),
-            y0: named.min.y.into(),
-            x1: named.max.x.into(),
-            y1: named.max.y.into(),
-        });
+        node.set_bounds(crate::panes::bounds(named));
+        if let Some(mark) = tab.mark() {
+            node.set_description(mark.said());
+        }
     });
     let closing = format!("Close {}", tab.name);
     close.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &closing));
     if ui.is_rect_visible(rect) {
         paint_tab(ui, tab, &area, &response, &close, name, dirty);
     }
-    let description = match (tab.unsaved, tab.path) {
-        (true, _) => Some("Unsaved edits"),
-        (false, None) => Some(NOT_SAVED_YET),
-        (false, Some(_)) => None,
-    };
-    let response = tooltip(response, tab.path.unwrap_or(tab.name), None, description);
+    let description = tab_description(tab);
+    let response = tooltip(
+        response,
+        tab.path.unwrap_or(tab.name),
+        None,
+        description.as_deref(),
+    );
     DocTabResponse {
         tab: response,
         close,
         rect,
+    }
+}
+
+/// What a tab's tooltip says under its path, as the prototype's `data-tipd` does: "Has
+/// errors.", "Unsaved edits.", and "Changed on disk since you opened it.", each that's so,
+/// in that order; for an untitled part with none, that it has no file yet. None for a saved
+/// document with nothing to say.
+fn tab_description(tab: &DocTab<'_>) -> Option<String> {
+    let said: Vec<&str> = [
+        (tab.errors, "Has errors."),
+        (tab.unsaved, "Unsaved edits."),
+        (tab.changed, "Changed on disk since you opened it."),
+    ]
+    .into_iter()
+    .filter_map(|(so, words)| so.then_some(words))
+    .collect();
+    if said.is_empty() {
+        tab.path.is_none().then(|| NOT_SAVED_YET.to_owned())
+    } else {
+        Some(said.join(" "))
     }
 }
 
@@ -378,10 +538,17 @@ fn paint_tab(
         0,
         StrokeKind::Inside,
     );
-    let at = Pos2::new(
-        left + theme::DOC_TAB_PADDING_LEFT,
-        rect.center().y - name.size().y / 2.0,
-    );
+    let mut start = left + theme::DOC_TAB_PADDING_LEFT;
+    if let Some(mark) = tab.mark() {
+        let radius = theme::DOC_TAB_MARK_SIZE / 2.0;
+        painter.circle_filled(
+            Pos2::new(start + radius, rect.center().y),
+            radius,
+            mark.colour(),
+        );
+        start += theme::DOC_TAB_MARK_SIZE + theme::DOC_TAB_GAP;
+    }
+    let at = Pos2::new(start, rect.center().y - name.size().y / 2.0);
     let after = at.x + name.size().x;
     painter.galley_with_override_text_color(at, name, text);
     if let Some(dirty) = dirty {
@@ -501,6 +668,11 @@ mod tests {
         pub const KBD_HEIGHT: f32 = 16.0;
         pub const KBD_RADIUS: u8 = 3;
         pub const KEYS_GAP: f32 = 2.0;
+        /// `.doc-tab .mark`: 6 square, round, `--red`; `.mark.outside`, `--outside`
+        /// (`--info`).
+        pub const MARK: f32 = 6.0;
+        pub const RED: Color32 = Color32::from_rgb(0xff, 0x38, 0x65);
+        pub const OUTSIDE: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
     }
 
     /// `app` drawn in the app's theme, its icons loaded.
@@ -844,6 +1016,8 @@ mod tests {
                             unsaved: true,
                             active: true,
                             first: true,
+                            errors: false,
+                            changed: false,
                         },
                         DocTab {
                             name: "vise-jaw.silico",
@@ -851,6 +1025,8 @@ mod tests {
                             unsaved: false,
                             active: false,
                             first: false,
+                            errors: false,
+                            changed: false,
                         },
                     ] {
                         doc_tab(ui, &tab);
@@ -1025,6 +1201,163 @@ mod tests {
     }
 
     #[test]
+    fn a_tabs_mark_is_a_dot_before_its_name_red_for_errors_else_the_outside_tone() {
+        // `renderAppbar`'s mark: errors (and changed too) red, changed alone `--outside`,
+        // neither none. Each tab, the first's two borders and the rest's one, 10 of padding,
+        // then the 6 point dot on the tab's middle, 6 before the name; told to a screen
+        // reader as its description.
+        let top = Rc::new(Cell::new(Pos2::ZERO));
+        let seen = Rc::clone(&top);
+        let h = drawn(move |ui| {
+            let row = Rect::from_min_size(
+                ui.max_rect().min,
+                Vec2::new(700.0, css::TOP_BAR_H - css::BORDER),
+            );
+            seen.set(row.min);
+            let layout = egui::Layout::left_to_right(egui::Align::Center);
+            ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(layout), |ui| {
+                ui.set_clip_rect(row);
+                tab_strip(ui, |ui| {
+                    for (at, (name, errors, changed)) in [
+                        ("broken.silico", true, true),
+                        ("moved.silico", false, true),
+                        ("plain.silico", false, false),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        doc_tab(
+                            ui,
+                            &DocTab {
+                                name,
+                                path: Some(name),
+                                unsaved: false,
+                                active: false,
+                                first: at == 0,
+                                errors,
+                                changed,
+                            },
+                        );
+                    }
+                });
+            });
+        });
+        let middle = top.get().y + (css::TOP_BAR_H - css::BORDER) / 2.0;
+        let dots: Vec<(Pos2, f32, Color32)> = clipped(&h)
+            .into_iter()
+            .filter_map(|shown| match shown.shape {
+                Shape::Circle(circle) => Some((circle.center, circle.radius, circle.fill)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dots.len(), 2, "{dots:?}");
+        let broken = text(&h, "broken.silico");
+        let moved = text(&h, "moved.silico");
+        let plain = text(&h, "plain.silico");
+        for ((center, radius, fill), name, colour) in [
+            (dots[0], &broken, css::RED),
+            (dots[1], &moved, css::OUTSIDE),
+        ] {
+            assert_eq!(fill, colour);
+            assert!(near(radius, css::MARK / 2.0), "{radius}");
+            assert!(near(center.y, middle), "{center:?}");
+            // The name 6 past the dot's right.
+            assert!(
+                near(name.pos.x, center.x + css::MARK / 2.0 + css::TAB_GAP),
+                "{:?} after the dot at {center:?}",
+                name.pos
+            );
+        }
+        // Each dot at its tab's padding, past the borders before it, each tab's left worked
+        // from the row's: the first tab's left border; the second's left is the first's right
+        // border, after the first's close button and its padding.
+        let row = top.get().x;
+        assert!(
+            near(
+                dots[0].0.x,
+                row + css::BORDER + css::TAB_PADDING_LEFT + css::MARK / 2.0
+            ),
+            "{dots:?}"
+        );
+        let second =
+            broken.pos.x + broken.galley.size().x + css::TAB_GAP + css::X + css::TAB_PADDING_RIGHT;
+        assert!(
+            near(
+                dots[1].0.x,
+                second + css::BORDER + css::TAB_PADDING_LEFT + css::MARK / 2.0
+            ),
+            "{dots:?} after {second}"
+        );
+        // The unmarked tab's name at its padding, nothing before it.
+        let plain_tab_left =
+            moved.pos.x + moved.galley.size().x + css::TAB_GAP + css::X + css::TAB_PADDING_RIGHT;
+        assert!(
+            near(
+                plain.pos.x,
+                plain_tab_left + css::BORDER + css::TAB_PADDING_LEFT
+            ),
+            "{:?} after {plain_tab_left}",
+            plain.pos
+        );
+        let described = |name: &str| {
+            use egui_kittest::kittest::NodeT;
+            h.get_by_role_and_label(egui::accesskit::Role::Button, name)
+                .accesskit_node()
+                .description()
+        };
+        assert_eq!(described("broken.silico").as_deref(), Some("has errors"));
+        assert_eq!(
+            described("moved.silico").as_deref(),
+            Some("changed outside")
+        );
+        assert_eq!(described("plain.silico"), None);
+    }
+
+    #[test]
+    fn a_tabs_tooltip_says_its_errors_its_edits_and_a_change_on_disk_as_data_tipd() {
+        // `renderAppbar`'s `data-tipd`: each that's so, in that order, each a sentence; an
+        // untitled part with none of them, that it has no file yet; a saved one, nothing.
+        let said = |path, errors, unsaved, changed| {
+            tab_description(&DocTab {
+                name: "bracket.silico",
+                path,
+                unsaved,
+                active: true,
+                first: true,
+                errors,
+                changed,
+            })
+        };
+        let saved = Some("/parts/bracket.silico");
+        assert_eq!(said(saved, false, false, false), None);
+        assert_eq!(
+            said(None, false, false, false).as_deref(),
+            Some(NOT_SAVED_YET)
+        );
+        assert_eq!(
+            said(None, false, true, false).as_deref(),
+            Some("Unsaved edits.")
+        );
+        assert_eq!(
+            said(saved, true, false, false).as_deref(),
+            Some("Has errors.")
+        );
+        assert_eq!(
+            said(saved, false, false, true).as_deref(),
+            Some("Changed on disk since you opened it.")
+        );
+        assert_eq!(
+            said(saved, true, true, true).as_deref(),
+            Some("Has errors. Unsaved edits. Changed on disk since you opened it.")
+        );
+        assert_eq!(
+            said(None, true, false, false).as_deref(),
+            Some("Has errors."),
+            "an untitled part with errors says so, not that it has no file"
+        );
+    }
+
+    #[test]
     fn the_tooltip_is_drawn_as_tooltip() {
         // Redo's: its title, its caps (egui_kittest's platform is neither macOS nor
         // Windows: Ctrl, Shift, and Z), and a description under them.
@@ -1110,26 +1443,45 @@ mod tests {
         assert_eq!(colour(&description), css::G550);
     }
 
+    /// The bar's empty space, (100, 0) to (300, 30).
+    fn space() -> Rect {
+        Rect::from_min_size(Pos2::new(100.0, 0.0), Vec2::new(200.0, 30.0))
+    }
+
+    /// The left button down (`pressed`) or up at `at`.
+    fn left(at: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        }
+    }
+
     /// The viewport commands `move_window` sends over the bar's empty space as the pointer
     /// goes down on it and comes up, twice, the window `maximized` or not: those of each
     /// frame.
     fn moved(maximized: bool) -> Vec<Vec<ViewportCommand>> {
-        let ctx = egui::Context::default();
-        let space = Rect::from_min_size(Pos2::new(100.0, 0.0), Vec2::new(200.0, 30.0));
-        let on = space.center();
-        let button = |pressed| egui::Event::PointerButton {
-            pos: on,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: Modifiers::NONE,
-        };
-        let frames = [
+        let on = space().center();
+        let frames = vec![
             vec![egui::Event::PointerMoved(on)],
-            vec![button(true)],
-            vec![button(false)],
-            vec![button(true)],
-            vec![button(false)],
+            vec![left(on, true)],
+            vec![left(on, false)],
+            vec![left(on, true)],
+            vec![left(on, false)],
         ];
+        sent(frames, maximized, move_window)
+    }
+
+    /// The viewport commands `draw` sends over the bar's empty space for each of `frames`,
+    /// 0.05 s apart, the window `maximized` or not.
+    fn sent(
+        frames: Vec<Vec<egui::Event>>,
+        maximized: bool,
+        draw: fn(&Ui, Rect),
+    ) -> Vec<Vec<ViewportCommand>> {
+        let ctx = egui::Context::default();
+        let space = space();
         frames
             .into_iter()
             .enumerate()
@@ -1146,7 +1498,7 @@ mod tests {
                         ..Default::default()
                     },
                 );
-                let mut drawn = ctx.run_ui(input, |ui| move_window(ui, space));
+                let mut drawn = ctx.run_ui(input, |ui| draw(ui, space));
                 drawn.textures_delta.clear();
                 // The window's own: not the theme the first frame sets.
                 drawn
@@ -1189,6 +1541,30 @@ mod tests {
                 assert!(sent.iter().all(Vec::is_empty), "{sent:?}");
             }
         }
+    }
+
+    #[test]
+    fn a_double_click_on_the_bars_empty_space_just_after_a_click_elsewhere_zooms_the_window() {
+        // #452 on the title bar, on any platform: a click off the bar at 0.05, then a
+        // double-click on its empty space by 0.35, inside egui's 0.6 s for a triple. egui's
+        // count of the pointer's clicks makes the second a triple; the space's own two
+        // clicks are a double-click, and the window zooms.
+        let (off, on) = (Pos2::new(50.0, 200.0), space().center());
+        let frames = vec![
+            vec![egui::Event::PointerMoved(off), left(off, true)],
+            vec![left(off, false)],
+            vec![egui::Event::PointerMoved(on)],
+            vec![left(on, true)],
+            vec![left(on, false)],
+            vec![left(on, true)],
+            vec![left(on, false)],
+        ];
+        let sent = sent(frames, false, title_bar);
+        assert_eq!(
+            sent.last(),
+            Some(&vec![ViewportCommand::Maximized(true)]),
+            "{sent:?}"
+        );
     }
 
     /// The room [`inset`] leaves, in a window full screen or not.

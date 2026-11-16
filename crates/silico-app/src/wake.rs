@@ -1,7 +1,7 @@
 //! Who to ask for a frame when something changes off the UI thread: the window's context,
 //! once its first frame has given it ([`Wake::set`]). Shared by the threads that keep the
-//! recent documents (`crate::recent`), warm the workers (`crate::start::Warm`), and make
-//! Select Other's boxes (`crate::boxes`).
+//! recent documents (`crate::recent`) and the side panes' widths (`crate::pane_widths`),
+//! warm the workers (`crate::start::Warm`), and make Select Other's boxes (`crate::boxes`).
 
 use std::sync::{Arc, Mutex, PoisonError};
 

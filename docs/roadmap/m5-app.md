@@ -50,6 +50,14 @@ Thirteen steps, where sketch mode may take two PRs. The core steps (M5.1, M5.2, 
   - the `cancelled` error code, still `internal` for a cancelled render (M4.6's open item), which the app's stop button shows (M5.4);
   - `Candidates::of_name` costs O(B) per broken name, felt where M5.8 shows a broken reference's candidates (a protected contract, so its own PR with the maintainer, if M5.8's benchmark shows it).
 
+## Known, fixed next
+
+- **Concave edges lost from the drawn image** (N5, confirmed on Metal, 2026-11-08). *Fixed:* a face beside an edge rising toward the eye across its stroke hid the stroke on that side (a concave edge's both faces, a fillet's tangent edge's flat face), its strip being offset toward the eye by only `EDGE_DEPTH_OFFSET`; each drawn edge is now moved toward the eye by a reach of its own, √2 pixels of depth a stroke's half width and half a pixel, never more than an edge pick's `edge_reach`, an edge behind a 1 mm wall still hidden (docs/design/m5.0-app.md, section 10, *As built (N5's image)*).
+
+## Follow-ups after M5
+
+- **A vertex picked through a thin wall** (N5, decided 2026-11-08). A vertex's picking disc, and Select Other's cast, take it toward the eye by 1.2% of the view's height (`vertex_reach`), depth alone, so a vertex behind a wall thinner than that can be picked through it and is listed unhidden; it's accepted for M5 (docs/design/m5.0-app.md, section 9, part 3a). The fix is an adjacency check, not depth alone: a vertex pick is dropped when a face nearer than an edge's reach (`edge_reach`, 2 pixels of the view's depth) that isn't one of the vertex's own faces covers it. The faces at a corner are the vertex's own, so a corner stays pickable, and a pick through a wall in front of it is dropped. The cast takes the same rule, so the hover and Select Other still agree.
+
 ## Open decisions
 
 Each was written with a recommendation, for the maintainer at M4's close, and was taken as recommended (2026-10-29) unless its text says otherwise.

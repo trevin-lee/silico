@@ -13,9 +13,10 @@
 //! orthographic view no smaller than their reach allows at the pane's height in pixels),
 //! which the viewport asks of every camera a control makes.
 
+use eframe::egui::Vec2;
 use silico_core::views::{self, NamedView};
 use silico_protocol::vec3::{cross, dot, sub};
-use silico_protocol::{Camera, Projection, least_view_height};
+use silico_protocol::{Camera, Frame, Projection, least_view_height};
 
 /// How far a drag of one point orbits, in degrees: half a turn across 360 points.
 pub const ORBIT_DEGREES_PER_POINT: f64 = 0.5;
@@ -29,6 +30,10 @@ pub const PERSPECTIVE_FIELD_OF_VIEW: f64 = 30.0;
 /// The view Home gives, and the first one a document opens at: Fusion's home is a corner's
 /// isometric view, its front and right toward the viewer, Z up.
 pub const HOME: NamedView = NamedView::TopFrontRight;
+
+/// SolidWorks' isometric view (Ctrl+7, and the ViewCube menu's Isometric), Z up: its front,
+/// right, and top toward the viewer, as the ViewCube's top front right corner gives it.
+pub const ISOMETRIC: NamedView = NamedView::TopFrontRight;
 
 /// What a view with no box to fit is fitted to: a 100 mm cube about the origin.
 pub const NO_BOX: [[f64; 3]; 2] = [[-50.0; 3], [50.0; 3]];
@@ -145,8 +150,22 @@ pub fn zoom(camera: &Camera, scroll: f64, cursor: [f64; 2], height: f64) -> Opti
 /// views fit by), kept perspective if it is, its eye far enough back that the view at the
 /// box's centre is that high, and half a diagonal more.
 pub fn fit(camera: &Camera, bounds: [[f64; 3]; 2], width: u32, height: u32) -> Option<Camera> {
+    fit_in(camera, bounds, width, height, Inset::default())
+}
+
+/// [`fit`], fitted into the part of the pane `inset` leaves: looking the way it looks, the
+/// box at that part's centre, kept perspective if it is.
+pub fn fit_in(
+    camera: &Camera,
+    bounds: [[f64; 3]; 2],
+    width: u32,
+    height: u32,
+    inset: Inset,
+) -> Option<Camera> {
     let frame = camera.frame().ok()?;
-    let (fitted, _) = views::fit_along(frame.back, frame.up, bounds, width, height);
+    let fitted = inset_fit(width, height, inset, |across, down| {
+        views::fit_along(frame.back, frame.up, bounds, across, down).0
+    })?;
     let Projection::Perspective { field_of_view } = camera.projection else {
         return checked_at(fitted, width, height);
     };
@@ -212,8 +231,174 @@ pub fn clamped(
 /// core's own camera for it, which `render` and `meshes` fit too, so the app and an agent
 /// asking for the view see the same.
 pub fn named(view: NamedView, bounds: [[f64; 3]; 2], width: u32, height: u32) -> Option<Camera> {
+    named_in(view, bounds, width, height, Inset::default())
+}
+
+/// The bands of a pane, in pixels in from each side, that panels over the canvas cover
+/// (sketch mode's bar at the top and its palette at the right): a view fitted with them
+/// fits its box into the rest of the pane, centred there. None (the default): the whole
+/// pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Inset {
+    pub top: u32,
+    pub right: u32,
+    pub bottom: u32,
+    pub left: u32,
+}
+
+/// What sketch mode adds to a view's fit (the M5.12 slice's finding, docs/walkthrough/m5.md):
+/// the open sketch's geometry, taken into the bounds with the bodies'
+/// (`crate::sketch::bounds`), and the bands its bar and palette cover, which a fitted view
+/// keeps its box out of. The tab sets it on its view each frame; the default, outside sketch
+/// mode, adds nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Framing {
+    /// The open sketch's geometry, as a box in model space.
+    pub sketch_box: Option<[[f64; 3]; 2]>,
+    pub inset: Inset,
+}
+
+impl Inset {
+    /// The part of a `width` by `height` pane it leaves, if it leaves at least a pixel each
+    /// way: its width and height.
+    fn free(self, width: u32, height: u32) -> Option<(u32, u32)> {
+        let across = width.checked_sub(self.left)?.checked_sub(self.right)?;
+        let down = height.checked_sub(self.top)?.checked_sub(self.bottom)?;
+        (across > 0 && down > 0).then_some((across, down))
+    }
+}
+
+/// The view of a box `make` fits, orthographic, for the part of a `width` by `height` pane
+/// that `inset` leaves: made at that part's size, then made the whole pane's, as many
+/// millimetres a pixel (so as high as the pane at that scale) and moved so its target shows
+/// at that part's centre. With no inset, `make`'s camera for the whole pane, as it is; with
+/// one that leaves no pixel, the same, as if there were none. Not checked: its caller
+/// checks the camera it gives.
+fn inset_fit(
+    width: u32,
+    height: u32,
+    inset: Inset,
+    make: impl Fn(u32, u32) -> Camera,
+) -> Option<Camera> {
+    let Some((across, down)) = inset
+        .free(width, height)
+        .filter(|_| inset != Inset::default())
+    else {
+        return Some(make(width, height));
+    };
+    let fitted = make(across, down);
+    let Projection::Orthographic { view_height } = fitted.projection else {
+        return None;
+    };
+    let frame = fitted.frame().ok()?;
+    let mm = view_height / f64::from(down);
+    // The part's centre is right of the pane's by half the left band less half the right,
+    // and below it (the screen's y down) by half the top band less half the bottom: the
+    // pane's centre, where the target shows, is that far left of and above the box's.
+    let right = (f64::from(inset.left) - f64::from(inset.right)) / 2.0 * mm;
+    let below = (f64::from(inset.top) - f64::from(inset.bottom)) / 2.0 * mm;
+    let offset = add(scaled(frame.right, -right), scaled(frame.up, below));
+    Some(Camera {
+        projection: Projection::Orthographic {
+            view_height: mm * f64::from(height),
+        },
+        eye: add(fitted.eye, offset),
+        target: add(fitted.target, offset),
+        up: fitted.up,
+    })
+}
+
+/// [`named`], fitted into the part of the pane `inset` leaves.
+pub fn named_in(
+    view: NamedView,
+    bounds: [[f64; 3]; 2],
+    width: u32,
+    height: u32,
+    inset: Inset,
+) -> Option<Camera> {
+    look_at(view.direction(), view.up(), bounds, width, height, inset)
+}
+
+/// Look At (Fusion's; SolidWorks' Normal To): the view square to a plane, looking at it
+/// from `toward`, its outward normal (a unit vector from the plane toward the eye), with
+/// `up` (a unit vector in the plane) up the image, fitted to `bounds` in the part of the
+/// pane `inset` leaves, as a named view is.
+pub fn look_at(
+    toward: [f64; 3],
+    up: [f64; 3],
+    bounds: [[f64; 3]; 2],
+    width: u32,
+    height: u32,
+    inset: Inset,
+) -> Option<Camera> {
     let (width, height) = (width.max(1), height.max(1));
-    checked_at(view.camera(bounds, width, height), width, height)
+    let camera = inset_fit(width, height, inset, |across, down| {
+        views::fit_along(toward, up, bounds, across, down).0
+    })?;
+    checked_at(camera, width, height)
+}
+
+/// Which way is up when looking at a face square from `toward` (its unit outward normal),
+/// as the named views have it ([`NamedView::up`]): +z across the view, made a unit as the
+/// core makes a corner's; or +y when the face looks along z, as `top` and `bottom` have it,
+/// which is when +z's part across the view is under a millionth, too short to steer by.
+pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
+    let z = [0.0, 0.0, 1.0];
+    let across = sub(z, scaled(toward, dot(z, toward)));
+    let length = dot(across, across).sqrt();
+    if length < 1e-6 {
+        return [0.0, 1.0, 0.0];
+    }
+    across.map(|part| part / length)
+}
+
+/// Where the document's vector `v` points on the screen as a camera's `frame` sees it, at
+/// `scale` points per unit of `v` square across the view: its part along the view's right,
+/// rightward, and along its up, upward (the screen's y down). The ViewCube and the triad turn
+/// with the camera by it.
+pub fn screen_offset(frame: &Frame, v: [f64; 3], scale: f64) -> Vec2 {
+    let x = dot(v, frame.right) * scale;
+    let y = -dot(v, frame.up) * scale;
+    Vec2::new(x as f32, y as f32)
+}
+
+/// How near a view's elevation and its azimuth must each be to a named view's to be at it, in
+/// radians: the prototype's (viewport.js's `viewName`).
+pub const AT_NAMED_VIEW: f64 = 0.01;
+
+/// The elevation past which a named view takes any azimuth, in radians: the prototype's
+/// (`viewName`'s `Math.abs(v.el) > 1.5`), which only the top and the bottom (±π/2) pass.
+const ANY_AZIMUTH_PAST: f64 = 1.5;
+
+/// The azimuth and the elevation, in radians, of a unit direction `d` from the target to the
+/// eye, as the prototype's camera holds a view (viewport.js's `dirOf(az, el) = (cos el sin
+/// az, −cos el cos az, sin el)`): the elevation `asin(d.z)` (its z held to ±1, as the
+/// prototype's ViewCube holds it), the azimuth `atan2(d.x, −d.y)`, from the front (−y)
+/// toward +x.
+fn azimuth_and_elevation(d: [f64; 3]) -> (f64, f64) {
+    (libm::atan2(d[0], -d[1]), libm::asin(d[2].clamp(-1.0, 1.0)))
+}
+
+/// Whether `camera` is at the named view `view`, by the prototype's rule (viewport.js's
+/// `viewName`): its elevation within [`AT_NAMED_VIEW`] of the view's, and its azimuth too,
+/// compared round the circle (the difference brought into [−π, π) as the prototype brings it,
+/// `((a − b + π) % 2π + 2π) % 2π − π`), but for the top and the bottom, which take any
+/// azimuth. Each is [`azimuth_and_elevation`] of a direction: the camera's, and the view's
+/// ([`NamedView::direction`]; the prototype's iso is at its corner's elevation rounded,
+/// 35.264°, the app's at asin(1/√3) = 35.26439°). Its up isn't looked at, as the
+/// prototype's camera has none of its own: so a view turned about its own axis (a sketch's
+/// Look At whose y isn't the view's up, or an orbit over a pole, upside down) is still at the
+/// view it looks from. Never for a camera that makes no frame ([`Camera::frame`]).
+pub fn at_view(camera: &Camera, view: NamedView) -> bool {
+    use std::f64::consts::{PI, TAU};
+    let Ok(frame) = camera.frame() else {
+        return false;
+    };
+    let (azimuth, elevation) = azimuth_and_elevation(frame.back);
+    let (view_azimuth, view_elevation) = azimuth_and_elevation(view.direction());
+    let turned = (((azimuth - view_azimuth + PI) % TAU + TAU) % TAU - PI).abs();
+    (elevation - view_elevation).abs() < AT_NAMED_VIEW
+        && (turned < AT_NAMED_VIEW || view_elevation.abs() > ANY_AZIMUTH_PAST)
 }
 
 /// The view switched to a perspective one (Fusion's ViewCube menu, *Camera*), at
@@ -521,5 +706,186 @@ mod tests {
         let ortho = projected(&perspective, false).unwrap();
         assert!((height(&ortho) - 80.0).abs() < 1e-12);
         assert_eq!(projected(&front(), false).unwrap(), front());
+    }
+
+    /// The slice's L on XZ: 60 along x, 50 up z.
+    const L: [[f64; 3]; 2] = [[0.0, 0.0, 0.0], [60.0, 0.0, 50.0]];
+
+    /// A 1000 by 800 pane with a 100-pixel band over its top and a 200-pixel one over its
+    /// right: the 800 by 700 left below them.
+    const BANDS: Inset = Inset {
+        top: 100,
+        right: 200,
+        bottom: 0,
+        left: 0,
+    };
+
+    #[test]
+    fn a_front_view_fitted_below_and_beside_bands_centres_its_box_in_the_rest_at_its_scale() {
+        // At 800 by 700, the core's fit: 50 up, 60 across × 700 / 800 = 52.5, so 1.1 × 52.5
+        // = 57.75 mm high over 700 pixels, 0.0825 mm a pixel; the pane's 800 rows are 66 mm.
+        // The rest's centre, (400, 450), is 100 pixels left of the pane's (500, 400) and 50
+        // below it: the target is the box's centre, (30, 0, 25), moved 100 × 0.0825 = 8.25
+        // right (+x) and 50 × 0.0825 = 4.125 up (+z). The eye stays two half diagonals
+        // (2 × √6100 / 2 = 78.102…) out along −y.
+        let fitted = named_in(NamedView::Front, L, 1000, 800, BANDS).unwrap();
+        assert!((height(&fitted) - 66.0).abs() < 1e-12, "{fitted:?}");
+        near(fitted.target, [38.25, 0.0, 29.125], 1e-12);
+        near(fitted.eye, [38.25, -6100f64.sqrt(), 29.125], 1e-12);
+        assert_eq!(fitted.up, [0.0, 0.0, 1.0]);
+        // So the L's top, z = 50, shows 400 − (50 − 29.125) / 0.0825 = 146.97 rows down,
+        // under the top band's 100; its left, x = 0, at 500 − 38.25 / 0.0825 = 36.36, and
+        // its right, x = 60, at 763.64, left of the right band at 800.
+        let mm = 66.0 / 800.0;
+        assert!(400.0 - (50.0 - fitted.target[2]) / mm > 100.0);
+        assert!(500.0 + (60.0 - fitted.target[0]) / mm < 800.0);
+        // `fit` looking the same way gives the same view.
+        let refit = fit_in(&front(), L, 1000, 800, BANDS).unwrap();
+        assert!((height(&refit) - 66.0).abs() < 1e-12);
+        near(refit.target, [38.25, 0.0, 29.125], 1e-12);
+    }
+
+    #[test]
+    fn bands_at_the_left_and_bottom_move_the_box_right_and_up_into_the_rest() {
+        // As BANDS' test, the rest 800 by 700 at 0.0825 mm a pixel, but its centre, (600,
+        // 350), is 100 right of the pane's (500, 400) and 50 above it: the target moves 8.25
+        // left (−x) and 4.125 down (−z) of the box's centre, (30, 0, 25).
+        let bands = Inset {
+            top: 0,
+            right: 0,
+            bottom: 100,
+            left: 200,
+        };
+        let fitted = named_in(NamedView::Front, L, 1000, 800, bands).unwrap();
+        assert!((height(&fitted) - 66.0).abs() < 1e-12, "{fitted:?}");
+        near(fitted.target, [21.75, 0.0, 20.875], 1e-12);
+    }
+
+    #[test]
+    fn a_band_leaving_one_pixel_across_fits_the_box_into_that_pixel() {
+        // 999 of 1000 columns covered at the right: the rest is 1 by 800, so the core's fit
+        // takes 60 across × 800 / 1 = 48 000, and 1.1 × that is 52 800 mm over 800 rows, 66 mm
+        // a pixel. The rest's centre, half a pixel in from the pane's left, is 499.5 pixels
+        // left of the pane's: the target is 499.5 × 66 = 32 967 right (+x) of the box's
+        // centre, at the box's middle height.
+        let sliver = Inset {
+            right: 999,
+            ..Inset::default()
+        };
+        let fitted = named_in(NamedView::Front, L, 1000, 800, sliver).unwrap();
+        assert!((height(&fitted) - 52_800.0).abs() < 1e-6, "{fitted:?}");
+        near(fitted.target, [30.0 + 32_967.0, 0.0, 25.0], 1e-6);
+    }
+
+    #[test]
+    fn with_no_bands_or_bands_that_leave_no_pixel_a_fit_is_the_whole_panes() {
+        let whole = named(NamedView::Front, L, 1000, 800).unwrap();
+        // The core's own fit, at the whole pane: 1.1 × max(50, 60 × 800 / 1000) = 55.
+        assert!((height(&whole) - 55.0).abs() < 1e-12);
+        near(whole.target, [30.0, 0.0, 25.0], 1e-12);
+        let covered = Inset {
+            top: 800,
+            ..Inset::default()
+        };
+        assert_eq!(
+            named_in(NamedView::Front, L, 1000, 800, covered),
+            Some(whole.clone())
+        );
+        let past = Inset {
+            right: 600,
+            left: 600,
+            ..Inset::default()
+        };
+        assert_eq!(
+            named_in(NamedView::Front, L, 1000, 800, past),
+            Some(whole.clone())
+        );
+        // Bands that meet: 500 from each side of 1000 leave no column, as none.
+        let meeting = Inset {
+            right: 500,
+            left: 500,
+            ..Inset::default()
+        };
+        assert_eq!(
+            named_in(NamedView::Front, L, 1000, 800, meeting),
+            Some(whole)
+        );
+    }
+
+    #[test]
+    fn a_perspective_view_fitted_with_bands_keeps_its_angle_and_the_target_the_bands_give() {
+        let perspective = projected(&front(), true).unwrap();
+        let fitted = fit_in(&perspective, L, 1000, 800, BANDS).unwrap();
+        assert_eq!(
+            fitted.projection,
+            Projection::Perspective {
+                field_of_view: PERSPECTIVE_FIELD_OF_VIEW
+            }
+        );
+        near(fitted.target, [38.25, 0.0, 29.125], 1e-12);
+        // 66 mm high at the target at 30°, and half the diagonal more: 33 / tan 15° +
+        // √6100 / 2 back along −y.
+        let back = 33.0 / libm::tan(15f64.to_radians()) + 6100f64.sqrt() / 2.0;
+        near(fitted.eye, [38.25, -back, 29.125], 1e-9);
+    }
+
+    #[test]
+    fn look_at_a_face_square_from_its_normal_fits_its_box_with_z_up_the_image() {
+        // A unit cube seen square to a face facing (1, 1, 0) / √2, +z up: the image's right
+        // is up × toward = (−1, 1, 0) / √2, so the corners span 1 up and √2 across; at 100
+        // by 100, 1.1 × √2 mm high. The eye is two half diagonals (√3) out from the centre.
+        let toward = [1.0 / 2f64.sqrt(), 1.0 / 2f64.sqrt(), 0.0];
+        let cube = [[0.0; 3], [1.0; 3]];
+        let looked = look_at(toward, [0.0, 0.0, 1.0], cube, 100, 100, Inset::default()).unwrap();
+        assert!((height(&looked) - 1.1 * 2f64.sqrt()).abs() < 1e-12);
+        near(looked.target, [0.5, 0.5, 0.5], 1e-15);
+        let out = 3f64.sqrt() / 2f64.sqrt();
+        near(looked.eye, [0.5 + out, 0.5 + out, 0.5], 1e-12);
+        assert_eq!(looked.up, [0.0, 0.0, 1.0]);
+        // From −y with +z up, the front view.
+        assert_eq!(
+            look_at([0.0, -1.0, 0.0], [0.0, 0.0, 1.0], L, 1000, 800, BANDS),
+            named_in(NamedView::Front, L, 1000, 800, BANDS)
+        );
+    }
+
+    #[test]
+    fn each_named_views_camera_is_at_that_view_and_no_other_in_either_projection() {
+        // The nearest two named views are a face and a corner, acos(1/√3) = 54.7° apart, far
+        // past a hundredth of a radian: each view's own camera, fitted to a box off the
+        // origin, is at it alone, and in perspective too.
+        let bounds = [[10.0, -20.0, 5.0], [70.0, 15.0, 45.0]];
+        for view in views::NAMED_VIEWS {
+            let camera = named(view, bounds, 1000, 800).unwrap();
+            let seen = projected(&camera, true).unwrap();
+            for other in views::NAMED_VIEWS {
+                assert_eq!(at_view(&camera, other), other == view, "{view:?} {other:?}");
+                assert_eq!(at_view(&seen, other), other == view, "{view:?} {other:?}");
+            }
+        }
+        // A camera that makes no frame is at none.
+        let mut bad = front();
+        bad.eye = bad.target;
+        assert!(views::NAMED_VIEWS.iter().all(|v| !at_view(&bad, *v)));
+    }
+
+    #[test]
+    fn up_across_a_face_is_z_made_square_to_its_normal_or_y_for_a_face_along_z() {
+        assert_eq!(up_across([0.0, 0.0, 1.0]), [0.0, 1.0, 0.0]);
+        assert_eq!(up_across([0.0, 0.0, -1.0]), [0.0, 1.0, 0.0]);
+        assert_eq!(up_across([1.0, 0.0, 0.0]), [0.0, 0.0, 1.0]);
+        // (1, 1, 1) / √3: z less its part along it, (−1/3, −1/3, 2/3), made a unit:
+        // (−1, −1, 2) / √6.
+        let corner = [1.0 / 3f64.sqrt(); 3];
+        let s = 6f64.sqrt();
+        near(up_across(corner), [-1.0 / s, -1.0 / s, 2.0 / s], 1e-15);
+        // Within a millionth of z, still z's; a face a hundredth off it turns z with it.
+        assert_eq!(up_across([0.0, 1e-7, 1.0]), [0.0, 1.0, 0.0]);
+        // At exactly a millionth (from (0, 1e-6, 1), +z's part across is (0, −1e-6, 0), its
+        // length 1e-6 to the bit, as √(x²) is x), it steers by that part: −y, not +y.
+        assert_eq!(up_across([0.0, 1e-6, 1.0]), [0.0, -1.0, 0.0]);
+        let tipped = [0.0, -0.01, (1.0f64 - 1e-4).sqrt()];
+        let up = up_across(tipped);
+        assert!(up[1] > 0.99 && up[2] > 0.0, "{up:?}");
     }
 }

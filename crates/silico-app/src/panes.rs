@@ -22,7 +22,7 @@ use crate::dialog::Action;
 use crate::icons::{self, Icon, IconSize};
 use crate::measures::Answers;
 use crate::properties;
-use crate::selection::Picked;
+use crate::selection::{Picked, SelectedAs};
 use crate::shortcuts::Command;
 use crate::tab::{Hideable, Tab};
 use crate::theme;
@@ -79,8 +79,8 @@ impl Pane {
 }
 
 /// Fusion's layout: the browser, the canvas, and the property panel side by side (the
-/// timeline, a panel of its own, is under them: `crate::timeline`), sized for each frame's
-/// width by [`fit`].
+/// timeline, a panel of its own, is under them: `crate::timeline`), sized each frame by
+/// [`fit`].
 pub fn layout() -> Tree<Pane> {
     let mut tiles = Tiles::default();
     let browser = tiles.insert_pane(Pane::Browser);
@@ -90,34 +90,18 @@ pub fn layout() -> Tree<Pane> {
     Tree::new("silico-window", root, tiles)
 }
 
-/// The side panes' widths, as the prototype's `#main` lays them out (styles.css: `grid-
-/// template-columns: var(--browser-w) 1fr var(--right-w)`, `--browser-w: 248px`, `--right-
-/// w: 296px`), each with its 1px border inside it (`#browser`'s `border-right`, `#right`'s
-/// `border-left`, `box-sizing: border-box`): the border is the tiles' gap, 1 wide
-/// (`Behavior::gap_width`), so each pane's own rect is the column less that 1.
-pub(crate) const BROWSER_W: f32 = 248.0;
-pub(crate) const RIGHT_W: f32 = 296.0;
-
-/// A side pane's border (`#browser`'s `border-right`, `#right`'s `border-left`): the tiles'
-/// gap ([`Panes`]' `gap_width`), taken from its column's width in [`fit`].
-const BORDER: f32 = 1.0;
-
-/// The tree's panes sized for a width of `width`: the browser `--browser-w` wide and the
-/// property panel `--right-w`, each with its border, and the canvas (`1fr`) the rest. A
-/// window narrower than the two side panes does as the prototype's grid does: the canvas
-/// shrinks to nothing (`#canvas-wrap`'s `min-width: 0`), and the panes keep their widths,
-/// the property panel running past the window's right edge, where it's cut off.
+/// The tree's panes sized as `laid` lays out the columns (`crate::columns::fit`: the side
+/// panes as dragged, the canvas the rest), each side pane's border, the tiles' 1-point gap
+/// (`Behavior::gap_width`), inside its column, so its pane's own rect is the column less
+/// that point. Columns wider than the window (its panes at their leasts) run past its right
+/// edge, where the property panel is cut off.
 ///
 /// `egui_tiles` shares its width out in proportion to each child's share, so each share
-/// is the pane's width itself: shares that sum to the width shared give each its own.
-/// The panes aren't resizable ([`Panes`]' `is_container_resizable`), as the prototype's
-/// aren't.
-// SEAM: the browser collapsed to a 28px strip (`#main.browser-collapsed`, interact.js's
-// `toggleBrowser`; design section 8), once its strip and chevron are built.
-pub fn fit(tree: &mut Tree<Pane>, width: f32) {
-    let sides = BROWSER_W + RIGHT_W;
-    let width = width.max(sides);
-    tree.set_width(width);
+/// is the pane's width itself: shares that sum to the width shared give each its own. A
+/// collapsed browser's column is its strip (`crate::columns::fit_strip`), laid out so too.
+pub(crate) fn fit(tree: &mut Tree<Pane>, laid: &crate::columns::Laid) {
+    use crate::columns::BORDER;
+    tree.set_width(laid.browser + laid.canvas + laid.properties);
     let pane = |tree: &Tree<Pane>, pane| tree.tiles.find_pane(&pane);
     let (Some(root), Some(browser), Some(viewport), Some(properties)) = (
         tree.root(),
@@ -129,9 +113,11 @@ pub fn fit(tree: &mut Tree<Pane>, width: f32) {
     };
     if let Some(Tile::Container(egui_tiles::Container::Linear(linear))) = tree.tiles.get_mut(root) {
         // The two gaps are the side panes' borders.
-        linear.shares.set_share(browser, BROWSER_W - BORDER);
-        linear.shares.set_share(viewport, width - sides);
-        linear.shares.set_share(properties, RIGHT_W - BORDER);
+        linear.shares.set_share(browser, laid.browser - BORDER);
+        linear.shares.set_share(viewport, laid.canvas);
+        linear
+            .shares
+            .set_share(properties, laid.properties - BORDER);
     }
 }
 
@@ -142,8 +128,9 @@ pub struct Panes<'a, P: Clients + 'static> {
     /// The property panel's name field, while it's being typed in: the feature, and the
     /// text.
     pub name: &'a mut Option<NameField>,
-    /// Whether a command was started: the frame after polls it.
-    pub started: &'a mut bool,
+    /// Whether the frame after is to be asked for (`App::keys`' meaning): a command started,
+    /// which it polls, or a key taken, whose change it draws.
+    pub next_frame: &'a mut bool,
     /// What the viewport's renderer holds, and how its frames reach it.
     pub drawing: &'a mut crate::viewport::Drawing,
     /// Enter or Esc pressed this frame, if it's an open dialog's (`App::keys`).
@@ -151,6 +138,11 @@ pub struct Panes<'a, P: Clients + 'static> {
     /// What each kind of dialog was last OK'd with: the selection view's Fillet opens its
     /// dialog with them, as the toolbar's does.
     pub remembered: &'a crate::dialog::Remembered,
+    /// Whether the browser is collapsed to its strip (`#main.browser-collapsed`).
+    pub browser_collapsed: bool,
+    /// Whether the browser's chevron was clicked this frame, to collapse it or show it
+    /// (interact.js's `toggleBrowser`).
+    pub browser_toggled: &'a mut bool,
 }
 
 impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
@@ -182,11 +174,12 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     }
 
     fn gap_width(&self, _style: &egui::Style) -> f32 {
-        BORDER
+        crate::columns::BORDER
     }
 
     fn is_container_resizable(&self, _tiles: &Tiles<Pane>, _tile_id: TileId) -> bool {
-        // The prototype's columns are fixed (`fit`): no splitter between them.
+        // The side panes' borders are dragged by `crate::columns`' handles, not by the
+        // tiles' splitters (its module says why): the tiles draw each border, no more.
         false
     }
 
@@ -198,8 +191,8 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
     }
 }
 
-/// A pane's place, `rect`, as the accessibility tree gives it (in points, as egui's
-/// widgets give theirs).
+/// Any place on the screen, `rect` (a pane's, a floating panel's, a tab's name), as the
+/// accessibility tree gives it: in points, as egui's widgets give theirs.
 pub(crate) fn bounds(rect: egui::Rect) -> egui::accesskit::Rect {
     egui::accesskit::Rect {
         x0: rect.min.x.into(),
@@ -220,21 +213,38 @@ pub(crate) fn building(tab: &Tab) -> &'static str {
 }
 
 impl<P: Clients + 'static> Panes<'_, P> {
-    /// The browser (section 8, *The browser*; DESIGN.md, *egui mapping*): the document's
-    /// row, and under it Origin, Bodies, and Sketches, by type as Fusion groups them, each
-    /// under a header with its caret; each row with its eye (the tab's visibility, never
-    /// saved), its icon, its name, its meta at its right, and its mark, from the rows the
-    /// tab worked out as its timeline was read ([`crate::tab::browser`]).
+    /// The browser (section 8, *The browser*; DESIGN.md, *egui mapping*): its title with
+    /// its chevron, Collapse browser; then the document's row, and under it Origin, Bodies,
+    /// and Sketches, by type as Fusion groups them, each under a header with its caret; each
+    /// row with its eye (the tab's visibility, never saved), its icon, its name, its meta at
+    /// its right, and its mark, from the rows the tab worked out as its timeline was read
+    /// ([`crate::tab::browser`]). Collapsed, its strip and the one chevron there, Show
+    /// browser ([`Self::strip`]).
     fn browser(&mut self, ui: &mut Ui) {
+        if self.browser_collapsed {
+            self.strip(ui);
+            return;
+        }
         // `.panel-body` straight under `.panel-title`, as each row under the last.
         ui.spacing_mut().item_spacing = Vec2::ZERO;
-        properties::title(ui, None, "Browser", None);
+        // app.js's `renderBrowser`: `aria-label="Collapse browser" data-tip="Collapse"`, the
+        // chevron as it's drawn, unturned.
+        let collapse = properties::PanelButton {
+            icon: Icon::Chevron,
+            label: "Collapse browser",
+            tip: "Collapse".to_owned(),
+        };
+        if properties::title_with(ui, None, "Browser", Some(collapse)) {
+            *self.browser_toggled = true;
+        }
         let Some(tab) = self.tab.as_deref_mut() else {
             padded(ui, |ui| {
                 ui.weak("No document open");
             });
             return;
         };
+        // Shown: a Find in browser's row is scrolled to below, as it is.
+        tab.reveal_browser = false;
         let mut asked = Asked::default();
         let browsers = |renaming: &crate::feature_menu::Renaming| {
             renaming.place == crate::feature_menu::Place::Browser
@@ -249,7 +259,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             // A body picked in the canvas, or a row found from the timeline or renamed:
             // its row shown, its group opened (section 9, *Browser and canvas*: the browser
             // expands and scrolls to it).
-            let group = if tab.browser.sketches.iter().any(|row| row.id == shown) {
+            let group = if tab.browser.sketches().iter().any(|row| row.id == shown) {
                 "Sketches"
             } else {
                 "Bodies"
@@ -280,38 +290,33 @@ impl<P: Clients + 'static> Panes<'_, P> {
             tab.renaming = renaming;
         }
         if let Some((feature, typed)) = asked.renamed {
-            *self.started |= tab.finish_rename(self.sessions, feature, &typed);
+            *self.next_frame |= tab.finish_rename(self.sessions, feature, &typed);
         }
         for what in asked.toggled {
             tab.toggle_shown(what);
         }
-        if let Some(id) = asked.selected {
+        if let Some((id, how)) = asked.selected {
+            row_clicked(tab, id, how, Click::Left);
+        }
+        if let Some(id) = asked.deselected {
             if tab.pick_body(&id) {
-                // A row chosen while a dialog's box takes a body fills that box, or says why
-                // it doesn't (section 9); the selection is the bodies the boxes hold.
+                // A dialog's box takes the row, as a plain click's does.
                 tab.selected_in = crate::feature_menu::Place::Browser;
-            } else if tab.selection().feature() != Some(&id) {
-                // A sketch chosen here fills an open dialog's selection box (section 9).
-                tab.pick(&id);
-                tab.selected_in = crate::feature_menu::Place::Browser;
-                tab.selection_mut().select_feature(id);
+            } else if !tab.in_dialog() {
+                tab.selection_mut().deselect_feature(&id);
             }
         }
-        if let Some(id) = asked.menu_selected
-            && tab.selection().feature() != Some(&id)
-        {
-            // Selected as its menu opens, as the timeline's right-click selects: never an
-            // open dialog's pick, which a click alone makes.
-            tab.selected_in = crate::feature_menu::Place::Browser;
-            tab.selection_mut().select_feature(id);
+        if let Some((id, how)) = asked.menu_selected {
+            // Selected as its menu opens, by both panes' rule (`Tab::menu_selects`).
+            row_clicked(tab, id, how, Click::Menu);
         }
         if let Some(act) = asked.act {
-            *self.started |= crate::feature_menu::act(tab, self.sessions, act);
+            *self.next_frame |= crate::feature_menu::act(tab, self.sessions, act);
         }
         if let Some(id) = asked.edit {
             // Edit Sketch for a sketch, a feature's dialog for any other.
             tab.edit_sketch_or_feature(self.sessions, &id);
-            *self.started = true;
+            *self.next_frame = true;
         }
         if asked.root {
             // The document's row (§5: "a click on the tree's top node lists them all"):
@@ -322,6 +327,51 @@ impl<P: Clients + 'static> Panes<'_, P> {
             } else {
                 tab.selection_mut().clear();
             }
+        }
+    }
+
+    /// The browser collapsed to its strip (`#main.browser-collapsed`; app.js's
+    /// `renderBrowser`): its one button, Show browser (`.ab-btn`, `margin: 2px`), its chevron
+    /// as the title's; nothing of the tree, which shows again with the browser. A body
+    /// picked in the canvas meanwhile isn't scrolled to later: its row is "scrolled to once,
+    /// whether its row was there or not". Find in browser shows it again, its row scrolled
+    /// to once it's shown, as SolidWorks and Fusion reveal their tree. A name being typed
+    /// over a row goes, sending nothing, as it goes with a row that's gone.
+    fn strip(&mut self, ui: &mut Ui) {
+        let side = theme::APP_BAR_BUTTON_SIZE;
+        let place = egui::Rect::from_min_size(
+            ui.max_rect().min + Vec2::splat(theme::BROWSER_STRIP_BUTTON_MARGIN),
+            Vec2::splat(side),
+        );
+        let show = properties::PanelButton {
+            icon: Icon::Chevron,
+            label: "Show browser",
+            tip: "Show browser".to_owned(),
+        };
+        let shown = ui
+            .scope_builder(UiBuilder::new().max_rect(place), |ui| {
+                properties::panel_button(ui, side, &show)
+            })
+            .inner;
+        if shown.clicked() {
+            *self.browser_toggled = true;
+        }
+        let Some(tab) = self.tab.as_deref_mut() else {
+            return;
+        };
+        if tab
+            .renaming
+            .as_ref()
+            .is_some_and(|renaming| renaming.place == crate::feature_menu::Place::Browser)
+        {
+            tab.renaming = None;
+        }
+        if tab.reveal_browser {
+            // Shown from the next frame, which scrolls to the row.
+            tab.reveal_browser = false;
+            *self.browser_toggled = true;
+        } else {
+            tab.selection_mut().scrolled();
         }
     }
 
@@ -366,7 +416,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
         });
         let sessions = self.sessions;
         let name = &mut *self.name;
-        let started = &mut *self.started;
+        let next_frame = &mut *self.next_frame;
         let elements = tab.selection().elements().next().is_some();
         if elements {
             // A pick made this frame (the canvas is drawn before this pane) is measured from
@@ -384,14 +434,14 @@ impl<P: Clients + 'static> Panes<'_, P> {
                         viewed = selected_elements(ui, tab);
                         properties::CardOut::default()
                     }
-                    Some(entry) => feature(ui, tab, &entry, sessions, name, started),
+                    Some(entry) => feature(ui, tab, &entry, sessions, name, next_frame),
                     None => document(ui, tab),
                 }
             })
             .inner;
         tab.hover_candidate(out.hovered);
         if let Some(asked) = out.asked {
-            *self.started |= tab.card_asked(sessions, asked);
+            *self.next_frame |= tab.card_asked(sessions, asked);
         }
         match viewed {
             None => {}
@@ -400,23 +450,24 @@ impl<P: Clients + 'static> Panes<'_, P> {
                 // Never a sketch's: an element's name names the feature that made it in a
                 // solid, which a sketch never is.
                 tab.edit_feature(sessions, &id);
-                *self.started = true;
+                *self.next_frame = true;
             }
             Some(Viewed::Fillet) => {
                 tab.open_dialog(sessions, crate::dialog::Kind::Fillet, self.remembered);
-                *self.started = true;
+                *self.next_frame = true;
             }
             Some(Viewed::SketchOn(face)) => {
                 tab.create_sketch_on_face(sessions, &face.to_string());
-                *self.started = true;
+                *self.next_frame = true;
             }
         }
     }
 
     /// The open dialog, docked in the property panel (open item 27): drawn, what's changed
     /// in it sent, and its OK or Cancel taken, or the key pressed: Enter is OK, if OK is on;
-    /// Esc goes to the first of these there is (section 3), a dialog's preview rebuilding,
-    /// which it stops, the dialog left open, or the dialog, which it cancels
+    /// Esc goes to the first of these there is (section 3): an arrow's press held in the
+    /// canvas, which it ends, a drag where it began; a dialog's preview rebuilding, which it
+    /// stops; the dialog left open by either; or the dialog, which it cancels
     /// ([`Tab::dialog_escape`]).
     fn dialog(&mut self, ui: &mut Ui) {
         let sessions = self.sessions;
@@ -472,15 +523,30 @@ impl<P: Clients + 'static> Panes<'_, P> {
                     node.set_role(egui::accesskit::Role::Dialog);
                     node.set_label(title);
                 });
-                dialog.ui(ui, &mut cards, preview, &named, &refused, enabled)
+                dialog.ui(
+                    ui,
+                    &mut cards,
+                    preview,
+                    &named,
+                    &refused,
+                    crate::dialog::Allowed {
+                        enabled,
+                        ok: &|dialog: &crate::dialog::Dialog| tab.ok_for(dialog),
+                    },
+                )
             })
             .inner;
         tab.dialog = Some(dialog);
         tab.hover_candidate(cards.out.hovered);
         if let Some(asked) = cards.out.asked {
-            *self.started |= tab.card_asked(sessions, asked);
+            *self.next_frame |= tab.card_asked(sessions, asked);
         }
-        *self.started |= tab.dialog_changed(sessions);
+        *self.next_frame |= tab.dialog_changed(sessions);
+        // The button's click, asked of the inputs before this frame's edits were sent, taken
+        // as Enter is: only if OK still holds after them.
+        if action == Action::Ok && !tab.can_ok() {
+            action = Action::None;
+        }
         match key {
             Some(egui::Key::Enter) if tab.can_ok() => action = Action::Ok,
             Some(egui::Key::Escape) if tab.dialog_escape(sessions) => action = Action::Cancel,
@@ -491,7 +557,7 @@ impl<P: Clients + 'static> Panes<'_, P> {
             Action::Ok => tab.close_dialog(sessions, true),
             Action::Cancel => tab.close_dialog(sessions, false),
         }
-        *self.started |= action != Action::None;
+        *self.next_frame |= action != Action::None;
     }
 }
 
@@ -528,7 +594,7 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 /// its type and ID), the document's problems and its own (its error card, with Edit, as
 /// `featureProps` offers it, `noShow`), its name, editable, which is an edit of the
 /// document, and its health and ID, with the ID's copy button (`prop('ID', …, { copy })`);
-/// and, if another program changed it, what changed (the purple Changed on disk card, with
+/// and, if another program changed it, what changed (the info Changed on disk card, with
 /// Mark as seen). What an error card's button asked, if one was.
 ///
 /// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
@@ -540,7 +606,7 @@ fn feature<P: Clients + 'static>(
     entry: &Entry,
     sessions: &Arc<Sessions<P>>,
     name: &mut Option<NameField>,
-    started: &mut bool,
+    next_frame: &mut bool,
 ) -> properties::CardOut {
     let mut sub = properties::body(
         &format!("{} · ", crate::timeline::kind_words(entry.kind)),
@@ -612,7 +678,7 @@ fn feature<P: Clients + 'static>(
         // Each change an edit, coalesced in the tab (section 3); an empty name too, for
         // the core to refuse and the tab to say why.
         tab.rename(sessions, entry.id.clone(), &text);
-        *started = true;
+        *next_frame = true;
         field.typed.push(text.clone());
     }
     field.text = text;
@@ -679,7 +745,7 @@ const NOT_MEASURED: &str = "Not measured yet";
 const NOT_BUILT: &str = "Not measured: its feature didn't build";
 
 /// The planar face's button that creates a sketch on it (`selectionProps`' `sketchOnFace`).
-const SKETCH_ON_FACE: &str = "Sketch on this face";
+pub(crate) const SKETCH_ON_FACE: &str = "Sketch on this face";
 
 /// One element selected (`selectionProps`' first view): its head (its kind's icon, its
 /// number in its body's solid, and what it is, on which body); MEASURES, from its entry
@@ -953,7 +1019,8 @@ fn measure_rows(
         }
     }
     if let Some(position) = entry.position {
-        let [x, y, z] = position.map(|length| properties::trimmed(length.nm().into(), NM_PER_MM));
+        let [x, y, z] =
+            position.map(|length| properties::trimmed(length.nm().into(), properties::NM_PER_MM));
         properties::text_row(ui, "Position", value(&format!("({x}, {y}, {z}) mm")));
     }
 }
@@ -1038,12 +1105,14 @@ fn angle_words(angle: silico_core::document::Angle) -> String {
 
 /// `length` as the selection view writes it: in mm, to two decimals (`fmtF`).
 fn mm(length: Length) -> String {
-    format!("{} mm", properties::fixed(length.nm().into(), NM_PER_MM))
+    format!(
+        "{} mm",
+        properties::fixed(length.nm().into(), properties::NM_PER_MM)
+    )
 }
 
-/// A length's nanometres in a mm, an area's millionths in a mm², and an angle's nanodegrees
-/// in a degree and in half a turn: the steps the core gives each in.
-const NM_PER_MM: i128 = 1_000_000;
+/// An area's millionths in a mm², and an angle's nanodegrees in a degree and in half a turn:
+/// the steps the core gives each in (a length's, [`properties::NM_PER_MM`]).
 const MILLIONTHS: i128 = 1_000_000;
 const NDEG_PER_DEGREE: i128 = 1_000_000_000;
 const NDEG_HALF_TURN: i64 = 180_000_000_000;
@@ -1052,7 +1121,7 @@ const NDEG_HALF_TURN: i64 = 180_000_000_000;
 /// lists it.
 fn body_name(tab: &Tab, id: &FeatureId) -> String {
     tab.browser
-        .bodies
+        .bodies()
         .iter()
         .find(|row| &row.id == id)
         .map(|row| row.name.clone())
@@ -1210,9 +1279,13 @@ fn units() -> String {
 #[derive(Default)]
 struct Asked {
     toggled: Vec<Hideable>,
-    selected: Option<FeatureId>,
-    /// A row right-clicked, selected as its menu opens.
-    menu_selected: Option<FeatureId>,
+    /// A row clicked: its feature, and how its row selects it.
+    selected: Option<(FeatureId, SelectedAs)>,
+    /// A selected row Ctrl-clicked (Cmd on macOS): its feature taken out of the selection.
+    deselected: Option<FeatureId>,
+    /// A row right-clicked, selected as its menu opens: its feature, and how its row selects
+    /// it.
+    menu_selected: Option<(FeatureId, SelectedAs)>,
     edit: Option<FeatureId>,
     root: bool,
     act: Option<crate::feature_menu::Act>,
@@ -1234,9 +1307,25 @@ const ORIGIN: [(&str, Icon); 7] = [
 ];
 
 /// A sketch row's prefix, `(–)`, `(+)`, or `(?)` (DESIGN.md, *Errors*: SolidWorks'
-/// definition prefixes), from sketch mode's read of each sketch's state.
+/// definition prefixes), from each sketch's state as its read gives it
+/// ([`SketchReads::state`](crate::sketch::SketchReads::state): sketch mode's, for the sketch
+/// open there).
 fn sketch_prefix(tab: &Tab, id: &FeatureId) -> Option<&'static str> {
-    tab.prefixes.prefix(id)
+    tab.sketch_reads.prefix(id)
+}
+
+/// A sketch row's meta, its plane (app.js's `renderBrowser`, `meta: f.plane`): an origin
+/// plane by its name, as the prototype's `XY`, `XZ`, and `YZ`; a planar face as `Face`, the
+/// prototype's sketch on a face before it names one (sketch.js's `plane: opts.plane ||
+/// 'Face'`), since the name it stores (`k7f2qx3m.box.Face6`) is no word for a row's right.
+fn plane_meta(plane: &silico_core::document::Plane) -> &'static str {
+    use silico_core::document::{OriginPlane, Plane};
+    match plane {
+        Plane::Origin(OriginPlane::Xy) => "XY",
+        Plane::Origin(OriginPlane::Xz) => "XZ",
+        Plane::Origin(OriginPlane::Yz) => "YZ",
+        Plane::Face(_) => "Face",
+    }
 }
 
 /// Whether a sketch's row asks for Edit Sketch by a double-click (its context menu's is the
@@ -1252,6 +1341,34 @@ fn prefix_colour(prefix: &str) -> Color32 {
         "(+)" => theme::SKETCH_OVER_DEFINED,
         _ => theme::BROWSER_PREFIX,
     }
+}
+
+/// How a browser row was clicked: a left click, or a right click opening its menu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Click {
+    Left,
+    Menu,
+}
+
+/// The browser's row `id` clicked, or right-clicked as its menu opens ([`Click::Menu`]):
+/// with a left click, a dialog's box that takes a body takes it, or says why it doesn't
+/// (section 9: the selection is then the bodies the boxes hold), and a sketch's row fills a
+/// box that takes a sketch, once (never a menu's, which a click alone makes); then the row's
+/// feature selected alone `how` its row selects it, its body whole for a body's row (the
+/// prototype's `bodyRow`, `maker: '*'`), itself for a sketch's, whatever was selected
+/// before. Either way the browser is where the selection was made (F2's field opens over the
+/// row).
+fn row_clicked(tab: &mut Tab, id: FeatureId, how: SelectedAs, click: Click) {
+    tab.selected_in = crate::feature_menu::Place::Browser;
+    if click == Click::Left {
+        if tab.pick_body(&id) {
+            return;
+        }
+        if tab.selection().feature() != Some(&id) {
+            tab.pick(&id);
+        }
+    }
+    tab.selection_mut().select_as(id, how);
 }
 
 /// The browser's tree, for `tab`: what its rows ask is put in `asked`, and a feature's name
@@ -1284,6 +1401,7 @@ fn tree(
             depth: 0,
             caret: Some(root.open),
             eye: None,
+            not_drawn: None,
             icon: Icon::Doc,
             prefix: None,
             name: root_name,
@@ -1313,6 +1431,7 @@ fn tree(
                         depth: 2,
                         caret: None,
                         eye: Some(shown),
+                        not_drawn: None,
                         icon,
                         prefix: None,
                         name,
@@ -1347,18 +1466,26 @@ fn tree(
     let no_body = match tab.document_problems.first() {
         Some(said) if any_features => format!("No body: {}", said.message),
         None if any_features => "No body: nothing builds one yet".to_owned(),
-        _ => "None yet. A pad or a primitive makes one.".to_owned(),
+        _ => "None yet. A pad makes one.".to_owned(),
     };
+    // Each group with how its rows select their features: a body's whole, a sketch as itself.
     let groups = [
-        ("Bodies", &tab.browser.bodies, Icon::Body, no_body),
+        (
+            "Bodies",
+            tab.browser.bodies(),
+            Icon::Body,
+            no_body,
+            SelectedAs::Body,
+        ),
         (
             "Sketches",
-            &tab.browser.sketches,
+            tab.browser.sketches(),
             Icon::Sketch,
             "None yet. Create Sketch starts one.".to_owned(),
+            SelectedAs::Itself,
         ),
     ];
-    for (group_name, rows, icon, empty) in groups {
+    for (group_name, rows, icon, empty, how) in groups {
         let count = rows.is_empty().then_some("0");
         if !header(ui, group_name, count) {
             continue;
@@ -1376,6 +1503,7 @@ fn tree(
                     .map(|said| said.message.as_str());
                 let what = Hideable::Feature(each.id.clone());
                 let marked = matches!(each.health, Health::Error | Health::Warning);
+                let not_drawn = if sketches { tab.not_drawn(each) } else { None };
                 let answer = row(
                     ui,
                     &Line {
@@ -1383,6 +1511,7 @@ fn tree(
                         depth: 2,
                         caret: None,
                         eye: Some(tab.shown(&what)),
+                        not_drawn: not_drawn.as_deref(),
                         icon,
                         prefix: if sketches {
                             sketch_prefix(tab, &each.id)
@@ -1391,12 +1520,18 @@ fn tree(
                         },
                         name: &each.name,
                         selected: Some(tab.selection().marks_body(&each.id)),
-                        meta: None,
+                        // app.js's `renderBrowser`: a body's the last healthy feature of
+                        // its chain, a sketch's its plane.
+                        meta: if sketches {
+                            tab.sketch_plane(&each.id).map(plane_meta)
+                        } else {
+                            each.last_healthy.as_deref()
+                        },
                         mark: marked.then_some((each.health, text)),
                         // A sketch's own failure reddens its name (`.row.err`); a body's
                         // mark is its chain's.
                         failed: sketches && each.health == Health::Error,
-                        // Changed by another program (`d.outside`), its purple dot where it
+                        // Changed by another program (`d.outside`), its info-blue dot where it
                         // has no health mark.
                         outside: tab.outside.get(&each.id).map(String::as_str),
                         clicks: false,
@@ -1405,13 +1540,20 @@ fn tree(
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
                 } else if answer.row.clicked() {
-                    asked.selected = Some(each.id.clone());
+                    if tab.selection().has_feature(&each.id)
+                        && ui.input(|input| input.modifiers.command)
+                    {
+                        asked.deselected = Some(each.id.clone());
+                    } else {
+                        asked.selected = Some((each.id.clone(), how));
+                    }
                 }
                 if let Some(entry) = tab.entry(each.id.as_str()) {
                     answer.row.context_menu(|ui| {
-                        // Selected as it's opened, as the prototype's `contextmenu` selects it.
-                        if tab.selection().feature() != Some(&each.id) {
-                            asked.menu_selected = Some(each.id.clone());
+                        // Selected as it's opened, as the prototype's `contextmenu` selects it,
+                        // by `Tab::menu_selects`.
+                        if tab.menu_selects(&each.id, how) {
+                            asked.menu_selected = Some((each.id.clone(), how));
                         }
                         let place = crate::feature_menu::Place::Browser;
                         if let Some(act) = crate::feature_menu::menu(ui, tab, entry, place) {
@@ -1492,6 +1634,7 @@ fn header(ui: &mut Ui, name: &str, meta: Option<&str>) -> bool {
             depth: 1,
             caret: Some(openness.open),
             eye: None,
+            not_drawn: None,
             icon: Icon::Folder,
             prefix: None,
             name,
@@ -1556,6 +1699,9 @@ struct Line<'a> {
     caret: Option<bool>,
     /// Its eye, if it has one: whether it shows.
     eye: Option<bool>,
+    /// Why what its eye shows is drawn nowhere, if it is (a sketch suppressed, or on no
+    /// plane): its eye's tooltip says it under its word.
+    not_drawn: Option<&'a str>,
     icon: Icon,
     /// A sketch's definition prefix, before its name.
     prefix: Option<&'static str>,
@@ -1568,7 +1714,7 @@ struct Line<'a> {
     mark: Option<(Health, Option<&'a str>)>,
     /// Whether its name is the error's red (`.row.err`).
     failed: bool,
-    /// What another program changed in it, if it did (`d.outside`): a purple dot at its
+    /// What another program changed in it, if it did (`d.outside`): an info-blue dot at its
     /// right where it has no mark (`.state-dot`).
     outside: Option<&'a str>,
     /// Whether it takes a click though it isn't selectable (the document's row, whose click
@@ -1735,7 +1881,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
                 eye,
                 word,
                 crate::shortcuts::Command::Hide.shown(ui.ctx()),
-                None,
+                line.not_drawn,
             ),
             shown,
         )
@@ -1783,11 +1929,16 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
         } else {
             theme::BROWSER_META
         };
-        let galley = ui.painter().layout_no_wrap(
+        // At most half the room between the name's start and the mark, cut short with an
+        // ellipsis past it, so a long feature's name in it never hides the row's own name,
+        // nor runs out of the row's left (the prototype's `.r-meta` doesn't shrink).
+        let mut job = egui::text::LayoutJob::simple_singleline(
             meta.to_owned(),
             egui::FontId::proportional(theme::HEADER_SIZE),
             colour,
         );
+        job.wrap = egui::text::TextWrapping::truncate_at_width(((right - x) / 2.0).max(0.0));
+        let galley = ui.painter().layout_job(job);
         let width = galley.size().x;
         ui.painter().galley(
             egui::pos2(right - width, centre - galley.size().y / 2.0),
@@ -1818,7 +1969,7 @@ fn row(ui: &mut Ui, line: &Line<'_>) -> RowAnswer {
 }
 
 /// The mark of a feature another program changed (`d.outside`), the browser's and the
-/// timeline's alike: a purple dot filling `rect` (`.state-dot`, or the timeline's
+/// timeline's alike: an info-blue dot filling `rect` (`.state-dot`, or the timeline's
 /// `.badge.outside`, in a ring of `ring`'s colour 1.5 outside it), labelled with what
 /// changed (`changed on disk: radius 5 → 3`) for the accessibility tree, and with the
 /// prototype's words as its hover text.
@@ -1953,9 +2104,13 @@ mod tests {
             entry("a91cw0de", "cylinder", &[], Health::Healthy),
             entry("m3tq8v0z", "cut", &["k7f2qx3m", "a91cw0de"], Health::Error),
         ];
-        let failed = crate::tab::browser(&timeline(&entries, &["k7f2qx3m", "a91cw0de"]));
+        let failed = crate::tab::browser(
+            &timeline(&entries, &["k7f2qx3m", "a91cw0de"]),
+            &[],
+            &crate::tab::Browser::default(),
+        );
         assert_eq!(
-            rows(&failed.bodies),
+            rows(failed.bodies()),
             [
                 ("k7f2qx3m".to_owned(), Health::Healthy, None),
                 ("a91cw0de".to_owned(), Health::Healthy, None)
@@ -1966,7 +2121,14 @@ mod tests {
         let mut built = entries.clone();
         built[2].health = Health::Healthy;
         let body = |entries: &[Entry]| {
-            rows(&crate::tab::browser(&timeline(entries, &["m3tq8v0z"])).bodies)
+            rows(
+                crate::tab::browser(
+                    &timeline(entries, &["m3tq8v0z"]),
+                    &[],
+                    &crate::tab::Browser::default(),
+                )
+                .bodies(),
+            )
         };
         assert_eq!(
             body(&built),
@@ -2163,9 +2325,10 @@ mod tests {
         tab: Option<Tab>,
         sessions: Arc<Sessions<Fake>>,
         name: Option<NameField>,
-        started: bool,
+        next_frame: bool,
         drawing: crate::viewport::Drawing,
         remembered: crate::dialog::Remembered,
+        toggled: bool,
     }
 
     fn fid(id: &str) -> FeatureId {
@@ -2179,6 +2342,9 @@ mod tests {
             name: name.to_owned(),
             health,
             marked_by: matches!(health, Health::Error | Health::Warning).then(|| fid(id)),
+            consumers: Default::default(),
+            suppressed: false,
+            last_healthy: None,
         }
     }
 
@@ -2198,7 +2364,7 @@ mod tests {
         let mut answer = timeline(features, &[]);
         answer.problems = problems;
         tab.timeline = Some(answer);
-        tab.browser = Browser { bodies, sketches };
+        tab.browser = Browser::new(bodies, sketches);
         tab
     }
 
@@ -2249,9 +2415,10 @@ mod tests {
                 |dir| silico_core::cache::Cache::unsealed(dir),
             )),
             name: None,
-            started: false,
+            next_frame: false,
             drawing: crate::viewport::Drawing::default(),
             remembered: crate::dialog::Remembered::default(),
+            toggled: false,
         };
         let mut h = Harness::builder()
             .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
@@ -2263,10 +2430,12 @@ mod tests {
                             tab: shown.tab.as_mut(),
                             sessions: &shown.sessions,
                             name: &mut shown.name,
-                            started: &mut shown.started,
+                            next_frame: &mut shown.next_frame,
                             drawing: &mut shown.drawing,
                             dialog_key: None,
                             remembered: &shown.remembered,
+                            browser_collapsed: false,
+                            browser_toggled: &mut shown.toggled,
                         }
                         .browser(ui);
                     });
@@ -2726,16 +2895,19 @@ mod tests {
     type Expected<'a> = (&'a str, f32, Color32, Option<(Color32, &'a str)>);
 
     #[test]
-    fn a_row_another_program_changed_has_its_purple_dot_where_it_has_no_health_mark() {
+    fn a_row_another_program_changed_has_its_info_dot_where_it_has_no_health_mark() {
         // The prototype's row (`o.mark === 'outside'`): a `.state-dot` (8 square, round) in
-        // `--purple` (#b780ff) at the row's right, the name cut 4 (`.row`'s gap) before it;
-        // a row with a health mark shows that mark alone.
-        const PURPLE: Color32 = Color32::from_rgb(0xb7, 0x80, 0xff);
+        // `--outside` (the info tone, #adbbff; Trevin's change of 2026-11-09, from purple) at
+        // the row's right, the name cut 4 (`.row`'s gap) before it; a row with a health mark
+        // shows that mark alone.
+        const OUTSIDE: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
         const DOT: f32 = 8.0;
         let mut tab = modelled();
         // Named long enough to be cut short by the dot.
         let long = "Block with a name long enough to run past the browser's edge";
-        tab.browser.bodies[0].name = long.to_owned();
+        let mut bodies = tab.browser.bodies().to_vec();
+        bodies[0].name = long.to_owned();
+        tab.browser = crate::tab::Browser::new(bodies, tab.browser.sketches().to_vec());
         for id in ["b0000001", "c0000001"] {
             tab.outside.insert(fid(id), "height 10 → 11".to_owned());
         }
@@ -2756,7 +2928,7 @@ mod tests {
             })
             .collect();
         assert!(
-            matches!(circles[..], [(centre, radius, PURPLE)]
+            matches!(circles[..], [(centre, radius, OUTSIDE)]
                 if near_pos(centre, dot.center()) && near(radius, DOT / 2.0)),
             "the block's dot: {circles:?}, not {DOT} across at {:?}",
             dot.center()
@@ -2844,7 +3016,7 @@ mod tests {
                 .all(|shown| format(shown).font_id.family != FontFamily::Monospace),
             "a prefix"
         );
-        assert!(!h.state().started, "an edit asked");
+        assert!(!h.state().next_frame, "an edit asked");
 
         // A sketch's prefix (`.row .prefix`), as a row with one draws it: 4 after the icon,
         // 11 points of the monospace font, its state's colour on a selected row too; the
@@ -2861,6 +3033,7 @@ mod tests {
                             depth: 2,
                             caret: None,
                             eye: Some(true),
+                            not_drawn: None,
                             icon: Icon::Sketch,
                             prefix: Some("(–)"),
                             name: "Profile",
@@ -2898,6 +3071,72 @@ mod tests {
             css::BLUE_TEXT,
             meta.left() - css::ROW_GAP,
         );
+    }
+
+    /// At the browser's least column, 200 (pane_widths.rs), less its border, 199: a sketch's
+    /// row two levels in, with its prefix and a health mark, shows a default name with two
+    /// digits, `Sketch12`, whole (by hand from the parts' widths: 100 before the prefix, the
+    /// prefix's 19.8 and 4, then the name, and 4, the mark's 14, and 6 after it, which leave
+    /// the name 51.2, and egui fits it by its last glyph's ink, 51.0, not its advance, 52.2);
+    /// and a body's, with its mark, the longest default name, `Intersect`. A pane a point
+    /// narrower cuts the sketch's name short, so the test can tell.
+    #[test]
+    fn at_the_least_browser_a_deep_rows_parts_and_a_default_name_fit() {
+        let drawn_at = |width: f32| {
+            let mut h = Harness::builder()
+                .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + 100.0))
+                .build_ui(move |ui| {
+                    let rows = [
+                        (Icon::Sketch, Some("(–)"), "Sketch12", Health::Error),
+                        (Icon::Body, None, "Intersect", Health::Warning),
+                    ];
+                    for (at, (icon, prefix, name, health)) in rows.into_iter().enumerate() {
+                        let top = PANE.y + at as f32 * css::ROW_H;
+                        let pane = Rect::from_min_size(
+                            Pos2::new(PANE.x, top),
+                            Vec2::new(width, css::ROW_H),
+                        );
+                        ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
+                            row(
+                                ui,
+                                &Line {
+                                    id: egui::Id::new(("least", at)),
+                                    depth: 2,
+                                    caret: None,
+                                    eye: Some(true),
+                                    not_drawn: None,
+                                    icon,
+                                    prefix,
+                                    name,
+                                    selected: Some(false),
+                                    meta: None,
+                                    mark: Some((health, None)),
+                                    failed: false,
+                                    outside: None,
+                                    clicks: false,
+                                },
+                            );
+                        });
+                    }
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(4);
+            h
+        };
+        let elided = |h: &Harness<'_>, name: &str| {
+            let shown: Vec<bool> = texts(h)
+                .iter()
+                .filter(|shown| shown.galley.text() == name)
+                .map(|shown| shown.galley.elided)
+                .collect();
+            assert_eq!(shown.len(), 1, "{name} painted {} times", shown.len());
+            shown[0]
+        };
+        let h = drawn_at(crate::pane_widths::BROWSER_MIN_W - css::BORDER);
+        assert!(!elided(&h, "Sketch12"), "Sketch12 cut short");
+        assert!(!elided(&h, "Intersect"), "Intersect cut short");
+        let h = drawn_at(198.0);
+        assert!(elided(&h, "Sketch12"), "Sketch12 whole at 198");
     }
 
     #[test]
@@ -2945,8 +3184,13 @@ mod tests {
     #[test]
     fn a_hidden_rows_name_and_icon_are_dimmed_as_hidden_obj_from_the_frame_its_eye_is_clicked() {
         let mut tab = modelled();
-        tab.hidden
-            .insert(crate::tab::Hideable::Feature(fid("b0000001")));
+        tab.overrides.insert(
+            crate::tab::Hideable::Feature(fid("b0000001")),
+            crate::tab::Override {
+                shown: false,
+                under: Default::default(),
+            },
+        );
         let mut h = drawn(tab);
         h.remove_cursor();
         h.run_steps(2);
@@ -2986,7 +3230,7 @@ mod tests {
             ..Said::default()
         };
         let down = |n: f32| css::TITLE_H + n * css::ROW_H;
-        let none_yet = "None yet. A pad or a primitive makes one.";
+        let none_yet = "None yet. A pad makes one.";
         for (features, problem, bodies) in [
             (&[][..], None, none_yet),
             (&[][..], Some(problem()), none_yet),
@@ -3063,16 +3307,16 @@ mod tests {
 
         // F2 on the block: its row's field; a name typed, then Enter, sent, and the next
         // frame asked for, to poll it.
-        assert!(!h.state().started);
+        assert!(!h.state().next_frame);
         tab_of(&mut h).start_rename(fid("b0000001"), crate::feature_menu::Place::Browser);
         h.run_steps(3);
         assert!(h.get_by_role(Role::TextInput).is_focused());
         h.get_by_role(Role::TextInput).type_text("Plate");
         h.run_steps(2);
-        assert!(!h.state().started, "sent as it's typed");
+        assert!(!h.state().next_frame, "sent as it's typed");
         h.key_press(Key::Enter);
         h.run_steps(2);
-        assert!(h.state().started, "the name sent, never polled");
+        assert!(h.state().next_frame, "the name sent, never polled");
         assert!(tab_of(&mut h).renaming.is_none());
 
         // The menu's Suppress on the shell's row: sent, and polled the same.
@@ -3081,7 +3325,7 @@ mod tests {
         h.run_steps(2);
         h.get_by_role_and_label(Role::Button, "Suppress").click();
         h.run_steps(2);
-        assert!(h.state().started, "the suppression sent, never polled");
+        assert!(h.state().next_frame, "the suppression sent, never polled");
     }
 }
 
@@ -3259,9 +3503,10 @@ mod property_panel_drawn {
         tab: Option<Tab>,
         sessions: Arc<Sessions<Fake>>,
         name: Option<NameField>,
-        started: bool,
+        next_frame: bool,
         drawing: crate::viewport::Drawing,
         remembered: crate::dialog::Remembered,
+        toggled: bool,
     }
 
     fn fid(id: &str) -> FeatureId {
@@ -3328,9 +3573,10 @@ mod property_panel_drawn {
                 |dir| silico_core::cache::Cache::unsealed(dir),
             )),
             name: None,
-            started: false,
+            next_frame: false,
             drawing: crate::viewport::Drawing::default(),
             remembered: crate::dialog::Remembered::default(),
+            toggled: false,
         };
         let mut h = Harness::builder()
             .with_size(Vec2::new(PANE.x + width + 40.0, PANE.y + HEIGHT + 40.0))
@@ -3342,10 +3588,12 @@ mod property_panel_drawn {
                             tab: shown.tab.as_mut(),
                             sessions: &shown.sessions,
                             name: &mut shown.name,
-                            started: &mut shown.started,
+                            next_frame: &mut shown.next_frame,
                             drawing: &mut shown.drawing,
                             dialog_key: None,
                             remembered: &shown.remembered,
+                            browser_collapsed: false,
+                            browser_toggled: &mut shown.toggled,
                         }
                         .properties(ui);
                     });
@@ -3788,9 +4036,14 @@ mod property_panel_drawn {
                 let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
                 ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
                     let mut cards = properties::Cards::default();
-                    dialog
-                        .borrow_mut()
-                        .ui(ui, &mut cards, None, &|_| None, &|_| false, true);
+                    dialog.borrow_mut().ui(
+                        ui,
+                        &mut cards,
+                        None,
+                        &|_| None,
+                        &|_| false,
+                        crate::dialog::Allowed::ALL,
+                    );
                 });
             });
         theme::apply(&h.ctx);
@@ -3865,7 +4118,14 @@ mod property_panel_drawn {
                     let pane = Rect::from_min_size(PANE, Vec2::new(W, HEIGHT));
                     ui.scope_builder(UiBuilder::new().max_rect(pane), |ui| {
                         let mut cards = properties::Cards::default();
-                        let done = dialog.ui(ui, &mut cards, preview, &|_| None, &|_| false, true);
+                        let done = dialog.ui(
+                            ui,
+                            &mut cards,
+                            preview,
+                            &|_| None,
+                            &|_| false,
+                            crate::dialog::Allowed::ALL,
+                        );
                         if done != Action::None {
                             *action = done;
                         }
@@ -4473,7 +4733,7 @@ mod property_panel_drawn {
         // Edit Feature's read of the box, under way: the dialog opens once it answers.
         let shown = h.state();
         assert!(shown.tab.as_ref().unwrap().in_dialog());
-        assert!(shown.started);
+        assert!(shown.next_frame);
     }
 
     #[test]
@@ -4509,7 +4769,7 @@ mod property_panel_drawn {
         let tab = h.state().tab.as_ref().unwrap();
         assert_eq!(tab.selection().feature(), Some(&fid("c0000001")));
         assert_eq!(tab.timeline_scroll(), Some(&fid("c0000001")));
-        assert!(!h.state().started, "a selection sends nothing");
+        assert!(!h.state().next_frame, "a selection sends nothing");
     }
 
     /// The pane's width in the app's 1280 × 800 window (its fixture's screenshots): the
@@ -4839,12 +5099,18 @@ mod property_panel_drawn {
             features: Some(vec![entry("aaaaaaaa", "box", "Block", Health::Healthy)]),
             bodies: vec![fid("aaaaaaaa")],
         });
-        tab.browser.bodies = vec![crate::tab::Row {
-            id: fid("aaaaaaaa"),
-            name: "Block".to_owned(),
-            health: Health::Healthy,
-            marked_by: None,
-        }];
+        tab.browser = crate::tab::Browser::new(
+            vec![crate::tab::Row {
+                id: fid("aaaaaaaa"),
+                name: "Block".to_owned(),
+                health: Health::Healthy,
+                marked_by: None,
+                consumers: Default::default(),
+                suppressed: false,
+                last_healthy: None,
+            }],
+            tab.browser.sketches().to_vec(),
+        );
         let model = crate::selection::tests::box_model();
         tab.selection_mut()
             .published(Some((model, Revision::OPENED)), 1);
@@ -4919,9 +5185,9 @@ mod property_panel_drawn {
         y = row_at(&h, "Made by", "Block", y, body(css::FS), css::INFO);
         assert!(h.query_by_role_and_label(Role::Link, "Block").is_some());
         y = row_at(&h, "Stability", "Stable", y, body(css::FS), css::GREEN);
-        // A planar face's buttons, 10 under the rows (app.js:582): Sketch on this face
-        // (`.btn-secondary`, Gray.300) first, then Edit Block (`.btn-ghost`, no fill), 6
-        // after it.
+        // A planar face's buttons, 10 under the rows (app.js's `selectionProps`): Sketch on
+        // this face (`.btn-secondary`, Gray.300) first, then Edit Block (`.btn-ghost`, no
+        // fill), 6 after it.
         let sketch = h
             .get_by_role_and_label(Role::Button, "Sketch on this face")
             .rect();
@@ -5149,11 +5415,11 @@ mod property_panel_drawn {
     #[test]
     fn every_element_type_has_its_words_for_each_kind_of_element_it_can_be() {
         use silico_core::command::elements::ElementType as T;
-        // By hand: the prototype's words where it has them (app.js:567-573: "Planar face",
-        // "Cylindrical face", "Line edge", "Arc edge", "Vertex"); for each other type the
-        // core gives (`ElementType`, its geometry as OCCT names it), a face its adjective
-        // before "face", an edge its curve's noun before "edge", as those are; the kind alone
-        // for a type of no name (`Other`). The words past the prototype's are #414's
+        // By hand: the prototype's words where it has them (app.js's `selectionProps`:
+        // "Planar face", "Cylindrical face", "Line edge", "Arc edge", "Vertex"); for each
+        // other type the core gives (`ElementType`, its geometry as OCCT names it), a face its
+        // adjective before "face", an edge its curve's noun before "edge", as those are; the
+        // kind alone for a type of no name (`Other`). The words past the prototype's are #414's
         // approved ones, pinned.
         let (face, edge, vertex) = (ElementKind::Face, ElementKind::Edge, ElementKind::Vertex);
         let table = [
@@ -5210,7 +5476,7 @@ mod property_panel_drawn {
 
     #[test]
     fn a_vertex_not_measured_yet_says_its_position_isnt_and_offers_edit_alone() {
-        // `selectionProps`' vertex (app.js:573): "Vertex" on its body, and its one measure,
+        // `selectionProps`' vertex (app.js): "Vertex" on its body, and its one measure,
         // Position, which says it isn't measured till `elements` answers, in `.subdued`,
         // never a dash; no Sketch on this face, no Fillet: Edit Block alone, 10 under the rows.
         let h = drawn(selecting(&["Vertex1"], Answers::default()));
@@ -5268,16 +5534,21 @@ mod property_panel_drawn {
         // Block in the timeline): its head names its own body's row, Body1, never the
         // other's, Plate, nor its feature's name.
         let mut tab = selecting(&["Face5"], Answers::default());
-        tab.browser.bodies[0].name = "Body1".to_owned();
-        tab.browser.bodies.insert(
+        let mut bodies = tab.browser.bodies().to_vec();
+        bodies[0].name = "Body1".to_owned();
+        bodies.insert(
             0,
             crate::tab::Row {
                 id: fid("b0000002"),
                 name: "Plate".to_owned(),
                 health: Health::Healthy,
                 marked_by: None,
+                consumers: Default::default(),
+                suppressed: false,
+                last_healthy: None,
             },
         );
+        tab.browser = crate::tab::Browser::new(bodies, tab.browser.sketches().to_vec());
         let h = drawn(tab);
         title_and_head(&h, "Face5", "Face · Body1", body(css::FS_SMALL));
         assert!(h.query_by_label_contains("Plate").is_none());

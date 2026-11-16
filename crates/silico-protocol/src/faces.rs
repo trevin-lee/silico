@@ -675,37 +675,135 @@ fn check_curve(c: &Curve, place: &Place) -> Result<(), InvalidParameter> {
 /// request's check and the core's profile both take a loop's area and perimeter by.
 pub fn area_and_perimeter(curves: &[Curve]) -> (f64, f64) {
     use std::f64::consts::PI;
-    let origin = curves
-        .iter()
-        .find_map(|c| c.ends().map(|(start, _)| start))
-        .unwrap_or_default();
+    let origin = loop_origin(curves);
     let (mut twice_area, mut perimeter) = (0.0, 0.0);
     for c in curves {
-        match *c {
-            Curve::Line { start, end } => {
-                twice_area += cross(start, end, origin);
-                perimeter += distance(start, end);
-            }
+        twice_area += twice_area_of(c, origin);
+        perimeter += match *c {
+            Curve::Line { start, end } => distance(start, end),
             Curve::Arc {
-                start,
-                end,
                 radius,
                 start_angle,
                 end_angle,
                 ..
-            } => {
-                let turn = end_angle - start_angle;
-                twice_area +=
-                    cross(start, end, origin) + radius * radius * (turn - libm::sin(turn));
-                perimeter += radius * turn.abs();
-            }
-            Curve::Circle { radius, .. } => {
-                twice_area += 2.0 * PI * radius * radius;
-                perimeter += 2.0 * PI * radius;
-            }
-        }
+            } => radius * (end_angle - start_angle).abs(),
+            Curve::Circle { radius, .. } => 2.0 * PI * radius,
+        };
     }
     (twice_area / 2.0, perimeter)
+}
+
+/// A loop's signed area and first moment, each about a point of its own, as
+/// [`area_moments`] gives them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AreaMoments {
+    /// Its signed area, [`area_and_perimeter`]'s: counter-clockwise positive, a circle
+    /// counter-clockwise ([`loop_area`] runs one the way its role says).
+    pub area: f64,
+    /// The point its moment is taken about, as its area is: its first point, or the origin
+    /// for a lone circle.
+    pub about: [f64; 2],
+    /// Its first moment about `about`: its area times its centroid's offset from `about`, so
+    /// its centroid is `about + moment / area`.
+    pub moment: [f64; 2],
+}
+
+/// A loop's signed area and first moment ([`AreaMoments`]), exactly, by Green's theorem:
+/// each curve's chord's share of the shoelace's sums, about the loop's first point; and each
+/// arc's segment between its chord and itself, of area (r²/2)(θ − sin θ) for its turn θ
+/// (below 0 run clockwise), whose moment about its circle's centre is (2/3)r³sin³(θ/2) toward
+/// the middle of its turn; a circle's disc counter-clockwise, about its centre. Its area is
+/// [`area_and_perimeter`]'s, by the same terms.
+pub fn area_moments(curves: &[Curve]) -> AreaMoments {
+    let about = loop_origin(curves);
+    let (mut twice_area, mut moment) = (0.0, [0.0, 0.0]);
+    for c in curves {
+        twice_area += twice_area_of(c, about);
+        let [x, y] = moment_of(c, about);
+        moment = [moment[0] + x, moment[1] + y];
+    }
+    AreaMoments {
+        area: twice_area / 2.0,
+        about,
+        moment,
+    }
+}
+
+/// Where a loop's area and moment are taken about: its first point, or the origin for a
+/// lone circle, which has none.
+fn loop_origin(curves: &[Curve]) -> [f64; 2] {
+    curves
+        .iter()
+        .find_map(|c| c.ends().map(|(start, _)| start))
+        .unwrap_or_default()
+}
+
+/// Twice `c`'s share of a loop's signed area about `origin`: its chord's cross product; an
+/// arc's, and its segment beside its chord, r²(θ − sin θ); a circle's disc counter-clockwise,
+/// 2πr².
+fn twice_area_of(c: &Curve, origin: [f64; 2]) -> f64 {
+    match *c {
+        Curve::Line { start, end } => cross(start, end, origin),
+        Curve::Arc {
+            start,
+            end,
+            radius,
+            start_angle,
+            end_angle,
+            ..
+        } => cross(start, end, origin) + twice_segment(radius, end_angle - start_angle),
+        Curve::Circle { radius, .. } => 2.0 * std::f64::consts::PI * radius * radius,
+    }
+}
+
+/// Twice the signed area between an arc of `radius` turning `turn` radians and its chord:
+/// r²(θ − sin θ), below 0 for a turn clockwise.
+fn twice_segment(radius: f64, turn: f64) -> f64 {
+    radius * radius * (turn - libm::sin(turn))
+}
+
+/// `c`'s share of a loop's first moment about `origin`: its chord's share of the shoelace's,
+/// (p + q)(p × q)/6, with p and q its ends from `origin`; an arc's, and its segment's, its
+/// area times its centre's offset and (2/3)r³sin³(θ/2) toward the middle of its turn; a
+/// circle's disc's, counter-clockwise, about its centre.
+fn moment_of(c: &Curve, origin: [f64; 2]) -> [f64; 2] {
+    let chord = |start: [f64; 2], end: [f64; 2]| {
+        let (p, q) = (
+            [start[0] - origin[0], start[1] - origin[1]],
+            [end[0] - origin[0], end[1] - origin[1]],
+        );
+        let sixth = (p[0] * q[1] - p[1] * q[0]) / 6.0;
+        [(p[0] + q[0]) * sixth, (p[1] + q[1]) * sixth]
+    };
+    match *c {
+        Curve::Line { start, end } => chord(start, end),
+        Curve::Arc {
+            center,
+            start,
+            end,
+            radius,
+            start_angle,
+            end_angle,
+        } => {
+            let turn = end_angle - start_angle;
+            let segment = twice_segment(radius, turn) / 2.0;
+            let half = libm::sin(turn / 2.0);
+            let reach = 2.0 / 3.0 * radius * radius * radius * half * half * half;
+            let middle = start_angle + turn / 2.0;
+            let [x, y] = chord(start, end);
+            [
+                x + segment * (center[0] - origin[0]) + reach * libm::cos(middle),
+                y + segment * (center[1] - origin[1]) + reach * libm::sin(middle),
+            ]
+        }
+        Curve::Circle { center, radius } => {
+            let area = std::f64::consts::PI * radius * radius;
+            [
+                area * (center[0] - origin[0]),
+                area * (center[1] - origin[1]),
+            ]
+        }
+    }
 }
 
 /// `a` × `b` about `origin`.
@@ -1095,6 +1193,163 @@ mod tests {
             line([0.0, 0.0], [3.0, 0.0]),
         ];
         close(loop_area(&quarter, true), 9.0 * PI / 4.0);
+    }
+
+    /// `curves`' centroid, from [`area_moments`].
+    fn centroid_of(curves: &[Curve]) -> [f64; 2] {
+        let m = area_moments(curves);
+        [
+            m.about[0] + m.moment[0] / m.area,
+            m.about[1] + m.moment[1] / m.area,
+        ]
+    }
+
+    #[track_caller]
+    fn near(got: [f64; 2], want: [f64; 2]) {
+        for k in 0..2 {
+            assert!(
+                (got[k] - want[k]).abs() <= 1e-12 * want[k].abs().max(1.0),
+                "{got:?} against {want:?}"
+            );
+        }
+    }
+
+    /// The sector of radius `r` about the origin from angle 0 through `turn`, counter-
+    /// clockwise: from the centre out along +x, round its arc, and back.
+    fn sector(r: f64, turn: f64) -> Vec<Curve> {
+        let end = [r * libm::cos(turn), r * libm::sin(turn)];
+        vec![
+            line([0.0, 0.0], [r, 0.0]),
+            Curve::Arc {
+                center: [0.0, 0.0],
+                start: [r, 0.0],
+                end,
+                radius: r,
+                start_angle: 0.0,
+                end_angle: turn,
+            },
+            line(end, [0.0, 0.0]),
+        ]
+    }
+
+    #[test]
+    fn a_sectors_area_and_centroid_are_its_own_at_turns_either_side_of_a_half_both_ways() {
+        // Radius 10 through θ: area 50θ, its centroid 2r·sin α / 3α from the centre along
+        // its bisector α = θ/2. Walked clockwise, the area's sign turns, the centroid stays.
+        for turn in [
+            PI / 3.0,
+            FRAC_PI_2,
+            2.0 * PI / 3.0,
+            4.0 * PI / 3.0,
+            1.5 * PI,
+            5.0 * PI / 3.0,
+        ] {
+            let half = turn / 2.0;
+            let reach = 20.0 * libm::sin(half) / (3.0 * half);
+            let want = [reach * libm::cos(half), reach * libm::sin(half)];
+            let ccw = sector(10.0, turn);
+            let area = area_moments(&ccw).area;
+            assert!(
+                (area - 50.0 * turn).abs() <= 1e-12 * 50.0 * turn,
+                "{turn}: {area}"
+            );
+            near(centroid_of(&ccw), want);
+            let cw = reversed(&ccw);
+            let area = area_moments(&cw).area;
+            assert!(
+                (area + 50.0 * turn).abs() <= 1e-12 * 50.0 * turn,
+                "{turn}: {area}"
+            );
+            near(centroid_of(&cw), want);
+            // Its area is `area_and_perimeter`'s, by the same terms.
+            assert_eq!(area_moments(&ccw).area, area_and_perimeter(&ccw).0);
+        }
+    }
+
+    #[test]
+    fn a_segments_centroid_is_its_own_either_side_of_a_half_both_ways() {
+        // The region between an arc of radius 10 turning θ about the origin, from −θ/2 to θ/2,
+        // and its chord: area (r²/2)(θ − sin θ), its centroid 4r·sin³(θ/2) / 3(θ − sin θ)
+        // along +x.
+        for turn in [2.0 * PI / 3.0, 4.0 * PI / 3.0] {
+            let half = turn / 2.0;
+            let (from, to) = (
+                [10.0 * libm::cos(-half), 10.0 * libm::sin(-half)],
+                [10.0 * libm::cos(half), 10.0 * libm::sin(half)],
+            );
+            let segment = vec![
+                Curve::Arc {
+                    center: [0.0, 0.0],
+                    start: from,
+                    end: to,
+                    radius: 10.0,
+                    start_angle: -half,
+                    end_angle: half,
+                },
+                line(to, from),
+            ];
+            let s = libm::sin(half);
+            let want = [40.0 * s * s * s / (3.0 * (turn - libm::sin(turn))), 0.0];
+            let area = 50.0 * (turn - libm::sin(turn));
+            assert!((area_moments(&segment).area - area).abs() <= 1e-12 * area);
+            near(centroid_of(&segment), want);
+            near(centroid_of(&reversed(&segment)), want);
+        }
+    }
+
+    #[test]
+    fn a_curves_moment_is_taken_about_the_point_it_is_given() {
+        // A circle's share about (1, 2): its disc, 4π, times its centre's offset from there,
+        // (3 − 1, −4 − 2). (In a loop a circle is alone, about the origin; the share is
+        // about whatever point it's asked of.)
+        let [x, y] = moment_of(&circle([3.0, -4.0], 2.0), [1.0, 2.0]);
+        assert!((x - 8.0 * PI).abs() <= 1e-12, "{x}");
+        assert!((y + 24.0 * PI).abs() <= 1e-12, "{y}");
+    }
+
+    #[test]
+    fn a_lone_circles_moment_is_its_disc_about_its_centre() {
+        let disc = [circle([3.0, -4.0], 2.0)];
+        let m = area_moments(&disc);
+        assert_eq!(m.about, [0.0, 0.0]);
+        assert!((m.area - 4.0 * PI).abs() <= 1e-12);
+        near(centroid_of(&disc), [3.0, -4.0]);
+    }
+
+    #[test]
+    fn the_prototypes_l_with_its_inner_corner_filleted_is_worked_by_hand() {
+        // The prototype's bracket profile (geometry.js's `prof`: W 60, tb 5, tu 5, H 50) with
+        // its inner corner filleted at r 5: the arc about (10, 10) from (10, 5) clockwise to
+        // (5, 10). The L is 525 mm², its moments (9562.5, 6937.5); the fillet adds the
+        // spandrel between (5, 5) and the arc, the square [5, 10]² less a quarter disc:
+        // 25(1 − π/4), its moments 5·25(1 − π/4) + r³(5/6 − π/4) = 125(11/6 − π/2) each way.
+        let filleted = vec![
+            line([0.0, 0.0], [60.0, 0.0]),
+            line([60.0, 0.0], [60.0, 5.0]),
+            line([60.0, 5.0], [10.0, 5.0]),
+            Curve::Arc {
+                center: [10.0, 10.0],
+                start: [10.0, 5.0],
+                end: [5.0, 10.0],
+                radius: 5.0,
+                start_angle: -FRAC_PI_2,
+                end_angle: -PI,
+            },
+            line([5.0, 10.0], [5.0, 50.0]),
+            line([5.0, 50.0], [0.0, 50.0]),
+            line([0.0, 50.0], [0.0, 0.0]),
+        ];
+        let area = 525.0 + 25.0 * (1.0 - PI / 4.0);
+        let spandrel = 125.0 * (11.0 / 6.0 - FRAC_PI_2);
+        assert!((area_moments(&filleted).area - area).abs() <= 1e-12 * area);
+        near(
+            centroid_of(&filleted),
+            [(9562.5 + spandrel) / area, (6937.5 + spandrel) / area],
+        );
+        near(
+            centroid_of(&reversed(&filleted)),
+            [(9562.5 + spandrel) / area, (6937.5 + spandrel) / area],
+        );
     }
 
     #[test]

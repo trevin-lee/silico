@@ -682,3 +682,130 @@ fn the_sessions_own_reload_is_filed_under_reload_in_its_logs() {
     assert_eq!(reloaded.len(), 1, "{:?}", logs.events);
     assert_eq!(reloaded[0].spans[0], "reload", "{:?}", reloaded[0].spans);
 }
+
+/// What `session` logs, read through `read_logs` until an event whose message starts with
+/// `start` is kept, `status` asked meanwhile (each starting a comparison, these sessions
+/// comparing with no interval): the first such event.
+fn first_logged(
+    sessions: &Sessions<Arc<FakeKernel>>,
+    session: &SessionId,
+    start: &str,
+) -> LogEvent {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        let _ = sessions.status(session);
+        if let Some(event) = every(sessions, session)
+            .events
+            .into_iter()
+            .find(|e| e.message.starts_with(start))
+        {
+            return event;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never logged {start:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// A disk watch's read of a file as it is, through any link at its path, whatever the
+/// workspace, but `lie` for a file named `liar` while `lying` is set: the bytes a comparison
+/// found, which the file no longer holds when the session's own reload reads it.
+fn reading(
+    liar: &'static str,
+    lie: &'static [u8],
+    lying: Arc<std::sync::atomic::AtomicBool>,
+) -> silico_core::disk::Reader {
+    use silico_core::disk::Found;
+    Arc::new(move |path: &std::path::Path| {
+        if lying.load(std::sync::atomic::Ordering::SeqCst)
+            && path.file_name() == Some(std::ffi::OsStr::new(liar))
+        {
+            return Found::Bytes(lie.to_vec());
+        }
+        match std::fs::read(path) {
+            Ok(bytes) => Found::Bytes(bytes),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Found::Gone,
+            Err(_) => Found::Unreadable,
+        }
+    })
+}
+
+#[test]
+fn the_watchs_own_reload_of_a_path_led_out_of_the_workspace_logs_the_refusal_as_a_command_gets_it()
+{
+    // #479: the reload, for bytes the watch found settled at a path that now leads out of
+    // the workspace, reads nothing and keeps nothing, and says why in the session's logs:
+    // the refusal a command reading the file then is given, word for word.
+    keep_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("work");
+    std::fs::create_dir(&root).unwrap();
+    let path = root.join("part.silico");
+    std::fs::write(&path, a_box("k7f2qx3m")).unwrap();
+    let outside = dir.path().join("outside.silico");
+    std::fs::write(&outside, a_box("b0000001")).unwrap();
+    let lying = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sessions = sessions(Arc::new(FakeKernel::new(1).unwrap()), &dir)
+        .watching_disk(
+            std::time::Duration::ZERO,
+            reading("part.silico", b"", lying),
+            Arc::new(std::time::Instant::now),
+        )
+        .unwrap()
+        .in_workspace(&root)
+        .unwrap();
+    let s1 = answer(sessions.open(&path, false)).session.unwrap().id;
+    std::fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(&outside, &path).unwrap();
+    const READ_NOTHING: &str = "the file's reload read nothing, so nothing of it is kept: ";
+    let logged = first_logged(&sessions, &s1, READ_NOTHING);
+    assert_eq!(logged.spans[0], "reload", "{:?}", logged.spans);
+    assert_eq!(logged.level, LogLevel::Info);
+    let (code, message, parameter, _) = refusal(&answer(sessions.text(&s1, None)));
+    assert_eq!(
+        (code, parameter.as_deref()),
+        (ErrorCode::InvalidInput, Some("path"))
+    );
+    assert!(message.ends_with(" is outside the workspace this server was started in"));
+    // The layer writes the event's fields after its message, as it writes every event's.
+    assert_eq!(
+        logged.message,
+        format!("{READ_NOTHING}{message} session={s1}")
+    );
+}
+
+#[test]
+fn the_watchs_own_reload_of_its_own_text_another_session_holds_logs_the_claims_refusal_as_a_command_gets_it()
+ {
+    // #479: the reload finds the session's own text, but through a link to another
+    // session's file, which the claim refuses; it keeps nothing, and says why in the
+    // session's logs: the refusal a command reading the file then is given, word for word.
+    // The watch's comparisons are made to have found other bytes, as one made just before
+    // the file came to hold the session's text again would have.
+    keep_logs();
+    let dir = tempfile::tempdir().unwrap();
+    let lying = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let sessions = sessions(Arc::new(FakeKernel::new(1).unwrap()), &dir)
+        .watching_disk(
+            std::time::Duration::ZERO,
+            reading("part.silico", br#"{"other": "bytes"}"#, Arc::clone(&lying)),
+            Arc::new(std::time::Instant::now),
+        )
+        .unwrap();
+    let text = a_box("k7f2qx3m");
+    let s1 = opened(&sessions, &dir, "part.silico", &text);
+    let s2 = opened(&sessions, &dir, "other.silico", &text);
+    let path = dir.path().join("part.silico");
+    std::fs::remove_file(&path).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("other.silico"), &path).unwrap();
+    lying.store(true, std::sync::atomic::Ordering::SeqCst);
+    const OWN_TEXT: &str = "the file's reload found the session's own text and couldn't take it, so nothing of it is kept: ";
+    let logged = first_logged(&sessions, &s1, OWN_TEXT);
+    assert_eq!(logged.spans[0], "reload", "{:?}", logged.spans);
+    assert_eq!(logged.level, LogLevel::Info);
+    let (_, message, _, _) = refusal(&answer(sessions.text(&s1, None)));
+    assert!(message.contains(&s2.to_string()), "{message}");
+    assert_eq!(logged.message, format!("{OWN_TEXT}{message} session={s1}"));
+}

@@ -76,7 +76,8 @@
 //!
 //! A session also watches its file on disk (docs/design/m5.0-app.md, section 4): `status`
 //! starts a comparison off the caller's thread at most once each [`DISK_CHECK_INTERVAL`],
-//! and says what the last found (`disk`). One that finds the file changed with no
+//! and says what the last found (`disk`). One that finds the file changed and settled (the
+//! comparison before it found the same bytes, and they aren't empty: #479) with no
 //! transaction open queues the session's own reload on its thread, at most one at a time
 //! (A3): a new revision no command asked for, named `reload` in `status.running`, which
 //! nothing cancels. A client that polls is woken as things it draws change
@@ -139,7 +140,10 @@ use registry::{
 pub use revisions::DiffAnswer;
 pub use threads::MAX_PUBLISHED_READS;
 use threads::{Counted, Reads, Threads};
-use transaction::{Claim, Held, Open, Reload, Rereads, SaveTo, transaction_open, untitled_cache};
+use transaction::{
+    Claim, FoundFile, Held, Open, Reload, Rereads, SaveTo, SettledReload, transaction_open,
+    untitled_cache,
+};
 pub use transaction::{NOT_RELOADED, TOO_LONG};
 pub(crate) use types::SESSION_ID_PATTERN;
 pub use types::{
@@ -209,7 +213,7 @@ struct Session<C: Kernel + 'static> {
     /// ([`registry::watch_saved`]).
     disk: OnceLock<DiskWatch>,
     /// Its own reload of its file, found changed on disk (A3): whether one is queued, and
-    /// the bytes a reload last refused, so the same refusal isn't queued at each comparison.
+    /// what a reload last refused, so the same refusal isn't queued at each comparison.
     /// Taken before the disk watch's lock (whether a comparison is still current is asked
     /// under it), and under none of the others.
     reloads: Mutex<Reloads>,
@@ -243,19 +247,25 @@ struct Session<C: Kernel + 'static> {
 }
 
 /// A session's own reloads (A3): one queued, and what the last refused, if it was refused
-/// and none has been taken since: the digest of the bytes it was queued for, and the
-/// registry's count of claims then (`Book::claims`), since a file another session claimed
-/// may be taken once its claim changes.
+/// and none has been taken since.
 #[derive(Default)]
 struct Reloads {
     queued: bool,
-    refused: Option<([u8; 32], u64)>,
+    refused: Option<Refused>,
 }
 
-/// The digest of a file's bytes, as a refused reload keeps them.
-fn digest(bytes: &[u8]) -> [u8; 32] {
-    use sha2::Digest as _;
-    sha2::Sha256::digest(bytes).into()
+/// The session's own reload, refused (a file another session holds, say), kept so the same
+/// reload isn't queued at each comparison only to be refused again: the digest of the bytes
+/// it was queued for; what its claim was given of the file that held them, where the
+/// session's path led and the file there ([`FoundFile`]); and the registry's count of claims
+/// then (`Book::claims`). It stands while each of those does, since those are all a claim
+/// decides by: a file another session claimed may be taken once its claim changes, and the
+/// same bytes in another file put at the path (the session's own, in place of a link to
+/// another session's) may be taken at once (#490).
+struct Refused {
+    digest: [u8; 32],
+    found: FoundFile,
+    claims: u64,
 }
 
 /// Where a file a command writes may go ([`Sessions::write_rules`]).
@@ -428,15 +438,16 @@ impl<C: Kernel + 'static> Session<C> {
 }
 
 impl<C: Kernel + 'static> Session<C> {
-    /// Whether a comparison that found the file changed, as `found`, should queue the
-    /// session's own reload (A3): not inside a transaction (only `commit` reads the file
-    /// there), nor while its own save has left the file part written (the next save says
-    /// where its old text is), nor while one is queued, nor for the bytes a reload refused
-    /// last (a file another session holds, say), which would be refused again; nor for a
-    /// comparison made against `counter`, a count of the session's reads and writes no
-    /// longer its own (it read or wrote since: dropped, never reported). If it should, it's
-    /// marked queued.
-    fn reload_wanted(&self, found: &[u8], claims: u64, counter: u64) -> bool {
+    /// Whether a comparison that found the file changed and settled, to bytes of digest
+    /// `found`, should queue the session's own reload (A3): not inside a transaction (only
+    /// `commit` reads the file there), nor while its own save has left the file part written
+    /// (the next save says where its old text is), nor while one is queued, nor for what a
+    /// reload refused last ([`Refused`]: a file another session holds, say), the same bytes
+    /// in the same file at the same path, at the same `claims`, which would be refused
+    /// again; nor for a comparison made against `counter`, a count of the session's reads
+    /// and writes no longer its own (it read or wrote since: dropped, never reported). If
+    /// it should, it's marked queued.
+    fn reload_wanted(&self, found: &[u8; 32], claims: u64, counter: u64) -> bool {
         {
             let held = self.held.read();
             let part_written = held
@@ -447,6 +458,9 @@ impl<C: Kernel + 'static> Session<C> {
                 return false;
             }
         }
+        // Where the path leads now and the file there, as a reload's claim would be given
+        // them: looked up with no lock held, since it opens the file.
+        let now = self.found_now();
         let mut reloads = lock(&self.reloads);
         // A comparison the session has read or written since (its own reload, taking these
         // bytes) is dropped, never reported (the design's section 4): checked under the
@@ -454,9 +468,11 @@ impl<C: Kernel + 'static> Session<C> {
         // a comparison found current here either finds `queued` still set or is current.
         if !self.disk.get().is_some_and(|disk| disk.current(counter))
             || reloads.queued
-            || reloads
-                .refused
-                .is_some_and(|refused| refused == (digest(found), claims))
+            || reloads.refused.as_ref().is_some_and(|refused| {
+                refused.digest == *found
+                    && refused.claims == claims
+                    && now.as_ref() == Some(&refused.found)
+            })
         {
             return false;
         }
@@ -464,22 +480,17 @@ impl<C: Kernel + 'static> Session<C> {
         true
     }
 
-    /// What the session's own reload came to, queued for a file found as `found`
-    /// ([`Session::reload`] as `commit` reads the file, inside a transaction too): reloaded
-    /// at a new revision; the file found as the session holds it (a `begin` or another
-    /// command ahead of it reloaded it first), the finding then `unchanged`; inside a
-    /// transaction and changed, nothing, the finding left `changed`; or refused, `found`
-    /// kept with `claims` so the same bytes aren't queued again until a claim changes; any
-    /// other answer forgets a refusal. Whether the client should be woken.
-    fn reloaded_itself(
-        &self,
-        reloaded: Result<Reload, Problems>,
-        found: [u8; 32],
-        claims: u64,
-    ) -> bool {
+    /// What the session's own reload came to, queued for the bytes of digest `found`
+    /// ([`Session::reload_settled`]): reloaded at a new revision; the file found as the
+    /// session holds it (a `begin` or another command ahead of it reloaded it first), the
+    /// finding then `unchanged`; nothing, the finding as the last comparison left it; or
+    /// the settled bytes refused, kept ([`Refused`]: `found`, the file that held them, and
+    /// `claims`) so the same bytes in the same file aren't queued again until a claim
+    /// changes. Any other answer forgets a refusal. Whether the client should be woken.
+    fn reloaded_itself(&self, reloaded: SettledReload, found: [u8; 32], claims: u64) -> bool {
         let (woken, refused) = match reloaded {
-            Ok(Reload::Reloaded) => (true, None),
-            Ok(Reload::AsHeld) => {
+            SettledReload::Reloaded => (true, None),
+            SettledReload::AsHeld => {
                 let held = self.held.read();
                 if let Some(file) = &held.file
                     && file.part_written.is_none()
@@ -490,14 +501,19 @@ impl<C: Kernel + 'static> Session<C> {
                 }
                 (true, None)
             }
-            Ok(Reload::Outside(_)) => (false, None),
-            Err(problems) => {
+            SettledReload::Nothing => (false, None),
+            SettledReload::Refused(problems, file) => {
                 tracing::warn!(
                     session = %self.id,
                     "the file changed on disk, and the session couldn't reload it: {:?}",
                     problems.errors()
                 );
-                (false, Some((found, claims)))
+                let refused = Refused {
+                    digest: found,
+                    found: file,
+                    claims,
+                };
+                (false, Some(refused))
             }
         };
         let mut reloads = lock(&self.reloads);
@@ -508,15 +524,15 @@ impl<C: Kernel + 'static> Session<C> {
     }
 }
 
-/// What a session's disk watch tells it when a comparison finds its file changed: the
-/// session's own reload queued on its thread, behind its commands, if one is wanted
-/// ([`Session::reload_wanted`]), as the next command would reload it (A3). Holds both
-/// weakly, so the watch keeps neither alive.
+/// What a session's disk watch tells it when a comparison finds its file changed and
+/// settled: the session's own reload queued on its thread, behind its commands, if one is
+/// wanted ([`Session::reload_wanted`]), as the next command would reload it (A3). Holds
+/// both weakly, so the watch keeps neither alive.
 fn reloader<P: Clients + 'static>(
     registry: Weak<Registry<P>>,
     session: Weak<Session<P::Client>>,
 ) -> crate::disk::Changed {
-    Arc::new(move |found: &[u8], counter: u64| {
+    Arc::new(move |found: &[u8; 32], counter: u64| {
         let Some(session) = session.upgrade() else {
             return;
         };
@@ -524,15 +540,18 @@ fn reloader<P: Clients + 'static>(
             .upgrade()
             .map_or(0, |registry| lock(&registry.book).claims);
         if session.reload_wanted(found, claims, counter) {
-            session.queue(reload_job(Weak::clone(&registry), digest(found)));
+            session.queue(reload_job(Weak::clone(&registry), *found));
         }
     })
 }
 
-/// The session's own reload, a job on its queue (A3): the file read as `commit` reads it
-/// (claimed as every command's read is, outside a transaction reloaded at a new revision),
-/// named `reload` in `status.running` and the session's logs while it runs, and the client
-/// woken by what it changed. A session closed first never runs it.
+/// The session's own reload, a job on its queue (A3): the file read as `commit` reads it,
+/// and taken only if it holds `found`, the digest of the bytes the disk watch found settled,
+/// or the session's own ([`Session::reload_settled`]): then claimed as every command's read
+/// is, and outside a transaction reloaded at a new revision. Anything else it finds changed
+/// again since, perhaps mid-write, and is neither claimed nor kept: the watch reads it again
+/// (#479). Named `reload` in `status.running` and the session's logs while it runs, and the
+/// client woken by what it changed. A session closed first never runs it.
 fn reload_job<P: Clients + 'static>(
     registry: Weak<Registry<P>>,
     found: [u8; 32],
@@ -565,7 +584,7 @@ fn reload_job<P: Clients + 'static>(
             let claims = registry
                 .upgrade()
                 .map_or(0, |registry| lock(&registry.book).claims);
-            let reloaded = session.reload(Rereads::Always, &claimed);
+            let reloaded = session.reload_settled(&found, &claimed);
             let woken = session.reloaded_itself(reloaded, found, claims);
             // A drag ends at any new revision.
             session.end_stale_drag();
@@ -682,6 +701,16 @@ impl<P: Clients + 'static> Sessions<P> {
     /// the old.
     pub fn on_change(&self, waker: impl Fn() + Send + Sync + 'static) {
         self.registry.waker.set(Arc::new(waker));
+    }
+
+    /// Session `session`'s newest rebuild's count of changes so far, and the last of them
+    /// its watcher has told the client's waker of ([`on_change`](Self::on_change)): equal
+    /// once every change of its count so far has woken the client. A test waits for that
+    /// before it counts the wakes that come after, rather than waiting a while. None with no
+    /// rebuild, or no such session.
+    #[cfg(any(test, feature = "fake"))]
+    pub fn rebuild_told(&self, session: &SessionId) -> Option<(u64, u64)> {
+        find_in(&self.registry, session)?.newest.told()
     }
 
     /// The same sessions, each comparing its file on disk at most once each `interval`,
@@ -1129,7 +1158,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     let _span = tracing::info_span!("check").entered();
                     Ok(CheckAnswer::of(
                         read.model(),
-                        &read.checking.excepted(read.reached),
+                        &read.checking.excepted(read.model(), read.reached),
                     ))
                 },
             ),
@@ -1199,7 +1228,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     let _span = tracing::info_span!("check", fresh).entered();
                     Ok(CheckAnswer::of(
                         &current.model,
-                        &current.checking.excepted(&current.reached),
+                        &current.checking.excepted(&current.model, &current.reached),
                     ))
                 }
                 Err(Unbuilt::Gated { gated, .. }) => Ok(CheckAnswer::refused(gated.problems())),
@@ -2330,12 +2359,17 @@ fn status_in<P: Clients + 'static>(
     let held = found.held.read();
     let gated = matches!(*held.gated, Gated::Checked(_));
     let rebuild = {
-        let state = lock(&found.rebuilds).reported(held.revision, gated);
+        // The state and its count read under the rebuilds' lock, as a rebuild's start
+        // records them (rebuilds, then the newest, then its count), so no rebuild of the
+        // revision can start between the two: never one state beside another's count.
+        let rebuilds = lock(&found.rebuilds);
+        let state = rebuilds.reported(held.revision, gated);
         let mut progress = if gated || state.state == RebuildState::Running {
-            found.newest.of(held.revision)
+            found.newest.of(held.revision, rebuilds.running.as_ref())
         } else {
             None
         };
+        drop(rebuilds);
         // A rebuild not running has no feature running, though its recompute, stopped, may
         // not have ended yet.
         if state.state != RebuildState::Running

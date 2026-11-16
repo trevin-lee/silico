@@ -826,6 +826,35 @@ fn holdable(file: &Sketch) -> Result<(), Error> {
     Err(error)
 }
 
+/// A solution the next solve can't translate ([`Translation::new`] refuses the file a save
+/// would write, as it refuses a drawing): `invalid_result`, as [`holdable`]'s and a collapsed
+/// symmetry's are, the translation's words as its message, its elements kept. So
+/// `invalid_input` is only ever the drawing's refusal, before any solve, whose diagnosis is
+/// of the geometry alone ([`Diagnosed::untranslated`]), which `sketch_tools::freedoms` reads.
+///
+/// Its suggestion is its own, as [`holdable`]'s is for a curve the constraints draw too
+/// small: the translation's tells the user to draw the geometry otherwise, but the drawing
+/// translated, and the constraints moved it where it doesn't, so redrawing it would meet
+/// this again. Only the drawing's refusal, `invalid_input`, is the solution's fault; any
+/// other code (`internal`, a gate bug, [`unchecked`]) passes through as it is, never read as
+/// the user's sketch at fault.
+fn unmeasurable(translation: Error) -> Error {
+    if translation.code() != ErrorCode::InvalidInput {
+        return translation;
+    }
+    Error::new(
+        ErrorCode::InvalidResult,
+        format!(
+            "the sketch solves to geometry the next solve can't measure: {}",
+            translation.message()
+        ),
+    )
+    .with_elements(translation.elements().iter().map(String::as_str))
+    .with_suggestion(
+        "change the constraints that bring it there: the solve, not where it was placed, makes it unmeasurable",
+    )
+}
+
 /// What a solve's diagnosis says of a sketch's members, by ID, for every answer that stands,
 /// solved or refused (docs/ports/sketcher.md, *Definition states*): PlaneGCS's diagnosis,
 /// taken where the solve started, before any algorithm ran, and the constraints decision 5
@@ -1821,7 +1850,10 @@ impl Translation {
             }
             let load = match Translation::new(&file) {
                 Ok(load) => load,
-                Err(e) => return Ok(refusal(first, Err(e))),
+                // The solution is one the next solve can't measure: the result's fault, as a
+                // collapsed symmetry's is (`read_noting`) and `holdable`'s, not the drawing's,
+                // whose refusal before any solve `invalid_input` is kept for.
+                Err(e) => return Ok(refusal(first, Err(unmeasurable(e)))),
             };
             // A worker that failed (crashed, timed out, ran short) or a reply that can't be
             // trusted is the error, as for the first solve; the worker refusing the start is
@@ -2918,5 +2950,36 @@ mod tests {
         let measured = t.references(&t.system.values).unwrap();
         let id = ElementId::new("r0000001").unwrap();
         assert_eq!(measured[&id], Measured::Angle(0.0));
+    }
+
+    #[test]
+    fn a_loads_translation_error_that_isnt_the_drawings_refusal_passes_through_unchanged() {
+        // #429's round 3, R6: the load's translation of a file whose structure the first
+        // translated can't name a point it lacks, so `unchecked` is a gate bug, which no
+        // input reaches through the load; it stays `internal`, its message and advice its
+        // own, never read as the user's sketch at fault.
+        let bug = unchecked("names p0000009 as a point".to_owned()).with_element("k0000001");
+        let passed = unmeasurable(bug.clone());
+        assert_eq!(passed.code(), ErrorCode::Internal);
+        assert_eq!(
+            passed.message(),
+            "the gate let through a sketch that names p0000009 as a point"
+        );
+        assert_eq!(
+            passed.suggestion(),
+            Some("this is a bug in Silico's sketch gate: report it")
+        );
+        assert_eq!(passed, bug);
+        // And so does every other code but the drawing's refusal, field for field.
+        for &code in ErrorCode::ALL {
+            let e = Error::new(code, "what went wrong")
+                .with_element("k0000002")
+                .with_suggestion("its own advice");
+            if code == ErrorCode::InvalidInput {
+                assert_eq!(unmeasurable(e).code(), ErrorCode::InvalidResult);
+            } else {
+                assert_eq!(unmeasurable(e.clone()), e, "{code:?}");
+            }
+        }
     }
 }

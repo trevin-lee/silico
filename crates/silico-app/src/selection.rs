@@ -25,7 +25,16 @@
 //! navigates; what it found is let go when the camera or the bodies change under it, and
 //! answers asked before that change are passed over. A pick takes an edge within
 //! [`EDGE_BAND_POINTS`] of the pointer (the prototype's 6, Select Other's too) before the
-//! face under it, as SolidWorks takes an edge near the pointer.
+//! face under it, as SolidWorks takes an edge near the pointer. With edges filtered out and
+//! faces not, a pick on an edge's drawn stroke takes the face under the pointer, the one the
+//! ray through its pixel meets first, cast on the bodies the frame drew (the stroke is drawn
+//! over it, so the renderer's picking holds the edge there), as SolidWorks' face filter
+//! selects only faces (docs/ux/solidworks.md §1, *Selection filters*); none where no face is
+//! under the stroke (past a silhouette). While a body drawn has its boxes still to come (made
+//! off the UI thread as the view takes its mesh), a click on a stroke waits for them, as Select
+//! Other's right click waits for its boxes, clearing nothing meanwhile, and is decided the frame
+//! they're made, cast with that frame's view (the camera moving first lets it go); a hover there
+//! takes nothing, and is asked again each frame till then.
 //!
 //! A pick is named, and the selection's elements drawn, only on bodies read from the model
 //! the selection is read against ([`View::bodies_of`]): a model published, its meshes not
@@ -68,7 +77,7 @@ use silico_render::render::{HIT_EDGE_POINTS, HIT_VERTEX_POINTS, MAX_PICKING_SIDE
 
 use crate::renderer::{Element, Outlines, Picking, PixelRect};
 use crate::theme;
-use crate::viewport::{LeftKind, View, ViewBody, ViewFrame};
+use crate::viewport::{LeftKind, View, ViewBody, ViewFrame, faces_of};
 
 /// The parameter a selection's names are read at: an error of its third name is at
 /// `selection.2`.
@@ -89,6 +98,38 @@ pub const EDGE_BAND_POINTS: f32 = HIT_EDGE_POINTS as f32;
 /// shares with the faces and edges under it, so a vertex is taken before an edge, and an edge
 /// before a face.
 pub const VERTEX_PICK_POINTS: f32 = HIT_VERTEX_POINTS as f32;
+
+/// What a cast finds under a pixel an edge's stroke covers ([`FaceUnder`]): the face the ray
+/// through it meets first, by its body's number; no face; or not known yet, while a body the
+/// frame drew has its boxes still to come.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Cast {
+    Face(u32, Element),
+    Empty,
+    Waiting,
+}
+
+/// What's under a pixel of a frame of a view where an edge's stroke covers it:
+/// [`Selection::overlay`]'s.
+pub(crate) type FaceUnder<'a> = &'a dyn Fn(&View, &ViewFrame, [u32; 2]) -> Cast;
+
+/// [`FaceUnder`] of the view and frame a pick is answered in.
+type Beneath<'a> = &'a dyn Fn([u32; 2]) -> Cast;
+
+/// What a pick found: its body, its element, the element's name, and whether the name is
+/// stable, as the bodies' meshes name them.
+type Found = (u32, Element, Arc<Name>, bool);
+
+/// A pick that can't be decided yet: an edge's stroke covers it, and what's under it can't
+/// be cast for till a body drawn has its boxes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NotYet;
+
+/// A [`FaceUnder`] that finds no face anywhere ([`Cast::Empty`]): a test's.
+#[cfg(test)]
+pub(crate) fn no_face(_: &View, _: &ViewFrame, _: [u32; 2]) -> Cast {
+    Cast::Empty
+}
 
 /// How many frames a click waits for its pick's answer, asking again each frame: past
 /// this (a second at 60 Hz: a renderer that answers none, or none installed), it's let go,
@@ -201,8 +242,8 @@ pub struct Hovered {
 }
 
 impl Hovered {
-    /// The feature that made it, as its name says (what the timeline outlines, DESIGN.md's
-    /// *Hover linking*).
+    /// The feature that made it, as its name says (whose item the timeline rings, DESIGN.md's
+    /// *Hover a feature, see its geometry*).
     pub fn feature(&self) -> &FeatureId {
         self.name.feature()
     }
@@ -344,6 +385,11 @@ struct Click {
     /// published when it was made, if the view's meshes were of another then; else the
     /// first published after it. Another published before they come, it's let go.
     awaits: Option<Of>,
+    /// Its pick's answer, kept while what's under an edge's stroke there waits for a body's
+    /// boxes to be cast on ([`Cast::Waiting`]): decided the frame they're made, as Select
+    /// Other's right click waits for them, asking nothing more meanwhile and counting no
+    /// frames. Asked again if the bodies change first.
+    answered: Option<Picking>,
 }
 
 /// The left button pressed on the canvas: where, and whether it has gone farther than a
@@ -378,11 +424,32 @@ enum Held {
     Until(Revision),
 }
 
+/// A selection as it was, to put back ([`Selection::saved`], [`Selection::restore`]: a
+/// dialog's Cancel): its items, and which features among them were selected as their bodies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedSelection {
+    items: Vec<Item>,
+    wholes: BTreeSet<FeatureId>,
+}
+
+/// How a feature is selected: as itself (its timeline item, a sketch's row: it tints the
+/// faces it made), or as its body (its body's row in the browser: the body's every face).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectedAs {
+    Itself,
+    Body,
+}
+
 /// The tab's selection and hover.
 #[derive(Debug, Default)]
 pub struct Selection {
     items: Vec<Item>,
-    /// One more each time the items change: the highlights are worked out again by it.
+    /// The features among `items` selected as bodies (a browser's body row, a dialog's body
+    /// box): tinted whole, as the prototype's `bodyRow` tints `maker: '*'`; any other feature
+    /// selected tints the faces it made, as its `selectFeature` makes it the maker.
+    wholes: BTreeSet<FeatureId>,
+    /// One more each time the items or the wholes change: the highlights and tints are
+    /// worked out again by it.
     version: u64,
     /// What the status bar says of the last change a rebuild made (a name gone), or of a
     /// pick the model refused, until the selection changes again.
@@ -460,7 +527,9 @@ impl Selection {
         }
     }
 
-    /// Whether feature `id` is selected as itself (its timeline item, its browser row).
+    /// Whether feature `id` is selected, as itself (its timeline item) or as its body (its
+    /// browser row, a dialog's body box): its timeline item and its row are marked either
+    /// way.
     pub fn has_feature(&self, id: &FeatureId) -> bool {
         self.items
             .iter()
@@ -616,19 +685,26 @@ impl Selection {
     }
 
     /// The element `name` finds in the published model's bodies (the core's `resolve`, as a
+    /// pick reads it): its body, its number there, and the name a store writes for it. None
+    /// if it finds none, or no model is published.
+    pub(crate) fn resolve_one(&self, name: &str) -> Option<Selected> {
+        let model = self.model.as_ref()?;
+        rules::resolve(model, &[name], PARAMETER)
+            .ok()?
+            .kept
+            .into_iter()
+            .next()
+    }
+
+    /// The element `name` finds in the published model's bodies (the core's `resolve`, as a
     /// pick reads it), as `view` draws it: its body's number and its face or edge; none if
     /// it finds none, if the view's bodies aren't of that model, or if no body drawn is the
     /// one it's in. What a broken reference's candidate lights (flow 6b).
     pub fn lit(&self, name: &str, view: &View) -> Option<(u32, Element)> {
-        let model = self.model.as_ref()?;
         if view.bodies_of() != self.of {
             return None;
         }
-        let found = rules::resolve(model, &[name], PARAMETER)
-            .ok()?
-            .kept
-            .into_iter()
-            .next()?;
+        let found = self.resolve_one(name)?;
         let number = view
             .bodies()
             .iter()
@@ -637,12 +713,16 @@ impl Selection {
         Some((number, drawn_as(found.element)?))
     }
 
-    /// Its items as they are, to put back later ([`restore`](Self::restore)).
-    pub fn saved(&self) -> Vec<Item> {
-        self.items.clone()
+    /// Its items as they are, and which features among them are selected as their bodies,
+    /// to put back later ([`restore`](Self::restore)).
+    pub fn saved(&self) -> SavedSelection {
+        SavedSelection {
+            items: self.items.clone(),
+            wholes: self.wholes.clone(),
+        }
     }
 
-    /// `items`, saved before ([`saved`](Self::saved)), put back as they were (a dialog's
+    /// `saved`, saved before ([`saved`](Self::saved)), put back as it was (a dialog's
     /// Cancel, as SolidWorks returns to the selection its command started with), a click
     /// waiting let go: each as it was found, read against no model published (nor asked
     /// again of the one published now) until the tab says from which revision
@@ -650,12 +730,10 @@ impl Selection {
     /// published. Until then, a model published may be a preview of the dialog's, which
     /// may have consumed them, its edits' previews landing even after the Cancel; the
     /// Cancel's undo publishes the model they were found in again.
-    pub fn restore(&mut self, items: Vec<Item>) {
-        if items != self.items {
-            self.set(items);
-        }
-        self.said = None;
-        self.click = None;
+    pub fn restore(&mut self, saved: SavedSelection) {
+        let SavedSelection { items, wholes } = saved;
+        // How each feature was selected, as itself or as its body, put back with it.
+        self.select_alone(items, wholes);
         self.again = false;
         self.held = Some(Held::Unsent);
     }
@@ -712,11 +790,23 @@ impl Selection {
         }
     }
 
-    /// The hover let go by the menu that held it ([`hold_hover`](Self::hold_hover)): nothing
-    /// is hovered, and the pointer's hover is asked again at once.
-    pub(crate) fn release_hover(&mut self) {
+    /// The hover let go by the menu that held it ([`hold_hover`](Self::hold_hover)), as it
+    /// closes: nothing is hovered, and the pointer's hover is asked again at once.
+    pub(crate) fn menu_released(&mut self) {
         if self.hover_held {
             self.hover_held = false;
+            self.hovered = None;
+            self.hover_asked = None;
+        }
+    }
+
+    /// What's hovered let go as the pointer isn't over the canvas, unless a menu holds it
+    /// (which lets it go as it closes, [`menu_released`](Self::menu_released)): the pointer
+    /// off the canvas, or the tab not shown (`Tab::canvas_unshown`), so the tab shown again
+    /// says no hover of before (its timeline's ring, its status bar's name) and asks its
+    /// canvas again.
+    pub(crate) fn pointer_gone(&mut self) {
+        if !self.hover_held {
             self.hovered = None;
             self.hover_asked = None;
         }
@@ -727,8 +817,8 @@ impl Selection {
         self.hover_held
     }
 
-    /// The feature that made what the pointer is over (the timeline outlines it, DESIGN.md's
-    /// *Hover linking*).
+    /// The feature that made what the pointer is over (the timeline rings its item,
+    /// DESIGN.md's *Hover a feature, see its geometry*).
     pub fn hovered_feature(&self) -> Option<&FeatureId> {
         self.hovered.as_ref().map(Hovered::feature)
     }
@@ -768,23 +858,80 @@ impl Selection {
         self.scroll = None;
     }
 
-    /// Feature `id` selected alone (a click on its row in the browser or the timeline). A
-    /// click in the canvas waiting for its pick is let go: it came before.
+    /// Feature `id` selected alone, as itself (a click on its timeline item, or on a sketch's
+    /// row in the browser): it tints the faces it made. A click in the canvas waiting for its
+    /// pick is let go: it came before.
     pub fn select_feature(&mut self, id: FeatureId) {
-        if self.feature() != Some(&id) {
-            self.set(vec![Item::Feature(id)]);
+        self.select_alone(vec![Item::Feature(id)], BTreeSet::new());
+    }
+
+    /// For the crate's tests only: the features `ids` selected, in order, each as itself, and
+    /// nothing else, a test hook for a selection of several (the app's clicks select one at
+    /// a time).
+    #[doc(hidden)]
+    pub fn select_features(&mut self, ids: Vec<FeatureId>) {
+        self.select_alone(
+            ids.into_iter().map(Item::Feature).collect(),
+            BTreeSet::new(),
+        );
+    }
+
+    /// The bodies the features `ids` made selected, in order, and nothing else, each tinted
+    /// whole (a body's row in the browser, the prototype's `bodyRow`; a boolean's dialog's
+    /// boxes: each body they hold, marked in the browser too). A click in the canvas waiting
+    /// for its pick is let go: it came before.
+    pub fn select_bodies(&mut self, ids: Vec<FeatureId>) {
+        let wholes = ids.iter().cloned().collect();
+        self.select_alone(ids.into_iter().map(Item::Feature).collect(), wholes);
+    }
+
+    /// `items` selected, and nothing else, `wholes` among them selected as their bodies; what
+    /// was said of the selection, and a click in the canvas waiting for its pick, let go.
+    fn select_alone(&mut self, items: Vec<Item>, wholes: BTreeSet<FeatureId>) {
+        if items != self.items {
+            self.set(items);
         }
+        self.wholes_are(wholes);
         self.said = None;
         self.click = None;
     }
 
-    /// The features `ids` selected, in order, and nothing else (a boolean's dialog's boxes:
-    /// each body they hold, lit whole in the canvas and marked in the browser). A click in
-    /// the canvas waiting for its pick is let go: it came before.
-    pub fn select_features(&mut self, ids: Vec<FeatureId>) {
-        let items: Vec<Item> = ids.into_iter().map(Item::Feature).collect();
-        if items != self.items {
-            self.set(items);
+    /// Feature `id` selected alone, `how`: as itself ([`select_feature`](Self::select_feature))
+    /// or as its body ([`select_bodies`](Self::select_bodies)).
+    pub fn select_as(&mut self, id: FeatureId, how: SelectedAs) {
+        match how {
+            SelectedAs::Itself => self.select_feature(id),
+            SelectedAs::Body => self.select_bodies(vec![id]),
+        }
+    }
+
+    /// Whether feature `id` alone is selected `how`: as itself (its timeline item, a sketch's
+    /// row) or as its body (its body's row).
+    pub fn selected_as(&self, id: &FeatureId, how: SelectedAs) -> bool {
+        self.feature() == Some(id) && self.wholes.contains(id) == (how == SelectedAs::Body)
+    }
+
+    /// The features selected as bodies, tinted whole, are `wholes`: worked out again if that
+    /// changes them.
+    fn wholes_are(&mut self, wholes: BTreeSet<FeatureId>) {
+        if self.wholes != wholes {
+            self.wholes = wholes;
+            self.version = self.version.wrapping_add(1);
+        }
+    }
+
+    /// Feature `id` taken out of the selection, the rest kept (a Ctrl-click, Cmd on macOS, on
+    /// its selected timeline item or browser row: Trevin's ask of 2026-11-09). A click in the
+    /// canvas waiting for its pick is let go: it came before.
+    pub fn deselect_feature(&mut self, id: &FeatureId) {
+        if self.has_feature(id) {
+            let rest = self
+                .items
+                .iter()
+                .filter(|item| !matches!(item, Item::Feature(each) if each == id))
+                .cloned()
+                .collect();
+            self.set(rest);
         }
         self.said = None;
         self.click = None;
@@ -1070,7 +1217,7 @@ impl Selection {
             // One revision, whether the read makes the items again (each answer's place
             // is its place in the selection, not in `names`) or not.
             let version = self.version;
-            self.items = items;
+            self.set(items);
             // Items a Cancel put back aren't read against this model, which may be its
             // dialog's preview, as a click's pick leaves them: the names picked were read
             // alone, above, till they're read.
@@ -1181,10 +1328,11 @@ impl Selection {
         let mut found: BTreeSet<(FeatureId, ElementRef)> = BTreeSet::new();
         let mut items = Vec::with_capacity(self.items.len());
         let mut place = 0usize;
-        for item in std::mem::take(&mut self.items) {
+        // Read in place, so what's made is compared with what was there, below.
+        for item in &self.items {
             let picked = match item {
                 Item::Feature(id) => {
-                    items.push(Item::Feature(id));
+                    items.push(Item::Feature(id.clone()));
                     continue;
                 }
                 Item::Element(picked) => picked,
@@ -1210,20 +1358,22 @@ impl Selection {
                 count();
                 self.again = true;
                 items.push(Item::Element(Picked {
-                    name: picked.name,
+                    name: picked.name.clone(),
                     state: State::Waiting { why: None, last },
-                    ..picked
+                    carry: picked.carry,
+                    found_in: picked.found_in,
                 }));
             } else if let Some(gone) = gone.remove(&at) {
                 count();
                 if gone.failed.is_some() {
                     items.push(Item::Element(Picked {
-                        name: picked.name,
+                        name: picked.name.clone(),
                         state: State::Waiting {
                             why: Some(words(&gone.why)),
                             last,
                         },
-                        ..picked
+                        carry: picked.carry,
+                        found_in: picked.found_in,
                     }));
                 } else {
                     dropped.push((kind, gone));
@@ -1245,6 +1395,13 @@ impl Selection {
 
     fn set(&mut self, items: Vec<Item>) {
         self.items = items;
+        // A body selected whole is so only while it's selected.
+        let items = &self.items;
+        self.wholes.retain(|id| {
+            items
+                .iter()
+                .any(|item| matches!(item, Item::Feature(each) if each == id))
+        });
         self.version = self.version.wrapping_add(1);
     }
 
@@ -1253,8 +1410,16 @@ impl Selection {
     /// hover asked and taken; and the highlights and the hover set on `view` to draw.
     /// `ctx` gives egui's click distance. While `view`'s bodies are of another model than
     /// the selection's, nothing is named from them: a click waits for the meshes, asking
-    /// nothing, and the hover is let go.
-    pub(crate) fn overlay(&mut self, view: &mut View, frame: &ViewFrame, ctx: &egui::Context) {
+    /// nothing, and the hover is let go. `face_under` gives the face under a pixel of a frame
+    /// of the view, by its body's number, where an edge's stroke covers it (Select Other's
+    /// cast, [`crate::select_other::SelectOther::face_under`]).
+    pub(crate) fn overlay(
+        &mut self,
+        view: &mut View,
+        frame: &ViewFrame,
+        ctx: &egui::Context,
+        face_under: FaceUnder<'_>,
+    ) {
         let ppp = frame.pixels_per_point;
         let click_px = ctx.options(|options| options.input_options.max_click_dist) * ppp;
         let band = band_px(ppp);
@@ -1269,10 +1434,25 @@ impl Selection {
                 filter: self.picks(),
                 at: frame.now,
                 awaits: if current { None } else { self.of },
+                answered: None,
             });
         }
         self.view_changed(view, frame);
         self.let_go_if_vain(view, frame.now, current);
+        // A click answered on an edge's stroke, waiting for the boxes to cast what's under it
+        // on: decided once they're made (their thread asks for a frame as each is).
+        if current
+            && let Some(click) = self.click
+            && let Some(picking) = click.answered
+        {
+            let beneath = |pixel| face_under(&*view, frame, pixel);
+            if self
+                .clicked(&picking, click.how, view.bodies(), &beneath)
+                .is_ok()
+            {
+                self.click = None;
+            }
+        }
         if let Some(picking) = view.picked()
             && self.taken.is_none_or(|taken| picking.frame > taken)
         {
@@ -1281,9 +1461,22 @@ impl Selection {
                 // Of meshes of another model: the click waits, and asks again once they've
                 // caught up.
                 Some(_) if !current => {}
-                Some(click) if click.after.is_none_or(|after| picking.frame > after) => {
+                Some(click)
+                    if click.answered.is_none()
+                        && click.after.is_none_or(|after| picking.frame > after) =>
+                {
                     self.click = None;
-                    self.clicked(&picking, click.how, view.bodies());
+                    let beneath = |pixel| face_under(&*view, frame, pixel);
+                    if self
+                        .clicked(&picking, click.how, view.bodies(), &beneath)
+                        .is_err()
+                    {
+                        tracing::debug!("a click on an edge's stroke waits for the boxes");
+                        self.click = Some(Click {
+                            answered: Some(picking),
+                            ..click
+                        });
+                    }
                 }
                 // An answer to a pick asked before the click: neither the click's nor, now,
                 // the hover's.
@@ -1292,7 +1485,8 @@ impl Selection {
                     && !self.hover_held
                     && self.stale_to.is_none_or(|stale| picking.frame > stale) =>
                 {
-                    self.hover_answered(&picking, view.bodies());
+                    let beneath = |pixel| face_under(&*view, frame, pixel);
+                    self.hover_answered(&picking, view.bodies(), &beneath);
                 }
                 None => {}
             }
@@ -1388,6 +1582,17 @@ impl Selection {
                 if seen.camera != now.camera && self.click.take().is_some() {
                     tracing::debug!("the camera moved under a click waiting for its pick: let go");
                 }
+                // A click answered on other bodies than these, waiting for their boxes: its
+                // answer is of them, so it's asked again.
+                if let Some(click) = &mut self.click
+                    && click.answered.take().is_some()
+                {
+                    click.frames = 0;
+                    click.after = view.last_asked();
+                    tracing::debug!(
+                        "the bodies changed under a click waiting for boxes: asked again"
+                    );
+                }
             }
             self.seen = Some(now);
         }
@@ -1444,6 +1649,12 @@ impl Selection {
             return;
         }
         if let Some(click) = &mut self.click {
+            if click.answered.is_some() {
+                // Answered, it waits for the boxes, not the renderer: nothing asked, no frame
+                // counted, and the hover asked again once it's decided.
+                self.hover_asked = None;
+                return;
+            }
             click.frames += 1;
             if click.frames > CLICK_FRAMES {
                 tracing::debug!("a click's pick never answered: let go");
@@ -1461,8 +1672,7 @@ impl Selection {
             return;
         }
         let Some(pointer) = frame.pointer_px else {
-            self.hovered = None;
-            self.hover_asked = None;
+            self.pointer_gone();
             return;
         };
         if view.navigating() {
@@ -1478,20 +1688,38 @@ impl Selection {
 
     /// A click's pick answered: what's under it selected `how`; nothing there, the
     /// selection cleared by a plain click, kept by a Ctrl-click. While a box takes the
-    /// canvas's picks, every click toggles, and one on nothing changes nothing.
-    fn clicked(&mut self, picking: &Picking, how: How, bodies: &BTreeMap<u32, ViewBody>) {
+    /// canvas's picks, every click toggles, and one on nothing changes nothing. Nothing done
+    /// while what's under it can't be decided yet ([`NotYet`]): the click waits.
+    fn clicked(
+        &mut self,
+        picking: &Picking,
+        how: How,
+        bodies: &BTreeMap<u32, ViewBody>,
+        beneath: Beneath<'_>,
+    ) -> Result<(), NotYet> {
         let how = self.canvas_how(how);
-        match self.under(picking, bodies) {
+        match self.under(picking, bodies, beneath)? {
             Some((_, _, name, _)) => self.pick(&name.to_string(), how),
             None if how == How::Replace => self.clear(),
             None => {}
         }
+        Ok(())
     }
 
     /// A hover's pick answered: what's under the pointer, read against the published model
-    /// when it's another element than before.
-    fn hover_answered(&mut self, picking: &Picking, bodies: &BTreeMap<u32, ViewBody>) {
-        let under = self.under(picking, bodies);
+    /// when it's another element than before. While what's under it can't be decided yet,
+    /// nothing is hovered, and its pixel is asked again next frame.
+    fn hover_answered(
+        &mut self,
+        picking: &Picking,
+        bodies: &BTreeMap<u32, ViewBody>,
+        beneath: Beneath<'_>,
+    ) {
+        let Ok(under) = self.under(picking, bodies, beneath) else {
+            self.hovered = None;
+            self.hover_asked = None;
+            return;
+        };
         self.heard = Some((
             centre_of(picking.rect),
             under.as_ref().map(|(_, _, name, _)| Arc::clone(name)),
@@ -1513,11 +1741,7 @@ impl Selection {
         {
             return;
         }
-        let found = self.model.as_ref().and_then(|model| {
-            rules::resolve(model, &[name.to_string()], PARAMETER)
-                .ok()
-                .and_then(|answer| answer.kept.into_iter().next())
-        });
+        let found = self.resolve_one(&name.to_string());
         self.hovered = Some(Hovered {
             body,
             element,
@@ -1529,37 +1753,84 @@ impl Selection {
 
     /// What a picking found under its centre, as the canvas picks ([`Self::picks`]): a
     /// vertex at its centre pixel (its disc is its tolerance, [`VERTEX_PICK_POINTS`]),
-    /// first; then an edge in its square; else the face at its centre pixel. Its body,
-    /// element, name, and the name's stability, as the bodies' meshes name them.
+    /// first; then an edge in its square; else the face at its centre pixel; or, where an
+    /// edge's stroke is drawn over that pixel and edges aren't picked but faces are, the face
+    /// `beneath` it. Its body, element, name, and the name's stability, as the bodies' meshes
+    /// name them; [`NotYet`] while the face beneath a stroke waits for boxes to cast on.
     fn under(
         &self,
         picking: &Picking,
         bodies: &BTreeMap<u32, ViewBody>,
-    ) -> Option<(u32, Element, Arc<Name>, bool)> {
+        beneath: Beneath<'_>,
+    ) -> Result<Option<Found>, NotYet> {
         let centre = centre_of(picking.rect);
         let picks = self.picks();
-        let vertex = picking.hit.filter(|hit| {
-            hit.pixel == centre && matches!(hit.hit, Element::Vertex(_)) && picks.vertices
-        });
-        let edge = picking.edge.filter(|_| picks.edges);
-        let face = picking.hit.filter(|hit| {
-            hit.pixel == centre && matches!(hit.hit, Element::Face(_)) && picks.faces
-        });
-        let pick = vertex.or(edge).or(face)?;
-        let named = bodies.get(&pick.body)?.name_of(pick.hit)?;
-        Some((pick.body, pick.hit, Arc::clone(&named.name), named.stable))
+        let at_centre = |kind: fn(&Element) -> bool| {
+            picking
+                .hit
+                .filter(|hit| hit.pixel == centre && kind(&hit.hit))
+                .map(|hit| (hit.body, hit.hit))
+        };
+        let vertex = at_centre(|e| matches!(e, Element::Vertex(_))).filter(|_| picks.vertices);
+        let edge = picking
+            .edge
+            .filter(|_| picks.edges)
+            .map(|edge| (edge.body, edge.hit));
+        let face = at_centre(|e| matches!(e, Element::Face(_))).filter(|_| picks.faces);
+        let found = match vertex.or(edge).or(face) {
+            Some(found) => Some(found),
+            None if at_centre(|e| matches!(e, Element::Edge(_))).is_some()
+                && picks.faces
+                && !picks.edges =>
+            {
+                match beneath(centre) {
+                    Cast::Face(body, face) => Some((body, face)),
+                    Cast::Empty => None,
+                    Cast::Waiting => return Err(NotYet),
+                }
+            }
+            None => None,
+        };
+        Ok(found.and_then(|(body, element)| {
+            let named = bodies.get(&body)?.name_of(element)?;
+            Some((body, element, Arc::clone(&named.name), named.stable))
+        }))
     }
 
-    /// The highlights and the hover set on `view`: the highlights worked out again only
-    /// when the selection or the bodies table changed (which model the bodies are of
-    /// changes only with the table).
-    fn draw(&mut self, view: &mut View) {
-        view.vertices = self.picks().vertices.then_some(VERTEX_PICK_POINTS);
+    /// The highlights and the selected features' faces set on `view`, worked out again
+    /// only when the selection or the bodies table changed: by the canvas as it draws a frame
+    /// that takes a new table, before it hands the frame on, so no frame lights an element by
+    /// a number another table gave it ([`View::table`]); and after, with the hover. A new
+    /// table drops the hover drawn (unless a menu holds it) and a lit candidate too, both by
+    /// the old numbers.
+    pub(crate) fn light(&mut self, view: &mut View) {
         let key = (self.version, view.table());
+        if self.drawn.map(|(_, table)| table) != Some(view.table()) {
+            // What's hovered, and a candidate lit, are by the table before's numbers, which
+            // may be another element's now: let go before the frame goes out (the hover is
+            // asked again as the pointer moves; a menu holding it keeps its own row).
+            if !self.hover_held {
+                view.hovered.clear();
+            }
+            view.candidate = None;
+        }
         if self.drawn != Some(key) {
             view.highlights = highlights(&self.items, view.bodies(), view.bodies_of());
+            view.selected_feature_faces =
+                selected_feature_faces(&self.items, &self.wholes, view.bodies());
             self.drawn = Some(key);
         }
+    }
+
+    /// The highlights and the hover set on `view`, and what its picks take ([`Self::picks`]:
+    /// its vertex discs, and its edges' picking strips, only for kinds picked): the
+    /// highlights worked out again only when the selection or the bodies table changed
+    /// (which model the bodies are of changes only with the table).
+    fn draw(&mut self, view: &mut View) {
+        let picks = self.picks();
+        view.vertices = picks.vertices.then_some(VERTEX_PICK_POINTS);
+        view.edges = picks.edges;
+        self.light(view);
         view.hovered = self
             .hovered
             .iter()
@@ -1626,10 +1897,9 @@ fn toggled(added: bool, place: usize, picked: &Picked) -> Toggled {
 }
 
 /// What the canvas highlights of `items` among `bodies`, read from the model `of`: each
-/// element found, in the body it's in (a vertex as the viewport's dot), if the answer it's drawn by
-/// is of that model (an element's number in another model may be another element of these
-/// meshes); each feature's faces, a body's whole (its browser row), else those it made, as
-/// each face's name says (as `View::linked` lights a feature hovered in the timeline).
+/// element found, in the body it's in (a vertex as the viewport's dot), if the answer it's
+/// drawn by is of that model (an element's number in another model may be another element of
+/// these meshes). A feature selected isn't highlighted but tinted ([`selected_feature_faces`]).
 fn highlights(
     items: &[Item],
     bodies: &BTreeMap<u32, ViewBody>,
@@ -1656,20 +1926,31 @@ fn highlights(
                     lit.insert((number, element));
                 }
             }
-            Item::Feature(id) => {
-                for (number, body) in bodies {
-                    let whole = &body.feature == id;
-                    let faces = body.faces.iter().zip(1u32..);
-                    lit.extend(
-                        faces
-                            .filter(|(face, _)| whole || face.name.feature() == id)
-                            .map(|(_, n)| (*number, Element::Face(n))),
-                    );
-                }
-            }
+            Item::Feature(_) => {}
         }
     }
     lit
+}
+
+/// The faces of the features among `items`, in `bodies`: a body's whole for a feature
+/// selected as its body (`wholes`: a browser's body row, a dialog's body box), else those
+/// it made ([`faces_of`], as [`View::linked_faces`] finds a feature hovered in the timeline's).
+/// The canvas tints them while no feature is hovered in the timeline, as the prototype's
+/// `syncHighlight` tints its `maker`, `hoverFeature || selFeature` (DESIGN.md's *Hover a
+/// feature, see its geometry*), its `bodyRow` the whole body (`maker: '*'`).
+fn selected_feature_faces(
+    items: &[Item],
+    wholes: &BTreeSet<FeatureId>,
+    bodies: &BTreeMap<u32, ViewBody>,
+) -> BTreeSet<(u32, Element)> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Feature(id) => Some(id),
+            Item::Element(_) => None,
+        })
+        .flat_map(|id| faces_of(id, bodies, wholes.contains(id)))
+        .collect()
 }
 
 /// An element as the renderer numbers it: a face, an edge, or a vertex (the viewport's
@@ -1788,10 +2069,7 @@ fn gone_words(
     if let [(_, one)] = dropped {
         said = format!("{said}: {}", words(&one.why));
     }
-    let mut chars = said.chars();
-    chars.next().map_or(String::new(), |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
+    crate::words::capitalised(&said)
 }
 
 /// The edge band, in physical pixels, at `ppp` pixels a point: at least one, and at most
@@ -2020,6 +2298,136 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_read_that_changes_nothing_keeps_the_version_and_one_that_drops_every_element_moves_it() {
+        // Issue #489. The version moves once for each change of the items, and only then:
+        // each count below is by hand, from the version the items were set at.
+        let mut selection = Selection::default();
+        let names = ["k7f2qx3m.box.Face1", "k7f2qx3m.box.Face2"];
+        selection.set(vec![picked(names[0]), picked(names[1])]);
+        let start = selection.version;
+        let both = || {
+            resolved(
+                vec![found("k7f2qx3m", face(1), 0), found("k7f2qx3m", face(2), 1)],
+                vec![],
+                &[],
+            )
+        };
+        // Both found: a change (waiting, now found).
+        took(&mut selection, both());
+        assert_eq!(selection.version, start + 1);
+        // Read again, the same answer: the items as they were, the version too.
+        let items = selection.items().to_vec();
+        for _ in 0..3 {
+            took(&mut selection, both());
+        }
+        assert_eq!(selection.items(), items.as_slice());
+        assert_eq!(selection.version, start + 1);
+        // Face2 pending: a change (found, now waiting), then the same each frame it's asked.
+        let waiting = || {
+            resolved(
+                vec![found("k7f2qx3m", face(1), 0)],
+                vec![],
+                &[(1, names[1])],
+            )
+        };
+        took(&mut selection, waiting());
+        assert_eq!(selection.version, start + 2);
+        for _ in 0..3 {
+            took(&mut selection, waiting());
+            assert!(selection.again);
+        }
+        assert_eq!(selection.version, start + 2);
+        // Both gone: nothing selected, and one change.
+        took(
+            &mut selection,
+            resolved(
+                vec![],
+                vec![gone(names[0], 0, None), gone(names[1], 1, None)],
+                &[],
+            ),
+        );
+        assert!(selection.is_empty());
+        assert_eq!(selection.version, start + 3);
+    }
+
+    #[test]
+    fn a_name_waiting_on_the_published_model_is_asked_each_frame_and_the_version_stays_put() {
+        // Issue #489. The box's model published before its names are (as the core publishes
+        // a model, its names named in the background), the box and two of its edges
+        // selected, the edges waiting: each frame asks them again of the same model, and
+        // while the answer is the same nothing changes, the version neither. Once the
+        // model's names are named, the edges are found: one change.
+        let model = box_model();
+        let revision = Revision::from_number(1).unwrap();
+        let unnamed = Arc::new(model.unnamed());
+        let mut selection = Selection::default();
+        selection.published(Some((Arc::clone(&unnamed), revision)), 1);
+        selection.select_feature(fid("aaaaaaaa"));
+        selection.pick_all(&edges(&[1, 2]), How::Add);
+        assert_eq!(
+            states(&selection),
+            [
+                ("aaaaaaaa.box.Edge1".to_owned(), "pending"),
+                ("aaaaaaaa.box.Edge2".to_owned(), "pending")
+            ]
+        );
+        let version = selection.version;
+        let items = selection.items().to_vec();
+        for frame in 0..5 {
+            selection.published(Some((Arc::clone(&unnamed), revision)), 1);
+            assert!(selection.again, "frame {frame}: not asked again");
+            assert_eq!(selection.version, version, "frame {frame}");
+        }
+        assert_eq!(selection.items(), items.as_slice());
+        // The same model, its names named.
+        selection.published(Some((Arc::clone(&model), revision)), 1);
+        assert_eq!(
+            states(&selection),
+            [
+                ("aaaaaaaa.box.Edge1".to_owned(), "found"),
+                ("aaaaaaaa.box.Edge2".to_owned(), "found")
+            ]
+        );
+        assert_eq!(selection.version, version + 1);
+        selection.published(Some((model, revision)), 1);
+        assert_eq!(selection.version, version + 1);
+    }
+
+    #[test]
+    fn a_rebuild_that_drops_every_element_moves_the_version_and_its_highlight_goes() {
+        // Issue #489. `rrrrrrrr.fuse.Face1`, picked on the fuses of a tool 1 mm long and a
+        // 2 mm cube, names the second fuse's Face1 (the first fuse's Face1, by its number,
+        // kept whole by a plain fuse), lit on its body. Carried to the fuses of a tool 3 mm
+        // long and a 4 mm cube, its text names another face, so it's gone (as
+        // `while_a_box_takes_the_canvas_what_a_rebuild_leaves_gone_is_dropped_unsaid` has it):
+        // nothing selected, one change, and the highlights, worked out again by it on the
+        // bodies table they were lit on, light nothing.
+        let revision = |n| Revision::from_number(n).unwrap();
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), revision(1))), 1);
+        selection.pick("rrrrrrrr.fuse.Face1", How::Replace);
+        let mut view = View::holding(BTreeMap::from([(
+            1,
+            view_body("ssssssss", &[named("ssssssss", face(1))]),
+        )]));
+        let none = Picking {
+            frame: 1,
+            rect: square([50.0, 50.0], [100, 100], 3),
+            hit: None,
+            edge: None,
+        };
+        view.answered_as((1, revision(1)), none);
+        selection.light(&mut view);
+        assert_eq!(view.highlights, BTreeSet::from([(1, Element::Face(1))]));
+        let version = selection.version();
+        selection.published(Some((fused(3, 4), revision(2))), 2);
+        assert!(selection.is_empty());
+        selection.light(&mut view);
+        assert_eq!(view.highlights, BTreeSet::new(), "the gone face still lit");
+        assert_eq!(selection.version(), version + 1);
+    }
+
+    #[test]
     fn storable_gives_each_stable_name_in_order_or_the_first_refusal() {
         let mut selection = Selection::default();
         selection.set(vec![
@@ -2150,6 +2558,7 @@ pub(crate) mod tests {
             filter: Filter::default(),
             at,
             awaits,
+            answered: None,
         }
     }
 
@@ -2163,7 +2572,7 @@ pub(crate) mod tests {
             event(Press, [50.0, 50.0], false),
             event(Release, [50.0, 50.0], false),
         ]);
-        selection.overlay(&mut view, &frame, &ctx);
+        selection.overlay(&mut view, &frame, &ctx, &no_face);
         assert_eq!(selection.click, None);
         assert_eq!(selection.said(), Some(CLICK_NO_MODEL));
     }
@@ -2355,7 +2764,7 @@ pub(crate) mod tests {
         frame.pointer_px = Some([50.0, 50.0]);
         selection.hover_asked = Some(centre_of(rect));
         let ctx = egui::Context::default();
-        selection.overlay(&mut view, &frame, &ctx);
+        selection.overlay(&mut view, &frame, &ctx, &no_face);
         assert_eq!(selection.taken, Some(5));
         assert_eq!(selection.hovered, None);
         let hovered = Hovered {
@@ -2366,7 +2775,7 @@ pub(crate) mod tests {
             found: None,
         };
         selection.hovered = Some(hovered.clone());
-        selection.overlay(&mut view, &frame, &ctx);
+        selection.overlay(&mut view, &frame, &ctx, &no_face);
         assert_eq!(view.picked().map(|picking| picking.frame), Some(5));
         assert_eq!(selection.hovered, Some(hovered));
     }
@@ -2652,15 +3061,15 @@ pub(crate) mod tests {
             event(Press, [50.0, 50.0], false),
             event(Release, [50.0, 50.0], false),
         ]);
-        selection.overlay(&mut view, &click, &ctx);
+        selection.overlay(&mut view, &click, &ctx, &no_face);
         for _ in 1..30 {
-            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         }
         assert_eq!(selection.click.map(|click| click.frames), Some(30));
         selection.published(Some((Arc::clone(&model), second.1)), second.0);
         // Waiting for model 2's meshes: no frame counted.
         for _ in 0..5 {
-            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         }
         assert_eq!(
             selection.click.map(|click| click.awaits),
@@ -2669,10 +3078,10 @@ pub(crate) mod tests {
         // Model 2's meshes come (the view's last answer, frame 5's, is before the click).
         view.answered_as(second, answer);
         for n in 1..=CLICK_FRAMES {
-            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
             assert_eq!(selection.click.map(|click| click.frames), Some(n));
         }
-        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.click, None);
     }
 
@@ -2844,7 +3253,8 @@ pub(crate) mod tests {
         };
         let under = |selection: &Selection, picking: &Picking| {
             selection
-                .under(picking, &bodies)
+                .under(picking, &bodies, &|_| Cast::Empty)
+                .unwrap()
                 .map(|(body, element, name, _)| (body, element, name.to_string()))
         };
         let mut selection = Selection::default();
@@ -2879,6 +3289,204 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn with_edges_filtered_out_a_pick_on_an_edges_stroke_takes_the_face_cast_under_it() {
+        let bodies = named_body();
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let centre = centre_of(rect);
+        let pick = |hit, pixel| crate::renderer::Pick {
+            body: 1,
+            hit,
+            pixel,
+            point: None,
+        };
+        // Edge2's stroke drawn over the centre pixel, and Edge1 in the square beside it.
+        let stroke = Picking {
+            frame: 1,
+            rect,
+            hit: Some(pick(Element::Edge(2), centre)),
+            edge: Some(pick(Element::Edge(1), [49, 50])),
+        };
+        // The cast: Face3 under any pixel, each pixel it's asked for kept.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let face3 = |pixel: [u32; 2]| {
+            asked.borrow_mut().push(pixel);
+            Cast::Face(1, Element::Face(3))
+        };
+        let under = |selection: &Selection, picking: &Picking, beneath: Beneath<'_>| {
+            selection.under(picking, &bodies, beneath).map(|under| {
+                under.map(|(body, element, name, _)| (body, element, name.to_string()))
+            })
+        };
+        let mut selection = Selection::default();
+        // Edges picked, as the filter starts: the edge in the square, nothing cast.
+        assert_eq!(
+            under(&selection, &stroke, &face3),
+            Ok(Some((1, Element::Edge(1), "k7f2qx3m.box.Edge1".to_owned())))
+        );
+        assert!(asked.borrow().is_empty());
+        // Edges filtered out: the face cast under the centre pixel, by its name.
+        selection.filter.edges = false;
+        assert_eq!(
+            under(&selection, &stroke, &face3),
+            Ok(Some((1, Element::Face(3), "k7f2qx3m.box.Face3".to_owned())))
+        );
+        assert_eq!(*asked.borrow(), [centre]);
+        // No face under the stroke (past a silhouette, or no box can be made): nothing. A
+        // body drawn still waiting for its boxes: not known yet.
+        assert_eq!(under(&selection, &stroke, &|_| Cast::Empty), Ok(None));
+        assert_eq!(under(&selection, &stroke, &|_| Cast::Waiting), Err(NotYet));
+        // A face the body's meshes don't name: nothing.
+        assert_eq!(
+            under(&selection, &stroke, &|_| Cast::Face(1, Element::Face(9))),
+            Ok(None)
+        );
+        // Faces filtered out too: nothing, and nothing cast.
+        asked.borrow_mut().clear();
+        selection.filter.faces = false;
+        assert_eq!(under(&selection, &stroke, &face3), Ok(None));
+        assert_eq!(under(&selection, &stroke, &|_| Cast::Waiting), Ok(None));
+        assert!(asked.borrow().is_empty());
+        // The filter whole, and a dialog's box taking faces alone: the face, cast.
+        selection.filter = Filter::default();
+        selection.take_into(Some(Filter {
+            faces: true,
+            edges: false,
+            vertices: false,
+        }));
+        assert_eq!(
+            under(&selection, &stroke, &face3).map(|u| u.map(|(_, element, _)| element)),
+            Ok(Some(Element::Face(3)))
+        );
+        assert_eq!(*asked.borrow(), [centre]);
+        // A face at the centre pixel is taken as the picking found it, and an edge's stroke
+        // beside the centre (the centre the background's) is nothing: nothing cast for either.
+        asked.borrow_mut().clear();
+        let face = Picking {
+            hit: Some(pick(Element::Face(1), centre)),
+            ..stroke
+        };
+        assert_eq!(
+            under(&selection, &face, &face3).map(|u| u.map(|(_, element, _)| element)),
+            Ok(Some(Element::Face(1)))
+        );
+        let beside = Picking {
+            hit: Some(pick(Element::Edge(2), [49, 50])),
+            ..stroke
+        };
+        assert_eq!(under(&selection, &beside, &face3), Ok(None));
+        // Nor for either while boxes are still to come: neither waits.
+        assert!(under(&selection, &face, &|_| Cast::Waiting).is_ok());
+        assert_eq!(under(&selection, &beside, &|_| Cast::Waiting), Ok(None));
+        assert!(asked.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_click_on_a_stroke_waits_for_its_boxes_clearing_nothing_and_asking_nothing_meanwhile() {
+        use LeftKind::{Press, Release};
+        let mut selection = one_box();
+        let of = (1, Revision::from_number(1).unwrap());
+        selection.pick("aaaaaaaa.box.Edge1", How::Replace);
+        selection.filter.edges = false;
+        let mut view = View::default();
+        let ctx = egui::Context::default();
+        let rect = square([20.0, 20.0], [100, 100], 3);
+        let stroke = |frame| Picking {
+            frame,
+            rect,
+            hit: Some(crate::renderer::Pick {
+                body: 1,
+                hit: Element::Edge(2),
+                pixel: centre_of(rect),
+                point: None,
+            }),
+            edge: None,
+        };
+        let click = |camera: &silico_protocol::Camera| ViewFrame {
+            camera: camera.clone(),
+            ..frame_of(vec![
+                event(Press, [20.0, 20.0], false),
+                event(Release, [20.0, 20.0], false),
+            ])
+        };
+        let still = |camera: &silico_protocol::Camera| ViewFrame {
+            camera: camera.clone(),
+            ..frame_of(Vec::new())
+        };
+        let home = frame_of(Vec::new()).camera;
+        // Each cast counted: a body's boxes still to come.
+        let casts = std::cell::Cell::new(0);
+        let waiting = |_: &View, _: &ViewFrame, _: [u32; 2]| {
+            casts.set(casts.get() + 1);
+            Cast::Waiting
+        };
+        // A plain click on Edge2's stroke, edges filtered out: its answer kept, the
+        // selection as it was.
+        selection.overlay(&mut view, &click(&home), &ctx, &waiting);
+        view.answered_as(of, stroke(6));
+        selection.overlay(&mut view, &still(&home), &ctx, &waiting);
+        assert_eq!(selection.click.and_then(|c| c.answered), Some(stroke(6)));
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
+        // Past CLICK_FRAMES frames: cast again each, nothing asked of the renderer and no
+        // frame counted (a click counting them would be let go), nothing cleared.
+        view.take_asked();
+        for _ in 0..CLICK_FRAMES + 5 {
+            selection.overlay(&mut view, &still(&home), &ctx, &waiting);
+        }
+        assert_eq!(view.asking(), None);
+        assert_eq!(selection.click.map(|c| c.frames), Some(0));
+        assert_eq!(casts.get(), 1 + CLICK_FRAMES + 5);
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
+        // The boxes made, no face under the stroke: decided, the plain click clears.
+        selection.overlay(&mut view, &still(&home), &ctx, &no_face);
+        assert_eq!(selection.click, None);
+        assert!(selection.is_empty());
+        // Another, waiting; the camera moved: let go, nothing cleared.
+        selection.pick("aaaaaaaa.box.Edge1", How::Replace);
+        selection.overlay(&mut view, &click(&home), &ctx, &waiting);
+        view.answered_as(of, stroke(7));
+        selection.overlay(&mut view, &still(&home), &ctx, &waiting);
+        assert!(selection.click.is_some_and(|c| c.answered.is_some()));
+        let mut moved = home.clone();
+        moved.eye[0] += 1.0;
+        selection.overlay(&mut view, &still(&moved), &ctx, &waiting);
+        assert_eq!(selection.click, None);
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
+        // Another, waiting; another table of bodies read: its answer, of the bodies before,
+        // dropped, and its pick asked again this frame, to be answered by a frame after the
+        // one it had; nothing cleared.
+        selection.overlay(&mut view, &click(&moved), &ctx, &waiting);
+        view.answered_as(of, stroke(8));
+        selection.overlay(&mut view, &still(&moved), &ctx, &waiting);
+        assert!(selection.click.is_some_and(|c| c.answered.is_some()));
+        view.tabled_again();
+        selection.overlay(&mut view, &still(&moved), &ctx, &waiting);
+        let asked = selection.click.unwrap();
+        assert_eq!(
+            (asked.answered, asked.frames, asked.after),
+            (None, 1, Some(8))
+        );
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
+        // Answered again, waiting; another model published meanwhile: its click isn't decided
+        // on the bodies of the model before, though a face is cast under it there.
+        view.answered_as(of, stroke(9));
+        selection.overlay(&mut view, &still(&moved), &ctx, &waiting);
+        assert!(
+            selection
+                .click
+                .is_some_and(|c| c.answered == Some(stroke(9)))
+        );
+        selection.published(Some((box_model(), Revision::from_number(2).unwrap())), 2);
+        let face = |_: &View, _: &ViewFrame, _: [u32; 2]| Cast::Face(1, Element::Face(3));
+        selection.overlay(&mut view, &still(&moved), &ctx, &face);
+        assert!(
+            selection
+                .click
+                .is_some_and(|c| c.answered == Some(stroke(9)))
+        );
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
+    }
+
+    #[test]
     fn a_selection_restored_is_as_it_was_saved_its_waiting_click_let_go() {
         let mut selection = Selection::default();
         selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);
@@ -2891,7 +3499,7 @@ pub(crate) mod tests {
         selection.click = Some(waiting_click(Instant::now(), None));
         selection.said = Some("said".to_owned());
         selection.restore(saved.clone());
-        assert_eq!(selection.items(), saved.as_slice());
+        assert_eq!(selection.items(), saved.items.as_slice());
         assert_eq!(
             selection.names(),
             ["aaaaaaaa.box.Face3", "aaaaaaaa.box.Face2"]
@@ -2912,6 +3520,166 @@ pub(crate) mod tests {
         selection.published(Some((fused(3, 4), revision(2))), 2);
         assert!(selection.is_empty());
         assert_eq!(selection.said(), None);
+    }
+
+    #[test]
+    fn a_body_selected_by_its_row_is_put_back_whole_by_a_dialogs_cancel() {
+        // A body selected by its browser row, then a dialog whose box takes edges alone
+        // (Fillet) lets the feature go, then its Cancel: put back as the body, whole.
+        let mut selection = Selection::default();
+        selection.select_bodies(vec![fid("rrrrrrrr")]);
+        assert!(selection.wholes.contains(&fid("rrrrrrrr")));
+        let saved = selection.saved();
+        selection.keep_only(Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        });
+        assert!(selection.is_empty() && selection.wholes.is_empty());
+        let version = selection.version();
+        selection.restore(saved);
+        assert_eq!(selection.feature(), Some(&fid("rrrrrrrr")));
+        assert!(
+            selection.wholes.contains(&fid("rrrrrrrr")),
+            "put back as the feature itself, no longer its body"
+        );
+        assert_ne!(selection.version(), version);
+        // The other way: a feature selected as itself (its timeline item), a dialog's body
+        // box then taking it as its body (Union), and its Cancel: itself again, not whole.
+        let mut selection = Selection::default();
+        selection.select_feature(fid("rrrrrrrr"));
+        let saved = selection.saved();
+        selection.select_bodies(vec![fid("rrrrrrrr")]);
+        assert!(selection.wholes.contains(&fid("rrrrrrrr")));
+        let version = selection.version();
+        selection.restore(saved);
+        assert_eq!(selection.feature(), Some(&fid("rrrrrrrr")));
+        assert!(selection.wholes.is_empty(), "put back as itself");
+        assert_ne!(selection.version(), version, "its tint worked out again");
+    }
+
+    #[test]
+    fn set_prunes_the_wholes_of_features_no_longer_selected() {
+        // A body selected by its row, then a face picked in its place: the body is no longer
+        // selected, so nor is it whole.
+        let mut selection = Selection::default();
+        selection.published(Some((fused(1, 2), Revision::from_number(1).unwrap())), 1);
+        selection.select_bodies(vec![fid("aaaaaaaa")]);
+        selection.pick("aaaaaaaa.box.Face3", How::Replace);
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Face3"]);
+        assert!(selection.wholes.is_empty(), "{:?}", selection.wholes);
+        // And names picked at once in its place (a box's), the same: with nothing a Cancel put
+        // back waiting to be read, and with something, where nothing is read again after.
+        for waiting in [false, true] {
+            if waiting {
+                let saved = selection.saved();
+                selection.restore(saved);
+            }
+            selection.select_bodies(vec![fid("aaaaaaaa")]);
+            assert!(selection.wholes.contains(&fid("aaaaaaaa")));
+            selection.pick_all(&["aaaaaaaa.box.Face2".to_owned()], How::Replace);
+            assert_eq!(selection.names(), ["aaaaaaaa.box.Face2"], "{waiting}");
+            assert!(
+                selection.wholes.is_empty(),
+                "{waiting}: {:?}",
+                selection.wholes
+            );
+        }
+        // A dialog's box taking edges alone lets the body go, its whole with it.
+        selection.select_bodies(vec![fid("aaaaaaaa")]);
+        selection.keep_only(Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        });
+        assert!(selection.wholes.is_empty(), "{:?}", selection.wholes);
+        // Taken out by a Ctrl-click, the others kept whole.
+        selection.select_bodies(vec![fid("aaaaaaaa"), fid("bbbbbbbb")]);
+        selection.deselect_feature(&fid("aaaaaaaa"));
+        assert_eq!(selection.wholes, BTreeSet::from([fid("bbbbbbbb")]));
+    }
+
+    #[test]
+    fn selecting_lets_a_waiting_click_and_what_was_said_go() {
+        // Each way of selecting features alone: a body's row, a timeline item, several.
+        type Select = fn(&mut Selection);
+        let ways: [(&str, Select); 3] = [
+            ("select_bodies", |s| s.select_bodies(vec![fid("aaaaaaaa")])),
+            ("select_feature", |s| s.select_feature(fid("aaaaaaaa"))),
+            ("select_features", |s| {
+                s.select_features(vec![fid("aaaaaaaa")])
+            }),
+        ];
+        for (way, select) in ways {
+            let mut selection = Selection {
+                click: Some(waiting_click(Instant::now(), None)),
+                said: Some("Can't select x".to_owned()),
+                ..Selection::default()
+            };
+            select(&mut selection);
+            assert!(selection.click.is_none(), "{way}: the waiting click kept");
+            assert_eq!(selection.said(), None, "{way}");
+            // And again, the same selection already: let go all the same.
+            selection.click = Some(waiting_click(Instant::now(), None));
+            selection.said = Some("Can't select x".to_owned());
+            select(&mut selection);
+            assert!(
+                selection.click.is_none(),
+                "{way} again: the waiting click kept"
+            );
+            assert_eq!(selection.said(), None, "{way} again");
+        }
+    }
+
+    #[test]
+    fn a_feature_is_selected_as_itself_or_as_its_body() {
+        let mut selection = Selection::default();
+        selection.select_feature(fid("aaaaaaaa"));
+        assert!(selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Itself));
+        assert!(!selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Body));
+        selection.select_bodies(vec![fid("aaaaaaaa")]);
+        assert!(selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Body));
+        assert!(!selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Itself));
+        // Another, or several: neither.
+        assert!(!selection.selected_as(&fid("bbbbbbbb"), SelectedAs::Body));
+        selection.select_bodies(vec![fid("aaaaaaaa"), fid("bbbbbbbb")]);
+        assert!(!selection.selected_as(&fid("aaaaaaaa"), SelectedAs::Body));
+    }
+
+    #[test]
+    fn deselect_feature_takes_that_feature_out_and_keeps_the_rest_as_they_were() {
+        // Trevin's ask of 2026-11-09: a Ctrl-click on a selected feature takes it out. Of
+        // three features and an element, the second feature goes; the rest stay, in order,
+        // and the selection's version moves, so what reads it reads it again.
+        let mut selection = Selection::default();
+        // Three bodies, as a dialog's boxes select them, each whole, and an edge.
+        selection.select_bodies(vec![fid("aaaaaaaa"), fid("bbbbbbbb"), fid("cccccccc")]);
+        selection.items.push(picked("k7f2qx3m.box.Edge9"));
+        let before = selection.version();
+        selection.deselect_feature(&fid("bbbbbbbb"));
+        assert_eq!(
+            selection.wholes,
+            BTreeSet::from([fid("aaaaaaaa"), fid("cccccccc")])
+        );
+        assert_eq!(
+            selection.items(),
+            [
+                Item::Feature(fid("aaaaaaaa")),
+                Item::Feature(fid("cccccccc")),
+                picked("k7f2qx3m.box.Edge9"),
+            ]
+        );
+        assert_ne!(selection.version(), before);
+        // A feature not selected: nothing changes, nor the version.
+        let unchanged = selection.version();
+        selection.deselect_feature(&fid("dddddddd"));
+        assert_eq!(selection.items().len(), 3);
+        assert_eq!(selection.version(), unchanged);
+        // The last feature out of a selection of one: nothing selected.
+        let mut one = Selection::default();
+        one.select_feature(fid("aaaaaaaa"));
+        one.deselect_feature(&fid("aaaaaaaa"));
+        assert!(one.is_empty());
     }
 
     #[test]
@@ -3090,7 +3858,7 @@ pub(crate) mod tests {
                 event(Release, [50.0 + apart, 50.0], false),
             ]);
             frame.pixels_per_point = 2.0;
-            selection.overlay(&mut View::default(), &frame, &ctx);
+            selection.overlay(&mut View::default(), &frame, &ctx, &no_face);
             selection.said() == Some(CLICK_NO_MODEL)
         };
         assert!(clicked(0.0));
@@ -3161,12 +3929,12 @@ pub(crate) mod tests {
                 .map(|hovered| (hovered.body, hovered.element, hovered.name.to_string()))
         };
         let mut selection = Selection::default();
-        selection.hover_answered(&over(1), &bodies);
+        selection.hover_answered(&over(1), &bodies, &|_| Cast::Empty);
         assert_eq!(
             hovered(&selection),
             Some((1, Element::Face(1), "k7f2qx3m.box.Face1".to_owned()))
         );
-        selection.hover_answered(&over(2), &bodies);
+        selection.hover_answered(&over(2), &bodies, &|_| Cast::Empty);
         assert_eq!(
             hovered(&selection),
             Some((1, Element::Face(2), "k7f2qx3m.box.Face2".to_owned()))
@@ -3209,7 +3977,8 @@ pub(crate) mod tests {
         };
         let under = |selection: &Selection, picking: &Picking| {
             selection
-                .under(picking, &bodies)
+                .under(picking, &bodies, &|_| Cast::Empty)
+                .unwrap()
                 .map(|(body, element, name, stable)| (body, element, name.to_string(), stable))
         };
         let mut selection = Selection::default();
@@ -3279,7 +4048,10 @@ pub(crate) mod tests {
             vertices: false,
         }));
         assert_eq!(
-            selection.under(&picking, &bodies).map(|u| u.1),
+            selection
+                .under(&picking, &bodies, &|_| Cast::Empty)
+                .unwrap()
+                .map(|u| u.1),
             Some(Element::Edge(1))
         );
         selection.draw(&mut view);
@@ -3287,11 +4059,40 @@ pub(crate) mod tests {
         // The box lets go: the vertex is picked, and the discs drawn, again.
         selection.take_into(None);
         assert_eq!(
-            selection.under(&picking, &bodies).map(|u| u.1),
+            selection
+                .under(&picking, &bodies, &|_| Cast::Empty)
+                .unwrap()
+                .map(|u| u.1),
             Some(Element::Vertex(2))
         );
         selection.draw(&mut view);
         assert_eq!(view.vertices, Some(VERTEX_PICK_POINTS));
+    }
+
+    #[test]
+    fn the_edge_filter_sets_whether_the_frames_edges_are_picked() {
+        // On, as the filter starts: the frame draws each edge near its square again toward
+        // the eye (N5). Off (E), not, so an edge is picked where it's drawn alone; and while
+        // a box takes faces alone (a dialog's), not either, whatever the filter.
+        let mut selection = Selection::default();
+        let mut view = View::default();
+        assert!(view.edges);
+        selection.filter.edges = false;
+        selection.draw(&mut view);
+        assert!(!view.edges);
+        selection.filter.edges = true;
+        selection.draw(&mut view);
+        assert!(view.edges);
+        selection.take_into(Some(Filter {
+            faces: true,
+            edges: false,
+            vertices: false,
+        }));
+        selection.draw(&mut view);
+        assert!(!view.edges);
+        selection.take_into(None);
+        selection.draw(&mut view);
+        assert!(view.edges);
     }
 
     #[test]
@@ -3351,23 +4152,28 @@ pub(crate) mod tests {
             }),
             edge: None,
         };
-        selection.clicked(&picking, How::Replace, &bodies);
+        selection
+            .clicked(&picking, How::Replace, &bodies, &|_| Cast::Empty)
+            .unwrap();
         assert_eq!(selection.names(), ["aaaaaaaa.box.Vertex5"]);
         let picked: Vec<_> = selection.elements().collect();
         assert_eq!(picked.len(), 1);
         assert!(picked[0].stable());
         assert_eq!(picked[0].found().unwrap().element, vertex(5));
         // Hovered, it's the hover's, its element a vertex.
-        selection.hover_answered(&picking, &bodies);
+        selection.hover_answered(&picking, &bodies, &|_| Cast::Empty);
         let hovered = selection.hovered().unwrap();
         assert_eq!((hovered.body, hovered.element), (1, Element::Vertex(5)));
         assert!(hovered.found.is_some());
     }
 
     #[test]
-    fn a_feature_lights_its_bodys_every_face_or_else_the_faces_named_as_its_own() {
+    fn a_feature_tints_the_faces_named_as_its_own_and_a_body_selected_its_every_face() {
         // Body 1, the fuse rrrrrrrr: its Face1 named as aaaaaaaa's, its Face2 as its own,
-        // its Face3 as bbbbbbbb's. Body 2, the box cccccccc: both faces its own.
+        // its Face3 as bbbbbbbb's. Body 2, the box cccccccc: both faces its own. A feature
+        // selected as itself (its timeline item: the prototype's `selectFeature`, its maker
+        // the feature) tints the faces named as its own; one selected as its body (its
+        // browser row: `bodyRow`, `maker: '*'`), the body's every face.
         use Element::Face;
         let bodies = BTreeMap::from([
             (
@@ -3389,18 +4195,37 @@ pub(crate) mod tests {
                 ),
             ),
         ]);
-        let lit = |id: &str| highlights(&[Item::Feature(fid(id))], &bodies, None);
+        let own =
+            |id: &str| selected_feature_faces(&[Item::Feature(fid(id))], &BTreeSet::new(), &bodies);
+        let whole = |id: &str| {
+            selected_feature_faces(
+                &[Item::Feature(fid(id))],
+                &BTreeSet::from([fid(id)]),
+                &bodies,
+            )
+        };
+        // Tinted, not highlighted: a feature selected highlights nothing.
+        assert!(highlights(&[Item::Feature(fid("rrrrrrrr"))], &bodies, None).is_empty());
         let set = |lit: &[(u32, Element)]| lit.iter().copied().collect::<BTreeSet<_>>();
-        // A body: its whole, and no other body's faces.
+        // A body by its row: its whole, and no other body's faces.
         assert_eq!(
-            lit("rrrrrrrr"),
+            whole("rrrrrrrr"),
             set(&[(1, Face(1)), (1, Face(2)), (1, Face(3))])
         );
-        assert_eq!(lit("cccccccc"), set(&[(2, Face(1)), (2, Face(2))]));
-        // A feature consumed: the faces named as its own, in the body they're in.
-        assert_eq!(lit("aaaaaaaa"), set(&[(1, Face(1))]));
-        assert_eq!(lit("bbbbbbbb"), set(&[(1, Face(3))]));
-        assert_eq!(lit("zzzzzzzz"), set(&[]));
+        assert_eq!(whole("cccccccc"), set(&[(2, Face(1)), (2, Face(2))]));
+        // The same features by their timeline items: the faces named as their own.
+        assert_eq!(own("rrrrrrrr"), set(&[(1, Face(2))]));
+        assert_eq!(own("cccccccc"), set(&[(2, Face(1)), (2, Face(2))]));
+        // A feature consumed: the faces named as its own, in the body they're in, however
+        // it's selected (it makes no body to take whole).
+        for (id, want) in [
+            ("aaaaaaaa", set(&[(1, Face(1))])),
+            ("bbbbbbbb", set(&[(1, Face(3))])),
+            ("zzzzzzzz", set(&[])),
+        ] {
+            assert_eq!(own(id), want, "{id}");
+            assert_eq!(whole(id), want, "{id}");
+        }
         // An element is drawn only if the answer it's drawn by is of the bodies' model.
         let of = (3, Revision::from_number(3).unwrap());
         let element = |found_in| {
@@ -3774,17 +4599,17 @@ pub(crate) mod tests {
             },
         );
         let ctx = egui::Context::default();
-        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.heard(), Some(&([50, 50], None)));
         // Heard in that frame alone.
-        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.heard(), None);
         // A click at (20, 20), and its answer: the click's, never heard as the hover's.
         let click = frame_of(vec![
             event(Press, [20.0, 20.0], false),
             event(Release, [20.0, 20.0], false),
         ]);
-        selection.overlay(&mut view, &click, &ctx);
+        selection.overlay(&mut view, &click, &ctx, &no_face);
         assert!(selection.click.is_some());
         view.answered_as(
             of,
@@ -3795,7 +4620,7 @@ pub(crate) mod tests {
                 edge: None,
             },
         );
-        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx);
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert!(selection.click.is_none(), "the click's answer not taken");
         assert_eq!(selection.heard(), None);
     }

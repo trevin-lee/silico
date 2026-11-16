@@ -7,7 +7,8 @@
 //! `sketch` read; it draws the tool's [`Preview`], says its [`Message`], and sends its
 //! [`Outcome::add`] as a `sketch_add` (`NewMembers::of`). Smart Dimension
 //! ([`SmartDimension`]) sits beside them, from picks, a right-click, and the Modify box to the
-//! `sketch_add` of one dimension, and the offer SD7 makes when it over-defines ([`offer`]).
+//! `sketch_add` of one dimension, and the offer SD7 makes when it over-defines ([`offer`]);
+//! and the ten constraint tools ([`relate`]), from a selection in pick order to one edit.
 //! Behaviour is SolidWorks', as the design takes it (docs/ux/solidworks.md, §4):
 //!
 //! - **Modes.** The first press decides: a press, a drag, and a release draws one entity;
@@ -34,8 +35,11 @@
 //!   about 1e-9 rad: an obround's join), so both hold where it's written. FreeCAD 1.1.3's
 //!   `seekAutoConstraint` adds both whatever; its main, since `d77c9647c3`, skips the
 //!   alignment wherever there's a tangency; this rule sits between them. Every one the
-//!   pointer shows at the accepting click is added, redundant or not (#278's G). Ctrl held,
-//!   or *Automatic relations* off, suppresses them all, and only them (#278's F).
+//!   pointer shows at the accepting click is added, and it shows none the sketch already
+//!   fixes (#278's G as amended, [`implied`]): an inferred relation asserting two points
+//!   level or plumb that the sketch already holds so, or reading only points it holds
+//!   fixed, is left out before it's shown. Ctrl held, or *Automatic relations* off,
+//!   suppresses them all, and only them (#278's F).
 //! - **Points lined up** (#278's E, and the coordinator's decision of 2026-10-31, as
 //!   SolidWorks wakes a point by hovering it): a point placed on nothing lines up only with
 //!   a woken point, one the pointer has passed within the pick tolerance of while the tool's
@@ -75,27 +79,37 @@ mod build;
 mod circle;
 mod dimension;
 mod geometry;
+mod implied;
 mod infer;
 mod line;
 mod point;
 mod rectangle;
+mod relate;
 #[cfg(test)]
 mod tests;
 
 use crate::command::{FeatureIds, Revision};
 use crate::document::sketch_edit::Members;
 use crate::document::{ElementId, FeatureId, Reference, Sketch};
+use crate::sketch_states::SketchStates;
 use crate::{Error, ErrorCode};
 use adds::Adds;
 
 pub use dimension::{
     DimensionEvent, DimensionPreview, LEVEL, Offer, OfferChoice, OfferRequest, PARALLEL, Placement,
-    PlacementKind, SmartDimension, TypedValue, offer, read_typed,
+    PlacementKind, SmartDimension, TypedValue, freedoms, offer, read_typed,
 };
+pub use implied::implied_by;
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
+pub use relate::{NOTHING_SELECTED, RelateEdit, Related, RelationTool, relate};
 
 /// A point or a vector in the sketch's plane, `[x, y]`, in millimetres.
 pub type Xy = [f64; 2];
+
+/// How many members a constraint tool's words name before counting the rest ("lines
+/// ne000001, ne000002, ne000003, and 47 more"), as an error's elements read, so a toast for
+/// a large selection stays short.
+pub(crate) const NAMED: usize = 3;
 
 /// Which tool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,7 +140,8 @@ impl ToolKind {
 /// What a tool works against: the sketch, by its feature's ID; the newest `sketch` read's
 /// members, as solved, and the revision of the model it read; the pick tolerance, in
 /// millimetres, that the viewport gives (a few pixels at its zoom); whether *Automatic
-/// relations* is on; and whether the tool draws for construction.
+/// relations* is on; whether the tool draws for construction; and the newest read's states,
+/// which points it fixes.
 #[derive(Debug, Clone, Copy)]
 pub struct Context<'a> {
     pub sketch_id: &'a FeatureId,
@@ -140,6 +155,20 @@ pub struct Context<'a> {
     /// construction either way, every other point not), and the relations inferred are the
     /// same. Smart Dimension, which adds no curve, doesn't read it.
     pub construction: bool,
+    /// The newest read's states: its points' (fully defined or not) are what a drawing tool
+    /// reads to leave out an inferred relation the sketch already fixes (#278's G as amended,
+    /// `implied`), and its constraints' and the sketch's are what Smart Dimension reads to
+    /// judge whether the dimension it placed over-defines the sketch, and so offers what it
+    /// may become (SD7). A sketch of free points has none to give: an empty read's are right.
+    pub states: &'a SketchStates,
+    /// Which of the axes the pointer may take ([`Axes`]): Smart Dimension's pick and its
+    /// hover, and a drawing tool's snaps (an `on` of an axis, a crossing with one, an `on`
+    /// beside a line's middle) and what its preview shows of them. The viewport allows each
+    /// only where it draws it within the pick's points of the pointer on the screen, which
+    /// the core can't see; with no pointer event (a read, a key), the allowance of the last
+    /// one. [`Axes::BOTH`] in a view square to the plane, where the pick's millimetres are
+    /// its points.
+    pub axes: Axes,
 }
 
 /// The keys held with an event: Shift (a square), and Ctrl (no inferred relations).
@@ -263,6 +292,19 @@ pub enum Message {
     /// Smart Dimension: the last dimension's offer (SD7) is open: no other is placed until
     /// it's answered.
     OfferOpen,
+    /// A constraint tool: every constraint the click would write is there already (C6), as
+    /// the phrase says ("line ne000002 is already vertical").
+    AllThere(String),
+    /// A constraint tool: this many of the constraints the click would write were there
+    /// already, and left out (C6).
+    SomeThere(usize),
+    /// A constraint tool: the relation is there already, as `said` says, and the `on`s it
+    /// makes redundant, `removed`, were removed (C5 and C6 as amended, #478): the first
+    /// [`NAMED`] named, the rest counted.
+    RedundantRemoved {
+        said: String,
+        removed: Vec<ElementId>,
+    },
 }
 
 impl Message {
@@ -302,6 +344,28 @@ impl Message {
                 "the last dimension is still solving: place this one once it has".to_owned()
             }
             Message::OfferOpen => "the last dimension over-defines the sketch: make it driven, leave it, or cancel it before placing another".to_owned(),
+            Message::AllThere(said) => format!("{said}: nothing was added"),
+            Message::SomeThere(1) => {
+                "1 of these constraints was already there: it wasn't added again".to_owned()
+            }
+            Message::SomeThere(n) => {
+                format!("{n} of these constraints were already there: they weren't added again")
+            }
+            Message::RedundantRemoved { said, removed } => {
+                let ids: Vec<String> = removed
+                    .iter()
+                    .take(NAMED)
+                    .map(ElementId::to_string)
+                    .collect();
+                let (noun, was) = match removed.len() {
+                    1 => ("constraint", "was"),
+                    _ => ("constraints", "were"),
+                };
+                format!(
+                    "{said}: nothing was added, and {noun} {}, which that makes redundant, {was} removed",
+                    crate::listed_first(&ids, removed.len())
+                )
+            }
         }
     }
 }
@@ -438,6 +502,8 @@ pub struct SketchTool {
     /// The gesture and its preview before the press in progress, for [`Event::Cancel`] to
     /// put back: none with no press in progress.
     before_press: Option<BeforePress>,
+    /// The classes of the newest view, built once for it ([`implied::ViewClasses`]).
+    classes: implied::ViewClasses,
 }
 
 /// A tool's gesture and preview as they were before a press.
@@ -486,6 +552,7 @@ impl SketchTool {
             adds: Adds::new(),
             woken: Vec::new(),
             before_press: None,
+            classes: implied::ViewClasses::default(),
         }
     }
 
@@ -595,6 +662,7 @@ impl SketchTool {
         }
         let pending = self.adds.members();
         let view = infer::View::of(context.sketch, &pending);
+        self.classes.keep_for(&view.sketch, context.states);
         let tolerance = if context.tolerance.is_finite() && context.tolerance > 0.0 {
             context.tolerance
         } else {
@@ -636,6 +704,8 @@ impl SketchTool {
                 tolerance,
                 infer: context.automatic_relations && !keys.ctrl,
                 woken: &woken,
+                classes: &self.classes,
+                axes: context.axes,
             },
             shift: keys.shift,
             ids,
@@ -687,4 +757,38 @@ fn not_finite(what: &str) -> Error {
         format!("a sketch tool made {what} that isn't a finite number"),
     )
     .with_suggestion(crate::worker::SILICO_BUG)
+}
+
+/// Which of the axes a pick, a snap, or an inference may take, the x axis and the y axis:
+/// for sketch mode's selection, Smart Dimension, and the drawing tools alike
+/// ([`Context::axes`]), each only where the viewport draws it within the pick's points of
+/// the pointer on the screen, which the core can't see (in a view oblique to the plane, the
+/// pick's millimetres reach farther one way than its points do).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Axes {
+    pub x: bool,
+    pub y: bool,
+}
+
+impl Axes {
+    /// Either axis may be picked.
+    pub const BOTH: Axes = Axes { x: true, y: true };
+}
+
+/// What a click at `at` picks of `sketch`, within `tolerance` millimetres, as Smart Dimension
+/// picks: a point of the sketch, or the origin where it's nearer (the point on a tie, and
+/// a point at the origin's place always); else the nearest curve, a line or an arc where
+/// it's drawn, a circle all round, an axis `axes` allows anywhere along it but where a line
+/// of the sketch lies along it (the sketch's own curve on a tie); else nothing. An axis
+/// `axes` doesn't allow drops out, so the nearest of the rest is taken. Sketch mode's
+/// selection hits the origin and the axes by it (the constraint tools' C9), so the two rank
+/// them by one rule. A tolerance that isn't a finite number above 0 is taken as 0, as Smart
+/// Dimension takes one; a place that isn't finite picks nothing.
+pub fn pick(sketch: &Sketch, at: Xy, tolerance: f64, axes: Axes) -> Option<Reference> {
+    infer::pick_in(
+        &infer::View::of(sketch, &Members::default()),
+        tolerance,
+        at,
+        axes,
+    )
 }

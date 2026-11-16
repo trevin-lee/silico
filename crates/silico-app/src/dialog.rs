@@ -1,6 +1,10 @@
 //! Feature dialogs (M5.8; docs/design/m5.0-app.md, sections 8 and 9, *Feature dialogs*):
 //! Fusion's docked dialog, a vertical stack of labelled inputs with OK and Cancel at its
-//! bottom, of the primitives and of the features that sweep a sketch's profile. A dialog
+//! bottom, of the features that sweep a sketch's profile, of the dressings and booleans, and
+//! of the primitives. Every kind's dialog shares one logic, a new feature's add among it,
+//! but the app opens a primitive's only to edit one a file holds, never to add one (solids
+//! are made sketch-first, as SolidWorks makes them: Trevin's decision of 2026-11-09); this
+//! module's tests of a new primitive's dialog exercise that shared logic. A dialog
 //! holds what its inputs say; the tab turns each change into an edit of the document
 //! inside its transaction ([`crate::tab::Tab`]), so the preview is the model rebuilt.
 //!
@@ -463,6 +467,54 @@ pub struct Dialog {
     /// The names its boxes let go of (a chip's remove button) since the tab last took them:
     /// the tab lets them go from the selection too.
     unpicked: Vec<String>,
+    /// A new sweep's body as last sent: its add's `base`, then the `base` each sketch picked
+    /// after its add moved it to (`crate::tab`'s `base_of`). None for any other dialog, and
+    /// for a sweep added with no body; a sweep's own dialog (Edit Feature) never moves it.
+    pub base: Option<FeatureId>,
+    /// Why a new sweep can't be built on the body its sketch's face is on, if it can't
+    /// (`crate::tab`'s `base_of`: the body a suppressed boolean's tool, which the gate counts
+    /// that boolean as consuming): nothing is sent for that sketch, OK is off, and the
+    /// dialog says it.
+    pub base_refused: Option<BaseRefused>,
+}
+
+/// Why a new sweep's base is refused ([`Dialog::base_refused`]): the sketch it's refused
+/// for, the words the dialog says, and, if the add's own read of the session's document
+/// refused it (`Tab`'s `Under::Base`), the revision that read was of: a check against the
+/// tab's timeline older than that mustn't undo it, and one of that revision or newer decides
+/// again. None for the check's own refusal, against the tab's timeline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BaseRefused {
+    pub sketch: FeatureId,
+    pub why: String,
+    pub read: Option<silico_core::command::Revision>,
+}
+
+/// What the tab lets an open dialog do: anything at all (`enabled`, none while its tab
+/// closes), and OK (`ok`: the tab's one rule, `Tab::ok_for`, asked of the dialog as its
+/// inputs are once drawn this frame, so an edit that makes an input invalid turns the button
+/// off in the frame it's made). A click on the button, as Enter, is taken only if the rule
+/// still holds once the tab has sent what this frame's inputs ask (`Tab::dialog_changed`): so
+/// neither closes a dialog whose add or base edit this frame queued.
+#[derive(Clone, Copy)]
+pub(crate) struct Allowed<'a> {
+    pub enabled: bool,
+    pub ok: &'a dyn Fn(&Dialog) -> bool,
+}
+
+/// OK on, whatever the dialog: a dialog drawn alone, as the panes' tests draw one.
+#[cfg(test)]
+fn always(_: &Dialog) -> bool {
+    true
+}
+
+#[cfg(test)]
+impl Allowed<'static> {
+    /// Everything allowed.
+    pub const ALL: Allowed<'static> = Allowed {
+        enabled: true,
+        ok: &always,
+    };
 }
 
 /// A length's input.
@@ -507,7 +559,8 @@ impl Dialog {
             value: Value::Selection(sketch),
         };
         // SEAM: the prototype draws Pad's direction as a segmented Direction, Normal (−Y) and
-        // Reversed (+Y) (app.js:618, `.seg`, `dlgRev`); a Reversed toggle until it's ported.
+        // Reversed (+Y) (app.js's `renderDialog`, `.seg`, `dlgRev`); a Reversed toggle until
+        // it's ported.
         let reversed = Input {
             label: "Reversed",
             part: Part::Reversed,
@@ -636,6 +689,8 @@ impl Dialog {
             active,
             serial,
             unpicked: Vec::new(),
+            base: None,
+            base_refused: None,
         }
     }
 
@@ -999,6 +1054,40 @@ impl Dialog {
         true
     }
 
+    /// A new feature's add, sent and refused before it was (a sweep's base its own read
+    /// refused), or refused by the core as made against a revision the session has moved on
+    /// from, let go: no longer adding, and nothing taken as sent, so the next time its inputs
+    /// may be added, they are.
+    pub fn forget_add(&mut self) {
+        self.adding = false;
+        self.sent.clear();
+    }
+
+    /// The text of `field` last taken as sent, if any was.
+    pub fn sent(&self, field: &str) -> Option<&String> {
+        self.sent.get(field)
+    }
+
+    /// `field` taken as last sent as `was` again (none: never sent): an edit
+    /// [`changes`](Self::changes) gave that the tab held back, so the next pass offers it
+    /// again.
+    pub fn unsend(&mut self, field: &'static str, was: Option<String>) {
+        match was {
+            Some(text) => self.sent.insert(field, text),
+            None => self.sent.remove(field),
+        };
+    }
+
+    /// The sketch its sketch box holds, if it has one and it's filled.
+    pub fn sketch(&self) -> Option<&FeatureId> {
+        self.inputs
+            .iter()
+            .find_map(|input| match (&input.part, &input.value) {
+                (Part::Sketch, Value::Selection(picked)) => picked.as_ref(),
+                _ => None,
+            })
+    }
+
     /// The active selection box filled with `sketch`, if the dialog has one.
     pub fn pick(&mut self, sketch: &FeatureId) {
         if let Some(Input {
@@ -1122,9 +1211,17 @@ impl Dialog {
         }
     }
 
-    /// Whether its active box takes a body: the canvas's picks and the browser's body rows
-    /// are its while it does.
-    pub fn takes_bodies(&self) -> bool {
+    /// Whether its boxes hold the selection as bodies (a boolean's boxes of one body, section
+    /// 9): while it's open, the selection is the bodies they hold, a canvas pick or a body's
+    /// browser row goes to its active box, and a right-click selects nothing. The one gate
+    /// for that, wherever it's asked.
+    pub fn boxes_hold_bodies(&self) -> bool {
+        self.kind.combines()
+    }
+
+    /// Whether its active box is a box of one body: what [`took_body`](Self::took_body) and
+    /// [`took_row`](Self::took_row) take a body into.
+    fn takes_bodies(&self) -> bool {
         self.body_box().is_some()
     }
 
@@ -1507,8 +1604,8 @@ impl Dialog {
     /// name of the feature it names, if the timeline lists it, and Cancel and OK in its
     /// footer at the bottom of `ui`; `named`
     /// gives a feature's name by its ID (a selection box shows it), `refused` whether an edit
-    /// of a field was refused (its input red, OK off), and `enabled` whether anything can be
-    /// sent now (off while the tab closes).
+    /// of a field was refused (its input red, OK off), and `allowed` whether anything can be
+    /// sent now (off while the tab closes) and whether the tab holds OK off.
     ///
     /// Left out: the Name field (the property panel's renames a feature, a dialog's would be
     /// one more way).
@@ -1523,8 +1620,9 @@ impl Dialog {
         preview: Option<properties::Preview>,
         named: &dyn Fn(&FeatureId) -> Option<String>,
         refused: &dyn Fn(&str) -> bool,
-        enabled: bool,
+        allowed: Allowed<'_>,
     ) -> Action {
+        let Allowed { enabled, ok } = allowed;
         let whole = ui.max_rect();
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         let closed = properties::title(
@@ -1543,7 +1641,6 @@ impl Dialog {
             .iter()
             .map(|input| self.readable(input))
             .collect();
-        let mut any_refused = false;
         let active = self.active;
         let serial = self.serial;
         let mut unpicked: Option<(usize, usize)> = None;
@@ -1564,7 +1661,6 @@ impl Dialog {
                             readable.get(at).copied().unwrap_or(true),
                             refused(input.part.field()),
                         );
-                        any_refused |= refused(input.part.field());
                         properties::row(ui, input.label, |ui, label| {
                             if input_ui(
                                 ui,
@@ -1642,8 +1738,10 @@ impl Dialog {
             names.said = None;
         }
         properties::footer_paint(ui, footer);
-        // Off while its add is unanswered: what's typed meanwhile is sent after it.
-        let ok = enabled && self.valid() && !any_refused && !self.adding && !self.holding();
+        // The tab's one rule (`Tab::ok_for`: valid, its add answered, no box holding, no edit
+        // refused, a sweep's base neither refused nor waiting), asked of the inputs as drawn
+        // this frame, as Enter asks it after.
+        let ok = enabled && ok(self);
         let mut action = if closed && enabled {
             Action::Cancel
         } else {
@@ -1800,13 +1898,31 @@ fn highlighted(active: Option<usize>, at: usize) -> bool {
 }
 
 /// A new feature of `kind` as `add_feature` takes it: the `members` its dialog's
-/// [`Dialog::add`] gave, and, for a sweep, `base`, the body it builds on, if it has one (a
-/// primitive takes none). None if they don't read as a feature's JSON, which they always do.
+/// [`Dialog::add`] gave, and, for a sweep, `base`, the body it builds on, if it has one
+/// (another kind takes none: the app adds no primitive, but this logic, shared by every
+/// kind, would add one with none). None if they don't read as a feature's JSON, which they
+/// always do.
 pub fn feature_node(kind: Kind, members: &[String], base: Option<&FeatureId>) -> Option<Node> {
     let mut members = members.to_vec();
     if let Some(base) = base.filter(|_| kind.sweeps()) {
         members.push(format!("\"base\": {}", quoted(base.as_str())));
     }
+    node_of(&members)
+}
+
+/// The sketch a new sweep's `members` (its dialog's [`Dialog::add`]) name, if they name one:
+/// what its base is found from (`crate::tab`'s `base_of`).
+pub fn sketch_of(members: &[String]) -> Option<FeatureId> {
+    let node = node_of(members)?;
+    match &member(&node, Part::Sketch.field())?.value {
+        Json::String(id) => FeatureId::new(id),
+        _ => None,
+    }
+}
+
+/// A dialog's `members` (each `"key": value`, as [`Dialog::add`] writes them) as the JSON
+/// object they make; none if they don't read as one.
+fn node_of(members: &[String]) -> Option<Node> {
     json::read(format!("{{{}}}", members.join(", ")).as_bytes()).ok()
 }
 
@@ -1840,6 +1956,26 @@ fn member<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_sweeps_members_name_its_sketch_and_others_name_none() {
+        let members = |sketch: Option<&str>| -> Vec<String> {
+            ["\"type\": \"pocket\"", "\"name\": \"Pocket\""]
+                .into_iter()
+                .map(str::to_owned)
+                .chain(sketch.map(|sketch| format!("\"sketch\": {sketch}")))
+                .collect()
+        };
+        assert_eq!(
+            sketch_of(&members(Some("\"s0000001\""))),
+            FeatureId::new("s0000001")
+        );
+        // None named, none that's a string, or none that's an ID.
+        assert_eq!(sketch_of(&members(None)), None);
+        assert_eq!(sketch_of(&members(Some("1"))), None);
+        assert_eq!(sketch_of(&members(Some("\"S\""))), None);
+        assert_eq!(sketch_of(&["\"sketch\":".to_owned()]), None);
+    }
 
     #[test]
     fn a_number_is_its_json_text_and_nothing_else_is_one() {

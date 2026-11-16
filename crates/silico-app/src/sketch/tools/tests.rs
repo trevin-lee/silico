@@ -1156,6 +1156,179 @@ fn the_canvas_menu_offers_end_chain_only_while_a_gesture_is_under_way() {
 }
 
 #[test]
+fn the_canvas_menu_is_the_prototypes_end_chain_smart_dimension_finish_and_cancel_with_their_keys() {
+    // js/interact.js's `onContext` in a sketch: End chain ['Esc'], Smart Dimension
+    // ('dimension' icon, ['D']), a separator, Finish Sketch ('check' icon, ['Mod', 'Enter']),
+    // and Cancel sketch, in that order; Mod is Ctrl off macOS and ⌘ on it, and Enter ↵ (the
+    // prototype's KEYNAME, app.js:8, as the registry names them). Each button named by its
+    // words alone, its keys its shortcut for a screen reader, and drawn as every menu's item
+    // is (`crate::menu`): its caps painted at its right, a separator line before Finish
+    // Sketch, every item as wide as the widest. Smart Dimension asks for its tool.
+    use crate::icons::Icon;
+    use crate::sketch::bar::{MenuAction, canvas_menu, menu_items};
+    use eframe::egui;
+    use egui_kittest::kittest::{NodeT, Queryable};
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let ctx = egui::Context::default();
+    ctx.set_os(egui::os::OperatingSystem::Nix);
+    let items = menu_items(&ctx, false);
+    let shown: Vec<_> = items
+        .iter()
+        .map(|item| {
+            (
+                item.action,
+                item.icon,
+                item.label,
+                item.caps.clone(),
+                item.off,
+                item.separated,
+            )
+        })
+        .collect();
+    let caps = |caps: &[&str]| caps.iter().map(|cap| (*cap).to_owned()).collect::<Vec<_>>();
+    assert_eq!(
+        shown,
+        [
+            (
+                MenuAction::EndChain,
+                None,
+                "End chain",
+                caps(&["Esc"]),
+                Some("Nothing is being drawn"),
+                false
+            ),
+            (
+                MenuAction::Dimension,
+                Some(Icon::Dimension),
+                "Smart Dimension",
+                caps(&["D"]),
+                None,
+                false
+            ),
+            (
+                MenuAction::Finish,
+                Some(Icon::Check),
+                "Finish Sketch",
+                caps(&["Ctrl", "↵"]),
+                None,
+                true
+            ),
+            (
+                MenuAction::Cancel,
+                None,
+                "Cancel sketch",
+                caps(&[]),
+                None,
+                false
+            ),
+        ]
+    );
+    ctx.set_os(egui::os::OperatingSystem::Mac);
+    assert_eq!(menu_items(&ctx, true)[2].caps, caps(&["⌘", "↵"]));
+    assert_eq!(menu_items(&ctx, true)[0].off, None);
+    // Drawn: its buttons top to bottom in that order, each named by its words, its keys
+    // its shortcut; Smart Dimension clicked asks for it.
+    let asked = Rc::new(Cell::new(MenuAction::None));
+    let seen = Rc::clone(&asked);
+    let mut h = egui_kittest::Harness::new_ui(move |ui| {
+        let action = canvas_menu(ui, true);
+        if action != MenuAction::None {
+            seen.set(action);
+        }
+    });
+    h.ctx.set_os(egui::os::OperatingSystem::Nix);
+    crate::theme::apply(&h.ctx);
+    h.run();
+    let mut buttons: Vec<(f32, String, Option<String>)> = h
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .map(|node| {
+            let node_rect = node.rect();
+            let access = node.accesskit_node();
+            (
+                node_rect.top(),
+                access.label().unwrap_or_default(),
+                access.data().keyboard_shortcut().map(str::to_owned),
+            )
+        })
+        .collect();
+    buttons.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let named: Vec<(String, Option<String>)> = buttons
+        .into_iter()
+        .map(|(_, label, keys)| (label, keys))
+        .collect();
+    let keyed = |label: &str, keys: Option<&str>| (label.to_owned(), keys.map(str::to_owned));
+    assert_eq!(
+        named,
+        [
+            keyed("End chain", Some("Esc")),
+            keyed("Smart Dimension", Some("D")),
+            keyed("Finish Sketch", Some("Ctrl+↵")),
+            keyed("Cancel sketch", None),
+        ]
+    );
+    // Its caps painted (#444's review), each a cap's words: Esc, D, Ctrl and ↵.
+    let painted: Vec<String> = crate::modal::tests::painted(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+            _ => None,
+        })
+        .collect();
+    for cap in ["Esc", "D", "Ctrl", "↵"] {
+        assert!(painted.iter().any(|text| text == cap), "{cap}: {painted:?}");
+    }
+    // Every item as wide as the widest, a menu's least at least (`crate::menu::width`).
+    let widths: Vec<f32> = h
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .map(|node| node.rect().width())
+        .collect();
+    assert_eq!(widths.len(), 4);
+    assert!(
+        widths.windows(2).all(|w| (w[0] - w[1]).abs() < 1e-3),
+        "{widths:?}"
+    );
+    assert!(widths[0] >= crate::menu::least_width() - 1e-3, "{widths:?}");
+    // The widest item's own width where it's past the least (`crate::menu::item_width`'s
+    // rule, the prototype's `.mi`), else the least.
+    // Measured on a context of its own, in the app's theme (its fonts), as the harness's.
+    let measuring = egui::Context::default();
+    measuring.set_os(egui::os::OperatingSystem::Nix);
+    crate::theme::apply(&measuring);
+    let mut ui_widths: Vec<f32> = Vec::new();
+    let mut measured = measuring.run_ui(Default::default(), |ui| {
+        ui_widths = menu_items(ui.ctx(), true)
+            .iter()
+            .map(|item| crate::menu::item_width(ui, &item.line()))
+            .collect();
+    });
+    measured.textures_delta.clear();
+    let widest = ui_widths
+        .iter()
+        .copied()
+        .fold(crate::menu::least_width(), f32::max);
+    // Its widest item, Finish Sketch with its caps, is past a menu's least: the width is that
+    // item's own, not the least.
+    assert!(widest > crate::menu::least_width(), "{ui_widths:?}");
+    assert!(
+        (widths[0] - widest).abs() < 1e-3,
+        "{widths:?} {ui_widths:?}"
+    );
+    // Drawn top to bottom, each 24 high, the separator (1 high, 4 above and below,
+    // `.menu .msep`) between Smart Dimension and Finish Sketch alone.
+    let mut tops: Vec<f32> = h
+        .query_all_by_role(egui::accesskit::Role::Button)
+        .map(|node| node.rect().top())
+        .collect();
+    tops.sort_by(f32::total_cmp);
+    let gaps: Vec<f32> = tops.windows(2).map(|w| w[1] - w[0]).collect();
+    assert_eq!(gaps, [24.0, 24.0 + 1.0 + 2.0 * 4.0, 24.0]);
+    h.get_by_label("Smart Dimension").click();
+    h.run();
+    assert_eq!(asked.get(), MenuAction::Dimension);
+}
+
+#[test]
 fn a_power_trim_sweep_pressed_near_a_line_trims_it_where_it_crosses_and_extends_nothing() {
     // Pressed 0.5 mm above na000001 at x = 30, within the pick, then swept down across it
     // to (30, −5): no extend (it left the line's carrier, and ends past neither end), but
@@ -1917,6 +2090,7 @@ fn input<'a>(read: &'a SketchRead, sketch: &'a FeatureId, tolerance: f64) -> Inp
         sketch,
         revision: Revision::OPENED,
         tolerance,
+        axes: Axes::BOTH,
         automatic_relations: true,
         construction: false,
         trim: TrimMode::Power,
@@ -2108,4 +2282,21 @@ fn a_pointer_half_a_number_is_off_the_plane_and_reaches_no_tool() {
         assert_eq!(desk.mode.tools.last(), None);
     }
     assert!(desk.adds.is_empty());
+}
+
+#[test]
+fn an_arcs_distance_is_its_rims_on_its_sweep_and_its_nearer_ends_past_it() {
+    // About (0, 0), radius 10, from 90° through 90°: from (0, 10) to (−10, 0).
+    let quarter = crate::sketch::draw::Curve::Round {
+        centre: [0.0, 0.0],
+        radius: 10.0,
+        start: std::f64::consts::FRAC_PI_2,
+        sweep: std::f64::consts::FRAC_PI_2,
+    };
+    let distance = |at| super::distance(quarter, at);
+    // At 135°, 1 outside the rim: 1.
+    let out = 11.0 * std::f64::consts::FRAC_1_SQRT_2;
+    assert!((distance([-out, out]) - 1.0).abs() < 1e-9);
+    // (−10, −1), just past its end: 1 from (−10, 0).
+    assert!((distance([-10.0, -1.0]) - 1.0).abs() < 1e-9);
 }

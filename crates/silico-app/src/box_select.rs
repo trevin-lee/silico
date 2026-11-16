@@ -1324,6 +1324,48 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_let_go_waiting_keeps_its_answer_while_a_name_waits_on_the_model() {
+        // Issue #489. The box's model published before its names are, its Edge1 selected
+        // and waiting: each frame the tab carries the selection to the model (asking Edge1
+        // again, `Tab::poll`) before the overlay (`Tab::overlay`). A drag let go before its press is
+        // answered waits for that answer across those frames, as it does with nothing
+        // waiting (the selection is the same); answered (nothing under the press), it's a
+        // window, and its toast says so.
+        let model = Arc::new(crate::selection::tests::box_model().unnamed());
+        let revision = silico_core::command::Revision::from_number(1).unwrap();
+        let carry = |selection: &mut Selection| {
+            selection.published(Some((Arc::clone(&model), revision)), 1);
+        };
+        let mut selection = Selection::default();
+        carry(&mut selection);
+        selection.pick("aaaaaaaa.box.Edge1", How::Replace);
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
+        let mut boxes = BoxSelect::default();
+        carry(&mut selection);
+        let left = vec![
+            event(Press, [50.0, 40.0]),
+            event(Move, [70.0, 40.0]),
+            event(Release, [90.0, 70.0]),
+        ];
+        let (toast, _) = overlaid(&mut boxes, &mut selection, left, true);
+        assert_eq!(toast, None);
+        assert_eq!(phase(&boxes), Some(Phase::Held));
+        for frame in 0..3 {
+            carry(&mut selection);
+            let (toast, asked) = overlaid(&mut boxes, &mut selection, Vec::new(), true);
+            assert_eq!(toast, None, "frame {frame}");
+            assert_eq!(phase(&boxes), Some(Phase::Held), "frame {frame}: let go");
+            assert!(asked.is_some(), "frame {frame}: its pick not asked");
+        }
+        // Its answer comes: nothing under the press.
+        boxes.heard = Some(([50, 40], None));
+        carry(&mut selection);
+        let (toast, _) = overlaid(&mut boxes, &mut selection, Vec::new(), true);
+        assert_eq!(toast.as_deref(), Some("Window selection: 0 edges"));
+        assert_eq!(phase(&boxes), None);
+    }
+
+    #[test]
     fn a_drag_decided_on_geometry_over_another_models_meshes_picks_nothing() {
         // A press that knew Face3 under it, decided in a frame whose bodies aren't of the
         // selection's model: nothing picked (the selection, with no model, would say why

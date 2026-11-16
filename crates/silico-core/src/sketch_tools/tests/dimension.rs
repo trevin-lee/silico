@@ -9,7 +9,7 @@ use super::*;
 use crate::command::sketch::{Region, SketchRead};
 use crate::document::{Angle, Length, LineSide, SketchArc, SketchCircle};
 use crate::sketch_states::{ConstraintState, SketchState, SketchStates};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 /// Smart Dimension driven against a sketch, which takes each `sketch_add` it makes.
 struct Dim {
@@ -24,6 +24,9 @@ struct Dim {
     made: Vec<Members>,
     messages: Vec<Message>,
     left: bool,
+    /// Which axes the pointer may take: both, as in a view square to the plane, unless a
+    /// test says otherwise.
+    axes: Axes,
 }
 
 impl Dim {
@@ -38,10 +41,11 @@ impl Dim {
                 dofs: 1000,
                 ..under()
             },
-            ids: Counter(100),
+            ids: Counter::after(100),
             made: Vec::new(),
             messages: Vec::new(),
             left: false,
+            axes: Axes::BOTH,
         }
     }
 
@@ -54,10 +58,10 @@ impl Dim {
             tolerance: self.tolerance,
             automatic_relations: true,
             construction: false,
+            states: &self.states,
+            axes: self.axes,
         };
-        let outcome = self
-            .tool
-            .handle(&context, &self.states, &mut self.ids, event);
+        let outcome = self.tool.handle(&context, &mut self.ids, event);
         if let Some(members) = &outcome.add {
             self.revision = self.revision.next().unwrap();
             self.tool.added(outcome.token.unwrap(), self.revision);
@@ -137,10 +141,6 @@ fn under() -> SketchStates {
     states(SketchState::UnderDefined)
 }
 
-fn r(text: &str) -> Reference {
-    Reference::Element(id(text))
-}
-
 fn mm(v: &str) -> Length {
     Length::parse(v).unwrap()
 }
@@ -189,7 +189,7 @@ fn a_line_is_its_length_placed_with_the_value_typed() {
     assert_eq!(
         d.shown(),
         Some(Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("50"),
             driving: true
         })
@@ -198,7 +198,7 @@ fn a_line_is_its_length_placed_with_the_value_typed() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("12.5"),
             driving: true
         }
@@ -231,7 +231,7 @@ fn a_circle_is_its_diameter_and_an_arc_its_radius() {
     assert_eq!(
         d.placed(),
         Form::Diameter {
-            curve: r("k0000001"),
+            curve: el("k0000001"),
             value: mm("14"),
             driving: true
         }
@@ -241,7 +241,7 @@ fn a_circle_is_its_diameter_and_an_arc_its_radius() {
     assert_eq!(
         d.placed(),
         Form::Radius {
-            curve: r("a0000001"),
+            curve: el("a0000001"),
             value: mm("10"),
             driving: true
         }
@@ -253,7 +253,7 @@ fn a_point_or_an_axis_alone_places_nothing() {
     let mut d = Dim::new(with_point(empty(), "p0000001", [10.0, 10.0]));
     d.click(10.0, 10.0).click(30.0, 30.0);
     assert_eq!(d.modify(), None);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
     d.escape().click(50.0, 0.2).click(30.0, 30.0);
     assert_eq!(d.tool.preview().picks, vec![Reference::XAxis]);
     assert_eq!(d.modify(), None);
@@ -270,16 +270,16 @@ fn a_line_along_an_axis_is_picked_before_the_axis_whatever_its_id() {
         for (sketch, on, off) in along_the_axes(name) {
             let mut d = Dim::new(sketch);
             d.to(on[0], on[1]);
-            assert_eq!(d.tool.preview().hover, Some(r(name)), "{name} at {on:?}");
+            assert_eq!(d.tool.preview().hover, Some(el(name)), "{name} at {on:?}");
             d.click(on[0], on[1]);
-            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at {on:?}");
+            assert_eq!(d.tool.preview().picks, vec![el(name)], "{name} at {on:?}");
             d.click(off[0], off[1]);
             assert_eq!(d.modify().as_deref(), Some("40"), "{name} at {on:?}");
             d.enter();
             assert_eq!(
                 d.placed(),
                 Form::Length {
-                    line: r(name),
+                    line: el(name),
                     value: mm("40"),
                     driving: true
                 }
@@ -300,7 +300,7 @@ fn a_line_along_an_axis_is_picked_where_its_foot_rounds() {
         ] {
             let mut d = Dim::new(with_line(empty(), name, from, to));
             d.click(at[0], at[1]);
-            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at {at:?}");
+            assert_eq!(d.tool.preview().picks, vec![el(name)], "{name} at {at:?}");
         }
     }
 }
@@ -316,7 +316,7 @@ fn a_line_along_the_x_axis_is_picked_with_the_pointer_on_it_anywhere_along_it() 
         for x in places {
             let mut d = Dim::new(with_line(empty(), name, [10.0, 0.0], [50.0, 0.0]));
             d.click(x, 0.0);
-            assert_eq!(d.tool.preview().picks, vec![r(name)], "{name} at ({x}, 0)");
+            assert_eq!(d.tool.preview().picks, vec![el(name)], "{name} at ({x}, 0)");
         }
     }
 }
@@ -334,7 +334,7 @@ fn a_line_within_a_tenth_of_a_micrometre_of_an_axis_is_picked_for_it() {
         let mut d = Dim::new(with_line(empty(), "zz000001", [10.0, y], [50.0, y]));
         d.click(20.0, -0.1 * y.signum());
         let want = if covered {
-            r("zz000001")
+            el("zz000001")
         } else {
             Reference::XAxis
         };
@@ -349,7 +349,7 @@ fn a_pick_as_near_a_line_beside_an_axis_as_the_axis_takes_the_line() {
     for name in ["aa000001", "zz000001"] {
         let mut d = Dim::new(with_line(empty(), name, [10.0, 0.5], [50.0, 0.5]));
         d.click(20.0, 0.25);
-        assert_eq!(d.tool.preview().picks, vec![r(name)], "{name}");
+        assert_eq!(d.tool.preview().picks, vec![el(name)], "{name}");
     }
 }
 
@@ -370,10 +370,207 @@ fn an_axis_is_picked_where_no_line_of_the_sketch_lies_on_it() {
             (off_y, [0.1, 20.0], Reference::YAxis),
         ] {
             let mut d = Dim::new(sketch);
+            // The pointer over it first: the preview shows the axis it would pick.
+            d.to(at[0], at[1]);
+            assert_eq!(
+                d.tool.preview().hover,
+                Some(axis.clone()),
+                "{name} at {at:?}"
+            );
             d.click(at[0], at[1]);
             assert_eq!(d.tool.preview().picks, vec![axis], "{name} at {at:?}");
         }
     }
+}
+
+#[test]
+fn pick_ranks_the_origin_with_the_points_and_the_axes_with_the_curves() {
+    // Sketch mode's selection's pick (C9), within 0.5. The empty sketch at (0.2, 0.1): the
+    // origin, √0.05 = 0.224 off, though the x axis is nearer, 0.1 off (points first).
+    assert_eq!(
+        pick(&empty(), [0.2, 0.1], 0.5, Axes::BOTH),
+        Some(Reference::Origin)
+    );
+    // A point at the origin's place, as near: the point (the sketch's own on a tie).
+    let at_origin = with_point(empty(), "p0000001", [0.0, 0.0]);
+    assert_eq!(
+        pick(&at_origin, [0.2, 0.1], 0.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    // A point at (0.4, 0), and (0.1, 0): the origin 0.1 off, the point 0.3: the origin.
+    let beside = with_point(empty(), "p0000001", [0.4, 0.0]);
+    assert_eq!(
+        pick(&beside, [0.1, 0.0], 0.5, Axes::BOTH),
+        Some(Reference::Origin)
+    );
+    // Far along an axis, 0.3 off it: the axis, anywhere along it.
+    assert_eq!(
+        pick(&empty(), [500.0, 0.3], 0.5, Axes::BOTH),
+        Some(Reference::XAxis)
+    );
+    assert_eq!(
+        pick(&empty(), [0.3, -700.0], 0.5, Axes::BOTH),
+        Some(Reference::YAxis)
+    );
+    // A line along the x axis, (10, 0) to (50, 0), 0.2 off both at (30, 0.2): the line.
+    let [(along_x, _, _), _] = along_the_axes("zz000001");
+    assert_eq!(
+        pick(&along_x, [30.0, 0.2], 0.5, Axes::BOTH),
+        Some(el("zz000001"))
+    );
+    // A place that isn't finite picks nothing, at any tolerance: (0, ∞) is ∞ from the
+    // origin and the x axis, which an infinite tolerance would otherwise reach.
+    assert_eq!(pick(&empty(), [f64::INFINITY, 0.0], 0.5, Axes::BOTH), None);
+    assert_eq!(pick(&empty(), [0.0, f64::NAN], 0.5, Axes::BOTH), None);
+    assert_eq!(
+        pick(&empty(), [0.0, f64::INFINITY], f64::INFINITY, Axes::BOTH),
+        None
+    );
+    // Nothing 3 from everything. A tolerance below zero or not a number is 0, as Smart
+    // Dimension takes it: nothing 0.14 off, and the origin exactly there.
+    assert_eq!(pick(&empty(), [3.0, 3.0], 0.5, Axes::BOTH), None);
+    assert_eq!(pick(&empty(), [0.1, 0.1], -1.0, Axes::BOTH), None);
+    assert_eq!(pick(&empty(), [0.1, 0.1], f64::NAN, Axes::BOTH), None);
+    assert_eq!(
+        pick(&empty(), [0.0, 0.0], f64::NAN, Axes::BOTH),
+        Some(Reference::Origin)
+    );
+}
+
+#[test]
+fn an_axis_a_pick_doesnt_allow_drops_out_and_the_nearest_of_the_rest_is_taken() {
+    // A line 0.3 above the x axis, (10, 0.3) to (50, 0.3), and a pick at (20, 0.1): the axis
+    // 0.1 off, the line 0.2. With both axes allowed, the axis; with the x axis not, the line.
+    let beside = with_line(empty(), "zz000001", [10.0, 0.3], [50.0, 0.3]);
+    let no_x = Axes { x: false, y: true };
+    assert_eq!(
+        pick(&beside, [20.0, 0.1], 0.5, Axes::BOTH),
+        Some(Reference::XAxis)
+    );
+    assert_eq!(pick(&beside, [20.0, 0.1], 0.5, no_x), Some(el("zz000001")));
+    // With nothing else near, nothing; the y axis, allowed, still taken where it's near.
+    assert_eq!(pick(&empty(), [20.0, 0.1], 0.5, no_x), None);
+    assert_eq!(
+        pick(&empty(), [0.1, 20.0], 0.5, no_x),
+        Some(Reference::YAxis)
+    );
+    let no_y = Axes { x: true, y: false };
+    assert_eq!(pick(&empty(), [0.1, 20.0], 0.5, no_y), None);
+    // The origin is no axis: a pick at it takes it whatever the axes.
+    let neither = Axes { x: false, y: false };
+    assert_eq!(
+        pick(&empty(), [0.1, 0.1], 0.5, neither),
+        Some(Reference::Origin)
+    );
+}
+
+#[test]
+fn smart_dimension_takes_no_axis_its_context_disallows_and_its_hover_agrees() {
+    // #484. A line 0.3 off the y axis, (0.3, 10) to (0.3, 50), and the pointer at (0.1, 20):
+    // the axis 0.1 off, the line 0.2, both within the pick's 0.5. With both axes allowed
+    // (the control), the hover and the pick are the axis, the nearer; with the y axis not,
+    // the line. And mirrored onto the x axis: (10, 0.3) to (50, 0.3), the pointer at
+    // (20, 0.1), the x axis 0.1 off and the line 0.2.
+    for y_axis in [true, false] {
+        let flip = |xy: Xy| if y_axis { xy } else { [xy[1], xy[0]] };
+        let (from, to, at) = (flip([0.3, 10.0]), flip([0.3, 50.0]), flip([0.1, 20.0]));
+        let (axis, without) = if y_axis {
+            (Reference::YAxis, Axes { x: true, y: false })
+        } else {
+            (Reference::XAxis, Axes { x: false, y: true })
+        };
+        for (axes, want) in [(Axes::BOTH, axis.clone()), (without, el("zz000001"))] {
+            let mut d = Dim::new(with_line(empty(), "zz000001", from, to));
+            d.axes = axes;
+            d.to(at[0], at[1]);
+            assert_eq!(
+                d.tool.preview().hover,
+                Some(want.clone()),
+                "hover, {axes:?}"
+            );
+            d.click(at[0], at[1]);
+            assert_eq!(d.tool.preview().picks, vec![want], "pick, {axes:?}");
+        }
+    }
+}
+
+#[test]
+fn smart_dimensions_hover_on_a_read_takes_the_axes_its_context_allows() {
+    // A read with no pointer event (`settle`) works the hover out again at the last place,
+    // (0.1, 20), beside (0.3, 10) to (0.3, 50): with the y axis not allowed, the line; with
+    // both, the axis, the nearer. What the context says decides it, not the last event's.
+    let sketch = with_line(empty(), "zz000001", [0.3, 10.0], [0.3, 50.0]);
+    let mut d = Dim::new(sketch.clone());
+    d.axes = Axes { x: true, y: false };
+    d.to(0.1, 20.0);
+    assert_eq!(d.tool.preview().hover, Some(el("zz000001")));
+    let sketch_id = sketch_id();
+    let states = under();
+    let context = |axes| Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+        construction: false,
+        states: &states,
+        axes,
+    };
+    d.tool.settle(&context(Axes { x: true, y: false }));
+    assert_eq!(d.tool.preview().hover, Some(el("zz000001")));
+    d.tool.settle(&context(Axes::BOTH));
+    assert_eq!(d.tool.preview().hover, Some(Reference::YAxis));
+}
+
+#[test]
+fn a_point_at_the_origins_place_is_picked_over_the_origin_from_any_side() {
+    // A point solved to (1e-15, 0), one place with the origin to the kernel (1e-7), clicked
+    // at (−0.2, 0): the origin is 0.2 off and the point 0.2 + 1e-15, yet the point stands
+    // for the origin and is picked. On its own side, (0.2, 0), it's nearer anyway.
+    let solved = with_point(empty(), "p0000001", [1e-15, 0.0]);
+    assert_eq!(
+        pick(&solved, [-0.2, 0.0], 0.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    assert_eq!(
+        pick(&solved, [0.2, 0.0], 0.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    // Within the tolerance of the origin but not of the point, which is 1e-15 farther: the
+    // point all the same, at its place.
+    assert_eq!(
+        pick(&solved, [-0.5, 0.0], 0.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    // A point 2e-7 off, past one place: the origin, 0.2 off, against 0.2000002.
+    let apart = with_point(empty(), "p0000001", [2e-7, 0.0]);
+    assert_eq!(
+        pick(&apart, [-0.2, 0.0], 0.5, Axes::BOTH),
+        Some(Reference::Origin)
+    );
+    // And a nearer point elsewhere still wins: (0.3, 0) clicked at (0.25, 0), 0.05 from it.
+    let both = with_point(solved, "p0000002", [0.3, 0.0]);
+    assert_eq!(
+        pick(&both, [0.25, 0.0], 0.5, Axes::BOTH),
+        Some(el("p0000002"))
+    );
+}
+
+#[test]
+fn a_point_as_near_as_the_origin_is_picked_over_it() {
+    // A point at (2, 2), far past one place with the origin, clicked at (1, 1): √2 from
+    // each, exactly, as (1, 1) and (−1, −1) give the same length. The tie goes to the
+    // sketch's own point.
+    let apart = with_point(empty(), "p0000001", [2.0, 2.0]);
+    assert_eq!(
+        pick(&apart, [1.0, 1.0], 1.5, Axes::BOTH),
+        Some(el("p0000001"))
+    );
+    // A hair nearer the origin, it's the origin's.
+    assert_eq!(
+        pick(&apart, [0.999, 0.999], 1.5, Axes::BOTH),
+        Some(Reference::Origin)
+    );
 }
 
 // --- SD1: two points, by the pointer; signs and order ---------------------------------
@@ -396,8 +593,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [25.0, 45.0],
             Form::DistanceX {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("30"),
                 driving: true,
             },
@@ -405,8 +602,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [25.0, -5.0],
             Form::DistanceX {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("30"),
                 driving: true,
             },
@@ -414,8 +611,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [55.0, 20.0],
             Form::DistanceY {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("20"),
                 driving: true,
             },
@@ -423,8 +620,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [-5.0, 20.0],
             Form::DistanceY {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("20"),
                 driving: true,
             },
@@ -432,8 +629,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [25.0, 20.0],
             Form::Distance {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("36.055513"),
                 driving: true,
             },
@@ -441,8 +638,8 @@ fn two_points_are_horizontal_above_the_box_vertical_beside_it_and_aligned_elsewh
         (
             [60.0, 50.0],
             Form::Distance {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("36.055513"),
                 driving: true,
             },
@@ -471,8 +668,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         }
@@ -484,8 +681,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::DistanceY {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("20"),
             driving: true
         }
@@ -497,8 +694,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::Distance {
-            a: r("p0000002"),
-            b: r("p0000001"),
+            a: el("p0000002"),
+            b: el("p0000001"),
             value: mm("36.055513"),
             driving: true
         }
@@ -516,8 +713,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000002"),
-            b: r("p0000001"),
+            a: el("p0000002"),
+            b: el("p0000001"),
             value: mm("30"),
             driving: true
         }
@@ -529,8 +726,8 @@ fn horizontal_and_vertical_distances_start_positive_whichever_point_is_picked_fi
     assert_eq!(
         d.placed(),
         Form::DistanceY {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("20"),
             driving: true
         }
@@ -549,8 +746,8 @@ fn a_negative_value_typed_for_a_horizontal_distance_is_taken_as_typed() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("-30"),
             driving: true
         }
@@ -569,7 +766,7 @@ fn the_origin_is_a_point_to_dimension_from() {
         d.placed(),
         Form::DistanceX {
             a: Reference::Origin,
-            b: r("p0000001"),
+            b: el("p0000001"),
             value: mm("10"),
             driving: true
         }
@@ -590,7 +787,7 @@ fn two_points_at_one_place_have_no_distance_but_a_horizontal_and_vertical_offset
     );
     let mut d = Dim::new(s);
     d.click(9.9999, 9.9999).click(10.000001, 10.000001);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001"), r("p0000002")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001"), el("p0000002")]);
     d.click(30.0, 30.0);
     assert_eq!(d.messages, vec![Message::NoDistance]);
     assert_eq!(d.modify(), None);
@@ -598,8 +795,8 @@ fn two_points_at_one_place_have_no_distance_but_a_horizontal_and_vertical_offset
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("0"),
             driving: true
         }
@@ -628,8 +825,8 @@ fn level_points_are_horizontal_and_plumb_ones_vertical_wherever_the_pointer_is()
         assert_eq!(
             d.placed(),
             Form::DistanceX {
-                a: r("p0000001"),
-                b: r("p0000002"),
+                a: el("p0000001"),
+                b: el("p0000002"),
                 value: mm("30"),
                 driving: true
             },
@@ -649,8 +846,8 @@ fn level_points_are_horizontal_and_plumb_ones_vertical_wherever_the_pointer_is()
     assert_eq!(
         d.placed(),
         Form::DistanceY {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         }
@@ -663,8 +860,8 @@ fn level_points_are_horizontal_and_plumb_ones_vertical_wherever_the_pointer_is()
     assert_eq!(
         d.placed(),
         Form::Distance {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         }
@@ -689,8 +886,8 @@ fn coincident_points_keep_their_pick_order() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("a0000001"),
-            b: r("c0000001"),
+            a: el("a0000001"),
+            b: el("c0000001"),
             value: mm("0"),
             driving: true
         }
@@ -702,8 +899,8 @@ fn coincident_points_keep_their_pick_order() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("c0000001"),
-            b: r("a0000001"),
+            a: el("c0000001"),
+            b: el("a0000001"),
             value: mm("0"),
             driving: true
         }
@@ -727,8 +924,8 @@ fn a_points_distance_from_a_line_is_on_the_side_it_is_drawn() {
         [30.0, -4.0],
     );
     let pld = |point: &str, value: &str, side| Form::PointLineDistance {
-        point: r(point),
-        line: r("n0000001"),
+        point: el(point),
+        line: el("n0000001"),
         value: mm(value),
         side,
         driving: true,
@@ -806,8 +1003,8 @@ fn a_circle_with_anything_else_is_measured_at_its_centre() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("c0000001"),
-            line: r("n0000001"),
+            point: el("c0000001"),
+            line: el("n0000001"),
             value: mm("20"),
             side: LineSide::Left,
             driving: true
@@ -820,8 +1017,8 @@ fn a_circle_with_anything_else_is_measured_at_its_centre() {
     assert_eq!(
         d.placed(),
         Form::DistanceY {
-            a: r("c0000001"),
-            b: r("p0000001"),
+            a: el("c0000001"),
+            b: el("p0000001"),
             value: mm("30"),
             driving: true
         }
@@ -833,8 +1030,8 @@ fn a_circle_with_anything_else_is_measured_at_its_centre() {
     assert_eq!(
         d.placed(),
         Form::Distance {
-            a: r("c0000001"),
-            b: r("c0000002"),
+            a: el("c0000001"),
+            b: el("c0000002"),
             value: mm("50"),
             driving: true
         }
@@ -857,8 +1054,8 @@ fn a_point_and_a_centreline_give_its_distance_on_its_side_and_nothing_across() {
         "n0000001",
     );
     let want = Form::PointLineDistance {
-        point: r("p0000001"),
-        line: r("n0000001"),
+        point: el("p0000001"),
+        line: el("n0000001"),
         value: mm("12"),
         side: LineSide::Right,
         driving: true,
@@ -898,7 +1095,7 @@ fn an_axis_is_a_centreline() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
+            point: el("p0000001"),
             line: Reference::YAxis,
             value: mm("12"),
             side: LineSide::Right,
@@ -918,7 +1115,7 @@ fn a_lock_on_a_centrelines_near_side_holds_across_it() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
+            point: el("p0000001"),
             line: Reference::YAxis,
             value: mm("12"),
             side: LineSide::Right,
@@ -1022,7 +1219,7 @@ fn a_line_and_an_axis_make_an_angle_and_a_skipped_box_rounds_it_to_the_nanodegre
         d.placed(),
         Form::Angle {
             a: Reference::XAxis,
-            b: r("n0000001"),
+            b: el("n0000001"),
             reversed: false,
             value: deg("26.565051177"),
             driving: true
@@ -1043,8 +1240,8 @@ fn a_right_click_locks_the_angle_the_preview_shows() {
     assert_eq!(
         d.shown(),
         Some(Form::Angle {
-            a: r("n000000a"),
-            b: r("n000000b"),
+            a: el("n000000a"),
+            b: el("n000000b"),
             reversed: false,
             value: deg("45"),
             driving: true
@@ -1054,8 +1251,8 @@ fn a_right_click_locks_the_angle_the_preview_shows() {
     assert_eq!(
         d.placed(),
         Form::Angle {
-            a: r("n000000a"),
-            b: r("n000000b"),
+            a: el("n000000a"),
+            b: el("n000000b"),
             reversed: false,
             value: deg("45"),
             driving: true
@@ -1076,8 +1273,8 @@ fn a_right_click_locks_a_horizontal_distance() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         }
@@ -1106,8 +1303,8 @@ fn chain() -> Sketch {
 
 fn angle(a: &str, b: &str, reversed: bool, value: &str) -> Form {
     Form::Angle {
-        a: r(a),
-        b: r(b),
+        a: el(a),
+        b: el(b),
         reversed,
         value: deg(value),
         driving: true,
@@ -1169,7 +1366,7 @@ fn the_vertex_is_a_shared_point_exactly() {
     else {
         panic!("{:?}", d.placed());
     };
-    assert_eq!((a, b, reversed), (r("n000000b"), r("n000000a"), false));
+    assert_eq!((a, b, reversed), (el("n000000b"), el("n000000a"), false));
     assert!(
         (159.0..160.0).contains(&value.degrees()),
         "{}",
@@ -1205,7 +1402,7 @@ fn the_pointer_on_the_vertex_is_between_the_along_rays() {
     else {
         panic!("{:?}", d.placed());
     };
-    assert_eq!((a, b, reversed), (r("n000000a"), r("n000000b"), false));
+    assert_eq!((a, b, reversed), (el("n000000a"), el("n000000b"), false));
     assert!(
         (67.16..67.17).contains(&value.degrees()),
         "{}",
@@ -1235,8 +1432,8 @@ fn two_parallel_lines_are_the_second_lines_from_to_the_first_line() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f000000b"),
-            line: r("n000000a"),
+            point: el("f000000b"),
+            line: el("n000000a"),
             value: mm("20"),
             side: LineSide::Left,
             driving: true
@@ -1249,8 +1446,8 @@ fn two_parallel_lines_are_the_second_lines_from_to_the_first_line() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f000000a"),
-            line: r("n000000b"),
+            point: el("f000000a"),
+            line: el("n000000b"),
             value: mm("20"),
             side: LineSide::Right,
             driving: true
@@ -1263,7 +1460,7 @@ fn two_parallel_lines_are_the_second_lines_from_to_the_first_line() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f000000a"),
+            point: el("f000000a"),
             line: Reference::XAxis,
             value: mm("10"),
             side: LineSide::Left,
@@ -1298,8 +1495,8 @@ fn lines_are_parallel_by_freecads_test_to_its_edge() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f000000b"),
-            line: r("n000000a"),
+            point: el("f000000b"),
+            line: el("n000000a"),
             value: mm("20"),
             side: LineSide::Left,
             driving: true
@@ -1313,8 +1510,8 @@ fn lines_are_parallel_by_freecads_test_to_its_edge() {
     assert_eq!(
         d.placed(),
         Form::Angle {
-            a: r("n000000b"),
-            b: r("n000000a"),
+            a: el("n000000b"),
+            b: el("n000000a"),
             reversed: true,
             value: deg("180"),
             driving: true
@@ -1345,15 +1542,15 @@ fn escape_undoes_the_last_pick_then_leaves_the_tool() {
     // nothing picked leaves the tool.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(15.0, 15.0);
-    assert_eq!(d.tool.preview().picks, vec![r("n000000a"), r("n000000b")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000a"), el("n000000b")]);
     d.escape();
-    assert_eq!(d.tool.preview().picks, vec![r("n000000a")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000a")]);
     assert!(!d.left);
     d.click(20.0, 40.0).escape();
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n000000a"),
+            line: el("n000000a"),
             value: mm("20"),
             driving: true
         }
@@ -1425,7 +1622,7 @@ fn escape_mid_click_drops_the_press_with_the_pick() {
     d.escape();
     d.send(DimensionEvent::Release([20.0, 40.0]));
     assert_eq!(d.modify(), None);
-    assert_eq!(d.tool.preview().picks, vec![r("n000000a")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000a")]);
 }
 
 #[test]
@@ -1445,9 +1642,9 @@ fn the_preview_shows_what_a_click_would_pick_and_points_before_curves() {
     // ID, the line's `from` point A's own; over A's middle, the line.
     let mut d = Dim::new(corner());
     d.to(10.1, 10.0);
-    assert_eq!(d.tool.preview().hover, Some(r("f000000a")));
+    assert_eq!(d.tool.preview().hover, Some(el("f000000a")));
     d.to(20.0, 10.2);
-    assert_eq!(d.tool.preview().hover, Some(r("n000000a")));
+    assert_eq!(d.tool.preview().hover, Some(el("n000000a")));
     d.to(20.0, 12.0);
     assert_eq!(d.tool.preview().hover, None);
 }
@@ -1478,7 +1675,7 @@ fn the_box_takes_no_units_arithmetic_or_words_and_stays_open() {
         assert_eq!(
             d.placed(),
             Form::Length {
-                line: r("n0000001"),
+                line: el("n0000001"),
                 value: mm("12"),
                 driving: true
             },
@@ -1505,7 +1702,7 @@ fn the_box_reads_a_number_as_the_document_does() {
         assert_eq!(
             d.placed(),
             Form::Length {
-                line: r("n0000001"),
+                line: el("n0000001"),
                 value: mm(want),
                 driving: true
             },
@@ -1563,8 +1760,8 @@ fn an_angles_box_reads_degrees_to_the_nanodegree_signed_within_a_turn() {
             assert_eq!(
                 d.placed(),
                 Form::Angle {
-                    a: r("n000000a"),
-                    b: r("n000000b"),
+                    a: el("n000000a"),
+                    b: el("n000000b"),
                     reversed: false,
                     value: deg(text),
                     driving: true
@@ -1593,7 +1790,7 @@ fn a_diameter_may_be_two_kilometres() {
     assert_eq!(
         d.placed(),
         Form::Diameter {
-            curve: r("k0000001"),
+            curve: el("k0000001"),
             value: mm("2000000"),
             driving: true
         }
@@ -1614,7 +1811,7 @@ fn a_skipped_box_writes_the_measured_value_rounded_to_the_nanometre() {
     // untouched box writes the same.
     let s = with_line(empty(), "n0000001", [10.0, 10.0], [11.0, 11.0]);
     let want = Form::Length {
-        line: r("n0000001"),
+        line: el("n0000001"),
         value: Length::from_nm(1_414_214),
         driving: true,
     };
@@ -1651,8 +1848,8 @@ fn a_skipped_box_whose_measure_the_gate_refuses_places_nothing_and_keeps_the_pic
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("500000"),
             driving: true
         }
@@ -1703,16 +1900,18 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Lowest;
     let mut made = Vec::new();
     for (pick, place) in [([20.0, 10.0], [20.0, 20.0]), ([20.0, 40.0], [20.0, 50.0])] {
         for at in [pick, place] {
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Release(at));
         }
-        let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+        let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
         made.push(out.add.unwrap().constraints[0].id.clone());
         // No read of its revision comes: its offer dismissed, so the next is placed.
         tool.dismiss_offer();
@@ -1732,13 +1931,11 @@ fn another_sketch_starts_the_tool_afresh() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: &under(),
+        axes: Axes::BOTH,
     };
-    d.tool.handle(
-        &context,
-        &under(),
-        &mut d.ids,
-        DimensionEvent::Move([50.0, 50.0]),
-    );
+    d.tool
+        .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
     assert!(d.tool.preview().picks.is_empty());
     assert!(!d.tool.busy());
 }
@@ -1756,7 +1953,7 @@ fn a_position_that_isnt_a_number_is_refused_and_changes_nothing() {
         let out = d.send(event.clone());
         assert_eq!(out.message, Some(Message::NotFinite), "{event:?}");
     }
-    assert_eq!(d.tool.preview().picks, vec![r("n000000a")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000a")]);
 }
 
 #[test]
@@ -1767,7 +1964,7 @@ fn a_tolerance_that_isnt_a_positive_number_picks_only_what_is_exactly_there() {
         d.click(20.0, 10.2);
         assert!(d.tool.preview().picks.is_empty(), "{tolerance}");
         d.click(20.0, 10.0);
-        assert_eq!(d.tool.preview().picks, vec![r("n000000a")], "{tolerance}");
+        assert_eq!(d.tool.preview().picks, vec![el("n000000a")], "{tolerance}");
     }
 }
 
@@ -1780,7 +1977,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
     sketch.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Length {
-            line: r("n000000b"),
+            line: el("n000000b"),
             value: Length::from_nm(0),
             driving: true,
         },
@@ -1793,19 +1990,21 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Release(at));
     }
-    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+    let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
     assert_eq!(out.message, None);
     assert_eq!(
         out.add.unwrap().constraints[0].form,
         Form::Length {
-            line: r("n000000a"),
+            line: el("n000000a"),
             value: mm("20"),
             driving: true
         }
@@ -1814,16 +2013,11 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
     // dismissed, as no read of its revision comes.)
     tool.dismiss_offer();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+        tool.handle(&context, &mut ids, DimensionEvent::Release(at));
     }
-    tool.handle(
-        &context,
-        &under(),
-        &mut ids,
-        DimensionEvent::Typed("0".to_owned()),
-    );
-    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Enter);
+    tool.handle(&context, &mut ids, DimensionEvent::Typed("0".to_owned()));
+    let out = tool.handle(&context, &mut ids, DimensionEvent::Enter);
     assert_eq!(out.add, None);
     let Some(Message::ValueRefused(error)) = out.message else {
         panic!("{out:?}");
@@ -1854,8 +2048,8 @@ fn enter_on_an_untouched_box_places_the_measured_distance_from_a_line() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
-            line: r("n0000001"),
+            point: el("p0000001"),
+            line: el("n0000001"),
             value: mm("7"),
             side: LineSide::Left,
             driving: true
@@ -1915,7 +2109,7 @@ fn an_untouched_box_follows_a_newer_read() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("100"),
             driving: true
         }
@@ -1938,8 +2132,8 @@ fn a_typed_box_keeps_its_text_on_the_newest_side_and_order() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
-            line: r("n0000001"),
+            point: el("p0000001"),
+            line: el("n0000001"),
             value: mm("5"),
             side: LineSide::Right,
             driving: true
@@ -1957,8 +2151,8 @@ fn a_typed_box_keeps_its_text_on_the_newest_side_and_order() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000002"),
-            b: r("p0000001"),
+            a: el("p0000002"),
+            b: el("p0000001"),
             value: mm("20"),
             driving: true
         }
@@ -2011,8 +2205,8 @@ fn a_placing_click_may_land_on_something() {
     assert_eq!(
         d.shown(),
         Some(Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("30"),
             driving: true
         })
@@ -2025,7 +2219,7 @@ fn a_placing_click_may_land_on_something() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("50"),
             driving: true
         }
@@ -2042,7 +2236,7 @@ fn clicks_while_the_box_is_open_change_nothing() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("12"),
             driving: true
         }
@@ -2239,7 +2433,7 @@ fn lines_that_only_meet_keep_the_quadrant_rule_opposite() {
             [[5.0, 4.5], [40.0, 0.2]],
             [-4.2, -1.71],
             Form::Angle {
-                a: r("n0000001"),
+                a: el("n0000001"),
                 b: x_axis,
                 reversed: false,
                 value: deg("315"),
@@ -2317,8 +2511,8 @@ fn slanted_t(start: Xy, left: bool, held: bool) -> Sketch {
         s.constraints.push(SketchConstraint {
             id: id("k0000001"),
             form: Form::On {
-                point: r("f000000b"),
-                curve: r("n000000a"),
+                point: el("f000000b"),
+                curve: el("n000000a"),
             },
         });
     }
@@ -2390,18 +2584,18 @@ fn a_t_held_at_a_lines_middle_never_crosses() {
     let m = [(p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0];
     let holds = [
         Form::Midpoint {
-            point: r("f000000b"),
-            line: r("n000000a"),
+            point: el("f000000b"),
+            line: el("n000000a"),
         },
         Form::Symmetric {
-            a: r("f000000a"),
-            b: r("t000000a"),
-            about: r("f000000b"),
+            a: el("f000000a"),
+            b: el("t000000a"),
+            about: el("f000000b"),
         },
         Form::Symmetric {
-            a: r("t000000a"),
-            b: r("f000000a"),
-            about: r("f000000b"),
+            a: el("t000000a"),
+            b: el("f000000a"),
+            about: el("f000000b"),
         },
     ];
     let pick_a = [p[0] + d[0] * 0.15, p[1] + d[1] * 0.15];
@@ -2468,50 +2662,50 @@ fn only_a_hold_of_one_lines_end_on_the_other_ties_them() {
     on_a.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::On {
-            point: r("p0000001"),
-            curve: r("n000000a"),
+            point: el("p0000001"),
+            curve: el("n000000a"),
         },
     });
     let mut on_circle = with_circle(crossing(), "k0000002", [15.0, 20.0], 5.0);
     on_circle.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::On {
-            point: r("t000000b"),
-            curve: r("k0000002"),
+            point: el("t000000b"),
+            curve: el("k0000002"),
         },
     });
     let mut about_p = with_point(crossing(), "p0000001", [15.0, 10.0]);
     about_p.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Symmetric {
-            a: r("f000000a"),
-            b: r("t000000a"),
-            about: r("p0000001"),
+            a: el("f000000a"),
+            b: el("t000000a"),
+            about: el("p0000001"),
         },
     });
     let mut half_on_a = with_point(crossing(), "z0000001", [20.0, 20.0]);
     half_on_a.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Symmetric {
-            a: r("f000000a"),
-            b: r("z0000001"),
-            about: r("t000000b"),
+            a: el("f000000a"),
+            b: el("z0000001"),
+            about: el("t000000b"),
         },
     });
     let mut middle_p = with_point(crossing(), "p0000001", [15.0, 10.0]);
     middle_p.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Midpoint {
-            point: r("p0000001"),
-            line: r("n000000a"),
+            point: el("p0000001"),
+            line: el("n000000a"),
         },
     });
     let mut middle_c = with_line(crossing(), "n000000c", [10.0, 15.0], [20.0, 15.0]);
     middle_c.constraints.push(SketchConstraint {
         id: id("k0000001"),
         form: Form::Midpoint {
-            point: r("t000000b"),
-            line: r("n000000c"),
+            point: el("t000000b"),
+            line: el("n000000c"),
         },
     });
     for s in [on_a, on_circle, about_p, half_on_a, middle_p, middle_c] {
@@ -2627,10 +2821,10 @@ fn the_origin_is_picked_where_its_nearer_than_a_point_and_a_point_on_it_otherwis
     d.click(0.1, 0.1);
     assert_eq!(d.tool.preview().picks, vec![Reference::Origin]);
     d.escape().click(0.25, 0.25);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
     let mut d = Dim::new(with_point(empty(), "p0000001", [0.0, 0.0]));
     d.click(0.0, 0.0);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
 }
 
 #[test]
@@ -2648,8 +2842,8 @@ fn a_point_on_a_centrelines_left_is_measured_from_its_left() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
-            line: r("n0000001"),
+            point: el("p0000001"),
+            line: el("n0000001"),
             value: mm("12"),
             side: LineSide::Left,
             driving: true
@@ -2666,13 +2860,13 @@ fn a_centreline_stays_picked_for_the_next_dimension() {
         .click(0.0, 20.0)
         .click(20.0, 5.0)
         .escape();
-    assert_eq!(d.tool.preview().picks, vec![r("n0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n0000001")]);
     d.click(25.0, 30.0).click(30.0, 30.0).escape();
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000002"),
-            line: r("n0000001"),
+            point: el("p0000002"),
+            line: el("n0000001"),
             value: mm("25"),
             side: LineSide::Right,
             driving: true
@@ -2699,8 +2893,8 @@ fn a_parallel_line_across_a_centreline_is_refused_as_a_point_is() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f0000001"),
-            line: r("n0000002"),
+            point: el("f0000001"),
+            line: el("n0000002"),
             value: mm("12"),
             side: LineSide::Left,
             driving: true
@@ -2716,8 +2910,8 @@ fn a_parallel_line_across_a_centreline_is_refused_as_a_point_is() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("f0000002"),
-            line: r("n0000001"),
+            point: el("f0000002"),
+            line: el("n0000001"),
             value: mm("12"),
             side: LineSide::Right,
             driving: true
@@ -2739,7 +2933,7 @@ fn a_pointer_a_subnormal_distance_across_a_centreline_is_across() {
     assert_eq!(
         d.placed(),
         Form::PointLineDistance {
-            point: r("p0000001"),
+            point: el("p0000001"),
             line: Reference::YAxis,
             value: mm("0.000001"),
             side: LineSide::Left,
@@ -2772,7 +2966,7 @@ fn the_lock_goes_with_a_pick_the_read_drops() {
     assert!(d.tool.preview().locked);
     d.sketch.points.pop();
     d.to(25.0, 45.0);
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
     assert!(!d.tool.preview().locked);
 }
 
@@ -2790,13 +2984,11 @@ fn another_sketch_forgets_the_placement() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: &under(),
+        axes: Axes::BOTH,
     };
-    d.tool.handle(
-        &context,
-        &under(),
-        &mut d.ids,
-        DimensionEvent::Move([50.0, 50.0]),
-    );
+    d.tool
+        .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
     assert_eq!(d.tool.placement(), None);
 }
 
@@ -2862,7 +3054,7 @@ fn a_second_placement_waits_for_the_firsts_read() {
     d.click(15.0, 15.0).click(30.0, 30.0);
     assert_eq!(d.messages, vec![Message::Solving]);
     assert_eq!(d.modify(), None);
-    assert_eq!(d.tool.preview().picks, vec![r("n000000b")]);
+    assert_eq!(d.tool.preview().picks, vec![el("n000000b")]);
     assert_eq!(d.made.len(), 1);
     d.revision = made;
     d.click(30.0, 30.0);
@@ -2886,8 +3078,10 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: &under(),
+        axes: Axes::BOTH,
     };
-    let out = d.tool.settle(&context, &under());
+    let out = d.tool.settle(&context);
     assert_eq!(out, Outcome::default());
     assert!(!d.tool.busy());
     d.click(20.0, 10.0).click(15.0, 15.0).click(25.0, 13.0);
@@ -2900,8 +3094,10 @@ fn settle_takes_a_read_with_no_event() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: &under(),
+        axes: Axes::BOTH,
     };
-    let out = d.tool.settle(&context, &under());
+    let out = d.tool.settle(&context);
     assert_eq!(out.message, Some(Message::DimensionChanged));
     assert_eq!(out.add, None);
     assert_eq!(d.tool.preview().modify, None);
@@ -2921,7 +3117,7 @@ fn a_box_typed_with_its_own_value_is_touched() {
     assert_eq!(
         d.placed(),
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: mm("50"),
             driving: true
         }
@@ -2972,8 +3168,8 @@ fn a_cancelled_press_picks_nothing_and_what_is_picked_stays() {
     // picked, and the pointer is where it was before the press. Then q clicked and the
     // dimension placed above the box: `distance_x` p to q, 40 − 10 = 30, as a twin that
     // never saw the press places it.
-    let p = r("p0000001");
-    let q = r("p0000002");
+    let p = el("p0000001");
+    let q = el("p0000002");
     let moves: [&[Xy]; 2] = [&[], &[[42.0, 33.0], [60.0, 55.0]]];
     for moves in moves {
         let mut d = Dim::new(two_points());
@@ -3034,7 +3230,7 @@ fn a_cancel_with_no_press_in_progress_changes_nothing() {
     assert_eq!(d.send(DimensionEvent::Cancel), Outcome::default());
     assert_eq!(d.tool.preview(), &preview);
     assert_eq!(d.tool.preview().pointer, Some([50.0, 50.0]));
-    assert_eq!(d.tool.preview().picks, vec![r("p0000001")]);
+    assert_eq!(d.tool.preview().picks, vec![el("p0000001")]);
     // The Modify box open and typed in; a press (which the box ignores) cancelled: the box
     // and its text stay, and Enter places what was typed.
     d.click(40.0, 30.0).click(25.0, 45.0).typed("12");
@@ -3045,8 +3241,8 @@ fn a_cancel_with_no_press_in_progress_changes_nothing() {
     assert_eq!(
         d.placed(),
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: mm("12"),
             driving: true
         }
@@ -3101,6 +3297,9 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
     d.click(20.0, 10.0).click(20.0, 30.0).escape();
     let k = d.tool.placement().unwrap().constraint;
     d.states.state = SketchState::OverDefined;
+    // The read refuses the solve, the dimension's own state flagged: offered, by `offer`'s
+    // rule, c3 as amended (Fable, 2026-11-09, c3-refused-sketch-fable.md).
+    d.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     d.states
         .constraints
         .insert(k.clone(), ConstraintState::Conflicting);
@@ -3126,12 +3325,13 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
-    let mut ids = Counter(0);
-    let mut send = |tool: &mut SmartDimension, event: DimensionEvent| {
-        tool.handle(&context, &under(), &mut ids, event)
-    };
+    let mut ids = Counter::after(0);
+    let mut send =
+        |tool: &mut SmartDimension, event: DimensionEvent| tool.handle(&context, &mut ids, event);
     for at in [[20.0, 10.0], [20.0, 30.0]] {
         send(&mut tool, DimensionEvent::Press(at));
         send(&mut tool, DimensionEvent::Release(at));
@@ -3152,37 +3352,43 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
 // --- Review #345, round 3 --------------------------------------------------------------
 
 #[test]
-fn a_dimension_that_leaves_a_solved_sketchs_freedoms_where_they_were_is_offered() {
+fn a_dimension_that_leaves_a_sketchs_freedoms_where_they_were_is_offered_where_they_count_its_rows()
+{
     // Item 1: placed on a read with 1000 freedoms; the add's read solved, nothing flagged,
     // its state the same: 1000 or more freedoms is a dependent dimension, offered; 999
-    // isn't. A refused solve's freedoms say nothing: not offered on them (state Invalid, no
-    // prompt either).
+    // isn't. A refused solve's freedoms count the constraints too (c3 as amended, Fable,
+    // 2026-11-09, c3-refused-sketch-fable.md; c3 had them say nothing), but for a
+    // translation's refusal (`invalid_input`), whose diagnosis is of the geometry alone. So
+    // a solution that can't be built (`invalid_result`, the state invalid, so no prompt and
+    // not newly refused) with 1000 is offered; a translation's refusal with 1000 isn't.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
-    assert_eq!(placement.kind, PlacementKind::Add { dofs: 1000 });
-    let made = placement.revision;
-    let read = |dofs: i32, refused: bool| {
-        let mut read = read_of(
-            d.sketch.clone(),
-            "t0000101",
-            ConstraintState::Satisfied,
-            if refused {
-                SketchState::Invalid
-            } else {
-                SketchState::UnderDefined
-            },
-        );
-        read.states.dofs = dofs;
-        if refused {
-            read.states.solve_problem = Some(Error::new(ErrorCode::InvalidResult, "invalid"));
+    assert_eq!(
+        placement.kind,
+        PlacementKind::Add {
+            before_prompted_refusal: false,
+            dofs: Some(1000)
         }
+    );
+    let made = placement.revision;
+    let read = |dofs: i32, refused: Option<ErrorCode>| {
+        let (own, of) = match refused {
+            Some(_) => (ConstraintState::Unsolved, SketchState::Invalid),
+            None => (ConstraintState::Satisfied, SketchState::UnderDefined),
+        };
+        let mut read = read_of(d.sketch.clone(), "t0000101", own, of);
+        read.states.dofs = dofs;
+        read.states.solve_problem = refused.map(|code| Error::new(code, "invalid"));
         read
     };
-    assert!(offer(&read(1000, false), made, &placement).is_some());
-    assert!(offer(&read(1001, false), made, &placement).is_some());
-    assert_eq!(offer(&read(999, false), made, &placement), None);
-    assert_eq!(offer(&read(1000, true), made, &placement), None);
+    assert!(offer(&read(1000, None), made, &placement).is_some());
+    assert!(offer(&read(1001, None), made, &placement).is_some());
+    assert_eq!(offer(&read(999, None), made, &placement), None);
+    let unbuildable = read(1000, Some(ErrorCode::InvalidResult));
+    assert!(offer(&unbuildable, made, &placement).is_some());
+    let untranslated = read(1000, Some(ErrorCode::InvalidInput));
+    assert_eq!(offer(&untranslated, made, &placement), None);
 }
 
 #[test]
@@ -3225,16 +3431,18 @@ fn a_placement_not_yet_answered_holds_the_next() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
-    let mut ids = Counter(0);
+    let mut ids = Counter::after(0);
     let click = |tool: &mut SmartDimension, ids: &mut Counter, at: [f64; 2]| {
-        tool.handle(&context, &under(), ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), ids, DimensionEvent::Release(at))
+        tool.handle(&context, ids, DimensionEvent::Press(at));
+        tool.handle(&context, ids, DimensionEvent::Release(at))
     };
     click(&mut tool, &mut ids, [20.0, 10.0]);
     click(&mut tool, &mut ids, [20.0, 30.0]);
-    let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+    let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
     assert!(out.add.is_some());
     click(&mut tool, &mut ids, [15.0, 15.0]);
     let out = click(&mut tool, &mut ids, [30.0, 30.0]);
@@ -3250,6 +3458,9 @@ fn an_offer_holds_the_tool_until_its_dismissed() {
     d.click(20.0, 10.0).click(20.0, 30.0).escape();
     let k = d.tool.placement().unwrap().constraint;
     d.states.state = SketchState::OverDefined;
+    // The read refuses the solve, the dimension's own state flagged: offered, by `offer`'s
+    // rule, c3 as amended (Fable, 2026-11-09, c3-refused-sketch-fable.md).
+    d.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     d.states
         .constraints
         .insert(k.clone(), ConstraintState::Conflicting);
@@ -3279,6 +3490,9 @@ fn a_later_read_releases_an_open_offer() {
     d.click(20.0, 10.0).click(20.0, 30.0).escape();
     let k = d.tool.placement().unwrap().constraint;
     d.states.state = SketchState::OverDefined;
+    // The read refuses the solve, the dimension's own state flagged: offered, by `offer`'s
+    // rule, c3 as amended (Fable, 2026-11-09, c3-refused-sketch-fable.md).
+    d.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     d.states
         .constraints
         .insert(k.clone(), ConstraintState::Conflicting);
@@ -3316,14 +3530,16 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: &under(),
+            axes: Axes::BOTH,
         };
         let mut tool = SmartDimension::new();
-        let mut ids = Counter(0);
+        let mut ids = Counter::after(0);
         for at in [[20.0, 10.0], [20.0, 30.0]] {
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Press(at));
-            tool.handle(&context, &under(), &mut ids, DimensionEvent::Release(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Press(at));
+            tool.handle(&context, &mut ids, DimensionEvent::Release(at));
         }
-        let out = tool.handle(&context, &under(), &mut ids, DimensionEvent::Escape);
+        let out = tool.handle(&context, &mut ids, DimensionEvent::Escape);
         let members = out.add.unwrap();
         let k = members.constraints[0].id.clone();
         tool.added(out.token.unwrap(), three);
@@ -3337,8 +3553,10 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             tolerance: TOLERANCE,
             automatic_relations: true,
             construction: false,
+            states: &states,
+            axes: Axes::BOTH,
         };
-        tool.settle(&context, &states);
+        tool.settle(&context);
         let placement = tool.placement().unwrap();
         assert_eq!(placement.read, one, "{state:?}");
         assert_eq!(placement.revision, three, "{state:?}");
@@ -3364,7 +3582,8 @@ fn a_placement_knows_the_read_it_was_placed_on() {
 }
 
 #[test]
-fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_state() {
+fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_state_and_with_none_by_its_freedoms()
+ {
     // Round 4, item 1. Placed on revision 1's read (1000 freedoms, nothing flagged, under
     // defined); an agent's edit made revision 2, the add revision 3.
     let mut d = Dim::new(corner());
@@ -3400,18 +3619,44 @@ fn with_an_edit_between_its_read_and_its_add_a_dimension_is_judged_by_its_own_st
         SketchState::FullyDefined,
     );
     assert!(offer(&constraint, three, &between).is_some());
-    // And with the agent's constraint the one flagged, the sketch newly over defined, the
-    // dimension satisfied: not the dimension's doing, not offered.
-    let theirs = read(
+    // And with the agent's constraint the one in conflict, the solve refused, the dimension
+    // `unsolved`: not the dimension's doing, so with the agent's edit between, not offered.
+    // With nothing between, the add took the solve to a refusal: offered for that, by
+    // `offer`'s rule, c3 as amended (Fable, 2026-11-09, c3-refused-sketch-fable.md), though it
+    // took a freedom (999, of 1000).
+    let mut theirs = read(
         &[
-            ("t0000101", ConstraintState::Satisfied),
+            ("t0000101", ConstraintState::Unsolved),
             ("k0000009", ConstraintState::Conflicting),
         ],
         999,
         SketchState::OverDefined,
     );
+    theirs.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     assert!(offer(&theirs, adjacent.revision, &adjacent).is_some());
     assert_eq!(offer(&theirs, three, &between), None);
+}
+
+#[test]
+fn a_solved_add_taking_a_freedom_is_not_offered_though_the_moved_pick_newly_over_defines() {
+    // #429 round 1, T2. Placed on a read with 1000 freedoms, under defined, nothing flagged.
+    // The add's read solved, 999 freedoms (it took one: independent), and PlaneGCS's contest
+    // moved its pick to k0000009, a dimension elsewhere, now redundant, so the sketch is
+    // newly over defined, solved. Its freedoms dropped, it isn't flagged, and the solve isn't
+    // refused: not offered, whatever the state's word.
+    let mut d = Dim::new(corner());
+    d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
+    let placement = d.tool.placement().unwrap();
+    let mut moved = read_with(
+        d.sketch.clone(),
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Redundant),
+        ],
+        SketchState::OverDefined,
+    );
+    moved.states.dofs = 999;
+    assert_eq!(offer(&moved, placement.revision, &placement), None);
 }
 
 // --- #345's mutants -----------------------------------------------------------------------
@@ -3471,7 +3716,7 @@ fn the_preview_has_the_pointer_and_hovers_nothing_once_two_are_picked() {
     let mut d = Dim::new(with_point(two_points(), "p0000003", [25.0, 45.0]));
     d.to(10.0, 10.0);
     assert_eq!(d.tool.preview().pointer, Some([10.0, 10.0]));
-    assert_eq!(d.tool.preview().hover, Some(r("p0000001")));
+    assert_eq!(d.tool.preview().hover, Some(el("p0000001")));
     d.click(10.0, 10.0).click(40.0, 30.0).to(25.0, 45.0);
     assert_eq!(d.tool.preview().pointer, Some([25.0, 45.0]));
     assert_eq!(d.tool.preview().hover, None);
@@ -3518,13 +3763,15 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         tolerance: TOLERANCE,
         automatic_relations: true,
         construction: false,
+        states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {
-        tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Press(at));
-        tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Release(at));
+        tool.handle(&context, &mut d.ids, DimensionEvent::Press(at));
+        tool.handle(&context, &mut d.ids, DimensionEvent::Release(at));
     }
-    let out = tool.handle(&context, &under(), &mut d.ids, DimensionEvent::Escape);
+    let out = tool.handle(&context, &mut d.ids, DimensionEvent::Escape);
     let token = out.token.unwrap();
     let k = out.add.unwrap().constraints[0].id.clone();
     assert_eq!(tool.placement(), None);
@@ -3537,9 +3784,10 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
             constraint: k,
             revision: made,
             read: Revision::OPENED,
-            before: SketchState::UnderDefined,
-            flagged: BTreeSet::new(),
-            kind: PlacementKind::Add { dofs: 0 },
+            kind: PlacementKind::Add {
+                before_prompted_refusal: false,
+                dofs: Some(0)
+            },
         })
     );
     tool.refused(token);
@@ -3549,14 +3797,20 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
 #[test]
 fn an_add_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_cancel() {
     // The corner with `length` of A, 25, driving, placed as t0000101 at revision 2 on a read
-    // under defined. A read of revision 2 over defined, or with no solution, offers it,
-    // whatever state the solve gave the dimension itself (PlaneGCS may flag another of its
-    // group).
+    // under defined, solved, 1000 freedoms. A read of revision 2 refused, over defined or
+    // with no solution, 0 freedoms, offers it, whatever state the solve gave the dimension
+    // itself (PlaneGCS may flag another of its group): the solve newly refused.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
     assert_eq!(placement.constraint, id("t0000101"));
-    assert_eq!(placement.before, SketchState::UnderDefined);
+    assert!(matches!(
+        placement.kind,
+        PlacementKind::Add {
+            before_prompted_refusal: false,
+            ..
+        }
+    ));
     let made = Revision::OPENED.next().unwrap();
     assert_eq!(placement.revision, made);
     for sketch_state in [SketchState::OverDefined, SketchState::NoSolution] {
@@ -3566,7 +3820,15 @@ fn an_add_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_ca
             ConstraintState::Satisfied,
             ConstraintState::Unsolved,
         ] {
-            let read = read_of(d.sketch.clone(), "t0000101", state, sketch_state);
+            // Refused (a conflict, or no solution) as M3.3 refuses it: offered by the solve
+            // newly refused, whatever the dimension's own state, by `offer`'s rule, c3 as
+            // amended (Fable, 2026-11-09, c3-refused-sketch-fable.md).
+            let code = match sketch_state {
+                SketchState::NoSolution => ErrorCode::SolveFailed,
+                _ => ErrorCode::OverConstrained,
+            };
+            let mut read = read_of(d.sketch.clone(), "t0000101", state, sketch_state);
+            read.states.solve_problem = Some(Error::new(code, "refused"));
             let offer = offer(&read, made, &placement).unwrap();
             assert_eq!(offer.constraint, id("t0000101"));
             assert_eq!(offer.state, state);
@@ -3602,60 +3864,68 @@ fn an_add_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_ca
 }
 
 #[test]
-fn an_add_that_flags_something_new_is_offered_whatever_the_state_before() {
-    // Round 2, item 1: SolidWorks prompts for each dimension. The sketch over defined or
-    // unsolvable before it (left so, or by an agent's edit), the add's read flags the
-    // dimension, which the read before couldn't: offered. So is a flag that leaves the
-    // sketch fully defined (PlaneGCS may flag a relation of the group, item 32's mixed
-    // group), and one of another constraint than the dimension.
+fn an_add_on_a_solved_sketch_is_offered_by_its_freedoms_whatever_the_contest_newly_flags() {
+    // The corner's `length` of A placed as t0000101 on a read with D freedoms. Solved after
+    // it: offered exactly when the freedoms didn't drop, whatever the contest newly flags. D −
+    // 1 with k0000009 newly flagged redundant (the contest's pick moved to another member of a
+    // group): not offered. D, nothing new flagged, over defined: offered (dependent).
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
     let made = placement.revision;
-    let flags_it = read_of(
-        d.sketch.clone(),
-        "t0000101",
-        ConstraintState::Conflicting,
-        SketchState::OverDefined,
-    );
-    for before in [SketchState::OverDefined, SketchState::NoSolution] {
-        let earlier = Placement {
-            before,
-            ..placement.clone()
-        };
-        let offer = offer(&flags_it, made, &earlier).unwrap();
-        assert_eq!(offer.state, ConstraintState::Conflicting, "{before:?}");
-    }
-    let redundant_relation = read_with(
-        d.sketch.clone(),
+    let PlacementKind::Add {
+        dofs: Some(dofs), ..
+    } = placement.kind
+    else {
+        panic!("{placement:?}")
+    };
+    let solved = |states: &[(&str, ConstraintState)], freedoms: i32, of: SketchState| {
+        let mut read = read_with(d.sketch.clone(), states, of);
+        read.states.dofs = freedoms;
+        read
+    };
+    let moved_pick = solved(
         &[
             ("t0000101", ConstraintState::Satisfied),
             ("k0000009", ConstraintState::Redundant),
         ],
+        dofs - 1,
         SketchState::FullyDefined,
     );
-    assert!(offer(&redundant_relation, made, &placement).is_some());
+    assert_eq!(offer(&moved_pick, made, &placement), None);
+    let dependent = solved(
+        &[("t0000101", ConstraintState::Redundant)],
+        dofs,
+        SketchState::OverDefined,
+    );
+    assert!(offer(&dependent, made, &placement).is_some());
 }
 
 #[test]
-fn no_offer_where_the_add_flagged_nothing_new_nor_changed_the_state_to_one_prompted() {
+fn no_offer_where_the_add_took_a_freedom_flagged_nothing_of_its_own_nor_newly_refused_the_solve() {
+    // Placed on a read with 1000 freedoms, under defined; each read here has 0.
     let mut d = Dim::new(corner());
     d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
     let placement = d.tool.placement().unwrap();
     let made = placement.revision;
     let read = |of| read_of(d.sketch.clone(), "t0000101", ConstraintState::Satisfied, of);
-    // Nothing flagged, the sketch still solved, or invalid geometry (no prompt in
-    // SolidWorks).
-    for of in [
-        SketchState::UnderDefined,
-        SketchState::FullyDefined,
-        SketchState::Invalid,
-    ] {
+    // Nothing flagged, the sketch still solved.
+    for of in [SketchState::UnderDefined, SketchState::FullyDefined] {
         assert_eq!(offer(&read(of), made, &placement), None, "{of:?}");
     }
-    // Over defined before it, by k0000009, which the add's read flags still, and nothing
-    // more: not this one's doing.
-    let same = read_with(
+    // A solution that can't be built (`invalid_result`): refused, but invalid, which no
+    // prompt is for (SolidWorks gives none), so not newly refused as the prompt counts it.
+    let mut unbuildable = read_of(
+        d.sketch.clone(),
+        "t0000101",
+        ConstraintState::Unsolved,
+        SketchState::Invalid,
+    );
+    unbuildable.states.solve_problem = Some(Error::new(ErrorCode::InvalidResult, "invalid"));
+    assert_eq!(offer(&unbuildable, made, &placement), None);
+    // Refused over defined before it, by k0000009, which the add's read flags still, and
+    // nothing more: not this one's doing.
+    let mut same = read_with(
         d.sketch.clone(),
         &[
             ("t0000101", ConstraintState::Unsolved),
@@ -3663,18 +3933,22 @@ fn no_offer_where_the_add_flagged_nothing_new_nor_changed_the_state_to_one_promp
         ],
         SketchState::OverDefined,
     );
+    same.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     let earlier = Placement {
-        before: SketchState::OverDefined,
-        flagged: [id("k0000009")].into_iter().collect(),
+        kind: PlacementKind::Add {
+            before_prompted_refusal: true,
+            dofs: Some(1000),
+        },
         ..placement.clone()
     };
     assert_eq!(offer(&same, made, &earlier), None);
-    let over = read_of(
+    let mut over = read_of(
         d.sketch.clone(),
         "t0000101",
         ConstraintState::Conflicting,
         SketchState::OverDefined,
     );
+    over.states.solve_problem = Some(Error::new(ErrorCode::OverConstrained, "conflict"));
     // A read of an older model, or a newer one: not the add's.
     assert_eq!(offer(&over, Revision::OPENED, &placement), None);
     assert_eq!(offer(&over, made.next().unwrap(), &placement), None);
@@ -3694,25 +3968,54 @@ fn no_offer_where_the_add_flagged_nothing_new_nor_changed_the_state_to_one_promp
 }
 
 #[test]
-fn the_state_a_dimension_is_placed_on_is_the_reads() {
-    let mut d = Dim::new(corner());
-    d.states.state = SketchState::NoSolution;
-    d.states
-        .constraints
-        .insert(id("k0000009"), ConstraintState::Conflicting);
-    d.states
-        .constraints
-        .insert(id("k0000008"), ConstraintState::Satisfied);
-    d.states
-        .constraints
-        .insert(id("k0000007"), ConstraintState::PartiallyRedundant);
-    d.click(20.0, 10.0).click(20.0, 30.0).escape();
-    let placement = d.tool.placement().unwrap();
-    assert_eq!(placement.before, SketchState::NoSolution);
-    assert_eq!(
-        placement.flagged,
-        [id("k0000007"), id("k0000009")].into_iter().collect()
-    );
+fn what_a_dimension_is_placed_on_is_the_reads() {
+    // Placed on a read with 1000 freedoms: refused with no solution, or over defined, a
+    // refusal the prompt is for, its freedoms counting the constraints; over defined but
+    // solved (a dimension repeating others), no refusal; refused invalid (a solution that
+    // can't be built), no refusal the prompt is for, its freedoms counting the constraints;
+    // a translation's refusal, neither, and no freedoms to compare.
+    let cases = [
+        (
+            SketchState::NoSolution,
+            Some(ErrorCode::SolveFailed),
+            true,
+            Some(1000),
+        ),
+        (
+            SketchState::OverDefined,
+            Some(ErrorCode::OverConstrained),
+            true,
+            Some(1000),
+        ),
+        (SketchState::OverDefined, None, false, Some(1000)),
+        (
+            SketchState::Invalid,
+            Some(ErrorCode::InvalidResult),
+            false,
+            Some(1000),
+        ),
+        (
+            SketchState::Invalid,
+            Some(ErrorCode::InvalidInput),
+            false,
+            None,
+        ),
+    ];
+    for (of, problem, prompted, dofs) in cases {
+        let mut d = Dim::new(corner());
+        d.states.state = of;
+        d.states.solve_problem = problem.map(|code| Error::new(code, "refused"));
+        d.click(20.0, 10.0).click(20.0, 30.0).escape();
+        let placement = d.tool.placement().unwrap();
+        assert_eq!(
+            placement.kind,
+            PlacementKind::Add {
+                before_prompted_refusal: prompted,
+                dofs
+            },
+            "{of:?} {problem:?}"
+        );
+    }
 }
 
 #[test]
@@ -3748,27 +4051,6 @@ fn forget_pending_forgets_the_placement_and_what_is_under_way() {
 }
 
 // --- SD7: an edit of a dimension's value -----------------------------------------------
-
-/// The corner with A's `length`, 25, placed as t0000101 (its add revision 2), then its
-/// value edited (`set_field`, revision 3) on revision 2's read, the sketch then in `before`
-/// with `flagged` flagged, its solve `refused` or not: the sketch and the edit's placement.
-fn edited(before: SketchState, flagged: &[&str], refused: bool) -> (Sketch, Placement) {
-    let mut d = Dim::new(corner());
-    d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
-    let added = d.tool.placement().unwrap();
-    assert_eq!(added.constraint, id("t0000101"));
-    let edit = Placement {
-        revision: added.revision.next().unwrap(),
-        read: added.revision,
-        before,
-        flagged: flagged.iter().map(|k| id(k)).collect(),
-        kind: PlacementKind::Edit {
-            before_refused: refused,
-        },
-        ..added
-    };
-    (d.sketch, edit)
-}
 
 /// A read of `members` with each constraint in its state, the sketch in `of`, with `dofs`
 /// freedoms, its solve refused as M3.3 refuses it: `solve_failed` with no solution,
@@ -3808,7 +4090,7 @@ fn an_edit_that_leaves_the_sketch_as_it_was_offers_nothing() {
         (SketchState::UnderDefined, SketchState::UnderDefined, 3),
     ];
     for (before, after, dofs) in cases {
-        let (sketch, edit) = edited(before, &[], false);
+        let (sketch, edit) = edit_on(&states_at(before, dofs, None, &[]));
         let read = edit_read(
             &sketch,
             &[("t0000101", ConstraintState::Satisfied)],
@@ -3822,7 +4104,10 @@ fn an_edit_that_leaves_the_sketch_as_it_was_offers_nothing() {
         );
         // The same read after an add on a read with those freedoms: dependent, offered.
         let add = Placement {
-            kind: PlacementKind::Add { dofs },
+            kind: PlacementKind::Add {
+                before_prompted_refusal: false,
+                dofs: Some(dofs),
+            },
             ..edit.clone()
         };
         assert!(
@@ -3834,22 +4119,23 @@ fn an_edit_that_leaves_the_sketch_as_it_was_offers_nothing() {
 
 #[test]
 fn an_edit_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_cancel() {
-    // Fully defined, nothing flagged; the edit's read over defined, or with no solution (its
-    // solve refused), nothing flagged either, so only the state offers it. Driven and Cancel
-    // are made against the edit's revision, 3: Cancel undoes the edit.
+    // Fully defined, solved, nothing flagged; the edit's read refused: over defined, the
+    // dimension itself in conflict (an edit can't make a row redundant, so its read is over
+    // defined only by a conflict), or with no solution, nothing flagged: the solve newly
+    // refused. Driven and Cancel are made against the edit's revision, 3: Cancel undoes the
+    // edit.
     let three = Revision::OPENED.next().unwrap().next().unwrap();
-    for after in [SketchState::OverDefined, SketchState::NoSolution] {
-        let (sketch, edit) = edited(SketchState::FullyDefined, &[], false);
+    for (after, own) in [
+        (SketchState::OverDefined, ConstraintState::Conflicting),
+        (SketchState::NoSolution, ConstraintState::Unsolved),
+    ] {
+        let (sketch, edit) = edit_on(&states(SketchState::FullyDefined));
         assert_eq!(edit.revision, three);
-        let read = edit_read(
-            &sketch,
-            &[("t0000101", ConstraintState::Satisfied)],
-            after,
-            0,
-        );
+        let read = edit_read(&sketch, &[("t0000101", own)], after, 0);
+        assert!(read.states.solve_problem.is_some(), "{after:?}");
         let offered = offer(&read, three, &edit).unwrap();
         assert_eq!(offered.constraint, id("t0000101"), "{after:?}");
-        assert_eq!(offered.state, ConstraintState::Satisfied, "{after:?}");
+        assert_eq!(offered.state, own, "{after:?}");
         assert_eq!(offered.sketch_state, after);
         assert_eq!(
             offered.request(OfferChoice::Driven),
@@ -3874,69 +4160,63 @@ fn an_edit_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_c
             })
         );
     }
-    // Over defined or unsolvable before the edit, k0000009 flagged (redundant where the
-    // sketch solved, conflicting where it was refused), and flagged so after, nothing newly:
-    // over defined by a dimension that agrees (solved) then no solution (refused) is the
-    // edit's doing, offered. A refused solve before (a conflict, no solution), or a solved
-    // one after: not.
-    for (before, before_refused, after, offered) in [
-        (
+    // Over defined or unsolvable before the edit: over defined by k0000009, a dimension that
+    // agrees (redundant, solved), or by its conflict (refused), or with no solution
+    // (refused). The edit's read has k0000009 redundant and nothing in conflict, over
+    // defined (solved) or with no solution (refused): from a solve to no solution is the
+    // solve newly refused, offered; a refused solve before, or a solved one after: not.
+    let agreeing = || {
+        states_at(
             SketchState::OverDefined,
-            false,
-            SketchState::OverDefined,
-            false,
-        ),
-        (
-            SketchState::OverDefined,
-            false,
+            0,
+            None,
+            &[("k0000009", ConstraintState::Redundant)],
+        )
+    };
+    let in_conflict = || conflict(0, &[("k0000009", ConstraintState::Conflicting)]);
+    let unsolvable = || {
+        states_at(
             SketchState::NoSolution,
-            true,
-        ),
-        (
-            SketchState::OverDefined,
-            true,
-            SketchState::OverDefined,
-            false,
-        ),
-        (
-            SketchState::OverDefined,
-            true,
-            SketchState::NoSolution,
-            false,
-        ),
-        (
-            SketchState::NoSolution,
-            true,
-            SketchState::OverDefined,
-            false,
-        ),
-        (
-            SketchState::NoSolution,
-            true,
-            SketchState::NoSolution,
-            false,
-        ),
+            0,
+            Some(ErrorCode::SolveFailed),
+            &[],
+        )
+    };
+    for (before, after, offered) in [
+        (agreeing(), SketchState::OverDefined, false),
+        (agreeing(), SketchState::NoSolution, true),
+        (in_conflict(), SketchState::OverDefined, false),
+        (in_conflict(), SketchState::NoSolution, false),
+        (unsolvable(), SketchState::OverDefined, false),
+        (unsolvable(), SketchState::NoSolution, false),
     ] {
-        let (sketch, edit) = edited(before, &["k0000009"], before_refused);
+        let (sketch, edit) = edit_on(&before);
+        let own = match after {
+            SketchState::NoSolution => ConstraintState::Unsolved,
+            _ => ConstraintState::Satisfied,
+        };
         let read = edit_read(
             &sketch,
-            &[
-                ("t0000101", ConstraintState::Satisfied),
-                ("k0000009", ConstraintState::Redundant),
-            ],
+            &[("t0000101", own), ("k0000009", ConstraintState::Redundant)],
             after,
             0,
         );
         assert_eq!(
             offer(&read, three, &edit).is_some(),
             offered,
-            "{before:?} {before_refused} {after:?}"
+            "{before:?} {after:?}"
         );
     }
     // A redundant t0000101 that agrees (over defined, solved, it flagged), edited to
     // disagree: over defined still, it flagged still, now conflicting, the solve refused.
-    // Neither the state's word nor the flags are new; the refusal is: offered.
-    let (sketch, edit) = edited(SketchState::OverDefined, &["t0000101"], false);
+    // Neither the state's word nor the flags are new; its conflict and the refusal are:
+    // offered.
+    let (sketch, edit) = edit_on(&states_at(
+        SketchState::OverDefined,
+        0,
+        None,
+        &[("t0000101", ConstraintState::Redundant)],
+    ));
     let disagrees = edit_read(
         &sketch,
         &[("t0000101", ConstraintState::Conflicting)],
@@ -3959,12 +4239,19 @@ fn an_edit_that_over_defines_or_unsolves_the_sketch_is_offered_driven_leave_or_c
 }
 
 #[test]
-fn an_edit_that_newly_flags_a_constraint_is_offered() {
-    // Under defined, nothing flagged; the edit's read flags a relation redundant, the sketch
-    // still under defined at the same 3 freedoms: offered. Over defined before by k0000009,
-    // the edit's read flags the dimension too: offered, though the state isn't new; k0000009
-    // alone, as before: not.
-    let (sketch, edit) = edited(SketchState::UnderDefined, &[], false);
+fn an_edit_is_offered_where_it_newly_sets_a_constraint_in_conflict_or_newly_refuses_the_solve() {
+    // `offer`'s rule for an edit, c3 as amended (Fable, 2026-11-09,
+    // c3-refused-sketch-fable.md). Under defined, solved, nothing flagged; the edit's read
+    // flags a relation redundant, the sketch still under defined at the same 3 freedoms,
+    // solved: nothing in conflict, not offered. The same read over defined, solved, a
+    // dimension redundant: an edit's read is so where its value took the solution to a
+    // configuration at which rows that were independent depend (a triangle flattened, say:
+    // for a solved sketch the diagnosis is taken again at the solution, M3.4's load),
+    // agreeing there, the freedoms up by one. Nothing in conflict and the solve not refused,
+    // so not offered: the edited dimension needn't be in the new group, SolidWorks prompts
+    // for no edit, and the state says over defined (which offered the edit once, under the
+    // old rule; it's no measure now).
+    let (sketch, edit) = edit_on(&states_at(SketchState::UnderDefined, 3, None, &[]));
     let read = edit_read(
         &sketch,
         &[
@@ -3974,11 +4261,27 @@ fn an_edit_that_newly_flags_a_constraint_is_offered() {
         SketchState::UnderDefined,
         3,
     );
-    let offered = offer(&read, edit.revision, &edit).unwrap();
-    assert_eq!(offered.constraint, id("t0000101"));
-    assert_eq!(offered.state, ConstraintState::Satisfied);
-    // k0000009 conflicting before: the solve refused.
-    let (sketch, edit) = edited(SketchState::OverDefined, &["k0000009"], true);
+    assert_eq!(offer(&read, edit.revision, &edit), None);
+    let over = edit_read(
+        &sketch,
+        &[
+            ("t0000101", ConstraintState::Satisfied),
+            ("k0000009", ConstraintState::Redundant),
+        ],
+        SketchState::OverDefined,
+        4,
+    );
+    assert_eq!(offer(&over, edit.revision, &edit), None);
+    // k0000009 conflicting before: the solve refused. The edit's read puts the dimension in
+    // conflict too: newly, offered, though the state isn't new; k0000009 alone, as before:
+    // not.
+    let (sketch, edit) = edit_on(&conflict(
+        0,
+        &[
+            ("t0000101", ConstraintState::Unsolved),
+            ("k0000009", ConstraintState::Conflicting),
+        ],
+    ));
     let flags_it = edit_read(
         &sketch,
         &[
@@ -3995,7 +4298,7 @@ fn an_edit_that_newly_flags_a_constraint_is_offered() {
     let same = edit_read(
         &sketch,
         &[
-            ("t0000101", ConstraintState::Satisfied),
+            ("t0000101", ConstraintState::Unsolved),
             ("k0000009", ConstraintState::Conflicting),
         ],
         SketchState::OverDefined,
@@ -4003,26 +4306,425 @@ fn an_edit_that_newly_flags_a_constraint_is_offered() {
     );
     assert_eq!(offer(&same, edit.revision, &edit), None);
     // With another change between the edit's read and the edit, the edit is judged by its
-    // dimension's own state, as an add is: flagged, offered; satisfied, not.
+    // dimension's own state: newly in conflict, offered; not in conflict, not.
     let between = Placement {
         revision: edit.revision.next().unwrap(),
         ..edit
     };
     assert!(offer(&flags_it, between.revision, &between).is_some());
     assert_eq!(offer(&same, between.revision, &between), None);
-    // But an edit's dimension flagged already in the read before: not offered again,
+    // But an edit's dimension in conflict already in the read before: not offered again,
     // whichever client's change came between.
-    let flagged_before = Placement {
-        flagged: [id("k0000009"), id("t0000101")].into_iter().collect(),
+    let in_conflict_before = Placement {
+        kind: PlacementKind::Edit {
+            before_prompted_refusal: true,
+            before_conflicting: [id("k0000009"), id("t0000101")].into_iter().collect(),
+        },
         ..between
     };
-    assert_eq!(offer(&flags_it, between.revision, &flagged_before), None);
-    // An add's is judged by its state alone, as before: offered.
+    assert_eq!(
+        offer(&flags_it, in_conflict_before.revision, &in_conflict_before),
+        None
+    );
+    // An add's is judged by its own flag alone, as before: offered.
     let added = Placement {
-        kind: PlacementKind::Add { dofs: 0 },
-        ..flagged_before
+        kind: PlacementKind::Add {
+            before_prompted_refusal: true,
+            dofs: Some(0),
+        },
+        ..in_conflict_before
     };
-    assert!(offer(&flags_it, between.revision, &added).is_some());
+    assert!(offer(&flags_it, added.revision, &added).is_some());
+}
+
+// --- SD7 by the dimension's own row: c3 as amended (Fable, 2026-11-09,
+// c3-refused-sketch-fable.md) -----------------------------------------------------------
+
+/// States in `of` with `dofs` freedoms, each constraint named in its state, the solve refused
+/// with `problem`, if any.
+fn states_at(
+    of: SketchState,
+    dofs: i32,
+    problem: Option<ErrorCode>,
+    constraints: &[(&str, ConstraintState)],
+) -> SketchStates {
+    let mut states = states(of);
+    states.dofs = dofs;
+    states.solve_problem = problem.map(|code| Error::new(code, "refused"));
+    for (k, state) in constraints {
+        states.constraints.insert(id(k), *state);
+    }
+    states
+}
+
+/// A read of the sketch `members` in the states `states`.
+fn read_on(members: &Sketch, states: SketchStates) -> SketchRead {
+    SketchRead {
+        states,
+        ..read_with(members.clone(), &[], SketchState::UnderDefined)
+    }
+}
+
+/// The corner's `length` of A, 25, placed as t0000101 by the tool (its add revision 2) on a
+/// read in the states `before`: the sketch it leaves, and its placement.
+fn placed_on(before: SketchStates) -> (Sketch, Placement) {
+    let mut d = Dim::new(corner());
+    d.states = before;
+    d.click(20.0, 10.0).click(20.0, 30.0).typed("25").enter();
+    let placement = d.tool.placement().unwrap();
+    assert_eq!(placement.constraint, id("t0000101"));
+    (d.sketch, placement)
+}
+
+/// That `length`'s value edited (`set_field`, revision 3) on revision 2's read, in the states
+/// `before`, as the app records an edit (`Edited::of`): the sketch, and the edit's placement.
+fn edit_on(before: &SketchStates) -> (Sketch, Placement) {
+    let (sketch, added) = placed_on(under());
+    let edit = Placement {
+        revision: added.revision.next().unwrap(),
+        read: added.revision,
+        kind: PlacementKind::edit_on(before),
+        ..added
+    };
+    (sketch, edit)
+}
+
+/// States refused `over_constrained`, over defined, with `dofs` freedoms.
+fn conflict(dofs: i32, constraints: &[(&str, ConstraintState)]) -> SketchStates {
+    states_at(
+        SketchState::OverDefined,
+        dofs,
+        Some(ErrorCode::OverConstrained),
+        constraints,
+    )
+}
+
+#[test]
+fn a_dependent_add_on_a_refused_sketch_is_offered_by_its_freedoms_whatever_its_own_state() {
+    // #429 round 1, R1, by hand. Placed on a read refused `over_constrained` by k0000009,
+    // in conflict elsewhere, 5 freedoms. The add's read refused alike, 5 freedoms still: the
+    // dimension's row is dependent, so offered, whichever of its group the contest left out:
+    // it (redundant), or its partner k0000008 (it `unsolved`, which its own state alone
+    // wouldn't offer). The solve was refused already, so not newly.
+    use ConstraintState::{Conflicting, Redundant, Unsolved};
+    let (sketch, placement) = placed_on(conflict(5, &[("k0000009", Conflicting)]));
+    for (own, partner) in [(Unsolved, Redundant), (Redundant, Unsolved)] {
+        let after = read_on(
+            &sketch,
+            conflict(
+                5,
+                &[
+                    ("t0000101", own),
+                    ("k0000008", partner),
+                    ("k0000009", Conflicting),
+                ],
+            ),
+        );
+        assert_eq!(
+            offer(&after, placement.revision, &placement).map(|o| o.state),
+            Some(own)
+        );
+    }
+}
+
+#[test]
+fn an_add_newly_refusing_an_over_defined_sketch_that_solved_is_offered() {
+    // #429 round 1, R3, by hand. Placed on a read over defined but solved (k0000009, a
+    // dimension repeating another, redundant), 4 freedoms. The add's read refused
+    // `over_constrained`, k0000009 and k0000008 conflicting (the reduced solve failing lists
+    // the whole group), the dimension in no group, `unsolved`, 3 freedoms: independent, and
+    // not flagged, but the solve is newly refused: offered.
+    use ConstraintState::{Conflicting, Redundant, Unsolved};
+    let before = states_at(
+        SketchState::OverDefined,
+        4,
+        None,
+        &[("k0000009", Redundant)],
+    );
+    let (sketch, placement) = placed_on(before);
+    let after = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Unsolved),
+                ("k0000008", Conflicting),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert_eq!(
+        offer(&after, placement.revision, &placement).map(|o| o.state),
+        Some(Unsolved)
+    );
+}
+
+#[test]
+fn a_redundant_dimension_edited_into_conflict_on_a_refused_sketch_is_offered() {
+    // #429 round 1, R2, by hand. Edited on a read refused `over_constrained` by k0000009,
+    // the dimension agreeing with k0000008, and redundant, the contest's pick. Edited to
+    // disagree: it and k0000008 conflicting (a group left in conflict lists every member):
+    // newly in conflict, offered, though it was flagged before.
+    use ConstraintState::{Conflicting, Redundant};
+    let (sketch, edit) = edit_on(&conflict(
+        3,
+        &[("t0000101", Redundant), ("k0000009", Conflicting)],
+    ));
+    let after = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Conflicting),
+                ("k0000008", Conflicting),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert_eq!(
+        offer(&after, edit.revision, &edit).map(|o| o.state),
+        Some(Conflicting)
+    );
+}
+
+#[test]
+fn an_edit_is_offered_for_any_constraint_it_newly_sets_in_conflict_and_with_a_change_between_for_its_own()
+ {
+    // #429 round 1, T1. Edited on a read refused by k0000009 in conflict, the dimension
+    // `unsolved` and k0000008, its partner, the contest's pick, redundant. The edit's read:
+    // k0000008 newly conflicting, the dimension `unsolved` still (decision 5 lists the pick
+    // alone). An edit changes no row, so whatever newly conflicts is taken for its doing
+    // (`offer`'s doc has the one case where it isn't): offered. A constraint newly
+    // redundant, k0000009 conflicting as before, nothing new in conflict: not offered. With
+    // another change between, the attribution is lost: judged by the dimension's own state,
+    // `unsolved`, not offered; newly conflicting itself, offered; conflicting before too, not.
+    use ConstraintState::{Conflicting, Redundant, Unsolved};
+    let (sketch, edit) = edit_on(&conflict(
+        3,
+        &[
+            ("t0000101", Unsolved),
+            ("k0000008", Redundant),
+            ("k0000009", Conflicting),
+        ],
+    ));
+    let partner = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Unsolved),
+                ("k0000008", Conflicting),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert_eq!(
+        offer(&partner, edit.revision, &edit).map(|o| o.state),
+        Some(Unsolved)
+    );
+    let same = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Unsolved),
+                ("k0000007", Redundant),
+                ("k0000008", Redundant),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert_eq!(offer(&same, edit.revision, &edit), None);
+    let between = Placement {
+        revision: edit.revision.next().unwrap(),
+        ..edit.clone()
+    };
+    assert_eq!(offer(&partner, between.revision, &between), None);
+    let own = read_on(
+        &sketch,
+        conflict(
+            3,
+            &[
+                ("t0000101", Conflicting),
+                ("k0000008", Conflicting),
+                ("k0000009", Conflicting),
+            ],
+        ),
+    );
+    assert!(offer(&own, between.revision, &between).is_some());
+    let (_, already) = edit_on(&conflict(
+        3,
+        &[
+            ("t0000101", Conflicting),
+            ("k0000008", Conflicting),
+            ("k0000009", Conflicting),
+        ],
+    ));
+    let already = Placement {
+        revision: already.revision.next().unwrap(),
+        ..already
+    };
+    assert_eq!(offer(&own, already.revision, &already), None);
+}
+
+#[test]
+fn an_edit_with_a_change_between_is_not_offered_for_its_own_redundancy() {
+    // #429 round 2, T7. Edited on a read refused by k0000009 in conflict, the dimension
+    // `unsolved`, with another change between the edit and its read, so the edit is judged
+    // by its dimension's own state. That state newly redundant, or partially redundant, is
+    // flagged but in no conflict, and an edit changes no row, so a repetition isn't its
+    // doing: not offered. Newly conflicting, it is.
+    use ConstraintState::{Conflicting, PartiallyRedundant, Redundant, Unsolved};
+    let (sketch, edit) = edit_on(&conflict(
+        3,
+        &[("t0000101", Unsolved), ("k0000009", Conflicting)],
+    ));
+    let between = Placement {
+        revision: edit.revision.next().unwrap(),
+        ..edit
+    };
+    for (own, offered) in [
+        (Redundant, false),
+        (PartiallyRedundant, false),
+        (Conflicting, true),
+    ] {
+        let after = read_on(
+            &sketch,
+            conflict(3, &[("t0000101", own), ("k0000009", Conflicting)]),
+        );
+        assert_eq!(
+            offer(&after, between.revision, &between).is_some(),
+            offered,
+            "{own:?}"
+        );
+    }
+}
+
+#[test]
+fn each_of_an_adds_three_reasons_offers_it_alone() {
+    // An add is offered for its row dependent (the freedoms where they were), for its own
+    // flag, or for the solve newly refused; each alone offers it, and none offers nothing.
+    // Placed on a read with 5 freedoms: one refused `over_constrained` (k0000009 in
+    // conflict), so no read newly refuses the solve; one over defined but solved (k0000009 a
+    // dimension repeating another, redundant), and one refused `invalid` (a solution that
+    // can't be built), so a read refused over defined newly refuses it. The add's read is
+    // refused `over_constrained`, k0000009 in conflict, and:
+    // - the dimension `unsolved`, 5 freedoms: the rank alone;
+    // - it conflicting, 4 freedoms: its own flag alone;
+    // - it `unsolved`, 4 freedoms: neither, so offered only where the solve is newly refused.
+    use ConstraintState::{Conflicting, Redundant, Unsolved};
+    let befores = [
+        (conflict(5, &[("k0000009", Conflicting)]), false),
+        (
+            states_at(
+                SketchState::OverDefined,
+                5,
+                None,
+                &[("k0000009", Redundant)],
+            ),
+            true,
+        ),
+        (
+            states_at(
+                SketchState::Invalid,
+                5,
+                Some(ErrorCode::InvalidResult),
+                &[("k0000009", Unsolved)],
+            ),
+            true,
+        ),
+    ];
+    for (before, newly_refused) in befores {
+        let (sketch, placement) = placed_on(before.clone());
+        for (own, dofs, offered) in [
+            (Unsolved, 5, true),
+            (Conflicting, 4, true),
+            (Unsolved, 4, newly_refused),
+        ] {
+            let after = read_on(
+                &sketch,
+                conflict(dofs, &[("t0000101", own), ("k0000009", Conflicting)]),
+            );
+            assert_eq!(
+                offer(&after, placement.revision, &placement).is_some(),
+                offered,
+                "{before:?} {own:?} {dofs}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_add_on_or_to_a_translations_refusal_is_never_judged_by_its_freedoms() {
+    // A translation's refusal (`invalid_input`) diagnoses the geometry alone, so its freedoms
+    // count no constraint and compare with nothing. Placed on one with 8, the add's read that
+    // refusal again with 8: not offered (invalid, no prompt, the dimension not flagged).
+    // Placed on a solved read with 3, the add's read a translation's refusal with 8: not
+    // offered. Placed on a read refused `invalid_result` with 3 (its diagnosis counts the
+    // constraints), the add's read refused `over_constrained` with 3: dependent, offered. A
+    // load's refusal is `invalid_result`, whose diagnosis counts the constraints
+    // (`Translation::solve`), and compares: its third case.
+    use ConstraintState::{Conflicting, Unsolved};
+    let untranslated = |dofs| {
+        states_at(
+            SketchState::Invalid,
+            dofs,
+            Some(ErrorCode::InvalidInput),
+            &[],
+        )
+    };
+    let after = |dofs| {
+        states_at(
+            SketchState::Invalid,
+            dofs,
+            Some(ErrorCode::InvalidInput),
+            &[("t0000101", Unsolved)],
+        )
+    };
+    let (sketch, placement) = placed_on(untranslated(8));
+    let read = read_on(&sketch, after(8));
+    assert_eq!(offer(&read, placement.revision, &placement), None);
+    let (sketch, placement) = placed_on(states_at(SketchState::UnderDefined, 3, None, &[]));
+    let read = read_on(&sketch, after(8));
+    assert_eq!(offer(&read, placement.revision, &placement), None);
+    // A solution that can't be built, or one a load can't translate again: `invalid_result`,
+    // with the first solve's diagnosis.
+    let unbuildable = states_at(SketchState::Invalid, 3, Some(ErrorCode::InvalidResult), &[]);
+    let (sketch, placement) = placed_on(unbuildable);
+    let read = read_on(
+        &sketch,
+        conflict(3, &[("t0000101", Unsolved), ("k0000009", Conflicting)]),
+    );
+    assert!(offer(&read, placement.revision, &placement).is_some());
+}
+
+#[test]
+fn an_add_on_a_refused_sketch_is_offered_for_any_flag_of_its_own_and_an_edit_only_for_a_conflict() {
+    // #429 round 1, T3. Placed on a read refused `over_constrained` by k0000009, 5 freedoms;
+    // the add's read refused alike, 4 freedoms (its row independent), so neither its freedoms
+    // nor a newly refused solve offer it: its own flag does, conflicting, redundant, or partially
+    // redundant. An edit on the same read whose read has its dimension newly redundant or
+    // partially redundant, not in conflict, isn't offered (an edit changes no row, so only a
+    // conflict is its doing); newly in conflict, it is.
+    use ConstraintState::{Conflicting, PartiallyRedundant, Redundant};
+    let before = conflict(5, &[("k0000009", Conflicting)]);
+    let (sketch, placement) = placed_on(before.clone());
+    let (_, edit) = edit_on(&before);
+    for own in [Conflicting, Redundant, PartiallyRedundant] {
+        let after = read_on(
+            &sketch,
+            conflict(4, &[("t0000101", own), ("k0000009", Conflicting)]),
+        );
+        assert_eq!(
+            offer(&after, placement.revision, &placement).map(|o| o.state),
+            Some(own)
+        );
+        assert_eq!(
+            offer(&after, edit.revision, &edit).is_some(),
+            own == Conflicting,
+            "{own:?}"
+        );
+    }
 }
 
 // --- The Modify box's reading, for a placed dimension's edit too ---------------------
@@ -4033,48 +4735,48 @@ fn dimensions() -> Vec<Form> {
     let v = mm("7");
     vec![
         Form::Length {
-            line: r("n0000001"),
+            line: el("n0000001"),
             value: v,
             driving: true,
         },
         Form::Distance {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: v,
             driving: true,
         },
         Form::DistanceX {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: v,
             driving: true,
         },
         Form::DistanceY {
-            a: r("p0000001"),
-            b: r("p0000002"),
+            a: el("p0000001"),
+            b: el("p0000002"),
             value: v,
             driving: false,
         },
         Form::PointLineDistance {
-            point: r("p0000001"),
-            line: r("n0000001"),
+            point: el("p0000001"),
+            line: el("n0000001"),
             value: v,
             side: LineSide::Right,
             driving: true,
         },
         Form::Radius {
-            curve: r("k0000001"),
+            curve: el("k0000001"),
             value: v,
             driving: true,
         },
         Form::Diameter {
-            curve: r("k0000001"),
+            curve: el("k0000001"),
             value: v,
             driving: true,
         },
         Form::Angle {
-            a: r("n0000001"),
-            b: r("n0000002"),
+            a: el("n0000001"),
+            b: el("n0000002"),
             reversed: true,
             value: deg("45"),
             driving: true,
@@ -4171,7 +4873,7 @@ fn an_edit_box_reads_each_dimensions_value_as_the_document_does() {
 #[test]
 fn a_form_that_isnt_a_dimension_reads_no_number() {
     let horizontal = Form::Horizontal {
-        line: r("n0000001"),
+        line: el("n0000001"),
     };
     assert_eq!(read_typed(&horizontal, "12.5"), Err(Message::NotANumber));
 }

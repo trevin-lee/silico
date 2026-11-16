@@ -15,7 +15,7 @@ use super::sketch::{
     Direction, ElementId, ElementKind, Form, Reference, Sketch, SketchPoint, TangentSide,
 };
 use super::{PROBLEMS_LISTED, nearest_ids, with_candidates};
-use crate::{Error, ErrorCode};
+use crate::{Error, ErrorCode, listed, listed_first};
 
 mod add;
 mod join;
@@ -626,6 +626,71 @@ fn kept_side(side: TangentSide, end_to_start: bool) -> Direction {
     }
 }
 
+/// The `direction` of a `tangent_on` of `piece`'s end `at` on `cutter`, as the stored drawing
+/// shows it (trim's decision 8; the constraint tools' C3): `same` when the piece, leaving
+/// `at`, runs as the cutter's own direction there, their dot product at least 0, so a right
+/// angle is `same`. The piece and `at` are found in `edited`, the cutter in `sketch` (a
+/// trim's, the sketch before it; the constraint tools give one sketch for both). `same`
+/// where either direction can't be found.
+pub(crate) fn drawn(
+    sketch: &Sketch,
+    edited: &Sketch,
+    piece: &Reference,
+    at: &Reference,
+    cutter: &Reference,
+) -> Direction {
+    let (Some(xy), Some(out)) = (split::reference_at(edited, at), leaving(edited, piece, at))
+    else {
+        return Direction::Same;
+    };
+    let Some(along_cutter) = own_direction(sketch, cutter, xy) else {
+        return Direction::Same;
+    };
+    if out[0] * along_cutter[0] + out[1] * along_cutter[1] >= 0.0 {
+        Direction::Same
+    } else {
+        Direction::Opposite
+    }
+}
+
+/// The direction the line or arc `curve` leaves its end `at` along, into the curve (not off
+/// its end, as `View::ends_at`'s), as the stored drawing shows it: its own direction there
+/// where it starts at `at`, the reverse where it ends there; none where `at` isn't one of its
+/// ends.
+pub(crate) fn leaving(sketch: &Sketch, curve: &Reference, at: &Reference) -> Option<[f64; 2]> {
+    let xy = split::reference_at(sketch, at)?;
+    let starts = split::starts_at(sketch, curve, at)?;
+    let along = own_direction(sketch, curve, xy)?;
+    Some(if starts {
+        along
+    } else {
+        [-along[0], -along[1]]
+    })
+}
+
+/// A curve's own direction at `xy`: a line's from `from` to `to`, a round's
+/// counter-clockwise, an axis's along +x or +y.
+fn own_direction(sketch: &Sketch, curve: &Reference, xy: [f64; 2]) -> Option<[f64; 2]> {
+    let id = match curve {
+        Reference::XAxis => return Some([1.0, 0.0]),
+        Reference::YAxis => return Some([0.0, 1.0]),
+        Reference::Origin => return None,
+        Reference::Element(id) => id,
+    };
+    if let Some(line) = sketch.lines.iter().find(|l| &l.id == id) {
+        let (from, to) = (
+            split::point_at(sketch, &line.from)?,
+            split::point_at(sketch, &line.to)?,
+        );
+        return Some([to[0] - from[0], to[1] - from[1]]);
+    }
+    let center = match sketch.arcs.iter().find(|a| &a.id == id) {
+        Some(arc) => split::point_at(sketch, &arc.center)?,
+        None => split::point_at(sketch, &sketch.circles.iter().find(|c| &c.id == id)?.center)?,
+    };
+    Some([-(xy[1] - center[1]), xy[0] - center[0]])
+}
+
 /// Refuses an edited sketch in which a constraint holds a curve's own point on it, or
 /// leaves a tangency in a form the gate refuses where the curves meet: what the gate would
 /// refuse of the edit's result, said as the edit's refusal (`edit` its subject, "merging
@@ -701,7 +766,7 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
                 // both ends. A split meets one only at a curve's end held tangent on it,
                 // whose tangent_on becomes that tangent_at, so it's refused, repeating it:
                 // never from a checked sketch, since the gate refuses an edge tangency beside
-                // an `on` or a `tangent_on` of an end (#258).
+                // an `on`, a `tangent_on` (#258), or a `midpoint` (#498) of an end.
                 let shared = match (a.element(), b.element()) {
                     (Some(a), Some(b)) => ends
                         .get(a)
@@ -718,19 +783,29 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
                         vec![a.to_string(), b.to_string(), point.to_string()],
                     );
                 }
-                // An end of one held on the other: the gate takes that as a tangent_on.
-                for on in &sketch.constraints {
-                    if let Form::On { point, curve } = &on.form
-                        && ((curve == b && of(point, a, &ends))
-                            || (curve == a && of(point, b, &ends)))
-                    {
+                // An end of one held on the other, by an `on` or at the other's middle by a
+                // `midpoint`: the gate takes that as a tangent_on, beside the midpoint. One
+                // beside a tangent_on is the gate's to refuse, in #290's words.
+                for hold in &sketch.constraints {
+                    let (point, curve, held) = match &hold.form {
+                        Form::On { point, curve } => {
+                            (point, curve, "on the other: that's a tangent_on")
+                        }
+                        Form::Midpoint { point, line } => (
+                            point,
+                            line,
+                            "at the other's middle: that's a tangent_on beside the midpoint",
+                        ),
+                        _ => continue,
+                    };
+                    if (curve == b && of(point, a, &ends)) || (curve == a && of(point, b, &ends)) {
                         return refuse(
                             id,
                             format!(
-                                "an edge tangency of {a} and {b} where {on_id} holds an end of one on the other: that's a tangent_on",
-                                on_id = on.id
+                                "an edge tangency of {a} and {b} where {hold_id} holds an end of one {held}",
+                                hold_id = hold.id
                             ),
-                            vec![on.id.to_string(), a.to_string(), b.to_string()],
+                            vec![hold.id.to_string(), a.to_string(), b.to_string()],
                         );
                     }
                 }
@@ -739,15 +814,6 @@ fn own_curve(sketch: &Sketch, edit: &str, parameter: &str, instead: &str) -> Res
         }
     }
     Ok(())
-}
-
-/// `ids` as a message lists them: "a", "a and b", "a, b and c".
-fn listed(ids: &[String]) -> String {
-    match ids.split_last() {
-        Some((last, [])) => last.clone(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-        None => String::new(),
-    }
 }
 
 /// Why an edit that can find several problems ([`remove`]) was refused: the first
@@ -863,10 +929,7 @@ fn point_in_use(
         .take(SAID)
         .map(|(_, id, _)| id.to_string())
         .collect();
-    let curves = match using.len() {
-        n if n <= SAID => listed(&said),
-        n => format!("{} and {} more", said.join(", "), n - SAID),
-    };
+    let curves = listed_first(&said, using.len());
     let elements = std::iter::once(point.to_string())
         .chain(using.iter().map(|(_, id, _)| id.to_string()))
         .take(PROBLEMS_LISTED);

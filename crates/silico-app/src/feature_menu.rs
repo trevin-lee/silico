@@ -209,19 +209,24 @@ fn unchangeable(tab: &Tab) -> Option<String> {
     None
 }
 
+/// Why sketch mode can't open in `tab` now ([`Tab::can_sketch`]), if it can't: what Edit
+/// Sketch says, and the canvas's Sketch on this face and Create Sketch
+/// (`crate::canvas_menu`).
+pub(crate) fn sketch_off(tab: &Tab) -> Option<String> {
+    if tab.can_sketch() {
+        None
+    } else {
+        Some(unchangeable(tab).unwrap_or_else(|| "The sketch can't open now".to_owned()))
+    }
+}
+
 /// Why `item` is off for the feature `entry` of `tab`, at `place`, if it is.
 pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String> {
     match item {
         Item::Edit => {
             if entry.kind == "sketch" {
                 // Sketch mode's Edit Sketch.
-                return if tab.can_sketch() {
-                    None
-                } else {
-                    Some(
-                        unchangeable(tab).unwrap_or_else(|| "The sketch can't open now".to_owned()),
-                    )
-                };
+                return sketch_off(tab);
             }
             let Some(kind) = crate::dialog::Kind::of(entry.kind) else {
                 return Some(format!(
@@ -245,13 +250,15 @@ pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String>
 }
 
 /// Why the browser has no row for `entry`: it lists bodies and sketches, a body by the
-/// feature that ends its chain; a feature that failed there built none.
+/// feature that ends its chain; a feature that failed there built none. It's inside a body
+/// if a feature other than a sketch names it as an input, as the gate counts consumers
+/// (`crate::tab::consumed`): a sketch on its face consumes nothing.
 fn no_row(tab: &Tab, entry: &Entry) -> String {
     let consumed = tab
         .timeline
         .as_ref()
         .and_then(|timeline| timeline.features.as_ref())
-        .is_some_and(|entries| entries.iter().any(|other| other.inputs.contains(&entry.id)));
+        .is_some_and(|entries| crate::tab::consumed(entries).contains_key(&entry.id));
     if consumed {
         "It's inside a body: the browser lists bodies and sketches".to_owned()
     } else if entry.health == Health::Error {
@@ -294,6 +301,7 @@ fn draw(ui: &mut Ui, name: &str, shown: Vec<Shown>) -> Option<Item> {
             off: shown.off.as_deref(),
             danger: shown.item == Item::Delete,
             lit: false,
+            checked: None,
         })
         .collect();
     let width = menu::width(ui, Some(name), &lines, 0.0);
@@ -379,6 +387,7 @@ pub fn act<P: silico_core::kernel::Clients + 'static>(
         }
         Act::FindInBrowser(id) => {
             tab.selected_in = Place::Browser;
+            tab.reveal_browser = true;
             tab.selection_mut().find_in_browser(id);
             false
         }
@@ -573,7 +582,7 @@ mod tests {
         use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
         use egui::accesskit::Role;
         use egui_kittest::Harness;
-        use egui_kittest::kittest::Queryable;
+        use egui_kittest::kittest::{NodeT, Queryable};
 
         use super::super::{Item, Shown, draw};
         use crate::modal::tests::{
@@ -649,14 +658,28 @@ mod tests {
             let mut h = block();
             let items: Vec<Rect> = [
                 "Edit feature double-click",
-                "Rename F2",
+                "Rename",
                 "Suppress",
                 "Find in browser",
-                "Delete Del",
+                "Delete",
             ]
             .into_iter()
             .map(|label| widget(&h, Role::Button, label))
             .collect();
+            // Each named by its words and dim words, its keys its keyboard shortcut for a
+            // screen reader (#444's review: one form for every menu).
+            for (label, keys) in [
+                ("Edit feature double-click", None),
+                ("Rename", Some("F2")),
+                ("Delete", Some("Del")),
+            ] {
+                let node = h.get_by_role_and_label(Role::Button, label);
+                assert_eq!(
+                    node.accesskit_node().data().keyboard_shortcut(),
+                    keys,
+                    "{label}"
+                );
+            }
             // Each 24 high, all one width, the widest's (`white-space: nowrap`, in a menu
             // `.menu`'s least wide less its border and its padding at least): here Edit
             // feature's, its words, its gesture, and `.sc`'s padding with no caps in it.
@@ -788,7 +811,7 @@ mod tests {
             }
             // Hovered: filled blue at `--r-sm`, its words, icon, and caps `--blue-text`, the
             // caps unfilled with a faint white outline.
-            h.get_by_role_and_label(Role::Button, "Rename F2").hover();
+            h.get_by_role_and_label(Role::Button, "Rename").hover();
             h.run_steps(2);
             assert_eq!(
                 fills_at(&h, items[1]),
@@ -814,7 +837,7 @@ mod tests {
             );
             // Delete hovered is lit as the others are (`:hover` outweighs `.danger`); the
             // off Suppress, hovered, isn't.
-            h.get_by_role_and_label(Role::Button, "Delete Del").hover();
+            h.get_by_role_and_label(Role::Button, "Delete").hover();
             h.run_steps(2);
             same_colour(
                 colour(&text_shape(&h, "Delete")),
@@ -846,7 +869,7 @@ mod tests {
                 });
             theme::apply(&h.ctx);
             h.run_steps(4);
-            let rename = widget(&h, Role::Button, "Rename F2");
+            let rename = widget(&h, Role::Button, "Rename");
             assert!(near(
                 rename.width(),
                 MENU_MIN_W - 2.0 * (MENU_PAD + css::BORDER)
@@ -869,7 +892,7 @@ mod tests {
                 });
             theme::apply(&h.ctx);
             h.run_steps(4);
-            let item = widget(&h, Role::Button, "Rename Shift+F2");
+            let item = widget(&h, Role::Button, "Rename");
             let mut caps: Vec<Rect> = rects(&h)
                 .into_iter()
                 .filter(|shape| {
@@ -920,8 +943,13 @@ mod tests {
             let cap = (cap + 2.0 * (4.0 + css::BORDER)).max(16.0);
             let want = MI_PAD + css::ICON + MI_GAP + words + MI_GAP + SC_PAD + cap + MI_PAD;
             assert!(want > MENU_MIN_W);
-            let rename = widget(&h, Role::Button, "Rename F2");
-            let delete = widget(&h, Role::Button, &format!("{name} Del"));
+            let rename = widget(&h, Role::Button, "Rename");
+            // Delete, named by its words as Find is, told apart by its keys.
+            let delete = h
+                .query_all_by_role_and_label(Role::Button, name)
+                .find(|node| node.accesskit_node().data().keyboard_shortcut() == Some("Del"))
+                .expect("Delete, its keys Del")
+                .rect();
             sized(
                 rename,
                 Rect::from_min_size(rename.min, Vec2::new(want, MI_H)),
@@ -973,7 +1001,7 @@ mod tests {
                 "{:?}",
                 head.pos
             );
-            for label in ["Rename F2", "Delete Del"] {
+            for label in ["Rename", "Delete"] {
                 let item = widget(&h, Role::Button, label);
                 assert!(
                     near(item.width(), width),

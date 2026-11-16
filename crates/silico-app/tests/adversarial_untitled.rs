@@ -7,35 +7,25 @@
 //! a wait on a command fails. Expected values by hand.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+#[path = "common/ui.rs"]
+mod ui;
 
-use eframe::egui::accesskit::Role;
-use eframe::egui::{Key, Modifiers};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use eframe::egui::{Key, Modifiers, ViewportCommand};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use silico_app::App;
-use silico_app::browse::{Answer, Ask, Browse, Pick};
+use silico_app::browse::Pick;
 use silico_app::export::ExportForm;
-use silico_app::tab::Tab;
-use silico_core::cache::Cache;
 use silico_core::command::{SessionId, Sessions};
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
-use silico_core::sketch::SketchSolver;
 use tempfile::TempDir;
-
-const EXAMPLE: &str = r#"{
-  "silico": 1,
-  "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
-  "features": [
-    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
-  ]
-}
-"#;
-
-const WAIT: Duration = Duration::from_secs(60);
+use ui::{
+    A_BOX, FakeBrowser, answer_question, anywhere, begin_sketch_on, close_window, new_part,
+    stand_in_sessions, step, step_until, tab_named, window_told,
+};
 
 type Fake = Arc<FakeKernel>;
 type AppHarness = Harness<'static, App<Fake>>;
@@ -47,80 +37,11 @@ struct Fixture {
 
 fn fixture() -> Fixture {
     let dir = tempfile::tempdir().unwrap();
-    let secret = dir.path().join("secret");
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let solver = FakeSketches::new();
-    let sessions = Sessions::with_stand_ins(
-        Arc::clone(&kernel),
-        move |cache| Cache::with_secret(cache, &secret),
-        move || Ok(Box::new(solver.clone()) as Box<dyn SketchSolver>),
-    );
+    let sessions = stand_in_sessions(&dir, &kernel, &FakeSketches::new());
     Fixture {
         dir,
         sessions: Arc::new(sessions),
-    }
-}
-
-/// The stand-in's state: what each dialog was asked, the answer the test gave (`None`
-/// until it does), and the waker of the last poll.
-#[derive(Default)]
-struct Dialogs {
-    asked: Vec<Ask>,
-    answer: Option<Option<PathBuf>>,
-    waker: Option<std::task::Waker>,
-}
-
-/// A native dialog that answers when the test says, from a thread of its own.
-#[derive(Clone, Default)]
-struct FakeBrowser(Arc<Mutex<Dialogs>>);
-
-impl Browse for FakeBrowser {
-    fn browse(&mut self, ask: &Ask) -> Option<Answer> {
-        let mut dialogs = self.0.lock().unwrap();
-        dialogs.asked.push(ask.clone());
-        dialogs.answer = None;
-        Some(Box::pin(FakeAnswer(Arc::clone(&self.0))))
-    }
-}
-
-struct FakeAnswer(Arc<Mutex<Dialogs>>);
-
-impl std::future::Future for FakeAnswer {
-    type Output = Option<PathBuf>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<PathBuf>> {
-        let mut dialogs = self.0.lock().unwrap();
-        match dialogs.answer.take() {
-            Some(answer) => std::task::Poll::Ready(answer),
-            None => {
-                dialogs.waker = Some(cx.waker().clone());
-                std::task::Poll::Pending
-            }
-        }
-    }
-}
-
-impl FakeBrowser {
-    fn answer(&self, answer: Option<&Path>) {
-        let waker = {
-            let mut dialogs = self.0.lock().unwrap();
-            dialogs.answer = Some(answer.map(Path::to_path_buf));
-            dialogs.waker.take()
-        };
-        std::thread::spawn(move || {
-            if let Some(waker) = waker {
-                waker.wake();
-            }
-        })
-        .join()
-        .unwrap();
-    }
-
-    fn asked(&self) -> Vec<Ask> {
-        self.0.lock().unwrap().asked.clone()
     }
 }
 
@@ -137,93 +58,28 @@ impl Fixture {
     }
 }
 
-fn step(h: &mut AppHarness) {
-    let _marked = never_waits::marked();
-    h.step();
-}
-
-#[track_caller]
-fn step_until(h: &mut AppHarness, what: &str, done: impl Fn(&AppHarness) -> bool) {
-    let deadline = Instant::now() + WAIT;
-    loop {
-        step(h);
-        if done(h) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "never {what}");
-        std::thread::sleep(Duration::from_millis(5));
-    }
-}
-
 fn steps(h: &mut AppHarness, n: usize) {
     for _ in 0..n {
         step(h);
     }
 }
 
-fn anywhere(h: &AppHarness, label: &str) -> bool {
-    h.query_by_label(label).is_some()
-}
-
-fn tab_named<'a>(h: &'a AppHarness, name: &str) -> &'a Tab {
-    h.state()
-        .tabs()
-        .iter()
-        .find(|tab| tab.name() == name)
-        .unwrap_or_else(|| panic!("no tab {name}"))
-}
-
 fn press_keys(h: &mut AppHarness, modifiers: Modifiers, key: Key) {
     h.key_press_modifiers(modifiers, key);
 }
 
-/// Command+N, and the part's tab waited for.
-fn new_part(h: &mut AppHarness) {
-    let before = h.state().tabs().len();
-    press_keys(h, Modifiers::COMMAND, Key::N);
-    step_until(h, "the part's tab", |h| {
-        h.state().tabs().len() == before + 1
-    });
-}
-
-/// A box added through CREATE's Box dialog and its OK, the part `name` then unsaved.
-fn add_box(h: &mut AppHarness, name: &str) {
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_role_and_label(Role::Button, "CREATE")
-        .click();
-    step_until(h, "CREATE's drop-down", |h| {
-        h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
-    });
-    step(h);
-    h.get_by_role_and_label(Role::Menu, "CREATE")
-        .get_by_label("Box")
-        .click();
-    step_until(h, "the dialog", |h| {
-        h.query_by_role_and_label(Role::Dialog, "Box").is_some()
-    });
-    step_until(h, "its add answered", |h| {
-        tab_named(h, name)
-            .dialog
-            .as_ref()
-            .is_some_and(|dialog| dialog.feature.is_some())
-    });
-    h.get_by_role(Role::Dialog)
-        .get_by_role_and_label(Role::Button, "OK")
-        .click();
+/// A sketch added to the part `name`, shown, as a part is begun sketch-first (the app makes
+/// no primitive: Trevin's decision of 2026-11-09): CREATE's Create Sketch on the XY plane,
+/// then Finish Sketch (Command+Enter), which keeps it, empty, as "Sketch1". The part `name`
+/// is then unsaved.
+fn add_sketch(h: &mut AppHarness, name: &str) {
+    // Create Sketch on once the part's timeline is read.
+    begin_sketch_on(h, name, "XY plane");
+    press_keys(h, Modifiers::COMMAND, Key::Enter);
     step_until(h, "unsaved", |h| {
-        h.query_by_role(Role::Dialog).is_none()
-            && tab_named(h, name).edits.idle()
-            && tab_named(h, name).unsaved()
+        let tab = tab_named(h, name);
+        tab.sketch.is_none() && tab.edits.idle() && tab.unsaved()
     });
-}
-
-/// The question's button `label`: the last of that label (after the app bar's).
-fn answer_question(h: &mut AppHarness, label: &str) {
-    h.query_all_by_role_and_label(Role::Button, label)
-        .last()
-        .unwrap()
-        .click_accesskit();
-    step(h);
 }
 
 /// Frames stepped until the native dialog has been asked `n` times in all.
@@ -234,35 +90,6 @@ fn asked_times(h: &mut AppHarness, browser: &FakeBrowser, n: usize) {
     assert_eq!(browser.asked()[n - 1].pick, Pick::Save);
 }
 
-/// The window asked to close, as its close button asks.
-fn close_window(h: &mut AppHarness) {
-    let root = eframe::egui::ViewportId::ROOT;
-    h.input_mut()
-        .viewports
-        .get_mut(&root)
-        .unwrap()
-        .events
-        .push(eframe::egui::ViewportEvent::Close);
-    step(h);
-    h.input_mut()
-        .viewports
-        .get_mut(&root)
-        .unwrap()
-        .events
-        .clear();
-}
-
-fn closing_told(h: &AppHarness) -> bool {
-    h.output()
-        .viewport_output
-        .get(&eframe::egui::ViewportId::ROOT)
-        .is_some_and(|viewport| {
-            viewport
-                .commands
-                .contains(&eframe::egui::ViewportCommand::Close)
-        })
-}
-
 #[test]
 fn a_save_panels_pick_for_a_part_closed_meanwhile_writes_nothing_and_says_nothing() {
     let f = fixture();
@@ -270,7 +97,7 @@ fn a_save_panels_pick_for_a_part_closed_meanwhile_writes_nothing_and_says_nothin
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 1);
     // The portal's panel leaves the window to be used: the part closed, its edits dropped.
@@ -296,7 +123,7 @@ fn a_save_panels_pick_for_a_part_whose_dont_save_is_still_running_writes_nothing
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 1);
     press_keys(&mut h, Modifiers::COMMAND, Key::W);
@@ -322,7 +149,7 @@ fn a_close_asked_while_the_parts_save_panel_is_open_is_taken_on_by_that_panel() 
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     // Command+S, then Close's Save while that panel is open: no second panel, and the one
     // open closes the part once it's saved.
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
@@ -348,7 +175,7 @@ fn a_cancel_of_a_save_panel_a_close_took_on_keeps_the_part() {
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 1);
     press_keys(&mut h, Modifiers::COMMAND, Key::W);
@@ -369,12 +196,12 @@ fn a_save_as_to_a_file_another_tab_holds_is_refused_said_and_leaves_the_part_unt
     let f = fixture();
     let browser = FakeBrowser::default();
     let held = f.dir.path().join("held.silico");
-    std::fs::write(&held, EXAMPLE).unwrap();
+    std::fs::write(&held, A_BOX).unwrap();
     let mut h = f.app(&browser);
     h.state_mut().open(held.to_str().unwrap(), false);
     step_until(&mut h, "its tab", |h| h.state().tabs().len() == 1);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 1);
     browser.answer(Some(&held));
@@ -389,7 +216,7 @@ fn a_save_as_to_a_file_another_tab_holds_is_refused_said_and_leaves_the_part_unt
     let tab = tab_named(&h, "Untitled");
     assert_eq!(tab.path, None);
     assert!(tab.unsaved());
-    assert_eq!(std::fs::read_to_string(&held).unwrap(), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&held).unwrap(), A_BOX);
     // Not stuck: saved elsewhere next.
     press_keys(&mut h, Modifiers::COMMAND, Key::S);
     asked_times(&mut h, &browser, 2);
@@ -409,7 +236,7 @@ fn a_quits_save_to_a_file_another_session_holds_stops_the_quit() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let held = f.dir.path().join("held.silico");
-    std::fs::write(&held, EXAMPLE).unwrap();
+    std::fs::write(&held, A_BOX).unwrap();
     // Held by another client of the same sessions (an agent's, say): a tab of the app's
     // holding it would be closed by the quit, letting it go before the save.
     let other = f.sessions.open(&held, false).wait();
@@ -417,7 +244,7 @@ fn a_quits_save_to_a_file_another_session_holds_stops_the_quit() {
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
         h.query_by_label_contains("Save changes before quitting?")
@@ -430,9 +257,9 @@ fn a_quits_save_to_a_file_another_session_holds_stops_the_quit() {
         h.state().message() == Some("Quit stopped: Untitled wasn't closed")
     });
     steps(&mut h, 20);
-    assert!(!closing_told(&h));
+    assert!(!window_told(&h, ViewportCommand::Close));
     assert!(tab_named(&h, "Untitled").unsaved());
-    assert_eq!(std::fs::read_to_string(&held).unwrap(), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&held).unwrap(), A_BOX);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -443,7 +270,7 @@ fn a_save_panels_pick_the_core_refuses_is_said_and_the_part_keeps_its_edits() {
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     // One in a folder that isn't there, a folder, and one in a rebuild cache.
     let folder = f.dir.path().join("folder.silico");
     std::fs::create_dir(&folder).unwrap();
@@ -494,7 +321,7 @@ fn a_quits_save_panel_answering_a_path_that_isnt_utf8_stops_the_quit() {
     let mut h = f.app(&browser);
     step(&mut h);
     new_part(&mut h);
-    add_box(&mut h, "Untitled");
+    add_sketch(&mut h, "Untitled");
     close_window(&mut h);
     step_until(&mut h, "the quit question", |h| {
         h.query_by_label_contains("Save changes before quitting?")
@@ -509,7 +336,7 @@ fn a_quits_save_panel_answering_a_path_that_isnt_utf8_stops_the_quit() {
         h.state().message() == Some("Quit stopped: Untitled wasn't closed")
     });
     steps(&mut h, 20);
-    assert!(!closing_told(&h));
+    assert!(!window_told(&h, ViewportCommand::Close));
     assert!(tab_named(&h, "Untitled").unsaved());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -589,7 +416,7 @@ fn save_as_picking_the_documents_own_file_saves_it() {
     let f = fixture();
     let browser = FakeBrowser::default();
     let own = f.dir.path().join("own.silico");
-    std::fs::write(&own, EXAMPLE).unwrap();
+    std::fs::write(&own, A_BOX).unwrap();
     let mut h = f.app(&browser);
     h.state_mut().open(own.to_str().unwrap(), false);
     step_until(&mut h, "its timeline", |h| {
@@ -598,14 +425,14 @@ fn save_as_picking_the_documents_own_file_saves_it() {
             .first()
             .is_some_and(|tab| tab.timeline.is_some())
     });
-    add_box(&mut h, "own.silico");
+    add_sketch(&mut h, "own.silico");
     press_keys(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
     asked_times(&mut h, &browser, 1);
     browser.answer(Some(&own));
     step_until(&mut h, "saved", |h| !tab_named(h, "own.silico").unsaved());
     assert_eq!(tab_named(&h, "own.silico").message, None);
     let text = std::fs::read_to_string(&own).unwrap();
-    assert!(text.contains(r#""name": "Box""#), "{text}");
+    assert!(text.contains(r#""name": "Sketch1""#), "{text}");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -615,7 +442,7 @@ fn save_as_picking_a_link_to_the_documents_own_file_saves_it_and_keeps_its_path(
     let f = fixture();
     let browser = FakeBrowser::default();
     let own = f.dir.path().join("own.silico");
-    std::fs::write(&own, EXAMPLE).unwrap();
+    std::fs::write(&own, A_BOX).unwrap();
     // A link to it, as a panel may answer (or its canonical form, /private/var for /var).
     let link = f.dir.path().join("link.silico");
     std::os::unix::fs::symlink(&own, &link).unwrap();
@@ -627,7 +454,7 @@ fn save_as_picking_a_link_to_the_documents_own_file_saves_it_and_keeps_its_path(
             .first()
             .is_some_and(|tab| tab.timeline.is_some())
     });
-    add_box(&mut h, "own.silico");
+    add_sketch(&mut h, "own.silico");
     press_keys(&mut h, Modifiers::COMMAND | Modifiers::SHIFT, Key::S);
     asked_times(&mut h, &browser, 1);
     browser.answer(Some(&link));
@@ -638,7 +465,7 @@ fn save_as_picking_a_link_to_the_documents_own_file_saves_it_and_keeps_its_path(
     assert_eq!(tab.path.as_deref(), own.to_str());
     assert!(std::fs::symlink_metadata(&link).unwrap().is_symlink());
     let text = std::fs::read_to_string(&own).unwrap();
-    assert!(text.contains(r#""name": "Box""#), "{text}");
+    assert!(text.contains(r#""name": "Sketch1""#), "{text}");
     // No transaction left open, nothing more to save.
     assert!(!tab.transaction);
     assert_eq!(never_waits::waits(), 0);
@@ -649,7 +476,7 @@ fn a_save_as_onto_its_own_file_with_no_edits_writes_nothing_and_leaves_it_clean(
     let f = fixture();
     let browser = FakeBrowser::default();
     let own = f.dir.path().join("own.silico");
-    std::fs::write(&own, EXAMPLE).unwrap();
+    std::fs::write(&own, A_BOX).unwrap();
     let mut h = f.app(&browser);
     h.state_mut().open(own.to_str().unwrap(), false);
     step_until(&mut h, "its timeline", |h| {
@@ -670,6 +497,6 @@ fn a_save_as_onto_its_own_file_with_no_edits_writes_nothing_and_leaves_it_clean(
     let tab = tab_named(&h, "own.silico");
     assert_eq!(tab.message, None);
     assert!(!tab.unsaved());
-    assert_eq!(std::fs::read_to_string(&own).unwrap(), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&own).unwrap(), A_BOX);
     assert_eq!(never_waits::waits(), 0);
 }

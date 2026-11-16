@@ -25,6 +25,7 @@
     del: { label: 'Delete', keys: ['Del'], group: 'Edit' },
     rebuild: { label: 'Rebuild', keys: ['Mod', 'B'], group: 'Rebuild', icon: 'rebuild', desc: 'Rebuilds what changed. Resumes a stopped rebuild' },
     rebuildAll: { label: 'Rebuild everything', keys: ['Mod', 'Shift', 'B'], group: 'Rebuild', desc: 'Every feature, ignoring the cache' },
+    reload: { label: 'Reload', keys: ['Mod', 'R'], group: 'Rebuild', desc: 'Reads the file from disk again, then rebuilds every feature' },
     stop: { label: 'Stop rebuild', keys: ['Esc'], group: 'Rebuild', icon: 'stop' },
     whatsWrong: { label: "What's wrong", keys: [], group: 'Rebuild', icon: 'error', desc: 'Every problem in the document' },
     createSketch: { label: 'Create Sketch', keys: [], group: 'Create', icon: 'sketch', desc: 'Pick an origin plane or a flat face, then sketch on it' },
@@ -32,11 +33,6 @@
     pocket: { label: 'Pocket', keys: [], group: 'Create', icon: 'pocket', desc: "Cuts a sketch's profile out of the solid" },
     revolve: { label: 'Revolve', keys: [], group: 'Create', icon: 'revolve', desc: 'Sweeps a profile around an axis' },
     groove: { label: 'Groove', keys: [], group: 'Create', icon: 'groove', desc: 'Cuts a profile swept around an axis' },
-    box: { label: 'Box', keys: [], group: 'Create', icon: 'box' },
-    cylinder: { label: 'Cylinder', keys: [], group: 'Create', icon: 'cylinder' },
-    sphere: { label: 'Sphere', keys: [], group: 'Create', icon: 'sphere' },
-    cone: { label: 'Cone', keys: [], group: 'Create', icon: 'cone' },
-    torus: { label: 'Torus', keys: [], group: 'Create', icon: 'torus' },
     fillet: { label: 'Fillet', keys: [], group: 'Modify', icon: 'fillet', desc: 'Rounds the selected edges' },
     chamfer: { label: 'Chamfer', keys: [], group: 'Modify', icon: 'chamfer', desc: 'Bevels the selected edges' },
     union: { label: 'Union', keys: [], group: 'Modify', icon: 'union' },
@@ -78,8 +74,10 @@
     cancel: { label: 'Cancel', keys: ['Esc'], group: 'Dialogs' },
     shortcuts: { label: 'Keyboard shortcuts', keys: ['?'], group: 'Help', icon: 'help' },
   };
-  const FEATURE_ICON = { sketch: 'sketch', pad: 'pad', pocket: 'pocket', fillet: 'fillet', chamfer: 'chamfer', revolve: 'revolve', groove: 'groove', box: 'box' };
-  const FEATURE_KIND = { sketch: 'Sketch', pad: 'Pad', pocket: 'Pocket', fillet: 'Fillet', chamfer: 'Chamfer' };
+  // The primitives' icons and names stay for those a file holds, which edit but are never made here
+  // (Trevin's decision of 2026-11-09: solids are made sketch-first).
+  const FEATURE_ICON = { sketch: 'sketch', pad: 'pad', pocket: 'pocket', fillet: 'fillet', chamfer: 'chamfer', revolve: 'revolve', groove: 'groove', box: 'box', cylinder: 'cylinder', sphere: 'sphere', cone: 'cone', torus: 'torus' };
+  const FEATURE_KIND = { sketch: 'Sketch', pad: 'Pad', pocket: 'Pocket', fillet: 'Fillet', chamfer: 'Chamfer', box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', cone: 'Cone', torus: 'Torus' };
 
   // ───────── Documents ─────────
   function bracketFeatures() {
@@ -344,7 +342,7 @@
       const err = x.problems.some((p) => p.severity === 'error');
       const out = Object.keys(x.outside).length;
       return `<div class="doc-tab ${x.uid === S.active && S.view === 'doc' ? 'active' : ''}" data-act="tab" data-id="${x.uid}" role="tab" tabindex="0" aria-selected="${x.uid === S.active}" data-tip="${esc(x.path)}" data-tipd="${err ? 'Has errors. ' : ''}${dirty(x) ? 'Unsaved edits. ' : ''}${out ? 'Changed on disk since you opened it.' : ''}">
-        ${err ? '<span class="mark" aria-label="has errors"></span>' : out ? '<span class="mark purple" aria-label="changed outside"></span>' : ''}
+        ${err ? '<span class="mark" aria-label="has errors"></span>' : out ? '<span class="mark outside" aria-label="changed outside"></span>' : ''}
         <span class="name">${esc(x.file)}${dirty(x) ? '<span class="dirty"> *</span>' : ''}</span>
         <button class="x" data-act="closeTab" data-id="${x.uid}" aria-label="Close ${esc(x.file)}">${icon('close')}</button></div>`;
     }).join('');
@@ -413,7 +411,7 @@
       ${o.prefix ? `<span class="prefix ${o.prefixCls || ''}" data-tip="${esc(o.prefixTip || '')}">${o.prefix}</span>` : ''}
       <span class="r-name">${esc(o.name)}</span>
       ${o.meta ? `<span class="r-meta">${o.meta}</span>` : ''}
-      ${o.mark === 'error' ? `<span class="r-err" data-tip="${esc(o.markTip || 'Has an error')}">${icon('error')}</span>` : o.mark === 'warn' ? `<span class="r-warn">${icon('warn')}</span>` : o.mark === 'outside' ? '<span class="state-dot" style="background:var(--purple)" data-tip="Changed on disk since you opened it"></span>' : ''}
+      ${o.mark === 'error' ? `<span class="r-err" data-tip="${esc(o.markTip || 'Has an error')}">${icon('error')}</span>` : o.mark === 'warn' ? `<span class="r-warn">${icon('warn')}</span>` : o.mark === 'outside' ? '<span class="state-dot" style="background:var(--outside)" data-tip="Changed on disk since you opened it"></span>' : ''}
     </div>`;
   }
   function renderBrowser() {
@@ -441,7 +439,7 @@
             const bodyErr = d.problems.find((p) => p.severity === 'error');
             const lastHealthy = [...d.features].reverse().find((f) => f.type !== 'sketch' && d.health[f.id] === 'healthy');
             body += row({ id: 'body1', depth: 2, icon: 'body', name: 'Body1', meta: lastHealthy ? esc(lastHealthy.name) : '', eye: S.vis.body, hidden: !S.vis.body, selected: S.selRow === 'body1', mark: bodyErr ? 'error' : null, markTip: bodyErr ? bodyErr.title : '', act: 'bodyRow' });
-          } else body += `<div class="tree-empty">${d.features.length ? 'No body: ' + (d.problems[0] ? esc(d.problems[0].title) : 'nothing builds one yet') : 'None yet. A pad or a primitive makes one.'}</div>`;
+          } else body += `<div class="tree-empty">${d.features.length ? 'No body: ' + (d.problems[0] ? esc(d.problems[0].title) : 'nothing builds one yet') : 'None yet. A pad makes one.'}</div>`;
         }
         const sketches = d.features.filter((f) => f.type === 'sketch');
         body += row({ id: 'sketches', depth: 1, caret: E.sketches, icon: 'folder', name: 'Sketches', meta: sketches.length ? '' : '0' });
@@ -546,7 +544,7 @@
     return `<div class="panel-title">Properties</div><div class="panel-body">
       <div class="prop-head"><div class="ph-icon">${icon(FEATURE_ICON[f.type])}</div><div><div class="ph-title">${esc(f.name)}</div><div class="ph-sub">${FEATURE_KIND[f.type]} · <span class="mono">${f.id}</span></div></div></div>
       ${pr.map((x) => errCard(x, { noShow: true })).join('')}
-      ${d.outside[id] ? `<div class="err-card warn" style="background:rgba(183,128,255,.12);border-color:#463375"><div class="ec-head" style="color:#e4d6ff">${icon('diff')}<span class="t">Changed on disk</span></div><div class="ec-body" style="color:#e4d6ff"><p>${esc(d.outside[id])}</p><div class="ec-actions"><button class="btn btn-ghost" data-act="ackOutside" data-id="${id}">Mark as seen</button></div></div></div>` : ''}
+      ${d.outside[id] ? `<div class="err-card info"><div class="ec-head">${icon('rebuild')}<span class="t">Changed on disk</span></div><div class="ec-body"><p>${esc(d.outside[id])}</p><div class="ec-actions"><button class="btn btn-ghost" data-act="ackOutside" data-id="${id}">Mark as seen</button></div></div></div>` : ''}
       ${section('Parameters')}${rows}
       ${section('Health')}${prop('State', healthTxt)}${prop('ID', `<span class="mono">${f.id}</span>`, { copy: f.id })}
       <div style="display:flex;gap:6px;padding:10px var(--pad)">
@@ -723,7 +721,7 @@
     if (roll >= d.features.length) items += rollBar();
     if (!d.features.length) items = '<span class="tl-empty">Features appear here, in order, as you add them.</span>';
     const errs = d.problems.filter((p) => p.severity === 'error').length;
-    $('#timeline').innerHTML = `<span class="tl-label">Timeline</span><div class="tl-track" role="toolbar" aria-label="Features in order">${items}</div>
+    $('#timeline').innerHTML = `<span class="tl-label">Timeline</span><div class="tl-track" role="toolbar" aria-label="Features in order" data-act="tlTrack">${items}</div>
       <div class="tl-right">${errs ? `<button class="st-item err-text" data-act="whatsWrong">${icon('error')} ${errs} error${errs > 1 ? 's' : ''}</button>` : ''}<span>${d.features.length} features</span><button class="ab-btn" data-act="noop" data-tip="Timeline options">${icon('gear')}</button></div>`;
   }
   function rollBar() { return `<div class="tl-roll" data-act="noop" data-roll="1" role="separator" aria-label="Rollback bar" data-tip="Rollback bar" data-tipd="Drag to see the part as it was at an earlier feature. (Onshape's; Fusion's marker is out of M5)"></div>`; }
@@ -790,8 +788,8 @@
   function renderBanner(d) {
     const B = S.banner; if (!B) return '';
     if (B.kind === 'reloaded') {
-      return `<div class="canvas-banner info" role="status" style="right:148px">${icon('diff', 'b-icon')}<div class="b-text"><div class="t">Reloaded ${esc(d.file)}: another program changed it on disk</div>
-        <div class="s">Revision ${B.from} → ${B.to}. You had no unsaved edits, so nothing of yours was lost. Changed features are marked <span class="state-dot" style="background:var(--purple)"></span> until you look at them.</div>
+      return `<div class="canvas-banner info" role="status" style="right:148px">${icon('rebuild', 'b-icon')}<div class="b-text"><div class="t">Reloaded ${esc(d.file)}: another program changed it on disk</div>
+        <div class="s">Revision ${B.from} → ${B.to}. You had no unsaved edits, so nothing of yours was lost. Changed features are marked <span class="state-dot" style="background:var(--outside)"></span> until you look at them.</div>
         <div class="diff">${B.changes.map((c) => `<span class="k">${esc(c.feature)}</span><span>${esc(c.field)}</span><span>${esc(c.text)}</span>`).join('')}</div></div>
         <div class="b-actions"><button class="btn btn-secondary" data-act="undoReload" data-tip="Puts back the version you had" data-tipd="An edit like any other: Save writes it">Restore my version</button><button class="ab-btn" data-act="dismissBanner" aria-label="Dismiss">${icon('close')}</button></div></div>`;
     }
@@ -859,8 +857,8 @@
     if (M.type === 'diff') {
       const ch = d.pendingDisk ? d.pendingDisk.changes : [];
       return `<div class="backdrop" data-act="closeModal"><div class="modal" style="width:520px" role="dialog" aria-modal="true" data-stop="1">
-        <div class="m-head">${icon('diff')}<span>What changed on disk</span><span class="grow"></span><button class="ab-btn" data-act="closeModal" aria-label="Close">${icon('close')}</button></div>
-        <div class="m-body"><div class="section" style="padding-left:0">Their change (on disk)</div>${ch.map((c) => `<div class="prop" style="padding:0"><span class="k" style="color:var(--purple)">${esc(c.feature)}</span><span class="v">${esc(c.field)} · ${esc(c.text)}</span></div>`).join('')}
+        <div class="m-head">${icon('rebuild')}<span>What changed on disk</span><span class="grow"></span><button class="ab-btn" data-act="closeModal" aria-label="Close">${icon('close')}</button></div>
+        <div class="m-body"><div class="section" style="padding-left:0">Their change (on disk)</div>${ch.map((c) => `<div class="prop" style="padding:0"><span class="k" style="color:var(--outside)">${esc(c.feature)}</span><span class="v">${esc(c.field)} · ${esc(c.text)}</span></div>`).join('')}
         <div class="section" style="padding-left:0">Your unsaved edits</div>${d.undo.map((u) => `<div class="prop" style="padding:0"><span class="k">Edit</span><span class="v">${esc(u.label)}</span></div>`).join('')}
         <div class="hint-block" style="margin:12px 0 0">A feature-level summary of the two documents, as <span class="mono">silico textconv</span> reads them for <span class="mono">git diff</span>.</div></div>
         <div class="m-foot"><button class="btn btn-secondary" data-act="closeModal">Close</button><button class="btn btn-secondary" data-act="reloadDiscard">Reload theirs</button><button class="btn btn-primary" data-act="saveAsCmd">Save mine as…</button></div></div></div>`;
@@ -870,6 +868,12 @@
         <div class="m-head">${icon('warn')}<span>Keep your edits</span></div>
         <div class="m-body"><p style="margin:0;color:var(--g750)">You keep working on your version. ${esc(d.file)} keeps its new contents on disk, and Save stays off until you reload or Save As. The status bar shows <span class="warn-text">Changed on disk</span> meanwhile.</p></div>
         <div class="m-foot"><button class="btn btn-secondary" data-act="closeModal">Back</button><button class="btn btn-secondary" data-act="keepMineConfirm">Keep working</button><button class="btn btn-primary" data-act="saveAsCmd">Save As now…</button></div></div></div>`;
+    }
+    if (M.type === 'reloadDirty') {
+      return `<div class="backdrop" data-act="closeModal"><div class="modal" role="dialog" aria-modal="true" data-stop="1">
+        <div class="m-head">${icon('rebuild')}<span>Reload ${esc(M.file)} from disk?</span></div>
+        <div class="m-body"><p style="margin:0;color:var(--g750)">It has ${M.edits} unsaved edit${M.edits === 1 ? '' : 's'}. Reloading drops them.</p></div>
+        <div class="m-foot"><button class="btn btn-danger" data-act="reloadDirtyDiscard">Reload, discard my edits</button><span style="flex:1"></span><button class="btn btn-secondary" data-act="closeModal">Cancel</button></div></div></div>`;
     }
     if (M.type === 'closeDirty') {
       return `<div class="backdrop" data-act="closeModal"><div class="modal" role="dialog" aria-modal="true" data-stop="1">

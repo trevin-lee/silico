@@ -1,7 +1,8 @@
 //! The viewport (docs/design/m5.0-app.md, sections 2, 3, 8, and 10; M5.6): the canvas that
 //! draws the tab's published model through a renderer ([`crate::renderer`]), under the tab's
 //! own camera (decision 29), with Fusion's navigation (the wheel, the middle button, F6),
-//! its ViewCube at the canvas's top right, and its navigation bar at its bottom centre.
+//! its ViewCube at the canvas's top right, its navigation bar at its bottom centre, and the
+//! triad and the view label at its bottom left ([`crate::triad`]).
 //!
 //! Each tab holds its meshes ([`View`]): the newest `meshes` answer's bodies by number, each
 //! with its key, its level, its box, the half pixels it serves, its mesh, and its faces' and
@@ -23,8 +24,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align, Layout, PointerButton, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2, WidgetInfo,
-    WidgetType,
+    self, Align, Layout, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder, Vec2,
+    WidgetInfo, WidgetType,
 };
 use silico_core::ErrorCode;
 use silico_core::command::meshes::{Held, MeshElement, MeshedBody, Meshes, MeshesRead};
@@ -38,8 +39,12 @@ use silico_core::recompute::Key;
 use silico_core::views::{NamedView, half_pixel_at, meshing_depth};
 use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 
+use crate::bar;
+use crate::icons::Icon;
+use crate::menu::{self, Checked};
 use crate::navigate::{self, HOME, NO_BOX};
-use crate::renderer::{Change, Element, FrameData, Picking, PixelRect, Present};
+use crate::renderer::{Change, Element, FrameData, Picking, PixelRect, Present, Tint};
+use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::theme;
 
@@ -336,13 +341,13 @@ impl Pressed {
     }
 }
 
-/// The left button's clicks anywhere in the window, counted as egui counts clicks, but the
-/// left button's alone: its press under way, and its last two clicks, when and where.
+/// The canvas's own left clicks, counted as egui counts the pointer's (`crate::clicks`, #452):
+/// its press under way, and its clicks' count. A click off the canvas isn't counted, so a
+/// double-click on it just after one isn't taken as a triple.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 struct LeftClicks {
     pressed: Option<Pressed>,
-    last: Option<(f64, Pos2)>,
-    last_last: Option<f64>,
+    count: crate::clicks::Count,
 }
 
 impl LeftClicks {
@@ -355,15 +360,7 @@ impl LeftClicks {
         if !pressed.clicked(at, time, options) {
             return false;
         }
-        let near = self.last.is_none_or(|(_, last)| {
-            last.distance_sq(at) < options.max_click_dist * options.max_click_dist
-        });
-        let delay = options.max_double_click_delay;
-        let double = near && self.last.is_some_and(|(last, _)| time - last < delay);
-        let triple = near && self.last_last.is_some_and(|last| time - last < delay * 2.0);
-        self.last_last = self.last.map(|(last, _)| last);
-        self.last = Some((time, at));
-        double && !triple
+        self.count.click(at, time, options)
     }
 }
 
@@ -475,6 +472,9 @@ pub struct View {
     /// The bodies the browser hides, by feature, as the last frame had them: drawn by no
     /// frame, and so not in the reach a view is clamped by.
     hidden: BTreeSet<FeatureId>,
+    /// The boxes of the shown sketches' lines the last frame drew (`crate::sketch::lines`):
+    /// in the reach a view is clamped by, as the renderer takes them into its own.
+    sketch_boxes: Vec<[[f64; 3]; 2]>,
     notice: Option<Notice>,
     /// A held mesh an answer gave none of wasn't found: the next read holds none.
     hold_none: bool,
@@ -484,16 +484,29 @@ pub struct View {
     drag: Option<Drag>,
     /// The navigation bar's tool, if one is chosen.
     pub tool: Option<Navigation>,
+    /// Whether the ground grid is shown ([`crate::grid`]): the navigation bar's Grid, on at
+    /// first, as the prototype's is. A sketch open hides it whatever this says.
+    pub grid: bool,
     /// The elements drawn highlighted, set from outside (M5.7's selection): passed through,
     /// but for one of a body the frame doesn't draw, or that its mesh hasn't.
     pub highlights: BTreeSet<(u32, Element)>,
     /// The elements drawn hovered (M5.7's pre-selection), set from outside, passed through
     /// as `highlights` are.
     pub hovered: BTreeSet<(u32, Element)>,
+    /// The faces of the features selected (a timeline item: the faces it made; a body by
+    /// its browser row: its every face), set from outside (M5.7's selection): tinted as a
+    /// feature hovered in the timeline is, while none is ([`maker_faces`](Self::maker_faces)).
+    pub selected_feature_faces: BTreeSet<(u32, Element)>,
     /// The radius, in points, within which a pick takes a vertex, if it takes vertices,
     /// set from outside (the selection's filter, M5.7): the renderer's
     /// [`crate::renderer::Frame::vertices`]. None picks none.
     pub vertices: Option<f32>,
+    /// Whether a pick takes edges, set from outside (the selection's filter, M5.7): the
+    /// renderer's [`crate::renderer::Frame::edges`], which draws each edge near a pick's
+    /// square again toward the eye only then, so with edges off an edge is picked where it's
+    /// drawn alone, a concave edge's stroke as a convex one's (and the selection takes the
+    /// face cast under it). On, as the selection's filter starts.
+    pub edges: bool,
     /// The broken reference's candidate whose card row the pointer is over (flow 6b), set
     /// from outside: drawn with the hover, in [`theme::VIEWPORT_CANDIDATE`] for that frame.
     ///
@@ -503,16 +516,20 @@ pub struct View {
     /// (the selection's and the hover's) of one width, so the one hovered is lit alone, on
     /// the hover's layer, until it has a third.
     pub candidate: Option<(u32, Element)>,
-    /// The feature hovered in the timeline (DESIGN.md, *Hover linking*): the faces it made,
-    /// as each face's name says ([`Name::feature`]), are highlighted with the selection's
-    /// while it's hovered.
+    /// The feature hovered in the timeline (DESIGN.md, *Hover a feature, see its geometry*;
+    /// the prototype's `hoverFeature`): the faces it made, as each face's name says
+    /// ([`Name::feature`]), are tinted while it's hovered, in place of the features
+    /// selected's, in [`theme::VIEWPORT_FEATURE_HOVER_TINT`] at
+    /// [`theme::VIEWPORT_FEATURE_HOVER_TINT_AMOUNT`] ([`feature_tint`]), but any selected
+    /// or hovered ([`tinted_faces`]).
     ///
     /// [`Name::feature`]: silico_core::naming::Name::feature
-    ///
-    /// SEAM: the prototype tints them with the maker's colour,
-    /// [`theme::VIEWPORT_FEATURE_HOVER_TINT`] (`#d4dbff` at 0.4), not the selection's; that
-    /// comes once the renderer has a second highlight style.
     pub linked: Option<FeatureId>,
+    /// The feature that made what the canvas's hover is over, as the timeline read it when
+    /// it last drew (it rings that feature's item, `.hovered-from-canvas`): set by the
+    /// timeline, drawn before the canvas, each frame. Once the canvas's hover names another
+    /// feature, the viewport asks for the next frame at once, so the timeline catches up.
+    pub ringed_feature: Option<FeatureId>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
     /// The serial of the newest frame that carried a pick of this view's: an answer to a
@@ -536,15 +553,37 @@ pub struct View {
     /// from the frame after the menu opens (the tab's overlay comes after the pane's
     /// navigation), and let go as it closes.
     pub(crate) wheel_held: bool,
+    /// What sketch mode adds to a fit, as the tab last set it.
+    framing: navigate::Framing,
 }
 
-/// A view a shortcut asks of the tab's viewport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The views the registry's view commands give, by their keys (F6, Home, Ctrl+1 to Ctrl+7)
+/// and by the ViewCube's menu (Home view and the named views): one table, so neither can
+/// give another view than the other.
+pub const VIEW_COMMANDS: [(Command, ViewAsk); 9] = [
+    (Command::Fit, ViewAsk::Fit),
+    (Command::Home, ViewAsk::Named(HOME)),
+    (Command::Front, ViewAsk::Named(NamedView::Front)),
+    (Command::Back, ViewAsk::Named(NamedView::Back)),
+    (Command::Left, ViewAsk::Named(NamedView::Left)),
+    (Command::Right, ViewAsk::Named(NamedView::Right)),
+    (Command::Top, ViewAsk::Named(NamedView::Top)),
+    (Command::Bottom, ViewAsk::Named(NamedView::Bottom)),
+    (Command::Isometric, ViewAsk::Named(navigate::ISOMETRIC)),
+];
+
+/// A view a shortcut asks of the tab's viewport. Each fits the bodies with what the view's
+/// [`navigate::Framing`] adds in sketch mode.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ViewAsk {
     /// The bodies fitted, looking as it looks (F6, the navigation bar's Fit).
     Fit,
     /// A named view of the bodies, as the ViewCube gives it (Home, a face, a corner).
     Named(NamedView),
+    /// Look At (Ctrl+8): the view square to a plane, looking from `toward`, its unit
+    /// normal toward the eye, with `up` up the image ([`navigate::look_at`]); and a ViewCube
+    /// edge's view, from between its two faces, which no named view gives.
+    LookAt { toward: [f64; 3], up: [f64; 3] },
 }
 
 impl Default for View {
@@ -563,17 +602,22 @@ impl Default for View {
             said: None,
             said_for: None,
             hidden: BTreeSet::new(),
+            sketch_boxes: Vec::new(),
             notice: None,
             hold_none: false,
             reads: 0,
             last: None,
             drag: None,
             tool: None,
+            grid: true,
             highlights: BTreeSet::new(),
             hovered: BTreeSet::new(),
+            selected_feature_faces: BTreeSet::new(),
             vertices: None,
+            edges: true,
             candidate: None,
             linked: None,
+            ringed_feature: None,
             picking: None,
             picked: None,
             last_asked: None,
@@ -583,6 +627,7 @@ impl Default for View {
             published: 0,
             read_published: 0,
             wheel_held: false,
+            framing: navigate::Framing::default(),
         }
     }
 }
@@ -668,6 +713,12 @@ impl View {
         self.asked = Some(ask);
     }
 
+    /// What sketch mode adds to a fit from now on ([`navigate::Framing`]): the tab's, each
+    /// frame.
+    pub fn frame_with(&mut self, framing: navigate::Framing) {
+        self.framing = framing;
+    }
+
     /// Looks through `camera`, as a control of the person's does.
     pub fn set_camera(&mut self, camera: Camera) {
         self.camera = camera;
@@ -682,19 +733,20 @@ impl View {
     /// The faces the feature hovered in the timeline made ([`linked`](Self::linked)), in
     /// every body that holds one, as each face's name says: none with none hovered.
     pub fn linked_faces(&self) -> Vec<(u32, Element)> {
-        let Some(feature) = &self.linked else {
-            return Vec::new();
-        };
-        self.bodies
-            .iter()
-            .flat_map(|(number, body)| {
-                body.faces
-                    .iter()
-                    .zip(1u32..)
-                    .filter(|(face, _)| face.name.feature() == feature)
-                    .map(|(_, n)| (*number, Element::Face(n)))
-            })
-            .collect()
+        match &self.linked {
+            Some(feature) => faces_of(feature, &self.bodies, false),
+            None => Vec::new(),
+        }
+    }
+
+    /// The faces tinted as their maker's (the prototype's `maker`, `hoverFeature ||
+    /// selFeature`): the feature hovered in the timeline's, if one is, even if it made none;
+    /// else the features selected's.
+    pub fn maker_faces(&self) -> Vec<(u32, Element)> {
+        match self.linked {
+            Some(_) => self.linked_faces(),
+            None => self.selected_feature_faces.iter().copied().collect(),
+        }
     }
 
     /// The published revision the bodies were read from, once a read has answered.
@@ -804,6 +856,29 @@ impl View {
         self.model = Some(of.1);
         self.last_asked = Some(picking.frame);
         self.picked = Some(picking);
+    }
+
+    /// As if another table of bodies had been read, of the same model: a selection's unit
+    /// tests' view.
+    #[cfg(test)]
+    pub(crate) fn tabled_again(&mut self) {
+        self.generation += 1;
+    }
+
+    /// A view holding `bodies`, read from no model: a unit test's.
+    #[cfg(test)]
+    pub(crate) fn holding(bodies: BTreeMap<u32, ViewBody>) -> View {
+        View {
+            bodies,
+            ..View::default()
+        }
+    }
+
+    /// The pick asked of the renderer and not yet given it, taken (as a frame takes it): a
+    /// unit test's, to see whether another is asked after.
+    #[cfg(test)]
+    pub(crate) fn take_asked(&mut self) -> Option<PixelRect> {
+        self.picking.take()
     }
 
     /// The read in flight polled: its answer taken if it has come.
@@ -946,6 +1021,17 @@ impl View {
         self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
     }
 
+    /// The shown sketches' lines' boxes, as the frame draws them: if they changed, the view
+    /// raised to the least they allow with the bodies, if it's under it, as the renderer
+    /// takes their reach too (an orthographic view under it would have every frame
+    /// refused).
+    fn take_sketch_boxes(&mut self, boxes: Vec<[[f64; 3]; 2]>) {
+        if boxes != self.sketch_boxes {
+            self.sketch_boxes = boxes;
+            self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
+        }
+    }
+
     /// Every body's box.
     fn boxes(&self) -> impl Iterator<Item = [[f64; 3]; 2]> + '_ {
         self.bodies.values().filter_map(|body| body.bounds)
@@ -953,12 +1039,13 @@ impl View {
 
     /// The boxes of the bodies drawn (those the browser hides left out), as the renderer
     /// takes their reach: a body's tight box, or, for one that couldn't be measured, its
-    /// mesh's own extent.
+    /// mesh's own extent; and the shown sketches' lines' boxes, which it takes too.
     fn drawn_boxes(&self) -> impl Iterator<Item = [[f64; 3]; 2]> + '_ {
         self.bodies
             .values()
             .filter(|body| !self.hidden.contains(&body.feature))
             .filter_map(|body| body.bounds.or_else(|| extent(&body.mesh)))
+            .chain(self.sketch_boxes.iter().copied())
     }
 
     /// The read to start at `now`, if one is wanted (section 3, *When the app reads*): none
@@ -1108,20 +1195,57 @@ impl View {
         silico_core::views::joined(self.boxes())
     }
 
-    /// The named view `view` of the bodies' boxes (a cube's, with none), in the view's
-    /// projection.
+    /// The bodies' boxes and the open sketch's (its framing's), joined: what a fit takes.
+    fn fit_bounds(&self) -> Option<[[f64; 3]; 2]> {
+        silico_core::views::joined(self.bounds().into_iter().chain(self.framing.sketch_box))
+    }
+
+    /// The named view `view` of the bodies' boxes and the open sketch's (a cube's, with
+    /// none), clear of sketch mode's bands, in the view's projection.
     fn look_from(&mut self, view: NamedView, size_px: [u32; 2]) {
-        let bounds = self.bounds().unwrap_or(NO_BOX);
-        let camera = navigate::named(view, bounds, size_px[0], size_px[1])
+        let bounds = self.fit_bounds().unwrap_or(NO_BOX);
+        let camera = navigate::named_in(view, bounds, size_px[0], size_px[1], self.framing.inset)
             .and_then(|camera| navigate::projected(&camera, self.perspective));
         self.moved(camera);
     }
 
-    /// Fits the view to the bodies' boxes (F6), looking as it looks.
+    /// Look At: the view square to a plane from `toward`, `up` up the image, fitted to the
+    /// boxes a named view fits, in the view's projection.
+    fn look_at(&mut self, toward: [f64; 3], up: [f64; 3], size_px: [u32; 2]) {
+        let bounds = self.fit_bounds().unwrap_or(NO_BOX);
+        let camera = navigate::look_at(
+            toward,
+            up,
+            bounds,
+            size_px[0],
+            size_px[1],
+            self.framing.inset,
+        )
+        .and_then(|camera| navigate::projected(&camera, self.perspective));
+        self.moved(camera);
+    }
+
+    /// Fits the view to the bodies' boxes and the open sketch's (F6), looking as it looks,
+    /// clear of sketch mode's bands.
     fn fit(&mut self, size_px: [u32; 2]) {
-        if let Some(bounds) = self.bounds() {
-            let camera = navigate::fit(&self.camera, bounds, size_px[0], size_px[1]);
+        if let Some(bounds) = self.fit_bounds() {
+            let camera = navigate::fit_in(
+                &self.camera,
+                bounds,
+                size_px[0],
+                size_px[1],
+                self.framing.inset,
+            );
             self.moved(camera);
+        }
+    }
+
+    /// The view `ask` asks for, given now, in a pane `size_px` pixels in size.
+    fn give(&mut self, ask: ViewAsk, size_px: [u32; 2]) {
+        match ask {
+            ViewAsk::Named(named) => self.look_from(named, size_px),
+            ViewAsk::Fit => self.fit(size_px),
+            ViewAsk::LookAt { toward, up } => self.look_at(toward, up, size_px),
         }
     }
 
@@ -1194,8 +1318,8 @@ impl View {
             if taken && let Some(was) = held.take() {
                 left.push(event(0, LeftKind::Cancel, was.at_px, input.modifiers));
             }
-            // Every left click is counted, the tool's and those off the canvas too, as egui
-            // counts them; only a stream's are handed on.
+            // The canvas's own left clicks are counted, those whose press it takes, as egui
+            // counts clicks but for none off it (`crate::clicks`); a stream's are handed on.
             for (place, each) in (1..).zip(&input.events) {
                 match *each {
                     egui::Event::PointerButton {
@@ -1204,8 +1328,8 @@ impl View {
                         pressed: true,
                         modifiers,
                     } => {
-                        clicks.pressed = Some(Pressed::new(pos, time));
                         if pressable && rect.contains(pos) {
+                            clicks.pressed = Some(Pressed::new(pos, time));
                             // A press whose release never came ends before this one begins.
                             if let Some(was) = held.take() {
                                 left.push(event(place, LeftKind::Cancel, was.at_px, modifiers));
@@ -1420,10 +1544,12 @@ impl View {
                 );
             }
         }
+        // The canvas's own middle double-click (`crate::clicks`), whatever was clicked just
+        // before; its clicks counted every frame, a view asked for or not.
+        let middle_double = crate::clicks::double_clicked_by(response, PointerButton::Middle);
         match self.asked.take() {
-            Some(ViewAsk::Named(named)) => self.look_from(named, size_px),
-            Some(ViewAsk::Fit) => self.fit(size_px),
-            None if response.double_clicked_by(PointerButton::Middle) => self.fit(size_px),
+            Some(ask) => self.give(ask, size_px),
+            None if middle_double => self.fit(size_px),
             None => {}
         }
     }
@@ -1653,6 +1779,24 @@ fn pixels(length: f32) -> u32 {
     length.round().max(0.0) as u32
 }
 
+/// The canvas behind the bodies over `rect`: a vertical gradient from
+/// [`theme::VIEWPORT_BG_TOP`] along its top to [`theme::VIEWPORT_BG_BOTTOM`] along its
+/// bottom, its colours blended as egui blends a mesh's (in sRGB, as CSS's `linear-gradient`
+/// does). The renderer's frames are transparent where no body is
+/// ([`theme::VIEWPORT_FRAME_BG`]), so it shows there.
+fn canvas_background(rect: Rect) -> egui::Shape {
+    let top = theme::color32(theme::VIEWPORT_BG_TOP);
+    let bottom = theme::color32(theme::VIEWPORT_BG_BOTTOM);
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(rect.left_top(), top);
+    mesh.colored_vertex(rect.right_top(), top);
+    mesh.colored_vertex(rect.right_bottom(), bottom);
+    mesh.colored_vertex(rect.left_bottom(), bottom);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    egui::Shape::mesh(mesh)
+}
+
 /// The viewport pane: the tab's view drawn, its navigation taken, its read started when
 /// one is wanted, and its frame given to the renderer.
 pub fn show<P: Clients + 'static>(
@@ -1662,8 +1806,10 @@ pub fn show<P: Clients + 'static>(
     drawing: &mut Drawing,
 ) {
     let rect = ui.available_rect_before_wrap();
-    ui.painter()
-        .rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+    ui.painter().add(canvas_background(rect));
+    // The ground grid's place, over the canvas and under everything else the pane paints,
+    // the renderer's frame among it: filled once this frame's camera is known.
+    let grid = ui.painter().add(egui::Shape::Noop);
     let response = ui.allocate_rect(rect, Sense::click_and_drag());
     if let Some(why) = &drawing.unavailable {
         // Said where the model would be: nothing else in the window would say it.
@@ -1684,12 +1830,47 @@ pub fn show<P: Clients + 'static>(
     let now = drawing.now();
     let now_hidden: BTreeSet<FeatureId> = tab
         .browser
-        .bodies
+        .bodies()
         .iter()
         .filter(|row| !tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
         .map(|row| row.id.clone())
         .collect();
+    let sketching = tab.in_sketch();
+    // The shown sketches' lines, each from its read as the tab holds it, and none while a
+    // sketch is open: sketch mode draws that one, and no other is drawn (the prototype's
+    // `if (S.sketch) setSketchLines([])`, app.js:979), the lines made kept for after it. A
+    // suppressed sketch has no read. Lines left to make for a frame's build budget are made
+    // in the frames after, each asked for.
+    let lines = if tab.sketch.is_some() {
+        Vec::new()
+    } else {
+        let shown_sketches: Vec<(FeatureId, Arc<silico_core::command::sketch::SketchRead>)> = tab
+            .browser
+            .sketches()
+            .iter()
+            .filter(|row| tab.shown(&crate::tab::Hideable::Feature(row.id.clone())))
+            .filter_map(|row| {
+                let held = tab.sketch_reads.held(&row.id)?;
+                Some((row.id.clone(), Arc::clone(&held.read)))
+            })
+            .collect();
+        let lines = tab.sketch_lines.frame(
+            shown_sketches.iter().map(|(id, read)| (id, read)),
+            &tab.view.camera,
+            rect.height(),
+        );
+        if tab.sketch_lines.pending() {
+            ui.ctx().request_repaint();
+        }
+        lines
+    };
+    let sketch_boxes: Vec<[[f64; 3]; 2]> = lines
+        .iter()
+        .filter_map(|line| line.strips.bounds())
+        .map(|(low, high)| [low, high])
+        .collect();
     let view = &mut tab.view;
+    view.take_sketch_boxes(sketch_boxes);
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
@@ -1708,6 +1889,11 @@ pub fn show<P: Clients + 'static>(
         }
         _ => {}
     }
+    // A table taken just now numbers the bodies afresh: the selection's highlights and
+    // tints worked out for it before this frame is handed on, never drawn by the numbers of
+    // the table before it.
+    tab.light_selection();
+    let view = &mut tab.view;
     // An answer to a pick of another tab, or of a table since made again, isn't this one's.
     if let Some((picking, session, generation)) = drawing.answered()
         && session == tab.id
@@ -1785,7 +1971,7 @@ pub fn show<P: Clients + 'static>(
     });
     // A highlight of a body not drawn, or of an element its mesh hasn't, would have the
     // renderer refuse the whole frame.
-    let linked = view.linked_faces();
+    let makers = view.maker_faces();
     let drawn = |(number, element): &(u32, Element)| {
         bodies.binary_search(number).is_ok()
             && view
@@ -1793,15 +1979,7 @@ pub fn show<P: Clients + 'static>(
                 .get(number)
                 .is_some_and(|body| body.has(*element))
     };
-    let highlights: Vec<(u32, Element)> = view
-        .highlights
-        .iter()
-        .copied()
-        .chain(linked)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .filter(drawn)
-        .collect();
+    let highlights: Vec<(u32, Element)> = view.highlights.iter().copied().filter(drawn).collect();
     // A candidate lit takes the hover's layer, in its own colour: the pointer is over its
     // card's row, not the canvas.
     let candidate = view.candidate.filter(drawn);
@@ -1814,6 +1992,7 @@ pub fn show<P: Clients + 'static>(
         .into_iter()
         .filter(drawn)
         .collect();
+    let tinted = tinted_faces(makers, &highlights, &hovered, drawn);
     // The vertices among them, drawn over the bodies by the pane (the renderer draws none).
     let dots = vertex_dots(&view.bodies, &highlights, &hovered);
     let mut outlines = crate::selection::outlines();
@@ -1839,9 +2018,17 @@ pub fn show<P: Clients + 'static>(
         highlights,
         hovered,
         outlines,
+        tinted,
+        tint: feature_tint(),
         picking,
+        edges: view.edges,
         vertices: view.vertices,
+        lines,
     };
+    if view.grid && !sketching {
+        let shapes = crate::grid::shapes(&view.camera, size_px, ppp, rect);
+        ui.painter().set(grid, egui::Shape::Vec(shapes));
+    }
     drawing.present(ui.painter(), rect, changes, Some(frame));
     paint_vertex_dots(
         &ui.painter_at(rect),
@@ -1855,18 +2042,93 @@ pub fn show<P: Clients + 'static>(
         // An idle egui draws no frame, and its answer is taken only in one.
         ui.ctx().request_repaint();
     }
+    // The triad at the canvas's bottom left, over the bodies and under what the tab's mode
+    // draws, and the view label beside it over that (the prototype's triad is its overlay's
+    // first, its label HTML above the overlay), both of the camera this frame draws.
+    let painter = ui.painter_at(rect);
+    if let Some(triad) = crate::triad::triad(&view.camera, rect) {
+        painter.extend(triad.shapes(&painter));
+    }
+    let label = crate::triad::view_label(&view.camera, rect);
     // Over the bodies, under the ViewCube and the bar, in the pane's own layer: what the
     // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
     // the bar's, registered after, come first. A camera they change is drawn next frame.
     if let Some(mut frame) = view.frame.take() {
-        overlaid(tab, sessions, &ui.painter_at(rect), &frame);
+        overlaid(tab, sessions, &painter, &frame);
         // Handed on once: what reads the frame after reads no event again.
         frame.left.clear();
         frame.secondary.clear();
         tab.view.frame = Some(frame);
     }
+    // The canvas's hover now over what another feature made than the timeline rang (or over
+    // nothing now, or something now): the timeline, drawn before the canvas, rings it in
+    // the next frame, asked for at once.
+    if tab.selection().hovered_feature() != tab.view.ringed_feature.as_ref() {
+        ui.ctx().request_repaint();
+    }
+    let (shape, line) = label.shape(&painter);
+    painter.add(shape);
+    // In the accessibility tree as a label, taking no click or drag of the canvas's.
+    let label_response = ui.interact(line, ui.id().with("view_label"), Sense::hover());
+    label_response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &label.words));
     view_cube(ui, rect, &mut tab.view, size_px);
-    navigation_bar(ui, rect, &mut tab.view, size_px);
+    // The bar's Look At, as Ctrl+8's: square to the face selected, or to the sketch.
+    if navigation_bar(ui, rect, &mut tab.view, size_px) {
+        tab.look_at();
+    }
+}
+
+/// The faces `feature` made in `bodies`, as each face's name says ([`Name::feature`]), in
+/// every body that holds one, ascending; or, `whole`, a body's every face where it's the
+/// body `feature` made (a body selected by its browser row, the prototype's `maker: '*'`).
+/// One rule for a feature hovered in the timeline and one selected.
+///
+/// [`Name::feature`]: silico_core::naming::Name::feature
+pub fn faces_of(
+    feature: &FeatureId,
+    bodies: &BTreeMap<u32, ViewBody>,
+    whole: bool,
+) -> Vec<(u32, Element)> {
+    bodies
+        .iter()
+        .flat_map(|(number, body)| {
+            let whole = whole && &body.feature == feature;
+            body.faces
+                .iter()
+                .zip(1u32..)
+                .filter(move |(face, _)| whole || face.name.feature() == feature)
+                .map(|(_, n)| (*number, Element::Face(n)))
+        })
+        .collect()
+}
+
+/// The tint of the faces a feature hovered in the timeline made, from the theme, as plain
+/// values for the renderer: the prototype's `MAKER` (DESIGN.md's Blue.800) at 0.4.
+pub fn feature_tint() -> Tint {
+    let [r, g, b, _] = theme::VIEWPORT_FEATURE_HOVER_TINT;
+    Tint {
+        colour: [r, g, b],
+        amount: theme::VIEWPORT_FEATURE_HOVER_TINT_AMOUNT,
+    }
+}
+
+/// Which of `makers`, the faces tinted as their maker's ([`View::maker_faces`]), are tinted:
+/// those `drawn`, but any in `highlights` or `hovered` (the selection's, and the hover's or a
+/// candidate's), which keep their own look, as the prototype's `applyHighlight` gives a face
+/// the selection's look, else the hover's, else the maker's tint. Ascending, each once.
+pub fn tinted_faces(
+    makers: Vec<(u32, Element)>,
+    highlights: &[(u32, Element)],
+    hovered: &[(u32, Element)],
+    drawn: impl Fn(&(u32, Element)) -> bool,
+) -> Vec<(u32, Element)> {
+    let kept: BTreeSet<&(u32, Element)> = highlights.iter().chain(hovered).collect();
+    makers
+        .into_iter()
+        .filter(|face| drawn(face) && !kept.contains(face))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 /// The tab's overlay given `frame`, and a test's watch after it, if one is set.
@@ -1946,23 +2208,389 @@ pub fn end_unshown<P: Clients + 'static>(
     overlaid(tab, sessions, &painter, &frame);
 }
 
-/// The ViewCube's faces: each named view's face, its outward normal.
-const FACES: [(NamedView, [f64; 3]); 6] = [
-    (NamedView::Front, [0.0, -1.0, 0.0]),
-    (NamedView::Back, [0.0, 1.0, 0.0]),
-    (NamedView::Left, [-1.0, 0.0, 0.0]),
-    (NamedView::Right, [1.0, 0.0, 0.0]),
-    (NamedView::Top, [0.0, 0.0, 1.0]),
-    (NamedView::Bottom, [0.0, 0.0, -1.0]),
+/// A face of the ViewCube: its named view, its outward normal, and the way its label's
+/// words run across it and the way their tops point, each a unit axis of the cube.
+#[derive(Debug, Clone, Copy)]
+struct CubeFace {
+    view: NamedView,
+    normal: [f64; 3],
+    right: [f64; 3],
+    up: [f64; 3],
+}
+
+/// The ViewCube's faces, each label lying as the prototype's textures do (viewport.js's
+/// `buildCube`: three.js's `BoxGeometry` turned a quarter about x, so its +y face is the
+/// top and its +z the front), read from outside the cube and upright from the face's own
+/// view: the sides' words z up, the top's tops toward the back. The prototype's bottom view
+/// looks with −y up, and its bottom's words read upright there, their tops toward the
+/// front; the app's (`NamedView::up`) looks with +y up, so the bottom's tops are toward the
+/// back here, or Bottom would show its own word upside down. Each face's `right × up` is
+/// its normal.
+const FACES: [CubeFace; 6] = [
+    CubeFace {
+        view: NamedView::Front,
+        normal: [0.0, -1.0, 0.0],
+        right: [1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    CubeFace {
+        view: NamedView::Back,
+        normal: [0.0, 1.0, 0.0],
+        right: [-1.0, 0.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    CubeFace {
+        view: NamedView::Left,
+        normal: [-1.0, 0.0, 0.0],
+        right: [0.0, -1.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    CubeFace {
+        view: NamedView::Right,
+        normal: [1.0, 0.0, 0.0],
+        right: [0.0, 1.0, 0.0],
+        up: [0.0, 0.0, 1.0],
+    },
+    CubeFace {
+        view: NamedView::Top,
+        normal: [0.0, 0.0, 1.0],
+        right: [1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+    },
+    CubeFace {
+        view: NamedView::Bottom,
+        normal: [0.0, 0.0, -1.0],
+        right: [-1.0, 0.0, 0.0],
+        up: [0.0, 1.0, 0.0],
+    },
 ];
 
-/// A named view's words, as the ViewCube labels it: `top_front_right` is "Top front right".
-fn words(view: NamedView) -> String {
-    let spaced = view.name().replace('_', " ");
-    let mut chars = spaced.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
+/// How far a face must face the view to be drawn: an edge-on face isn't.
+const CUBE_FACE_SHOWN: f64 = 1e-9;
+
+/// How far a face must face the view for its label to be drawn and its click taken.
+const CUBE_FACE_LABELLED: f64 = 0.25;
+
+/// How far a corner's view, or an edge's, must face the view for its click to be taken, and
+/// the side of the square about it that takes it.
+const CUBE_CORNER_SHOWN: f64 = 0.1;
+const CUBE_CORNER_SIDE: f32 = 12.0;
+
+/// The cube's half side as a part of the ViewCube's side: the prototype's cube camera spans
+/// 3.5 of the cube's units across the square it's drawn in, the cube 2 of them
+/// (viewport.js's `buildCube`: `OrthographicCamera(-1.75, 1.75, 1.75, -1.75, …)` and
+/// `BoxGeometry(2, 2, 2)`).
+const CUBE_HALF_SIDE: f64 = 1.0 / 3.5;
+
+/// The cube's axis stubs (viewport.js's `buildCube`, `ax`): from just outside its bottom
+/// front left corner, 1.02 half sides from its centre on each axis, 1.4 half sides along x,
+/// y, and z, each in its axis's colour, in the document's axes as the cube's faces are.
+const CUBE_STUB_FROM: [f64; 3] = [-1.02, -1.02, -1.02];
+const CUBE_STUB_LENGTH: f64 = 1.4;
+
+/// Narrows `s`, an interval of s, to where c + m·s ≤ 0: false if nothing's left.
+fn keep_where_not_above_zero(s: &mut [f64; 2], c: f64, m: f64) -> bool {
+    if m > 0.0 {
+        s[1] = s[1].min(-c / m);
+    } else if m < 0.0 {
+        s[0] = s[0].max(-c / m);
+    } else if c > 0.0 {
+        return false;
+    }
+    s[0] <= s[1]
+}
+
+/// The part of the segment from `from` to `from + along` (s from 0 to 1 along it) the cube
+/// hides from a view looking along −`back`, as the cube is drawn, orthographic: where the
+/// ray from the point toward the eye, along `back`, meets the cube (its points at most 1
+/// from its centre on each axis). The cube is convex, so that's one interval of s, or none:
+/// the s for which some t ≥ 0 puts `from + s·along + t·back` in the cube, each axis
+/// bounding t from below and above by a line in s (or s itself, an axis the view is square
+/// to), and every lower bound at most every upper one.
+fn hidden_by_cube(from: [f64; 3], along: [f64; 3], back: [f64; 3]) -> Option<[f64; 2]> {
+    let mut s = [0.0, 1.0];
+    // t ≥ c + m·s, and t ≤ c + m·s, each as (c, m): t ≥ 0 first.
+    let mut lower = vec![(0.0, 0.0)];
+    let mut upper = Vec::new();
+    for k in 0..3 {
+        let (a, d, b) = (from[k], along[k], back[k]);
+        if b == 0.0 {
+            // −1 ≤ a + d·s ≤ 1.
+            if !keep_where_not_above_zero(&mut s, a - 1.0, d)
+                || !keep_where_not_above_zero(&mut s, -1.0 - a, -d)
+            {
+                return None;
+            }
+        } else {
+            // a + d·s + t·b from −1 to 1: t between (−1 − a − d·s)/b and (1 − a − d·s)/b,
+            // the lesser below, two lines in s of one slope.
+            let slope = -d / b;
+            let (one, other) = ((-1.0 - a) / b, (1.0 - a) / b);
+            lower.push((one.min(other), slope));
+            upper.push((one.max(other), slope));
+        }
+    }
+    if upper.is_empty() {
+        // No way to look along: nothing's hidden.
+        return None;
+    }
+    for &(lc, lm) in &lower {
+        for &(uc, um) in &upper {
+            if !keep_where_not_above_zero(&mut s, lc - uc, lm - um) {
+                return None;
+            }
+        }
+    }
+    Some(s)
+}
+
+/// The parts of the segment from `from` to `from + along` the cube doesn't hide from a view
+/// looking along −`back` ([`hidden_by_cube`]), each by its s from 0 to 1: the whole, or what's
+/// before and after the part it hides, each only if it's of some length.
+fn seen_past_cube(from: [f64; 3], along: [f64; 3], back: [f64; 3]) -> Vec<[f64; 2]> {
+    match hidden_by_cube(from, along, back) {
+        None => vec![[0.0, 1.0]],
+        Some([start, end]) => [[0.0, start], [end, 1.0]]
+            .into_iter()
+            .filter(|[a, b]| a < b)
+            .collect(),
+    }
+}
+
+/// A face's fill (viewport.js's `buildCube`).
+fn cube_face_fill(view: NamedView) -> egui::Color32 {
+    match view {
+        NamedView::Top => theme::VIEW_CUBE_TOP_FILL,
+        NamedView::Bottom => theme::VIEW_CUBE_BOTTOM_FILL,
+        NamedView::Front => theme::VIEW_CUBE_FRONT_FILL,
+        NamedView::Back => theme::VIEW_CUBE_BACK_FILL,
+        _ => theme::VIEW_CUBE_SIDE_FILL,
+    }
+}
+
+/// An edge of the ViewCube: its two ends, corners of the cube (each coordinate ±1), and the
+/// outward normals of the two faces it joins.
+#[derive(Debug, Clone, Copy)]
+struct CubeEdge {
+    ends: [[f64; 3]; 2],
+    faces: [[f64; 3]; 2],
+}
+
+impl CubeEdge {
+    /// Its middle: the sum of the two faces' normals, its one 0 along the edge.
+    fn middle(self) -> [f64; 3] {
+        std::array::from_fn(|k| self.faces[0][k] + self.faces[1][k])
+    }
+}
+
+/// The cube's twelve edges: for each axis, the four along it, from −1 to 1 on it.
+fn cube_edges() -> impl Iterator<Item = CubeEdge> {
+    (0..3).flat_map(|k| {
+        let (a, b) = ((k + 1) % 3, (k + 2) % 3);
+        [(1.0, 1.0), (1.0, -1.0), (-1.0, -1.0), (-1.0, 1.0)]
+            .into_iter()
+            .map(move |(sa, sb)| {
+                let mut start = [0.0; 3];
+                start[a] = sa;
+                start[b] = sb;
+                let mut end = start;
+                start[k] = -1.0;
+                end[k] = 1.0;
+                let (mut one, mut other) = ([0.0; 3], [0.0; 3]);
+                one[a] = sa;
+                other[b] = sb;
+                CubeEdge {
+                    ends: [start, end],
+                    faces: [one, other],
+                }
+            })
     })
+}
+
+/// Where a point of the cube's face lands: the face's centre on screen, and how far one of
+/// the face's units (its half side) across it and down it move on screen.
+#[derive(Debug, Clone, Copy)]
+struct OnFace {
+    centre: Pos2,
+    across: Vec2,
+    down: Vec2,
+}
+
+impl OnFace {
+    /// The point `u` across the face and `v` down it, each in its half sides (its corners
+    /// at ±1): an orthographic view maps the face affinely, so a square on it is a
+    /// parallelogram on screen.
+    fn at(&self, u: f32, v: f32) -> Pos2 {
+        self.centre + self.across * u + self.down * v
+    }
+}
+
+/// A face's label, waiting for the pass's end ([`CubeLabels`]): its words laid out at the
+/// size they have face-on, where its mesh goes in the paint list, and how it lies on its
+/// face.
+struct CubeLabel {
+    galley: Arc<egui::Galley>,
+    layer: egui::LayerId,
+    clip: Rect,
+    opacity: f32,
+    at: egui::layers::ShapeIdx,
+    face: OnFace,
+    /// Points of the galley a half side of the face holds: the cube's scale.
+    per_unit: f32,
+}
+
+/// The ViewCube's labels, each drawn on its face at the pass's end: a label is its galley's
+/// glyphs as a mesh, each vertex mapped onto the face, so it foreshortens with the face and
+/// stays inside it; the mesh's texture coordinates are the font atlas's, which grows while
+/// a pass lays out text, so they're taken from the atlas only once the pass has laid out
+/// everything. Each label holds the place its face kept for it in the paint list, so it's
+/// drawn over its face and under the cube's edges.
+#[derive(Default)]
+struct CubeLabels {
+    waiting: Vec<CubeLabel>,
+}
+
+impl egui::Plugin for CubeLabels {
+    fn debug_name(&self) -> &'static str {
+        "ViewCube labels"
+    }
+
+    fn on_begin_pass(&mut self, _ui: &mut Ui) {
+        // Those of a pass that never ended are another pass's places.
+        self.waiting.clear();
+    }
+
+    fn on_end_pass(&mut self, ui: &mut Ui) {
+        for label in self.waiting.drain(..) {
+            let mesh = label_mesh(ui.ctx(), &label);
+            let mut painter = ui
+                .ctx()
+                .layer_painter(label.layer)
+                .with_clip_rect(label.clip);
+            painter.set_opacity(label.opacity);
+            painter.set(label.at, egui::Shape::mesh(mesh));
+        }
+    }
+}
+
+/// `label`'s glyphs as a mesh on its face: the galley tessellated about its centre, at the
+/// font atlas's size now, each vertex's offset from that centre, in face units, taken
+/// across and down the face from the label's middle ([`theme::VIEW_CUBE_LABEL_DROP`] below
+/// the face's).
+fn label_mesh(ctx: &egui::Context, label: &CubeLabel) -> egui::Mesh {
+    let mut options = ctx.tessellation_options(|options| *options);
+    // Placed on the face after, so not snapped to pixels here.
+    options.round_text_to_pixels = false;
+    let atlas = ctx.fonts(|fonts| fonts.font_image_size());
+    let mut tessellator =
+        egui::epaint::Tessellator::new(ctx.pixels_per_point(), options, atlas, Vec::new());
+    let middle = label.galley.rect.center().to_vec2();
+    let text = egui::epaint::TextShape::new(
+        Pos2::ZERO - middle,
+        Arc::clone(&label.galley),
+        theme::VIEW_CUBE_LABEL,
+    );
+    let mut mesh = egui::Mesh::default();
+    tessellator.tessellate_text(&text, &mut mesh);
+    let drop = 2.0 * theme::VIEW_CUBE_LABEL_DROP;
+    for vertex in &mut mesh.vertices {
+        let u = vertex.pos.x / label.per_unit;
+        let v = drop + vertex.pos.y / label.per_unit;
+        vertex.pos = label.face.at(u, v);
+    }
+    mesh
+}
+
+/// A face of the ViewCube as the prototype's texture paints it (viewport.js's `label`): the
+/// border's grey over the whole face, and `fill` inside the border, neither stroked: the
+/// cube's edges are drawn once, over them.
+fn paint_cube_face(painter: &egui::Painter, on: OnFace, fill: egui::Color32) {
+    let corners = |half: f32| {
+        vec![
+            on.at(half, half),
+            on.at(half, -half),
+            on.at(-half, -half),
+            on.at(-half, half),
+        ]
+    };
+    let border = egui::Shape::convex_polygon(corners(1.0), theme::VIEW_CUBE_BORDER, Stroke::NONE);
+    painter.add(border);
+    let inside = 1.0 - 2.0 * theme::VIEW_CUBE_BORDER_WIDTH;
+    painter.add(egui::Shape::convex_polygon(
+        corners(inside),
+        fill,
+        Stroke::NONE,
+    ));
+}
+
+/// Keeps `words`' place in the paint list, over the face `on`, for its label, drawn there at
+/// the pass's end ([`CubeLabels`]): Inter Medium at [`theme::VIEW_CUBE_LABEL_SIZE`] of the
+/// face's side face-on, `per_unit` points to its half side. The first pass that labels a
+/// face registers the labels' plugin, and its labels are drawn from the next, asked for at
+/// once: a pass's plugins are those it began with.
+fn label_cube_face(painter: &egui::Painter, on: OnFace, per_unit: f32, words: &str) {
+    if !painter.is_visible() {
+        return;
+    }
+    let size = theme::VIEW_CUBE_LABEL_SIZE * 2.0 * per_unit;
+    let galley = painter.layout_no_wrap(
+        words.to_owned(),
+        egui::FontId::proportional(size),
+        theme::VIEW_CUBE_LABEL,
+    );
+    let label = CubeLabel {
+        galley,
+        layer: painter.layer_id(),
+        clip: painter.clip_rect(),
+        opacity: painter.opacity(),
+        at: painter.add(egui::Shape::Noop),
+        face: on,
+        per_unit,
+    };
+    let ctx = painter.ctx();
+    if ctx
+        .with_plugin(|labels: &mut CubeLabels| labels.waiting.push(label))
+        .is_none()
+    {
+        ctx.add_plugin(CubeLabels::default());
+        ctx.request_repaint();
+    }
+}
+
+/// An edge's words, as the ViewCube labels it: the two faces it joins, named in the order a
+/// corner's are (`top_front_right`: top or bottom, then front or back, then left or right),
+/// so "Top front", "Front right", "Top right".
+fn edge_words(edge: CubeEdge) -> String {
+    let side = |c: f64, less: &'static str, more: &'static str| {
+        if c > 0.0 {
+            Some(more)
+        } else if c < 0.0 {
+            Some(less)
+        } else {
+            None
+        }
+    };
+    let [x, y, z] = edge.middle();
+    let named: Vec<&str> = [
+        side(z, "bottom", "top"),
+        side(y, "front", "back"),
+        side(x, "left", "right"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    crate::words::capitalised(&named.join(" "))
+}
+
+/// An edge's view (the prototype's cube clicked near an edge, viewport.js's `mouseup`: the
+/// view from the direction its region names, Z up): from its middle made a unit, up as the
+/// named views have it ([`navigate::up_across`]), and fitted as they are.
+fn edge_view(edge: CubeEdge) -> ViewAsk {
+    let toward = edge.middle().map(|c| c * std::f64::consts::FRAC_1_SQRT_2);
+    ViewAsk::LookAt {
+        toward,
+        up: navigate::up_across(toward),
+    }
 }
 
 /// A clickable part of the ViewCube, labelled for the accessibility tree.
@@ -1972,35 +2600,175 @@ fn cube_part(ui: &mut Ui, rect: Rect, label: &str) -> egui::Response {
     response.on_hover_text(label)
 }
 
-/// The ViewCube's menu (fusion.md, *ViewCube and Navigation Bar*: *Camera*): the
-/// projection, which the views it gives keep.
-fn projection_menu(ui: &mut Ui, view: &mut View) {
-    for (word, wanted) in [("Orthographic", false), ("Perspective", true)] {
-        if ui.radio(view.perspective == wanted, word).clicked() {
-            view.project(wanted);
-            ui.close();
-        }
-    }
+/// The ViewCube's menu's name: its ▾'s tooltip's title (app.js's `cubeMenu` button), and
+/// what a screen reader finds the ▾ and the menu by.
+pub const CUBE_MENU: &str = "View cube options";
+
+/// The display settings' name: its button's tooltip's title (app.js's `displayMenu`
+/// button), and what a screen reader finds the button and its menu by.
+pub const DISPLAY_SETTINGS: &str = "Display settings";
+
+/// The one visual style the renderer draws (the prototype's display menu's first, its
+/// others left out until the renderer draws them).
+pub const SHADED_WITH_VISIBLE_EDGES: &str = "Shaded with visible edges";
+
+/// What the ViewCube's menu asks: a view, or the projection.
+#[derive(Debug, Clone, Copy)]
+enum CubeAct {
+    View(ViewAsk),
+    Perspective(bool),
 }
 
-/// Where the ViewCube is drawn in `viewport`.
+/// The ViewCube's menu (interact.js's `cubeMenu`; fusion.md, *ViewCube and Navigation Bar*:
+/// Go Home and *Camera*): Home view, with its icon and its key; under *Views*, the named
+/// views the registry's keys give (Front to Bottom, and Isometric), by its words and with
+/// its keys; and under *Camera*, the projection, the view's marked. What was chosen.
+fn cube_menu(ui: &mut Ui, perspective: bool) -> Option<CubeAct> {
+    let ctx = ui.ctx().clone();
+    let views: Vec<(Command, ViewAsk, Vec<String>)> = VIEW_COMMANDS
+        .into_iter()
+        .filter(|(command, _)| *command != Command::Fit)
+        .map(|(command, ask)| (command, ask, command.caps(&ctx)))
+        .collect();
+    let mut lines = Vec::new();
+    for (command, ask, caps) in &views {
+        let home = *command == Command::Home;
+        let item = menu::Item {
+            icon: home.then_some(Icon::Home),
+            label: command.label(),
+            sub: None,
+            caps,
+            off: None,
+            danger: false,
+            lit: false,
+            checked: None,
+        };
+        lines.push(menu::Line::Item(item, CubeAct::View(*ask)));
+        if home {
+            lines.push(menu::Line::Separator);
+            lines.push(menu::Line::Head("Views"));
+        }
+    }
+    lines.push(menu::Line::Separator);
+    lines.push(menu::Line::Head("Camera"));
+    for (word, wanted) in [
+        (crate::words::ORTHOGRAPHIC, false),
+        (crate::words::PERSPECTIVE, true),
+    ] {
+        let item = menu::Item {
+            icon: None,
+            label: word,
+            sub: None,
+            caps: &[],
+            off: None,
+            danger: false,
+            lit: false,
+            checked: Some(Checked::Choice(perspective == wanted)),
+        };
+        lines.push(menu::Line::Item(item, CubeAct::Perspective(wanted)));
+    }
+    menu::lines(ui, CUBE_MENU, &lines)
+}
+
+/// What the display settings' menu asks: the visual style (the one there is), the
+/// projection, or the ground grid shown or hidden.
+#[derive(Debug, Clone, Copy)]
+enum DisplayAct {
+    Style,
+    Perspective(bool),
+    Grid,
+}
+
+/// The display settings' menu (interact.js's `displayMenu`; fusion.md, *Display Settings*),
+/// of what the app draws: under *Visual style*, the one style the renderer draws, marked
+/// (the prototype's others, Shaded, Wireframe, and Hidden edges, left out until the renderer
+/// draws them); under *Camera*, the projection, the view's marked; and the ground grid,
+/// marked while it's shown. What was chosen.
+fn display_menu(ui: &mut Ui, perspective: bool, grid: bool) -> Option<DisplayAct> {
+    let item = |icon: Option<Icon>, label: &'static str, checked: Checked| menu::Item {
+        icon,
+        label,
+        sub: None,
+        caps: &[],
+        off: None,
+        danger: false,
+        lit: false,
+        checked: Some(checked),
+    };
+    let lines = [
+        menu::Line::Head("Visual style"),
+        menu::Line::Item(
+            item(None, SHADED_WITH_VISIBLE_EDGES, Checked::Choice(true)),
+            DisplayAct::Style,
+        ),
+        menu::Line::Separator,
+        menu::Line::Head("Camera"),
+        menu::Line::Item(
+            item(
+                Some(Icon::Ortho),
+                crate::words::ORTHOGRAPHIC,
+                Checked::Choice(!perspective),
+            ),
+            DisplayAct::Perspective(false),
+        ),
+        menu::Line::Item(
+            item(
+                Some(Icon::Persp),
+                crate::words::PERSPECTIVE,
+                Checked::Choice(perspective),
+            ),
+            DisplayAct::Perspective(true),
+        ),
+        menu::Line::Separator,
+        menu::Line::Item(
+            item(Some(Icon::Grid), "Ground grid", Checked::Toggle(grid)),
+            DisplayAct::Grid,
+        ),
+    ];
+    menu::lines(ui, DISPLAY_SETTINGS, &lines)
+}
+
+/// Where the ViewCube is drawn in `viewport`: its margin in from the canvas's top and right.
 pub fn view_cube_rect(viewport: Rect) -> Rect {
     Rect::from_min_size(
         egui::pos2(
             viewport.right() - theme::VIEW_CUBE_SIDE - theme::VIEW_CUBE_MARGIN,
-            viewport.top() + theme::VIEW_CUBE_MARGIN + theme::VIEW_CUBE_HOME_HEIGHT,
+            viewport.top() + theme::VIEW_CUBE_MARGIN,
         ),
         Vec2::splat(theme::VIEW_CUBE_SIDE),
     )
 }
 
+/// Where the ViewCube's Home view and ▾ are drawn beside the cube at `cube`: bar buttons
+/// (one icon each) in a column at its left, its right [`theme::VIEW_CUBE_BUTTONS_GAP`] left
+/// of the cube, Home's top level with the cube's, the ▾ under it.
+fn view_cube_buttons(cube: Rect) -> [Rect; 2] {
+    let style = bar::ButtonStyle::VIEW_CUBE;
+    let size = Vec2::new(style.width(bar::content_width(1, None)), style.height);
+    let home = Rect::from_min_size(
+        egui::pos2(
+            cube.left() - theme::VIEW_CUBE_BUTTONS_GAP - size.x,
+            cube.top(),
+        ),
+        size,
+    );
+    let options = home.translate(Vec2::new(0.0, size.y + theme::VIEW_CUBE_BUTTONS_SPACING));
+    [home, options]
+}
+
 /// The ViewCube, at the canvas's top right (section 8; fusion.md, *ViewCube and Navigation
-/// Bar*): the cube as the camera sees it; a face's click gives its orthographic view, a
-/// corner's its isometric one, a left drag orbits, and Home gives the home view; its menu
-/// switches the projection, which the views it gives keep.
+/// Bar*): the cube as the camera sees it, drawn as the prototype's (viewport.js's
+/// `buildCube` and `label`): each face it faces filled in its own grey inside a border, its
+/// label in capitals lying on it, each edge of a face drawn once over them, and the axis
+/// stubs at its bottom front left corner, but where the cube is in front of them. A face's
+/// click gives its orthographic view, an edge's the view between its two faces', a corner's
+/// its isometric one, and a left drag orbits. Beside it, Home view gives the home view, and
+/// the ▾ opens its menu (Home view, the named views, and the projection, which the views it
+/// gives keep), as a right click on the cube does.
 fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
     let side = theme::VIEW_CUBE_SIDE;
     let rect = view_cube_rect(viewport);
+    let [home, options] = view_cube_buttons(rect);
     let Ok(frame) = view.camera.frame() else {
         return;
     };
@@ -2008,6 +2776,8 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(egui::accesskit::Role::Group);
             node.set_label("ViewCube");
+            // A group that senses nothing gets no bounds of egui's: the cube and its buttons.
+            node.set_bounds(crate::panes::bounds(rect.union(home).union(options)));
         });
         let cube = ui.interact(rect, ui.id().with("cube"), Sense::click_and_drag());
         cube.widget_info(|| WidgetInfo::labeled(WidgetType::Other, true, "Orbit the view"));
@@ -2021,140 +2791,293 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             view.drag = None;
         }
         let mut parts = vec![cube];
-        let scale = f64::from(side) * 0.28;
-        let at = |v: [f64; 3]| {
-            let x = silico_protocol::vec3::dot(v, frame.right) * scale;
-            let y = -silico_protocol::vec3::dot(v, frame.up) * scale;
-            let offset = Vec2::new(x as f32, y as f32);
-            rect.center() + offset
-        };
+        let scale = f64::from(side) * CUBE_HALF_SIDE;
+        let offset = |v: [f64; 3]| navigate::screen_offset(&frame, v, scale);
+        let at = |v: [f64; 3]| rect.center() + offset(v);
+        let facing = |normal: [f64; 3]| silico_protocol::vec3::dot(normal, frame.back);
         let painter = ui.painter_at(rect);
-        let fill = ui.visuals().widgets.inactive.bg_fill;
-        let stroke = Stroke::new(1.0, ui.visuals().widgets.inactive.fg_stroke.color);
         let mut chosen = None;
-        for (named, normal) in FACES {
-            let facing = silico_protocol::vec3::dot(normal, frame.back);
-            if facing <= 1e-9 {
+        for face in FACES {
+            let faced = facing(face.normal);
+            if faced <= CUBE_FACE_SHOWN {
                 continue;
             }
-            // The face's two directions across it, and its corners in turn about it.
-            let k = normal.iter().position(|c| *c != 0.0).unwrap_or(0);
-            let (a, b) = ((k + 1) % 3, (k + 2) % 3);
-            let corner = |sa: f64, sb: f64| {
-                let mut v = normal;
-                v[a] = sa;
-                v[b] = sb;
-                at(v)
+            let on = OnFace {
+                centre: at(face.normal),
+                across: offset(face.right),
+                down: offset(face.up.map(|c| -c)),
             };
-            let points = vec![
-                corner(1.0, 1.0),
-                corner(1.0, -1.0),
-                corner(-1.0, -1.0),
-                corner(-1.0, 1.0),
-            ];
-            let shade = fill.gamma_multiply(0.6 + 0.4 * facing as f32);
-            painter.add(egui::Shape::convex_polygon(points, shade, stroke));
-            if facing > 0.25 {
-                let label = words(named);
-                let centre = at(normal);
-                painter.text(
-                    centre,
-                    egui::Align2::CENTER_CENTER,
-                    &label,
-                    egui::FontId::proportional(10.0),
-                    ui.visuals().text_color(),
-                );
-                let part = Rect::from_center_size(centre, Vec2::splat(side * 0.3));
+            paint_cube_face(&painter, on, cube_face_fill(face.view));
+            if faced > CUBE_FACE_LABELLED {
+                let label = crate::words::view_words(face.view);
+                label_cube_face(&painter, on, scale as f32, &label.to_uppercase());
+                let part = Rect::from_center_size(on.centre, Vec2::splat(side * 0.3));
                 let response = cube_part(ui, part, &label);
                 if response.clicked() {
-                    chosen = Some(named);
+                    chosen = Some(ViewAsk::Named(face.view));
                 }
                 parts.push(response);
             }
         }
+        // Each edge of a face drawn, once, over the faces: so one shared by two is no wider.
+        for edge in cube_edges() {
+            if edge
+                .faces
+                .iter()
+                .any(|normal| facing(*normal) > CUBE_FACE_SHOWN)
+            {
+                let [start, end] = edge.ends;
+                painter.line_segment([at(start), at(end)], theme::VIEW_CUBE_EDGE);
+            }
+        }
+        // The axis stubs at its corner, over its edges, each but where the cube is in front
+        // of it (the prototype's are depth tested), and none seen end on, a point.
+        for (k, colour) in [theme::AXIS_X, theme::AXIS_Y, theme::AXIS_Z]
+            .into_iter()
+            .enumerate()
+        {
+            let mut along = [0.0; 3];
+            along[k] = CUBE_STUB_LENGTH;
+            let point = |s: f64| {
+                let mut p = CUBE_STUB_FROM;
+                p[k] += s * along[k];
+                at(p)
+            };
+            let stroke = Stroke::new(theme::VIEW_CUBE_STUB_WIDTH, theme::color32(colour));
+            for [a, b] in seen_past_cube(CUBE_STUB_FROM, along, frame.back) {
+                let ends = [point(a), point(b)];
+                if ends[0] != ends[1] {
+                    painter.line_segment(ends, stroke);
+                }
+            }
+        }
+        // Each edge whose view faces it more than a tenth, as a corner's, clickable at its
+        // middle (before the corners, so a corner keeps its own square where they meet).
+        for edge in cube_edges() {
+            let middle = edge.middle();
+            if facing(middle) * std::f64::consts::FRAC_1_SQRT_2 <= CUBE_CORNER_SHOWN {
+                continue;
+            }
+            let part = Rect::from_center_size(at(middle), Vec2::splat(CUBE_CORNER_SIDE));
+            let response = cube_part(ui, part, &edge_words(edge));
+            if response.clicked() {
+                chosen = Some(edge_view(edge));
+            }
+            parts.push(response);
+        }
         for named in silico_core::views::NAMED_VIEWS {
             let direction = named.direction();
-            if FACES.iter().any(|(face, _)| *face == named)
-                || silico_protocol::vec3::dot(direction, frame.back) <= 0.1
+            if FACES.iter().any(|face| face.view == named) || facing(direction) <= CUBE_CORNER_SHOWN
             {
                 continue;
             }
             let corner = at(direction.map(|c| c * 3f64.sqrt()));
-            painter.circle_filled(corner, 3.0, stroke.color);
             let response = cube_part(
                 ui,
-                Rect::from_center_size(corner, Vec2::splat(12.0)),
-                &words(named),
+                Rect::from_center_size(corner, Vec2::splat(CUBE_CORNER_SIDE)),
+                &crate::words::view_words(named),
             );
             if response.clicked() {
-                chosen = Some(named);
+                chosen = Some(ViewAsk::Named(named));
             }
             parts.push(response);
         }
-        let home = Rect::from_min_size(
-            rect.left_top() - Vec2::new(0.0, theme::VIEW_CUBE_HOME_HEIGHT),
-            Vec2::new(44.0, theme::VIEW_CUBE_HOME_HEIGHT - 2.0),
+        // Home view and the ▾, in their column at its left.
+        let ctx = ui.ctx().clone();
+        let style = bar::ButtonStyle::VIEW_CUBE;
+        let label = Command::Home.label();
+        let home = ui.put(home, |ui: &mut Ui| {
+            bar::styled_button(ui, &[Icon::Home], None, label, true, None, style)
+        });
+        if bar::tooltip(home, label, Command::Home.shown(&ctx), None).clicked() {
+            chosen = Some(ViewAsk::Named(HOME));
+        }
+        let options = ui.put(options, |ui: &mut Ui| {
+            bar::styled_button(ui, &[Icon::Down], None, CUBE_MENU, true, None, style)
+        });
+        ctx.accesskit_node_builder(options.id, |node| {
+            node.set_has_popup(egui::accesskit::HasPopup::Menu);
+        });
+        let options = bar::tooltip(
+            options,
+            CUBE_MENU,
+            None,
+            Some("Orthographic or perspective"),
         );
-        if ui.put(home, egui::Button::new("Home").small()).clicked() {
-            chosen = Some(HOME);
+        // Its menu: under the ▾, or at a right click anywhere on the cube; the ▾ again
+        // closes it.
+        let menu_id = ui.id().with("menu");
+        let opened_at = if options.clicked() {
+            if egui::Popup::is_id_open(&ctx, menu_id) {
+                egui::Popup::close_id(&ctx, menu_id);
+                None
+            } else {
+                Some(options.rect.left_bottom() + theme::VIEW_CUBE_MENU_FROM_BUTTON)
+            }
+        } else if parts.iter().any(egui::Response::secondary_clicked) {
+            ctx.pointer_interact_pos()
+                .map(|at| at + theme::VIEW_CUBE_MENU_FROM_CLICK)
+        } else {
+            None
+        };
+        if let Some(at) = opened_at {
+            ctx.data_mut(|data| data.insert_temp(menu_id, at));
+            egui::Popup::open_id(&ctx, menu_id);
         }
-        // A right-click anywhere on the cube opens its menu.
-        for part in &parts {
-            part.context_menu(|ui| projection_menu(ui, view));
+        let anchor = ctx
+            .data(|data| data.get_temp::<Pos2>(menu_id))
+            .filter(|_| egui::Popup::is_id_open(&ctx, menu_id));
+        if let Some(at) = anchor {
+            let popup = egui::Popup::new(menu_id, ctx.clone(), at, ui.layer_id()).open_memory(None);
+            let perspective = view.perspective;
+            let asked = bar::as_menu(popup)
+                .show(|ui| cube_menu(ui, perspective))
+                .and_then(|shown| shown.inner);
+            match asked {
+                Some(CubeAct::View(ask)) => chosen = Some(ask),
+                Some(CubeAct::Perspective(wanted)) => view.project(wanted),
+                None => {}
+            }
         }
-        if let Some(named) = chosen {
-            view.look_from(named, size_px);
+        if let Some(ask) = chosen {
+            view.give(ask, size_px);
         }
     });
 }
 
-/// The navigation bar, floating at the canvas's bottom centre (section 8): Orbit, Pan, and
-/// Zoom, each the left drag's tool while chosen (a second click lets it go), and Fit. A
-/// press anywhere on it, its padding too, is its own, never the canvas's.
-fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
+/// The navigation bar's tools, each the left drag's while it's chosen: what it does, its
+/// icon, its words (the prototype's `data-tip`), the registry's command whose keys its
+/// tooltip names (`data-tipk`), and its tooltip's line (`data-tipd`; Orbit's but for its
+/// last sentence, "Alt-drag also orbits in this prototype", which the app doesn't).
+const TOOLS: [(Navigation, Icon, &str, Command, Option<&str>); 3] = [
+    (
+        Navigation::Orbit,
+        Icon::Orbit,
+        "Orbit",
+        Command::Orbit,
+        Some("Or click here, then drag with the left button. Esc returns to Select."),
+    ),
+    (Navigation::Pan, Icon::Pan, "Pan", Command::Pan, None),
+    (
+        Navigation::Zoom,
+        Icon::Zoom,
+        "Zoom",
+        Command::Zoom,
+        Some("The wheel zooms toward the pointer"),
+    ),
+];
+
+/// Where the navigation bar is drawn in `viewport`: its margin above the canvas's bottom,
+/// about its middle.
+fn navigation_bar_rect(viewport: Rect) -> Rect {
     let size = Vec2::new(theme::NAVIGATION_BAR_WIDTH, theme::NAVIGATION_BAR_HEIGHT);
-    let rect = Rect::from_center_size(
+    Rect::from_center_size(
         egui::pos2(
             viewport.center().x,
             viewport.bottom() - size.y / 2.0 - theme::NAVIGATION_BAR_MARGIN,
         ),
         size,
-    );
+    )
+}
+
+/// The navigation bar, floating at the canvas's bottom centre (section 8; app.js's
+/// `.nav-bar`), its buttons the prototype's icons, each with its tooltip: Orbit, Pan, and
+/// Zoom, each the left drag's tool while chosen (a second click, or Esc, lets it go); Fit;
+/// Look At; a separator; Display settings, whose menu opens above it; and Grid, which shows
+/// and hides the ground grid. A press anywhere on it, its padding too, is its own, never the
+/// canvas's. Whether Look At was clicked, which the tab does as Ctrl+8 does
+/// ([`Tab::look_at`]): it needs the tab's selection, or its sketch.
+fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) -> bool {
+    let rect = navigation_bar_rect(viewport);
+    let mut look_at = false;
     ui.scope_builder(
         UiBuilder::new()
             .id_salt("navigation_bar")
             .max_rect(rect)
-            .layout(Layout::left_to_right(Align::Center))
-            // Under its buttons, over the canvas: the frame's padding absorbs a press.
+            // Under its buttons, over the canvas: its padding and border absorb a press.
             .sense(Sense::click_and_drag()),
         |ui| {
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Toolbar);
                 node.set_label("Navigation bar");
             });
-            egui::Frame::new()
-                .fill(ui.visuals().window_fill)
-                .corner_radius(theme::SMALL_CORNER_RADIUS)
-                .inner_margin(egui::Margin::symmetric(6, 2))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        for (tool, word) in [
-                            (Navigation::Orbit, "Orbit"),
-                            (Navigation::Pan, "Pan"),
-                            (Navigation::Zoom, "Zoom"),
-                        ] {
-                            let on = view.tool == Some(tool);
-                            if ui.selectable_label(on, word).clicked() {
-                                view.tool = (!on).then_some(tool);
-                            }
-                        }
-                        if ui.button("Fit").clicked() {
-                            view.fit(size_px);
-                        }
-                    });
+            let corner = theme::NORMAL_CORNER_RADIUS;
+            let painter = ui.painter();
+            painter.add(theme::NAVIGATION_BAR_SHADOW.as_shape(rect, corner));
+            painter.rect(
+                rect,
+                corner,
+                theme::NAVIGATION_BAR_BG,
+                Stroke::new(theme::BORDER_WIDTH, theme::NAVIGATION_BAR_BORDER),
+                StrokeKind::Inside,
+            );
+            let inner = rect.shrink(theme::BORDER_WIDTH + theme::NAVIGATION_BAR_PADDING);
+            let row = UiBuilder::new()
+                .max_rect(inner)
+                .layout(Layout::left_to_right(Align::Center));
+            ui.scope_builder(row, |ui| {
+                ui.spacing_mut().item_spacing = Vec2::new(theme::NAVIGATION_BAR_GAP, 0.0);
+                let ctx = ui.ctx().clone();
+                let style = bar::ButtonStyle::NAVIGATION_BAR;
+                for (tool, icon, word, command, said) in TOOLS {
+                    let on = view.tool == Some(tool);
+                    let button = bar::styled_button(ui, &[icon], None, word, true, Some(on), style);
+                    if bar::tooltip(button, word, command.shown(&ctx), said).clicked() {
+                        view.tool = (!on).then_some(tool);
+                    }
+                }
+                let word = Command::Fit.label();
+                let fit = bar::styled_button(ui, &[Icon::Fit], None, word, true, None, style);
+                if bar::tooltip(fit, word, Command::Fit.shown(&ctx), None).clicked() {
+                    view.fit(size_px);
+                }
+                let word = Command::LookAt.label();
+                let look = bar::styled_button(ui, &[Icon::LookAt], None, word, true, None, style);
+                let said = Some("Square to the selected face");
+                look_at = bar::tooltip(look, word, Command::LookAt.shown(&ctx), said).clicked();
+                bar::separator_of(
+                    ui,
+                    theme::NAVIGATION_BAR_SEPARATOR_HEIGHT,
+                    theme::NAVIGATION_BAR_SEPARATOR_MARGIN,
+                );
+                let icons = [Icon::Display, Icon::Down];
+                let display =
+                    bar::styled_button(ui, &icons, None, DISPLAY_SETTINGS, true, None, style);
+                ctx.accesskit_node_builder(display.id, |node| {
+                    node.set_has_popup(egui::accesskit::HasPopup::Menu);
                 });
+                let said = Some("Visual style, camera, grid");
+                let display = bar::tooltip(display, DISPLAY_SETTINGS, None, said);
+                let (perspective, grid) = (view.perspective, view.grid);
+                let popup = egui::Popup::menu(&display)
+                    .align(egui::RectAlign::TOP_START)
+                    .gap(theme::NAVIGATION_BAR_MENU_GAP);
+                let asked = bar::as_menu(popup)
+                    .show(|ui| display_menu(ui, perspective, grid))
+                    .and_then(|shown| shown.inner);
+                match asked {
+                    Some(DisplayAct::Perspective(wanted)) => view.project(wanted),
+                    Some(DisplayAct::Grid) => view.grid = !view.grid,
+                    Some(DisplayAct::Style) | None => {}
+                }
+                // The canvas was painted before the bar: the next frame, which egui draws
+                // after any frame with input, shows the change.
+                let shown = Some(view.grid);
+                let grid = bar::styled_button(ui, &[Icon::Grid], None, "Grid", true, shown, style);
+                if bar::tooltip(grid, "Grid", None, None).clicked() {
+                    view.grid = !view.grid;
+                }
+            });
+            // Its whole place its own, padding and border too (egui senses a scope by the
+            // rect it ended with), and its bounds that place: egui gives a scope that senses
+            // the bounds it starts with, none (a size of NaN), until it ends.
+            ui.expand_to_include_rect(rect);
+            ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+                node.set_bounds(crate::panes::bounds(rect));
+            });
         },
     );
+    look_at
 }
 
 #[cfg(test)]
@@ -2504,22 +3427,86 @@ mod tests {
     }
 
     #[test]
-    fn the_view_cubes_labels_are_the_named_views_in_words() {
-        assert_eq!(words(NamedView::TopFrontRight), "Top front right");
-        assert_eq!(words(NamedView::Front), "Front");
+    fn the_view_cube_sits_its_margin_in_from_the_canvass_top_right_its_buttons_at_its_left() {
+        // A canvas from (100, 50) to (900, 650): the cube's 92-point square (the prototype's
+        // `CUBE`) 16 points (`CUBE_M`) in from its right edge and its top, 900 − 16 − 92 =
+        // 792 to 900 − 16 = 884 across, 50 + 16 = 66 to 66 + 92 = 158 down. Home view and the
+        // ▾ (app.js: `right: 16 + 92 + 4`, `top: 16px`, a column 2 apart), each a bar button
+        // of one 14-point icon, 5 of padding each side (24 wide, over `--btn`'s 22) and 22
+        // high: from 792 − 4 − 24 = 764 to 788 across; Home 66 to 88 down, the ▾ 90 to 112.
+        let viewport = Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(900.0, 650.0));
+        let cube = view_cube_rect(viewport);
+        assert_eq!(
+            cube,
+            Rect::from_min_max(egui::pos2(792.0, 66.0), egui::pos2(884.0, 158.0))
+        );
+        assert_eq!(
+            view_cube_buttons(cube),
+            [
+                Rect::from_min_max(egui::pos2(764.0, 66.0), egui::pos2(788.0, 88.0)),
+                Rect::from_min_max(egui::pos2(764.0, 90.0), egui::pos2(788.0, 112.0)),
+            ]
+        );
     }
 
     #[test]
-    fn the_view_cube_sits_its_margin_in_from_the_canvass_top_right_under_home() {
-        // A canvas from (100, 50) to (900, 650): the cube's 92-point square (the prototype's
-        // `CUBE`) 16 points (`CUBE_M`) in from its right edge, 900 − 16 − 92 = 792 to
-        // 900 − 16 = 884, and 16 points down past Home's 20-point row, 50 + 16 + 20 = 86 to
-        // 86 + 92 = 178.
+    fn the_navigation_bar_sits_its_margin_above_the_canvass_bottom_about_its_middle() {
+        // The canvas from (100, 50) to (900, 650): 220 by 32 (`.nav-bar`), its middle at x
+        // 500 and its bottom 12 above 650, so from (390, 606) to (610, 638).
         let viewport = Rect::from_min_max(egui::pos2(100.0, 50.0), egui::pos2(900.0, 650.0));
         assert_eq!(
-            view_cube_rect(viewport),
-            Rect::from_min_max(egui::pos2(792.0, 86.0), egui::pos2(884.0, 178.0))
+            navigation_bar_rect(viewport),
+            Rect::from_min_max(egui::pos2(390.0, 606.0), egui::pos2(610.0, 638.0))
         );
+    }
+
+    #[test]
+    fn each_cube_edge_is_named_by_its_faces_as_a_corner_is_and_looks_from_between_them() {
+        // The twelve edges, each by its two faces, top or bottom first, then front or back,
+        // then left or right (as `top_front_right`); its view from its middle made a unit,
+        // by hand: (0, −1, 1)/√2 for the top front, up (0, 1, 1)/√2 (+z made square to it);
+        // (1, −1, 0)/√2 for the front right, up +z.
+        let r = std::f64::consts::FRAC_1_SQRT_2;
+        let mut named: Vec<String> = cube_edges().map(edge_words).collect();
+        named.sort_unstable();
+        assert_eq!(
+            named,
+            [
+                "Back left",
+                "Back right",
+                "Bottom back",
+                "Bottom front",
+                "Bottom left",
+                "Bottom right",
+                "Front left",
+                "Front right",
+                "Top back",
+                "Top front",
+                "Top left",
+                "Top right",
+            ]
+        );
+        let near = |a: [f64; 3], b: [f64; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-15);
+        for (middle, toward, up) in [
+            ([0.0, -1.0, 1.0], [0.0, -r, r], [0.0, r, r]),
+            ([1.0, -1.0, 0.0], [r, -r, 0.0], [0.0, 0.0, 1.0]),
+            ([-1.0, 0.0, -1.0], [-r, 0.0, -r], [-r, 0.0, r]),
+        ] {
+            // The edge of that middle: the one there is.
+            let mut found = cube_edges().filter(|edge| edge.middle() == middle);
+            let (Some(edge), None) = (found.next(), found.next()) else {
+                panic!("{middle:?}: no one edge there");
+            };
+            let ViewAsk::LookAt {
+                toward: got,
+                up: got_up,
+            } = edge_view(edge)
+            else {
+                panic!("{middle:?}: not a look");
+            };
+            assert!(near(got, toward), "{middle:?}: {got:?}");
+            assert!(near(got_up, up), "{middle:?}: up {got_up:?}");
+        }
     }
 
     #[test]
@@ -2794,6 +3781,38 @@ mod tests {
     }
 
     #[test]
+    fn a_shown_sketchs_far_lines_raise_the_least_view_and_zoom_stops_there() {
+        // No body, 1,600 rows, onto (20, 10, 5): a shown sketch's lines at (320, 10, 5),
+        // 300 mm from the target, make the least 1,600 · 300 / 2^19 · 1.01 = 0.924683 mm. A
+        // view at 0.01 is raised to it when the lines' boxes come, and a zoom in from there
+        // stays; their boxes gone, a zoom in goes on.
+        let mut view = View {
+            rows: 1600,
+            ..View::default()
+        };
+        view.set_camera(front(0.01));
+        view.take_sketch_boxes(vec![[[320.0, 10.0, 5.0], [320.0, 10.0, 5.0]]]);
+        let least = 1600.0 * 300.0 / 524_288.0 * 1.01;
+        let Projection::Orthographic { view_height } = view.camera.projection else {
+            panic!("orthographic")
+        };
+        assert!((view_height - least).abs() < 1e-12, "{view_height}");
+        view.zoom(200.0, [0.0, 0.0], 800.0);
+        assert_eq!(
+            view.camera.projection,
+            Projection::Orthographic { view_height }
+        );
+        view.take_sketch_boxes(Vec::new());
+        view.zoom(200.0, [0.0, 0.0], 800.0);
+        assert_eq!(
+            view.camera.projection,
+            Projection::Orthographic {
+                view_height: view_height / 2.0
+            }
+        );
+    }
+
+    #[test]
     fn a_view_under_the_least_a_new_table_allows_is_raised_to_it() {
         // Zoomed to 1e-5 mm onto (20, 10, 5) before any body came, in a pane 400 pixels
         // high: the cut's box (0, 0, −1) to (40, 20, 11) reaches √(20² + 10² + 6²) = 23.152 mm
@@ -2834,10 +3853,11 @@ mod tests {
     }
 
     #[test]
-    fn a_new_bodies_table_has_the_selections_highlights_worked_out_again() {
-        // Body m3tq8v0z, two faces, selected by its row: both its faces lit, as body 1. A
-        // read's answer then numbers it 2 (a body before it, new): the table is made again,
-        // and the same selection lights body 2's faces, not body 1's.
+    fn a_new_bodies_table_has_the_selections_tinted_faces_worked_out_again() {
+        // Body m3tq8v0z, two faces, selected by its row: both its faces tinted as its
+        // maker's, as body 1, none highlighted. A read's answer then numbers it 2 (a body
+        // before it, new): the table is made again, and the same selection tints body 2's
+        // faces, not body 1's.
         use silico_core::naming::{Name, PrimitiveKind, TypeWord};
         use silico_protocol::{ElementKind, ElementRef};
         let id = FeatureId::new("m3tq8v0z").unwrap();
@@ -2873,16 +3893,200 @@ mod tests {
             now: now(),
         };
         let ctx = egui::Context::default();
-        selection.overlay(&mut view, &frame, &ctx);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
         let lit = |body: u32| BTreeSet::from([(body, Element::Face(1)), (body, Element::Face(2))]);
-        assert_eq!(view.highlights, lit(1));
+        assert_eq!(view.selected_feature_faces, lit(1));
+        assert_eq!(view.maker_faces(), Vec::from_iter(lit(1)));
+        assert!(view.highlights.is_empty());
         let mesh = Arc::clone(&view.bodies[&1].mesh);
         view.take_bodies(vec![MeshedBody {
             faces,
             ..meshed(2, 1, 0.03125, Some(mesh))
         }]);
-        selection.overlay(&mut view, &frame, &ctx);
-        assert_eq!(view.highlights, lit(2));
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.selected_feature_faces, lit(2));
+    }
+
+    #[test]
+    fn one_feature_tints_the_same_faces_hovered_in_the_timeline_or_selected_and_its_body_all() {
+        // Body m3tq8v0z, the feature's own: its Face1 named as aaaaaaaa's, its Face2 as its
+        // own. Selected by its timeline item (`select_feature`, the prototype's
+        // `selectFeature`: the maker is the feature), it tints its Face2 alone, as hovered in
+        // the timeline it does; selected by its browser row (`select_body`, `bodyRow`'s
+        // `maker: '*'`), the body's both.
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let named = |id: &str, index: u32| MeshElement {
+            name: Arc::new(Name::Element {
+                feature: FeatureId::new(id).unwrap(),
+                made: TypeWord::Primitive(PrimitiveKind::Box),
+                element: ElementRef {
+                    kind: ElementKind::Face,
+                    index,
+                },
+            }),
+            stable: true,
+            count: None,
+        };
+        let mut held = body(0.03125, [0.03125, 0.0625], CUT);
+        held.faces = vec![named("aaaaaaaa", 1), named("m3tq8v0z", 2)];
+        let mut view = view_with(&[(1, held)], 3);
+        let id = FeatureId::new("m3tq8v0z").unwrap();
+        let frame = ViewFrame {
+            session: SessionId::parse("s1").unwrap(),
+            rect: Rect::from_min_size(Pos2::ZERO, egui::vec2(100.0, 100.0)),
+            camera: front(80.0),
+            size_px: [100, 100],
+            pixels_per_point: 1.0,
+            pointer_px: None,
+            left: Vec::new(),
+            secondary: Vec::new(),
+            drawn: Vec::new(),
+            now: now(),
+        };
+        let ctx = egui::Context::default();
+        let mut selection = crate::selection::Selection::default();
+        selection.select_feature(id.clone());
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        let selected = view.maker_faces();
+        assert_eq!(selected, [(1, Element::Face(2))]);
+        view.linked = Some(id.clone());
+        assert_eq!(view.maker_faces(), selected, "selected against hovered");
+        view.linked = None;
+        selection.select_bodies(vec![id.clone()]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(
+            view.maker_faces(),
+            [(1, Element::Face(1)), (1, Element::Face(2))]
+        );
+        // Its timeline item clicked again: itself, its own face.
+        selection.select_feature(id.clone());
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), [(1, Element::Face(2))]);
+        // A dialog's body box (Union's) takes it as its body: whole.
+        let whole = [(1, Element::Face(1)), (1, Element::Face(2))];
+        selection.select_bodies(vec![id.clone()]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole, "a dialog's body box");
+        // Selected by its row, then a dialog taking edges alone, then its Cancel: whole.
+        selection.select_bodies(vec![id.clone()]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole);
+        let saved = selection.saved();
+        selection.keep_only(crate::selection::Filter {
+            faces: false,
+            edges: true,
+            vertices: false,
+        });
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert!(view.maker_faces().is_empty());
+        selection.restore(saved);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole, "after the dialog's Cancel");
+        // Selected by its timeline item, then a dialog's body box, then its Cancel: its own
+        // face again.
+        selection.select_feature(id.clone());
+        let saved = selection.saved();
+        selection.select_bodies(vec![id]);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(view.maker_faces(), whole);
+        selection.restore(saved);
+        selection.overlay(&mut view, &frame, &ctx, &crate::selection::no_face);
+        assert_eq!(
+            view.maker_faces(),
+            [(1, Element::Face(2))],
+            "after the body box's Cancel"
+        );
+    }
+
+    #[test]
+    fn a_new_bodies_table_lets_a_hover_and_a_candidate_by_its_old_numbers_go() {
+        // Body 1 lit for the table it came in, Face1 drawn hovered and Face2 a candidate.
+        // A read's answer then numbers it 2: before the frame goes out, the selection's
+        // light lets both go (they're by the old numbers, body 1 being another body now).
+        // A menu holding the hover keeps its own row; the candidate goes either way.
+        let mut first = body(0.03125, [0.03125, 0.0625], CUT);
+        first.faces = Vec::new();
+        for held in [false, true] {
+            let mut view = view_with(&[(1, first.clone())], 3);
+            let mut selection = crate::selection::Selection::default();
+            selection.light(&mut view);
+            if held {
+                selection.hold_hover(None);
+            }
+            view.hovered = BTreeSet::from([(1, Element::Face(1))]);
+            view.candidate = Some((1, Element::Face(2)));
+            // The same table: nothing let go.
+            selection.light(&mut view);
+            assert_eq!(view.hovered, BTreeSet::from([(1, Element::Face(1))]));
+            assert_eq!(view.candidate, Some((1, Element::Face(2))));
+            let mesh = Arc::clone(&view.bodies[&1].mesh);
+            view.take_bodies(vec![meshed(2, 1, 0.03125, Some(mesh))]);
+            selection.light(&mut view);
+            assert_eq!(view.candidate, None, "held {held}");
+            if held {
+                assert_eq!(view.hovered, BTreeSet::from([(1, Element::Face(1))]));
+            } else {
+                assert!(view.hovered.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn a_selection_change_on_the_same_table_keeps_the_hover_and_the_candidate() {
+        // The table unchanged and the selection changed between two lights (a feature
+        // selected): its highlights and tints are worked out again, but the hover drawn and a
+        // lit candidate are of this table's numbers still, and stay.
+        let mut view = view_with(&[(1, body(0.03125, [0.03125, 0.0625], CUT))], 3);
+        let mut selection = crate::selection::Selection::default();
+        selection.light(&mut view);
+        view.hovered = BTreeSet::from([(1, Element::Face(1))]);
+        view.candidate = Some((1, Element::Face(2)));
+        let before = selection.version();
+        selection.select_feature(FeatureId::new("m3tq8v0z").unwrap());
+        assert_ne!(selection.version(), before);
+        selection.light(&mut view);
+        assert_eq!(view.hovered, BTreeSet::from([(1, Element::Face(1))]));
+        assert_eq!(view.candidate, Some((1, Element::Face(2))));
+    }
+
+    #[test]
+    fn the_maker_tinted_is_the_feature_hovered_in_the_timeline_else_those_selected() {
+        // viewport.js's `syncHighlight`: `maker = S.hoverFeature || S.selFeature`. Body 1's
+        // faces 1 and 2 made by aaaaaaaa, its face 3 by bbbbbbbb; aaaaaaaa selected. Nothing
+        // hovered in the timeline: aaaaaaaa's two. bbbbbbbb hovered: its face alone, the
+        // selected one's left. cccccccc hovered, which made none: none, not the selected's.
+        use silico_core::naming::{Name, PrimitiveKind, TypeWord};
+        use silico_protocol::{ElementKind, ElementRef};
+        let named = |id: &str, index: u32| MeshElement {
+            name: Arc::new(Name::Element {
+                feature: FeatureId::new(id).unwrap(),
+                made: TypeWord::Primitive(PrimitiveKind::Box),
+                element: ElementRef {
+                    kind: ElementKind::Face,
+                    index,
+                },
+            }),
+            stable: true,
+            count: None,
+        };
+        let mut held = body(0.03125, [0.03125, 0.0625], CUT);
+        held.faces = vec![
+            named("aaaaaaaa", 1),
+            named("aaaaaaaa", 2),
+            named("bbbbbbbb", 3),
+        ];
+        let mut view = view_with(&[(1, held)], 3);
+        view.selected_feature_faces =
+            BTreeSet::from([(1, Element::Face(1)), (1, Element::Face(2))]);
+        assert_eq!(
+            view.maker_faces(),
+            [(1, Element::Face(1)), (1, Element::Face(2))]
+        );
+        view.linked = Some(FeatureId::new("bbbbbbbb").unwrap());
+        assert_eq!(view.maker_faces(), [(1, Element::Face(3))]);
+        view.linked = Some(FeatureId::new("cccccccc").unwrap());
+        assert!(view.maker_faces().is_empty());
     }
 
     #[test]
@@ -3084,6 +4288,60 @@ mod tests {
             assert_eq!((circle.radius, circle.fill), (4.5, fill));
             assert_eq!(circle.stroke, Stroke::new(1.0, egui::Color32::BLACK));
         }
+    }
+
+    #[test]
+    fn a_hovered_features_faces_are_tinted_but_those_selected_or_hovered_and_those_not_drawn() {
+        use Element::{Edge, Face};
+        // The feature's faces as found, out of order and one twice: body 1's 1 to 4 and body
+        // 2's 1 and 2. Body 1's Face2 selected and its Face3 hovered keep their looks (the
+        // prototype's `applyHighlight`: the selection's, else the hover's, else the maker's
+        // tint); body 2's Face2 a candidate on the hover's layer, the same. An edge selected or
+        // hovered takes no face of the tint. Body 3 isn't drawn.
+        let linked = vec![
+            (2, Face(2)),
+            (1, Face(4)),
+            (1, Face(1)),
+            (1, Face(2)),
+            (3, Face(1)),
+            (1, Face(3)),
+            (2, Face(1)),
+            (1, Face(1)),
+        ];
+        let highlights = [(1, Edge(1)), (1, Face(2))];
+        let hovered = [(1, Face(3)), (2, Face(2)), (1, Edge(4))];
+        let drawn = |(body, _): &(u32, Element)| *body != 3;
+        assert_eq!(
+            tinted_faces(linked.clone(), &highlights, &hovered, drawn),
+            [(1, Face(1)), (1, Face(4)), (2, Face(1))]
+        );
+        // Nothing selected or hovered: every face drawn, ascending, each once.
+        assert_eq!(
+            tinted_faces(linked, &[], &[], drawn),
+            [
+                (1, Face(1)),
+                (1, Face(2)),
+                (1, Face(3)),
+                (1, Face(4)),
+                (2, Face(1)),
+                (2, Face(2))
+            ]
+        );
+        // No feature hovered: none.
+        assert!(tinted_faces(Vec::new(), &highlights, &hovered, drawn).is_empty());
+    }
+
+    #[test]
+    fn the_feature_tint_is_the_prototypes_blue_800_at_0_4() {
+        // viewport.js's `MAKER`, `#d4dbff`, at `uTintAmt.value = 0.4` (DESIGN.md's "a
+        // feature's faces on hover: Blue.800 tint 40%").
+        assert_eq!(
+            feature_tint(),
+            Tint {
+                colour: [0xd4, 0xdb, 0xff],
+                amount: 0.4,
+            }
+        );
     }
 
     #[test]
@@ -3510,5 +4768,272 @@ mod tests {
         let options = egui::InputOptions::default();
         assert!(!clicks.released(egui::pos2(120.0, 100.0), 60.1, &options));
         assert!(left_click(&mut clicks, at, 60.15));
+    }
+
+    /// Each face's label reads from outside the cube (its right × up is its normal) and
+    /// upright from the face's own named view as the core gives it: its normal the view's
+    /// way, its up the view's up, its right the view's right (the up × that way).
+    #[test]
+    fn each_cube_faces_label_reads_upright_from_its_own_view() {
+        use silico_protocol::vec3::cross;
+        let mut views: Vec<NamedView> = FACES.iter().map(|face| face.view).collect();
+        for face in FACES {
+            let view = face.view;
+            assert_eq!(cross(face.right, face.up), face.normal, "{view:?}");
+            assert_eq!(view.direction(), face.normal, "{view:?}");
+            assert_eq!(view.up(), face.up, "{view:?}");
+            assert_eq!(cross(view.up(), view.direction()), face.right, "{view:?}");
+        }
+        // The six faces, each once.
+        views.sort_by_key(|view| view.name());
+        views.dedup();
+        assert_eq!(views.len(), 6);
+    }
+
+    /// The cube's edges: its twelve, each once, along one axis from −1 to 1 at two corners,
+    /// between the two faces whose normals are its other two coordinates.
+    #[test]
+    fn the_cubes_edges_are_its_twelve_each_once_between_the_faces_it_joins() {
+        let mut seen = BTreeSet::new();
+        let mut along = [0; 3];
+        for CubeEdge {
+            ends: [start, end],
+            faces: [one, other],
+        } in cube_edges()
+        {
+            let moving: Vec<usize> = (0..3).filter(|&k| start[k] != end[k]).collect();
+            assert_eq!(moving.len(), 1, "{start:?} {end:?}");
+            let k = moving[0];
+            along[k] += 1;
+            assert_eq!((start[k], end[k]), (-1.0, 1.0));
+            assert!(start.iter().chain(&end).all(|c| c.abs() == 1.0));
+            assert_ne!(one, other);
+            for normal in [one, other] {
+                let nonzero: Vec<usize> = (0..3).filter(|&a| normal[a] != 0.0).collect();
+                assert_eq!(nonzero.len(), 1, "{normal:?}");
+                let a = nonzero[0];
+                assert_ne!(a, k);
+                assert_eq!(normal[a], start[a], "{normal:?} at {start:?}");
+            }
+            assert!(seen.insert((start.map(f64::to_bits), end.map(f64::to_bits))));
+            // Its middle the midpoint of its ends: their mean, by hand, on the axis it runs
+            // along 0 and on the others its faces' ±1.
+            let edge = CubeEdge {
+                ends: [start, end],
+                faces: [one, other],
+            };
+            let midpoint: [f64; 3] = std::array::from_fn(|a| (start[a] + end[a]) / 2.0);
+            assert_eq!(edge.middle(), midpoint, "{start:?} {end:?}");
+        }
+        assert_eq!(seen.len(), 12);
+        assert_eq!(along, [4, 4, 4]);
+    }
+
+    /// The canvas's gradient: a mesh of two triangles over the rectangle, its top corners
+    /// #141517 and its bottom ones #2a2c30 (styles.css's `--canvas-top` and
+    /// `--canvas-bottom`).
+    #[test]
+    fn the_canvas_background_runs_from_its_top_colour_to_its_bottom_one() {
+        let rect = Rect::from_min_max(egui::pos2(10.0, 20.0), egui::pos2(110.0, 220.0));
+        let egui::Shape::Mesh(mesh) = canvas_background(rect) else {
+            panic!("not a mesh");
+        };
+        let top = egui::Color32::from_rgb(0x14, 0x15, 0x17);
+        let bottom = egui::Color32::from_rgb(0x2a, 0x2c, 0x30);
+        let corners: Vec<(Pos2, egui::Color32)> =
+            mesh.vertices.iter().map(|v| (v.pos, v.color)).collect();
+        assert_eq!(
+            corners,
+            [
+                (egui::pos2(10.0, 20.0), top),
+                (egui::pos2(110.0, 20.0), top),
+                (egui::pos2(110.0, 220.0), bottom),
+                (egui::pos2(10.0, 220.0), bottom),
+            ]
+        );
+        assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3]);
+        assert_eq!(mesh.texture_id, egui::TextureId::default());
+    }
+
+    /// `got` is the interval `want`, each end to 1e-12.
+    #[track_caller]
+    fn same_interval(got: Option<[f64; 2]>, want: [f64; 2]) {
+        let got = got.unwrap_or_else(|| panic!("nothing hidden, against {want:?}"));
+        assert!(
+            (got[0] - want[0]).abs() < 1e-12 && (got[1] - want[1]).abs() < 1e-12,
+            "{got:?} against {want:?}"
+        );
+    }
+
+    /// The axis stubs, from (−1.02, −1.02, −1.02), 1.4 along each axis, hidden where the
+    /// ray from a point toward the eye meets the cube, by hand. From the home view's way,
+    /// (1, −1, 1)/√3, the x stub's point (−1.02 + 1.4·s, −1.02, −1.02) moves to y < −1 toward
+    /// the eye, never in the cube: seen whole, as is the z stub. The y stub's (−1.02, y,
+    /// −1.02) moves by u = t/√3 to (−1.02 + u, y − u, −1.02 + u): in the cube for u from 0.02
+    /// to 2.02 and from y − 1 to y + 1, some u for y + 1 ≥ 0.02, so hidden from y = −0.98,
+    /// s = 0.04/1.4 = 1/35, to its end, and seen from 0 to 1/35. From the back and above,
+    /// (0, 1, 1)/√2, the x stub moves by u = t/√2 to (x, −1.02 + u, −1.02 + u), in the cube
+    /// for u from 0.02 to 2.02 if its x is too, from s = 0.02/1.4 = 1/70: seen from 0 to
+    /// 1/70. Square on from the front, (0, −1, 0), each stub's point moves away from the
+    /// cube, or stays 0.02 outside it: none hidden.
+    #[test]
+    fn the_cubes_axis_stubs_are_hidden_where_the_cube_is_in_front_of_them() {
+        let third = 1.0 / 3f64.sqrt();
+        let home = [third, -third, third];
+        let stub = |k: usize| {
+            let mut along = [0.0; 3];
+            along[k] = CUBE_STUB_LENGTH;
+            along
+        };
+        assert_eq!(CUBE_STUB_FROM, [-1.02; 3]);
+        assert_eq!(CUBE_STUB_LENGTH, 1.4);
+        assert_eq!(hidden_by_cube(CUBE_STUB_FROM, stub(0), home), None);
+        assert_eq!(hidden_by_cube(CUBE_STUB_FROM, stub(2), home), None);
+        same_interval(
+            hidden_by_cube(CUBE_STUB_FROM, stub(1), home),
+            [1.0 / 35.0, 1.0],
+        );
+        assert_eq!(seen_past_cube(CUBE_STUB_FROM, stub(0), home), [[0.0, 1.0]]);
+        let seen = seen_past_cube(CUBE_STUB_FROM, stub(1), home);
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert_eq!(seen[0][0], 0.0);
+        assert!((seen[0][1] - 1.0 / 35.0).abs() < 1e-12, "{seen:?}");
+        let half = 1.0 / 2f64.sqrt();
+        let back_above = [0.0, half, half];
+        same_interval(
+            hidden_by_cube(CUBE_STUB_FROM, stub(0), back_above),
+            [1.0 / 70.0, 1.0],
+        );
+        for k in 0..3 {
+            assert_eq!(
+                hidden_by_cube(CUBE_STUB_FROM, stub(k), [0.0, -1.0, 0.0]),
+                None,
+                "{k}"
+            );
+        }
+        // A segment through the cube's middle, along x at y = z = 0 from −2 to 2, seen from
+        // the front: hidden where it's in the cube, x from −1 to 1, s from 1/4 to 3/4, and
+        // seen either side of that.
+        let through = ([-2.0, 0.0, 0.0], [4.0, 0.0, 0.0]);
+        same_interval(
+            hidden_by_cube(through.0, through.1, [0.0, -1.0, 0.0]),
+            [0.25, 0.75],
+        );
+        assert_eq!(
+            seen_past_cube(through.0, through.1, [0.0, -1.0, 0.0]),
+            [[0.0, 0.25], [0.75, 1.0]]
+        );
+        // The same segment 0.5 in front of the cube: never hidden.
+        assert_eq!(
+            hidden_by_cube([-2.0, -1.5, 0.0], [4.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+            None
+        );
+        // And 0.5 behind it: hidden where the cube's in front, s from 1/4 to 3/4.
+        same_interval(
+            hidden_by_cube([-2.0, 1.5, 0.0], [4.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+            [0.25, 0.75],
+        );
+    }
+
+    /// The cube's far face and its own faces, by hand. Along y at x = z = 0, from y = 1.5
+    /// to 5, seen from (0.6, −0.8, 0): a point (0, y, 0) moves to (0.6t, y − 0.8t, 0) toward
+    /// the eye, reaching the cube's far face, y = 1, at t = (y − 1)/0.8, and leaving it by
+    /// its side, x = 1, at t = 1/0.6: hidden while (y − 1)/0.8 ≤ 5/3, to y = 7/3, s =
+    /// (7/3 − 3/2)/3.5 = 5/21, and seen past that. The cube is closed: behind it from the
+    /// front, along x from −2 to 2 at y = 1.5, a segment in the plane of its top face, z = 1,
+    /// or its bottom's, z = −1, is hidden where the cube's in front, s from 1/4 to 3/4; one
+    /// 0.5 above it or below it, never.
+    #[test]
+    fn the_cube_hides_a_segment_as_far_as_its_far_face_and_its_closed_faces_reach() {
+        same_interval(
+            hidden_by_cube([0.0, 1.5, 0.0], [0.0, 3.5, 0.0], [0.6, -0.8, 0.0]),
+            [0.0, 5.0 / 21.0],
+        );
+        let seen = seen_past_cube([0.0, 1.5, 0.0], [0.0, 3.5, 0.0], [0.6, -0.8, 0.0]);
+        assert_eq!(seen.len(), 1, "{seen:?}");
+        assert!((seen[0][0] - 5.0 / 21.0).abs() < 1e-12, "{seen:?}");
+        assert_eq!(seen[0][1], 1.0);
+        let front = [0.0, -1.0, 0.0];
+        for z in [1.0, -1.0] {
+            same_interval(
+                hidden_by_cube([-2.0, 1.5, z], [4.0, 0.0, 0.0], front),
+                [0.25, 0.75],
+            );
+        }
+        for z in [1.5, -1.5] {
+            assert_eq!(
+                hidden_by_cube([-2.0, 1.5, z], [4.0, 0.0, 0.0], front),
+                None,
+                "{z}"
+            );
+        }
+    }
+
+    /// A label left waiting by a run that never ended a pass for it is dropped, not drawn
+    /// over the next run's shapes. egui takes a run's plugins before its first pass, so the
+    /// labels' plugin, registered by the first pass that labels a face, ends no pass of that
+    /// run: if that pass asks for another, the second's label waits, keeping a place in a
+    /// paint list that's gone. The next run, which draws only a red square, where that label
+    /// kept its place, still draws the square, and no label; the one after, labelling the
+    /// face, draws its label.
+    #[test]
+    fn a_label_left_waiting_by_a_run_that_never_ended_its_pass_is_dropped_not_drawn_over_the_next()
+    {
+        let ctx = egui::Context::default();
+        // The app's fonts: eframe's default ones aren't built in, so with none a label lays out
+        // no glyphs.
+        theme::apply(&ctx);
+        let on = OnFace {
+            centre: egui::pos2(50.0, 50.0),
+            across: Vec2::new(20.0, 0.0),
+            down: Vec2::new(0.0, 20.0),
+        };
+        let square = egui::Color32::RED;
+        let mut passes = 0;
+        ctx.run_ui(egui::RawInput::default(), |ui| {
+            passes += 1;
+            label_cube_face(ui.painter(), on, 20.0, "TOP");
+            if passes == 1 {
+                ui.ctx().request_discard("a second pass");
+            }
+        })
+        .drop_without_applying_deltas();
+        assert_eq!(passes, 2);
+        assert_eq!(
+            ctx.with_plugin(|labels: &mut CubeLabels| labels.waiting.len()),
+            Some(1)
+        );
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.painter().rect_filled(
+                Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::splat(10.0)),
+                0.0,
+                square,
+            );
+        });
+        let shapes: Vec<egui::Shape> = output.shapes.iter().map(|c| c.shape.clone()).collect();
+        output.drop_without_applying_deltas();
+        assert!(
+            shapes
+                .iter()
+                .any(|shape| matches!(shape, egui::Shape::Rect(r) if r.fill == square)),
+            "{shapes:?}"
+        );
+        assert!(
+            !shapes
+                .iter()
+                .any(|shape| matches!(shape, egui::Shape::Mesh(_))),
+            "{shapes:?}"
+        );
+        let output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            label_cube_face(ui.painter(), on, 20.0, "TOP");
+        });
+        let meshes = output
+            .shapes
+            .iter()
+            .filter(|c| matches!(&c.shape, egui::Shape::Mesh(m) if !m.vertices.is_empty()))
+            .count();
+        let shapes = format!("{:?}", output.shapes);
+        output.drop_without_applying_deltas();
+        assert_eq!(meshes, 1, "{shapes}");
     }
 }

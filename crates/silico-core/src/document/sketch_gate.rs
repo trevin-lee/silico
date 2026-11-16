@@ -71,6 +71,10 @@ fn size_problem(drawn: Drawn) -> Option<SizeProblem> {
     sent(drawn, false)?.size_problem()
 }
 
+/// What the gate refuses a `tangent` of two lines (or a line and an axis, or both axes)
+/// for, in its words, which the constraint tools' Tangent says too.
+pub(crate) const TWO_LINES_TANGENT: &str = "a tangent takes a line and a circle or arc, or two circles or arcs: two lines can't be tangent";
+
 /// The largest angle a constraint may have, either way, in degrees.
 pub const MAX_ANGLE_DEGREES: i64 = 360;
 
@@ -463,23 +467,39 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     }
 
     // The tangent rule below ("a curve ending on another is tangent where it ends") judges
-    // pairs of an edge `tangent` and an `on` or a `tangent_on`, which holds its a's end on its
-    // b as an `on` does (#258), and refuses each pair at whichever of the two comes later in
-    // the constraint list: a file's order (sorted by ID, as written), or an edit's, which
-    // appends what it adds, so the refusal names the member the edit gave. Every constraint
-    // holding a point on a curve, by its curve and point, its places in the list in order,
-    // each with the tangent_on's a, the curve it makes tangent there (none for an `on`).
-    let mut ons: BTreeMap<(&Reference, &ElementId), Vec<Hold>> = BTreeMap::new();
+    // pairs of an edge `tangent` and a constraint holding a point on a curve, read from
+    // `Form::hold` as the constraint tools' Tangent reads its places (C3 as amended, #478: a
+    // hold is a hold): an `on`, a `tangent_on`, which holds its a's end on its b as an `on`
+    // does (#258), or a `midpoint`, which holds its point on its line. It refuses each pair at
+    // whichever of the two comes later in the constraint list: a file's order (sorted by ID,
+    // as written), or an edit's, which appends what it adds, so the refusal names the member
+    // the edit gave. Every hold, by its curve and point, its places in the list in order, each
+    // with its kind; and each `tangent_on`, by the curve and point it holds and its a, the
+    // first in the list. Where the ending curve's own tangent_on holds its end on the other,
+    // wherever it is in the list, the edge tangent says nothing it doesn't, and every refusal
+    // of the pair says to remove the tangent, so none asks for a tangent_on the sketch has
+    // (#498).
+    let mut holds: BTreeMap<(&Reference, &ElementId), Vec<Hold>> = BTreeMap::new();
+    let mut tangent_ons: BTreeMap<(&Reference, &ElementId, &Reference), (usize, &ElementId)> =
+        BTreeMap::new();
     for (i, c) in sketch.constraints.iter().enumerate() {
-        let (point, curve, tangent) = match &c.form {
-            Form::On { point, curve } => (point, curve, None),
-            Form::TangentOn { a, at, b, .. } => (at, b, Some(a)),
-            _ => continue,
+        let Some((point, curve)) = c.form.hold() else {
+            continue;
+        };
+        let kind = match &c.form {
+            Form::TangentOn { a, .. } => HoldKind::TangentOn(a),
+            Form::Midpoint { .. } => HoldKind::Midpoint(&c.id),
+            // An `on`, the third.
+            _ => HoldKind::On,
         };
         if let Some(point) = point.element() {
-            ons.entry((curve, point))
+            holds
+                .entry((curve, point))
                 .or_default()
-                .push((i, &c.id, tangent));
+                .push((i, &c.id, kind));
+            if let HoldKind::TangentOn(a) = kind {
+                tangent_ons.entry((curve, point, a)).or_insert((i, &c.id));
+            }
         }
     }
     // Each edge `tangent` the rule applies to, as it's passed, by the curve one of its
@@ -612,10 +632,11 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         ),
                         format!("make it a tangent_at, at point {point}"),
                     ));
-                } else if let Some((point, ending, other, on, tangent)) = {
+                } else if let Some((point, ending, other, holder, kind)) = {
                     // Either curve may be the one ending on the other: each way round, the
-                    // tangent kept for an `on` after it, and the first `on` before it that
-                    // holds an end of x on y (one way round, then the other).
+                    // tangent kept for a hold after it, and a hold before it of an end of x
+                    // on y (one way round, then the other): the first tangent_on of x, which
+                    // makes x tangent where it holds the end already, else the first hold.
                     let mut found = None;
                     for (x, y) in [(a, b), (b, a)] {
                         let Some(curve) = x.element() else {
@@ -631,14 +652,24 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             tangents.entry((y, end)).or_insert((&constraint.id, x));
                         }
                         if found.is_none() {
-                            found = ends
-                                .into_iter()
-                                .filter_map(|end| {
-                                    let &(place, id, tangent) = ons.get(&(y, end))?.first()?;
-                                    (place < i).then_some((place, end, id, tangent))
+                            let tangent_on = ends
+                                .iter()
+                                .filter_map(|&end| {
+                                    let &(place, id) = tangent_ons.get(&(y, end, x))?;
+                                    (place < i).then_some((place, end, id, HoldKind::TangentOn(x)))
                                 })
-                                .min_by_key(|&(place, ..)| place)
-                                .map(|(_, end, id, tangent)| (end, x, y, id, tangent));
+                                .min_by_key(|&(place, ..)| place);
+                            found = tangent_on
+                                .or_else(|| {
+                                    ends.iter()
+                                        .filter_map(|&end| {
+                                            let &(place, id, kind) =
+                                                holds.get(&(y, end))?.first()?;
+                                            (place < i).then_some((place, end, id, kind))
+                                        })
+                                        .min_by_key(|&(place, ..)| place)
+                                })
+                                .map(|(_, end, id, kind)| (end, x, y, id, kind));
                         }
                     }
                     found
@@ -649,9 +680,15 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     add(refuse(
                         &format!("{at}.b"),
                         format!(
-                            "a tangent's {ending} ends at point {point}, which constraint {on} puts on {other}: a curve ending on another is tangent where it ends"
+                            "a tangent's {ending} ends at point {point}, which constraint {holder} puts on {other}: a curve ending on another is tangent where it ends"
                         ),
-                        one_tangency(ending, point, other, tangent),
+                        one_tangency(
+                            ending,
+                            point,
+                            other,
+                            kind,
+                            tangent_ons.contains_key(&(other, point, ending)),
+                        ),
                     ));
                 }
                 let (line_a, line_b) = (is_line(0), is_line(1));
@@ -662,7 +699,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 if line_a && line_b {
                     add(refuse(
                         &format!("{at}.b"),
-                        "a tangent takes a line and a circle or arc, or two circles or arcs: two lines can't be tangent".to_owned(),
+                        TWO_LINES_TANGENT.to_owned(),
                         "make one of them a circle or arc, or use parallel".to_owned(),
                     ));
                 } else if !fits {
@@ -696,7 +733,13 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         format!(
                             "a tangent_on puts point {point}, where {ending} ends, on {b}, which constraint {tangent} makes {ending} edge tangent to: a curve ending on another is tangent where it ends"
                         ),
-                        one_tangency(ending, point, b, Some(a)),
+                        one_tangency(
+                            ending,
+                            point,
+                            b,
+                            HoldKind::TangentOn(a),
+                            tangent_ons.contains_key(&(b, point, ending)),
+                        ),
                     ));
                 }
                 if let Some(point) = end.element() {
@@ -759,17 +802,28 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                     }
                 }
             }
-            // The tangent rule's pair, refused here when the `on` comes after the tangent.
-            Form::On { point, curve } => {
+            // The tangent rule's pair, refused here when the `on` or the `midpoint` comes after
+            // the tangent.
+            Form::On { point, curve } | Form::Midpoint { point, line: curve } => {
                 if let Some(end) = point.element()
                     && let Some(&(tangent, ending)) = tangents.get(&(curve, end))
                 {
+                    let (holder, kind) = match form {
+                        Form::Midpoint { .. } => ("a midpoint", HoldKind::Midpoint(&constraint.id)),
+                        _ => ("an on", HoldKind::On),
+                    };
                     add(refuse(
                         &format!("{at}.point"),
                         format!(
-                            "an on puts point {end}, where {ending} ends, on {curve}, which constraint {tangent} makes {ending} edge tangent to: a curve ending on another is tangent where it ends"
+                            "{holder} puts point {end}, where {ending} ends, on {curve}, which constraint {tangent} makes {ending} edge tangent to: a curve ending on another is tangent where it ends"
                         ),
-                        one_tangency(ending, end, curve, None),
+                        one_tangency(
+                            ending,
+                            end,
+                            curve,
+                            kind,
+                            tangent_ons.contains_key(&(curve, end, ending)),
+                        ),
                     ));
                 }
             }
@@ -880,11 +934,29 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
         if n > most {
             add(refuse(
                 key,
-                format!("the sketch has {n} {what}, more than the {most} the sketch solver takes"),
-                "split the sketch into smaller sketches: a single profile past this is more work than the sketch solver takes".to_owned(),
+                past_the_solver(n, most, what),
+                SPLIT_THE_SKETCH.to_owned(),
             ));
         }
     }
+}
+
+/// The gate's refusal of a sketch with `n` of `what`, past the `most` the sketch solver takes,
+/// which a constraint tool says too, ahead of an add that would pass it.
+pub(crate) fn past_the_solver(n: usize, most: usize, what: &str) -> String {
+    format!("the sketch has {n} {what}, more than the {most} the sketch solver takes")
+}
+
+/// What to do about a sketch past a limit of the sketch solver's.
+pub(crate) const SPLIT_THE_SKETCH: &str = "split the sketch into smaller sketches: a single profile past this is more work than the sketch solver takes";
+
+/// What the gate counts against `MAX_SKETCH_CONSTRAINTS`, as its refusal says it.
+pub(crate) const CONSTRAINTS_COUNTED: &str = "constraints (counting each arc's rules as one)";
+
+/// How many constraints the gate counts in `sketch` against `MAX_SKETCH_CONSTRAINTS`: its
+/// constraints, and each arc's rules as one.
+pub(crate) fn counted_constraints(sketch: &Sketch) -> usize {
+    sketch.constraints.len() + sketch.arcs.len()
 }
 
 /// What a reference resolved to.
@@ -1014,30 +1086,51 @@ fn own_points<'a>(
 }
 
 /// A constraint holding a point on a curve, for the tangent rule: its place in the constraint
-/// list, its ID, and a `tangent_on`'s a, the curve it makes tangent there (none for an `on`).
-type Hold<'a> = (usize, &'a ElementId, Option<&'a Reference>);
+/// list, its ID, and its kind.
+type Hold<'a> = (usize, &'a ElementId, HoldKind<'a>);
+
+/// Which of the three forms holding a point on a curve ([`Form::hold`]) a hold is, with what
+/// the tangent rule's suggestion names of it.
+#[derive(Clone, Copy)]
+enum HoldKind<'a> {
+    /// An `on`.
+    On,
+    /// A `tangent_on`, with its a, the curve it makes tangent at the point it holds.
+    TangentOn(&'a Reference),
+    /// A `midpoint`, by its ID.
+    Midpoint(&'a ElementId),
+}
 
 /// What makes one tangency of an edge `tangent` of `ending` and `other` and the constraint
-/// holding `ending`'s end, `point`, on `other`: an `on` (`tangent` none) and the edge tangent
-/// become one `tangent_on`; a `tangent_on` that makes `ending` tangent there already says
-/// what the edge tangent does, so the edge tangent goes; one that makes another curve tangent
-/// there (ending at the same point) stays, holding the point, and the edge tangent becomes a
-/// `tangent_on` of its own.
+/// holding `ending`'s end, `point`, on `other` (`hold`). Where a `tangent_on` of `ending`
+/// holds `point` on `other` (`tangent_there`), wherever it is in the list and whichever hold
+/// is named, it already says what the edge tangent does, so the edge tangent goes: no
+/// suggestion asks for a `tangent_on` the sketch has. Otherwise an `on` and the edge tangent
+/// become one `tangent_on`; a `tangent_on` that makes another curve tangent there (ending at
+/// the same point) stays, holding the point, and the edge tangent becomes a `tangent_on` of
+/// its own, as it does beside a `midpoint`, which stays too, holding the point at the line's
+/// middle.
 fn one_tangency(
     ending: &Reference,
     point: &ElementId,
     other: &Reference,
-    tangent: Option<&Reference>,
+    hold: HoldKind<'_>,
+    tangent_there: bool,
 ) -> String {
-    match tangent {
-        None => format!("make the two one tangent_on, with a {ending}, at {point}, and b {other}"),
-        Some(a) if a == ending => {
-            format!(
-                "remove the tangent: the tangent_on already makes them tangent at point {point}"
-            )
+    if tangent_there {
+        return format!(
+            "remove the tangent: the tangent_on already makes them tangent at point {point}"
+        );
+    }
+    match hold {
+        HoldKind::On => {
+            format!("make the two one tangent_on, with a {ending}, at {point}, and b {other}")
         }
-        Some(a) => format!(
+        HoldKind::TangentOn(a) => format!(
             "make the tangent a tangent_on, with a {ending}, at {point}, and b {other}, keeping {a}'s"
+        ),
+        HoldKind::Midpoint(midpoint) => format!(
+            "make the tangent a tangent_on, with a {ending}, at {point}, and b {other}, keeping midpoint {midpoint}"
         ),
     }
 }
@@ -1085,7 +1178,7 @@ pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static st
     // The origin and the two axes are geometry too.
     let geometry =
         sketch.points.len() + sketch.lines.len() + sketch.circles.len() + sketch.arcs.len() + 3;
-    let constraints = sketch.constraints.len() + sketch.arcs.len();
+    let constraints = counted_constraints(sketch);
     let dimensions = sketch
         .constraints
         .iter()
@@ -1116,7 +1209,7 @@ pub(super) fn size(sketch: &Sketch) -> [(&'static str, usize, usize, &'static st
             "constraints",
             constraints,
             MAX_SKETCH_CONSTRAINTS,
-            "constraints (counting each arc's rules as one)",
+            CONSTRAINTS_COUNTED,
         ),
     ]
 }

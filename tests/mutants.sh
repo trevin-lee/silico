@@ -4,8 +4,10 @@
 # starts from the gate's build; on CI it keeps its own, without debug info, beside it
 # (SILICO_TARGET, .github/workflows/mutants.yml). cargo-mutants has to run in place: a copy of the tree can't find
 # OCCT, so every mutant would look unviable. .cargo/mutants.toml makes each mutant run every
-# workspace test. If a run is killed mid-mutant, the next gate or mutants run restores the
-# tree.
+# workspace test, unless the run names its tests (--test-package): on CI the plan names the
+# mutated packages and those that depend on them, where that's sound (.github/mutants-tests.py,
+# mutants.yml's `tests`). If a run is killed mid-mutant, the next gate or mutants run restores
+# the tree.
 #
 # Arguments go to cargo mutants; paths to files (--in-diff, --output) must be absolute,
 # since it runs in the worktree, while --file names source files from the tree's root. Without --output, the results (mutants.out) land in the worktree, which the next
@@ -81,6 +83,14 @@ slow_proptests=(
   # perspective looks at random; the pyramid's tests hold its rules at their edges.
   adversarial_face_anchors::random_close_perspective_looks_at_long_slabs_draw_every_clear_face_pixel_as_a_ray_cast_sees_it
 )
+# M5.12's scripted slice (silico-app's tests/slice.rs), left out: an end-to-end acceptance
+# test that builds the bracket through the app on the real workers and lavapipe, then reads
+# its exports back in FreeCAD, minutes on a loaded shard for every mutant; every path it
+# drives is covered by the unit and harness tests (the sketch tools', the app's, the core's
+# commands, the export's). It stays in the gate.
+app_acceptance=(
+  the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_reads_back
+)
 # package(p) & (test(=a) | test(=b) | ...), for a package and its tests.
 tests_of() {
   local package=$1 tests="" t
@@ -88,8 +98,9 @@ tests_of() {
   for t in "$@"; do tests="${tests:+$tests | }test(=$t)"; done
   echo "package($package) & ($tests)"
 }
-# Left out of mutants and of the exploration alike: the wall clock's tests and the GiB ones.
-skipped="$(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}")"
+# Left out of mutants and of the exploration alike: the wall clock's tests, the GiB ones, and
+# the app's acceptance test.
+skipped="$(tests_of silico-core "${core_wall_clock[@]}") | $(tests_of silico-sketch "${sketch_wall_clock[@]}") | $(tests_of silico-kernel "${kernel_wall_clock[@]}") | $(tests_of silico-render "${render_scale[@]}") | $(tests_of silico-app "${app_acceptance[@]}")"
 # The slow proptests, for mutants to leave out too and the exploration to run alone: empty
 # when there are none, as `package(p) & ()` is no filter.
 slow=""
@@ -126,12 +137,15 @@ trap 'rm -f "$nextest_config"' EXIT
   printf '\n[profile.silico-mutants]\nslow-timeout = { period = "60s", terminate-after = 5 }\n'
 } >"$nextest_config"
 # Each mutant's tests, and the baseline's, given 30 minutes: no multiple of the baseline,
-# which runs only the mutated packages' tests. The workspace's take 4 to 5 minutes on a
-# loaded runner, and Cargo can wait as long again before them on the package cache's lock,
-# which every runner on the VM shares. (At 300 s, every test had passed so far in 10 of
-# run 39630661896's 11 timeouts.) A hung test, retried twice on CI, takes 15 minutes from
-# when it starts, at most about 5 into the run: nextest ends it first, and its failure
-# catches the mutant. A run past 30 minutes times out, and a timeout is triaged as missed.
+# which runs only the mutated packages' tests. The workspace's take about 15.5 minutes in a
+# gate at about 7 threads at full priority (#430's, run 42658028231, 2026-11-09), longer at a
+# shard's 2 to 4 at the idle weight, and Cargo can wait before them on the package cache's
+# lock, which every runner on the VM shares: a mutant only the last packages' tests catch
+# took 26 to 30 minutes (#445), so CI's plan narrows each run's tests to the packages that
+# can see its mutants where it can (.github/mutants-tests.py). (At 300 s, every test had
+# passed so far in 10 of run 39630661896's 11 timeouts.) A hung test, retried twice on CI,
+# takes 15 minutes from when it starts, at most about 5 into the run: nextest ends it first,
+# and its failure catches the mutant. A run past 30 minutes times out, and a timeout is triaged as missed.
 cargo mutants --in-place --timeout 1800 --cargo-test-arg=-E --cargo-test-arg="$filter" \
   --cargo-test-arg=--config-file --cargo-test-arg="$nextest_config" \
   --cargo-test-arg=--profile --cargo-test-arg=silico-mutants "$@"

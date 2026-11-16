@@ -341,9 +341,10 @@ pub const ALERT_WARNING_BG: Color32 = hex_alpha(0xdf7700, 46);
 pub const ALERT_WARNING_TEXT: Color32 = hex(0xffd28a);
 /// "Rebuilt" and ready dots (`success_text_color`, Green.700).
 pub const SUCCESS: Color32 = hex(0x00da7e);
-/// What an agent or another program changed on disk (Purple.600; approved, `re_ui` has no
-/// such token).
-pub const CHANGED_OUTSIDE: Color32 = hex(0xb780ff);
+/// What an agent or another program changed on disk (the prototype's `--outside`): the info
+/// tone, [`INFO`], light and unsaturated, apart from the selection's saturated Blue.500
+/// (Trevin's change of 2026-11-09: the purple it was didn't fit the theme).
+pub const CHANGED_OUTSIDE: Color32 = INFO;
 /// Links and information (`info_text_color`, Blue.700; the prototype's `--info`).
 pub const INFO: Color32 = hex(0xadbbff);
 
@@ -490,14 +491,26 @@ pub const SKETCH_BAR_HEIGHT: f32 = 32.0;
 
 // ---- The viewport: plain values the app passes to the renderer's frames ----
 
-/// The canvas (`viewport_background`, Gray.0).
-pub const VIEWPORT_BG: Rgba8 = rgba8_of(GRAY_0, 0xff);
+/// The canvas: a vertical gradient, soft charcoal along its top to a lighter grey along its
+/// bottom, as Fusion's dark theme's canvas is (Trevin's change of 2026-11-09, DESIGN.md's
+/// *Changes since approval*: a black canvas "looks like the void"), in place of `re_ui`'s
+/// `viewport_background`, Gray.0, then darkened by him the same day once he saw it: its
+/// first ends, #1e1f22 and #3a3c41, were "too light". Each end its own constant, to be set
+/// from a screenshot.
+pub const VIEWPORT_BG_TOP: Rgba8 = rgba8(0x141517);
+pub const VIEWPORT_BG_BOTTOM: Rgba8 = rgba8(0x2a2c30);
+/// The renderer's frames' own background: none, so they're composited over the canvas's
+/// gradient, painted under them, which shows wherever no body is.
+pub const VIEWPORT_FRAME_BG: Option<[u8; 3]> = None;
 /// A body's colour (the prototype's; `re_ui` has none).
 pub const VIEWPORT_BODY: Rgba8 = rgba8(0xb9c0ca);
 /// A body's edges (the prototype's).
 pub const VIEWPORT_EDGE: Rgba8 = rgba8(0x101010);
 /// Their width, in points.
 pub const VIEWPORT_EDGE_WIDTH: f32 = 1.5;
+/// A shown sketch's curves drawn among the bodies (the prototype's `syncSketchLines`
+/// lines), their width in points.
+pub const VIEWPORT_SKETCH_WIDTH: f32 = 1.5;
 /// A hovered face's tint: white, mixed in at [`VIEWPORT_HOVER_TINT_AMOUNT`].
 pub const VIEWPORT_HOVER_TINT: Rgba8 = rgba8(0xffffff);
 /// How much of [`VIEWPORT_HOVER_TINT`] a hovered face takes.
@@ -515,8 +528,9 @@ pub const VIEWPORT_SELECTION_TINT_AMOUNT: f32 = 0.55;
 pub const VIEWPORT_SELECTION_EDGE: Rgba8 = rgba8(0x5b95ff);
 /// A selected edge's width.
 pub const VIEWPORT_SELECTION_EDGE_WIDTH: f32 = 3.5;
-/// The faces a feature made, while it's hovered in the timeline: Blue.800, mixed in at
-/// [`VIEWPORT_FEATURE_HOVER_TINT_AMOUNT`].
+/// The faces a feature made, while it's hovered in the timeline: Blue.800, mixed into a
+/// face's colour in linear light at [`VIEWPORT_FEATURE_HOVER_TINT_AMOUNT`], before it's lit
+/// (`crate::viewport::feature_tint`).
 pub const VIEWPORT_FEATURE_HOVER_TINT: Rgba8 = rgba8(0xd4dbff);
 /// How much of [`VIEWPORT_FEATURE_HOVER_TINT`] those faces take.
 pub const VIEWPORT_FEATURE_HOVER_TINT_AMOUNT: f32 = 0.4;
@@ -545,11 +559,15 @@ pub const VIEWPORT_GRID_MINOR_MM: f32 = 10.0;
 /// The major lines' spacing, in millimetres.
 pub const VIEWPORT_GRID_MAJOR_MM: f32 = 50.0;
 /// How far from the origin the grid has faded out, in millimetres: linearly, from full at
-/// the origin.
+/// the origin. The ground grid reaches as far ([`crate::grid`]).
 pub const VIEWPORT_GRID_FADE_MM: f32 = 200.0;
-/// The grid's axis lines' width, each in its axis's colour ([`AXIS_X`], [`AXIS_Y`]).
+/// The grid's minor and major lines' width, in points: a WebGL line's pixel at the
+/// prototype's scale, as the sketch's grid draws them (`crate::sketch::draw`).
+pub const VIEWPORT_GRID_WIDTH: f32 = 1.0;
+/// The grid's axis lines' width, each in its axis's colour ([`AXIS_X`], [`AXIS_Y`], and
+/// the ground grid's Z, [`AXIS_Z`]).
 pub const VIEWPORT_GRID_AXIS_WIDTH: f32 = 1.5;
-/// Their alpha, out of 255: 90% (viewport.js:198).
+/// Their alpha, out of 255: 90% (viewport.js's `buildGrid`, its `axis`).
 pub const VIEWPORT_GRID_AXIS_ALPHA: u8 = 230;
 /// A box select's fill, window or crossing: [`SELECTION_BG`]'s Blue.500 at 14%.
 pub const BOX_SELECT_FILL: Rgba8 = rgba8_of(SELECTION_BG, 36);
@@ -732,21 +750,158 @@ pub const TOOLTIP_SHADOW: Shadow = Shadow {
 };
 
 /// The ViewCube's side, and its margin from the canvas's top and right (the prototype's
-/// viewport.js:101, `CUBE` and `CUBE_M`); the Home button sits above it, this high. The
-/// prototype's Home is a 22 high button 4 to the cube's left (app.js:782), which the
-/// viewport's overlay places.
+/// viewport.js:101, `CUBE` and `CUBE_M`).
 pub const VIEW_CUBE_SIDE: f32 = 92.0;
 pub const VIEW_CUBE_MARGIN: f32 = 16.0;
-pub const VIEW_CUBE_HOME_HEIGHT: f32 = 20.0;
+
+/// The ViewCube's two buttons, Home view and its options' ▾ (app.js's `renderCanvasUI`, the
+/// `home3d` and `cubeMenu` buttons): bar buttons (`.ab-btn`) in a column at the cube's left,
+/// its right 4 left of the cube (`right: 16 + 92 + 4`) and its top level with the cube's
+/// (`top: 16px`), 2 apart (`gap: 2px`), each filled Gray.200 at rest and hovered alike (an
+/// inline `background`, over `.ab-btn:hover`'s).
+pub const VIEW_CUBE_BUTTONS_GAP: f32 = 4.0;
+pub const VIEW_CUBE_BUTTONS_SPACING: f32 = 2.0;
+pub const VIEW_CUBE_BUTTON_BG: Color32 = GRAY_200;
+
+/// Where the ViewCube's menu opens, from the ▾'s bottom left corner (interact.js's
+/// `cubeMenu(r.left - 150, r.bottom + 2)`), and from a right click on the cube
+/// (`onCubeMenu`'s `e.clientX - 160, e.clientY`): its top left corner there.
+pub const VIEW_CUBE_MENU_FROM_BUTTON: Vec2 = Vec2::new(-150.0, 2.0);
+pub const VIEW_CUBE_MENU_FROM_CLICK: Vec2 = Vec2::new(-160.0, 0.0);
+
+/// The ViewCube's faces' fills (viewport.js's `buildCube`): the right and left alike
+/// (Gray.300), the top lightest, the bottom darkest (Gray.200), the front and back between.
+pub const VIEW_CUBE_SIDE_FILL: Color32 = GRAY_300;
+pub const VIEW_CUBE_TOP_FILL: Color32 = hex(0x363535);
+pub const VIEW_CUBE_BOTTOM_FILL: Color32 = GRAY_200;
+pub const VIEW_CUBE_FRONT_FILL: Color32 = hex(0x303030);
+pub const VIEW_CUBE_BACK_FILL: Color32 = hex(0x262626);
+/// The border just inside each face's edge, and its width as a part of the face's side: the
+/// prototype's face is a 128 px texture stroked 3 px wide at its rim in Gray.350
+/// (viewport.js's `label`: `strokeRect(1.5, 1.5, 125, 125)`, `lineWidth = 3`).
+pub const VIEW_CUBE_BORDER: Color32 = GRAY_350;
+pub const VIEW_CUBE_BORDER_WIDTH: f32 = 3.0 / 128.0;
+/// A face's label: its words in capitals in Gray.750, Inter Medium 21 px high on the
+/// face's 128, given as a part of the face's side, and its middle 2 px of the 128 below the
+/// face's (viewport.js's `label`: `fillText(text, 64, 66)`, its baseline `middle`).
+pub const VIEW_CUBE_LABEL: Color32 = GRAY_750;
+pub const VIEW_CUBE_LABEL_SIZE: f32 = 21.0 / 128.0;
+pub const VIEW_CUBE_LABEL_DROP: f32 = 2.0 / 128.0;
+/// The cube's edges, each drawn once over its faces: a WebGL line's 1 pixel, here 1 point,
+/// in Gray.500 (viewport.js's `buildCube`, its `EdgesGeometry` in `#827f7f`).
+pub const VIEW_CUBE_EDGE: Stroke = Stroke {
+    width: 1.0,
+    color: GRAY_500,
+};
+/// The cube's axis stubs at its corner, each in its axis's colour ([`AXIS_X`], [`AXIS_Y`],
+/// [`AXIS_Z`]), a WebGL line's 1 pixel, here 1 point (viewport.js's `buildCube`, `ax`).
+pub const VIEW_CUBE_STUB_WIDTH: f32 = 1.0;
+
+/// The triad's origin, as far in from the canvas's left as up from its bottom
+/// (viewport.js's `drawOverlay`: `ox = 44, oy = h - 44`).
+pub const TRIAD_INSET: f32 = 44.0;
+/// An axis's length on the screen square across the view, each shorter by how far it points
+/// along it (`L = 26`).
+pub const TRIAD_LENGTH: f32 = 26.0;
+/// An axis's stroke, in its colour ([`AXIS_X`], [`AXIS_Y`], [`AXIS_Z`]), its ends round
+/// (`stroke-width="2" stroke-linecap="round"`).
+pub const TRIAD_WIDTH: f32 = 2.0;
+/// How far past an axis's end its letter stands, along it (`L + 9`); how far below that the
+/// letter's baseline is (`ly + 3.5`), the letter's middle across there (`text-anchor:
+/// middle`); and its size (`font-size="10.5"`), in its axis's colour.
+pub const TRIAD_LABEL_PAST: f32 = 9.0;
+pub const TRIAD_LABEL_DROP: f32 = 3.5;
+pub const TRIAD_LABEL_SIZE: f32 = 10.5;
+/// The dot over the origin, drawn last: its radius and its fill (`<circle r="2"
+/// fill="#cfcfcf"/>`, Gray.750).
+pub const TRIAD_ORIGIN_RADIUS: f32 = 2.0;
+pub const TRIAD_ORIGIN_FILL: Color32 = GRAY_750;
+
+/// The view label beside the triad (styles.css's `.view-label`, at `left: 82px` as app.js's
+/// `renderCanvasUI` places it): its line's left, in from the canvas's left; its line's
+/// bottom, up from the canvas's bottom (`bottom: 12px`); and its line's height (the body's
+/// 16).
+pub const VIEW_LABEL_LEFT: f32 = 82.0;
+pub const VIEW_LABEL_BOTTOM: f32 = 12.0;
+pub const VIEW_LABEL_LINE_HEIGHT: f32 = BODY_LINE_HEIGHT;
+/// Its words: [`CANVAS_LABEL_SIZE`] (`--fs-small`, 11) in Gray.500 (`--g500`).
+pub const VIEW_LABEL_SIZE: f32 = CANVAS_LABEL_SIZE;
+pub const VIEW_LABEL_TEXT: Color32 = GRAY_500;
+
+/// A feature dialog's distance arrow in the canvas (interact.js's `arrowGeom` and its
+/// overlay): its colour, Blue.525 (`#4676ff`, the focus ring's), and while it's dragged,
+/// white (`dragArrow ? '#ffffff' : '#4676ff'`).
+pub const ARROW: Color32 = FOCUS;
+pub const ARROW_HELD: Color32 = GRAY_1000;
+/// Its shaft: its width (`stroke-width="2.5"`), and its length on the screen from its base
+/// along the sweep, whatever the zoom (`tip = a + u * 56`).
+pub const ARROW_WIDTH: f32 = 2.5;
+pub const ARROW_LENGTH: f32 = 56.0;
+/// Its head, a triangle filled in its colour: its point this far past the shaft's end
+/// (`g.ux * 12`), its corners this far either side of the shaft's end (`px * 6`).
+pub const ARROW_HEAD_LENGTH: f32 = 12.0;
+pub const ARROW_HEAD_HALF_WIDTH: f32 = 6.0;
+/// The dot over its base, in its colour (`<circle r="3.5">`).
+pub const ARROW_DOT_RADIUS: f32 = 3.5;
+/// Its label, the value in mm: its box's left this far past the shaft's end along the arrow
+/// (`g.ux * 22`), and this far right of that (`+ 6`), its middle down there; its height
+/// (`height="20"`), its corners (`rx="4"`), and the room before its words and after them
+/// (`lx + 6`, and the width's `+ 12`); filled `#212121`, outlined 1 point in the arrow's
+/// colour (SVG's default `stroke-width`); its words 11.5 high in white (`font-size="11.5"`,
+/// `fill="#fff"`), their baseline 4 below its middle (`ly + 4`).
+pub const ARROW_LABEL_PAST: f32 = 22.0;
+pub const ARROW_LABEL_SHIFT: f32 = 6.0;
+pub const ARROW_LABEL_HEIGHT: f32 = 20.0;
+pub const ARROW_LABEL_RADIUS: u8 = 4;
+pub const ARROW_LABEL_PAD: f32 = 6.0;
+pub const ARROW_LABEL_FILL: Color32 = GRAY_200;
+pub const ARROW_LABEL_OUTLINE: f32 = 1.0;
+pub const ARROW_LABEL_SIZE: f32 = 11.5;
+pub const ARROW_LABEL_TEXT: Color32 = GRAY_1000;
+pub const ARROW_LABEL_DROP: f32 = 4.0;
+/// Where a press takes an arrow (`arrowHit`): nearer than 14 points to its shaft's end, or
+/// than 6 to its shaft.
+pub const ARROW_HIT_TIP: f32 = 14.0;
+pub const ARROW_HIT_SHAFT: f32 = 6.0;
+/// The flip arrow's shaft, from the profile along the sweep: half the distance arrow's.
+/// Silico's own: the prototype draws no flip arrow (its Direction is the dialog's, `dlgRev`),
+/// so it's drawn as the distance arrow is, shorter, with no dot and no label.
+pub const FLIP_ARROW_LENGTH: f32 = 28.0;
 
 /// The navigation bar's width and height, and its margin from the canvas's bottom (the
 /// prototype's `.nav-bar`, 12 from the bottom). Its height is a 24 high button, 3 of padding,
-/// and a 1 border, each above and below; its width, its seven buttons as app.js:771 lays
-/// them out (five of 26, the display menu's 42, and the grid's 26), its separator (7), the
-/// 1 between each, and the same padding and border at each side.
+/// and a 1 border, each above and below; its width, its seven buttons as app.js's
+/// `renderCanvasUI` lays them out (five of 26, the display menu's 42, and the grid's 26),
+/// its separator (7), the 1 between each, and the same padding and border at each side.
 pub const NAVIGATION_BAR_WIDTH: f32 = 220.0;
 pub const NAVIGATION_BAR_HEIGHT: f32 = 32.0;
 pub const NAVIGATION_BAR_MARGIN: f32 = 12.0;
+
+/// The navigation bar's frame (`.nav-bar`): Gray.200 inside a 1 Gray.250 border, `--r`'s
+/// corners, 3 of padding inside the border, 1 between its items, and its shadow (`0 4px
+/// 14px`, black at half).
+pub const NAVIGATION_BAR_BG: Color32 = FLOATING_BG;
+pub const NAVIGATION_BAR_BORDER: Color32 = PANEL_BORDER;
+pub const NAVIGATION_BAR_PADDING: f32 = 3.0;
+pub const NAVIGATION_BAR_GAP: f32 = 1.0;
+pub const NAVIGATION_BAR_SHADOW: Shadow = Shadow {
+    offset: [0, 4],
+    blur: 14,
+    spread: 0,
+    color: with_alpha(GRAY_0, 128),
+};
+
+/// A navigation bar button's height and least width (`.nav-bar .ab-btn`: 24 and 26), and
+/// its separator's height and its margin at each side (`.nav-bar .ab-sep`: 14 and 3).
+pub const NAVIGATION_BAR_BUTTON_HEIGHT: f32 = 24.0;
+pub const NAVIGATION_BAR_BUTTON_WIDTH: f32 = 26.0;
+pub const NAVIGATION_BAR_SEPARATOR_HEIGHT: f32 = 14.0;
+pub const NAVIGATION_BAR_SEPARATOR_MARGIN: f32 = 3.0;
+
+/// How far above its button the display settings' menu opens (interact.js's
+/// `displayMenu(r.left, r.top - 4, true)`: its bottom 4 above the button's top, its left at
+/// the button's).
+pub const NAVIGATION_BAR_MENU_GAP: f32 = 4.0;
 
 /// A small button's height (`.btn`): Copy MCP config, and the dialogs' buttons.
 pub const BUTTON_HEIGHT: f32 = 22.0;
@@ -816,6 +971,11 @@ pub const DOC_TAB_DIRTY: Color32 = TEXT_STRONG;
 /// A tab's close button (`.doc-tab .x`), shown while the tab is hovered or shown: its side,
 /// its corners, its icon (Gray.550), and its fill and icon hovered (Gray.350, white).
 pub const DOC_TAB_CLOSE_SIZE: f32 = 16.0;
+/// A tab's mark (`.doc-tab .mark`): a dot this wide, before its name, `DOC_TAB_GAP` from
+/// it; red for errors, the changed-outside tone for a file changed on disk (`.outside`).
+pub const DOC_TAB_MARK_SIZE: f32 = 6.0;
+pub const DOC_TAB_MARK_ERRORS: Color32 = ERROR_TEXT;
+pub const DOC_TAB_MARK_OUTSIDE: Color32 = CHANGED_OUTSIDE;
 pub const DOC_TAB_CLOSE_CORNER_RADIUS: u8 = 3;
 pub const DOC_TAB_CLOSE: Color32 = TEXT_SUBDUED;
 pub const DOC_TAB_CLOSE_HOVER_BG: Color32 = GRAY_350;
@@ -923,6 +1083,11 @@ pub const PANEL_TITLE_PADDING_RIGHT: f32 = 6.0;
 pub const PANEL_TITLE_GAP: f32 = 6.0;
 pub const PANEL_TITLE_BUTTON_SIZE: f32 = 20.0;
 
+/// The browser collapsed to its strip (`#main.browser-collapsed`, app.js's `renderBrowser`):
+/// its one button, Show browser, an `.ab-btn` ([`APP_BAR_BUTTON_SIZE`] square) with `margin:
+/// 2px`, so 2 in from the strip's top and left.
+pub const BROWSER_STRIP_BUTTON_MARGIN: f32 = 2.0;
+
 /// A row's padding at its left before its depth's indents (`6 + depth * 18`), at its right,
 /// and the gap between its parts (`.row`).
 pub const BROWSER_ROW_PADDING_LEFT: f32 = 6.0;
@@ -998,6 +1163,12 @@ pub const TIMELINE_ITEM_SELECTED_BG: Color32 = SELECTION_BG;
 /// A sketch's icon (`.sketch`), Gray.600, whether hovered or selected: styles.css gives it
 /// after both.
 pub const TIMELINE_SKETCH_ICON: Color32 = GRAY_600;
+
+/// The ring of an item whose feature made what the canvas's hover is over
+/// (`.hovered-from-canvas`): Gray.600 inside its border, round its corners (`box-shadow:
+/// inset 0 0 0 1px var(--g600)`), this wide.
+pub const TIMELINE_RING: Color32 = GRAY_600;
+pub const TIMELINE_RING_WIDTH: f32 = 1.0;
 
 /// A failed feature (`.err`): its icon Red.550 and a line of it along the item's bottom;
 /// a warned one's (`.warn`) the warning's orange. The line's width.
@@ -1527,13 +1698,24 @@ pub const CANVAS_MIN_HEIGHT: f32 = VIEW_CUBE_MARGIN
     + NAVIGATION_BAR_HEIGHT
     + NAVIGATION_BAR_MARGIN;
 
+/// The toolbar's least width: its widest row, sketch mode's (SKETCH's CREATE, MODIFY,
+/// CONSTRAINTS, and INSPECT, from its left after `.tb-panels`' 6, then Finish Sketch in
+/// `.tb-finish`'s 8 at each side and the row's 6 at its right), 881.5 in the app's fonts;
+/// rounded up to the 8-point grid the prototype's columns are on (248, 296), 888. The test
+/// `at_the_windows_least_width_the_app_bar_toolbar_and_status_bar_fit` lays it out there.
+pub const TOOLBAR_MIN_WIDTH: f32 = 888.0;
+
 /// The window's least size (Fusion's window has one; the prototype, a page, has none): the
-/// browser's and the property panel's columns (`--browser-w`, `--right-w`) and the least
-/// canvas between them, 884; and the app bar (`--top-bar-h`), the toolbar (`--toolbar-tabs-
-/// h`, `--toolbar-h`, and its border), the least canvas, the timeline (`--timeline-h`, and
-/// the 1 egui's separator line takes above it), and the status bar (`--status-h`), 336.
-pub const WINDOW_MIN_WIDTH: f32 =
-    crate::panes::BROWSER_W + crate::panes::RIGHT_W + CANVAS_MIN_WIDTH;
+/// wider of the toolbar's least ([`TOOLBAR_MIN_WIDTH`], 888) and the side panes' columns at
+/// their leasts (`crate::pane_widths`' `BROWSER_MIN_W` and `PROPERTIES_MIN_W`, 200 and 232)
+/// with the least canvas between them, 772: 888, at which the panes keep the prototype's
+/// widths and a narrower window gives back only what panes dragged wider take; and the app
+/// bar (`--top-bar-h`), the toolbar (`--toolbar-tabs-h`, `--toolbar-h`, and its border), the
+/// least canvas, the timeline (`--timeline-h`, and the 1 egui's separator line takes above
+/// it), and the status bar (`--status-h`), 336.
+pub const WINDOW_MIN_WIDTH: f32 = TOOLBAR_MIN_WIDTH.max(
+    crate::pane_widths::BROWSER_MIN_W + crate::pane_widths::PROPERTIES_MIN_W + CANVAS_MIN_WIDTH,
+);
 pub const WINDOW_MIN_HEIGHT: f32 = TOP_BAR_HEIGHT
     + TOOLBAR_TABS_HEIGHT
     + TOOLBAR_PANELS_HEIGHT
@@ -1565,10 +1747,12 @@ pub const BANNER_TITLE: Color32 = TEXT_STRONG;
 pub const BANNER_WARNING_BG: Color32 = hex(0x2a1d0b);
 pub const BANNER_WARNING_BORDER: Color32 = hex(0x6b4310);
 pub const BANNER_WARNING_TEXT: Color32 = ALERT_WARNING_TEXT;
-/// A banner saying the session reloaded its file (`.canvas-banner.info`): purple.
-pub const BANNER_INFO_BG: Color32 = hex(0x17142a);
-pub const BANNER_INFO_BORDER: Color32 = hex(0x463375);
-pub const BANNER_INFO_TEXT: Color32 = hex(0xe4d6ff);
+/// A banner saying the session reloaded its file (`.canvas-banner.info`): the info tone on
+/// a dark card as the other banners' (`--info-card-bg`, `--info-card-border`,
+/// `--info-card-text`; Trevin's change of 2026-11-09, from purple).
+pub const BANNER_INFO_BG: Color32 = hex(0x111a2d);
+pub const BANNER_INFO_BORDER: Color32 = hex(0x2b3c66);
+pub const BANNER_INFO_TEXT: Color32 = hex(0xdce3ff);
 /// A banner saying the file is gone (`.canvas-banner.err`).
 pub const BANNER_ERROR_BG: Color32 = hex(0x2a0a12);
 pub const BANNER_ERROR_BORDER: Color32 = hex(0x6e1228);
@@ -1585,12 +1769,13 @@ pub const BANNER_LIST_MARGIN_TOP: f32 = 6.0;
 pub const BANNER_LIST_ROW_GAP: f32 = 2.0;
 pub const BANNER_LIST_COLUMN_GAP: f32 = 10.0;
 
-/// The card in a feature's properties saying another program changed it (`.err-card.warn`,
-/// restyled purple as `featureProps` styles it): `rgba(183,128,255,.12)`, its border
-/// `#463375`, its words `#e4d6ff`.
-pub const OUTSIDE_CARD_BG: Color32 = Color32::from_rgba_unmultiplied_const(183, 128, 255, 31);
-pub const OUTSIDE_CARD_BORDER: Color32 = hex(0x463375);
-pub const OUTSIDE_CARD_TEXT: Color32 = hex(0xe4d6ff);
+/// The card in a feature's properties saying another program changed it (`.err-card.info`):
+/// the info banner's card, its head ([`INFO`]) and words (Trevin's change of 2026-11-09,
+/// from purple).
+pub const OUTSIDE_CARD_BG: Color32 = BANNER_INFO_BG;
+pub const OUTSIDE_CARD_BORDER: Color32 = BANNER_INFO_BORDER;
+pub const OUTSIDE_CARD_HEAD: Color32 = INFO;
+pub const OUTSIDE_CARD_TEXT: Color32 = BANNER_INFO_TEXT;
 /// A ghost button's words (`.btn-ghost`): Gray.750; hovered, on its fill
 /// ([`GHOST_BUTTON_HOVER_BG`]), white.
 pub const GHOST_BUTTON_TEXT: Color32 = GRAY_750;
@@ -1719,7 +1904,10 @@ pub fn style(mut base: egui::Style) -> egui::Style {
     visuals.panel_fill = PANEL_BG;
     visuals.window_fill = FLOATING_BG;
     visuals.faint_bg_color = BOTTOM_BAR_BG;
-    visuals.extreme_bg_color = color32(VIEWPORT_BG);
+    // egui's own darkest ground (a scroll bar's trough, a progress bar's, a dark frame's),
+    // Gray.0 as the canvas was; the canvas is its gradient now (`VIEWPORT_BG_TOP`,
+    // `VIEWPORT_BG_BOTTOM`).
+    visuals.extreme_bg_color = GRAY_0;
     visuals.text_edit_bg_color = Some(FIELD_BG);
     visuals.code_bg_color = FIELD_BG;
     visuals.weak_text_color = Some(TEXT_SUBDUED);
@@ -2109,7 +2297,7 @@ mod tests {
         ] {
             assert_eq!(color, [r, g, b, of_255(alpha)], "{name}");
         }
-        // viewport.js:198, the grid's axes at 0.9.
+        // viewport.js's `buildGrid`, its `axis`: the grid's axes at 0.9.
         assert_eq!(VIEWPORT_GRID_AXIS_ALPHA, of_255(0.9));
     }
 
@@ -2182,7 +2370,9 @@ mod tests {
             assert_eq!(color, opaque(hex), "{name}");
         }
         // viewport.js:587, viewport.js:183's `#646363`, and DESIGN.md's candidates and
-        // canvas.
+        // canvas: styles.css's `--canvas-top` and `--canvas-bottom` (Trevin's of 2026-11-09),
+        // and nothing behind the renderer's bodies (viewport.js's `setClearColor(0x000000,
+        // 0)`).
         for (name, color, rgba) in [
             (
                 "BOX_SELECT_STROKE",
@@ -2194,8 +2384,13 @@ mod tests {
                 VIEWPORT_CANDIDATE,
                 [0xff, 0x7a, 0x0c, 0xff],
             ),
-            ("VIEWPORT_BG", VIEWPORT_BG, [0, 0, 0, 0xff]),
-            // interact.js:473-475, `overlay`'s `dot`: a hovered vertex white, a selected one
+            ("VIEWPORT_BG_TOP", VIEWPORT_BG_TOP, [0x14, 0x15, 0x17, 0xff]),
+            (
+                "VIEWPORT_BG_BOTTOM",
+                VIEWPORT_BG_BOTTOM,
+                [0x2a, 0x2c, 0x30, 0xff],
+            ),
+            // interact.js's `overlay`, its `dot`: a hovered vertex white, a selected one
             // #4676ff, each ringed `stroke="#000"`.
             (
                 "VIEWPORT_HOVER_VERTEX",
@@ -2212,9 +2407,20 @@ mod tests {
                 VIEWPORT_VERTEX_RING_COLOR,
                 [0, 0, 0, 0xff],
             ),
+            // viewport.js's `MAKER`, `#d4dbff`: DESIGN.md's "a feature's faces on hover:
+            // Blue.800", re_ui 0.38.1's Blue.800 (`color_table.ron`).
+            (
+                "VIEWPORT_FEATURE_HOVER_TINT",
+                VIEWPORT_FEATURE_HOVER_TINT,
+                [0xd4, 0xdb, 0xff, 0xff],
+            ),
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        // viewport.js's `applyHighlight`: a maker's face `uTintAmt.value = 0.4` (DESIGN.md's
+        // "tint 40%").
+        assert_eq!(VIEWPORT_FEATURE_HOVER_TINT_AMOUNT, 0.4);
+        assert_eq!(VIEWPORT_FRAME_BG, None);
         // The dot's `r="4.5"` and its ring's `stroke-width="1"`.
         assert_eq!((VIEWPORT_VERTEX_RADIUS, VIEWPORT_VERTEX_RING), (4.5, 1.0));
     }
@@ -2250,6 +2456,7 @@ mod tests {
         assert_eq!(DOC_TAB_MAX_WIDTH, 220.0);
         assert_eq!(DOC_TAB_CLOSE_SIZE, 16.0);
         assert_eq!(DOC_TAB_CLOSE_CORNER_RADIUS, 3);
+        assert_eq!(DOC_TAB_MARK_SIZE, 6.0);
         // `.tooltip .tt-title`'s `gap: 8px`, `.tt-desc`'s `margin-top: 2px`.
         assert_eq!(TOOLTIP_TITLE_GAP, 8.0);
         assert_eq!(TOOLTIP_DESCRIPTION_GAP, 2.0);
@@ -2271,6 +2478,8 @@ mod tests {
             ("DOC_TAB_DIRTY", DOC_TAB_DIRTY, 0xffffff),
             // `.doc-tab .x`, `--g550`; `.x:hover`, `--g1000` on `--g350`.
             ("DOC_TAB_CLOSE", DOC_TAB_CLOSE, 0x939090),
+            ("DOC_TAB_MARK_ERRORS", DOC_TAB_MARK_ERRORS, 0xff3865),
+            ("DOC_TAB_MARK_OUTSIDE", DOC_TAB_MARK_OUTSIDE, 0xadbbff),
             ("DOC_TAB_CLOSE_HOVER", DOC_TAB_CLOSE_HOVER, 0xffffff),
             ("DOC_TAB_CLOSE_HOVER_BG", DOC_TAB_CLOSE_HOVER_BG, 0x525151),
         ] {
@@ -2410,6 +2619,9 @@ mod tests {
         };
         // `.panel-title`: `padding: 0 6px 0 var(--pad)`, `--pad: 12px`.
         assert_eq!(BROWSER_TITLE_PADDING, 12.0);
+        // The collapsed strip's button: `.ab-btn` (`--btn: 22px`) with `margin: 2px`.
+        assert_eq!(BROWSER_STRIP_BUTTON_MARGIN, 2.0);
+        assert_eq!(APP_BAR_BUTTON_SIZE, 22.0);
         // `.row`: `gap: 4px; padding-right: 6px`, `padding-left: 6 + depth * 18`.
         assert_eq!(BROWSER_ROW_PADDING_LEFT, 6.0);
         assert_eq!(BROWSER_ROW_PADDING_RIGHT, 6.0);
@@ -2479,6 +2691,8 @@ mod tests {
         assert_eq!(TIMELINE_ITEM_GAP, 2.0);
         assert_eq!(TIMELINE_ITEM_SIZE, 30.0);
         assert_eq!(TIMELINE_ITEM_CORNER_RADIUS, 4);
+        // `.hovered-from-canvas`: `inset 0 0 0 1px`.
+        assert_eq!(TIMELINE_RING_WIDTH, 1.0);
         // `.err`/`.warn`: `inset 0 -2px 0`; `.suppressed`: `opacity: .35`, its strike
         // `left: 5px; right: 5px; height: 1.5px; rotate(-35deg)`; `.queued`: `.45`.
         assert_eq!(TIMELINE_MARK_LINE_WIDTH, 2.0);
@@ -2531,6 +2745,8 @@ mod tests {
                 0x186add,
             ),
             ("TIMELINE_SKETCH_ICON", TIMELINE_SKETCH_ICON, 0x9f9f9f),
+            // `.hovered-from-canvas`, `--g600`.
+            ("TIMELINE_RING", TIMELINE_RING, 0x9f9f9f),
             // `.err`, `--red`; `.warn`, `--orange`; `.err-text`, `--red`.
             ("TIMELINE_ERROR", TIMELINE_ERROR, 0xff3865),
             ("TIMELINE_WARNING", TIMELINE_WARNING, 0xff7a0c),
@@ -2593,6 +2809,153 @@ mod tests {
             ),
             ([0, 6], 18, 0)
         );
+    }
+
+    /// The ViewCube's look, typed from viewport.js's `label` and `buildCube`.
+    #[test]
+    fn the_view_cubes_look_is_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `names`: RIGHT and LEFT `#2c2b2b`, TOP `#363535`, BOTTOM `#212121`, FRONT
+        // `#303030`, BACK `#262626`; `strokeStyle = '#525151'`, `fillStyle = '#cfcfcf'`;
+        // the edges' `color: '#827f7f'`.
+        for (name, color, hex) in [
+            ("VIEW_CUBE_SIDE_FILL", VIEW_CUBE_SIDE_FILL, 0x2c2b2b),
+            ("VIEW_CUBE_TOP_FILL", VIEW_CUBE_TOP_FILL, 0x363535),
+            ("VIEW_CUBE_BOTTOM_FILL", VIEW_CUBE_BOTTOM_FILL, 0x212121),
+            ("VIEW_CUBE_FRONT_FILL", VIEW_CUBE_FRONT_FILL, 0x303030),
+            ("VIEW_CUBE_BACK_FILL", VIEW_CUBE_BACK_FILL, 0x262626),
+            ("VIEW_CUBE_BORDER", VIEW_CUBE_BORDER, 0x525151),
+            ("VIEW_CUBE_LABEL", VIEW_CUBE_LABEL, 0xcfcfcf),
+            ("VIEW_CUBE_EDGE", VIEW_CUBE_EDGE.color, 0x827f7f),
+        ] {
+            assert_eq!(color, opaque(hex), "{name}");
+        }
+        // A 128 px face: `lineWidth = 3`, `21px`, and the words' middle at 66, 2 below 64.
+        assert_eq!(VIEW_CUBE_BORDER_WIDTH * 128.0, 3.0);
+        assert_eq!(VIEW_CUBE_LABEL_SIZE * 128.0, 21.0);
+        assert_eq!(VIEW_CUBE_LABEL_DROP * 128.0, 2.0);
+        // A WebGL line's one pixel, the edges' and the axis stubs'.
+        assert_eq!(VIEW_CUBE_EDGE.width, 1.0);
+        assert_eq!(VIEW_CUBE_STUB_WIDTH, 1.0);
+        // Home and ▾: `right: 16 + 92 + 4`, `gap: 2px`, `background: var(--g200)`; the menu
+        // at `r.left - 150, r.bottom + 2` from the ▾, and `e.clientX - 160` from a click.
+        assert_eq!(VIEW_CUBE_BUTTONS_GAP, 4.0);
+        assert_eq!(VIEW_CUBE_BUTTONS_SPACING, 2.0);
+        assert_eq!(VIEW_CUBE_BUTTON_BG, opaque(0x212121));
+        assert_eq!(VIEW_CUBE_MENU_FROM_BUTTON, Vec2::new(-150.0, 2.0));
+        assert_eq!(VIEW_CUBE_MENU_FROM_CLICK, Vec2::new(-160.0, 0.0));
+    }
+
+    /// The triad, typed from viewport.js's `drawOverlay`, and the view label, from
+    /// styles.css's `.view-label` and the body's font, and app.js's `left:82px`.
+    #[test]
+    fn the_triads_and_the_view_labels_look_is_the_prototypes() {
+        // `ox = 44, oy = h - 44, L = 26`; each `<line>` `stroke-width="2"`; each `<text>` at
+        // `L + 9`, its `y` 3.5 below, `font-size="10.5"`; `<circle r="2" fill="#cfcfcf"/>`.
+        assert_eq!(TRIAD_INSET, 44.0);
+        assert_eq!(TRIAD_LENGTH, 26.0);
+        assert_eq!(TRIAD_WIDTH, 2.0);
+        assert_eq!(TRIAD_LABEL_PAST, 9.0);
+        assert_eq!(TRIAD_LABEL_DROP, 3.5);
+        assert_eq!(TRIAD_LABEL_SIZE, 10.5);
+        assert_eq!(TRIAD_ORIGIN_RADIUS, 2.0);
+        assert_eq!(TRIAD_ORIGIN_FILL, Color32::from_rgb(0xcf, 0xcf, 0xcf));
+        // The axes' `#ff6981`, `#00b266`, `#7a95ff`, opaque.
+        assert_eq!(AXIS_X, [0xff, 0x69, 0x81, 0xff]);
+        assert_eq!(AXIS_Y, [0x00, 0xb2, 0x66, 0xff]);
+        assert_eq!(AXIS_Z, [0x7a, 0x95, 0xff, 0xff]);
+        // `left: 82px` (app.js), `bottom: 12px`, `--lh: 16px`, `--fs-small: 11px`,
+        // `color: var(--g500)`, `#827f7f`.
+        assert_eq!(VIEW_LABEL_LEFT, 82.0);
+        assert_eq!(VIEW_LABEL_BOTTOM, 12.0);
+        assert_eq!(VIEW_LABEL_LINE_HEIGHT, 16.0);
+        assert_eq!(VIEW_LABEL_SIZE, 11.0);
+        assert_eq!(VIEW_LABEL_TEXT, Color32::from_rgb(0x82, 0x7f, 0x7f));
+    }
+
+    /// The distance arrow, typed from interact.js's overlay of `arrowGeom`'s arrow, and its
+    /// hit area from `arrowHit`.
+    #[test]
+    fn the_distance_arrows_look_is_the_prototypes() {
+        // `col = dragArrow ? '#ffffff' : '#4676ff'`; `stroke-width="2.5"`; `ux * 56`.
+        assert_eq!(ARROW, Color32::from_rgb(0x46, 0x76, 0xff));
+        assert_eq!(ARROW_HELD, Color32::from_rgb(0xff, 0xff, 0xff));
+        assert_eq!(ARROW_WIDTH, 2.5);
+        assert_eq!(ARROW_LENGTH, 56.0);
+        // The head's `g.ux * 12` and `px * 6`; the base's `r="3.5"`.
+        assert_eq!(ARROW_HEAD_LENGTH, 12.0);
+        assert_eq!(ARROW_HEAD_HALF_WIDTH, 6.0);
+        assert_eq!(ARROW_DOT_RADIUS, 3.5);
+        // `lx = tip.x + ux * 22 + 6`, `y = ly - 10`, `height="20"`, `rx="4"`,
+        // `fill="#212121"`, `x = lx + 6`, `font-size="11.5"`, `fill="#fff"`, `y = ly + 4`.
+        assert_eq!(ARROW_LABEL_PAST, 22.0);
+        assert_eq!(ARROW_LABEL_SHIFT, 6.0);
+        assert_eq!(ARROW_LABEL_HEIGHT, 20.0);
+        assert_eq!(ARROW_LABEL_RADIUS, 4);
+        assert_eq!(ARROW_LABEL_PAD, 6.0);
+        assert_eq!(ARROW_LABEL_FILL, Color32::from_rgb(0x21, 0x21, 0x21));
+        assert_eq!(ARROW_LABEL_OUTLINE, 1.0);
+        assert_eq!(ARROW_LABEL_SIZE, 11.5);
+        assert_eq!(ARROW_LABEL_TEXT, Color32::from_rgb(0xff, 0xff, 0xff));
+        assert_eq!(ARROW_LABEL_DROP, 4.0);
+        // `Math.hypot(m.x - g.tip.x, m.y - g.tip.y) < 14 || segD(m, g.a, g.tip) < 6`.
+        assert_eq!(ARROW_HIT_TIP, 14.0);
+        assert_eq!(ARROW_HIT_SHAFT, 6.0);
+        assert_eq!(FLIP_ARROW_LENGTH, ARROW_LENGTH / 2.0);
+    }
+
+    /// The navigation bar, typed from styles.css's `.nav-bar`, `.nav-bar .ab-btn`, and
+    /// `.nav-bar .ab-sep`, and app.js's buttons in it.
+    #[test]
+    fn the_navigation_bars_look_is_the_prototypes_and_its_size_its_parts() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `background: var(--g200); border: 1px solid var(--g250); padding: 3px; gap: 1px;
+        // box-shadow: 0 4px 14px rgba(0,0,0,.5)`.
+        assert_eq!(NAVIGATION_BAR_BG, opaque(0x212121));
+        assert_eq!(NAVIGATION_BAR_BORDER, opaque(0x272626));
+        assert_eq!(NAVIGATION_BAR_PADDING, 3.0);
+        assert_eq!(NAVIGATION_BAR_GAP, 1.0);
+        assert_eq!(
+            (
+                NAVIGATION_BAR_SHADOW.offset,
+                NAVIGATION_BAR_SHADOW.blur,
+                NAVIGATION_BAR_SHADOW.spread,
+                NAVIGATION_BAR_SHADOW.color,
+            ),
+            ([0, 4], 14, 0, Color32::from_rgba_unmultiplied(0, 0, 0, 128))
+        );
+        // A button 24 high, 26 wide at least; a separator 14 high, 3 each side.
+        assert_eq!(NAVIGATION_BAR_BUTTON_HEIGHT, 24.0);
+        assert_eq!(NAVIGATION_BAR_BUTTON_WIDTH, 26.0);
+        assert_eq!(NAVIGATION_BAR_SEPARATOR_HEIGHT, 14.0);
+        assert_eq!(NAVIGATION_BAR_SEPARATOR_MARGIN, 3.0);
+        // Seven buttons: five of one icon (14 and 5 each side, 24, so 26), Display settings'
+        // two icons 4 apart (5 + 14 + 4 + 14 + 5 = 42), and Grid's 26; the separator's 1
+        // and 3 each side; a 1 gap between each of the eight; the padding and border each
+        // side: 5·26 + 42 + 26 + 7 + 7 + 2·4 = 220 across, 24 + 2·4 = 32 high.
+        assert_eq!(NAVIGATION_BAR_WIDTH, 220.0);
+        assert_eq!(NAVIGATION_BAR_HEIGHT, 32.0);
+        assert_eq!(
+            5.0 * NAVIGATION_BAR_BUTTON_WIDTH
+                + 42.0
+                + NAVIGATION_BAR_BUTTON_WIDTH
+                + (BORDER_WIDTH + 2.0 * NAVIGATION_BAR_SEPARATOR_MARGIN)
+                + 7.0 * NAVIGATION_BAR_GAP
+                + 2.0 * (NAVIGATION_BAR_PADDING + BORDER_WIDTH),
+            NAVIGATION_BAR_WIDTH
+        );
+        assert_eq!(
+            NAVIGATION_BAR_BUTTON_HEIGHT + 2.0 * (NAVIGATION_BAR_PADDING + BORDER_WIDTH),
+            NAVIGATION_BAR_HEIGHT
+        );
+        // The display menu 4 above its button (`r.top - 4`).
+        assert_eq!(NAVIGATION_BAR_MENU_GAP, 4.0);
     }
 
     // ---- A key cap's border, as `.kbd` draws it (border 1/1/2/1, radius 3, border-box) ----

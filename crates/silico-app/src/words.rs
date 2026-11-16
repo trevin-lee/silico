@@ -1,4 +1,4 @@
-//! Words the app's messages share.
+//! Words the app's messages and labels share.
 
 /// `names` as a list in words, joined by `conjunction` ("and" or "or"): "A", "A and B",
 /// "A, B, and C", with the serial comma, as the core's and the kernel's lists have it.
@@ -30,9 +30,44 @@ pub(crate) fn listed_at_most<S: AsRef<str>>(names: &[S], conjunction: &str, most
     }
 }
 
+/// `words` with its first character a capital (as Unicode capitalises it, which may be more
+/// than one character), the rest as they are: `top front right` is "Top front right".
+pub(crate) fn capitalised(words: &str) -> String {
+    let mut chars = words.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// A named view's words, as the ViewCube labels it and the view label names a face:
+/// `top_front_right` is "Top front right", `front` "Front".
+pub(crate) fn view_words(view: silico_core::views::NamedView) -> String {
+    capitalised(&view.name().replace('_', " "))
+}
+
+/// The projections in words, as the view label, the ViewCube's menu, and Display settings say
+/// them.
+pub(crate) const ORTHOGRAPHIC: &str = "Orthographic";
+pub(crate) const PERSPECTIVE: &str = "Perspective";
+
+/// `projection` in words: [`ORTHOGRAPHIC`] or [`PERSPECTIVE`].
+pub(crate) fn projection_words(projection: &silico_protocol::Projection) -> &'static str {
+    match projection {
+        silico_protocol::Projection::Orthographic { .. } => ORTHOGRAPHIC,
+        silico_protocol::Projection::Perspective { .. } => PERSPECTIVE,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{listed, listed_at_most};
+    use super::{listed, listed_at_most, view_words};
+    use silico_core::views::NamedView;
+
+    #[test]
+    fn a_named_views_words_are_its_name_in_words_its_first_a_capital() {
+        assert_eq!(view_words(NamedView::TopFrontRight), "Top front right");
+        assert_eq!(view_words(NamedView::Front), "Front");
+    }
 
     #[test]
     fn a_list_in_words_has_its_conjunction_and_the_serial_comma() {

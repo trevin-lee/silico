@@ -1,7 +1,7 @@
 //! Hostile scenes for the bodies the render worker holds between renders (`/break-it` on
 //! crates/silico-render/src/render.rs: each body uploaded once about its own centre and
 //! moved into each view by its instance's transform, the held bodies found again by number
-//! and mesh, a face's plain and tinted meshes each uploaded the first time they're drawn).
+//! and mesh, a face's plain and baked meshes each uploaded the first time they're drawn).
 //!
 //! What's drawn is checked against a ray cast by hand in f64 here, or against a fresh
 //! worker's drawing byte for byte, never against a stored image.

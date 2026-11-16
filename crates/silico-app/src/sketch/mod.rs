@@ -1,10 +1,11 @@
 //! Sketch mode (docs/design/m5.0-app.md, section 9, *Sketching*; the M5.11 plan): a tab's
 //! state while a sketch is open, never a pane of its own. The sketch open and the revision
 //! sketch mode opened at; the newest `sketch` read, one in flight at a time, the one
-//! source of what's drawn, the status, and the tools' context; the sketch's members
-//! selected; the palette's settings; and the tool chosen ([`tools`]), with what it asks of
-//! the core. Entering, Finish, Cancel, and the edits are the tab's (`tab.rs`), through its
-//! queue, as a feature dialog's are.
+//! source of what's drawn, the status, and the tools' context; what's selected, the
+//! sketch's members and its origin and axes, in pick order ([`selection`]); the palette's
+//! settings; and the tool chosen ([`tools`]), with what it asks of the core. Entering,
+//! Finish, Cancel, and the edits are the tab's (`tab.rs`), through its queue, as a feature
+//! dialog's are.
 //!
 //! The viewport calls [`SketchMode::frame`] each frame (through `Tab::sketch_frame`, which
 //! then sends what the tool asked) with its left button's events, a projection to the
@@ -15,11 +16,14 @@
 //! ([`dimension`]).
 
 pub mod bar;
+pub mod bounds;
 pub mod dimension;
 pub mod drag;
 pub mod draw;
 pub mod hit;
+pub mod lines;
 pub mod screen;
+pub mod selection;
 pub mod style;
 pub mod tools;
 
@@ -34,17 +38,19 @@ use silico_core::command::{ModelChoice, Problems, Revision, Running, SessionId, 
 use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
 use silico_core::kernel::{Clients, SketchPlane};
 use silico_core::sketch_states::{MemberState, SketchState};
-use silico_core::sketch_tools::{DimensionEvent, Event, Modifiers, Offer, OfferChoice};
+use silico_core::sketch_tools::{Axes, DimensionEvent, Event, Modifiers, Offer, OfferChoice};
 
 use crate::tab::{Row, said};
 use bar::{DimensionShown, PaletteView, Settings, StateShown, StatusLine};
 use dimension::{Ask, EditBox, Edited, ModifyAction, ModifyView, OfferView, value_of};
 use drag::Drag;
 use draw::{
-    Curve, Drawn, Geometry, RegionFill, Scale, Shown, View, add, angle, bounds, dimension_preview,
-    direction, dot, drawing, fill_scale, ghost, length, mul, preview, region_fills, sub, to_shapes,
+    Curve, Drawn, DrawnSelection, Geometry, RegionFill, Scale, Shown, View, add, angle, bounds,
+    dimension_preview, direction, dot, drawing, fill_scale, ghost, length, mul, preview,
+    region_fills, sub, to_shapes,
 };
-use hit::{Hit, hit};
+use hit::{Hit, SketchPick, hit};
+use selection::SketchSelection;
 use style::*;
 use tools::{Input, Tools};
 
@@ -109,10 +115,13 @@ pub fn prefix(state: SketchState) -> Option<&'static str> {
 }
 
 /// Whether a sketch's browser row, `row` (its name's response), asks for Edit Sketch by a
-/// double-click, on only while `can` (fusion.md, *Sketch mode*, [esk]). Its context menu's
+/// double-click, on only while `can` (fusion.md, *Sketch mode*, [esk]). The double-click is
+/// the row's own (`crate::clicks`), so a click on an eye just before it doesn't turn it into
+/// a triple click (#452); its clicks are counted whether or not `can`. Its context menu's
 /// Edit Sketch is the feature's menu's (`crate::feature_menu`), as every feature row's is.
 pub fn edit_asked(row: Option<&egui::Response>, can: bool) -> bool {
-    can && row.is_some_and(egui::Response::double_clicked)
+    let double = row.is_some_and(crate::clicks::double_clicked);
+    can && double
 }
 
 /// A `sketch` read, answered: the revision of the model it read (none if it named none),
@@ -121,6 +130,13 @@ pub fn edit_asked(row: Option<&egui::Response>, can: bool) -> bool {
 pub struct Read {
     pub model: Option<Revision>,
     pub result: Result<SketchRead, Problems>,
+}
+
+/// Sketch mode's panels over the canvas, each's rectangle on the screen as a frame drew it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Panels {
+    pub bar: egui::Rect,
+    pub palette: egui::Rect,
 }
 
 /// What a left button did in the viewport, as the pane hands it over each frame.
@@ -240,7 +256,7 @@ struct DrawnOf {
     read: u64,
     /// The drag's solved frames drawn, while a drag's frame is drawn in the read's place.
     drag: Option<u64>,
-    selected: BTreeSet<ElementId>,
+    selected: DrawnSelection,
     shown: Shown,
     probes: [Option<Pos2>; 4],
     scale: Scale,
@@ -257,6 +273,10 @@ pub struct SketchMode {
     /// The sketch open: an existing one's, or, for Create Sketch, its ID once its add has
     /// answered.
     pub sketch: Option<FeatureId>,
+    /// For Create Sketch, the name its add gives the sketch: what its Finish's step adds
+    /// ("Add Sketch1"), and what its steps call it till the timeline lists it. None for Edit
+    /// Sketch.
+    pub created: Option<String>,
     /// The revision it opened at, once everything asked before it has answered (set by its
     /// own opening alone): its undo goes no further back, and is off till it's known.
     pub opened_at: Option<Revision>,
@@ -277,10 +297,11 @@ pub struct SketchMode {
     /// The last frame's drawing, and how many drawings it has worked out.
     drawn: Option<(DrawnOf, Vec<Drawn>)>,
     pub drawings: u64,
-    /// The members selected, each with its kind; and a press under way, what's under it and
-    /// whether Ctrl was held, to select on its release.
-    pub selection: BTreeSet<Hit>,
-    pressed: Option<(Option<Hit>, bool)>,
+    /// What's selected, in pick order: members, each with its kind, and the origin and the
+    /// axes; and a press under way, what's under it and whether Ctrl was held, to select on
+    /// its release.
+    pub selection: SketchSelection,
+    pressed: Option<(Option<SketchPick>, bool)>,
     pub settings: Settings,
     /// The tool chosen, if one is (M5.11b's): what it draws as it's used, what it says, and
     /// what it asks of the core, which the tab sends.
@@ -306,11 +327,20 @@ pub struct SketchMode {
     /// on the screen, if it is: opened by a right-click with no tool on, or a tool other
     /// than Smart Dimension, whose right-click locks its kind instead.
     pub menu_at: Option<Pos2>,
+    /// The sketch bar's and the palette's rectangles on the screen, as the last frame drew
+    /// them: what the bands a fit keeps its box out of are measured from
+    /// (`app::sketch_inset`).
+    pub panels: Option<Panels>,
     /// Where the Modify box open stands on the screen, as the last frame projected it.
     modify_screen: Option<Pos2>,
     /// The pick tolerance, in millimetres, at the last frame's view's middle: what Smart
     /// Dimension is given with a read or the Modify box, between pointer events.
     tolerance: f64,
+    /// Which axes the pointer may take, as the last pointer event on the plane given to a
+    /// tool found them there ([`axes_at`]): what a tool is given with a read, the Modify
+    /// box, or a key, between pointer events, so Smart Dimension's hover worked out again
+    /// on a read takes no axis the pointer couldn't. Both before any.
+    axes: Axes,
 }
 
 impl SketchMode {
@@ -320,6 +350,7 @@ impl SketchMode {
         SketchMode {
             serial,
             sketch,
+            created: None,
             opened_at: None,
             read: None,
             reading: None,
@@ -330,7 +361,7 @@ impl SketchMode {
             fill_builds: 0,
             drawn: None,
             drawings: 0,
-            selection: BTreeSet::new(),
+            selection: SketchSelection::default(),
             pressed: None,
             settings: Settings::default(),
             tools: Tools::default(),
@@ -344,7 +375,9 @@ impl SketchMode {
             asks: Vec::new(),
             modify_screen: None,
             tolerance: 0.0,
+            axes: Axes::BOTH,
             menu_at: None,
+            panels: None,
         }
     }
 
@@ -388,15 +421,18 @@ impl SketchMode {
         self.reading = Some(sessions.sketch(session, ModelChoice::Published, sketch.clone()));
     }
 
-    /// `read` kept as the newest, and the selection kept to what it still holds; Smart
-    /// Dimension given it (`settle`); and an edit of a dimension judged on it, if it's of the
-    /// revision the edit made, or its offer let go, if it's of a later one.
+    /// `read` kept as the newest, and the selection kept to what it still holds, in its
+    /// order (the origin and the axes always); Smart Dimension given it (`settle`); and an
+    /// edit of a dimension judged on it, if it's of the revision the edit made, or its offer
+    /// let go, if it's of a later one.
     pub(crate) fn took(&mut self, read: Read) {
         if let Ok(sketch) = &read.result {
-            let held: BTreeSet<&ElementId> = sketch.members.elements().map(|(id, _)| id).collect();
-            self.selection.retain(|hit| held.contains(&hit.id));
+            self.selection.retain_held(sketch);
             if let Some(edit) = &self.edit_box
-                && !held.contains(&edit.constraint)
+                && !sketch
+                    .members
+                    .elements()
+                    .any(|(id, _)| *id == edit.constraint)
             {
                 self.edit_box = None;
             }
@@ -408,6 +444,7 @@ impl SketchMode {
             self.sketch.as_ref(),
             &self.settings,
             self.tolerance,
+            self.axes,
         ) {
             self.tools.settle(&input);
         }
@@ -436,36 +473,17 @@ impl SketchMode {
         }
     }
 
-    /// A click in the viewport, on `hit` (none: empty space), with Ctrl or not (open item
-    /// 24, as SolidWorks' selection): a plain click selects only what it's on, a Ctrl-click
-    /// adds it or takes it away, and a click on nothing clears the selection.
-    pub fn click(&mut self, hit: Option<Hit>, ctrl: bool) {
-        match (hit, ctrl) {
-            (None, _) => self.selection.clear(),
-            (Some(hit), false) => {
-                self.selection.clear();
-                self.selection.insert(hit);
-            }
-            (Some(hit), true) => {
-                if !self.selection.remove(&hit) {
-                    self.selection.insert(hit);
-                }
-            }
-        }
-    }
-
-    /// What Delete would do with the selection: a lone point whose two curves end there,
-    /// the pieces a split leaves, joined (whether `sketch_join` takes them is its own to
-    /// say); anything else removed, as `sketch_remove` judges it. None with nothing
-    /// selected.
+    /// What Delete would do with the selection's members, the origin and the axes ignored
+    /// (C9): a lone point whose two curves end there, the pieces a split leaves, joined
+    /// (whether `sketch_join` takes them is its own to say); anything else removed, by ID,
+    /// as `sketch_remove` judges it. None with no member selected.
     pub fn deletion(&self) -> Option<Deletion> {
-        if self.selection.is_empty() {
+        let mut selected: Vec<&Hit> = self.selection.members().collect();
+        if selected.is_empty() {
             return None;
         }
-        if let ([only], Some(sketch)) = (
-            self.selection.iter().collect::<Vec<_>>().as_slice(),
-            self.drawable(),
-        ) && only.kind == ElementKind::Point
+        if let ([only], Some(sketch)) = (selected.as_slice(), self.drawable())
+            && only.kind == ElementKind::Point
         {
             let id = &only.id;
             let members = &sketch.members;
@@ -486,9 +504,10 @@ impl SketchMode {
                 return Some(Deletion::Join(id.clone()));
             }
         }
+        selected.sort();
         Some(Deletion::Remove(
-            self.selection
-                .iter()
+            selected
+                .into_iter()
                 .map(|hit| Reference::Element(hit.id.clone()))
                 .collect(),
         ))
@@ -534,6 +553,7 @@ impl SketchMode {
                     if dragged.is_none() {
                         *dragged = found
                             .as_ref()
+                            .and_then(SketchPick::member)
                             .and_then(|hit| self.grab(hit, input, event.at));
                     }
                     self.pressed = Some((found, event.ctrl));
@@ -563,12 +583,14 @@ impl SketchMode {
                     if let Some((found, ctrl)) = self.pressed.take() {
                         // What the press was on, if the read now still holds it: a read
                         // taken between the press and its release may have let it go.
-                        let held = found.filter(|hit| {
-                            self.drawable().is_some_and(|read| {
-                                read.members.elements().any(|(id, _)| id == &hit.id)
+                        let held = found.filter(|picked| {
+                            picked.held_by(|id| {
+                                self.drawable().is_some_and(|read| {
+                                    read.members.elements().any(|(held, _)| held == id)
+                                })
                             })
                         });
-                        self.click(held, ctrl);
+                        self.selection.click(held, ctrl);
                     }
                 }
                 PointerAction::Cancel => {
@@ -625,12 +647,18 @@ impl SketchMode {
 
     /// What's under `at` on the screen, within the pick tolerance at the view's scale there:
     /// of what's drawn, the drag's last frame while it lasts (once it has ended, until the
-    /// read of its edit comes), or else the newest read.
-    fn found(&self, input: &FrameInput<'_>, at: Pos2, dragged: Option<&Drag>) -> Option<Hit> {
+    /// read of its edit comes), or else the newest read. An axis may be taken only where it's
+    /// drawn within the pick tolerance on the screen too ([`axis_near`]): one that isn't is
+    /// no candidate, and the nearest of the rest is taken.
+    fn found(
+        &self,
+        input: &FrameInput<'_>,
+        at: Pos2,
+        dragged: Option<&Drag>,
+    ) -> Option<SketchPick> {
         let read = dragged.and_then(Drag::shown).or_else(|| self.drawable())?;
-        let scale = scale_at(input.to_plane, at)?;
-        let on = (input.to_plane)(at)?;
-        hit(read, on, scale.mm(SKETCH_PICK_TOLERANCE), scale)
+        let (on, scale, axes) = axes_at(input, at)?;
+        hit(read, on, scale.mm(SKETCH_PICK_TOLERANCE), scale, axes)
     }
 
     /// A drag of `hit`, pressed at `at` on the screen: a point, or a line's, a circle's, or
@@ -680,7 +708,7 @@ impl SketchMode {
         if self.offer().is_some() || self.edit_box.as_ref().is_some_and(|edit| edit.sent) {
             return;
         }
-        let Some(found) = self.found(input, at, dragged) else {
+        let Some(SketchPick::Member(found)) = self.found(input, at, dragged) else {
             return;
         };
         let Some(read) = self.drawable() else {
@@ -712,8 +740,10 @@ impl SketchMode {
     }
 
     /// The frame's left-button events given to the tool on, in the sketch's millimetres
-    /// (through `to_plane`), each with the pick tolerance where it is; then the pointer, if
-    /// it has moved since, as a hover, with the keys `held`. A press off the plane is none
+    /// (through `to_plane`), each with the pick tolerance where it is and the axes it may
+    /// take there, as the selection finds them ([`axes_at`], kept for the events with no
+    /// place on the plane and for a read or a key between them); then the pointer, if it
+    /// has moved since, as a hover, with the keys `held`. A press off the plane is none
     /// of the tool's; a release off it, or a press cancelled, ends the gesture with nothing
     /// added; a double-click off it ends a chain. With no read of the sketch to work
     /// against, only a release or a cancel reaches the tool, ending its gesture.
@@ -723,6 +753,7 @@ impl SketchMode {
         let tolerance = |at: Pos2| {
             scale_at(input.to_plane, at).map_or(0.0, |scale| scale.mm(SKETCH_PICK_TOLERANCE))
         };
+        let axes = |at: Pos2, kept: Axes| axes_at(input, at).map_or(kept, |(.., axes)| axes);
         for event in input.events {
             // A right-click is Smart Dimension's lock; with any other tool, the menu's.
             if event.action == PointerAction::RightClick
@@ -731,11 +762,13 @@ impl SketchMode {
                 self.menu_at = Some(event.at);
                 continue;
             }
+            self.axes = axes(event.at, self.axes);
             let Some(context) = tool_input(
                 &self.read,
                 self.sketch.as_ref(),
                 &self.settings,
                 tolerance(event.at),
+                self.axes,
             ) else {
                 // No read to work against (none yet, or a failed one): a press's end still
                 // ends it, so none outlives its release.
@@ -777,11 +810,13 @@ impl SketchMode {
         if self.tools.choice().is_none() || self.tools.last() == Some(at) {
             return;
         }
+        self.axes = axes(pointer, self.axes);
         if let Some(context) = tool_input(
             &self.read,
             self.sketch.as_ref(),
             &self.settings,
             tolerance(pointer),
+            self.axes,
         ) {
             self.tools.handle(&context, Event::Move(at), held);
         }
@@ -803,7 +838,7 @@ impl SketchMode {
         let of = DrawnOf {
             read: self.taken,
             drag: dragged.map(|(.., frames)| frames),
-            selected: self.selection.iter().map(|hit| hit.id.clone()).collect(),
+            selected: DrawnSelection::of(&self.selection),
             shown: self.shown(),
             probes: [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]].map(|p| (view.project)(p)),
             scale: view.scale,
@@ -837,7 +872,7 @@ impl SketchMode {
             .map_or(&[][..], |(_, fills)| fills.as_slice());
         let mut drawn = drawing(read, view, of.shown, &of.selected, fills);
         if let Some((shown, begin, _)) = dragged {
-            let begun = drawing(begin, view, of.shown, &BTreeSet::new(), &[]);
+            let begun = drawing(begin, view, of.shown, &DrawnSelection::default(), &[]);
             let mut ghosted = ghost(&begun, begin, shown);
             ghosted.append(&mut drawn);
             drawn = ghosted;
@@ -863,9 +898,9 @@ impl SketchMode {
             .map(|(_, fills)| fills.as_slice())
     }
 
-    /// The IDs selected.
+    /// The members' IDs selected.
     pub fn selected_ids(&self) -> BTreeSet<ElementId> {
-        self.selection.iter().map(|hit| hit.id.clone()).collect()
+        self.selection.members().map(|hit| hit.id.clone()).collect()
     }
 
     /// What the palette's settings show.
@@ -1070,6 +1105,7 @@ impl SketchMode {
             self.sketch.as_ref(),
             &self.settings,
             self.tolerance,
+            self.axes,
         ) else {
             return;
         };
@@ -1119,14 +1155,26 @@ impl SketchMode {
     /// Esc, with a tool on: the gesture ended and the tool left, the tool told if the sketch
     /// is read (section 9, *Line*). Whether a tool was on to take it.
     pub fn escape_tool(&mut self) -> bool {
-        let input = tool_input(&self.read, self.sketch.as_ref(), &self.settings, 0.0);
+        let input = tool_input(
+            &self.read,
+            self.sketch.as_ref(),
+            &self.settings,
+            0.0,
+            self.axes,
+        );
         self.tools.escape(input.as_ref())
     }
 
     /// Enter, or the right-click menu's *End chain* (`event`), given to the tool on: a
     /// chain ended, the tool kept. Nothing before the sketch is read.
     pub fn end_chain(&mut self, event: Event) {
-        if let Some(input) = tool_input(&self.read, self.sketch.as_ref(), &self.settings, 0.0) {
+        if let Some(input) = tool_input(
+            &self.read,
+            self.sketch.as_ref(),
+            &self.settings,
+            0.0,
+            self.axes,
+        ) {
             self.tools.handle(&input, event, Modifiers::default());
         }
     }
@@ -1145,6 +1193,13 @@ impl SketchMode {
         }
     }
 
+    /// The newest read's geometry as a box in model space, on its plane
+    /// ([`bounds::model_box`]): what a fit takes in with the bodies in sketch mode. None
+    /// before a read has placed it, or for a sketch with nothing in it.
+    pub fn model_box(&self) -> Option<[[f64; 3]; 2]> {
+        bounds::model_box(self.drawable()?)
+    }
+
     /// What the sketch bar shows of the sketch, named `name`.
     pub fn bar_view(&self, name: &str, enabled: bool) -> bar::BarView {
         let plane = self.drawable().and_then(|read| read.plane.as_ref().ok());
@@ -1158,12 +1213,14 @@ impl SketchMode {
 }
 
 /// What the tools work against: the newest read, if it read the sketch `sketch` of a model
-/// it names; the pick `tolerance`, in millimetres; and the palette's settings.
+/// it names; the pick `tolerance`, in millimetres, and the `axes` the pointer may take; and
+/// the palette's settings.
 fn tool_input<'a>(
     read: &'a Option<Read>,
     sketch: Option<&'a FeatureId>,
     settings: &Settings,
     tolerance: f64,
+    axes: Axes,
 ) -> Option<Input<'a>> {
     let read = read.as_ref()?;
     let revision = read.model?;
@@ -1174,6 +1231,7 @@ fn tool_input<'a>(
         sketch,
         revision,
         tolerance,
+        axes,
         automatic_relations: settings.automatic_relations,
         construction: settings.construction,
         trim: settings.trim,
@@ -1219,6 +1277,50 @@ pub(crate) fn on_curve(curve: Curve, at: [f64; 2]) -> Option<[f64; 2]> {
     (on[0].is_finite() && on[1].is_finite()).then_some(on)
 }
 
+/// Whether the axis along `along` (a unit vector through the origin) is drawn within the
+/// pick tolerance of the screen's point `at`, whose place on the plane is `on`: the
+/// screen's distance from `at` to the line the view draws the axis along, through its
+/// place nearest `on` and a point's step (`scale`) on from there (a view draws a line of
+/// the plane as a line). None near where the view draws neither. The pick's millimetres
+/// are the mean of a point's step across and down ([`scale_at`]): in a view oblique to the
+/// plane, they reach farther than the pick's points one way on the screen, and an axis,
+/// which runs the whole view, would be taken there far off it (R3).
+fn axis_near(
+    project: &dyn Fn([f64; 2]) -> Option<Pos2>,
+    along: [f64; 2],
+    on: [f64; 2],
+    at: Pos2,
+    scale: Scale,
+) -> bool {
+    let foot = mul(along, dot(on, along));
+    let (Some(a), Some(b)) = (project(foot), project(add(foot, mul(along, scale.0)))) else {
+        return false;
+    };
+    let (ab, off) = (b - a, at - a);
+    let across = if ab.length() > 0.0 {
+        (ab.x * off.y - ab.y * off.x).abs() / ab.length()
+    } else {
+        off.length()
+    };
+    across <= SKETCH_PICK_TOLERANCE
+}
+
+/// Where the screen's point `at` is on the plane, the millimetres a point there
+/// ([`scale_at`]), and which axes a pick there may take: each only where the view draws it
+/// within the pick tolerance of `at` on the screen ([`axis_near`]). Sketch mode's selection
+/// and its tools work it out alike, so for the same pointer they allow the same axes. None
+/// where `at`, or a point's step from it, misses the plane.
+fn axes_at(input: &FrameInput<'_>, at: Pos2) -> Option<([f64; 2], Scale, Axes)> {
+    let scale = scale_at(input.to_plane, at)?;
+    let on = (input.to_plane)(at)?;
+    let near = |along| axis_near(input.project, along, on, at, scale);
+    let axes = Axes {
+        x: near([1.0, 0.0]),
+        y: near([0.0, 1.0]),
+    };
+    Some((on, scale, axes))
+}
+
 /// Millimetres per screen point on the plane at `at`: the mean of how far one point across
 /// and one point down move there; none where either misses the plane, or reads as nothing.
 pub fn scale_at(to_plane: &dyn Fn(Pos2) -> Option<[f64; 2]>, at: Pos2) -> Option<Scale> {
@@ -1230,21 +1332,48 @@ pub fn scale_at(to_plane: &dyn Fn(Pos2) -> Option<[f64; 2]>, at: Pos2) -> Option
     (mm > 0.0 && mm.is_finite()).then_some(Scale(mm))
 }
 
-/// Each sketch's state, for the browser's prefixes: read one sketch at a time, of the
-/// newest published model, each once for each revision of it.
+/// Each sketch's read, kept whole: for the browser's prefixes (its state), and for what the
+/// viewport draws of a shown sketch (its plane and members). Read one sketch at a time, of
+/// the newest published model, each once for each revision of it, the shown sketches first,
+/// so a burst of revisions refreshes what's drawn before what isn't. Each answer is kept as
+/// the newest: while the next revision's read is in flight, the last is held, so nothing
+/// drawn of it ever lapses between them, as every answer is drawn as of its own revision
+/// (docs/design/m4.1-command-api.md, decision 33; docs/design/m5.0-app.md, section 3). An
+/// answer equal to the one held keeps the held one (the same `Arc`), so what's made of it
+/// needn't be made again. A read refused once it ran (a suppressed sketch, one no longer
+/// there, a worker's failure) holds none. One refused before it reached a model (too many
+/// published reads running at once, the session closing, no thread to be had), which names
+/// none, keeps what's held, and is sent again by a later frame.
+///
+/// The sketch open in sketch mode isn't read here. A sketch's state is kept once, in its
+/// held read, but for the open sketch's: sketch mode's read of it is newer, so its state
+/// stands in for the held one's while it's open, and after Finish until it's read again
+/// ([`state`](Self::state), the browser's prefix). What's drawn of a sketch in the viewport
+/// is its held read's, its state with its geometry, both of one revision.
 #[derive(Default)]
-pub struct Prefixes {
-    states: BTreeMap<FeatureId, SketchState>,
+pub struct SketchReads {
+    held: BTreeMap<FeatureId, Held>,
+    /// The sketch open in sketch mode, or last open, until it's read again here: its state
+    /// as sketch mode's read gives it.
+    open_state: Option<(FeatureId, SketchState)>,
     asked: BTreeMap<FeatureId, Revision>,
-    reading: Option<(FeatureId, Running<SketchRead>)>,
+    reading: Option<(FeatureId, Revision, Running<SketchRead>)>,
     /// How many reads it has sent: what a test counts.
     pub reads: u64,
 }
 
-impl Prefixes {
+/// A sketch's newest read, and the published revision it's of.
+#[derive(Debug, Clone)]
+pub struct Held {
+    pub read: Arc<SketchRead>,
+    pub revision: Revision,
+}
+
+impl SketchReads {
     /// The read in flight polled, without waiting; and, if none is, the first of `rows`
-    /// (the browser's sketches) not read of the model `published`, read. The sketch open in
-    /// sketch mode, `open`, isn't read here: its state is its read's.
+    /// (the browser's sketches) not read of the model `published`, read: the first that's
+    /// `shown`, else the first of the rest. The sketch open in sketch mode, `open`, isn't
+    /// read here: its state is its read's.
     pub fn poll<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -1252,57 +1381,111 @@ impl Prefixes {
         rows: &[Row],
         published: Option<Revision>,
         open: Option<&SketchMode>,
+        shown: &dyn Fn(&FeatureId) -> bool,
     ) {
         let open_id = open.and_then(|mode| mode.sketch.as_ref());
         if let (Some(id), Some(read)) = (open_id, open.and_then(SketchMode::drawable)) {
-            self.states.insert(id.clone(), read.states.state);
+            self.open_state = Some((id.clone(), read.states.state));
         }
-        if let Some((id, running)) = self.reading.take() {
+        if let Some((id, asked, running)) = self.reading.take() {
             match running.try_take() {
-                Ok(response) => match response.result {
-                    Ok(read) => {
-                        self.states.insert(id, read.states.state);
+                Ok(response) => {
+                    // Of the model the answer says it read, or the one it was asked of.
+                    let revision = response
+                        .model
+                        .as_ref()
+                        .map_or(asked, |model| model.revision);
+                    let ran = response.model.is_some();
+                    // Read again here: sketch mode's state no longer stands in for it,
+                    // unless it's open.
+                    if ran
+                        && open_id != Some(&id)
+                        && self
+                            .open_state
+                            .as_ref()
+                            .is_some_and(|(last, _)| *last == id)
+                    {
+                        self.open_state = None;
                     }
-                    // A suppressed sketch, or one a worker's failure left unread: no prefix.
-                    Err(_) => {
-                        self.states.remove(&id);
+                    match response.result {
+                        Ok(read) => {
+                            let kept = self
+                                .held
+                                .get(&id)
+                                .map(|held| &held.read)
+                                .filter(|held| ***held == read)
+                                .map(Arc::clone);
+                            let read = kept.unwrap_or_else(|| Arc::new(read));
+                            self.held.insert(id, Held { read, revision });
+                        }
+                        // Refused before it reached a model (too many published reads
+                        // running at once, the session closing, no thread to be had): what's
+                        // held stays, and it's asked again.
+                        Err(_) if !ran => {
+                            self.asked.remove(&id);
+                        }
+                        // A suppressed sketch, one no longer there, or one a worker's failure
+                        // left unread: no prefix, and nothing to draw.
+                        Err(_) => {
+                            self.held.remove(&id);
+                        }
                     }
-                },
+                }
                 Err(running) => {
-                    self.reading = Some((id, running));
+                    self.reading = Some((id, asked, running));
                     return;
                 }
             }
         }
-        self.states
-            .retain(|id, _| rows.iter().any(|row| &row.id == id));
-        self.asked
-            .retain(|id, _| rows.iter().any(|row| &row.id == id));
+        let listed = |id: &FeatureId| rows.iter().any(|row| &row.id == id);
+        if self.open_state.as_ref().is_some_and(|(id, _)| !listed(id)) {
+            self.open_state = None;
+        }
+        self.held.retain(|id, _| listed(id));
+        self.asked.retain(|id, _| listed(id));
         let Some(published) = published else {
             return;
         };
-        if let Some(row) = rows
+        let unread =
+            |row: &&Row| Some(&row.id) != open_id && self.asked.get(&row.id) != Some(&published);
+        let next = rows
             .iter()
-            .filter(|row| Some(&row.id) != open_id)
-            .find(|row| self.asked.get(&row.id) != Some(&published))
-        {
+            .filter(unread)
+            .find(|row| shown(&row.id))
+            .or_else(|| rows.iter().find(unread));
+        if let Some(row) = next {
             self.asked.insert(row.id.clone(), published);
             self.reads += 1;
             let running = sessions.sketch(session, ModelChoice::Published, row.id.clone());
-            self.reading = Some((row.id.clone(), running));
+            self.reading = Some((row.id.clone(), published, running));
         }
     }
 
     /// The sketch `id`'s prefix, if its state is read and has one.
     pub fn prefix(&self, id: &FeatureId) -> Option<&'static str> {
-        self.states.get(id).copied().and_then(prefix)
+        self.state(id).and_then(prefix)
     }
 
-    /// The sketch `id`'s state, if it's read.
+    /// The sketch `id`'s state, if it's read: sketch mode's, for the sketch open there or
+    /// last open until it's read again here; otherwise its held read's.
     pub fn state(&self, id: &FeatureId) -> Option<SketchState> {
-        self.states.get(id).copied()
+        match &self.open_state {
+            Some((open, state)) if open == id => Some(*state),
+            _ => self.held.get(id).map(|held| held.read.states.state),
+        }
+    }
+
+    /// The sketch `id`'s newest read held, if one is: its read whole, and the revision it's
+    /// of.
+    pub fn held(&self, id: &FeatureId) -> Option<&Held> {
+        self.held.get(id)
+    }
+
+    /// The sketch whose read is in flight, if one is.
+    pub fn reading(&self) -> Option<&FeatureId> {
+        self.reading.as_ref().map(|(id, ..)| id)
     }
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

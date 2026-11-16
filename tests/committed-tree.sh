@@ -11,6 +11,9 @@
 # Re-runs the sourcing script ("$0", with its arguments) holding the lock, so source it
 # before anything with side effects.
 
+# shellcheck source=tests/lane-caches.sh
+source "$(dirname "${BASH_SOURCE[0]}")/lane-caches.sh"
+
 root=$(git rev-parse --show-toplevel)
 commit=$(git -C "$root" rev-parse --verify "${SILICO_TREE_COMMIT:-HEAD}^{commit}")
 checkout_id=$(printf '%s' "$root" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)
@@ -65,11 +68,24 @@ if [ ! -e "$tree/.git" ]; then
   git -C "$root" worktree remove --force "$tree" 2>/dev/null || true
   git -C "$root" worktree add --detach --quiet "$tree" "$commit"
 fi
+# Caches a run moved aside to start the worktree again (above), and couldn't move back because
+# it stopped first (`git worktree add` failing on a full disk): each put back where the tree
+# has none, the rest let go, so none sits beside the tree for good.
+for keep in "$tree".keep.*; do
+  [ -d "$keep" ] || continue
+  for cache in target target-mutants target-filler .pixi; do
+    if [ -e "$keep/$cache" ] && [ ! -e "$tree/$cache" ]; then mv "$keep/$cache" "$tree/"; fi
+  done
+  remove_tree "$keep"
+done
 # The build's own target directory: target/, or the one SILICO_TARGET names (CI's mutants
 # shards build without debug info in target-mutants/, and filler shards, with a Cargo home of
 # their own, in target-filler/, so no build evicts or invalidates another).
 # target/occt stays in target/: the build scripts find OCCT there.
-target=${SILICO_TARGET:-target}
+target=$(lane_of_run)
+# A lane's cache unbuilt for a week goes, here and in each sibling checkout no run holds
+# (tests/lane-caches.sh): its runner no longer builds that lane there.
+prune_for_run "$tree"
 target_limit_gib=${SILICO_TARGET_LIMIT_GIB:-30}
 # $target/debug keeps a copy of each crate for each set of dependencies and features it was
 # built with (each branch's Cargo.lock, cargo-mutants' baselines of a few packages), and

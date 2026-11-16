@@ -1,13 +1,15 @@
 //! `silico-app`: the app's window. It starts with all four of its workers or not at all
 //! (the rule `silico serve` keeps too), then warms one kernel worker and one sketch worker
-//! off its UI thread (decision 10), starts reading its list of recent documents off it too,
-//! and opens a window drawn by `eframe` on wgpu, showing the start page.
+//! off its UI thread (decision 10), starts reading its list of recent documents and its
+//! panes' widths off it too, and opens a window drawn by `eframe` on wgpu, showing the start
+//! page.
 
 use std::io::Write as _;
 use std::process::ExitCode;
 use std::sync::Arc;
 
 use silico_app::App;
+use silico_app::pane_widths::KeptLayout;
 use silico_app::recent::Recents;
 use silico_app::start::Warm;
 use silico_app::theme;
@@ -59,8 +61,10 @@ fn main() -> ExitCode {
         tracing::warn!("the workers can't be warmed ahead of the first rebuild: {e}");
         warm.cold();
     }
-    // Read off the UI thread, from the platform's app-data folder.
+    // Read off the UI thread, from the platform's app-data folder: the recent documents, and
+    // the side panes' widths beside them.
     let recents = Recents::default_file().map(Recents::at);
+    let widths = KeptLayout::default_file().map(KeptLayout::at);
     let silico = silico_beside();
     let ran = eframe::run_native(
         "Silico",
@@ -74,6 +78,10 @@ fn main() -> ExitCode {
                 .serving_with(silico);
             let app = match recents {
                 Some(recents) => app.remembering(recents),
+                None => app,
+            };
+            let app = match widths {
+                Some(widths) => app.keeping_layout(widths),
                 None => app,
             };
             // The viewport drawn by silico-render on eframe's own device; with no wgpu, or
@@ -187,16 +195,20 @@ mod tests {
 
     #[test]
     fn the_apps_window_is_no_smaller_than_its_panes_bars_and_a_usable_canvas() {
-        // By hand from styles.css and the theme's proposals. Wide: `--browser-w` 248 and
-        // `--right-w` 296, and a canvas that holds a banner at its least, 320, 10 at each
-        // side. High: `--top-bar-h` 30; the toolbar, `--toolbar-tabs-h` 24, `--toolbar-h`
-        // 52, and its 1 border; a canvas that holds the ViewCube, 16 from its top and 92
-        // high, over the navigation bar, 32 high and 12 above and below it; egui's 1 line
-        // over the timeline; `--timeline-h` 40; and `--status-h` 24.
-        let wide = 248.0 + 296.0 + (10.0 + 320.0 + 10.0);
+        // By hand from styles.css and the theme's proposals. Wide: the wider of the toolbar
+        // in sketch mode, 881.5 in the app's fonts, on the 8-point grid 888, and the side
+        // panes at their leasts (pane_widths.rs: the browser's 200, the property panel's 232)
+        // with a canvas that holds a banner at its least, 320, 10 at each side. High:
+        // `--top-bar-h` 30; the toolbar, `--toolbar-tabs-h` 24, `--toolbar-h` 52, and its 1
+        // border; a canvas that holds the ViewCube, 16 from its top and 92 high, over the
+        // navigation bar, 32 high and 12 above and below it; egui's 1 line over the
+        // timeline; `--timeline-h` 40; and `--status-h` 24.
+        let panes: f32 = 200.0 + 232.0 + (10.0 + 320.0 + 10.0);
+        assert_eq!(panes, 772.0);
+        let wide = panes.max(888.0);
         let high =
             30.0 + (24.0 + 52.0 + 1.0) + (16.0 + 92.0 + 12.0 + 32.0 + 12.0) + 1.0 + 40.0 + 24.0;
-        assert_eq!((wide, high), (884.0, 336.0));
+        assert_eq!((wide, high), (888.0, 336.0));
         for app_bar in [true, false] {
             let viewport = app_options(app_bar).viewport;
             assert_eq!(

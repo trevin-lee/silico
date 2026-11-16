@@ -120,7 +120,8 @@ impl<C: Kernel + 'static> Rebuilds<C> {
     /// What `status` reports of `revision`'s rebuild, the session's, whose document the gate
     /// took if `gated`: [`state`](Self::state)'s, or, for a document the gate refused,
     /// `none`, but for an edit's candidate running, which is built whatever the document
-    /// held is. Its progress is left for the caller to read ([`Newest::of`]).
+    /// held is. Its progress is for the caller to read ([`Newest::of`]) before letting this
+    /// lock go, so no rebuild starts between the state and its count (`status_in`).
     pub(super) fn reported(&self, revision: Revision, gated: bool) -> Rebuild {
         if gated
             || self
@@ -203,8 +204,9 @@ impl<C: Kernel + 'static> Rebuilds<C> {
     }
 
     /// What's become of `revision`'s rebuild (`status`): an edit's candidate running counts
-    /// as `revision`'s, the session's revision until its save. Its progress is left for the
-    /// caller to read ([`Newest::of`]), once this lock is let go.
+    /// as `revision`'s, the session's revision until its save. Its progress is for the
+    /// caller to read ([`Newest::of`]) before letting this lock go, so no rebuild starts
+    /// between the state and its count (`status_in`).
     pub(super) fn state(&self, revision: Revision) -> Rebuild {
         let running = self
             .running
@@ -249,21 +251,46 @@ impl Newest {
         *lock(&self.0) = Some((label, progress));
     }
 
+    /// The newest rebuild let go if it's an edit's candidate: called as its commit is refused
+    /// or cancelled, under the rebuilds' lock. Its count is no revision's then, though it
+    /// may run on until its recompute ends, and its label is of the revision the save would
+    /// have given, which an edit in a transaction or a reload may give next: kept, `status`
+    /// would show it as that revision's (#423).
+    pub(super) fn forget_candidate(&self) {
+        let mut newest = lock(&self.0);
+        if newest.as_ref().is_some_and(|(label, _)| label.candidate) {
+            *newest = None;
+        }
+    }
+
     /// The progress of `revision`'s rebuild, if the newest is that one: the revision it's of
-    /// (as a rollback gave it on), or an edit's candidate still running, which counts as the
-    /// session's revision until its save. Its count when it ended, once it has.
-    pub(super) fn of(&self, revision: Revision) -> Option<Progress> {
+    /// (as a rollback gave it on), or an edit's candidate while it's still `running` (the
+    /// rebuilds', read under their lock), which counts as the session's revision until its
+    /// save. Its count when it ended, once it has. A candidate stopped (its commit cancelled)
+    /// is no longer the revision's, though its count may run on until its recompute ends
+    /// (#423): its `done` and `steps` are another document's, and once its commit is refused
+    /// it's forgotten ([`forget_candidate`](Self::forget_candidate)).
+    pub(super) fn of(&self, revision: Revision, running: Option<&Label>) -> Option<Progress> {
         let newest = lock(&self.0);
         let (label, progress) = newest.as_ref()?;
-        let count = progress.now();
-        (label.revision() == revision || (label.candidate && !count.ended))
-            .then(|| Progress::from(&count))
+        let candidate = label.candidate && running.is_some_and(|running| running.is(label));
+        (label.revision() == revision || candidate).then(|| Progress::from(&progress.now()))
     }
 
     /// The newest rebuild's count, as it goes on, in this crate's tests only.
     #[cfg(test)]
     pub(super) fn counter(&self) -> Option<StepCounter> {
         lock(&self.0).as_ref().map(|(_, progress)| progress.clone())
+    }
+
+    /// The newest rebuild's count of changes so far, and the last of them its watcher has
+    /// told the client of: equal once every change so far has woken it. None with no
+    /// rebuild.
+    #[cfg(any(test, feature = "fake"))]
+    pub(super) fn told(&self) -> Option<(u64, u64)> {
+        let newest = lock(&self.0);
+        let (label, progress) = newest.as_ref()?;
+        Some((progress.changes(), label.told.load(Ordering::SeqCst)))
     }
 
     /// The progress of the newest rebuild, while it runs.
@@ -302,6 +329,10 @@ pub(super) struct Label {
     /// is never replaced by what this one comes to. 0 for a label not started (as a test
     /// makes one by hand): every rebuild that starts is numbered as it does.
     number: u64,
+    /// The number of the last change of its count ([`StepCounter::changes`]) its watcher
+    /// has looked at, and told the client of if one is set ([`watch`]): so a test can wait
+    /// until every change so far is told ([`Newest::told`]), by an event, not by time.
+    told: Arc<AtomicU64>,
 }
 
 impl Label {
@@ -314,6 +345,7 @@ impl Label {
             cancelled: Arc::new(AtomicBool::new(false)),
             reads: Reads::Kept,
             number: 0,
+            told: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -1035,6 +1067,8 @@ pub(super) fn watch<C: Kernel + 'static>(session: &Weak<Session<C>>, label: &Lab
         {
             waker.wake();
         }
+        // Told: every change up to this one has woken the client, if one is set.
+        label.told.store(changes, Ordering::SeqCst);
         if count.ended {
             break;
         }
@@ -1241,5 +1275,45 @@ mod tests {
         // Revision 2's cancel stops 2 alone, and says nothing of 1.
         let two_cancelled = rebuilds(&kernel, ended(TWO, Ending::Cancelled));
         assert_eq!(states(&two_cancelled), [Idle, Stopped]);
+    }
+
+    /// A rebuild's progress, as `Newest` keeps it, of a step counter with nothing yet done.
+    fn progress_of(newest: &Newest, revision: Revision, running: Option<&Label>) -> bool {
+        newest.of(revision, running).is_some()
+    }
+
+    #[test]
+    fn a_candidates_progress_is_its_revisions_only_while_it_runs_and_until_its_commit_is_refused() {
+        // #423: an edit's candidate, of revision 2, counts as revision 1's rebuild while the
+        // rebuilds' running label is its own: not once it's stopped (none running), nor
+        // beside another label of the same revision (a rebuild started after it); and its
+        // commit refused, it's forgotten, so revision 2 shows none of it.
+        let newest = Newest::default();
+        let candidate = Label::candidate(Revision(2));
+        newest.started(candidate.clone(), StepCounter::default());
+        assert!(progress_of(&newest, Revision::OPENED, Some(&candidate)));
+        assert!(!progress_of(&newest, Revision::OPENED, None));
+        let other = Label::candidate(Revision(2));
+        assert!(!progress_of(&newest, Revision::OPENED, Some(&other)));
+        // Of revision 2 itself, its own number, before it's forgotten.
+        assert!(progress_of(&newest, Revision(2), None));
+        newest.forget_candidate();
+        assert!(newest.counter().is_none());
+        assert!(!progress_of(&newest, Revision(2), None));
+        assert!(!progress_of(&newest, Revision::OPENED, Some(&candidate)));
+    }
+
+    #[test]
+    fn forgetting_a_candidate_leaves_a_revisions_own_rebuild() {
+        // A rebuild of the session's revision (no candidate) is never forgotten as a refused
+        // commit's: its progress stays its revision's, running or not.
+        let newest = Newest::default();
+        newest.started(
+            Label::new(Revision::OPENED, Reached::default()),
+            StepCounter::default(),
+        );
+        newest.forget_candidate();
+        assert!(newest.counter().is_some());
+        assert!(progress_of(&newest, Revision::OPENED, None));
     }
 }
