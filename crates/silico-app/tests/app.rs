@@ -36,16 +36,16 @@ use tempfile::TempDir;
 use ui::{
     A_BOX, ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT,
     FakeBrowser, In, PLATE, PLATE_END, SKETCHED_EXAMPLE, TRIAD_DOT, TWO_BOXES, added, advance,
-    answer_question, anywhere, arrow_dots, arrow_shafts, begin_sketch_on, body_of, boxed,
-    button_event, choose, chosen, click_in_one_frame, click_over_two_frames, close_window, create,
-    create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag, every_face,
-    everything, f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front,
-    hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state, leave_sketch,
-    leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
-    modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
-    pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away, press, prompt,
-    redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of, select,
-    selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
+    animation_time, answer_question, anywhere, arrow_dots, arrow_shafts, begin_sketch_on, body_of,
+    boxed, button_event, choose, chosen, click_in_one_frame, click_over_two_frames, close_window,
+    create, create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag,
+    every_face, everything, f2_typed, faces_made_by, failing_kernel, field, fields_of,
+    from_the_front, hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state,
+    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
+    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
+    open_export, pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away,
+    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
+    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
     stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
     tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
     view_label, view_label_node, view_mut, wheel, window_told, written,
@@ -10129,6 +10129,10 @@ impl Fixture {
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
         silico_app::theme::apply(&h.ctx);
+        // The viewport's tests here look at the view a frame at a time: each view asked for
+        // taken at once, as egui_kittest's own animation time has it (the transitions' tests
+        // set egui's 0.2 again).
+        animation_time(&h, 0.0);
         h.state_mut().open(path.to_str().unwrap(), false);
         (h, record)
     }
@@ -20130,6 +20134,314 @@ fn f6_is_the_navigation_bars_fit_and_home_the_view_cubes_home() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- View transitions (DESIGN.md's *egui mapping*; the prototype's `VP.animateTo`) ----
+//
+// Expected values by hand from the prototype's ease, `2t²` to the middle and `1 − (2 − 2t)²/2`
+// after it, over the app's 200 ms at the fixture's sixtieth of a second a frame (12 frames):
+// 3 frames in, 0.125 of the way; 6, half; 7, 1 − (5/6)²/2 = 47/72; and the azimuth and the
+// elevation each moved by that much, the azimuth the short way round.
+
+use silico_app::viewport::ViewAsk;
+use silico_core::views::NamedView;
+
+/// The camera the fake renderer was last given.
+fn drawn_camera(record: &Record) -> silico_protocol::Camera {
+    record.lock().unwrap().frames.last().unwrap().camera.clone()
+}
+
+/// The azimuth and the elevation of `camera`'s view, in degrees, as the prototype's camera
+/// holds them: the azimuth from the front (−y) toward +x, the elevation up from level.
+fn azimuth_and_elevation(camera: &silico_protocol::Camera) -> (f64, f64) {
+    let d = view_direction(camera);
+    (
+        libm::atan2(d[0], -d[1]).to_degrees(),
+        libm::asin(d[2]).to_degrees(),
+    )
+}
+
+/// `frames` frames stepped with a transition under way through each, its label `said`, a
+/// frame asked for at once after each.
+#[track_caller]
+fn transition_frames(h: &mut AppHarness, frames: usize, said: &str) {
+    for frame in 0..frames {
+        step(h);
+        assert!(view(h).transition().is_some(), "ended at frame {frame}");
+        assert_eq!(view_label(h), said);
+        assert_eq!(repaint_delay(h), Some(Duration::ZERO));
+    }
+}
+
+/// The app's own frames idle: one asked for at most [`IDLE_FRAME`] on, never at once.
+fn frames_idle(h: &AppHarness) -> bool {
+    repaint_delay(h).is_some_and(|delay| delay > Duration::from_millis(100) && delay <= IDLE_FRAME)
+}
+
+#[test]
+fn a_named_view_eases_there_over_200_ms_and_ends_on_the_camera_a_jump_gives() {
+    // With egui's animation time at 0, as the harness sets it, Ctrl+4 and Ctrl+1 are taken
+    // in the frame they're given: the right view's camera and the front's, the cut's box's
+    // centre their target. At egui's own 0.2, the right view asked (as Ctrl+4 and the
+    // cube's menu ask it) is taken that frame and the front drawn, then eased from: 3 frames on (0.05 s) the azimuth 0.125 of 90°,
+    // 11.25°, level, the eye as far out; 6 frames on half, 45°, the height halfway between
+    // the two views'; 12 frames on (0.2 s) the right view's camera to the bit, as the jump
+    // gave it. The label names the front until that frame and the right from it; a frame
+    // is asked for at once until then, and the frames are idle after.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+    step(&mut h);
+    let right = view(&h).camera().clone();
+    assert!(view(&h).transition().is_none());
+    assert!(looks_from(&right, [1.0, 0.0, 0.0]));
+    assert_eq!(view_label(&h), "Orthographic · Right");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let front = view(&h).camera().clone();
+    assert!(view(&h).transition().is_none());
+    assert!(looks_from(&front, [0.0, -1.0, 0.0]));
+    assert_eq!(drawn_camera(&record), front);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    let target = [20.0, 10.0, 5.0];
+    near(front.target, target, 1e-12);
+    near(right.target, target, 1e-12);
+    let out = |camera: &silico_protocol::Camera| {
+        let d = minus(camera.eye, camera.target);
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    };
+    assert!((out(&front) - out(&right)).abs() < 1e-9);
+    let heights = (ortho_height(&front), ortho_height(&right));
+    assert_ne!(heights.0, heights.1);
+
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    step(&mut h);
+    let start = h.ctx.input(|input| input.time);
+    assert!(view(&h).transition().is_some());
+    assert_eq!(view(&h).camera(), &front);
+    assert_eq!(drawn_camera(&record), front);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    let frame = 1.0 / 60.0;
+    let elapsed = |h: &AppHarness| h.ctx.input(|input| input.time) - start;
+
+    transition_frames(&mut h, 3, "Orthographic · Front");
+    assert!((elapsed(&h) - 3.0 * frame).abs() < 1e-6, "{}", elapsed(&h));
+    let quarter = view(&h).camera().clone();
+    assert_eq!(drawn_camera(&record), quarter);
+    let (azimuth, elevation) = azimuth_and_elevation(&quarter);
+    assert!((azimuth - 11.25).abs() < 1e-4, "{azimuth}");
+    assert!(elevation.abs() < 1e-9, "{elevation}");
+    near(quarter.target, target, 1e-9);
+    assert!((out(&quarter) - out(&front)).abs() < 1e-9);
+    near(quarter.up, [0.0, 0.0, 1.0], 1e-12);
+
+    transition_frames(&mut h, 3, "Orthographic · Front");
+    let half = view(&h).camera().clone();
+    assert_eq!(drawn_camera(&record), half);
+    let (azimuth, _) = azimuth_and_elevation(&half);
+    assert!((azimuth - 45.0).abs() < 1e-4, "{azimuth}");
+    let between = (heights.0 + heights.1) / 2.0;
+    assert!(
+        (ortho_height(&half) - between).abs() < 1e-6 * between,
+        "{} against {between}",
+        ortho_height(&half)
+    );
+
+    transition_frames(&mut h, 5, "Orthographic · Front");
+    step(&mut h);
+    assert!((elapsed(&h) - 12.0 * frame).abs() < 1e-6, "{}", elapsed(&h));
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(drawn_camera(&record), right);
+    assert_eq!(view_label(&h), "Orthographic · Right");
+    meshes_settled(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(frames_idle(&h), "{:?}", repaint_delay(&h));
+    assert_eq!(view(&h).camera(), &right);
+    // The right view asked again where it is: nothing to ease, taken at once.
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &right);
+    // The top asked, then the front 2 frames on: the front eased to from where the top's
+    // had reached, the label naming the right, where the first began, until the front's
+    // end, then the front, to the bit.
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Top));
+    step(&mut h);
+    transition_frames(&mut h, 2, "Orthographic · Right");
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Front));
+    transition_frames(&mut h, 12, "Orthographic · Right");
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &front);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_middle_drag_or_the_wheel_mid_transition_ends_it_where_the_view_had_reached() {
+    // From the front, the right view asked, 6 frames: then the middle button pressed. That frame
+    // moves it on a seventh (47/72 of 90°, 58.75°) and ends it there: the pan's 40 points
+    // left move the target 40 points' worth along that view's right, (cos 58.75°,
+    // sin 58.75°, 0), and the view never goes on to the right. Then the top view from
+    // there (its azimuth 0, its right +x), 3 frames, and the wheel: its frame moves it on a
+    // fourth (2 · (1/3)² = 2/9 of the way: the azimuth 58.75° · 7/9 = 45.694…°, the
+    // elevation 90° · 2/9 = 20°) and ends it, the zoom keeping that view's direction.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    step(&mut h);
+    transition_frames(&mut h, 6, "Orthographic · Front");
+    let press = |h: &AppHarness, at: eframe::egui::Pos2, pressed: bool| {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    };
+    press(&h, at, true);
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    let reached = view(&h).camera().clone();
+    let (azimuth, elevation) = azimuth_and_elevation(&reached);
+    assert!((azimuth - 58.75).abs() < 1e-4, "{azimuth}");
+    assert!(elevation.abs() < 1e-9, "{elevation}");
+    // Named for the view it's at once the transition ends: none.
+    assert_eq!(view_label(&h), "Orthographic");
+    let to = at - eframe::egui::vec2(40.0, 0.0);
+    h.hover_at(to);
+    step(&mut h);
+    press(&h, to, false);
+    step(&mut h);
+    let mm = ortho_height(&reached) / f64::from(the_viewport(&h).height());
+    let a = 58.75f64.to_radians();
+    let panned = view(&h).camera().clone();
+    let along = [40.0 * mm * libm::cos(a), 40.0 * mm * libm::sin(a), 0.0];
+    near(
+        panned.target,
+        std::array::from_fn(|k| reached.target[k] + along[k]),
+        1e-3 * mm,
+    );
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &panned);
+
+    h.hover_at(at);
+    step(&mut h);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Top));
+    step(&mut h);
+    transition_frames(&mut h, 3, "Orthographic");
+    h.event(eframe::egui::Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, 50.0),
+        phase: eframe::egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    let zoomed = view(&h).camera().clone();
+    let (azimuth, elevation) = azimuth_and_elevation(&zoomed);
+    assert!((azimuth - 58.75 * 7.0 / 9.0).abs() < 1e-4, "{azimuth}");
+    assert!((elevation - 20.0).abs() < 1e-4, "{elevation}");
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &zoomed);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A view asked for, by name, and how.
+type Asked = (&'static str, fn(&mut AppHarness));
+
+#[test]
+fn home_fit_and_look_at_ease_to_the_camera_each_jump_gives() {
+    // From the front panned off, each of Home (its key and the cube's), F6, the navigation
+    // bar's Fit, and Look At at the left face: at egui's animation time 0 the view it gives
+    // at once; at 0.2 a transition under way from the frame it's asked in, a frame asked for
+    // at once, and at its end the same camera to the bit.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let mut start = view(&h).camera().clone();
+    start.eye[0] += 7.0;
+    start.target[0] += 7.0;
+    let asks: [Asked; 5] = [
+        ("Home", |h| h.key_press(Key::Home)),
+        ("the cube's Home", |h| {
+            h.get_by_role_and_label(Role::Group, "ViewCube")
+                .get_by_label("Home view")
+                .click();
+        }),
+        ("F6", |h| h.key_press(Key::F6)),
+        ("Fit", |h| {
+            h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+                .get_by_label("Fit")
+                .click();
+        }),
+        ("Look At", |h| {
+            h.state_mut().tabs_mut()[0].look_at_face([-1.0, 0.0, 0.0]);
+        }),
+    ];
+    for (name, ask) in asks {
+        animation_time(&h, 0.0);
+        view_mut(&mut h).set_camera(start.clone());
+        step(&mut h);
+        ask(&mut h);
+        step(&mut h);
+        step(&mut h);
+        assert!(view(&h).transition().is_none(), "{name}");
+        let jumped = view(&h).camera().clone();
+        assert_ne!(jumped, start, "{name}");
+        animation_time(&h, 0.2);
+        view_mut(&mut h).set_camera(start.clone());
+        // Settled, any read it wants answered, and the frames idle.
+        meshes_settled(&mut h);
+        step_until(&mut h, "idle frames", frames_idle);
+        ask(&mut h);
+        step(&mut h);
+        // Under way, and the next frame asked for at once, even where it began in a frame
+        // with no input and the camera not yet moved (Look At's), or after the frame's own
+        // ask (the cube's and the bar's are taken after the canvas is drawn).
+        assert!(view(&h).transition().is_some(), "{name}");
+        assert_eq!(repaint_delay(&h), Some(Duration::ZERO), "{name}");
+        step(&mut h);
+        assert!(view(&h).transition().is_some(), "{name}");
+        assert_ne!(view(&h).camera(), &jumped, "{name}");
+        step_until(&mut h, "the transition's end", |h| {
+            view(h).transition().is_none()
+        });
+        assert_eq!(view(&h).camera(), &jumped, "{name}");
+    }
+    // A camera set as a control sets it, mid-transition: taken, and the transition over.
+    h.key_press(Key::Home);
+    step(&mut h);
+    assert!(view(&h).transition().is_some());
+    view_mut(&mut h).set_camera(start.clone());
+    for _ in 0..15 {
+        step(&mut h);
+    }
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &start);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn the_view_keys_do_nothing_while_a_field_is_typed_in_or_a_modal_is_open() {
     let f = fixture();
@@ -20727,6 +21039,9 @@ fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
                 // own tests check which).
                 let f = fixture();
                 let mut h = triangle_opened(&f);
+                // Each view taken at once, as egui_kittest's animation time has it, so the
+                // cameras compared are each one's own, not one eased to.
+                animation_time(&h, 0.0);
                 for chord in keys_of(command) {
                     press_chord(&mut h, chord);
                     step(&mut h);

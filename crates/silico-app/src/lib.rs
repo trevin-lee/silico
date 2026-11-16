@@ -45,6 +45,7 @@ pub mod tab;
 pub mod theme;
 pub mod timeline;
 pub mod toolbar;
+pub mod transition;
 pub mod triad;
 pub mod viewport;
 mod wake;
