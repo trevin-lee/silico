@@ -29308,7 +29308,7 @@ fn sketch_modes_menu_is_never_open_with_smart_dimension_on() {
 const CONSTRUCTING: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Construct", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 10, "y": 30, "construction": false}, {"id": "pa000004", "x": 50, "y": 30, "construction": false}, {"id": "pa000005", "x": 10, "y": 50, "construction": false}, {"id": "pa000006", "x": 50, "y": 50, "construction": false}, {"id": "pb000001", "x": 100, "y": 60, "construction": false}, {"id": "pb000002", "x": 110, "y": 60, "construction": false}, {"id": "pb000003", "x": 90, "y": 60, "construction": false}, {"id": "pc000001", "x": 100, "y": 20, "construction": false}, {"id": "pd000001", "x": 70, "y": 40, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000003", "from": "pa000005", "to": "pa000006", "construction": true}], "circles": [{"id": "cc000001", "center": "pc000001", "radius": 5, "construction": false}], "arcs": [{"id": "ab000001", "center": "pb000001", "start": "pb000002", "end": "pb000003", "construction": false}], "constraints": [{"id": "kd000001", "type": "horizontal", "line": "na000001"}]}
   ]

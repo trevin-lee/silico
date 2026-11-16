@@ -213,9 +213,7 @@ impl OpCode {
     /// they asked.
     pub fn side(self, stage: Stage, input: usize) -> Side {
         match (self, stage) {
-            (OpCode::Pad | OpCode::Pocket | OpCode::Revolve | OpCode::Groove, Stage::Sweep) => {
-                Side::Neither
-            }
+            (op, Stage::Sweep) if op.sweeps() => Side::Neither,
             (OpCode::Cut, _) if input == 0 => Side::Outside,
             (OpCode::Cut | OpCode::Common, _) => Side::Inside,
             (
@@ -240,8 +238,9 @@ impl OpCode {
     /// writes `FUS` or `CUT` for those: one word names every step of the feature (S4), so
     /// FreeCAD's form, held for comparison and FreeCAD's orders, says the feature's.
     ///
-    /// A pattern's or mirror's is `FUS`, though FreeCAD 1.1.3's `Transformed` cuts a
-    /// subtractive tool's copies (`FeatureTransformed.cpp:577`, `:586`), so its form of a cut
+    /// A pattern's or mirror's is `FUS`, though FreeCAD 1.1's `Transformed` cuts a
+    /// subtractive tool's copies (`FeatureTransformed.cpp:392`, `:399` at the 1.1 branch
+    /// point, `af2d42a4aa`), so its form of a cut
     /// step's elements writes `CUT`: no step names a copy yet, and M6.3 settles the cut
     /// step's form, pinned by a test, before any does (docs/design/m2.7-naming.md, N10).
     pub fn code(self) -> &'static str {

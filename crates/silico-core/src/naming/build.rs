@@ -203,9 +203,13 @@ impl ElementMap {
     /// a tool's copy (`C`) of a map that isn't a sweep step's, the only tool a pattern
     /// copies; a solid's (`S`) of a sketch's faces, which are in no solid.
     ///
-    /// A copied name past the bounds ([`MOST_DEPTH`], [`MOST_WEIGHT`]) is left out, never
-    /// numbered here: by the tool's number every copy of the element would share one name.
-    /// An element left with none is the step's to name by its number in its result.
+    /// Each name is held to the parser's rule too, so the map never holds a name a reference
+    /// to it can't store: a tool's copy leaves out a name that isn't a sweep's (a sweep
+    /// feature's last step keeps its base's names, which no tool's copy may wrap), and a
+    /// solid's copy a sketch's. A copied name past the bounds ([`MOST_DEPTH`],
+    /// [`MOST_WEIGHT`]) is left out too, never numbered here: by the tool's number every copy
+    /// of the element would share one name. An element left with none is the step's to name
+    /// by its number in its result (N10's open item for M6.3).
     pub fn copy(
         of: &ElementMap,
         feature: FeatureId,
@@ -225,9 +229,14 @@ impl ElementMap {
         if !copies {
             return None;
         }
+        let wraps = |name: &Name| match (copied, name.type_word()) {
+            (Copied::Tool, TypeWord::Operation(made)) => made.sweeps(),
+            (Copied::Tool, TypeWord::Primitive(_)) => false,
+            (Copied::Solid, made) => made != TypeWord::Operation(OpCode::Sketch),
+        };
         let mut builder = Builder::new(feature, operation, Stage::Last);
         for (element, names) in &of.names {
-            for name in names {
+            for name in names.iter().filter(|name| wraps(name)) {
                 let copy = Name::Copy {
                     feature: builder.map.feature.clone(),
                     operation,

@@ -1038,6 +1038,75 @@ fn a_name_of_exactly_the_most_names_is_kept_and_one_more_is_numbered() {
 }
 
 #[test]
+fn a_copy_of_a_name_at_the_most_names_is_left_out_and_a_lighter_one_is_copied() {
+    // N10: a copy is a name more, so the copy of a name already 4,096 names written out
+    // would be 4,097, past the bound the parser reads to: the copy's map leaves it out
+    // (never numbering it by the tool's number), and copies the rest. The map is the one
+    // the test above works by hand, its Face1 at the bound.
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+    let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
+    let steps = [
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (2, 3),
+        (1, 3),
+        (2, 3),
+        (0, 1),
+    ];
+    for (n, (p, q)) in steps.into_iter().enumerate() {
+        let history = crossed_with_tool(p, q);
+        map = ElementMap::operation(
+            id(&format!("f{n:07}")),
+            OpCode::Cut,
+            &[&map, &tool],
+            &history,
+        );
+    }
+    let face1 = map.name(element(ElementKind::Face, 1)).unwrap();
+    assert_eq!(written_out(&face1), 4096);
+    let one = silico_core::naming::Instance::new(&[1]).unwrap();
+    let copied = ElementMap::copy(
+        &map,
+        id("m0000001"),
+        OpCode::Mirror,
+        silico_core::naming::Copied::Solid,
+        &one,
+    )
+    .unwrap();
+    assert_eq!(copied.name(element(ElementKind::Face, 1)), None);
+    // Every other element is copied, each name wrapped once and under the bound.
+    let mut kept = 0;
+    for (element, names) in map.iter() {
+        if element == self::element(ElementKind::Face, 1) {
+            continue;
+        }
+        let own = &names[0];
+        let copy = copied.name(element).unwrap();
+        assert_eq!(
+            copy.to_string(),
+            format!("m0000001.mirror.{}(S1 {own})", kind_word(element.kind))
+        );
+        assert!(written_out(&copy) <= 4096, "{copy}");
+        kept += 1;
+    }
+    assert!(kept > 0);
+    assert_eq!(copied.iter().count(), map.iter().count() - 1);
+}
+
+fn kind_word(kind: ElementKind) -> &'static str {
+    match kind {
+        ElementKind::Vertex => "Vertex",
+        ElementKind::Edge => "Edge",
+        ElementKind::Face => "Face",
+        ElementKind::Solid => "Solid",
+    }
+}
+
+#[test]
 fn a_deep_timeline_names_and_writes_its_names_on_a_default_thread() {
     // Found by the review: a plate drilled 6,000 times, a feature a hole, nested its top
     // face's name 6,000 deep, and writing it overflowed a 2 MB stack (an abort). Bounded,

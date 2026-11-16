@@ -916,6 +916,14 @@ fn a_copys_name_passes_the_gate_under_either_scheme_and_finds_nothing_loudly() {
             silico_core::ErrorCode::ReferenceBroken,
             "{error}"
         );
+        // N8: the name says a linear_pattern made it, and q0000002 is a pocket.
+        assert!(
+            error
+                .message()
+                .contains("names an element a linear_pattern made, but q0000002 is a pocket now"),
+            "{error}"
+        );
+        assert!(!error.candidates().is_empty(), "{error}");
     }
 }
 
@@ -955,5 +963,179 @@ fn the_gate_refuses_a_copy_of_an_unstable_name_as_any_unstable_name() {
                 );
             }
         }
+    }
+}
+
+#[test]
+fn a_copy_counts_a_level_on_top_of_its_names_duplicates_and_under_its_own() {
+    // The parser's height counts a copy's level whatever its inner name's height is made
+    // of (the review: only copies of copies were nested at the bound, which the depth
+    // argument refuses alone). The wall is 2 high; 254 `~1`s make it 256; a copy of it is
+    // 257, past the bound. And 254 `~1`s on a copy of the wall (3 high) make 257 too.
+    let high = format!("{WALL}{}", "~1".repeat(254));
+    assert!(parse(&high).is_ok());
+    let error = parse(&format!("t0000001.linear_pattern.Face(C2 {high})")).unwrap_err();
+    assert!(error.why.contains("nested more than 256"), "{error}");
+    let at = format!("{WALL}{}", "~1".repeat(253));
+    assert!(parse(&format!("t0000001.linear_pattern.Face(C2 {at})")).is_ok());
+    let copy = format!("t0000001.linear_pattern.Face(C2 {WALL})");
+    assert!(parse(&format!("{copy}{}", "~1".repeat(253))).is_ok());
+    let error = parse(&format!("{copy}{}", "~1".repeat(254))).unwrap_err();
+    assert!(error.why.contains("nested more than 256"), "{error}");
+}
+
+#[test]
+fn a_tools_copy_of_a_sweep_features_last_map_wraps_only_the_sweeps_names() {
+    // A pad's last step keeps its base's elements under their own names (a box's here),
+    // which no tool's copy may wrap (the parser refuses `(C1 k7f2qx3m.box.Face1)`): so the
+    // copy's map leaves them out, holding only names the parser reads back.
+    let cube = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    // The box's six faces kept as 1 to 6, the pad's sweep's two faces as 7 and 8.
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+            InputHistory {
+                faces: vec![kept(7), kept(8)],
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+        ],
+        result: ElementCounts {
+            faces: 8,
+            edges: 0,
+            vertices: 0,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let last = ElementMap::operation(id("p0000001"), OpCode::Pad, &[&cube, &pad()], &history);
+    assert_eq!(last.made(), TypeWord::Operation(OpCode::Pad));
+    assert_eq!(
+        last.name(face(1)).unwrap().to_string(),
+        "k7f2qx3m.box.Face1"
+    );
+    let one = Instance::new(&[1]).unwrap();
+    let copies = ElementMap::copy(
+        &last,
+        id("t0000001"),
+        OpCode::LinearPattern,
+        Copied::Tool,
+        &one,
+    )
+    .unwrap();
+    for n in 1..=6 {
+        assert_eq!(copies.name(face(n)), None, "Face{n}");
+    }
+    assert_eq!(
+        copies.name(face(7)).unwrap().to_string(),
+        "t0000001.linear_pattern.Face(C1 p0000001.pad.Face(M s0000001.sketch.Face1))"
+    );
+    assert_eq!(
+        copies.name(face(8)).unwrap().to_string(),
+        "t0000001.linear_pattern.Face(C1 p0000001.pad.Face2)"
+    );
+    let pad_makers = |feature: &FeatureId| match feature.as_str() {
+        "s0000001" => Some(Maker::By(OpCode::Sketch)),
+        "p0000001" => Some(Maker::By(OpCode::Pad)),
+        "t0000001" => Some(Maker::By(OpCode::LinearPattern)),
+        "k7f2qx3m" => Some(Maker::Itself(PrimitiveKind::Box)),
+        _ => None,
+    };
+    for (_, names) in copies.iter() {
+        for name in names {
+            assert!(
+                Name::parse(&name.to_string(), &pad_makers).is_ok(),
+                "{name}"
+            );
+        }
+    }
+    // A solid's copy of the same map wraps every name, the box's among them.
+    let whole =
+        ElementMap::copy(&last, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    assert_eq!(
+        whole.name(face(1)).unwrap().to_string(),
+        "m0000001.mirror.Face(S1 k7f2qx3m.box.Face1)"
+    );
+}
+
+#[test]
+fn a_pattern_steps_freecad_op_code_is_fus_until_m6_3_settles_a_cuts() {
+    // N10's open item: an `OpCode` carries no boolean, so the three write `FUS`; M6.3
+    // changes this with a test of the cut case.
+    for op in [OpCode::LinearPattern, OpCode::PolarPattern, OpCode::Mirror] {
+        assert_eq!(op.code(), "FUS", "{op:?}");
+    }
+}
+
+#[test]
+fn a_copy_sorts_after_every_other_kind_of_name_and_equals_none() {
+    let wall = wall();
+    let copy = copy(
+        "t0000001",
+        OpCode::LinearPattern,
+        ElementKind::Face,
+        Copied::Tool,
+        &[2],
+        Arc::clone(&wall),
+    );
+    let others = [
+        "k7f2qx3m.box.Face6",
+        WALL,
+        "q0000002.pocket.Edge(U q0000002.pocket.Face(G s0000003.sketch.Edge.cc000001))",
+        "q0000002.pocket.Face(L q0000002.pocket.Edge3)",
+        "q0000002.pocket.Face3~1",
+    ];
+    for text in others {
+        let other = parse(text).unwrap();
+        assert_eq!(other.cmp(&copy), std::cmp::Ordering::Less, "{text}");
+        assert_ne!(other, copy, "{text}");
+    }
+    // A sketch's element sorts before a copy too.
+    let sketch = Name::Sketch {
+        feature: id("s0000003"),
+        kind: ElementKind::Edge,
+        id: silico_core::document::ElementId::new("cc000001").unwrap(),
+    };
+    assert_eq!(sketch.cmp(&copy), std::cmp::Ordering::Less);
+}
+
+#[test]
+fn a_tools_copy_of_a_sweeps_name_from_above_or_below_reads_and_of_a_cuts_is_refused() {
+    // `type_word` of a name from above (`U`) or below (`L`) is its operation's, so a tool's
+    // copy of a pocket's edge named from above reads, and of a cut's is refused, at the
+    // inner name's type word (column 42).
+    let p = "t0000001.linear_pattern.Edge(";
+    let upper = "q0000002.pocket.Edge(U q0000002.pocket.Face(G s0000003.sketch.Edge.cc000001))";
+    let text = format!("{p}C2 {upper})");
+    assert_eq!(parse(&text).unwrap().to_string(), text);
+    let lower = "q0000002.pocket.Face(L q0000002.pocket.Edge3)";
+    let text = format!("t0000001.linear_pattern.Face(C2 {lower})");
+    assert_eq!(parse(&text).unwrap().to_string(), text);
+    for inner in [
+        "cccccccc.cut.Edge(U k7f2qx3m.box.Face6)",
+        "cccccccc.cut.Edge(L k7f2qx3m.box.Vertex1)",
+    ] {
+        let error = parse(&format!("{p}C2 {inner})")).unwrap_err();
+        assert_eq!(error.column, 42, "{inner}: {error}");
+        assert!(
+            error.why.contains("and a cut's isn't one"),
+            "{inner}: {error}"
+        );
     }
 }

@@ -501,12 +501,16 @@ impl Reader<'_> {
                 }));
             }
         };
-        let Some(instance) = Instance::new(&offsets).filter(|i| i.offsets().len() == offsets.len())
-        else {
-            self.at = last_at;
-            return Err(self.error(
-                "an instance's last offset is 1 or more: trailing zeros are left off, and the original is no copy",
-            ));
+        // The one spelling: no trailing zero, so neither the original (every offset 0) nor
+        // an instance written with a zero more than it has.
+        let instance = match (offsets.last(), Instance::new(&offsets)) {
+            (Some(&last), Some(instance)) if last > 0 => instance,
+            _ => {
+                self.at = last_at;
+                return Err(self.error(
+                    "an instance's last offset is 1 or more: trailing zeros are left off, and the original is no copy",
+                ));
+            }
         };
         self.expect(" ")?;
         let inner_at = self.at;
