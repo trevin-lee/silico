@@ -2562,7 +2562,7 @@ fn in_an_oblique_view_smart_dimension_and_the_line_tool_take_no_axis_far_off_on_
     // The selection takes the line (#481).
     let mut mode = mode_at(issue());
     click_through(&mut mode, &placed, at, false);
-    assert_eq!(mode.selection.references(), [line.clone()]);
+    assert_eq!(mode.selection.references(), std::slice::from_ref(&line));
     // Smart Dimension: hovered there, the line; and a read that comes with no pointer event
     // works the hover out again with the allowance the pointer had, so still the line (with
     // both axes allowed, it would be the axis, the nearer in millimetres). Clicked, the line
