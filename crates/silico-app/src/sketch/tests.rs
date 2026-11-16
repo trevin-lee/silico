@@ -7480,3 +7480,95 @@ fn the_scale_at_a_place_is_the_mean_step_of_a_point_right_and_a_point_down_or_no
     let misses = |_: Pos2| -> Option<[f64; 2]> { None };
     assert_eq!(scale_at(&misses, pos2(10.0, 0.0)), None);
 }
+
+/// [`rectangle`] with its top, na000003, construction; a circle ca000001 about pa000001 and
+/// an arc aa000001 about pa000002, both profile; and a horizontal, ka000001, of the bottom.
+fn switching() -> Sketch {
+    let mut sketch = rectangle(vec![horizontal("ka000001", "na000001")]);
+    sketch.lines[2].construction = true;
+    sketch.circles.push(SketchCircle {
+        id: id("ca000001"),
+        center: id("pa000001"),
+        radius: Coordinate::new(5.0).unwrap(),
+        construction: false,
+    });
+    sketch.arcs.push(SketchArc {
+        id: id("aa000001"),
+        center: id("pa000002"),
+        start: id("pa000003"),
+        end: id("pa000004"),
+        construction: false,
+    });
+    sketch
+}
+
+/// Construction's switch of `picks` in `sketch`: the value, and the fields set to it.
+fn switched(sketch: &Sketch, picks: &[Reference]) -> Option<(bool, Vec<String>)> {
+    selection::construction_switch(sketch, picks).map(|switch| {
+        let fields = std::iter::once(switch.first).chain(switch.rest).collect();
+        (switch.construction, fields)
+    })
+}
+
+/// `construction` and `fields`, as [`switched`] gives them.
+fn switch(construction: bool, fields: &[&str]) -> Option<(bool, Vec<String>)> {
+    Some((
+        construction,
+        fields.iter().map(|f| (*f).to_owned()).collect(),
+    ))
+}
+
+#[test]
+fn construction_sets_every_selected_curve_one_way_and_leaves_out_what_isnt_a_curve() {
+    let sketch = switching();
+    // Two profile lines: both made construction, in pick order.
+    assert_eq!(
+        switched(&sketch, &[element("na000002"), element("na000001")]),
+        switch(
+            true,
+            &["lines.na000002.construction", "lines.na000001.construction"]
+        )
+    );
+    // A construction line and a profile one: all made construction, so only the profile one
+    // changes (each flipped on its own would make the top profile).
+    assert_eq!(
+        switched(&sketch, &[element("na000003"), element("na000001")]),
+        switch(true, &["lines.na000001.construction"])
+    );
+    // Only construction: all made profile.
+    assert_eq!(
+        switched(&sketch, &[element("na000003")]),
+        switch(false, &["lines.na000003.construction"])
+    );
+    // A circle and an arc, by their own lists.
+    assert_eq!(
+        switched(&sketch, &[element("aa000001"), element("ca000001")]),
+        switch(
+            true,
+            &[
+                "arcs.aa000001.construction",
+                "circles.ca000001.construction"
+            ]
+        )
+    );
+    // Points, constraints, the origin, and the axes are left out; with nothing else, no
+    // switch (the palette's setting turns instead).
+    let not_curves = [
+        element("pa000001"),
+        element("ka000001"),
+        Reference::Origin,
+        Reference::XAxis,
+        Reference::YAxis,
+    ];
+    assert_eq!(switched(&sketch, &not_curves), None);
+    assert_eq!(switched(&sketch, &[]), None);
+    // With a curve among them, only the curve; a curve picked twice counts once.
+    let mut picks = not_curves.to_vec();
+    picks.extend([element("na000004"), element("na000004")]);
+    assert_eq!(
+        switched(&sketch, &picks),
+        switch(true, &["lines.na000004.construction"])
+    );
+    // A curve the read doesn't hold is left out.
+    assert_eq!(switched(&sketch, &[element("nz000001")]), None);
+}
