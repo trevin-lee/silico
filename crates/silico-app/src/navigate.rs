@@ -227,7 +227,7 @@ pub fn clamped(
     }
 }
 
-/// The named view `view` of `bounds` (the ViewCube's faces and corners, and Home): the
+/// The named view `view` of `bounds` (the ViewCube's faces, edges, and corners, and Home): the
 /// core's own camera for it, which `render` and `meshes` fit too, so the app and an agent
 /// asking for the view see the same.
 pub fn named(view: NamedView, bounds: [[f64; 3]; 2], width: u32, height: u32) -> Option<Camera> {
@@ -336,20 +336,6 @@ pub fn look_at(
         views::fit_along(toward, up, bounds, across, down).0
     })?;
     checked_at(camera, width, height)
-}
-
-/// Which way is up when looking at a face square from `toward` (its unit outward normal),
-/// as the named views have it ([`NamedView::up`]): +z across the view, made a unit as the
-/// core makes a corner's; or +y when the face looks along z, as `top` and `bottom` have it,
-/// which is when +z's part across the view is under a millionth, too short to steer by.
-pub fn up_across(toward: [f64; 3]) -> [f64; 3] {
-    let z = [0.0, 0.0, 1.0];
-    let across = sub(z, scaled(toward, dot(z, toward)));
-    let length = dot(across, across).sqrt();
-    if length < 1e-6 {
-        return [0.0, 1.0, 0.0];
-    }
-    across.map(|part| part / length)
 }
 
 /// Where the document's vector `v` points on the screen as a camera's `frame` sees it, at
@@ -850,8 +836,8 @@ mod tests {
 
     #[test]
     fn each_named_views_camera_is_at_that_view_and_no_other_in_either_projection() {
-        // The nearest two named views are a face and a corner, acos(1/√3) = 54.7° apart, far
-        // past a hundredth of a radian: each view's own camera, fitted to a box off the
+        // The nearest two named views are an edge and a corner, acos(√(2/3)) = 35.3° apart,
+        // far past a hundredth of a radian: each view's own camera, fitted to a box off the
         // origin, is at it alone, and in perspective too.
         let bounds = [[10.0, -20.0, 5.0], [70.0, 15.0, 45.0]];
         for view in views::NAMED_VIEWS {
@@ -866,25 +852,5 @@ mod tests {
         let mut bad = front();
         bad.eye = bad.target;
         assert!(views::NAMED_VIEWS.iter().all(|v| !at_view(&bad, *v)));
-    }
-
-    #[test]
-    fn up_across_a_face_is_z_made_square_to_its_normal_or_y_for_a_face_along_z() {
-        assert_eq!(up_across([0.0, 0.0, 1.0]), [0.0, 1.0, 0.0]);
-        assert_eq!(up_across([0.0, 0.0, -1.0]), [0.0, 1.0, 0.0]);
-        assert_eq!(up_across([1.0, 0.0, 0.0]), [0.0, 0.0, 1.0]);
-        // (1, 1, 1) / √3: z less its part along it, (−1/3, −1/3, 2/3), made a unit:
-        // (−1, −1, 2) / √6.
-        let corner = [1.0 / 3f64.sqrt(); 3];
-        let s = 6f64.sqrt();
-        near(up_across(corner), [-1.0 / s, -1.0 / s, 2.0 / s], 1e-15);
-        // Within a millionth of z, still z's; a face a hundredth off it turns z with it.
-        assert_eq!(up_across([0.0, 1e-7, 1.0]), [0.0, 1.0, 0.0]);
-        // At exactly a millionth (from (0, 1e-6, 1), +z's part across is (0, −1e-6, 0), its
-        // length 1e-6 to the bit, as √(x²) is x), it steers by that part: −y, not +y.
-        assert_eq!(up_across([0.0, 1e-6, 1.0]), [0.0, -1.0, 0.0]);
-        let tipped = [0.0, -0.01, (1.0f64 - 1e-4).sqrt()];
-        let up = up_across(tipped);
-        assert!(up[1] > 0.99 && up[2] > 0.0, "{up:?}");
     }
 }

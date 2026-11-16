@@ -63,8 +63,9 @@
 //! held back in the release's frame, its tab shown or not (`Tab::arrows_frame`); OK, and a save
 //! that closes the tab, end a drag still under way by sending it first (`Tab::close_dialog`,
 //! `Tab::flush_held`). Esc ends a drag where it began (section 3's chain, an open drag first:
-//! `Tab::escape_first`), as the stream's cancel does; a dialog closed, or its tab beginning to
-//! close, mid-drag leaves the rest of its stream doing nothing.
+//! `Tab::escape_first`), as the stream's cancel does, but the cancel a modal coming over the
+//! window gives it (`Grip::modal_over`), which keeps the value it was dragged to; a dialog
+//! closed, or its tab beginning to close, mid-drag leaves the rest of its stream doing nothing.
 //!
 //! Each arrow is data first, in model space ([`handles`], from the dialog, the sketch's plane,
 //! and its profile's centroid, [`profile_centroid`]) and then on the screen ([`arrows`], through
@@ -597,6 +598,10 @@ struct Held {
     /// Whether it still acts: not once the dialog it was pressed in has closed, or Esc has
     /// ended it.
     live: bool,
+    /// Whether a modal has come over the window while it's held ([`Grip::modal_over`]): its
+    /// cancel, the canvas's as the modal came, then keeps a drag's value rather than giving
+    /// the input back the text it held at the press.
+    kept: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -629,9 +634,11 @@ impl Grip {
     ///
     /// A press on an arrow takes its stream: its moves drag a distance arrow ([`dragged`]), its
     /// release on the flip arrow, where it was pressed, turns Reversed over, and its cancel
-    /// gives a dragged input back the text it held at the press. A stream an arrow didn't take
-    /// is given back whole, and so is a press with no dialog. Once the dialog it was pressed in
-    /// has closed, the rest of the stream asks nothing.
+    /// gives a dragged input back the text it held at the press, but once a modal has come
+    /// over the window ([`modal_over`](Self::modal_over)), when the drag keeps the value it
+    /// was dragged to. A stream an arrow didn't take is given back whole, and so is a press
+    /// with no dialog. Once the dialog it was pressed in has closed, the rest of the stream
+    /// asks nothing.
     pub fn frame(
         &mut self,
         events: &[LeftEvent],
@@ -662,6 +669,7 @@ impl Grip {
                             press_px: event.at_px,
                             took: took(arrows, dialog, at)?,
                             live: true,
+                            kept: false,
                         })
                     });
                     if self.held.is_none() {
@@ -700,6 +708,7 @@ impl Grip {
                 LeftKind::Cancel => match self.held.take() {
                     Some(Held {
                         live: true,
+                        kept: false,
                         took: Took::Distance { distance, was, .. },
                         ..
                     }) => asked.push(Asked::Restore(distance.part, was)),
@@ -743,6 +752,18 @@ impl Grip {
         match &held.took {
             Took::Distance { distance, .. } => Some(distance.part),
             Took::Flip(_) => None,
+        }
+    }
+
+    /// A modal over the window (#487), told each frame it is, before the canvas reads the
+    /// frame's events: the stream held goes on through them, so a release among them, before
+    /// the key that opened the modal, still finishes its click and a move its drag; and the
+    /// cancel the canvas gives what's still held after them keeps the drag's value, as when
+    /// its tab begins to close mid-drag (#480's review, RL1), never putting the press's text
+    /// back as Esc does.
+    pub fn modal_over(&mut self) {
+        if let Some(held) = &mut self.held {
+            held.kept = true;
         }
     }
 

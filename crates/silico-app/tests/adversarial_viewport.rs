@@ -2189,7 +2189,7 @@ fn a_view_changed_every_frame_is_named_by_the_label_of_the_frame_that_draws_it()
     assert!(looks_from(&drawn(&record), [0.0, 0.0, 1.0]));
     assert_eq!(view_label(&h), "Orthographic · Top");
     // The cube's top front edge, clickable from the top: its view, between the top's and
-    // the front's, is unnamed.
+    // the front's, is the core's top_front, which the label doesn't name.
     h.get_by_role_and_label(egui::accesskit::Role::Group, "ViewCube")
         .get_by_label("Top front")
         .click();

@@ -773,3 +773,41 @@ fn an_orthographic_view_cuts_off_nothing_toward_the_eye_or_away_from_it() {
         "the far face is cut off: the centre is {centre:?}"
     );
 }
+
+#[test]
+fn a_box_from_a_cube_edges_named_view_shows_its_two_faces_in_the_share_worked_by_hand() {
+    // The bench's 40 x 20 x 10 box, fitted by the core's named view at 160 x 120. From
+    // top_front, (0, −1, 1)/√2, only the top (face 6) and the front (face 3) face the view,
+    // each at 1/√2: across, both span the box's 40; up the image, the top spans its 20
+    // depth over √2, the front its 10 height over √2, so the top covers twice the front's
+    // pixels. From front_right, (1, −1, 0)/√2, the front (3) and the right (2), up the image
+    // both its 10, across the front 40/√2 and the right 20/√2: again two to one.
+    let mut w = worker();
+    let bounds = [[0.0; 3], [40.0, 20.0, 10.0]];
+    for (view, more, less) in [
+        (silico_core::views::NamedView::TopFront, [1, 6], [1, 3]),
+        (silico_core::views::NamedView::FrontRight, [1, 3], [1, 2]),
+    ] {
+        let scene = RenderScene {
+            camera: view.camera(bounds, 160, 120),
+            ..front_of_a_box(160, 120)
+        };
+        let (_, ids) = render(&mut w, scene);
+        let ids = ids.unwrap();
+        let faces: std::collections::BTreeSet<PixelId> = ids
+            .iter()
+            .copied()
+            .filter(|id| *id != [0, 0] && id[1] & EDGE_BIT == 0)
+            .collect();
+        assert_eq!(
+            faces,
+            [less, more].into_iter().collect(),
+            "{view:?}: faces seen"
+        );
+        let (m, l) = (
+            pixels_of(&ids, 160, more).len() as f64,
+            pixels_of(&ids, 160, less).len() as f64,
+        );
+        assert!((m / l - 2.0).abs() < 0.15, "{view:?}: {m} against {l}");
+    }
+}

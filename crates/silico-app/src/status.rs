@@ -660,6 +660,7 @@ fn button(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, stop: bool) -> Res
     // Painted at the bar's opacity, not faded further when off: `.st-btn:disabled` is
     // Gray.400 itself.
     let opacity = ui.opacity();
+    let own = enabled;
     ui.add_enabled(enabled, |ui: &mut Ui| {
         ui.set_opacity(opacity);
         let galley = ui.painter().layout_no_wrap(
@@ -677,7 +678,9 @@ fn button(ui: &mut Ui, icon: Icon, text: &str, enabled: bool, stop: bool) -> Res
         let enabled = ui.is_enabled();
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
         let hovered = response.hovered();
-        let (fill, ink) = match (enabled, stop, hovered) {
+        // Behind a modal, drawn as its own flag has it (#487).
+        let on = crate::modal::looks_on(ui, own);
+        let (fill, ink) = match (on, stop, hovered) {
             (false, _, _) => (Color32::TRANSPARENT, theme::STATUS_BUTTON_DISABLED_TEXT),
             (true, true, false) => (theme::STATUS_STOP_BG, theme::STATUS_STOP_TEXT),
             (true, true, true) => (theme::STATUS_STOP_HOVER_BG, theme::STATUS_STOP_HOVER_TEXT),
@@ -726,6 +729,7 @@ fn item_button(
 ) -> Response {
     // Painted at the bar's opacity, not faded further when off.
     let opacity = ui.opacity();
+    let own = enabled;
     ui.add_enabled(enabled, |ui: &mut Ui| {
         ui.set_opacity(opacity);
         let galley = ui.painter().layout_job(plain(text, colour));
@@ -745,7 +749,8 @@ fn item_button(
         let (rect, response) = ui.allocate_exact_size(size, Sense::click());
         let enabled = ui.is_enabled();
         response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
-        let ink = if !enabled {
+        // Behind a modal, drawn as its own flag has it (#487).
+        let ink = if !crate::modal::looks_on(ui, own) {
             theme::STATUS_BUTTON_DISABLED_TEXT
         } else if response.hovered() {
             ui.painter().rect_filled(
@@ -830,6 +835,25 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
+
+    #[test]
+    fn the_bars_buttons_behind_a_modal_keep_their_own_look_stop_and_item_on_or_off() {
+        for stop in [true, false] {
+            crate::modal::tests::drawn_alike_behind(|ui, on| {
+                button(ui, Icon::Stop, "Stop", on, stop);
+            });
+        }
+        crate::modal::tests::drawn_alike_behind(|ui, on| {
+            item_button(
+                ui,
+                Mark::Icon(Icon::Error),
+                "Rebuilt with 2 errors",
+                theme::ERROR_TEXT,
+                &[],
+                on,
+            );
+        });
+    }
 
     /// The prototype's tokens and geometry.
     mod css {

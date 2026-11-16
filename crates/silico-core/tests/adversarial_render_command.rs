@@ -262,6 +262,18 @@ fn every_named_view_of_a_nanometre_cube_at_either_extreme_aspect_is_drawn() {
         "bottom_front_right",
         "bottom_back_left",
         "bottom_back_right",
+        "top_front",
+        "top_back",
+        "top_left",
+        "top_right",
+        "bottom_front",
+        "bottom_back",
+        "bottom_left",
+        "bottom_right",
+        "front_left",
+        "front_right",
+        "back_left",
+        "back_right",
     ] {
         for (w, h) in [(4096, 1), (1, 4096), (1, 1)] {
             let done = bench.render(&view(name, w, h)).unwrap_or_else(|p| {
@@ -277,7 +289,7 @@ fn every_named_view_of_a_nanometre_cube_at_either_extreme_aspect_is_drawn() {
             assert!(view_height >= 1e-6, "{name} {w}x{h}");
         }
     }
-    assert_eq!(bench.renderer.sent().len(), 14 * 3);
+    assert_eq!(bench.renderer.sent().len(), 26 * 3);
 }
 
 // --- Bodies that failed or weren't measured ----------------------------------------------
