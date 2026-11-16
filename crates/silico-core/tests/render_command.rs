@@ -243,12 +243,8 @@ fn an_edge_view_fits_the_bodies_as_worked_by_hand() {
             _ => [r, -r, 0.0],
         };
         let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
-        for k in 0..3 {
-            assert!(
-                (d[k] / length - along[k]).abs() < 1e-9,
-                "{name}: {:?}",
-                c.eye
-            );
+        for (got, want) in d.iter().zip(along) {
+            assert!((got / length - want).abs() < 1e-9, "{name}: {:?}", c.eye);
         }
     }
     assert_eq!(bench.renderer.sent().len(), 2);

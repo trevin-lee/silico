@@ -684,11 +684,8 @@ mod tests {
                 "{view:?}: {view_height}"
             );
             let got_right = cross(camera.up, view.direction());
-            for k in 0..3 {
-                assert!(
-                    (got_right[k] - right[k]).abs() <= 1e-15,
-                    "{view:?}: {got_right:?}"
-                );
+            for (got, want) in got_right.iter().zip(right) {
+                assert!((got - want).abs() <= 1e-15, "{view:?}: {got_right:?}");
             }
             let d = [
                 camera.eye[0] - 20.0,
@@ -696,10 +693,10 @@ mod tests {
                 camera.eye[2] - 5.0,
             ];
             let away = 2100f64.sqrt();
-            for k in 0..3 {
-                let want = view.axes()[k] / r2 * away;
+            for (got, axis) in d.iter().zip(view.axes()) {
+                let want = axis / r2 * away;
                 assert!(
-                    (d[k] - want).abs() <= 1e-12,
+                    (got - want).abs() <= 1e-12,
                     "{view:?}: eye {:?}",
                     camera.eye
                 );
