@@ -46828,7 +46828,19 @@ fn a_new_parts_canvas_says_start_with_a_sketch_and_its_create_sketch_opens_the_p
         labels_in(&planes, Role::Button),
         ["XY plane", "XZ plane", "YZ plane"]
     );
-    assert!(hint(&h).is_some(), "the planes' anchor stays");
+    // The planes' anchor, it stays every frame they're open: no frame hides it as their pick.
+    for frame in 0..4 {
+        step(&mut h);
+        assert!(
+            hint(&h).is_some(),
+            "frame {frame}: the planes' anchor stays"
+        );
+        assert!(
+            h.query_by_role_and_label(Role::Menu, "Create Sketch")
+                .is_some(),
+            "frame {frame}: the planes stay open"
+        );
+    }
     assert!(sketch_mode(&h).is_none());
     h.get_by_role_and_label(Role::Button, "XZ plane").click();
     step_until(&mut h, "its sketch added", |h| {
@@ -47132,8 +47144,9 @@ fn the_timelines_arrows_do_nothing_with_no_feature_selected_or_a_bodys_row_selec
 fn the_timelines_arrows_are_a_fields_while_a_name_is_typed_and_a_menus_while_one_is_open() {
     // The prototype's `if (typing) return` and its menu's own arrows: in the property
     // panel's Name field, and in F2's rename field, → and ← move the cursor and select
-    // nothing; with the timeline's menu open (its right click selects Pin), they're the
-    // menu's, Pin kept. Esc closes it, and → walks again.
+    // nothing; with the timeline's menu open (its right click selects Pin), or the
+    // navigation bar's Display settings, they're the menu's, Pin kept. Esc closes it, and
+    // → walks again.
     use eframe::egui::{Key, Modifiers};
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
@@ -47184,6 +47197,29 @@ fn the_timelines_arrows_are_a_fields_while_a_name_is_typed_and_a_menus_while_one
     h.key_press(Key::Escape);
     step(&mut h);
     step(&mut h);
+    // A menu that selects nothing as it stays open, the navigation bar's Display settings:
+    // the arrows its, Pin kept; Esc closes it, and → walks again.
+    click_on_bar(&mut h, "Display settings");
+    assert!(
+        eframe::egui::Popup::is_any_open(&h.ctx),
+        "Display settings open"
+    );
+    for key in [Key::ArrowRight, Key::ArrowLeft] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert_eq!(
+            feature_selected(&h).as_deref(),
+            Some(PIN_ID),
+            "display, {key:?}"
+        );
+    }
+    assert!(
+        eframe::egui::Popup::is_any_open(&h.ctx),
+        "Display settings still open"
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(!eframe::egui::Popup::is_any_open(&h.ctx));
     pressed_with(&mut h, Modifiers::NONE, Key::ArrowRight);
     assert_eq!(feature_selected(&h).as_deref(), Some(HOLE_ID));
     assert_eq!(never_waits::waits(), 0);
