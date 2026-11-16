@@ -938,10 +938,11 @@ pub struct Row {
     /// timeline order, that's healthy, a sketch's never counted. Healthy is the prototype's
     /// word for built and shown, which a feature built with warnings is too (Fusion's yellow,
     /// "a feature that still shows", `silico_core::timeline`); one in error, suppressed, or
-    /// not built (`unknown`) isn't. While the tip is `unknown` (an edit's reach, rebuilding),
-    /// the meta the last read gave is kept, so the row doesn't change till the rebuild says
-    /// how it stands. Otherwise none: for a sketch, and a body whose tip is healthy or
-    /// warned, which shows none rather than its name twice.
+    /// not built (`unknown`) isn't. While the tip is `unknown` (an edit's reach, rebuilding;
+    /// or built but not measured, a kernel fault leaving its fingerprint unchecked), the
+    /// meta the last read gave is kept, so the row doesn't change till its health is known.
+    /// Otherwise none: for a sketch, and a body whose tip is healthy or warned, which shows
+    /// none rather than its name twice.
     pub last_healthy: Option<String>,
 }
 
