@@ -154,12 +154,44 @@ const SKETCH_TOOLS: [(Command, sketch::tools::Choice); 7] = {
 /// its top, centred; the palette at its right, below the ViewCube, as far from the canvas's
 /// right (and, at most, its bottom) as `PALETTE_MARGIN`.
 const SKETCH_BAR_FROM_TOP: f32 = 10.0;
-/// The least the sketch bar stands in from each of the canvas's sides, as far as it stands
-/// below its top: a bar as wide as the canvas allows cuts its sketch's name short (#466).
+/// The least the sketch bar stands in from the canvas's left, as far as it stands below its
+/// top, and from its right, clear of the ViewCube as a banner is (#466).
 const SKETCH_BAR_FROM_SIDE: f32 = SKETCH_BAR_FROM_TOP;
+const SKETCH_BAR_FROM_RIGHT: f32 = theme::BANNER_MARGIN_RIGHT;
 const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
     egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
+
+/// Where the sketch bar showing `bar` stands over `canvas`, its top left, and the most it may
+/// be wide. Centred, below the canvas's top, but its right kept clear of the ViewCube, as a
+/// banner's is (`crate::banner`): as wide as the canvas allows between
+/// [`SKETCH_BAR_FROM_SIDE`] from its left and [`SKETCH_BAR_FROM_RIGHT`] from its right, and
+/// moved left only as far as that keeps it from reaching the ViewCube. Where that room
+/// can't hold all of the bar but its name and the name's least, [`sketch::bar::NAME_LEAST`],
+/// it takes [`SKETCH_BAR_FROM_SIDE`] at each side instead.
+fn sketch_bar_place(
+    ctx: &egui::Context,
+    canvas: egui::Rect,
+    bar: &sketch::bar::BarView,
+) -> (egui::Pos2, f32) {
+    let style = ctx.global_style();
+    let rest = sketch::bar::rest_width(ctx, &style, bar);
+    let clear = canvas.width() - SKETCH_BAR_FROM_SIDE - SKETCH_BAR_FROM_RIGHT;
+    let (most, right) = if clear >= rest + sketch::bar::NAME_LEAST {
+        (clear, canvas.right() - SKETCH_BAR_FROM_RIGHT)
+    } else {
+        (
+            canvas.width() - 2.0 * SKETCH_BAR_FROM_SIDE,
+            canvas.right() - SKETCH_BAR_FROM_SIDE,
+        )
+    };
+    let width = sketch::bar::bar_width(ctx, &style, bar, most);
+    let left = (canvas.center().x - width / 2.0).min(right - width);
+    // On a whole pixel, down, so the area's own rounding to pixels never moves it right.
+    let ppp = ctx.pixels_per_point();
+    let left = (left * ppp).floor() / ppp;
+    (egui::pos2(left, canvas.top() + SKETCH_BAR_FROM_TOP), most)
+}
 
 /// The bands sketch mode's panels cover, in pixels at `pixels_per_point`: from the canvas's
 /// top to as far below the sketch bar as it stands below the top, and from the canvas's
@@ -2322,10 +2354,10 @@ impl<P: Clients + 'static> App<P> {
         let offer = mode.offer_view(&name);
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
-        let bar_width = canvas.width() - 2.0 * SKETCH_BAR_FROM_SIDE;
+        let (bar_at, bar_width) = sketch_bar_place(ui.ctx(), canvas, &bar);
         let bar_drawn = egui::Area::new(sketch::dimension::bar_area(&id))
-            .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
-            .pivot(egui::Align2::CENTER_TOP)
+            .fixed_pos(bar_at)
+            .pivot(egui::Align2::LEFT_TOP)
             .show(ui.ctx(), |ui| {
                 action = sketch::bar::sketch_bar(ui, &bar, bar_width);
             })

@@ -3748,19 +3748,20 @@ fn bar_parts(h: &egui_kittest::Harness<'_>) -> (egui::Rect, egui::Rect, egui::Re
 
 #[test]
 fn a_long_sketch_name_is_cut_with_an_ellipsis_so_the_bar_keeps_to_its_width() {
-    // #466: 400 W's, with no state, a short one, and the longest the bar shows, at 300 (less
-    // than all but the name), 440 (the canvas at the window's least, 888 − 200 − 232 = 456,
-    // less 10 at each side), 600, and 716 (1280's canvas, 736, less 20). The bar no wider
-    // than it's given, or than the bar of no name and 96 for the name (`NAME_LEAST`) where
-    // that's wider, and narrower by less than a W (the name cut at a whole letter); Cancel
-    // and Finish Sketch inside it; the name whole in the tree and painted as W's and an
-    // ellipsis.
+    // #466: 400 W's, with no state, a short one, and the widest the bar shows (an under
+    // defined sketch's, with a four-figure count), at 300 (less than all but the name), 440
+    // (the canvas at the window's least with the panes at theirs, 888 − 200 − 232 = 456,
+    // less 10 at each side), 578 (1280's canvas, 736, less 10 and the ViewCube's 148), and
+    // 716. The bar no wider than it's given, or than the bar of no name and 96 for the name
+    // (`NAME_LEAST`) where that's wider, and narrower by less than a W (the name cut at a
+    // whole letter); as wide as `bar_width` says, which places it; Cancel and Finish Sketch
+    // inside it; the name whole in the tree and painted as W's and an ellipsis.
     let name = "W".repeat(400);
-    for state in [None, Some("Empty"), Some("Invalid solution found")] {
+    for state in [None, Some("Empty"), Some("Under defined · 1234 DOF")] {
         let rest = bar_parts(&bar_at(bar_view("", state), f32::INFINITY))
             .0
             .width();
-        for width in [300.0, 440.0, 600.0, 716.0] {
+        for width in [300.0, 440.0, 578.0, 716.0] {
             let most = f32::max(width, rest + 96.0);
             let h = bar_at(bar_view(&name, state), width);
             let letter = h.ctx.fonts_mut(|fonts| {
@@ -3775,6 +3776,16 @@ fn a_long_sketch_name_is_cut_with_an_ellipsis_so_the_bar_keeps_to_its_width() {
             });
             let (rect, cancel, finish, labels) = bar_parts(&h);
             let at = format!("{state:?} at {width}: {rect:?}");
+            let placed = bar::bar_width(
+                &h.ctx,
+                &h.ctx.global_style(),
+                &bar_view(&name, state),
+                width,
+            );
+            assert!(
+                (rect.width() - placed).abs() < 1e-3,
+                "{at}: placed {placed}"
+            );
             assert!(rect.width() <= most, "{at}, at most {most}");
             assert!(
                 rect.width() > most - letter,
