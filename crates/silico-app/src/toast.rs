@@ -196,7 +196,7 @@ fn one(ui: &mut egui::Ui, toast: &Toast) {
 /// `box-sizing: border-box`): 420 − 2 − 18 − 22 = 378.
 pub fn words_width() -> f32 {
     theme::TOAST_MAX_WIDTH
-        - 2.0 * theme::BORDER_WIDTH
+        - theme::BORDER_WIDTH * 2.0
         - f32::from(theme::TOAST_PADDING.left)
         - f32::from(theme::TOAST_PADDING.right)
         - ICON_SIZE
@@ -218,21 +218,15 @@ pub fn opacity(age: f64, fade: f64) -> f32 {
     }
 }
 
-/// How long after `now` the next frame is needed for `shown`: none with none shown; at once
-/// while any fades (its last `fade` seconds); else when the first to fade begins to, or, with
-/// no fade, when the first is taken down.
+/// How long after `now` the next frame is needed for `shown`: none with none shown; else
+/// when the first to fade begins to (its time left less `fade`), which is at once while any
+/// fades, a wait of none or less; with no fade, when the first is taken down. A `fade` that
+/// isn't a number, or is less than none, is none (`f64::max` gives 0 for either).
 pub fn next_frame(shown: &[Shown], now: f64, fade: f64) -> Option<Duration> {
-    let fade = if fade.is_nan() { 0.0 } else { fade.max(0.0) };
+    let fade = fade.max(0.0);
     shown
         .iter()
-        .map(|shown| {
-            let left = theme::TOAST_SECONDS - (now - shown.at);
-            if fade > 0.0 && left <= fade {
-                0.0
-            } else {
-                left - fade
-            }
-        })
+        .map(|shown| theme::TOAST_SECONDS - (now - shown.at) - fade)
         .min_by(f64::total_cmp)
         .map(|wait| Duration::try_from_secs_f64(wait).unwrap_or(Duration::ZERO))
 }
@@ -317,8 +311,12 @@ mod tests {
         assert!((opacity(3.7, FADE) - 0.5).abs() < 1e-6);
         assert_eq!(opacity(3.8, FADE), 0.0);
         assert_eq!(opacity(5.0, FADE), 0.0);
-        // No fade: whole while shown.
+        // No fade: whole while shown, and past its time too (as a fade of none or less, or
+        // one that isn't a number, gives no fade at all, at any age).
         assert_eq!(opacity(0.0, 0.0), 1.0);
+        assert_eq!(opacity(5.0, 0.0), 1.0);
+        assert_eq!(opacity(1.0, -0.2), 1.0);
+        assert_eq!(opacity(5.0, f64::NAN), 1.0);
         assert_eq!(opacity(f64::NAN, FADE), 1.0);
     }
 
@@ -342,6 +340,17 @@ mod tests {
         // No fade: the frame that takes it down, at 13.8.
         let wait = next_frame(&[shown(10.0)], 11.0, 0.0).unwrap();
         assert!((wait.as_secs_f64() - 2.8).abs() < 1e-9, "{wait:?}");
+        // At the fade's start exactly (13.6), and just before it: at once, and 0.1 s on.
+        assert_eq!(next_frame(&[shown(10.0)], 13.6, FADE), Some(Duration::ZERO));
+        let wait = next_frame(&[shown(10.0)], 13.5, FADE).unwrap();
+        assert!((wait.as_secs_f64() - 0.1).abs() < 1e-9, "{wait:?}");
+        // Past its time (not yet taken down): at once.
+        assert_eq!(next_frame(&[shown(10.0)], 14.0, FADE), Some(Duration::ZERO));
+        // A fade less than none, or not a number, is none: 2.8 s on from 11.
+        for fade in [-0.2, f64::NAN] {
+            let wait = next_frame(&[shown(10.0)], 11.0, fade).unwrap();
+            assert!((wait.as_secs_f64() - 2.8).abs() < 1e-9, "{fade}: {wait:?}");
+        }
     }
 
     /// The fills and borders of the toasts' frames painted, top to bottom: each frame a

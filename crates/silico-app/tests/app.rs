@@ -47113,6 +47113,58 @@ fn command_key_held(h: &mut AppHarness, key: eframe::egui::Key) {
 }
 
 #[test]
+fn save_with_its_edits_undone_and_the_file_not_known_to_match_sends_the_commit() {
+    use eframe::egui::Key;
+    use silico_core::disk::{Disk, Found};
+    // The pin renamed, then undone back to the file's document: nothing unsaved, but the
+    // transaction open; then the file can't be read (the watch's reader says so). Save sends
+    // the commit in the frame it's pressed, the core's answer deciding: it writes nothing and
+    // ends the transaction, and "matches the file" isn't said.
+    let unreadable = Arc::new(AtomicBool::new(false));
+    let read: Reader = {
+        let unreadable = Arc::clone(&unreadable);
+        Arc::new(move |path: &Path| {
+            if unreadable.load(Ordering::SeqCst) {
+                Found::Unreadable
+            } else {
+                plain_read(path)
+            }
+        })
+    };
+    let f = fixture_reading(Some(read));
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    undo_by_key(&mut h);
+    step_until(&mut h, "undone back", |h| {
+        !h.state().tabs()[0].unsaved() && h.state().tabs()[0].transaction
+    });
+    unreadable.store(true, Ordering::SeqCst);
+    step_until(&mut h, "the file found unreadable", |h| {
+        h.state().tabs()[0]
+            .status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(Disk::Unreadable))
+    });
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    command_key(&mut h, Key::S);
+    assert_eq!(h.state().tabs()[0].saves, 1, "the commit sent at the press");
+    step_until(&mut h, "the transaction ended", |h| {
+        !h.state().tabs()[0].transaction
+    });
+    assert!(
+        !toasts_shown(&h)
+            .iter()
+            .any(|(text, ..)| text.starts_with("Nothing to save")),
+        "{:?}",
+        toasts_shown(&h)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn undo_held_with_nothing_to_undo_shows_one_toast() {
     // #514's review: each repeat of a held key asks again; a toast saying what one shown
     // says, with its icon, isn't stacked again.

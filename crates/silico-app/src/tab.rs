@@ -12304,6 +12304,44 @@ mod tests {
     }
 
     #[test]
+    fn a_commit_that_writes_nothing_says_the_file_matches_only_if_status_still_finds_it_so() {
+        // The file found unchanged as the commit is sent, but `status` giving no comparison
+        // as its answer is taken (each answer taken here by hand, `status` held so): "matches
+        // the file" isn't said. Once it's found so at both, at the commit's revision, it is.
+        use crate::toast::Kind::Info;
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        renamed_and_undone(&mut tab, &sessions);
+        set_disk(&mut tab, Some(Disk::Unchanged));
+        tab.save(&sessions, false);
+        assert_eq!(tab.saves, 1, "the commit sent, the file found unchanged");
+        let at = tab.revision;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !tab.under.is_empty() {
+            set_disk(&mut tab, None);
+            tab.take_answers(&sessions);
+            assert!(std::time::Instant::now() < deadline, "never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Answered, writing nothing, at the same revision as `status` was read at.
+        assert!(!tab.transaction);
+        assert_eq!((tab.revision, tab.status_revision), (at, at));
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        // The matching case, with the watch: said.
+        let (_dir, sessions, _path, mut tab) = opened_watching(BLOCK);
+        renamed_and_undone(&mut tab, &sessions);
+        tab.save(&sessions, false);
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(
+                "Nothing to save: part.silico matches the file.".to_owned(),
+                Info
+            )]
+        );
+    }
+
+    #[test]
     fn a_commit_that_writes_nothing_over_a_file_changed_on_disk_says_nothing_matches() {
         // #514's second round: an unchanged transaction's commit writes nothing over a file
         // another program wrote since, and the file doesn't match: nothing is toasted (the
