@@ -358,11 +358,16 @@ pub fn arrows(
         let a = on_screen(base)?;
         let b = on_screen(std::array::from_fn(|k| base[k] + PROBE_MM * way[k]))?;
         let d = sub(b, a);
-        let per_mm = length(d) / PROBE_MM;
-        if !(per_mm >= FLAT && per_mm.is_finite()) {
+        let points_per_mm = length(d) / PROBE_MM;
+        if !(points_per_mm >= FLAT && points_per_mm.is_finite()) {
             return None;
         }
-        Arrow::new(a, mul(d, 1.0 / (per_mm * PROBE_MM)), per_mm, shaft)
+        Arrow::new(
+            a,
+            mul(d, 1.0 / (points_per_mm * PROBE_MM)),
+            points_per_mm,
+            shaft,
+        )
     };
     let distances = handles
         .distances
