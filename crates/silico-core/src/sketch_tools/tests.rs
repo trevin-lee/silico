@@ -11,7 +11,7 @@ use crate::command::Revision;
 
 mod dimension;
 mod edges;
-mod extend;
+mod extend_entities;
 mod implied;
 mod relate;
 use crate::document::json::{self, Plain};

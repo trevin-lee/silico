@@ -14,31 +14,33 @@ use super::{Preview, PreviewArc, Xy};
 use crate::Error;
 use crate::document::sketch_edit::Geo;
 use crate::document::{ElementId, Sketch};
-use crate::extend::{End, next_crossing, no_next_curve};
+use crate::extend::{End, extendable, next_crossing, no_length, no_next_curve};
 
 /// The end of `sketch`'s line or arc `curve` that the pointer at `at` picks: the end of the
 /// half under it. A line's start if `at`, put on its line, falls before its midpoint, else
 /// its end (the midpoint itself picks the end). An arc's start if `at`'s angle about its
 /// centre falls within its sweep before its mid-angle, else its end (the mid-angle picks
 /// the end); an angle past the sweep (a pointer within the pick of an arc's end, just past
-/// it) picks the nearer end by angle, the start where they're as near. None for a member
-/// that isn't a line or an arc (a circle, a point, a constraint, or none of the sketch's),
-/// a line of no length, a pointer at an arc's centre, which is on neither half, and a
-/// place that isn't finite.
-pub fn extend_end(sketch: &Sketch, curve: &ElementId, at: Xy) -> Option<End> {
+/// it) picks the nearer end by angle, the start where they're as near. None for a pointer
+/// on neither half: at an arc's centre, or at a place that isn't finite. Refused, in the
+/// words `sketch_extend` refuses it with, for a member that isn't a line or an arc (a
+/// circle, a point, a constraint, or none of the sketch's) and an arc whose ends are at one
+/// angle from its centre; and for a line of no length, which has no direction to go on in.
+pub fn extend_end(sketch: &Sketch, curve: &ElementId, at: Xy) -> Result<Option<End>, Error> {
+    let geo = extendable(sketch, curve)?;
     if !finite(at) {
-        return None;
+        return Ok(None);
     }
-    match Geo::of(sketch, curve)? {
+    Ok(match geo {
         Geo::Line { from, to } => {
             let d = sub(to, from);
             let span = dot(d, d);
-            if span <= 0.0 || !span.is_finite() {
-                return None;
+            if span <= 0.0 {
+                return Err(no_length(curve));
             }
             let t = dot(sub(at, from), d) / span;
             if !t.is_finite() {
-                return None;
+                return Ok(None);
             }
             Some(if t < 0.5 { End::Start } else { End::End })
         }
@@ -50,7 +52,7 @@ pub fn extend_end(sketch: &Sketch, curve: &ElementId, at: Xy) -> Option<End> {
         } => {
             let off = sub(at, center);
             if length(off) <= 0.0 {
-                return None;
+                return Ok(None);
             }
             let sweep = end_angle - start_angle;
             let on = (angle_of(off) - start_angle).rem_euclid(TAU);
@@ -66,8 +68,9 @@ pub fn extend_end(sketch: &Sketch, curve: &ElementId, at: Xy) -> Option<End> {
                 End::Start
             })
         }
+        // `extendable` refuses a circle.
         Geo::Circle { .. } => None,
-    }
+    })
 }
 
 /// `sketch`'s line or arc `curve` with its `end` extended to the next curve, as the click

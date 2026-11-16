@@ -194,13 +194,7 @@ pub fn next_crossing(
     end: End,
 ) -> Result<Option<Crossing>, Error> {
     let _span = tracing::info_span!("sketch_next_crossing", curve = curve.as_str()).entered();
-    let Some(geo) = Geo::of(sketch, curve) else {
-        return Err(if sketch.arcs.iter().any(|a| &a.id == curve) {
-            no_sweep(curve)
-        } else {
-            not_extendable(sketch, curve)
-        });
-    };
+    let geo = extendable(sketch, curve)?;
     // The end that moves, and the other.
     let (moving, fixed) = match (&geo, end) {
         (Geo::Line { from, to }, End::Start)
@@ -365,6 +359,29 @@ pub(crate) fn no_next_curve(sketch: &Sketch, curve: &ElementId, end: End) -> Err
     .with_suggestion(format!(
         "extend it by {increment}, or to a point on its {carrier}"
     ))
+}
+
+/// `sketch`'s line or arc `curve`, as [`next_crossing`] and Extend Entities' hover take it
+/// (`sketch_tools::extend_end`); refused as [`extend`] refuses a member that isn't a line or
+/// an arc, and an arc whose ends are at one angle from its centre, which has no circle to go
+/// around.
+pub(crate) fn extendable(sketch: &Sketch, curve: &ElementId) -> Result<Geo, Error> {
+    match Geo::of(sketch, curve) {
+        Some(Geo::Circle { .. }) => Err(not_extendable(sketch, curve)),
+        Some(geo) => Ok(geo),
+        None if sketch.arcs.iter().any(|a| &a.id == curve) => Err(no_sweep(curve)),
+        None => Err(not_extendable(sketch, curve)),
+    }
+}
+
+/// Refuses a line whose ends are at one place: it has no direction to go on in.
+pub(crate) fn no_length(curve: &ElementId) -> Error {
+    refused(
+        format!("line {curve} has no length, so it has no direction to extend"),
+        "curve",
+        "move one of its ends off the other",
+    )
+    .with_elements([curve.to_string()])
 }
 
 /// Refuses `curve` as no line or arc of `sketch`.
