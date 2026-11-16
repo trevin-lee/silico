@@ -49890,6 +49890,162 @@ fn finish_let_go_before_save_in_one_frame_is_saved_with_the_sketchs_line() {
 }
 
 #[test]
+fn undo_then_a_line_let_go_in_one_frame_undoes_the_line_before() {
+    // #535's review: ⌘Z, then the release, in one frame: each document key acts where it
+    // came among the frame's events, so this Undo, before the release, takes back the line
+    // drawn before, and the release then adds its line, as on main.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Z, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [40.0, 50.0], [45.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_then_a_line_let_go_in_one_frame_finishes_the_sketch_without_it() {
+    // #535's review: ⌘↵, then the release, in one frame: Finish, before the release, ends
+    // sketch mode with the line still held, so its gesture is cut short and adds nothing, as
+    // a gesture held as a modal comes is.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Enter, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 4, "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_then_finish_let_go_in_one_frame_saves_nothing_as_sketch_mode_was_open() {
+    // #535's review: ⌘S, then Finish Sketch's release, in one frame: Save, before the
+    // release, finds sketch mode open, whose edits it waits for, and saves nothing; the
+    // click then finishes the sketch, its line in the document but not in the file.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let path = f.dir.path().join("example.silico");
+    let lines_on_disk = |path: &Path| {
+        let saved = std::fs::read(path).unwrap();
+        let document = silico_core::document::read(&saved).unwrap();
+        document
+            .features
+            .into_iter()
+            .find_map(|feature| match feature.operation {
+                silico_core::document::Operation::Sketch(sketch) => Some(sketch.lines.len()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(lines_on_disk(&path), 4);
+    let at = toolbar_finish(&h).rect().center();
+    h.hover_at(at);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::S, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    assert_eq!(lines_on_disk(&path), 4);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_in_the_frame_a_click_opens_export_is_dropped_and_export_stays_up() {
+    // #535's review: a document key after the frame's release is decided once the window
+    // has had it, and not over a question that click opened, as no key acts under one: a
+    // click on File's Export… and ⌘Z in one frame leave the rename in, its undo count as it
+    // was, and Export's dialog up.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    renamed(&mut h, "K", "PinK");
+    settled(&mut h);
+    let undos = |h: &AppHarness| h.state().tabs()[0].transaction().map(|t| t.undo);
+    let before = undos(&h);
+    assert!(before.is_some_and(|undo| undo > 0), "{before:?}");
+    assert!(h.state().tabs()[0].undoable());
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    let at = h
+        .get_by_role_and_label(Role::Button, "Export…")
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    for pressed in [true, false] {
+        events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events.push(key_event(Key::Z, command));
+    step(&mut h);
+    step_until(&mut h, "the export dialog", |h| anywhere(h, EXPORT_EXAMPLE));
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(anywhere(&h, EXPORT_EXAMPLE), "Export's dialog gone");
+    }
+    settled(&mut h);
+    assert_eq!(undos(&h), before);
+    assert!(shows(&h, "Timeline", "PinK"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn the_toast_stays_over_the_modify_box_and_the_palette_after_a_press_on_the_palette() {
     // #497's review, round 4: the prototype's `#toasts` (z 650) are over `.modify-box` (40),
     // `.sketch-bar` (26) and `.palette` (22); all of one egui order here, the toast is
