@@ -1244,6 +1244,12 @@ pub const KNOWN: &[Known] = &[
         shows: Shows::Varies(Rule::MergeSolveUnbuildable),
         why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, whose solve puts the symmetric k0000023's two points at one place, which Silico refuses (#se-so-does-any-refusal-of-the to #se-a-line-the-solve-shortens-to); FreeCAD's merge is rolled back (#se-any-result-whose-solve-is-worse), in 2 of 3 whole sweeps as a conflict with constraints redundant as well (-3, a rollback not measured elsewhere), in the rest (and alone) in a form the note gives, but an answer that varies is no oracle",
     },
+    // `sketch-edit-sweep --seed 164 --count 500`'s case 179.
+    Known {
+        case: "edit_164_179",
+        shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which the symmetric k0000020 would mirror an end of n0000005 about n0000005 itself, which Silico refuses (#se-a-curve-s-own-point-constrained, #se-the-merged-sketch-is-gated); FreeCAD makes the merge, its solve succeeding (0, 12 degrees of freedom), in 10 of 10 runs alone and 1 of 3 whole sweeps, and rolls it back (#se-any-result-whose-solve-is-worse) in the other two, but an answer that varies is no oracle",
+    },
 ];
 
 /// Whether `v`'s Silico side is a refusal by a rule of `want`'s kind, whatever it names (a

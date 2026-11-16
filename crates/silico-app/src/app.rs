@@ -23,7 +23,7 @@ use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
-use crate::pane_widths::{KeptWidths, Widths};
+use crate::pane_widths::{KeptLayout, Widths};
 use crate::panes::{self, Pane, Panes};
 use crate::properties;
 use crate::recent::Recents;
@@ -142,9 +142,54 @@ const SKETCH_TOOLS: [(Command, sketch::tools::Choice); 7] = {
 /// its top, centred; the palette at its right, below the ViewCube, as far from the canvas's
 /// right (and, at most, its bottom) as `PALETTE_MARGIN`.
 const SKETCH_BAR_FROM_TOP: f32 = 10.0;
+/// The least the sketch bar stands in from the canvas's left, as far as it stands below its
+/// top, and from its right, clear of the ViewCube as a banner is (#466).
+const SKETCH_BAR_FROM_SIDE: f32 = SKETCH_BAR_FROM_TOP;
+const SKETCH_BAR_FROM_RIGHT: f32 = theme::BANNER_MARGIN_RIGHT;
 const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
     egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
+
+/// Where the sketch bar showing `bar` stands over `canvas`, its top left, and the most it may
+/// be wide ([`sketch_bar_room`], [`sketch_bar_left`]), from its widths laid out in the
+/// app's style.
+fn sketch_bar_place(
+    ctx: &egui::Context,
+    canvas: egui::Rect,
+    bar: &sketch::bar::BarView,
+) -> (egui::Pos2, f32) {
+    let style = ctx.global_style();
+    let rest = sketch::bar::rest_width(ctx, &style, bar);
+    let most = sketch_bar_room(canvas.width(), rest);
+    let width = sketch::bar::bar_width(ctx, &style, bar, most);
+    let left = sketch_bar_left(canvas, width);
+    // On a whole pixel, down, so the area's own rounding to pixels never moves it right.
+    let ppp = ctx.pixels_per_point();
+    let left = (left * ppp).floor() / ppp;
+    (egui::pos2(left, canvas.top() + SKETCH_BAR_FROM_TOP), most)
+}
+
+/// The most the sketch bar may be wide over a canvas `canvas_width` wide, all of it but its
+/// name `rest` wide: the room between [`SKETCH_BAR_FROM_SIDE`] from the canvas's left and
+/// [`SKETCH_BAR_FROM_RIGHT`] from its right, clear of the ViewCube as a banner is
+/// (`crate::banner`); or, where that room is narrower, the rest and the name's least
+/// ([`sketch::bar::NAME_LEAST`]), so a usual name is whole.
+fn sketch_bar_room(canvas_width: f32, rest: f32) -> f32 {
+    let clear = canvas_width - SKETCH_BAR_FROM_SIDE - SKETCH_BAR_FROM_RIGHT;
+    clear.max(rest + sketch::bar::NAME_LEAST)
+}
+
+/// The sketch bar's left over `canvas`, the bar `width` wide: centred, moved left as far as
+/// keeps its right [`SKETCH_BAR_FROM_RIGHT`] from the canvas's right, but never nearer the
+/// canvas's left than [`SKETCH_BAR_FROM_SIDE`]. A bar wider than that room runs right from
+/// there, over the ViewCube only as far as it must.
+fn sketch_bar_left(canvas: egui::Rect, width: f32) -> f32 {
+    let centred = canvas.center().x - width / 2.0;
+    let clear_of_cube = canvas.right() - SKETCH_BAR_FROM_RIGHT - width;
+    centred
+        .min(clear_of_cube)
+        .max(canvas.left() + SKETCH_BAR_FROM_SIDE)
+}
 
 /// The bands sketch mode's panels cover, in pixels at `pixels_per_point`: from the canvas's
 /// top to as far below the sketch bar as it stands below the top, and from the canvas's
@@ -504,23 +549,30 @@ impl<P: Clients + 'static> App<P> {
         self
     }
 
-    /// The app, laying its side panes out at the widths `widths` keeps once it has read them,
-    /// and keeping there those each drag of a border leaves.
+    /// The app, laying its side panes out as `layout` keeps them (their widths, and whether
+    /// the browser is collapsed) once it has read them, and keeping there what each drag of
+    /// a border, and each collapse or show of the browser, leaves.
     #[must_use]
-    pub fn keeping_widths(mut self, widths: KeptWidths) -> Self {
-        self.columns.keeping(widths);
+    pub fn keeping_layout(mut self, layout: KeptLayout) -> Self {
+        self.columns.keeping(layout);
         self
     }
 
     /// The side panes' widths, as dragged (or read, or the prototype's), each its border
-    /// included: what [`keeping_widths`](Self::keeping_widths)' file keeps.
+    /// included: what [`keeping_layout`](Self::keeping_layout)' file keeps.
     pub fn pane_widths(&self) -> Widths {
         self.columns.chosen()
     }
 
+    /// Whether the browser is collapsed to its strip (its chevrons, Collapse browser and Show
+    /// browser): kept with the widths, in [`keeping_layout`](Self::keeping_layout)' file.
+    pub fn browser_collapsed(&self) -> bool {
+        self.columns.collapsed()
+    }
+
     /// Where the side panes' widths are kept: nowhere (read at once, the prototype's) unless
-    /// [`keeping_widths`](Self::keeping_widths) gave a file.
-    pub fn kept_widths(&self) -> &KeptWidths {
+    /// [`keeping_layout`](Self::keeping_layout) gave a file.
+    pub fn kept_layout(&self) -> &KeptLayout {
         self.columns.kept()
     }
 
@@ -797,6 +849,7 @@ impl<P: Clients + 'static> App<P> {
                 columns,
                 ..
             } = self;
+            let mut browser_toggled = false;
             let mut panes = Panes {
                 tab: active.and_then(|at| tabs.get_mut(at)),
                 sessions,
@@ -805,6 +858,8 @@ impl<P: Clients + 'static> App<P> {
                 drawing,
                 dialog_key,
                 remembered,
+                browser_collapsed: columns.collapsed(),
+                browser_toggled: &mut browser_toggled,
             };
             let area = ui.available_rect_before_wrap();
             let laid = columns.laid(area.width());
@@ -812,6 +867,10 @@ impl<P: Clients + 'static> App<P> {
             tree.ui(&mut panes, ui);
             // Over the panes' borders, after them, so a press there drags the border.
             columns.handles(ui, area, laid);
+            // The browser's chevron: collapsed or shown, laid out so from the next frame.
+            if browser_toggled {
+                columns.toggle_browser(ui.ctx());
+            }
             // Over the canvas, drawn after it, so it takes the pointer over its place.
             let canvas = tree
                 .tiles
@@ -1447,8 +1506,14 @@ impl<P: Clients + 'static> App<P> {
         }
         let selected = tab.selection().feature().cloned();
         // Each only where its menu item would be on: else its reason is said, as the item's
-        // hover says it.
-        let place = tab.selected_in;
+        // hover says it. A row selected in a browser collapsed since is renamed in the
+        // timeline, where its field can be seen.
+        let place = match tab.selected_in {
+            crate::feature_menu::Place::Browser if self.columns.collapsed() => {
+                crate::feature_menu::Place::Timeline
+            }
+            place => place,
+        };
         let can = |tab: &Tab, id: &silico_core::document::FeatureId, item| {
             let entry = tab.entry(id.as_str())?;
             Some(crate::feature_menu::off(tab, entry, item, place))
@@ -1503,7 +1568,7 @@ impl<P: Clients + 'static> App<P> {
             tab.sketch_toggle(choice);
         }
         if construction {
-            tab.sketch_toggle_construction();
+            tab.sketch_construction(sessions);
         }
         if sketch_enter {
             tab.sketch_enter(sessions);
@@ -1580,6 +1645,7 @@ impl<P: Clients + 'static> App<P> {
                 || rebuild_all
                 || deleted
                 || sketch_delete
+                || construction
                 || finish
                 || sketch_enter,
             dialog_key,
@@ -2235,7 +2301,10 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
-            Some(toolbar::Act::Construction) => tab.sketch_toggle_construction(),
+            Some(toolbar::Act::Construction) => {
+                tab.sketch_construction(&self.sessions);
+                *next_frame = true;
+            }
             Some(toolbar::Act::Relate(relation)) => {
                 tab.sketch_relate(&self.sessions, relation);
                 *next_frame = true;
@@ -2323,10 +2392,13 @@ impl<P: Clients + 'static> App<P> {
         let offer = mode.offer_view(&name);
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
+        let (bar_at, bar_width) = sketch_bar_place(ui.ctx(), canvas, &bar);
         let bar_drawn = egui::Area::new(sketch::dimension::bar_area(&id))
-            .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
-            .pivot(egui::Align2::CENTER_TOP)
-            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar))
+            .fixed_pos(bar_at)
+            .pivot(egui::Align2::LEFT_TOP)
+            .show(ui.ctx(), |ui| {
+                action = sketch::bar::sketch_bar(ui, &bar, bar_width);
+            })
             .response
             .rect;
         // Pinned at the canvas's top right, under the ViewCube, as the prototype's is, and
@@ -3017,7 +3089,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        Answered, App, Opening, Part, held_list, mine_row, sketch_inset, split_answered, theirs_row,
+        Answered, App, Opening, Part, held_list, mine_row, sketch_bar_left, sketch_bar_place,
+        sketch_bar_room, sketch_inset, split_answered, theirs_row,
     };
     use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
@@ -3035,6 +3108,102 @@ mod tests {
             super::stopped_words(StoppedAt::Uncounted, "⌘B"),
             "Rebuild stopped. Rebuild (⌘B) resumes it."
         );
+    }
+
+    #[test]
+    fn the_sketch_bars_room_is_clear_of_the_viewcube_unless_that_leaves_a_name_too_little() {
+        // All of the bar but its name 400 wide: the room between 10 from the canvas's left
+        // and 148 from its right (its width less 158), but never less than the rest and the
+        // name's 96, 496: the two meet at a canvas 400 + 96 + 158 = 654 wide.
+        for (canvas, most) in [
+            (340.0, 496.0),
+            (456.0, 496.0),
+            (653.0, 496.0),
+            (654.0, 496.0),
+            (655.0, 497.0),
+            (736.0, 578.0),
+        ] {
+            assert_eq!(sketch_bar_room(canvas, 400.0), most, "{canvas}");
+        }
+    }
+
+    #[test]
+    fn the_sketch_bar_is_centred_moved_left_of_the_viewcube_and_kept_off_the_canvass_left() {
+        use eframe::egui::{Rect, pos2};
+        // A canvas from x = 200, `width` wide; the bar `bar` wide; its left and right, by
+        // hand. Centred is the canvas's middle less half the bar; clear of the ViewCube, the
+        // canvas's right less 148 less the bar; never left of the canvas's left and 10.
+        let canvas =
+            |width: f32| Rect::from_min_max(pos2(200.0, 100.0), pos2(200.0 + width, 700.0));
+        for (width, bar, left) in [
+            // A long name in the room the canvas gives it (`sketch_bar_room`, the rest 400):
+            // at 655 and 654 its right at the 148 (855 − 148 = 707, 854 − 148 = 706) and its
+            // left at the 10 (210); at 653, 456, and 340 the rest and 96, 496, from the 10,
+            // its right 706 past the 148 (705, 508, 392) as far as it must be.
+            (655.0, 497.0, 210.0),
+            (654.0, 496.0, 210.0),
+            (653.0, 496.0, 210.0),
+            (456.0, 496.0, 210.0),
+            (340.0, 496.0, 210.0),
+            // At 736 (1280's), centred until it would reach the 148, at a bar 736 − 296 =
+            // 440 wide: 439 centred, 568 − 219.5 = 348.5; 440 both, 348; 441 at the 148,
+            // 936 − 148 − 441 = 347.
+            (736.0, 300.0, 418.0),
+            (736.0, 439.0, 348.5),
+            (736.0, 440.0, 348.0),
+            (736.0, 441.0, 347.0),
+            // Then at the 148 until it meets the 10, at 736 − 158 = 578 wide: 577 from 211;
+            // 578 from 210; 579 from 210 too, its right 789 one past the 148's 788.
+            (736.0, 577.0, 211.0),
+            (736.0, 578.0, 210.0),
+            (736.0, 579.0, 210.0),
+        ] {
+            let got = sketch_bar_left(canvas(width), bar);
+            assert_eq!(got, left, "{width}, {bar}");
+            let right = got + bar;
+            let limit = 200.0 + width - 148.0;
+            assert_eq!(
+                right <= limit,
+                bar <= width - 158.0,
+                "{width}, {bar}: {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sketch_bars_left_is_rounded_down_to_a_whole_pixel() {
+        use crate::sketch::bar::{BarView, StateShown};
+        use eframe::egui::{Rect, pos2};
+        use std::sync::Mutex;
+        // A canvas from x = 200.8, 340 wide, and a sketch named 400 W's: too long for the
+        // room clear of the ViewCube, so the bar stands 10 from the canvas's left, 210.8.
+        // Rounded down to a whole pixel: at 1 pixel a point, 210; at 1.5, pixel 316.2 down to
+        // 316, 316 / 1.5; at 2, pixel 421.6 down to 421, 210.5. Its top 10 below the canvas's.
+        for (ppp, left) in [(1.0, 210.0), (1.5, 316.0 / 1.5), (2.0, 210.5)] {
+            let placed = Arc::new(Mutex::new(None));
+            let into = Arc::clone(&placed);
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(eframe::egui::vec2(1000.0, 400.0))
+                .with_pixels_per_point(ppp)
+                .build_ui(move |ui| {
+                    let canvas = Rect::from_min_max(pos2(200.8, 100.0), pos2(540.8, 380.0));
+                    let bar = BarView {
+                        name: "W".repeat(400),
+                        plane: "XY".to_owned(),
+                        state: Some(StateShown {
+                            words: "Fully defined".to_owned(),
+                            colour: theme::TEXT_DEFAULT,
+                        }),
+                        enabled: true,
+                    };
+                    *into.lock().unwrap() = Some(sketch_bar_place(ui.ctx(), canvas, &bar).0);
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(2);
+            let at = placed.lock().unwrap().unwrap();
+            assert_eq!(at, pos2(left, 110.0), "{ppp}");
+            assert_eq!((at.x * ppp).fract(), 0.0, "{ppp}: {at:?}");
+        }
     }
 
     #[test]

@@ -161,6 +161,14 @@ pub struct Context<'a> {
     /// judge whether the dimension it placed over-defines the sketch, and so offers what it
     /// may become (SD7). A sketch of free points has none to give: an empty read's are right.
     pub states: &'a SketchStates,
+    /// Which of the axes the pointer may take ([`Axes`]): Smart Dimension's pick and its
+    /// hover, and a drawing tool's snaps (an `on` of an axis, a crossing with one, an `on`
+    /// beside a line's middle) and what its preview shows of them. The viewport allows each
+    /// only where it draws it within the pick's points of the pointer on the screen, which
+    /// the core can't see; with no pointer event (a read, a key), the allowance of the last
+    /// one. [`Axes::BOTH`] in a view square to the plane, where the pick's millimetres are
+    /// its points.
+    pub axes: Axes,
 }
 
 /// The keys held with an event: Shift (a square), and Ctrl (no inferred relations).
@@ -697,6 +705,7 @@ impl SketchTool {
                 infer: context.automatic_relations && !keys.ctrl,
                 woken: &woken,
                 classes: &self.classes,
+                axes: context.axes,
             },
             shift: keys.shift,
             ids,
@@ -750,10 +759,11 @@ fn not_finite(what: &str) -> Error {
     .with_suggestion(crate::worker::SILICO_BUG)
 }
 
-/// Which of the axes a pick may take, the x axis and the y axis: both, for Smart Dimension;
-/// for sketch mode's selection, each only where the viewport draws it within the pick's
-/// points of the click on the screen, which the core can't see (in a view oblique to the
-/// plane, the pick's millimetres reach farther one way than its points do).
+/// Which of the axes a pick, a snap, or an inference may take, the x axis and the y axis:
+/// for sketch mode's selection, Smart Dimension, and the drawing tools alike
+/// ([`Context::axes`]), each only where the viewport draws it within the pick's points of
+/// the pointer on the screen, which the core can't see (in a view oblique to the plane, the
+/// pick's millimetres reach farther one way than its points do).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Axes {
     pub x: bool,
