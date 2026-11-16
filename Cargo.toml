@@ -84,6 +84,9 @@ rfd = { version = "0.17.2", default-features = false, features = ["xdg-portal"] 
 # The platform's folder for an app's own data (the app's list of recent documents), the
 # version Rerun already brings.
 directories = "6.0"
+# Dates in the platform's time zone (the start page's "when" column), the version Rerun already
+# brings.
+jiff = "0.2.38"
 glam = "0.30"
 macaw = "0.30"
 pollster = "0.4"

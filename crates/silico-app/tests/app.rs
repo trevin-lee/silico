@@ -16256,6 +16256,543 @@ fn a_recent_documents_click_that_starts_an_open_asks_for_the_next_frame_itself()
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- The start page's extras: Keyboard shortcuts, each row's time, Remove from list, the
+// arrow keys, and a drop (the prototype's `renderStart`, `openRecent`, and `keydown`) ----
+
+/// 2026-11-15 14:30:00 UTC, the wall clock these tests' apps are given: 20,772 days of
+/// 86,400 s from the epoch (56 years of 365 days, 14 leap days, then 318), and 52,200.
+const NOON_AND_A_HALF: i64 = 1_794_753_000;
+
+/// The file at `path` given `seconds` after the epoch as its modified time, as a save does
+/// (std's `File::set_modified`, as the core's cache tests set theirs).
+fn modified_at(path: &Path, seconds: i64) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(seconds.try_into().unwrap()))
+        .unwrap();
+}
+
+impl Fixture {
+    /// The app keeping its recent documents in [`recents_file`](Self::recents_file), which
+    /// lists `paths`, its wall clock `clock`'s seconds after the epoch, the list read.
+    fn remembering_at(
+        &self,
+        paths: &[&Path],
+        clock: &Arc<std::sync::atomic::AtomicI64>,
+    ) -> AppHarness {
+        let file = self.recents_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mut text = String::from("silico recent-documents 1\n");
+        for path in paths {
+            text.push_str(path.to_str().unwrap());
+            text.push('\n');
+        }
+        std::fs::write(&file, text).unwrap();
+        let clock = Arc::clone(clock);
+        let wall: silico_app::app::WallClock =
+            Arc::new(move || jiff::Timestamp::from_second(clock.load(Ordering::SeqCst)).unwrap());
+        let mut h = self.app_made(|app| app.remembering(Recents::at(file)).dated(wall));
+        recents_read(&mut h);
+        h
+    }
+}
+
+/// The labels in Recent that aren't its rows or its links: each row's time.
+fn recent_times(h: &AppHarness) -> Vec<String> {
+    start_page(h)
+        .get_by_role_and_label(Role::List, "Recent")
+        .query_all_by_role(Role::Label)
+        .filter_map(|node| {
+            // egui gives a label's text as its value.
+            let node = node.accesskit_node();
+            node.label().or_else(|| node.value())
+        })
+        .collect()
+}
+
+#[test]
+fn the_start_pages_keyboard_shortcuts_opens_the_sheet_as_question_mark_does() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    let shortcuts = start_page(&h).get_by_role_and_label(Role::Button, "Keyboard shortcuts");
+    shortcuts.click();
+    step_until(&mut h, "the sheet", sheet_open);
+    // Its close gives the start page back, the sheet closed.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    assert!(start_shown(&h));
+    // No Search commands yet: the command search isn't built.
+    assert!(
+        start_page(&h)
+            .query_by_role_and_label(Role::Button, "Search commands")
+            .is_none()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn each_recent_document_says_when_its_file_was_modified_by_the_wall_clock() {
+    let f = fixture();
+    let recent = f.file("recent.silico", EXAMPLE);
+    let old = f.file("old.silico", EXAMPLE);
+    // Thirty minutes before the clock, and 2001-02-03 12:00 UTC (11,356 days and 43,200 s):
+    // "Feb 3, 2001" in any time zone within 12 hours of UTC.
+    modified_at(&recent, NOON_AND_A_HALF - 30 * 60);
+    modified_at(&old, 981_201_600);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&recent, &old], &clock);
+    step_until(&mut h, "each time", |h| {
+        recent_times(h) == ["30 min ago", "Feb 3, 2001"]
+    });
+    // The clock moves on five minutes: said again at the next frame.
+    clock.store(NOON_AND_A_HALF + 5 * 60, Ordering::SeqCst);
+    step_until(&mut h, "the time said anew", |h| {
+        recent_times(h) == ["35 min ago", "Feb 3, 2001"]
+    });
+    // A document opened, then saved meanwhile (its time set as a save sets it): Home looks
+    // through the list again, and says its new time.
+    open_and_wait(&mut h, &old);
+    modified_at(&old, NOON_AND_A_HALF + 3 * 60);
+    home_button(&h).click();
+    step_until(&mut h, "old's new time, first", |h| {
+        start_shown(h)
+            && recent_names(h) == ["old.silico", "recent.silico"]
+            && recent_times(h) == ["2 min ago", "35 min ago"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn remove_from_list_drops_a_missing_document_opens_nothing_and_a_restart_reads_it_gone() {
+    let f = fixture();
+    let kept = f.file("kept.silico", EXAMPLE);
+    let gone = f.dir.path().join("gone.silico");
+    let also = f.dir.path().join("also-gone.silico");
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&gone, &kept, &also], &clock);
+    step_until(&mut h, "the missing marked", |h| {
+        recent_rows(h)
+            .iter()
+            .filter(|(_, said)| said.ends_with(", not found"))
+            .count()
+            == 2
+    });
+    let links = |h: &AppHarness| {
+        start_page(h)
+            .query_all_by_role_and_label(Role::Link, "Remove from list")
+            .map(|node| {
+                node.accesskit_node()
+                    .description()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let (gone_at, kept_at, also_at) = (
+        gone.to_str().unwrap(),
+        kept.to_str().unwrap(),
+        also.to_str().unwrap(),
+    );
+    // A link for each missing document, none for the one that's there.
+    assert_eq!(links(&h), [gone_at, also_at]);
+    start_page(&h)
+        .query_all_by_role_and_label(Role::Link, "Remove from list")
+        .find(|node| node.accesskit_node().description().as_deref() == Some(gone_at))
+        .unwrap()
+        .click();
+    step_until(&mut h, "gone removed", |h| {
+        recent_names(h) == ["kept.silico", "also-gone.silico"]
+    });
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Removed gone.silico from Recent")
+    );
+    assert!(anywhere(&h, "Removed gone.silico from Recent"));
+    // The row's own click didn't come with it: nothing opened, and no open's refusal said.
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(h.state().message(), None);
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{kept_at}\n{also_at}\n")
+    );
+    // The app started again reads the list without it.
+    drop(h);
+    let mut again = f.remembering_at_file(&clock);
+    step_until(&mut again, "the list read again", |h| {
+        recent_names(h) == ["kept.silico", "also-gone.silico"]
+    });
+    // The last missing one removed; kept goes from disk and is removed in turn, by its link
+    // once the list is looked through again (the start page shown again): Recent is empty.
+    start_page(&again)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    step_until(&mut again, "also removed", |h| {
+        recent_names(h) == ["kept.silico"]
+    });
+    std::fs::remove_file(&kept).unwrap();
+    open_and_wait(&mut again, &f.file("other.silico", EXAMPLE));
+    home_button(&again).click();
+    step_until(&mut again, "kept marked", |h| {
+        start_shown(h)
+            && recent_rows(h)
+                .iter()
+                .any(|(name, said)| name == "kept.silico" && said.ends_with(", not found"))
+    });
+    start_page(&again)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    step_until(&mut again, "kept removed", |h| {
+        recent_names(h) == ["other.silico"]
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!(
+            "silico recent-documents 1\n{}\n",
+            f.dir.path().join("other.silico").to_str().unwrap()
+        )
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn removing_the_last_recent_document_shows_recents_empty_state() {
+    let f = fixture();
+    let gone = f.dir.path().join("gone.silico");
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&gone], &clock);
+    step_until(&mut h, "gone marked", |h| {
+        recent_rows(h)
+            == [(
+                "gone.silico".to_owned(),
+                format!("{}, not found", gone.to_str().unwrap()),
+            )]
+    });
+    start_page(&h)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    step_until(&mut h, "Recent's empty state", |h| {
+        recent_names(h).is_empty()
+            && start_page(h)
+                .query_by_label("No recent documents yet: each you open or make is listed here.")
+                .is_some()
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        "silico recent-documents 1\n"
+    );
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+impl Fixture {
+    /// The app keeping its recent documents in [`recents_file`](Self::recents_file) as it
+    /// is, its wall clock `clock`'s, the list read.
+    fn remembering_at_file(&self, clock: &Arc<std::sync::atomic::AtomicI64>) -> AppHarness {
+        let clock = Arc::clone(clock);
+        let wall: silico_app::app::WallClock =
+            Arc::new(move || jiff::Timestamp::from_second(clock.load(Ordering::SeqCst)).unwrap());
+        let file = self.recents_file();
+        let mut h = self.app_made(|app| app.remembering(Recents::at(file)).dated(wall));
+        recents_read(&mut h);
+        h
+    }
+}
+
+/// Whether Recent's row labelled `name` has the keyboard's focus.
+fn row_focused(h: &AppHarness, name: &str) -> bool {
+    start_page(h)
+        .get_by_role_and_label(Role::List, "Recent")
+        .get_by_role_and_label(Role::Button, name)
+        .accesskit_node()
+        .is_focused()
+}
+
+/// The names of Recent's rows that have the keyboard's focus.
+fn rows_focused(h: &AppHarness) -> Vec<String> {
+    recent_names(h)
+        .into_iter()
+        .filter(|name| row_focused(h, name))
+        .collect()
+}
+
+#[test]
+fn up_and_down_move_along_recent_clamped_and_enter_opens_the_row_focused() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let two = f.file("two.silico", EXAMPLE);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&one, &two], &clock);
+    step_until(&mut h, "both listed", |h| {
+        recent_names(h) == ["one.silico", "two.silico"]
+    });
+    assert!(rows_focused(&h).is_empty());
+    for (key, want) in [
+        (Key::ArrowDown, "one.silico"),
+        (Key::ArrowDown, "two.silico"),
+        (Key::ArrowDown, "two.silico"),
+        (Key::ArrowUp, "one.silico"),
+        (Key::ArrowUp, "one.silico"),
+        (Key::ArrowDown, "two.silico"),
+    ] {
+        h.key_press(key);
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(rows_focused(&h), [want], "after {key:?}");
+    }
+    // The hint says so in Recent's header.
+    assert!(anywhere(&h, "RECENT"));
+    // Enter opens the row focused, two, as its click does.
+    h.key_press(Key::Enter);
+    step_until(&mut h, "two's tab", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .map(|tab| tab.name().to_owned())
+            .collect::<Vec<_>>()
+            == ["two.silico"]
+    });
+    assert!(!start_shown(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn recents_arrows_are_not_taken_while_typing_or_under_the_sheet() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&one], &clock);
+    step_until(&mut h, "listed", |h| recent_names(h) == ["one.silico"]);
+    // Ctrl+O with no native dialogs: the typed Open's field has the keyboard. ↓ is the
+    // field's, never Recent's.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    step_until(&mut h, "the typed Open", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step_until(&mut h, "its field typed in", |h| h.ctx.text_edit_focused());
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert!(rows_focused(&h).is_empty());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the typed Open closed", |h| {
+        !anywhere(h, "Open document")
+    });
+    // The sheet open over the page: its keys, not Recent's.
+    step(&mut h);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert!(rows_focused(&h).is_empty());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    // Nothing over the page: ↓ is Recent's again.
+    step(&mut h);
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(rows_focused(&h), ["one.silico"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_on_a_missing_recent_document_does_what_its_click_does() {
+    let f = fixture();
+    let kept = f.file("kept.silico", EXAMPLE);
+    let gone = f.dir.path().join("gone.silico");
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&gone, &kept], &clock);
+    step_until(&mut h, "gone marked", |h| {
+        recent_rows(h)
+            .first()
+            .is_some_and(|(_, said)| said.ends_with(", not found"))
+    });
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(rows_focused(&h), ["gone.silico"]);
+    h.key_press(Key::Enter);
+    // As a click on it (a_recent_document_no_longer_there_is_said_and_dropped_from_the_list):
+    // its open refused, said, and it's dropped from the list.
+    let folder = f.dir.path().display().to_string();
+    let said =
+        format!("gone.silico isn't in {folder} any more, so it's no longer listed in Recent");
+    step_until(&mut h, "gone said and dropped", |h| {
+        h.state().message() == Some(said.as_str()) && recent_names(h) == ["kept.silico"]
+    });
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A file dropped on the window, as eframe gives it.
+#[derive(Debug)]
+struct Dropped(PathBuf);
+
+impl eframe::egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+/// `paths` dropped on the window together, in that order, taken by the next frame.
+fn dropped(h: &mut AppHarness, paths: &[&Path]) {
+    for path in paths {
+        h.input_mut()
+            .dropped_files
+            .push(Arc::new(Dropped(path.to_path_buf())));
+    }
+    step(h);
+}
+
+/// The open tabs' names, in their order.
+fn tab_names(h: &AppHarness) -> Vec<String> {
+    h.state()
+        .tabs()
+        .iter()
+        .map(|tab| tab.name().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_silico_file_dropped_on_the_start_page_opens_and_is_listed_in_recent() {
+    let f = fixture();
+    let part = f.file("part.silico", EXAMPLE);
+    let mut h = f.remembering();
+    dropped(&mut h, &[&part]);
+    step_until(&mut h, "part's tab", |h| tab_names(h) == ["part.silico"]);
+    assert_eq!(
+        h.state().tabs()[0].path.as_deref(),
+        Some(part.to_str().unwrap())
+    );
+    assert!(!start_shown(&h));
+    home_button(&h).click();
+    step_until(&mut h, "Recent", |h| {
+        start_shown(h) && recent_names(h) == ["part.silico"]
+    });
+    assert_eq!(h.state().toast(), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn several_files_dropped_open_in_order_and_those_not_silico_are_named_in_a_toast() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let notes = f.file("notes.txt", "not a part");
+    let two = f.file("two.SILICO", EXAMPLE);
+    let picture = f.file("photo.png", "");
+    let mut h = f.app();
+    step(&mut h);
+    dropped(&mut h, &[&one, &notes, &two, &picture]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("notes.txt, photo.png aren't .silico documents, so they weren't opened")
+    );
+    // The toast on the start page, over its bottom right.
+    step(&mut h);
+    assert!(anywhere(
+        &h,
+        "notes.txt, photo.png aren't .silico documents, so they weren't opened"
+    ));
+    step_until(&mut h, "both tabs", |h| {
+        tab_names(h) == ["one.silico", "two.SILICO"]
+    });
+    // The last dropped shown, as the last of several opens asked is.
+    let shown = h.get_by_role_and_label(Role::Button, "two.SILICO");
+    assert_eq!(toggled(&shown), Some(true));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_dropped_that_isnt_silico_is_refused_by_name_and_nothing_opens() {
+    let f = fixture();
+    let notes = f.file("notes.txt", EXAMPLE);
+    let mut h = f.app();
+    step(&mut h);
+    dropped(&mut h, &[&notes]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("notes.txt isn't a .silico document, so it wasn't opened")
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(h.state().message(), None);
+    assert!(start_shown(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_silico_file_dropped_with_a_document_open_opens_a_tab_and_one_open_already_is_shown() {
+    let f = fixture();
+    let (mut h, first) = f.opened("first.silico", EXAMPLE);
+    let second = f.file("second.silico", EXAMPLE);
+    dropped(&mut h, &[&second]);
+    step_until(&mut h, "second's tab, shown", |h| {
+        tab_names(h) == ["first.silico", "second.silico"]
+            && toggled(&h.get_by_role_and_label(Role::Button, "second.silico")) == Some(true)
+    });
+    // The first dropped again: its tab shown, not opened a second time.
+    dropped(&mut h, &[&first]);
+    step_until(&mut h, "first shown", |h| {
+        toggled(&h.get_by_role_and_label(Role::Button, "first.silico")) == Some(true)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(tab_names(&h), ["first.silico", "second.silico"]);
+    assert_eq!(h.state().message(), None);
+    // A file that isn't one dropped over the document: refused in the canvas's toast.
+    let picture = f.file("photo.png", "");
+    dropped(&mut h, &[&picture]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("photo.png isn't a .silico document, so it wasn't opened")
+    );
+    step(&mut h);
+    assert!(anywhere(
+        &h,
+        "photo.png isn't a .silico document, so it wasn't opened"
+    ));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dropped_silico_that_isnt_a_document_is_refused_as_opens_pick_of_it_is() {
+    let f = fixture();
+    // A folder by a document's name: there, but no document.
+    let folder = f.dir.path().join("folder.silico");
+    std::fs::create_dir(&folder).unwrap();
+    let mut opened = f.app();
+    step(&mut opened);
+    opened.state_mut().open(folder.to_str().unwrap(), false);
+    step_until(&mut opened, "Open's refusal", |h| {
+        h.state().message().is_some()
+    });
+    let refused = opened.state().message().unwrap().to_owned();
+    drop(opened);
+    let mut h = f.app();
+    step(&mut h);
+    dropped(&mut h, &[&folder]);
+    step_until(&mut h, "the drop's refusal", |h| {
+        h.state().message().is_some()
+    });
+    assert_eq!(h.state().message(), Some(refused.as_str()));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(h.state().toast(), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- The app bar (docs/design/m5-ui/DESIGN.md, *Layout*; styles.css's `.ab-*`, `.doc-tab`) ----
 
 impl Fixture {

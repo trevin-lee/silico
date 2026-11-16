@@ -1,9 +1,11 @@
 //! The start page: what the window shows with no document open, and the Home tab while
 //! documents are (docs/design/m5-ui/DESIGN.md, *Start page or blank canvas?*, approved
-//! 2026-11-01). New and Open, the documents opened lately (`crate::recent`), and the note
-//! for agents with Copy MCP config, laid out as the prototype's `.st-wrap` lays them out: a
-//! column of its own at the left, Recent at the right, centred in the window. The warm
-//! start's state ([`Warm`]) is the status bar's while no document is open.
+//! 2026-11-01). New, Open, and Keyboard shortcuts, the documents opened lately
+//! (`crate::recent`), each with when it was modified ([`when`]), and the note for agents
+//! with Copy MCP config, laid out as the prototype's `.st-wrap` lays them out: a column of
+//! its own at the left, Recent at the right, centred in the window, and under Recent the
+//! note that a document dropped on the window opens. The warm start's state ([`Warm`]) is
+//! the status bar's while no document is open.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,9 +13,10 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use eframe::egui::text::{LayoutJob, TextFormat, TextWrapping};
 use eframe::egui::{
-    self, Align2, Color32, FontFamily, FontId, Modifiers, Pos2, Rect, Response, RichText, Sense,
-    Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
+    self, Align, Align2, Color32, FontFamily, FontId, Id, Key, Modifiers, Pos2, Rect, Response,
+    RichText, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType,
 };
+use jiff::{SignedDuration, Timestamp, Zoned};
 
 use crate::icons::{Icon, IconSize};
 use crate::recent::{Recent, Recents};
@@ -198,8 +201,12 @@ pub(crate) enum Act {
     None,
     New,
     Open,
-    /// A recent document clicked, by its path.
+    /// Keyboard shortcuts: the shortcut sheet, as `?` opens it.
+    Shortcuts,
+    /// A recent document clicked (or its row's Enter), by its path.
     Recent(String),
+    /// A missing recent document's Remove from list, by its path.
+    Remove(String),
     CopyMcpConfig,
 }
 
@@ -209,7 +216,90 @@ pub(crate) struct Shown<'a> {
     pub recents: Option<&'a Recents>,
     /// Whether Copy MCP config knows a workspace to name: if not, it says so.
     pub workspace_known: bool,
+    /// Now, by the wall clock: what each recent document's time is said against ([`when`]).
+    pub now: Timestamp,
+    /// Whether the page takes the arrow keys this frame (Recent's ↑ and ↓): not while a text
+    /// field has the keyboard, nor with a modal or a menu open.
+    pub keys: bool,
 }
+
+/// The abbreviated names of the months, January first, as the prototype's dates give them
+/// (`Oct 28`).
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// When a document was modified, `then`, as the start page's Recent says it at `now` (the
+/// prototype's `.when`: `12 min ago`, `Yesterday`, `Oct 28`), in `then`'s time zone. The
+/// time between them is the time elapsed (a day with a clock change counts its real hours);
+/// the days are the calendar's in that zone. In order, the first that holds:
+///
+/// - less than a minute between them, either way: `Just now` (a time a little ahead of the
+///   clock is a file server's clock a little ahead of this one's);
+/// - `then` a minute or more ahead of `now`: its date, as below (no time ago can be said);
+/// - less than an hour ago: whole minutes, `1 min ago` to `59 min ago`;
+/// - on `now`'s day: whole hours, `1 h ago` to `23 h ago`;
+/// - on the day before `now`'s: `Yesterday`;
+/// - in `now`'s year: the month's abbreviation and the day, `Oct 28` (`Oct 5`, no leading
+///   zero);
+/// - else with the year too, `Oct 28, 2025`.
+pub fn when(then: &Zoned, now: Timestamp) -> String {
+    let now = now.to_zoned(then.time_zone().clone());
+    let ago = then.timestamp().duration_until(now.timestamp());
+    let minute = SignedDuration::from_secs(60);
+    if ago.abs() < minute {
+        return "Just now".to_owned();
+    }
+    let (day, today) = (then.date(), now.date());
+    if ago > SignedDuration::ZERO {
+        if ago < SignedDuration::from_secs(60 * 60) {
+            return format!("{} min ago", ago.as_secs() / 60);
+        }
+        if day == today {
+            return format!("{} h ago", ago.as_secs() / (60 * 60));
+        }
+        if today.yesterday().is_ok_and(|yesterday| yesterday == day) {
+            return "Yesterday".to_owned();
+        }
+    }
+    let month = usize::try_from(day.month() - 1)
+        .ok()
+        .and_then(|month| MONTHS.get(month))
+        .copied()
+        .unwrap_or("");
+    if day.year() == today.year() {
+        format!("{month} {}", day.day())
+    } else {
+        format!("{month} {}, {}", day.day(), day.year())
+    }
+}
+
+/// Whether `path` names a document by its extension, `.silico` in any case (as a Save As's
+/// name keeps `.SILICO`, `crate::browse::document_path`): what a drop on the window opens.
+pub fn names_a_document(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(crate::browse::EXTENSION))
+}
+
+/// What a toast says of the files dropped on the window that aren't documents, `names` (by
+/// their file names, in the order dropped), none of which was opened.
+pub fn not_documents(names: &[String]) -> String {
+    match names {
+        [one] => format!("{one} isn't a .silico document, so it wasn't opened"),
+        names => format!(
+            "{} aren't .silico documents, so they weren't opened",
+            names.join(", ")
+        ),
+    }
+}
+
+/// What the drop note under Recent says (`.drop-note`), its middle part in `.mono`.
+pub const DROP_NOTE: [&str; 3] = [
+    "Drop a ",
+    ".silico",
+    " file anywhere in this window to open it.",
+];
 
 /// The start page, filling `ui` (the window's central panel): labelled `Start` for the
 /// accessibility tree.
@@ -238,7 +328,8 @@ pub(crate) fn page(ui: &mut Ui, shown: &Shown<'_>) -> Act {
                     ui.add_space(theme::START_COLUMN_GAP);
                     ui.vertical(|ui| {
                         ui.set_width(right);
-                        recent(ui, shown.recents, &mut act);
+                        recent(ui, shown, &mut act);
+                        drop_note(ui);
                     });
                 });
                 ui.add_space(theme::START_PADDING_BOTTOM);
@@ -247,7 +338,8 @@ pub(crate) fn page(ui: &mut Ui, shown: &Shown<'_>) -> Act {
     act
 }
 
-/// The left column: the logo and name, New and Open, and the note for agents.
+/// The left column: the logo and name, New, Open, and Keyboard shortcuts, and the note for
+/// agents. The prototype's Search commands (`S`) waits for the command search.
 fn side(ui: &mut Ui, workspace_known: bool, act: &mut Act) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = theme::START_BRAND_GAP;
@@ -270,6 +362,10 @@ fn side(ui: &mut Ui, workspace_known: bool, act: &mut Act) {
     ui.add_space(theme::START_ACTION_GAP);
     if action(ui, Icon::Open, Command::Open, false).clicked() {
         *act = Act::Open;
+    }
+    ui.add_space(theme::START_ACTION_GAP);
+    if action(ui, Icon::Help, Command::Shortcuts, false).clicked() {
+        *act = Act::Shortcuts;
     }
     ui.add_space(theme::START_NOTE_MARGIN);
     let width = ui.available_width();
@@ -537,15 +633,56 @@ fn copy_button(ui: &mut Ui) -> Response {
     response
 }
 
-/// A section's header: its name in capitals, subdued, letters spaced.
-fn header(ui: &mut Ui, name: &str) {
-    ui.label(
+/// A section's header: its name in capitals, subdued, letters spaced; and at its right, if
+/// `hint`, Recent's keys (`↑ ↓ ↵ opens`, app.js's `.st-h`).
+fn header(ui: &mut Ui, name: &str, hint: bool) {
+    let said = ui.label(
         RichText::new(name.to_uppercase())
             .size(theme::HEADER_SIZE)
             .color(theme::TEXT_SUBDUED)
             .extra_letter_spacing(theme::CAPITALS_LETTER_SPACING),
     );
+    if hint {
+        keys_hint(ui, Pos2::new(ui.max_rect().right(), said.rect.center().y));
+    }
     ui.add_space(theme::START_HEADER_GAP);
+}
+
+/// What Recent's header says of its keys, after the caps (`.st-h`'s last span).
+pub const KEYS_HINT: &str = "opens";
+
+/// Recent's keys, ending at `right`, on its line's middle: the caps ↑ and ↓ side by side
+/// (two `.keys`, no space between), a space, ↵'s cap, a space, and "opens", subdued, in the
+/// header's size with no capitals' spacing. Painted only: the rows' focus and Enter are
+/// what the accessibility tree has of it.
+fn keys_hint(ui: &Ui, right: Pos2) {
+    let painter = ui.painter();
+    let font = FontId::proportional(theme::HEADER_SIZE);
+    let laid =
+        |text: &str| painter.layout_no_wrap(text.to_owned(), font.clone(), theme::TEXT_SUBDUED);
+    let opens = laid(KEYS_HINT);
+    // A space's width: " opens" less "opens", as the line lays it out.
+    let space = laid(&format!(" {KEYS_HINT}")).size().x - opens.size().x;
+    let opens_left = right.x - opens.size().x;
+    painter.galley(
+        Pos2::new(opens_left, right.y - opens.size().y / 2.0),
+        opens,
+        theme::TEXT_SUBDUED,
+    );
+    let colours = (
+        theme::KEY_CAP_BG,
+        theme::KEY_CAP_STROKE,
+        theme::KEY_CAP_TEXT,
+    );
+    let enter = vec![crate::shortcuts::key_cap(Key::Enter)];
+    let enter_right = Pos2::new(opens_left - space, right.y);
+    key_caps_coloured(ui, enter_right, &enter, colours, theme::KEY_CAP_GAP);
+    let arrows = vec![
+        crate::shortcuts::key_cap(Key::ArrowUp),
+        crate::shortcuts::key_cap(Key::ArrowDown),
+    ];
+    let arrows_right = Pos2::new(enter_right.x - key_caps_width(ui, &enter) - space, right.y);
+    key_caps_coloured(ui, arrows_right, &arrows, colours, 0.0);
 }
 
 /// What Recent says when the app keeps no list: the platform named no folder for it, or its
@@ -553,40 +690,197 @@ fn header(ui: &mut Ui, name: &str) {
 pub const NOT_KEPT: &str =
     "Recent documents aren't being kept: there's nowhere to keep their list.";
 
+/// What Recent says when it lists nothing yet.
+pub const NO_RECENTS: &str = "No recent documents yet: each you open or make is listed here.";
+
 /// The right column: the recent documents, newest first, labelled `Recent` for the
-/// accessibility tree, each a button by its file's name.
-fn recent(ui: &mut Ui, recents: Option<&Recents>, act: &mut Act) {
-    header(ui, "Recent");
+/// accessibility tree, each a button by its file's name, with when it was modified (a
+/// label) or, if it's missing, Remove from list (a link); ↑ and ↓ move the keyboard's focus
+/// along them, and Enter opens the one focused, as its click does.
+fn recent(ui: &mut Ui, shown: &Shown<'_>, act: &mut Act) {
+    let recents = shown.recents;
+    let said = match recents {
+        None => Some(NOT_KEPT),
+        Some(recents) if !recents.is_kept() => Some(NOT_KEPT),
+        Some(recents) if !recents.is_read() => Some("Reading the list of recent documents…"),
+        Some(recents) if !recents.list().is_empty() => None,
+        Some(_) => Some(NO_RECENTS),
+    };
+    header(ui, "Recent", said.is_none());
     ui.scope_builder(UiBuilder::new().id_salt("recent"), |ui| {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
             node.set_role(egui::accesskit::Role::List);
             node.set_label("Recent");
         });
-        let said = match recents {
-            None => Some(NOT_KEPT),
-            Some(recents) if !recents.is_kept() => Some(NOT_KEPT),
-            Some(recents) if !recents.is_read() => Some("Reading the list of recent documents…"),
-            Some(recents) if !recents.list().is_empty() => None,
-            Some(_) => Some("No recent documents yet: each you open or make is listed here."),
-        };
         if let Some(said) = said {
             ui.label(RichText::new(said).color(theme::TEXT_SUBDUED));
             return;
         }
-        for recent in recents.map(Recents::list).unwrap_or_default() {
-            if row(ui, recent).clicked() {
-                *act = Act::Recent(recent.path.clone());
+        let list = recents.map(Recents::list).unwrap_or_default();
+        let ids: Vec<Id> = list
+            .iter()
+            .map(|recent| ui.id().with(("recent row", &recent.path)))
+            .collect();
+        if shown.keys {
+            arrows(ui, &ids);
+        }
+        for (at, (recent, id)) in list.iter().zip(ids).enumerate() {
+            // `.recent`'s gap, between rows only.
+            if at > 0 {
+                ui.add_space(theme::START_RECENT_ROW_GAP);
             }
-            ui.add_space(theme::START_RECENT_ROW_GAP);
+            match row(ui, id, recent, shown.now) {
+                Row::Opened => *act = Act::Recent(recent.path.clone()),
+                Row::Removed => *act = Act::Remove(recent.path.clone()),
+                Row::None => {}
+            }
         }
     });
 }
 
-/// A recent document's row: its thumbnail's place (the document's icon; a warning's if
-/// nothing was at its path), its name and its folder, and "not found" if nothing was.
-fn row(ui: &mut Ui, recent: &Recent) -> Response {
+/// ↑ and ↓ pressed this frame, with no modifier, each taken in turn (interact.js's
+/// `keydown` on the start page): the keyboard's focus moved to the next row down or up,
+/// stopping at the first and the last, from the first row if no row has it. egui's own
+/// arrow keys, which move the focus to the nearest widget that way, don't move it too.
+fn arrows(ui: &mut Ui, rows: &[Id]) {
+    let Some(last) = rows.len().checked_sub(1) else {
+        return;
+    };
+    let downs: Vec<bool> = ui.input_mut(|input| {
+        let mut downs = Vec::new();
+        input.events.retain(|event| match event {
+            egui::Event::Key {
+                key: key @ (Key::ArrowUp | Key::ArrowDown),
+                pressed: true,
+                modifiers,
+                ..
+            } if modifiers.is_none() => {
+                downs.push(*key == Key::ArrowDown);
+                false
+            }
+            _ => true,
+        });
+        downs
+    });
+    if downs.is_empty() {
+        return;
+    }
+    ui.memory_mut(|memory| memory.move_focus(egui::FocusDirection::None));
+    let mut at = ui
+        .memory(|memory| memory.focused())
+        .and_then(|focused| rows.iter().position(|row| *row == focused));
+    for down in downs {
+        at = Some(match at {
+            None => 0,
+            Some(at) if down => (at + 1).min(last),
+            Some(at) => at.saturating_sub(1),
+        });
+    }
+    if let Some(row) = at.and_then(|at| rows.get(at)) {
+        ui.memory_mut(|memory| memory.request_focus(*row));
+    }
+}
+
+/// The note under Recent that a document dropped on the window opens (`.drop-note`): the
+/// column's width, below the list by `.recent`'s margin, in a dashed border, its words
+/// centred.
+fn drop_note(ui: &mut Ui) {
+    ui.add_space(theme::START_DROP_NOTE_MARGIN);
+    let width = ui.available_width();
+    let inner = (width - 2.0 * (theme::START_DROP_NOTE_PADDING + theme::BORDER_WIDTH)).max(0.0);
+    let plain = TextFormat {
+        font_id: FontId::proportional(theme::BODY_SIZE),
+        color: theme::TEXT_SUBDUED,
+        line_height: Some(theme::BODY_LINE_HEIGHT),
+        ..Default::default()
+    };
+    let mono = TextFormat {
+        font_id: FontId::monospace(theme::MONOSPACE_SIZE),
+        ..plain.clone()
+    };
+    let mut job = LayoutJob::default();
+    for (at, text) in DROP_NOTE.iter().enumerate() {
+        let format = if at == 1 { &mono } else { &plain };
+        job.append(text, 0.0, format.clone());
+    }
+    job.wrap = TextWrapping::wrap_at_width(inner);
+    job.halign = Align::Center;
+    let galley = ui.painter().layout_job(job);
+    let height = galley.size().y + 2.0 * (theme::START_DROP_NOTE_PADDING + theme::BORDER_WIDTH);
+    let (_, rect) = ui.allocate_space(Vec2::new(width, height));
+    // The stroke's middle, half its width inside the note's edge, its corners as much
+    // tighter than the edge's.
+    let outline = rounded_outline(
+        rect.shrink(theme::BORDER_WIDTH / 2.0),
+        f32::from(theme::NORMAL_CORNER_RADIUS) - theme::BORDER_WIDTH / 2.0,
+    );
+    ui.painter().extend(Shape::dashed_line(
+        &outline,
+        Stroke::new(theme::BORDER_WIDTH, theme::START_DROP_NOTE_BORDER),
+        theme::START_DROP_NOTE_DASH,
+        theme::START_DROP_NOTE_DASH_GAP,
+    ));
+    ui.painter().galley(
+        Pos2::new(
+            rect.center().x,
+            rect.top() + theme::BORDER_WIDTH + theme::START_DROP_NOTE_PADDING,
+        ),
+        galley,
+        theme::TEXT_SUBDUED,
+    );
+}
+
+/// The outline of `rect` with corners `radius` round, closed: its corners in eight steps a
+/// quarter turn.
+fn rounded_outline(rect: Rect, radius: f32) -> Vec<Pos2> {
+    const STEPS: usize = 8;
+    let radius = radius
+        .min(rect.width() / 2.0)
+        .min(rect.height() / 2.0)
+        .max(0.0);
+    let corners = [
+        // Each corner's centre, and the angle its arc starts at (y down: a quarter turn on is
+        // clockwise on the screen).
+        (rect.right_top() + Vec2::new(-radius, radius), -0.5),
+        (rect.right_bottom() + Vec2::new(-radius, -radius), 0.0),
+        (rect.left_bottom() + Vec2::new(radius, -radius), 0.5),
+        (rect.left_top() + Vec2::new(radius, radius), 1.0),
+    ];
+    let mut points = Vec::with_capacity(4 * (STEPS + 1) + 1);
+    for (centre, start) in corners {
+        for step in 0..=STEPS {
+            let turn = (start + 0.5 * step as f32 / STEPS as f32) * std::f32::consts::PI;
+            points.push(centre + radius * Vec2::new(libm::cosf(turn), libm::sinf(turn)));
+        }
+    }
+    if let Some(first) = points.first().copied() {
+        points.push(first);
+    }
+    points
+}
+
+/// What a recent document's row was asked this frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Row {
+    None,
+    /// Clicked, or Enter (or Space) with the keyboard's focus on it.
+    Opened,
+    /// Its Remove from list clicked, which opens nothing.
+    Removed,
+}
+
+/// What a missing recent document's row offers in place of its time (`.link`).
+pub const REMOVE_FROM_LIST: &str = "Remove from list";
+
+/// A recent document's row, `id`: its thumbnail's place (the document's icon; a warning's if
+/// nothing was at its path), its name and its folder, and "not found" if nothing was; at its
+/// right (`.when`), when it was modified, said at `now` ([`when`]), or, if it's missing,
+/// [`REMOVE_FROM_LIST`], a link that takes its own click. Its name and folder are cut short
+/// before that column and the grid's gap.
+fn row(ui: &mut Ui, id: Id, recent: &Recent, now: Timestamp) -> Row {
     let size = Vec2::new(ui.available_width(), theme::START_RECENT_ROW_HEIGHT);
-    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let (_, rect) = ui.allocate_space(size);
+    let response = ui.interact(rect, id, Sense::click());
     let name = recent.name().to_owned();
     response.widget_info(|| WidgetInfo::labeled(WidgetType::Button, true, &name));
     let described = if recent.missing {
@@ -598,17 +892,109 @@ fn row(ui: &mut Ui, recent: &Recent) -> Response {
         node.set_description(described);
     });
     let response = response.on_hover_text(&recent.path);
-    if !ui.is_rect_visible(rect) {
-        return response;
+    // The right column: the link, or the time, if any, laid out first so the name and folder
+    // are cut short before it.
+    let right = rect.right() - theme::START_RECENT_PADDING_RIGHT;
+    let when_format = |ink: Color32, underline: Stroke| TextFormat {
+        font_id: FontId::proportional(theme::HEADER_SIZE),
+        color: ink,
+        underline,
+        line_height: Some(theme::BODY_LINE_HEIGHT),
+        ..Default::default()
+    };
+    let (when_text, link) = match (&recent.missing, &recent.modified) {
+        (true, _) => (Some(REMOVE_FROM_LIST.to_owned()), true),
+        (false, Some(modified)) => (Some(when(modified, now)), false),
+        (false, None) => (None, false),
+    };
+    let when_size = when_text.as_ref().map_or(Vec2::ZERO, |text| {
+        ui.painter()
+            .layout_job(LayoutJob::single_section(
+                text.clone(),
+                when_format(theme::INFO, Stroke::NONE),
+            ))
+            .size()
+    });
+    let when_rect = Rect::from_min_size(
+        Pos2::new(right - when_size.x, rect.center().y - when_size.y / 2.0),
+        when_size,
+    );
+    // The row lit with the pointer on its link too, as a browser's `:hover` lights the
+    // button the link is in.
+    let over_link = link && ui.rect_contains_pointer(when_rect);
+    let mut asked = if response.clicked() {
+        Row::Opened
+    } else {
+        Row::None
+    };
+    if ui.is_rect_visible(rect) {
+        paint_row(ui, &response, rect, recent, over_link, when_size.x);
     }
-    if response.hovered() || response.has_focus() {
+    let Some(text) = when_text else {
+        return asked;
+    };
+    if link {
+        // After the row, so above it: its click is the link's alone.
+        let removing = ui.interact(when_rect, id.with("remove"), Sense::click());
+        removing.widget_info(|| WidgetInfo::labeled(WidgetType::Link, true, REMOVE_FROM_LIST));
+        ui.ctx().accesskit_node_builder(removing.id, |node| {
+            node.set_description(recent.path.clone());
+        });
+        let (ink, underline) = if removing.hovered() {
+            (
+                theme::TEXT_STRONG,
+                Stroke::new(theme::BORDER_WIDTH, theme::TEXT_STRONG),
+            )
+        } else {
+            (theme::INFO, Stroke::NONE)
+        };
+        let galley = ui
+            .painter()
+            .layout_job(LayoutJob::single_section(text, when_format(ink, underline)));
+        ui.painter().galley(when_rect.min, galley, ink);
+        theme::focus_ring(
+            ui,
+            &removing,
+            when_rect,
+            theme::SMALL_CORNER_RADIUS,
+            StrokeKind::Outside,
+        );
+        let removing = removing.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if removing.clicked() {
+            asked = Row::Removed;
+        }
+    } else {
+        // A label in the tree, under the list, so the time is read out as it's shown.
+        let shown = ui.interact(when_rect, id.with("when"), Sense::hover());
+        shown.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
+        let galley = ui.painter().layout_job(LayoutJob::single_section(
+            text,
+            when_format(theme::TEXT_SUBDUED, Stroke::NONE),
+        ));
+        ui.painter()
+            .galley(when_rect.min, galley, theme::TEXT_SUBDUED);
+    }
+    asked
+}
+
+/// A recent document's row, but its right column, `when_width` wide: its fill hovered or
+/// focused (or `over_link`), the focus ring, the thumbnail's place, and its name and folder.
+fn paint_row(
+    ui: &Ui,
+    response: &Response,
+    rect: Rect,
+    recent: &Recent,
+    over_link: bool,
+    when_width: f32,
+) {
+    if response.hovered() || response.has_focus() || over_link {
         ui.painter().rect_filled(
             rect,
             theme::NORMAL_CORNER_RADIUS,
             theme::START_RECENT_HOVER_BG,
         );
     }
-    focus_ring(ui, &response, rect);
+    focus_ring(ui, response, rect);
     let thumb = Rect::from_min_size(
         Pos2::new(
             rect.left() + theme::START_RECENT_PADDING_LEFT,
@@ -633,9 +1019,15 @@ fn row(ui: &mut Ui, recent: &Recent) -> Response {
         Rect::from_center_size(thumb.center(), Vec2::splat(crate::icons::ICON_SIZE)),
     );
     let left = thumb.right() + theme::START_RECENT_COLUMN_GAP;
-    let width = (rect.right() - theme::START_RECENT_PADDING_RIGHT - left).max(0.0);
+    // The grid's gap stands before the right column, even an empty one.
+    let width = (rect.right()
+        - theme::START_RECENT_PADDING_RIGHT
+        - when_width
+        - theme::START_RECENT_COLUMN_GAP
+        - left)
+        .max(0.0);
     let mut name_job = LayoutJob::single_section(
-        name,
+        recent.name().to_owned(),
         TextFormat {
             font_id: FontId::proportional(theme::BODY_SIZE),
             color: if recent.missing {
@@ -687,7 +1079,6 @@ fn row(ui: &mut Ui, recent: &Recent) -> Response {
         folder_galley,
         theme::TEXT_SUBDUED,
     );
-    response
 }
 
 #[cfg(test)]
@@ -765,6 +1156,7 @@ mod tests {
         Recent {
             path: path.to_owned(),
             missing,
+            modified: None,
         }
     }
 
@@ -824,7 +1216,7 @@ mod tests {
     use egui::text::TextFormat as Format;
     use egui::{CornerRadius, Shape};
     use egui_kittest::Harness;
-    use egui_kittest::kittest::Queryable;
+    use egui_kittest::kittest::{NodeT, Queryable};
 
     /// The prototype's tokens and geometry.
     mod css {
@@ -916,6 +1308,12 @@ mod tests {
         /// `.state-dot`: 8 by 8, `border-radius: 50%`.
         pub const STATE_DOT: f32 = 8.0;
     }
+
+    /// The wall clock's now in these tests: 2026-11-15 14:30:00 UTC. From the epoch to
+    /// 2026-01-01, 56 years of 365 days and 14 leap days (1972 to 2024), 20,454 days; then
+    /// 304 to November (31 + 28 + 31 + 30 + 31 + 30 + 31 + 31 + 30 + 31) and 14 more:
+    /// 20,772 days of 86,400 s, 1,794,700,800, and 14.5 h, 52,200.
+    const NOW: Timestamp = Timestamp::constant(1_794_753_000, 0);
 
     /// The harness's window, and the margin egui_kittest's frame leaves round the page.
     const WINDOW: Vec2 = Vec2::new(1296.0, 900.0);
@@ -1078,6 +1476,8 @@ mod tests {
         let shown = Shown {
             recents: None,
             workspace_known: true,
+            now: NOW,
+            keys: true,
         };
         let mut h = drawn(|ui| {
             page(ui, &shown);
@@ -1122,9 +1522,24 @@ mod tests {
                 ),
                 "Open…",
             );
+            // Keyboard shortcuts, 4 below Open… (Search commands, the prototype's third, waits
+            // for the command search).
+            let shortcuts = button(&h, "Keyboard shortcuts");
+            sized(
+                shortcuts,
+                Rect::from_min_size(
+                    Pos2::new(left, open.bottom() + css::ACTIONS_GAP),
+                    Vec2::new(css::SIDE, css::ACTION_HEIGHT),
+                ),
+                "Keyboard shortcuts",
+            );
+            assert!(
+                h.query_by_role_and_label(egui::accesskit::Role::Button, "Search commands")
+                    .is_none()
+            );
             // The note's rule, 28 below them, the column's width, 1 of Gray.250; its text 16
             // below the rule, wrapped at the column's width.
-            let rule_top = open.bottom() + css::NOTE_MARGIN;
+            let rule_top = shortcuts.bottom() + css::NOTE_MARGIN;
             let rule = painted(&h)
                 .into_iter()
                 .find_map(|shape| match shape {
@@ -1230,12 +1645,19 @@ mod tests {
         let shown = Shown {
             recents: None,
             workspace_known: true,
+            now: NOW,
+            keys: true,
         };
         let mut h = drawn(|ui| {
             page(ui, &shown);
         });
-        // egui_kittest's platform is neither macOS nor Windows: Command is Ctrl.
-        for (label, key, primary) in [("New part", "N", true), ("Open…", "O", false)] {
+        // egui_kittest's platform is neither macOS nor Windows: Command is Ctrl. Keyboard
+        // shortcuts' one cap is `?` (app.js: `<span class="kbd">?</span>`).
+        for (label, caps, primary) in [
+            ("New part", &["N", "Ctrl"][..], true),
+            ("Open…", &["O", "Ctrl"][..], false),
+            ("Keyboard shortcuts", &["?"][..], false),
+        ] {
             let rect = button(&h, label);
             let (fill, ink, cap_fill, cap_border, cap_ink) = if primary {
                 (
@@ -1278,7 +1700,7 @@ mod tests {
             // each side (16 at least), its border 1 and 2 at its bottom, its text centred
             // across and on its 16 line under its top border, 10.5 points.
             let mut end = rect.right() - css::ACTION_PADDING;
-            for cap in [key, "Ctrl"] {
+            for &cap in caps {
                 let shown = texts(&h, cap)
                     .into_iter()
                     .find(|shown| rect.contains(shown.pos))
@@ -1328,10 +1750,11 @@ mod tests {
             let ctrl = texts(&h, "Ctrl").remove(0).galley.size().x;
             assert!(ctrl + 10.0 > css::KBD_MIN_WIDTH, "{ctrl}");
         }
-        // Hovered: Open… Gray.250 with white ink (`.st-action:hover`), New part white with
-        // black (`.st-action.primary:hover`).
+        // Hovered: Open… and Keyboard shortcuts Gray.250 with white ink (`.st-action:hover`),
+        // New part white with black (`.st-action.primary:hover`).
         for (label, fill, ink) in [
             ("Open…", css::G250, css::G1000),
+            ("Keyboard shortcuts", css::G250, css::G1000),
             ("New part", css::G1000, css::PRIMARY_HOVER_TEXT),
         ] {
             h.get_by_role_and_label(egui::accesskit::Role::Button, label)
@@ -1435,6 +1858,8 @@ mod tests {
         let shown = Shown {
             recents: None,
             workspace_known: true,
+            now: NOW,
+            keys: true,
         };
         let mut h = drawn(|ui| {
             page(ui, &shown);
@@ -1509,16 +1934,32 @@ mod tests {
         recents
     }
 
+    /// The file at `path` given `time` as its modified time.
+    fn modified_at(path: &Path, time: Timestamp) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(std::time::SystemTime::from(time))
+            .unwrap();
+    }
+
+    /// Twelve minutes before [`NOW`].
+    const TWELVE_MIN_AGO: Timestamp = Timestamp::constant(1_794_753_000 - 12 * 60, 0);
+
     #[test]
     fn recents_rows_are_drawn_as_recent_row() {
         let dir = tempfile::tempdir().unwrap();
         let bracket = dir.path().join("bracket.silico");
         std::fs::write(&bracket, b"").unwrap();
+        modified_at(&bracket, TWELVE_MIN_AGO);
         let gone = dir.path().join("fixtures").join("vise-jaw.silico");
         let recents = listing(&[bracket.to_str().unwrap(), gone.to_str().unwrap()]);
         let shown = Shown {
             recents: Some(&recents),
             workspace_known: true,
+            now: NOW,
+            keys: true,
         };
         let mut h = drawn(|ui| {
             page(ui, &shown);
@@ -1582,9 +2023,25 @@ mod tests {
                 assert!(tint.is_some(), "{name}'s icon");
             }
             // Its name and folder in two lines of 16 on the row's middle, 14 beyond the
-            // thumb, cut short 10 from its right.
+            // thumb, cut short 14 (the grid's gap) before its right column (`.when`: its
+            // time, or Remove from list), which ends 10 from its right.
+            let when = text(
+                &h,
+                if missing {
+                    "Remove from list"
+                } else {
+                    "12 min ago"
+                },
+            );
             let text_left = thumb.right() + css::ROW_GAP;
-            let cut = row.right() - css::ROW_PADDING_RIGHT - text_left;
+            // Laid out at a whole point's width: epaint rounds a wrap's width (its
+            // `Fonts::layout_job`, against re-wrapping from frame to frame).
+            let cut = (row.right()
+                - css::ROW_PADDING_RIGHT
+                - when.galley.size().x
+                - css::ROW_GAP
+                - text_left)
+                .round();
             let named = text(&h, name);
             at(
                 named.pos,
@@ -1677,6 +2134,8 @@ mod tests {
         let shown = Shown {
             recents: Some(&recents),
             workspace_known: true,
+            now: NOW,
+            keys: true,
         };
         let h = drawn(|ui| {
             page(ui, &shown);
@@ -1708,5 +2167,564 @@ mod tests {
             (dots[0].radius, dots[0].fill),
             (css::STATE_DOT / 2.0, css::GREEN)
         );
+    }
+
+    // ---- When a recent document was modified (`.when`) ----
+
+    /// `text` as a time, from RFC 3339.
+    fn ts(text: &str) -> Timestamp {
+        text.parse().unwrap()
+    }
+
+    /// [`when`] of `then` in `zone`, at `now`.
+    fn said(zone: &jiff::tz::TimeZone, then: &str, now: &str) -> String {
+        when(&ts(then).to_zoned(zone.clone()), ts(now))
+    }
+
+    #[test]
+    fn a_time_is_said_as_the_prototypes_when_by_the_rule_written_down() {
+        use jiff::tz::{TimeZone, offset};
+        let utc = TimeZone::UTC;
+        // Each worked by hand from the rule in `when`'s documentation.
+        for (then, now, want) in [
+            // Less than a minute: just now; a minute: minutes; an hour: hours, on the day.
+            ("2026-11-15T14:30:00Z", "2026-11-15T14:30:00Z", "Just now"),
+            (
+                "2026-11-15T14:29:00.000000001Z",
+                "2026-11-15T14:30:00Z",
+                "Just now",
+            ),
+            ("2026-11-15T14:29:00Z", "2026-11-15T14:30:00Z", "1 min ago"),
+            ("2026-11-15T13:30:01Z", "2026-11-15T14:30:00Z", "59 min ago"),
+            ("2026-11-15T13:30:00Z", "2026-11-15T14:30:00Z", "1 h ago"),
+            ("2026-11-15T00:00:00Z", "2026-11-15T14:30:00Z", "14 h ago"),
+            ("2026-11-15T00:00:00Z", "2026-11-15T23:59:59Z", "23 h ago"),
+            // The day before: yesterday, from its first second to its last.
+            ("2026-11-14T23:59:59Z", "2026-11-15T14:30:00Z", "Yesterday"),
+            ("2026-11-14T00:00:00Z", "2026-11-15T14:30:00Z", "Yesterday"),
+            // Before that: the date, this year's without the year.
+            ("2026-11-13T23:59:59Z", "2026-11-15T14:30:00Z", "Nov 13"),
+            ("2026-10-05T12:00:00Z", "2026-11-15T14:30:00Z", "Oct 5"),
+            ("2026-01-01T00:00:00Z", "2026-11-15T14:30:00Z", "Jan 1"),
+            (
+                "2025-12-31T23:59:59Z",
+                "2026-11-15T14:30:00Z",
+                "Dec 31, 2025",
+            ),
+            (
+                "2001-02-03T12:00:00Z",
+                "2026-11-15T14:30:00Z",
+                "Feb 3, 2001",
+            ),
+            // Midnight: minutes across it, then yesterday, never hours.
+            ("2026-11-14T23:45:00Z", "2026-11-15T00:30:00Z", "45 min ago"),
+            ("2026-11-15T00:00:00Z", "2026-11-15T00:30:00Z", "30 min ago"),
+            ("2026-11-14T23:30:00Z", "2026-11-15T00:30:00Z", "Yesterday"),
+            // The year's end: yesterday is last year's, the day before it a date with its
+            // year.
+            ("2026-12-31T23:55:00Z", "2027-01-01T00:10:00Z", "15 min ago"),
+            ("2026-12-31T23:00:00Z", "2027-01-01T00:10:00Z", "Yesterday"),
+            (
+                "2026-12-30T12:00:00Z",
+                "2027-01-01T00:10:00Z",
+                "Dec 30, 2026",
+            ),
+            // A leap day.
+            ("2028-02-29T10:00:00Z", "2028-03-01T10:00:00Z", "Yesterday"),
+            ("2028-02-28T23:00:00Z", "2028-03-01T10:00:00Z", "Feb 28"),
+            // The clock behind the file's time: under a minute, just now; else its date.
+            ("2026-11-15T14:30:59Z", "2026-11-15T14:30:00Z", "Just now"),
+            ("2026-11-15T14:31:00Z", "2026-11-15T14:30:00Z", "Nov 15"),
+            ("2026-11-16T09:00:00Z", "2026-11-15T14:30:00Z", "Nov 16"),
+            (
+                "2027-01-02T00:00:00Z",
+                "2026-11-15T14:30:00Z",
+                "Jan 2, 2027",
+            ),
+        ] {
+            assert_eq!(said(&utc, then, now), want, "{then} at {now}");
+        }
+        // The days are the time zone's. At +09:00, 23:00Z on the 14th is 08:00 on the
+        // 15th and 00:30Z on the 15th is 09:30: the same day, an hour and a half apart.
+        let tokyo = TimeZone::fixed(offset(9));
+        let (then, now) = ("2026-11-14T23:00:00Z", "2026-11-15T00:30:00Z");
+        assert_eq!(said(&tokyo, then, now), "1 h ago");
+        assert_eq!(said(&utc, then, now), "Yesterday");
+        // At -05:00, 06:00Z on the 14th is 01:00 on the 14th and 03:00Z on the 15th is
+        // 22:00 on the 14th: 21 hours on one day.
+        let east = TimeZone::fixed(offset(-5));
+        let (then, now) = ("2026-11-14T06:00:00Z", "2026-11-15T03:00:00Z");
+        assert_eq!(said(&east, then, now), "21 h ago");
+        assert_eq!(said(&utc, then, now), "Yesterday");
+        // And so is the year: 03:00Z on 2026-01-01 is 22:00 on 2025-12-31 at -05:00, and
+        // 12:00Z on 2025-12-29 is 07:00 that day.
+        let (then, now) = ("2025-12-29T12:00:00Z", "2026-01-01T03:00:00Z");
+        assert_eq!(said(&east, then, now), "Dec 29");
+        assert_eq!(said(&utc, then, now), "Dec 29, 2025");
+        // A day the clocks go back (New York's rule: 2026-11-01, a Sunday, at 02:00 EDT,
+        // 06:00Z): from 00:30 EDT (04:30Z) to 12:00 EST (17:00Z) the clock moves 11.5 h but
+        // 12.5 h pass, and the hours said are those that passed.
+        let new_york = TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
+        assert_eq!(
+            said(&new_york, "2026-11-01T04:30:00Z", "2026-11-01T17:00:00Z"),
+            "12 h ago"
+        );
+    }
+
+    #[test]
+    fn only_a_silico_file_is_a_document_to_drop_and_the_rest_are_named() {
+        for (path, document) in [
+            ("/a/part.silico", true),
+            ("/a/part.SILICO", true),
+            ("/a/part.v2.silico", true),
+            ("/a/part.silico.txt", false),
+            ("/a/part", false),
+            ("/a/silico", false),
+            ("/a/.silico", false),
+            ("/a/photo.png", false),
+        ] {
+            assert_eq!(names_a_document(Path::new(path)), document, "{path}");
+        }
+        assert_eq!(
+            not_documents(&["photo.png".to_owned()]),
+            "photo.png isn't a .silico document, so it wasn't opened"
+        );
+        assert_eq!(
+            not_documents(&["photo.png".to_owned(), "notes.txt".to_owned()]),
+            "photo.png, notes.txt aren't .silico documents, so they weren't opened"
+        );
+    }
+
+    /// A list read of `paths`, each looked for, all of them first there with a time.
+    fn listing_timed(paths: &[&str]) -> Recents {
+        let bytes = crate::recent::text(paths).into_bytes();
+        let dir = tempfile::tempdir().unwrap();
+        let mut recents = Recents::reading(
+            dir.path().join("recent-documents"),
+            Box::new(move |_| Some(bytes)),
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !(recents.list().len() == paths.len()
+            && recents
+                .list()
+                .iter()
+                .all(|recent| recent.missing || recent.modified.is_some()))
+        {
+            recents.poll();
+            assert!(std::time::Instant::now() < deadline, "never told");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        recents
+    }
+
+    /// `.link`'s `--info`, and `.recent-row .when`'s size.
+    const INFO: Color32 = Color32::from_rgb(0xad, 0xbb, 0xff);
+
+    #[test]
+    fn each_rows_time_or_its_remove_from_list_is_drawn_as_when_at_its_right() {
+        let dir = tempfile::tempdir().unwrap();
+        let bracket = dir.path().join("bracket.silico");
+        let plate = dir.path().join("plate.silico");
+        for (path, time) in [
+            (&bracket, TWELVE_MIN_AGO),
+            // 2001-02-03 12:00 UTC: 11,356 days (31 years of 365 and 8 leap days, then 33)
+            // of 86,400 s, and 43,200. Feb 3, 2001 in any zone within 12 hours of UTC.
+            (&plate, Timestamp::constant(981_201_600, 0)),
+        ] {
+            std::fs::write(path, b"").unwrap();
+            modified_at(path, time);
+        }
+        let gone = dir.path().join("vise-jaw.silico");
+        let recents = listing_timed(&[
+            bracket.to_str().unwrap(),
+            plate.to_str().unwrap(),
+            gone.to_str().unwrap(),
+        ]);
+        let acts = std::cell::RefCell::new(Vec::new());
+        let mut h = drawn(|ui| {
+            let shown = Shown {
+                recents: Some(&recents),
+                workspace_known: true,
+                now: NOW,
+                keys: true,
+            };
+            let act = page(ui, &shown);
+            if act != Act::None {
+                acts.borrow_mut().push(act);
+            }
+        });
+        for (name, when, ink) in [
+            ("bracket.silico", "12 min ago", css::G550),
+            ("plate.silico", "Feb 3, 2001", css::G550),
+            ("vise-jaw.silico", "Remove from list", INFO),
+        ] {
+            let row = button(&h, name);
+            let shown = text(&h, when);
+            // Right-aligned 10 from the row's right (its padding), on its middle, 11 points
+            // on a 16 line.
+            at(
+                shown.pos + shown.galley.size(),
+                Pos2::new(
+                    row.right() - css::ROW_PADDING_RIGHT,
+                    row.center().y + shown.galley.size().y / 2.0,
+                ),
+                when,
+            );
+            assert!(near(shown.galley.size().y, css::LH), "{when}");
+            let format = format(&shown, 0);
+            assert_eq!(
+                (&format.font_id, colour(&shown, 0), format.underline),
+                (&FontId::proportional(css::FS_SMALL), ink, Stroke::NONE),
+                "{when}"
+            );
+        }
+        // In the tree: each time a label, the missing one's link a link.
+        for when in ["12 min ago", "Feb 3, 2001"] {
+            assert!(
+                h.query_by_role_and_label(egui::accesskit::Role::Label, when)
+                    .is_some(),
+                "{when}"
+            );
+        }
+        let link = h.get_by_role_and_label(egui::accesskit::Role::Link, "Remove from list");
+        assert_eq!(
+            link.accesskit_node().description().as_deref(),
+            Some(gone.to_str().unwrap())
+        );
+        // Hovered, the link is white and underlined (`.link:hover`), and its row is lit
+        // under it, as the button it's in is.
+        link.hover();
+        h.run_steps(2);
+        let hovered = text(&h, "Remove from list");
+        assert_eq!(colour(&hovered, 0), css::G1000);
+        assert_eq!(format(&hovered, 0).underline, Stroke::new(1.0, css::G1000));
+        let missing_row = button(&h, "vise-jaw.silico");
+        assert_eq!(
+            fill_at(&h, missing_row),
+            Some((css::G200, CornerRadius::same(css::R)))
+        );
+        // Its click removes the document and opens nothing; the row's own click opens it.
+        h.get_by_role_and_label(egui::accesskit::Role::Link, "Remove from list")
+            .click();
+        h.run_steps(2);
+        assert_eq!(
+            *acts.borrow(),
+            [Act::Remove(gone.to_str().unwrap().to_owned())]
+        );
+        acts.borrow_mut().clear();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "vise-jaw.silico")
+            .click();
+        h.run_steps(2);
+        assert_eq!(
+            *acts.borrow(),
+            [Act::Recent(gone.to_str().unwrap().to_owned())]
+        );
+    }
+
+    /// The row labelled `name` has the keyboard's focus.
+    fn focused(h: &Harness<'_>, name: &str) -> bool {
+        h.get_by_role_and_label(egui::accesskit::Role::Button, name)
+            .accesskit_node()
+            .is_focused()
+    }
+
+    #[test]
+    fn up_and_down_move_the_focus_along_recent_stopping_at_its_ends_and_enter_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = ["one.silico", "two.silico", "three.silico"];
+        let paths: Vec<String> = names
+            .iter()
+            .map(|name| {
+                let path = dir.path().join(name);
+                std::fs::write(&path, b"").unwrap();
+                path.to_str().unwrap().to_owned()
+            })
+            .collect();
+        let listed: Vec<&str> = paths.iter().map(String::as_str).collect();
+        let recents = listing_timed(&listed);
+        let keys = std::cell::Cell::new(true);
+        let acts = std::cell::RefCell::new(Vec::new());
+        let mut h = drawn(|ui| {
+            let shown = Shown {
+                recents: Some(&recents),
+                workspace_known: true,
+                now: NOW,
+                keys: keys.get(),
+            };
+            let act = page(ui, &shown);
+            if act != Act::None {
+                acts.borrow_mut().push(act);
+            }
+        });
+        let only = |h: &Harness<'_>, name: Option<&str>| {
+            for row in names {
+                assert_eq!(focused(h, row), Some(row) == name, "{row}, want {name:?}");
+            }
+        };
+        only(&h, None);
+        // Nothing focused: ↓ focuses the first row (interact.js: from -1, the next is 0);
+        // then each ↓ the next, the last staying.
+        for want in ["one.silico", "two.silico", "three.silico", "three.silico"] {
+            h.key_press(Key::ArrowDown);
+            h.run_steps(2);
+            only(&h, Some(want));
+        }
+        // ↑ back, the first staying.
+        for want in ["two.silico", "one.silico", "one.silico"] {
+            h.key_press(Key::ArrowUp);
+            h.run_steps(2);
+            only(&h, Some(want));
+        }
+        // Drawn focused: the row's fill and its ring.
+        let one = button(&h, "one.silico");
+        assert_eq!(
+            fill_at(&h, one),
+            Some((css::G200, CornerRadius::same(css::R)))
+        );
+        assert!(ringed(&h, one));
+        // Two presses in one frame move two rows.
+        h.key_press(Key::ArrowDown);
+        h.key_press(Key::ArrowDown);
+        h.run_steps(2);
+        only(&h, Some("three.silico"));
+        // With a modifier, an arrow isn't Recent's.
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowUp);
+        h.run_steps(2);
+        only(&h, Some("three.silico"));
+        // Enter opens the row focused, as its click does.
+        assert!(acts.borrow().is_empty());
+        h.key_press(Key::Enter);
+        h.run_steps(2);
+        assert_eq!(*acts.borrow(), [Act::Recent(paths[2].clone())]);
+        // From another of the page's controls, ↑ goes to Recent's first row, not to the
+        // control above it.
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Open…")
+            .focus();
+        h.run_steps(2);
+        h.key_press(Key::ArrowUp);
+        h.run_steps(2);
+        only(&h, Some("one.silico"));
+        // Not the page's while it isn't given the keys (a field typed in, a modal, a menu):
+        // from Open…, ↑ is egui's own, which moves to the widget above it, never to a row.
+        keys.set(false);
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Open…")
+            .focus();
+        h.run_steps(2);
+        h.key_press(Key::ArrowUp);
+        h.run_steps(2);
+        only(&h, None);
+    }
+
+    #[test]
+    fn recents_header_says_its_keys_at_its_right_only_with_rows_to_move_along() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = dir.path().join("one.silico");
+        std::fs::write(&one, b"").unwrap();
+        let recents = listing_timed(&[one.to_str().unwrap()]);
+        let shown = Shown {
+            recents: Some(&recents),
+            workspace_known: true,
+            now: NOW,
+            keys: true,
+        };
+        let h = drawn(|ui| {
+            page(ui, &shown);
+        });
+        let (_, left, width) = columns(WINDOW.x);
+        let header = text(&h, "RECENT");
+        // "opens", at the column's right, 11 points, Gray.550, on the header's line.
+        let opens = text(&h, KEYS_HINT);
+        assert!(
+            near(opens.pos.x + opens.galley.size().x, left + width),
+            "{:?}",
+            opens.pos
+        );
+        assert_eq!(
+            (&format(&opens, 0).font_id, colour(&opens, 0)),
+            (&FontId::proportional(css::FS_SMALL), css::G550)
+        );
+        let middle = header.pos.y + header.galley.size().y / 2.0;
+        assert!(near(opens.pos.y + opens.galley.size().y / 2.0, middle));
+        // A space's width before it (the inline text's), as the header's font lays one out.
+        let space = {
+            let font = FontId::proportional(css::FS_SMALL);
+            let fonts = |text: &str| {
+                h.ctx
+                    .fonts_mut(|fonts| {
+                        fonts.layout_no_wrap(text.to_owned(), font.clone(), css::G550)
+                    })
+                    .size()
+                    .x
+            };
+            fonts(" opens") - fonts("opens")
+        };
+        assert!(space > 0.0);
+        // The caps, `.kbd` at rest (Gray.250 in Gray.350, Gray.800 letters), each 16 high on
+        // the header's middle: ↵ a space before "opens", then a space, then ↑ and ↓ side by
+        // side, no gap between their `.keys`.
+        let mut end = opens.pos.x - space;
+        for (cap, gap_after) in [("↵", space), ("↓", 0.0), ("↑", 0.0)] {
+            let shown = text(&h, cap);
+            let size = shown.galley.size();
+            let width =
+                (size.x + 2.0 * (css::KBD_PADDING + css::KBD_BORDER)).max(css::KBD_MIN_WIDTH);
+            let want = Rect::from_min_max(
+                Pos2::new(end - width, middle - css::KBD_HEIGHT / 2.0),
+                Pos2::new(end, middle + css::KBD_HEIGHT / 2.0),
+            );
+            let drawn = rects(&h)
+                .into_iter()
+                .find(|shape| {
+                    shape.corner_radius == CornerRadius::same(css::KBD_RADIUS)
+                        && near_rect(shape.rect, want)
+                })
+                .unwrap_or_else(|| panic!("{cap}'s cap at {want:?}"));
+            assert_eq!(drawn.fill, css::G250, "{cap}");
+            crate::modal::tests::kbd_border(
+                &crate::modal::tests::cap_border(&h, want),
+                want,
+                css::G350,
+                cap,
+            );
+            assert_eq!(colour(&shown, 0), css::G800, "{cap}");
+            assert_eq!(
+                format(&shown, 0).font_id,
+                FontId::proportional(css::KBD_SIZE)
+            );
+            end = want.left() - gap_after;
+        }
+        // No rows: no keys to say.
+        let empty = Recents::unkept();
+        let shown = Shown {
+            recents: Some(&empty),
+            workspace_known: true,
+            now: NOW,
+            keys: true,
+        };
+        let h = drawn(|ui| {
+            page(ui, &shown);
+        });
+        assert!(texts(&h, KEYS_HINT).is_empty());
+        assert!(texts(&h, "↵").is_empty());
+    }
+
+    #[test]
+    fn the_drop_note_is_drawn_as_drop_note_under_recent() {
+        // `.drop-note`: `margin-top: 26px; padding: 14px; border: 1px dashed var(--g350);
+        // border-radius: var(--r); color: var(--g550); text-align: center`, after `.recent`
+        // and its `margin-bottom: 30px` (Samples, between them in the prototype, not built:
+        // the two margins meet, and the larger stands).
+        const NOTE_MARGIN: f32 = 30.0;
+        const NOTE_PADDING: f32 = 14.0;
+        let dir = tempfile::tempdir().unwrap();
+        let one = dir.path().join("one.silico");
+        std::fs::write(&one, b"").unwrap();
+        let recents = listing_timed(&[one.to_str().unwrap()]);
+        let shown = Shown {
+            recents: Some(&recents),
+            workspace_known: true,
+            now: NOW,
+            keys: true,
+        };
+        let h = drawn(|ui| {
+            page(ui, &shown);
+        });
+        let (_, left, width) = columns(WINDOW.x);
+        let row = button(&h, "one.silico");
+        // `.recent`'s gap is between its rows, none after the last.
+        let top = row.bottom() + NOTE_MARGIN;
+        let height = 1.0 + NOTE_PADDING + css::LH + NOTE_PADDING + 1.0;
+        let note = Rect::from_min_size(Pos2::new(left, top), Vec2::new(width, height));
+        // Its words: "Drop a ", `.silico` in `.mono`, and the rest, 12 points on 16, Gray.550,
+        // their line centred across it, 1 + 14 below its top.
+        let said = painted(&h)
+            .into_iter()
+            .find_map(|shape| match shape {
+                Shape::Text(shown) if shown.galley.text().starts_with("Drop a ") => Some(shown),
+                _ => None,
+            })
+            .expect("the drop note");
+        assert_eq!(
+            said.galley.text(),
+            "Drop a .silico file anywhere in this window to open it."
+        );
+        let sections: Vec<(&str, FontId, Color32)> = said
+            .galley
+            .job
+            .sections
+            .iter()
+            .map(|section| {
+                (
+                    &said.galley.job.text[section.byte_range.start.0..section.byte_range.end.0],
+                    section.format.font_id.clone(),
+                    section.format.color,
+                )
+            })
+            .collect();
+        assert_eq!(
+            sections,
+            [
+                ("Drop a ", FontId::proportional(css::FS), css::G550),
+                (".silico", FontId::monospace(css::MONO), css::G550),
+                (
+                    " file anywhere in this window to open it.",
+                    FontId::proportional(css::FS),
+                    css::G550
+                ),
+            ]
+        );
+        // Its line as laid out (its advance, not its ink), centred: within half a point,
+        // as egui starts a centred line on a whole point.
+        let drawn = said.galley.rect.translate(said.pos.to_vec2());
+        assert!(
+            (drawn.center().x - note.center().x).abs() <= 0.5,
+            "{drawn:?} in {note:?}"
+        );
+        assert!(near(said.pos.y, top + 1.0 + NOTE_PADDING), "{:?}", said.pos);
+        assert!(near(said.galley.size().y, css::LH));
+        // Its border: dashes of Gray.350, 1 wide, along the note's edge (its stroke's middle
+        // half a point in), round its corners.
+        let dashes: Vec<[Pos2; 2]> = painted(&h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::LineSegment { points, stroke } if stroke.color == css::G350 => {
+                    assert_eq!(stroke.width, 1.0);
+                    Some(points)
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(dashes.len() > 20, "{} dashes", dashes.len());
+        // Each dash's ends on the stroke's middle: the note's edge half a point in, its
+        // corners `--r` (6) less that half point round. A point's distance from that rounded
+        // rectangle (its signed distance: the corner's centre box, then the radius) is
+        // nothing, within the chords that stand for its corners' arcs (8 a quarter turn:
+        // 5.5 × (1 − cos(π/32)), 0.03).
+        let edge = note.shrink(0.5);
+        let radius = f32::from(css::R) - 0.5;
+        let off = |point: Pos2| {
+            let half = edge.size() / 2.0 - Vec2::splat(radius);
+            let q = (point - edge.center()).abs() - half;
+            q.max(Vec2::ZERO).length() + q.x.max(q.y).min(0.0) - radius
+        };
+        let mut reach = Rect::NOTHING;
+        for point in dashes.iter().flatten() {
+            assert!(
+                off(*point).abs() < 0.05,
+                "{point:?}: {} off {edge:?}",
+                off(*point)
+            );
+            reach = reach.union(Rect::from_min_max(*point, *point));
+        }
+        // They go all the way round: their reach is within half a point of the edge each
+        // way.
+        for (got, want) in [
+            (reach.left(), edge.left()),
+            (reach.right(), edge.right()),
+            (reach.top(), edge.top()),
+            (reach.bottom(), edge.bottom()),
+        ] {
+            assert!((got - want).abs() < 0.5, "{reach:?} against {edge:?}");
+        }
     }
 }

@@ -50,6 +50,10 @@ pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN)
 pub const FILTERS_SAID: &str =
     "F5 shows the selection filters. They live in the toolbar, under SELECT.";
 
+/// The wall clock the start page says each recent document's time against: a test's, to set
+/// by hand, or [`jiff::Timestamp::now`].
+pub type WallClock = Arc<dyn Fn() -> jiff::Timestamp + Send + Sync>;
+
 /// What Reload says with a feature dialog open (⌘R, Ctrl+R elsewhere): as Rebuild everything
 /// does nothing in a dialog, the dialog's OK or Cancel comes first.
 pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload drops what it holds.";
@@ -372,6 +376,12 @@ pub struct App<P: Clients + 'static> {
     tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
+    /// Whether the start page was shown last frame: shown again, its documents are looked
+    /// for again (their times, and which are missing). True at first, as the list's thread
+    /// looks for them as it starts.
+    start_was_shown: bool,
+    /// The wall clock the start page's times are said against.
+    wall: WallClock,
     /// The side panes' widths, as dragged, and where they're kept, if anywhere.
     columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
@@ -482,6 +492,8 @@ impl<P: Clients + 'static> App<P> {
             home: false,
             tab_in_view: None,
             recents: None,
+            start_was_shown: true,
+            wall: Arc::new(jiff::Timestamp::now),
             columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
@@ -505,6 +517,14 @@ impl<P: Clients + 'static> App<P> {
     #[must_use]
     pub fn documents_folder(mut self, documents: Option<PathBuf>) -> Self {
         self.documents = documents;
+        self
+    }
+
+    /// The app, its start page saying each recent document's time against `wall` (a test's
+    /// clock), not the system's.
+    #[must_use]
+    pub fn dated(mut self, wall: WallClock) -> Self {
+        self.wall = wall;
         self
     }
 
@@ -729,6 +749,8 @@ impl<P: Clients + 'static> App<P> {
         // acts, so it comes first in the tab's queue.
         let renamed = self.rename_clicked_away(ui.ctx());
         let (mut next_frame, dialog_key) = self.keys(ui);
+        // Files dropped on the window, opened as Open's pick is.
+        next_frame |= self.take_drops(ui);
         // The canvas's Select Other closed under a modal, the shortcut sheet, or What's
         // Wrong (one its keys just opened, `?`, too): the focus and the keys are theirs.
         let over =
@@ -747,10 +769,26 @@ impl<P: Clients + 'static> App<P> {
                 tab.canvas_unshown();
             }
         }
-        if self.start_shown() {
+        let start_shown = self.start_shown();
+        if start_shown && !self.start_was_shown {
+            // Shown again: each recent document looked for again, off this thread, so a
+            // document saved meanwhile shows its new time.
+            if let Some(recents) = &self.recents {
+                recents.look();
+            }
+        }
+        self.start_was_shown = start_shown;
+        if start_shown {
             // The start page alone between the bars: no toolbar, panes, or dialog.
             self.status_bar(ui, &mut next_frame);
-            let act = egui::CentralPanel::default()
+            // Recent's arrow keys: never a field's, nor under a modal (the sheet's too) or a
+            // menu.
+            let keys = self.asking.is_none()
+                && self.sheet.is_none()
+                && !ui.ctx().text_edit_focused()
+                && !egui::Popup::is_any_open(ui.ctx());
+            let now = (self.wall)();
+            let (act, page) = egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(theme::PANEL_BG))
                 .show(ui, |ui| {
                     if self.tabs.is_empty() {
@@ -760,11 +798,15 @@ impl<P: Clients + 'static> App<P> {
                     let shown = start::Shown {
                         recents: self.recents.as_ref(),
                         workspace_known: self.workspace().is_some(),
+                        now,
+                        keys,
                     };
-                    start::page(ui, &shown)
+                    (start::page(ui, &shown), ui.max_rect())
                 })
                 .inner;
             self.start_act(ui, act, &mut next_frame);
+            // A drop's refusal, or a removal from Recent, over the page's bottom right.
+            self.show_toast(ui, page);
             self.after_drawing(ui, next_frame);
             return;
         }
@@ -884,8 +926,10 @@ impl<P: Clients + 'static> App<P> {
         tab.finish_rename(&self.sessions, renaming.feature, &renaming.text)
     }
 
-    /// What the start page's `act` asks: a new untitled part, Open's panel, a recent
-    /// document opened (or its tab shown, if it's open), or the MCP config copied.
+    /// What the start page's `act` asks: a new untitled part, Open's panel, the shortcut
+    /// sheet, a recent document opened (or its tab shown, if it's open), a missing one
+    /// removed from Recent (said in a toast, as the prototype's `openRecent` says it), or
+    /// the MCP config copied.
     fn start_act(&mut self, ui: &Ui, act: start::Act, next_frame: &mut bool) {
         match act {
             start::Act::None => {}
@@ -894,14 +938,75 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             start::Act::Open => self.ask_open(ui.ctx()),
+            start::Act::Shortcuts => self.sheet = Some(Sheet::default()),
             start::Act::Recent(path) => *next_frame |= self.open_recent(&path),
+            start::Act::Remove(path) => {
+                if let Some(recents) = &self.recents {
+                    recents.remove(&path);
+                    let name = crate::recent::name_of(&path);
+                    self.toast = Some((
+                        format!("Removed {name} from Recent"),
+                        ui.input(|input| input.time),
+                    ));
+                }
+            }
             start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
         }
     }
 
-    /// The recent document at `path` opened: its tab shown if it's open, nothing done if its
-    /// open is under way (a double-click, or a second click before the first answers), else
-    /// opened. Both compared by their absolute paths. Whether an open was started.
+    /// The files dropped on the window this frame, in the order dropped (DESIGN.md's start
+    /// page: "Drop a .silico file anywhere in this window to open it"), with a document
+    /// shown or none: each `.silico` one ([`start::names_a_document`]) opened as Open's pick
+    /// is, its refusals the same, or its tab shown if it's open already, as a recent
+    /// document's click does; the rest named in a toast, none of them opened. None is taken
+    /// while a quit closes the tabs. Whether an open was started.
+    fn take_drops(&mut self, ui: &Ui) -> bool {
+        let dropped: Vec<PathBuf> = ui.input(|input| {
+            input
+                .raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path().to_path_buf())
+                .collect()
+        });
+        if dropped.is_empty() || self.quitting {
+            return false;
+        }
+        let mut started = false;
+        let mut refused = Vec::new();
+        for path in dropped {
+            if !start::names_a_document(&path) {
+                refused.push(
+                    path.file_name()
+                        .unwrap_or(path.as_os_str())
+                        .to_string_lossy()
+                        .into_owned(),
+                );
+                continue;
+            }
+            match path.into_os_string().into_string() {
+                Ok(path) => started |= self.open_recent(&path),
+                Err(path) => {
+                    // As Open's pick of such a path is said.
+                    self.message = Some(format!(
+                        "{} can't be used: its path isn't UTF-8",
+                        std::path::Path::new(&path).display()
+                    ));
+                    self.message_from = None;
+                }
+            }
+        }
+        if !refused.is_empty() {
+            self.toast = Some((start::not_documents(&refused), ui.input(|input| input.time)));
+            ui.ctx().request_repaint();
+        }
+        started
+    }
+
+    /// The recent document at `path` (or a document dropped on the window) opened: its tab
+    /// shown if it's open, nothing done if its open is under way (a double-click, a second
+    /// click before the first answers, or the same file dropped twice), else opened. Both
+    /// compared by their absolute paths. Whether an open was started.
     fn open_recent(&mut self, path: &str) -> bool {
         let same = |other: &str| {
             std::path::absolute(other).is_ok_and(|at| at == std::path::Path::new(path))

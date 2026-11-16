@@ -168,6 +168,7 @@ The sheet (`?`) is generated from the same command registry as menus, tooltips a
 - Selection (outside sketches): X faces, E edges, V vertices, H hide/show, Esc clears. A click on the timeline's empty space clears it too, and ⌘/Ctrl-click on a selected timeline item or browser row takes its feature out (Trevin's ask, 2026-11-09).
 - Sketch: L line, R rectangle, C circle, A arc, P point, T trim, D Smart Dimension, X construction, hold ⌘/Ctrl for no relations, ⌘↵ Finish Sketch.
 - Dialogs: ↵ OK, Esc Cancel.
+- Start page: ↑ ↓ move along Recent, ↵ opens the row focused (as built: docs/design/m5.0-app.md, section 8, *The start page*).
 - **Esc does the nearest thing first** (§3): ends a drag, then a sketch tool's chain, then the tool, then stops a dialog's preview, then cancels the dialog, then clears the selection, then stops the rebuild.
 
 ## Proposals beyond M5.0 (each needs a yes or no)
