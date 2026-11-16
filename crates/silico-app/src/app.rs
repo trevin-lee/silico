@@ -68,16 +68,6 @@ fn not_utf8(path: &std::ffi::OsStr) -> String {
     )
 }
 
-/// The session another holds the file an open was refused for, if that's why it was: the
-/// core's refusal, "… is already open in session s1" (the one place it names the holder).
-fn held_by(problems: &silico_core::command::Problems) -> Option<&str> {
-    problems
-        .errors()
-        .iter()
-        .find_map(|error| error.message().rsplit_once(" is already open in session "))
-        .map(|(_, holder)| holder)
-}
-
 /// What Reload says with a feature dialog open (⌘R, Ctrl+R elsewhere): as Rebuild everything
 /// does nothing in a dialog, the dialog's OK or Cancel comes first.
 pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload drops what it holds.";
@@ -1148,6 +1138,16 @@ impl<P: Clients + 'static> App<P> {
                 now,
             ));
         }
+        // Its list's file couldn't be written: still listed, as the file has it.
+        if let Some(path) = polled.not_removed.last() {
+            self.toast = Some((
+                format!(
+                    "{} couldn't be removed from Recent: its list couldn't be written",
+                    crate::recent::name_of(path)
+                ),
+                now,
+            ));
+        }
         for recent in polled.gone {
             self.message = Some(format!(
                 "{} isn't in {} any more, so it's no longer listed in Recent",
@@ -1288,18 +1288,6 @@ impl<P: Clients + 'static> App<P> {
         let opened = match response.result {
             Ok(opened) => opened,
             Err(problems) => {
-                // The file is open in a tab already, by another path to it (a link): that
-                // tab shown, as for a recent document's click on its own path.
-                if let Some(id) = held_by(&problems).and_then(|holder| {
-                    self.tabs
-                        .iter()
-                        .find(|tab| tab.id.to_string() == holder)
-                        .map(|tab| tab.id)
-                }) {
-                    self.active = Some(id);
-                    self.home = false;
-                    return;
-                }
                 self.message = Some(said(&problems));
                 self.message_from = Some(number);
                 // A recent document's: dropped from the list if nothing is at its path.

@@ -16907,10 +16907,21 @@ fn recents_arrows_are_not_taken_under_a_question_or_with_a_menu_open() {
             .is_some()
     });
     assert!(start_shown(&h));
-    // The press alone in a frame's input (egui_kittest's key_press steps a frame for its
-    // release too), checked at that frame and each after. egui itself never lets a widget
-    // behind a modal keep the focus (its `create_widget` surrenders it in the frame it's
-    // given), so this holds with or without the app's own guard: it pins what's seen.
+    // Save all focused, then ↓ alone in a frame's input (egui_kittest's key_press steps a
+    // frame for its release too): the focus stays on one of the question's buttons. Were
+    // the arrows Recent's under it, ↓ would hand the focus to a row behind the modal, which
+    // egui takes back at once, leaving nothing focused.
+    h.get_by_role_and_label(Role::Button, "Save all").focus();
+    step(&mut h);
+    step(&mut h);
+    let on_the_question = |h: &AppHarness| {
+        ["Don't save", "Cancel", "Save all"].iter().any(|label| {
+            h.get_by_role_and_label(Role::Button, label)
+                .accesskit_node()
+                .is_focused()
+        })
+    };
+    assert!(on_the_question(&h), "Save all never focused");
     h.input_mut().events.push(eframe::egui::Event::Key {
         key: Key::ArrowDown,
         physical_key: None,
@@ -16921,14 +16932,14 @@ fn recents_arrows_are_not_taken_under_a_question_or_with_a_menu_open() {
     for _ in 0..3 {
         step(&mut h);
         assert!(rows_focused(&h).is_empty());
-        assert_eq!(h.ctx.memory(|memory| memory.focused()), None);
+        assert!(on_the_question(&h), "the question's focus lost");
     }
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[cfg(unix)]
 #[test]
-fn a_file_dropped_by_another_path_to_an_open_one_shows_its_tab() {
+fn a_file_dropped_by_another_path_to_an_open_one_is_refused_as_the_core_says() {
     let f = fixture();
     let (mut h, first) = f.opened("first.silico", EXAMPLE);
     let second = f.file("second.silico", EXAMPLE);
@@ -16938,15 +16949,69 @@ fn a_file_dropped_by_another_path_to_an_open_one_shows_its_tab() {
     std::os::unix::fs::symlink(f.dir.path(), &link).unwrap();
     let through = link.join("first.silico");
     assert_ne!(through, first);
+    // Not the tab's path's text: opened, and refused by the core, which holds it in the
+    // first tab's session, its refusal said as Open's is (the app never reads the session
+    // out of the message; m4.1-command-api.md: a client switches on the code).
     dropped(&mut h, &[&through]);
-    step_until(&mut h, "first shown", |h| {
-        toggled(&h.get_by_role_and_label(Role::Button, "first.silico")) == Some(true)
+    let holder = h.state().tabs()[0].id.to_string();
+    step_until(&mut h, "the core's refusal said", |h| {
+        h.state()
+            .message()
+            .is_some_and(|said| said.contains(&format!("is already open in session {holder}")))
     });
     for _ in 0..5 {
         step(&mut h);
     }
     assert_eq!(tab_names(&h), ["first.silico", "second.silico"]);
-    assert_eq!(h.state().message(), None);
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "second.silico")),
+        Some(true)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_removal_whose_list_cant_be_written_is_said_and_the_row_stays() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let gone = f.dir.path().join("gone.silico");
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&gone], &clock);
+    step_until(&mut h, "gone marked", |h| {
+        recent_rows(h)
+            .first()
+            .is_some_and(|(_, said)| said.ends_with(", not found"))
+    });
+    // The list's folder read-only: its file can't be written anew.
+    let folder = f.recents_file().parent().unwrap().to_path_buf();
+    let before = std::fs::read_to_string(f.recents_file()).unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    start_page(&h)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    let said = "gone.silico couldn't be removed from Recent: its list couldn't be written";
+    // Stepped by hand, not by step_until, so the folder is made writable again whatever
+    // happens (the test's directory removed after).
+    let told = (0..2000).any(|_| {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+        h.state().toast().map(|(toast, _)| toast) == Some(said)
+    });
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(told, "never said; the toast: {:?}", h.state().toast());
+    // Still listed, still missing, as the file still has it.
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        recent_rows(&h),
+        [(
+            "gone.silico".to_owned(),
+            format!("{}, not found", gone.to_str().unwrap())
+        )]
+    );
+    assert_eq!(std::fs::read_to_string(f.recents_file()).unwrap(), before);
     assert_eq!(never_waits::waits(), 0);
 }
 

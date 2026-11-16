@@ -96,6 +96,9 @@ enum Told {
     Gone(Recent),
     /// A document dropped from the list as asked ([`Ask::Remove`]), its file written.
     Removed(String),
+    /// A document asked to be dropped ([`Ask::Remove`]) whose list's file couldn't be
+    /// written: still listed, as the file has it.
+    NotRemoved(String),
 }
 
 /// What the list's thread told since the last poll, besides the list.
@@ -105,6 +108,8 @@ pub(crate) struct Polled {
     pub gone: Vec<Recent>,
     /// The paths removed from the list as asked ([`Recents::remove`]).
     pub removed: Vec<String>,
+    /// The paths asked to be removed that stay listed: the list's file couldn't be written.
+    pub not_removed: Vec<String>,
 }
 
 /// The list of recent documents, as the window last heard it from the thread that keeps it.
@@ -243,6 +248,7 @@ impl Recents {
                 }
                 Told::Gone(recent) => polled.gone.push(recent),
                 Told::Removed(path) => polled.removed.push(path),
+                Told::NotRemoved(path) => polled.not_removed.push(path),
             }
         }
         polled
@@ -375,21 +381,29 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wak
                         });
                     }
                 }
+                // What was found at it is dropped below, once the file is written without it.
                 Ask::Remove(path) => {
                     after.retain(|kept| *kept != path);
-                    found.remove(&path);
                     removed.push(path);
                 }
                 Ask::Look => look_again = true,
             }
         }
+        let mut written = true;
         if after != before {
             let lines: Vec<&str> = after.iter().map(String::as_str).collect();
             if let Err(e) = write(file, &text(&lines)) {
                 tracing::warn!("the list of recent documents couldn't be written: {e}");
+                written = false;
             }
         }
-        paths = after;
+        // A removal the file doesn't hold isn't one: the list stays as the file has it, so a
+        // row said removed never comes back at the next read.
+        paths = if written || removed.is_empty() {
+            after
+        } else {
+            before
+        };
         if look_again {
             found = look_all(&paths);
             zone = TimeZone::system();
@@ -411,9 +425,15 @@ fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wak
                 return;
             }
         }
-        // Told after the list without them, so the window has that list when it hears.
+        // Told after the list without them, so the window has that list when it hears; or,
+        // the file unwritten, that they stay.
         for path in removed {
-            if tell.send(Told::Removed(path)).is_err() {
+            let told = if written {
+                Told::Removed(path)
+            } else {
+                Told::NotRemoved(path)
+            };
+            if tell.send(told).is_err() {
                 return;
             }
         }
