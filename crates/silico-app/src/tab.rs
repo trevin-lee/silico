@@ -6204,6 +6204,41 @@ impl Tab {
         self.timeline_scroll = Some(id);
     }
 
+    /// → (`forward`) or ← (interact.js's `keydown`): the feature after or before the one
+    /// selected as itself, in the timeline's order, selected alone as a click on its item
+    /// selects it, and the timeline scrolled to it. The first and the last stay as they are
+    /// (the prototype's clamp). Nothing without a feature selected as itself (a body's row,
+    /// elements, or nothing selected), or with the timeline unread.
+    pub fn select_beside(&mut self, forward: bool) {
+        let Some(id) = self.selection.feature().filter(|id| {
+            self.selection
+                .selected_as(id, crate::selection::SelectedAs::Itself)
+        }) else {
+            return;
+        };
+        let Some(entries) = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_ref())
+        else {
+            return;
+        };
+        let Some(at) = entries.iter().position(|entry| &entry.id == id) else {
+            return;
+        };
+        let to = if forward {
+            at.saturating_add(1)
+        } else {
+            at.saturating_sub(1)
+        };
+        let Some(next) = entries.get(to).filter(|_| to != at) else {
+            return;
+        };
+        let next = next.id.clone();
+        self.selected_in = crate::feature_menu::Place::Timeline;
+        self.show_in_timeline(next);
+    }
+
     /// The feature the timeline is to scroll to, if one is.
     pub fn timeline_scroll(&self) -> Option<&FeatureId> {
         self.timeline_scroll.as_ref()
