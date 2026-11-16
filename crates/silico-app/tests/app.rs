@@ -36632,6 +36632,11 @@ fn mixing_fuse() -> silico_core::kernel::History {
 /// The fake kernel's fuses answered as [`mixing_fuse`] has them, their result a box a mm³
 /// larger than their base (so S7's rule takes them), and UNION_BETWEEN open, its meshes read.
 fn union_between(f: &Fixture) -> (AppHarness, Record) {
+    union_between_of(f, UNION_BETWEEN, "Fourth")
+}
+
+/// [`union_between`] of `text`, waited for till the browser lists `last` among its bodies.
+fn union_between_of(f: &Fixture, text: &str, last: &str) -> (AppHarness, Record) {
     f.kernel.answer_instead(|op| match op {
         Op::Boolean {
             op: silico_core::kernel::BooleanOp::Fuse,
@@ -36645,10 +36650,10 @@ fn union_between(f: &Fixture) -> (AppHarness, Record) {
         )),
         _ => None,
     });
-    let (mut h, record) = f.drawn("between.silico", UNION_BETWEEN);
+    let (mut h, record) = f.drawn("between.silico", text);
     meshes_settled(&mut h);
     step_until(&mut h, "the browser's bodies", |h| {
-        ["First", "Joined", "Fourth"]
+        ["First", "Joined", last]
             .iter()
             .all(|name| shows(h, "Browser", name))
     });
@@ -46547,35 +46552,40 @@ fn a_value_held_back_when_the_tab_begins_to_close_is_saved_as_its_field_shows() 
 
 #[test]
 fn a_body_box_held_back_behind_an_edit_when_the_tab_begins_to_close_is_saved_as_it_shows() {
-    // #483: Edit Feature on Joined, the union of Second and Third, the session's queue held
-    // so each edit stays out. Joined renamed Merged (an edit of its feature, sent,
-    // unanswered); the tool box then takes First, held back behind that edit (a box of one
-    // body waits for its feature's edit). Close, then Save: the save writes what the boxes
-    // show, Second and First, and the name.
+    // #483: Edit Feature on Joined, the union of Second and Third, beside a spare body made
+    // before it; the session's queue held so each edit stays out. The target box takes
+    // First (sent, unanswered); the tool box then takes Spare, held back behind that edit (a
+    // box of one body waits for its feature's edit). Close, then Save: the save writes the
+    // bodies the boxes show, First and Spare.
     let f = fixture();
-    let (mut h, record) = union_between(&f);
+    let spared = UNION_BETWEEN.replace(
+        "    {\"id\": \"n0000001\"",
+        "    {\"id\": \"e0000001\", \"type\": \"box\", \"v\": 1, \"name\": \"Spare\", \"position\": [0, 30, 0], \"length\": 10, \"width\": 10, \"height\": 10},\n    {\"id\": \"n0000001\"",
+    );
+    let (mut h, record) = union_between_of(&f, &spared, "Spare");
     let path = f.dir.path().join("between.silico");
     edit_from_the_timeline(&mut h, "Joined");
     step_until(&mut h, "its dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Union").is_some()
     });
     let (hold, _check) = hold_queue(&f, &h, 0);
-    let sessions = Arc::clone(h.state().sessions());
-    let joined = silico_core::document::FeatureId::new("n0000001").unwrap();
-    h.state_mut().tabs_mut()[0].rename(&sessions, joined, "Merged");
-    step(&mut h);
     let first = body_of(&h, "c0000001");
-    click_box(&mut h, "Tool Body");
+    let spare = body_of(&h, "e0000001");
     click_face(&mut h, &record, first, 1);
-    step_until(&mut h, "First in the tool box", |h| {
-        boxed_bodies(h) == held(&[Some("a0000001"), Some("c0000001")])
+    step_until(&mut h, "First in the target box", |h| {
+        boxed_bodies(h) == held(&[Some("c0000001"), Some("b0000001")])
+    });
+    click_box(&mut h, "Tool Body");
+    click_face(&mut h, &record, spare, 1);
+    step_until(&mut h, "Spare in the tool box", |h| {
+        boxed_bodies(h) == held(&[Some("c0000001"), Some("e0000001")])
     });
     for _ in 0..5 {
         step(&mut h);
     }
     assert_eq!(
         h.state().tabs()[0].sent,
-        [Sent::Begin, Sent::Edit("name".to_owned())],
+        [Sent::Begin, Sent::Edit("base".to_owned())],
         "the tool box wasn't held back"
     );
     h.get_by_label("Close between.silico").click_accesskit();
@@ -46591,9 +46601,7 @@ fn a_body_box_held_back_behind_an_edit_when_the_tab_begins_to_close_is_saved_as_
     step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
     let saved = std::fs::read_to_string(&path).unwrap();
     assert!(
-        saved.contains(r#""name": "Merged""#)
-            && saved.contains(r#""base": "a0000001""#)
-            && saved.contains(r#""tool": "c0000001""#),
+        saved.contains(r#""base": "c0000001""#) && saved.contains(r#""tool": "e0000001""#),
         "saved: {saved}"
     );
     assert_eq!(never_waits::waits(), 0);

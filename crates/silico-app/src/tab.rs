@@ -6570,14 +6570,22 @@ impl Tab {
         }
         let changed = !changes.is_empty();
         for (field, value) in changes {
-            self.edit(
-                sessions,
-                Edit {
-                    feature: feature.clone(),
-                    field: field.to_owned(),
-                    value,
-                },
-            );
+            let edit = Edit {
+                feature: feature.clone(),
+                field: field.to_owned(),
+                value,
+            };
+            if hold_bodies {
+                self.edit(sessions, edit);
+            } else {
+                // Flushed for a closing save: at the back, never in place of an edit of the
+                // same field that waits, which would move it ahead of the other box's and
+                // undo the order `Dialog::changes` planned (#501's review).
+                let step = self.edit_words(&edit);
+                self.hush();
+                self.edits.queue.push_back(Queued::Edit(edit, step));
+                self.advance(sessions);
+            }
         }
         // Its base sent after its sketch, in the dialog's transaction, so OK keeps both and
         // Cancel undoes both.
@@ -9439,6 +9447,68 @@ mod tests {
             Some(None)
         );
         assert!(!dialog.adding);
+    }
+
+    #[test]
+    fn a_closing_flush_puts_a_dialogs_held_bodies_after_what_waits_never_in_its_place() {
+        // #501's review: a union's base edit waiting in the queue (dddddddd), then its tool
+        // (eeeeeeee) and its base again (bbbbbbbb, the document's tool), both held. The flush
+        // adds both at the back, in the order the dialog plans (the tool first, so the base
+        // never names the tool's body), never the base in place of the one queued, which
+        // would send it ahead of the tool.
+        use crate::dialog::Standing;
+        let fid = |text: &str| FeatureId::new(text).unwrap();
+        let (_dir, sessions, mut tab) = session_tab();
+        let node = silico_core::document::json::read(
+            br#"{"id": "n0000001", "type": "fuse", "v": 1, "name": "U", "base": "aaaaaaaa", "tool": "bbbbbbbb"}"#,
+        )
+        .unwrap();
+        let mut dialog = Dialog::load(Kind::Union, fid("n0000001"), &node, 1).unwrap();
+        dialog.activate(0);
+        dialog.took_row(&fid("dddddddd"), true, Standing::Before);
+        let queued = dialog.changes(false);
+        assert_eq!(queued.len(), 1);
+        tab.edits.queue.push_back(Queued::Edit(
+            Edit {
+                feature: fid("n0000001"),
+                field: "base".to_owned(),
+                value: queued[0].1.clone(),
+            },
+            None,
+        ));
+        dialog.activate(1);
+        dialog.took_row(&fid("eeeeeeee"), true, Standing::Before);
+        dialog.activate(0);
+        dialog.took_row(&fid("bbbbbbbb"), true, Standing::Before);
+        assert!(dialog.holding());
+        tab.dialog = Some(dialog);
+        // A begin still out holds what's queued (`blocked`), so the base edit still waits
+        // where the flush finds it, as it would behind another feature's edit in flight.
+        tab.beginning = true;
+        tab.flush_held(&sessions);
+        let id = |value: &Node| match &value.value {
+            silico_core::document::json::Value::String(id) => id.clone(),
+            _ => panic!("not an ID"),
+        };
+        let in_flight = tab
+            .edits
+            .in_flight
+            .iter()
+            .map(|flying| (flying.field.1.clone(), id(&flying.value)));
+        let waiting = tab.edits.queue.iter().filter_map(|queued| match queued {
+            Queued::Edit(edit, _) => Some((edit.field.clone(), id(&edit.value))),
+            _ => None,
+        });
+        let order: Vec<(String, String)> = in_flight.chain(waiting).collect();
+        let want: Vec<(String, String)> = [
+            ("base", "dddddddd"),
+            ("tool", "eeeeeeee"),
+            ("base", "bbbbbbbb"),
+        ]
+        .into_iter()
+        .map(|(field, id)| (field.to_owned(), id.to_owned()))
+        .collect();
+        assert_eq!(order, want);
     }
 
     #[test]
