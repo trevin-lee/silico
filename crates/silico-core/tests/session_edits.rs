@@ -1083,7 +1083,7 @@ fn replace_text_refuses_text_without_naming_and_what_check_refuses() {
             Some(
                 "only a document saved before the header recorded its naming scheme is read without it"
             ),
-            Some("add \"naming\": 5 after units")
+            Some("add \"naming\": 6 after units")
         )
     );
     // JSON, but not a document's object (so no header to lack naming): the reader's own
