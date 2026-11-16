@@ -135,14 +135,16 @@ fn a_hover_near_an_arcs_start_extends_it_clockwise_two_hundred_and_ten_degrees_t
 fn an_arcs_halves_meet_at_its_mid_angle_and_past_its_sweep_the_nearer_end_wins() {
     let s = arc_and_ledge();
     let arc_id = id("aa000001");
-    // The mid-angle, 45°, is the end's; 44° the start's.
-    assert_eq!(extend_end(&s, &arc_id, on_ten(45.0)), Some(End::End));
+    // The mid-angle, 45° (along (1, 1), which `atan2` gives as π/4 exactly, half of π/2),
+    // is the end's; 44° the start's.
+    assert_eq!(extend_end(&s, &arc_id, [5.0, 5.0]), Some(End::End));
     assert_eq!(extend_end(&s, &arc_id, on_ten(44.0)), Some(End::Start));
     // Past the sweep: 100° is 10° past the end (and 260° short of the start); −10° is 10°
-    // short of the start. 225° is 135° from either: the start's.
+    // short of the start. 225° (along (−1, −1), −3π/4 exactly) is 135° from either: the
+    // start's.
     assert_eq!(extend_end(&s, &arc_id, on_ten(100.0)), Some(End::End));
     assert_eq!(extend_end(&s, &arc_id, on_ten(-10.0)), Some(End::Start));
-    assert_eq!(extend_end(&s, &arc_id, on_ten(225.0)), Some(End::Start));
+    assert_eq!(extend_end(&s, &arc_id, [-5.0, -5.0]), Some(End::Start));
     // Off the rim the angle's what counts; at the centre there's no half.
     assert_eq!(extend_end(&s, &arc_id, [3.0, 0.5]), Some(End::Start));
     assert_eq!(extend_end(&s, &arc_id, [0.0, 0.0]), None);
@@ -150,9 +152,8 @@ fn an_arcs_halves_meet_at_its_mid_angle_and_past_its_sweep_the_nearer_end_wins()
 
 #[test]
 fn a_circle_a_point_a_constraint_or_no_member_takes_nothing() {
-    let mut s = arc_and_ledge();
-    s = constrained(
-        s,
+    let s = constrained(
+        arc_and_ledge(),
         vec![Form::Horizontal {
             line: el("na000001"),
         }],

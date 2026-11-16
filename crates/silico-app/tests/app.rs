@@ -24666,22 +24666,29 @@ fn tool_on(h: &AppHarness) -> Option<silico_app::sketch::tools::Choice> {
     sketch_mode(h).and_then(|mode| mode.tools.choice())
 }
 
+/// The sketch bar's Extend pressed through the accessibility tree, in SKETCH's MODIFY panel.
+fn extend_button(h: &mut AppHarness) {
+    sketch_button(h, "Extend").click_accesskit();
+    step(h);
+    step(h);
+}
+
 #[test]
 fn extends_button_chooses_it_and_a_second_press_leaves_it() {
     use silico_app::sketch::tools::Choice;
     let f = fixture();
     let mut h = walled_sketch(&f);
     assert_eq!(tool_on(&h), None);
-    relate_button(&mut h, "Extend");
+    extend_button(&mut h);
     assert_eq!(tool_on(&h), Some(Choice::Extend));
     // The palette names it and says how it's used.
     assert!(anywhere(
         &h,
         "Click a line or an arc near the end to extend it to the next curve."
     ));
-    relate_button(&mut h, "Extend");
+    extend_button(&mut h);
     assert_eq!(tool_on(&h), None);
-    relate_button(&mut h, "Extend");
+    extend_button(&mut h);
     assert_eq!(tool_on(&h), Some(Choice::Extend));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -24692,7 +24699,7 @@ fn extend_hovered_then_clicked_takes_a_lines_end_to_the_wall_as_one_undo_step() 
     let f = fixture();
     let mut h = walled_sketch(&f);
     let before = text_of(&f.sessions, &h);
-    relate_button(&mut h, "Extend");
+    extend_button(&mut h);
     // Hovered at (8, 0.2), past na000001's midpoint: its end, (10, 0), drawn on to the
     // wall at (30, 0).
     sketch_events(&f, &mut h, &moved(8.0, 0.2));
@@ -24725,7 +24732,7 @@ fn extend_clicked_on_the_half_that_meets_nothing_sends_nothing_and_says_the_core
     let f = fixture();
     let mut h = walled_sketch(&f);
     let before = text_of(&f.sessions, &h);
-    relate_button(&mut h, "Extend");
+    extend_button(&mut h);
     // At (2, −0.2), before na000001's midpoint: its start, (0, 0), meets nothing to the left.
     // Hovered: no extension drawn, and why said in the palette.
     sketch_events(&f, &mut h, &moved(2.0, -0.2));
