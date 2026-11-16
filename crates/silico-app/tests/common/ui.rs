@@ -151,14 +151,18 @@ pub fn anywhere<P: AppKernel>(h: &AppUi<P>, label: &str) -> bool {
     h.query_by_label(label).is_some()
 }
 
-/// Stepped until nothing of the tab's is under way and its last answer's revision is read:
+/// Stepped until nothing of the tab's is under way and its last answer's revision is read
+/// ([`is_settled`]).
+pub fn settled<P: AppKernel>(h: &mut AppUi<P>) {
+    step_until(h, "everything answered", is_settled);
+}
+
+/// Whether nothing of the first tab's is under way and its last answer's revision is read:
 /// its edits, its steps, a dialog's add, and the timeline read at that revision
 /// (`applying`), which answers a frame or more after them.
-pub fn settled<P: AppKernel>(h: &mut AppUi<P>) {
-    step_until(h, "everything answered", |h| {
-        let tab = &h.state().tabs()[0];
-        tab.edits.idle() && !tab.applying() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
-    });
+pub fn is_settled<P: AppKernel>(h: &AppUi<P>) -> bool {
+    let tab = &h.state().tabs()[0];
+    tab.edits.idle() && !tab.applying() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
 }
 
 // --- The app bar and the status bar --------------------------------------------------------

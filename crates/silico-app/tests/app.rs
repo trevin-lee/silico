@@ -40,15 +40,15 @@ use ui::{
     button_event, choose, chosen, click_in_one_frame, click_over_two_frames, close_window, create,
     create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag, every_face,
     everything, f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front,
-    hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state, leave_sketch,
-    leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
-    modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
-    pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front, pointer_away,
-    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
-    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
-    stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
-    tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
-    view_label, view_label_node, view_mut, wheel, window_told, written,
+    hand_clock, hover_item, image_centre, in_status_bar, is_settled, lavapipe_render_state,
+    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
+    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
+    open_export, pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front,
+    pointer_away, press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked,
+    save_as_of, select, selected_names, settled, shapes_painted, sketch_mode, sketch_read,
+    sorted_fields, stand_in_sessions, step, step_until, tab_named, tessellated, text_of,
+    the_viewport, tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view,
+    view_direction, view_label, view_label_node, view_mut, wheel, window_told, written,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -22213,7 +22213,9 @@ fn cancel_of_a_sketch_that_began_the_transaction_rolls_it_back_byte_for_byte() {
         fields_of(&text_of(&f.sessions, &h), "Sketch1"),
         Some(empty_sketch("Sketch1", r#""xz""#))
     );
-    leave_sketch(&mut h, false);
+    leave_sketch_unsettled(&mut h, false);
+    // Cancel's own: nothing said of a discard.
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
     assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     let tab = &h.state().tabs()[0];
     assert!(!tab.transaction);
@@ -22259,8 +22261,7 @@ fn toasts_till_settled(h: &mut AppHarness) -> Vec<String> {
                 seen.push(said.to_owned());
             }
         }
-        let tab = &h.state().tabs()[0];
-        tab.edits.idle() && !tab.applying() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
+        is_settled(h)
     });
     seen.into_inner()
 }
@@ -22432,6 +22433,135 @@ fn a_line_drawn_in_the_frame_finish_is_pressed_keeps_the_new_sketch() {
     assert_eq!((sketch.points.len(), sketch.lines.len()), (2, 1));
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Sketch1");
     step_until(&mut h, "Sketch1 listed", |h| listed(h, "Sketch1"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Create Sketch on XY in EXAMPLE, after renaming Pin to PinK first if `edited`; its sketch
+/// added, read, and everything answered. The session's text before Create Sketch.
+fn new_empty_sketch(f: &Fixture, edited: bool) -> (AppHarness, String) {
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    if edited {
+        select(&mut h, "Pin");
+        type_name(&mut h, "K");
+        settled(&mut h);
+    }
+    let before = text_of(&f.sessions, &h);
+    assert_eq!(before.contains(r#""name": "PinK""#), edited);
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    settled(&mut h);
+    (h, before)
+}
+
+#[test]
+fn a_save_and_create_sketch_asked_while_an_empty_new_sketchs_finish_is_judged_wait_for_it() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, false);
+    let path = f.dir.path().join("example.silico");
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.finish_sketch(&sessions, true);
+        assert!(tab.sketch.is_none());
+        // Its judgement's read under way: the close isn't taken yet, so no sketch mode opens,
+        // and Create Sketch pressed opens none.
+        assert!(!tab.can_sketch());
+        tab.create_sketch(&sessions, silico_core::document::OriginPlane::Xz);
+        assert!(tab.sketch.is_none());
+        // A save waits for the discard, so it writes nothing of the sketch.
+        tab.save(&sessions, false);
+    }
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert!(!h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_only_line_deleted_in_the_frame_finish_is_pressed_discards_the_new_sketch() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, false);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
+    let line = sketch_of_text(&f, &h, id.as_str()).lines[0]
+        .id
+        .as_str()
+        .to_owned();
+    read_with_lines(&mut h, 1);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    select_member(&mut h, &line, silico_core::document::ElementKind::Line);
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_delete(&sessions);
+        // The removal queued or sent, unanswered, and the last read still shows the line.
+        assert!(tab.unsettled());
+        let read = tab.sketch.as_ref().unwrap().drawable().unwrap();
+        assert_eq!(read.members.lines.len(), 1);
+        tab.finish_sketch(&sessions, true);
+    }
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert!(!h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_are_off_while_an_empty_new_sketchs_finish_is_judged() {
+    let f = fixture();
+    let (mut h, renamed) = new_empty_sketch(&f, true);
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        // Undo was on before: sketch mode's own add, after the rename.
+        tab.finish_sketch(&sessions, true);
+        // Till the close is taken, its undo back to where sketch mode opened still to send,
+        // Undo would go past it to the rename.
+        assert!(!tab.undoable());
+        assert!(!tab.redoable());
+    }
+    // Ctrl+Z pressed meanwhile does nothing; the discard undoes to the rename alone.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), renamed);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_revert_asked_while_an_empty_new_sketchs_finish_is_judged_drops_the_close_and_says_nothing() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, true);
+    let undos = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .filter(|sent| matches!(sent, Sent::Undo(_)))
+            .count()
+    };
+    let before = undos(&h);
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.finish_sketch(&sessions, true);
+        tab.revert(&sessions, false);
+    }
+    // The revert rolls the rename and the sketch back together; the close it dropped sends
+    // no undo of its own, and no discard is said of a part going back to its file.
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    assert_eq!(undos(&h), before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -30732,11 +30862,9 @@ fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
     begin_sketch_on(h, part, "XY plane");
 }
 
-/// A point placed in the part `part`'s new sketch, then Finish Sketch (⌘↵), which keeps
-/// the sketch, holding the point (one holding nothing it would discard): sketch mode closed,
-/// and the part's edits held, unsaved, its tab marked.
+/// Finish Sketch (⌘↵) in the part `part`, shown, which keeps its sketch (one holding
+/// something): sketch mode closed, and the part's edits held, unsaved, its tab marked.
 fn finish_sketch_unsaved(h: &mut AppHarness, part: &str) {
-    place_point_in(h, part, 10.0, 10.0);
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
     let marked = format!("{part} *");
     step_until(h, "sketch mode closed, unsaved", |h| {
@@ -30745,10 +30873,12 @@ fn finish_sketch_unsaved(h: &mut AppHarness, part: &str) {
     });
 }
 
-/// A sketch added to the part `part`, shown: [`begin_sketch_on_xy`], then Finish Sketch,
-/// which keeps it, empty, as "Sketch1".
+/// A sketch added to the part `part`, shown: [`begin_sketch_on_xy`], a point placed at
+/// (10, 10), then Finish Sketch, which keeps it, holding the point, as "Sketch1" (one
+/// holding nothing it would discard).
 fn add_sketch(h: &mut AppHarness, part: &str) {
     begin_sketch_on_xy(h, part);
+    place_point_in(h, part, 10.0, 10.0);
     finish_sketch_unsaved(h, part);
 }
 
