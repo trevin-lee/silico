@@ -12173,6 +12173,35 @@ mod tests {
     }
 
     #[test]
+    fn an_undo_or_a_redo_is_said_once_its_answer_is_taken_never_as_it_is_sent() {
+        use crate::toast::Kind::Info;
+        // The pin renamed: one step, "Rename Pin" (by hand). Its undo and its redo, each
+        // said in the poll that takes the core's answer, nothing said as it's sent.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
+        tab.take_toasts();
+        tab.step(&sessions, true);
+        assert!(tab.stepping());
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        polled_until(&mut tab, &sessions, |tab| !tab.stepping());
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [("Undid: Rename Pin".to_owned(), Info)]
+        );
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.redoable());
+        tab.step(&sessions, false);
+        assert!(tab.stepping());
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        polled_until(&mut tab, &sessions, |tab| !tab.stepping());
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [("Redid: Rename Pin".to_owned(), Info)]
+        );
+    }
+
+    #[test]
     fn a_refused_undo_leaves_what_undo_and_redo_name_and_the_count_as_they_were() {
         // The pin renamed through the session: one step, "Rename Pin" (by hand). Then an
         // undo made against a revision that isn't the session's: refused as a conflict, and
