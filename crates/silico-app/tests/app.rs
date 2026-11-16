@@ -552,13 +552,13 @@ fn widths_file(f: &Fixture) -> PathBuf {
 /// The app keeping its panes' widths in `file`, in a window 1280 wide, the example open
 /// from `name`, the file read.
 fn keeping_widths(f: &Fixture, name: &str, file: &Path) -> AppHarness {
-    use silico_app::pane_widths::KeptWidths;
+    use silico_app::pane_widths::KeptLayout;
     let file = file.to_owned();
     let mut h = in_window(f, name, 1280.0, |app| {
-        app.keeping_widths(KeptWidths::at(file))
+        app.keeping_layout(KeptLayout::at(file))
     });
     step_until(&mut h, "the widths read", |h| {
-        h.state().kept_widths().is_read()
+        h.state().kept_layout().is_read()
     });
     step(&mut h);
     h
@@ -681,7 +681,7 @@ fn a_drag_in_a_narrowed_window_moves_its_column_alone_and_keeps_the_others_choic
 /// written with them as the drag ends.
 #[test]
 fn a_widths_file_read_while_a_border_is_dragged_never_moves_the_panes() {
-    use silico_app::pane_widths::KeptWidths;
+    use silico_app::pane_widths::KeptLayout;
     let f = fixture();
     let file = widths_file(&f);
     std::fs::create_dir_all(file.parent().unwrap()).unwrap();
@@ -693,16 +693,16 @@ fn a_widths_file_read_while_a_border_is_dragged_never_moves_the_panes() {
     });
     let kept = file.clone();
     let mut h = in_window(&f, "example.silico", 1280.0, move |app| {
-        app.keeping_widths(KeptWidths::reading(kept, read))
+        app.keeping_layout(KeptLayout::reading(kept, read))
     });
-    assert!(!h.state().kept_widths().is_read());
+    assert!(!h.state().kept_layout().is_read());
     press_at(&mut h, 247.5);
     pointer_moved(&mut h, 247.5, 299.5);
     step(&mut h);
     assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
     release.send(()).unwrap();
     step_until(&mut h, "the widths read", |h| {
-        h.state().kept_widths().is_read()
+        h.state().kept_layout().is_read()
     });
     step(&mut h);
     step(&mut h);
@@ -765,6 +765,272 @@ fn a_drag_ends_as_the_window_loses_the_focus_and_is_kept() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- The browser collapsed to its strip (`#main.browser-collapsed`; app.js's
+// `renderBrowser`, interact.js's `toggleBrowser`) ----
+//
+// Expected values by hand from the prototype: the strip's column is 28 (`grid-template-
+// columns: 28px 1fr var(--right-w)`), its border inside it, so its pane 27; its button an
+// `.ab-btn` (`--btn: 22px`) with `margin: 2px`; the title's an `.ab-btn` 20 square
+// (`.panel-title .ab-btn`) at the title's right padding, 6, in its 24 (`--title-h`).
+
+/// The browser's title chevron, Collapse browser, and the strip's, Show browser.
+fn chevron(h: &AppHarness, label: &str) -> eframe::egui::Rect {
+    h.get_by_role_and_label(Role::Button, label).rect()
+}
+
+/// The browser's chevron `label` clicked, and the frame after it laid out.
+fn chevron_clicked(h: &mut AppHarness, label: &str) {
+    browser(h)
+        .get_by_role_and_label(Role::Button, label)
+        .click();
+    step(h);
+    step(h);
+}
+
+/// Whether a tooltip `words` is shown.
+fn tooltip_shown(h: &AppHarness, words: &str) -> bool {
+    h.query_all_by_role(Role::Label).any(|node| {
+        let node = node.accesskit_node();
+        node.label().or_else(|| node.value()).as_deref() == Some(words)
+    })
+}
+
+/// The title's chevron collapses the browser to a 28-point strip, the canvas taking the
+/// 220 it gave (1280 − 28 − 296 = 956), the property panel where it was; its rows gone
+/// and its border's handle with them (no resize cursor at its strip's border, 27 to 28, nor
+/// where its border was, 247 to 248). The strip's chevron shows it again as it was.
+#[test]
+fn the_browsers_chevron_collapses_it_to_a_28_point_strip_and_the_canvas_takes_its_width() {
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    step_until(&mut h, "its body", |h| shows(h, "Browser", "Hole"));
+    assert_eq!(columns(&h), [(0.0, 247.0), (248.0, 736.0), (985.0, 295.0)]);
+    // At the title's right: 247 − 6 − 20 = 221, centred in its 24, 2 down.
+    let top = MARGIN + 107.0;
+    assert_eq!(
+        chevron(&h, "Collapse browser"),
+        eframe::egui::Rect::from_min_size(
+            eframe::egui::pos2(MARGIN + 221.0, top + 2.0),
+            eframe::egui::vec2(20.0, 20.0)
+        )
+    );
+    // Its tooltip the prototype's `data-tip`.
+    pointer_away(&mut h);
+    assert!(!tooltip_shown(&h, "Collapse"));
+    h.get_by_role_and_label(Role::Button, "Collapse browser")
+        .hover();
+    step_until(&mut h, "its tooltip", |h| tooltip_shown(h, "Collapse"));
+    chevron_clicked(&mut h, "Collapse browser");
+    assert!(h.state().browser_collapsed());
+    assert_eq!(columns(&h), [(0.0, 27.0), (28.0, 956.0), (985.0, 295.0)]);
+    // The strip holds the one chevron, 2 in from its top left, 22 square; no title, no
+    // rows.
+    assert_eq!(
+        chevron(&h, "Show browser"),
+        eframe::egui::Rect::from_min_size(
+            eframe::egui::pos2(MARGIN + 2.0, top + 2.0),
+            eframe::egui::vec2(22.0, 22.0)
+        )
+    );
+    assert!(browser_rows(&h).is_empty(), "{:?}", browser_rows(&h));
+    assert!(!shows(&h, "Browser", "Collapse browser"));
+    assert!(!shows(&h, "Browser", "BROWSER"));
+    for x in [27.5, 26.0, 29.0, 247.5, 245.0] {
+        h.hover_at(on_panes(x));
+        step(&mut h);
+        assert!(!resize_cursor(&h), "a resize cursor at {x}");
+    }
+    // The property panel's border still drags.
+    h.hover_at(on_panes(984.5));
+    step(&mut h);
+    assert!(resize_cursor(&h));
+    pointer_away(&mut h);
+    h.get_by_role_and_label(Role::Button, "Show browser")
+        .hover();
+    step_until(&mut h, "its tooltip", |h| tooltip_shown(h, "Show browser"));
+    chevron_clicked(&mut h, "Show browser");
+    assert!(!h.state().browser_collapsed());
+    assert_eq!(columns(&h), [(0.0, 247.0), (248.0, 736.0), (985.0, 295.0)]);
+    assert!(shows(&h, "Browser", "Hole"));
+    assert!(!shows(&h, "Browser", "Show browser"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Collapsing keeps the width the browser was dragged to, and showing it again lays it out
+/// there: dragged to 328, collapsed (28, the canvas 956), the property panel's border then
+/// dragged 60 left while it's collapsed (356, the canvas 1280 − 28 − 356 = 896), and shown
+/// again: 328, the canvas 1280 − 328 − 356 = 596.
+#[test]
+fn the_browser_shown_again_is_at_the_width_it_was_dragged_to() {
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    border_dragged(&mut h, 247.5, 327.5);
+    assert_eq!(columns(&h), [(0.0, 327.0), (328.0, 656.0), (985.0, 295.0)]);
+    chevron_clicked(&mut h, "Collapse browser");
+    assert_eq!(columns(&h), [(0.0, 27.0), (28.0, 956.0), (985.0, 295.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (328.0, 296.0));
+    border_dragged(&mut h, 984.5, 924.5);
+    assert_eq!(columns(&h), [(0.0, 27.0), (28.0, 896.0), (925.0, 355.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (328.0, 356.0));
+    chevron_clicked(&mut h, "Show browser");
+    assert_eq!(columns(&h), [(0.0, 327.0), (328.0, 596.0), (925.0, 355.0)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// While it's collapsed, the property panel's border drags as far as the strip leaves the
+/// canvas its least, 1280 − 28 − 340 = 912, not the 1280 − 248 − 340 = 692 the open
+/// browser would; shown again in a window too narrow for both, the panes give back as any
+/// narrow window has them: from 248 and 912 at 1280, over 248 + 912 + 340 − 1280 = 220, the
+/// rooms 48 and 680, 728; the browser gives 220 · 48 / 728 = 14.5, 15 rounded, the property
+/// panel 205: 233 and 707.
+#[test]
+fn a_property_panel_widened_past_the_strip_gives_back_when_the_browser_is_shown() {
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    chevron_clicked(&mut h, "Collapse browser");
+    border_dragged(&mut h, 984.5, 84.5);
+    assert_eq!(columns(&h), [(0.0, 27.0), (28.0, 340.0), (369.0, 911.0)]);
+    chevron_clicked(&mut h, "Show browser");
+    assert_eq!(columns(&h), [(0.0, 232.0), (233.0, 340.0), (574.0, 706.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (248.0, 912.0));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A collapsed browser in a narrower window: the strip keeps its 28 and the property panel
+/// gives back toward its least before the canvas goes below its own, 340. At 800, room:
+/// 800 − 28 − 296 = 476. At 650, 650 − 28 − 340 = 282. At 600, 232, the least, exactly. At
+/// 500, the canvas 500 − 28 − 232 = 240; at 200, nothing, the panel past the window's edge.
+/// Wide again, as chosen.
+#[test]
+fn a_collapsed_browsers_strip_keeps_its_width_in_a_narrow_window() {
+    let f = fixture();
+    let mut h = in_window(&f, "example.silico", 1280.0, |app| app);
+    chevron_clicked(&mut h, "Collapse browser");
+    for (window, want) in [
+        (800.0, [(0.0, 27.0), (28.0, 476.0), (505.0, 295.0)]),
+        (650.0, [(0.0, 27.0), (28.0, 340.0), (369.0, 281.0)]),
+        (600.0, [(0.0, 27.0), (28.0, 340.0), (369.0, 231.0)]),
+        (500.0, [(0.0, 27.0), (28.0, 240.0), (269.0, 231.0)]),
+        (200.0, [(0.0, 27.0), (28.0, 0.0), (29.0, 231.0)]),
+        (1280.0, [(0.0, 27.0), (28.0, 956.0), (985.0, 295.0)]),
+    ] {
+        resized(&mut h, window);
+        assert_eq!(columns(&h), want, "at {window}");
+        assert!(shows(&h, "Browser", "Show browser"), "at {window}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A restart opens the browser as it was left: collapsed, written to the file on its own
+/// line after the widths (the browser's dragged 300 kept under it), and a new app on the
+/// file lays out the strip; shown there, the line goes and the browser is at its 300.
+#[test]
+fn a_restart_keeps_the_browser_collapsed_and_its_dragged_width() {
+    let f = fixture();
+    let file = widths_file(&f);
+    let mut h = keeping_widths(&f, "first.silico", &file);
+    border_dragged(&mut h, 247.5, 299.5);
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 296\n");
+    chevron_clicked(&mut h, "Collapse browser");
+    file_reads(
+        &file,
+        "silico pane-widths 1\nbrowser 300\nproperties 296\nbrowser collapsed\n",
+    );
+    drop(h);
+    let mut again = keeping_widths(&f, "again.silico", &file);
+    assert!(again.state().browser_collapsed());
+    assert_eq!(
+        columns(&again),
+        [(0.0, 27.0), (28.0, 956.0), (985.0, 295.0)]
+    );
+    chevron_clicked(&mut again, "Show browser");
+    file_reads(&file, "silico pane-widths 1\nbrowser 300\nproperties 296\n");
+    assert_eq!(
+        columns(&again),
+        [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The browser collapsed while its border's drag is held (its chevron clicked through the
+/// accessibility tree, as a screen reader clicks it, the button still down): the drag ends there, its 300 kept and
+/// written; the pointer going on moves nothing, and its release does nothing; shown, the
+/// browser is at that 300.
+#[test]
+fn collapsing_the_browser_mid_drag_ends_the_drag_and_keeps_its_width() {
+    let f = fixture();
+    let file = widths_file(&f);
+    let mut h = keeping_widths(&f, "mid.silico", &file);
+    press_at(&mut h, 247.5);
+    pointer_moved(&mut h, 247.5, 299.5);
+    step(&mut h);
+    assert_eq!(columns(&h)[0], (0.0, 299.0));
+    browser(&h)
+        .get_by_role_and_label(Role::Button, "Collapse browser")
+        .click_accesskit();
+    step(&mut h);
+    step(&mut h);
+    file_reads(
+        &file,
+        "silico pane-widths 1\nbrowser 300\nproperties 296\nbrowser collapsed\n",
+    );
+    for x in [349.5, 399.5] {
+        h.hover_at(on_panes(x));
+        step(&mut h);
+        assert!(!resize_cursor(&h), "a resize cursor at {x}");
+    }
+    released_at(&mut h, 399.5);
+    assert_eq!(columns(&h), [(0.0, 27.0), (28.0, 956.0), (985.0, 295.0)]);
+    let widths = h.state().pane_widths();
+    assert_eq!((widths.browser, widths.properties), (300.0, 296.0));
+    chevron_clicked(&mut h, "Show browser");
+    assert_eq!(columns(&h), [(0.0, 299.0), (300.0, 684.0), (985.0, 295.0)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// F2 on a row selected in the browser renames over its row (`Place::Browser`); with the
+/// browser collapsed since, where no row shows, it renames in the timeline instead.
+#[test]
+fn f2_with_the_browser_collapsed_renames_in_the_timeline() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    browser(&h).get_by_label("Cut").click();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].selected_in,
+        silico_app::feature_menu::Place::Browser
+    );
+    chevron_clicked(&mut h, "Collapse browser");
+    h.key_press(eframe::egui::Key::F2);
+    step_until(&mut h, "the rename field", |h| {
+        rename_field(h, "Cut").is_some()
+    });
+    assert_eq!(
+        h.state().tabs()[0]
+            .renaming
+            .as_ref()
+            .map(|renaming| renaming.place),
+        Some(silico_app::feature_menu::Place::Timeline)
+    );
+    // Its field over its timeline item, as the timeline places it: at its left, above it.
+    let field = rename_field(&h, "Cut").unwrap().rect();
+    let item = h
+        .get_by_role_and_label(Role::Group, "Features in order")
+        .get_by_label("Cut")
+        .rect();
+    assert!(
+        (field.left() - item.left()).abs() <= 1.0 && field.bottom() < item.top(),
+        "{field:?} not over {item:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// Only the primary button drags a border: a middle-button drag from the browser's border
 /// 80 right moves no column, and the widths chosen are the prototype's still.
 #[test]
@@ -802,7 +1068,7 @@ fn a_middle_button_drag_on_a_border_resizes_nothing() {
 /// to wake it), the read held, then let go, a frame is asked for with none stepped.
 #[test]
 fn the_widths_read_ask_the_window_for_a_frame() {
-    use silico_app::pane_widths::KeptWidths;
+    use silico_app::pane_widths::KeptLayout;
     use std::sync::atomic::AtomicU64;
     let f = fixture();
     let (release, released) = std::sync::mpsc::channel::<()>();
@@ -811,7 +1077,7 @@ fn the_widths_read_ask_the_window_for_a_frame() {
         Some(b"silico pane-widths 1\nbrowser 300\nproperties 260\n".to_vec())
     });
     let file = widths_file(&f);
-    let mut h = f.app_made(|app| app.keeping_widths(KeptWidths::reading(file, read)));
+    let mut h = f.app_made(|app| app.keeping_layout(KeptLayout::reading(file, read)));
     let asked = Arc::new(AtomicU64::new(0));
     let counted = Arc::clone(&asked);
     h.ctx.set_request_repaint_callback(move |_| {
@@ -819,7 +1085,7 @@ fn the_widths_read_ask_the_window_for_a_frame() {
     });
     step(&mut h);
     step(&mut h);
-    assert!(!h.state().kept_widths().is_read());
+    assert!(!h.state().kept_layout().is_read());
     let before = asked.load(Ordering::SeqCst);
     release.send(()).unwrap();
     let deadline = Instant::now() + WAIT;
@@ -828,7 +1094,7 @@ fn the_widths_read_ask_the_window_for_a_frame() {
         std::thread::sleep(Duration::from_millis(2));
     }
     step(&mut h);
-    assert!(h.state().kept_widths().is_read());
+    assert!(h.state().kept_layout().is_read());
     let widths = h.state().pane_widths();
     assert_eq!((widths.browser, widths.properties), (300.0, 260.0));
     assert_eq!(never_waits::waits(), 0);
@@ -17680,6 +17946,483 @@ fn an_empty_group_says_what_makes_its_first_row() {
             .query_by_label("None yet. Create Sketch starts one.")
             .is_some()
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Each row's meta (`.r-meta`; app.js's `renderBrowser`): a body's the last healthy
+// feature of its chain, a sketch's its plane ----
+
+/// A washer alone; a plate, a triangle on XY, a pad of it on the plate, a notch (the
+/// triangle again, on XY), and a pocket of the notch in the pad, whose fingerprint isn't
+/// what it builds (drift: built, and in error); and a point sketched on XZ and one on YZ.
+/// The pocket's body's chain in timeline order is Plate, Triangle, Raised, Notch, Cut: its
+/// last healthy feature, a sketch never counted, is Raised.
+const METAS: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000002", "type": "box", "v": 1, "name": "Washer", "position": [50, 0, 0], "length": 5, "width": 5, "height": 1},
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "r0000002", "type": "pad", "v": 1, "name": "Raised", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 3, "reversed": false}},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Notch", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "q0000003", "type": "pocket", "v": 1, "name": "Cut", "base": "r0000002", "sketch": "s0000002", "extent": {"type": "one_side", "length": 1, "reversed": false}, "fingerprint": {"volume": 1, "area": 6, "center": [0, 0, 0], "bbox": [0, 0, 0, 1, 1, 1], "faces": 6, "edges": 12, "vertices": 8}},
+    {"id": "s0000003", "type": "sketch", "v": 1, "name": "Side", "plane": "xz", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []},
+    {"id": "s0000004", "type": "sketch", "v": 1, "name": "End", "plane": "yz", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+/// The texts painted on the browser's row `name`, in the order they're painted: its prefix,
+/// its meta, then its name (its eye's and icon's glyphs are images).
+fn row_texts(h: &AppHarness, name: &str) -> Vec<String> {
+    let row = browser(h).get_by_label(name).rect();
+    texts_in(h, row).into_iter().map(|(text, _)| text).collect()
+}
+
+/// The body rows' metas name the last healthy feature of each one's chain, and the sketch
+/// rows' their planes: Washer, healthy, none (its row is named after its tip, Washer
+/// itself); Cut, a tip in error (its drift), Raised, the Notch after it a sketch; each
+/// sketch its origin plane, as the prototype writes it.
+#[test]
+fn each_rows_meta_is_its_bodys_last_healthy_feature_or_its_sketchs_plane() {
+    let f = fixture();
+    let (mut h, _) = f.opened("metas.silico", METAS);
+    step_until(&mut h, "every sketch's plane", |h| {
+        ["Triangle", "Notch", "Side", "End"]
+            .iter()
+            .all(|name| shows(h, "Browser", name) && row_texts(h, name).len() >= 2)
+    });
+    // Cut is in error: its body's mark.
+    let bodies = browser(&h).get_by_role_and_label(Role::Group, "Bodies");
+    assert!(bodies.query_by_label("Cut").is_some());
+    assert_eq!(row_texts(&h, "Washer"), ["Washer"]);
+    assert_eq!(row_texts(&h, "Cut"), ["Raised", "Cut"]);
+    assert!(
+        h.state().tabs()[0]
+            .browser
+            .bodies()
+            .iter()
+            .any(|row| row.name == "Cut" && row.health == silico_core::timeline::Health::Error),
+        "Cut isn't marked in error"
+    );
+    // The sketches, fully defined (the triangles, consumed) or under defined (the points,
+    // `(–)`), each its plane.
+    let ends = |name: &str| {
+        row_texts(&h, name)
+            .into_iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ends("Triangle"), ["Triangle", "XY"]);
+    assert_eq!(ends("Notch"), ["Notch", "XY"]);
+    assert_eq!(ends("Side"), ["Side", "XZ"]);
+    assert_eq!(ends("End"), ["End", "YZ"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// While a sketch is open in sketch mode, sketch mode's newest read stands for that sketch
+/// alone (`Tab::sketch_plane`): Side, open on XZ, shows XZ, and End and Triangle, each held
+/// read's, keep YZ and XY.
+#[test]
+fn a_sketch_open_in_sketch_mode_leaves_each_other_sketchs_meta_its_own_plane() {
+    let f = fixture();
+    let (mut h, _) = f.opened("metas.silico", METAS);
+    step_until(&mut h, "every sketch's plane", |h| {
+        ["Triangle", "Notch", "Side", "End"]
+            .iter()
+            .all(|name| shows(h, "Browser", name) && row_texts(h, name).len() >= 2)
+    });
+    step_until(&mut h, "the model published", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.published == Some(tab.revision)
+    });
+    double_click(&mut h, "Browser", "Side");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    let mode = sketch_mode(&h).unwrap();
+    assert_eq!(mode.sketch, Some(sketch_id("s0000003")));
+    assert!(mode.drawable().is_some(), "Side's read isn't drawable");
+    let ends = |name: &str| {
+        row_texts(&h, name)
+            .into_iter()
+            .rev()
+            .take(2)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ends("Side"), ["Side", "XZ"]);
+    assert_eq!(ends("End"), ["End", "YZ"]);
+    assert_eq!(ends("Triangle"), ["Triangle", "XY"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A pocket the kernel refuses builds nothing, so its body is the pad's, as the model has
+/// it: the pad's row, named after its tip, Raised, which is the last healthy feature of its
+/// chain too, so no meta; the failed pocket no body of its own. (A tip built but in error,
+/// Cut's drift in [`METAS`], shows the last healthy feature: the test before.)
+#[test]
+fn a_failing_last_feature_leaves_the_pads_body_whose_healthy_tip_shows_no_meta() {
+    let f = fixture();
+    refuses_the_cut(&f);
+    let text = METAS.replace(&format!(", {BAD_FINGERPRINT}"), "");
+    assert_ne!(text, METAS);
+    let (mut h, _) = f.opened("metas.silico", &text);
+    step_until(&mut h, "Raised's body", |h| {
+        browser(h)
+            .query_by_role_and_label(Role::Group, "Bodies")
+            .is_some_and(|bodies| bodies.query_by_label("Raised").is_some())
+    });
+    let bodies = browser(&h).get_by_role_and_label(Role::Group, "Bodies");
+    assert!(bodies.query_by_label("Cut").is_none());
+    assert_eq!(row_texts(&h, "Raised"), ["Raised"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The pocket's drifted fingerprint in [`METAS`].
+const BAD_FINGERPRINT: &str = r#""fingerprint": {"volume": 1, "area": 6, "center": [0, 0, 0], "bbox": [0, 0, 0, 1, 1, 1], "faces": 6, "edges": 12, "vertices": 8}"#;
+
+/// A sketch on a face's meta is `Face`: what the prototype's sketch on a face is before it
+/// names one, the name it stores being no word for a row's right.
+#[test]
+fn a_sketch_on_a_faces_meta_is_face() {
+    let f = fixture();
+    let (mut h, _) = f.opened("face.silico", ON_A_FACE);
+    step_until(&mut h, "its meta", |h| {
+        shows(h, "Browser", "Top") && row_texts(h, "Top").contains(&"Face".to_owned())
+    });
+    let texts = row_texts(&h, "Top");
+    assert_eq!(texts[texts.len() - 2..], ["Face", "Top"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A feature's health as the tab's timeline read last gave it.
+fn health_of(h: &AppHarness, name: &str) -> Option<silico_core::timeline::Health> {
+    h.state().tabs()[0]
+        .timeline
+        .as_ref()?
+        .features
+        .as_ref()?
+        .iter()
+        .find(|entry| entry.name == name)
+        .map(|entry| entry.health)
+}
+
+/// A plate, a triangle, a pad of it, a notch, a pocket of the notch in the pad that's
+/// suppressed, and a pocket of the notch on that, drifted (in error): the last pocket's
+/// chain in timeline order is Plate, Triangle, Raised, Notch, Mid, Cut, and the last
+/// healthy feature before its tip, Mid suppressed and Notch a sketch, is Raised.
+const SUPPRESSED_BELOW: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "r0000002", "type": "pad", "v": 1, "name": "Raised", "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 3, "reversed": false}},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Notch", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "q0000003", "type": "pocket", "v": 1, "name": "Mid", "suppressed": true, "base": "r0000002", "sketch": "s0000002", "extent": {"type": "one_side", "length": 1, "reversed": false}},
+    {"id": "q0000004", "type": "pocket", "v": 1, "name": "Cut", "base": "q0000003", "sketch": "s0000002", "extent": {"type": "one_side", "length": 1, "reversed": false}, "fingerprint": {"volume": 1, "area": 6, "center": [0, 0, 0], "bbox": [0, 0, 0, 1, 1, 1], "faces": 6, "edges": 12, "vertices": 8}}
+  ]
+}
+"#;
+
+/// A suppressed feature below a tip in error is no healthy feature: the meta skips it (and
+/// the sketch) to the one before, Raised.
+#[test]
+fn a_suppressed_feature_below_a_tip_in_error_is_skipped_for_the_meta() {
+    use silico_core::timeline::Health;
+    let f = fixture();
+    let (mut h, _) = f.opened("suppressed.silico", SUPPRESSED_BELOW);
+    step_until(&mut h, "Cut in error, Mid suppressed", |h| {
+        health_of(h, "Cut") == Some(Health::Error)
+            && health_of(h, "Mid") == Some(Health::Suppressed)
+            && shows(h, "Browser", "Cut")
+    });
+    step(&mut h);
+    assert_eq!(row_texts(&h, "Cut"), ["Raised", "Cut"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A plate in error (drifted), a triangle, a pad of it suppressed, and a pocket of the
+/// triangle on the pad, which passes its base through to the plate, in error (drifted):
+/// the pocket's chain, Plate, Triangle, Raised, Cut, has no healthy feature before its tip.
+const NONE_HEALTHY: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10, "fingerprint": {"volume": 1, "area": 6, "center": [0, 0, 0], "bbox": [0, 0, 0, 1, 1, 1], "faces": 6, "edges": 12, "vertices": 8}},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
+    {"id": "r0000002", "type": "pad", "v": 1, "name": "Raised", "suppressed": true, "base": "b0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 3, "reversed": false}},
+    {"id": "q0000003", "type": "pocket", "v": 1, "name": "Cut", "base": "r0000002", "sketch": "s0000001", "extent": {"type": "one_side", "length": 1, "reversed": false}, "fingerprint": {"volume": 1, "area": 6, "center": [0, 0, 0], "bbox": [0, 0, 0, 1, 1, 1], "faces": 6, "edges": 12, "vertices": 8}}
+  ]
+}
+"#;
+
+/// A body whose chain has no healthy feature before its tip in error (the plate in error,
+/// the pad suppressed, the triangle a sketch) has none to name: no meta.
+#[test]
+fn a_body_with_no_healthy_feature_has_no_meta() {
+    use silico_core::timeline::Health;
+    let f = fixture();
+    let (mut h, _) = f.opened("none.silico", NONE_HEALTHY);
+    step_until(&mut h, "Plate and Cut in error, Raised suppressed", |h| {
+        health_of(h, "Plate") == Some(Health::Error)
+            && health_of(h, "Raised") == Some(Health::Suppressed)
+            && health_of(h, "Cut") == Some(Health::Error)
+            && shows(h, "Browser", "Cut")
+    });
+    step(&mut h);
+    let bodies = browser(&h).get_by_role_and_label(Role::Group, "Bodies");
+    assert!(bodies.query_by_label("Cut").is_some());
+    assert_eq!(row_texts(&h, "Cut"), ["Cut"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A row's texts at each of a run of frames.
+type Frames = Vec<Vec<String>>;
+
+/// `text` (METAS, or a form of it) opened, its rows read, then its pocket made 2 deep with
+/// its cut held, stepping till the pocket alone reads as unknown (the edit's reach,
+/// rebuilding; Raised before it still healthy, the last healthy feature) and ten frames
+/// more, and then, released, till it doesn't: Cut's row's texts
+/// at every frame till the release (the first those before the edit), and at every frame
+/// after it.
+fn cut_texts_through_a_rebuild(f: &Fixture, text: &str) -> (Frames, Frames, AppHarness) {
+    use silico_core::timeline::Health;
+    let (mut h, _) = f.opened("metas.silico", text);
+    step_until(&mut h, "the rows read", |h| {
+        shows(h, "Browser", "Cut")
+            && health_of(h, "Cut").is_some_and(|health| health != Health::Unknown)
+            && row_texts(h, "Triangle").len() >= 2
+    });
+    step(&mut h);
+    let mut held = vec![row_texts(&h, "Cut")];
+    let hold = f.kernel.hold(|op| {
+        matches!(
+            op,
+            Op::Boolean {
+                op: silico_protocol::BooleanOp::Cut,
+                ..
+            }
+        )
+    });
+    let edit = silico_app::tab::Edit {
+        feature: silico_core::document::FeatureId::new("q0000003").unwrap(),
+        field: "extent".to_owned(),
+        value: json::read(br#"{"type": "one_side", "length": 2, "reversed": false}"#).unwrap(),
+    };
+    {
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].edit(&f.sessions, edit);
+    }
+    let deadline = Instant::now() + WAIT;
+    while health_of(&h, "Cut") != Some(Health::Unknown) {
+        assert!(Instant::now() < deadline, "Cut never read as unknown");
+        step(&mut h);
+        held.push(row_texts(&h, "Cut"));
+    }
+    for _ in 0..10 {
+        step(&mut h);
+        assert_eq!(
+            health_of(&h, "Cut"),
+            Some(Health::Unknown),
+            "released early"
+        );
+        assert!(
+            matches!(
+                health_of(&h, "Raised"),
+                Some(Health::Healthy | Health::Warning)
+            ),
+            "Raised in the edit's reach"
+        );
+        held.push(row_texts(&h, "Cut"));
+    }
+    hold.release();
+    let mut after = Vec::new();
+    while health_of(&h, "Cut") == Some(Health::Unknown) {
+        assert!(Instant::now() < deadline, "the rebuild never ended");
+        step(&mut h);
+        after.push(row_texts(&h, "Cut"));
+    }
+    step(&mut h);
+    after.push(row_texts(&h, "Cut"));
+    (held, after, h)
+}
+
+/// A healthy tip's row stays as it was while an edit of it rebuilds: no meta before, none
+/// while the pocket is unknown (where the last healthy feature before it is Raised, which
+/// a read taking an unknown tip as not healthy would show), none after.
+#[test]
+fn a_healthy_tips_row_doesnt_change_while_it_rebuilds() {
+    let f = fixture();
+    let text = METAS.replace(&format!(", {BAD_FINGERPRINT}"), "");
+    let (held, after, h) = cut_texts_through_a_rebuild(&f, &text);
+    for (frame, texts) in held.iter().chain(&after).enumerate() {
+        assert_eq!(texts, &["Cut"], "frame {frame}");
+    }
+    assert_ne!(
+        health_of(&h, "Cut"),
+        Some(silico_core::timeline::Health::Error)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A drifted tip keeps its meta, Raised, while an edit of it rebuilds; once it's
+/// rebuilt, the meta is as its health then says: Raised while it's still in error, none if
+/// it isn't (an open transaction's edit excepts its reach's drift, decision 28), and
+/// nothing else on the way.
+#[test]
+fn a_drifted_tip_keeps_its_meta_while_it_rebuilds() {
+    let f = fixture();
+    let (held, after, h) = cut_texts_through_a_rebuild(&f, METAS);
+    for (frame, texts) in held.iter().enumerate() {
+        assert_eq!(texts, &["Raised", "Cut"], "frame {frame}");
+    }
+    let settled: Vec<String> = if health_of(&h, "Cut") == Some(silico_core::timeline::Health::Error)
+    {
+        vec!["Raised".to_owned(), "Cut".to_owned()]
+    } else {
+        vec!["Cut".to_owned()]
+    };
+    for (frame, texts) in after.iter().enumerate() {
+        assert!(
+            texts == &settled || texts == &["Raised", "Cut"],
+            "frame {frame} after the release: {texts:?}"
+        );
+    }
+    assert_eq!(after.last(), Some(&settled));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A name being typed over a browser row goes when the browser collapses (its chevron
+/// clicked through the accessibility tree, which a click away from the field doesn't
+/// precede), sending nothing, as it goes with a row that's gone; shown again, no field.
+#[test]
+fn a_rename_over_a_row_goes_when_the_browser_collapses() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("ladder.silico", LADDER);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    browser(&h).get_by_label("Cut").click();
+    step(&mut h);
+    step(&mut h);
+    h.key_press(eframe::egui::Key::F2);
+    step_until(&mut h, "the rename field", |h| {
+        rename_field(h, "Cut").is_some()
+    });
+    step(&mut h);
+    rename_field(&h, "Cut").unwrap().type_text("Typed");
+    step(&mut h);
+    browser(&h)
+        .get_by_role_and_label(Role::Button, "Collapse browser")
+        .click_accesskit();
+    step(&mut h);
+    step(&mut h);
+    assert!(h.state().browser_collapsed());
+    assert!(h.state().tabs()[0].renaming.is_none());
+    assert!(rename_field(&h, "Cut").is_none());
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs()[0].sent.is_empty());
+    chevron_clicked(&mut h, "Show browser");
+    assert!(rename_field(&h, "Cut").is_none());
+    assert!(shows(&h, "Browser", "Cut"));
+    assert!(!shows(&h, "Browser", "Typed"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Find in browser from a timeline item, with the browser collapsed, shows the browser and
+/// then scrolls to the row, as SolidWorks and Fusion reveal their tree.
+#[test]
+fn find_in_browser_shows_a_collapsed_browser_and_scrolls_to_the_row() {
+    let text = sketches_around_forty_blocks();
+    let f = fixture();
+    let (mut h, _) = f.opened("forty.silico", &text);
+    step_until(&mut h, "its rows", |h| shows(h, "Browser", "Block 40"));
+    chevron_clicked(&mut h, "Collapse browser");
+    assert!(h.state().browser_collapsed());
+    menu_on(&mut h, "Timeline", "Front");
+    menu_click(&mut h, "FRONT", "Find in browser");
+    step_until(&mut h, "the browser shown, its row in view", |h| {
+        !h.state().browser_collapsed()
+            && shows(h, "Browser", "Front")
+            && row_in_view(h, "Sketches", "Front")
+    });
+    assert_eq!(
+        toggled(
+            &browser(&h)
+                .get_by_role_and_label(Role::Group, "Sketches")
+                .get_by_label("Front")
+        ),
+        Some(true)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A meta of a 400-character name (the pad's) is cut short with an ellipsis at half the
+/// room between the row's name and its mark: the row 247 wide (the pane), its name from
+/// 6 + 2 · 18 + 14 + 4 + 18 + 4 + 14 + 4 = 100, its mark 14 at 247 − 6 − 14 = 227, 4 before
+/// it, so the room 100 to 223, the meta no wider than 61.5 and ending at 223; the name
+/// keeps the rest.
+#[test]
+fn a_400_character_meta_is_cut_short_and_leaves_the_rows_name_room() {
+    let f = fixture();
+    let long = "R".repeat(400);
+    let text = METAS.replace("\"name\": \"Raised\"", &format!("\"name\": \"{long}\""));
+    let (mut h, _) = f.opened("metas.silico", &text);
+    step_until(&mut h, "Cut's meta", |h| {
+        shows(h, "Browser", "Cut") && row_texts(h, "Cut").len() == 2
+    });
+    let row = browser(&h).get_by_label("Cut").rect();
+    let pane = browser(&h).rect();
+    let galleys: Vec<_> = painted_in(&h, row)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) => Some(text),
+            _ => None,
+        })
+        .collect();
+    let shown: Vec<(String, eframe::egui::Rect)> = galleys
+        .iter()
+        .map(|text| {
+            (
+                text.galley.text().to_owned(),
+                eframe::egui::Rect::from_min_size(text.pos, text.galley.size()),
+            )
+        })
+        .collect();
+    assert_eq!(shown.len(), 2, "{shown:?}");
+    let (meta, at) = &shown[0];
+    assert_eq!(meta, &long);
+    // Cut with an ellipsis: its last glyph `…`, after `R`s.
+    let glyphs: Vec<_> = galleys[0]
+        .galley
+        .rows
+        .iter()
+        .flat_map(|row| row.glyphs.iter())
+        .collect();
+    assert_eq!(glyphs.last().map(|glyph| glyph.chr), Some('…'));
+    let r = glyphs.first().unwrap();
+    assert_eq!(r.chr, 'R');
+    let left = pane.left() + 100.0;
+    let right = pane.left() + 223.0;
+    assert!(at.width() <= 61.5 + 0.5, "{at:?}");
+    // And as wide as half the room allows: within one `R` of it.
+    assert!(
+        at.width() > 61.5 - r.advance_width - 0.5,
+        "{at:?}, an R {}",
+        r.advance_width
+    );
+    assert!((at.right() - right).abs() <= 0.5, "{at:?}");
+    assert!(at.left() >= left + 61.5 - 0.5, "{at:?}");
+    let (name, at) = &shown[1];
+    assert_eq!(name, "Cut");
+    assert!((at.left() - left).abs() <= 0.5, "{at:?}");
     assert_eq!(never_waits::waits(), 0);
 }
 

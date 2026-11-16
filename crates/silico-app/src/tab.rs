@@ -936,6 +936,20 @@ pub struct Row {
     pub consumers: std::collections::BTreeSet<FeatureId>,
     /// Whether its feature is suppressed (a sketch's: then nothing of it is drawn).
     pub suppressed: bool,
+    /// A body's meta (app.js's `renderBrowser`): the last healthy feature of its chain. The
+    /// app names a body after its tip, as SolidWorks names a solid body after the feature
+    /// that last changed it, where the prototype names it `Body1`; so the meta adds the last
+    /// healthy feature only when the tip isn't it, which is when the tip is in error (built,
+    /// but drifted): then it's the name of the last feature before the tip in its chain, in
+    /// timeline order, that's healthy, a sketch's never counted. Healthy is the prototype's
+    /// word for built and shown, which a feature built with warnings is too (Fusion's yellow,
+    /// "a feature that still shows", `silico_core::timeline`); one in error, suppressed, or
+    /// not built (`unknown`) isn't. While the tip is `unknown` (an edit's reach, rebuilding;
+    /// or built but not measured, a kernel fault leaving its fingerprint unchecked), the
+    /// meta the last read gave is kept, so the row doesn't change till its health is known.
+    /// Otherwise none: for a sketch, and a body whose tip is healthy or warned, which shows
+    /// none rather than its name twice.
+    pub last_healthy: Option<String>,
 }
 
 /// An eye clicked away from its row's default (docs/design/m5.0-app.md, decision 29: "kept
@@ -1224,6 +1238,10 @@ pub struct Tab {
     pub renaming: Option<crate::feature_menu::Renaming>,
     /// Where the person last selected a feature: F2 renames it there.
     pub selected_in: crate::feature_menu::Place,
+    /// Find in browser asked while the browser may be collapsed: the browser's strip shows
+    /// it again before its row is scrolled to, as SolidWorks and Fusion reveal their tree;
+    /// the browser shown lets it go.
+    pub reveal_browser: bool,
     /// A save or a revert that was to close the tab was refused: the tab stays, and a quit
     /// waiting on it stops ([`take_close_refused`](Self::take_close_refused)).
     close_refused: bool,
@@ -1523,6 +1541,7 @@ impl Tab {
             told: None,
             renaming: None,
             selected_in: crate::feature_menu::Place::Timeline,
+            reveal_browser: false,
             close_refused: false,
             replace_asked: None,
             roll_back: false,
@@ -5768,6 +5787,20 @@ impl Tab {
             .map(|problem| format!("Not drawn: {}", problem.message()))
     }
 
+    /// The plane the sketch `id` is on, as the document stores it (an origin plane, or a
+    /// planar face by its name), once it's read: sketch mode's newest read for the sketch
+    /// open there, else its held read ([`SketchReads::held`]). None until one is read, and
+    /// for a sketch no read holds (a suppressed one, which is never read).
+    pub fn sketch_plane(&self, id: &FeatureId) -> Option<&silico_core::document::Plane> {
+        let open = self
+            .sketch
+            .as_ref()
+            .filter(|mode| mode.sketch.as_ref() == Some(id))
+            .and_then(SketchMode::drawable);
+        open.or_else(|| self.sketch_reads.held(id).map(|held| &*held.read))
+            .map(|read| &read.members.plane)
+    }
+
     /// The features no sketch counts among its consumers yet ("a feature the open dialog
     /// is making counts from its OK", decision 29): the one the open dialog is making, till
     /// its OK; and each cancelled one's kept in `unmade`.
@@ -5835,7 +5868,7 @@ impl Tab {
             None => false,
         };
         let editing = self.dialog.as_ref().is_some_and(|dialog| !dialog.made);
-        let rows = browser(timeline, &self.making());
+        let rows = browser(timeline, &self.making(), &self.browser);
         self.browser = rows;
         if editing || edit_undone {
             return;
@@ -8079,12 +8112,14 @@ fn marked(timeline: &TimelineAnswer) -> bool {
 /// The browser's rows of `timeline` (section 8): its bodies, the model's (`bodies`; a chain
 /// whose last feature failed built no body there, and the core's timeline doesn't report
 /// one, so none is listed for it), each marked by the worst of its chain's features (the
-/// first in error, else the first with a warning); and its sketches, each marked by its own,
+/// first in error, else the first with a warning), with the last healthy one for its meta
+/// ([`Row::last_healthy`]; kept from `before`, the rows of the last read, while its tip is
+/// rebuilding); and its sketches, each marked by its own,
 /// with its consumers (decision 29): each feature that lists it among its `inputs`, but those
 /// of `making`, the feature the open dialog is making, which counts from its OK, and any
 /// cancelled one not yet undone in what's read. Each feature found by its ID once, through a
 /// map.
-pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
+pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId], before: &Browser) -> Browser {
     let entries = timeline.features.as_deref().unwrap_or_default();
     let place: BTreeMap<&FeatureId, usize> = entries
         .iter()
@@ -8105,6 +8140,7 @@ pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
         marked_by: worst.map(|at| entries[at].id.clone()),
         consumers: std::collections::BTreeSet::new(),
         suppressed: entry.suppressed,
+        last_healthy: None,
     };
     let bodies = timeline
         .bodies
@@ -8122,7 +8158,29 @@ pub fn browser(timeline: &TimelineAnswer, making: &[&FeatureId]) -> Browser {
                         .copied()
                         .find(|&i| entries[i].health == Health::Warning)
                 });
-            row(&entries[at], worst)
+            let tip = &entries[at];
+            let last_healthy = match tip.health {
+                Health::Error => chain
+                    .iter()
+                    .rev()
+                    .map(|&i| &entries[i])
+                    .filter(|entry| entry.id != tip.id)
+                    .find(|entry| {
+                        entry.kind != "sketch"
+                            && matches!(entry.health, Health::Healthy | Health::Warning)
+                    })
+                    .map(|entry| entry.name.clone()),
+                Health::Unknown => before
+                    .bodies
+                    .iter()
+                    .find(|row| row.id == tip.id)
+                    .and_then(|row| row.last_healthy.clone()),
+                Health::Healthy | Health::Warning | Health::Suppressed => None,
+            };
+            Row {
+                last_healthy,
+                ..row(&entries[at], worst)
+            }
         })
         .collect();
     let sketches = entries
@@ -8814,7 +8872,7 @@ mod tests {
             let of = of.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
             (sketch.to_owned(), of)
         };
-        let all = browser(&read, &[]);
+        let all = browser(&read, &[], &Browser::default());
         assert_eq!(
             consumers(&all),
             [
@@ -8826,7 +8884,7 @@ mod tests {
         assert_eq!(all.bodies.len(), 1);
         assert!(all.bodies[0].consumers.is_empty());
         assert_eq!(
-            consumers(&browser(&read, &[&id("c0000001")])),
+            consumers(&browser(&read, &[&id("c0000001")], &Browser::default())),
             [
                 row("s0000001", &["p0000001"]),
                 row("s0000002", &[]),
@@ -10517,6 +10575,7 @@ mod tests {
             marked_by: None,
             consumers: Default::default(),
             suppressed: false,
+            last_healthy: None,
         };
         tab.timeline = Some(TimelineAnswer {
             revision: Revision::OPENED,
@@ -12006,6 +12065,7 @@ mod tests {
                     marked_by: None,
                     consumers: Default::default(),
                     suppressed: false,
+                    last_healthy: None,
                 }],
                 Vec::new(),
             );
@@ -13901,6 +13961,7 @@ mod tests {
             marked_by: None,
             consumers: Default::default(),
             suppressed: false,
+            last_healthy: None,
         };
         let mut tab = tab();
         tab.browser = Browser::new(

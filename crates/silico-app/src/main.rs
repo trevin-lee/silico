@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use silico_app::App;
-use silico_app::pane_widths::KeptWidths;
+use silico_app::pane_widths::KeptLayout;
 use silico_app::recent::Recents;
 use silico_app::start::Warm;
 use silico_app::theme;
@@ -64,7 +64,7 @@ fn main() -> ExitCode {
     // Read off the UI thread, from the platform's app-data folder: the recent documents, and
     // the side panes' widths beside them.
     let recents = Recents::default_file().map(Recents::at);
-    let widths = KeptWidths::default_file().map(KeptWidths::at);
+    let widths = KeptLayout::default_file().map(KeptLayout::at);
     let silico = silico_beside();
     let ran = eframe::run_native(
         "Silico",
@@ -81,7 +81,7 @@ fn main() -> ExitCode {
                 None => app,
             };
             let app = match widths {
-                Some(widths) => app.keeping_widths(widths),
+                Some(widths) => app.keeping_layout(widths),
                 None => app,
             };
             // The viewport drawn by silico-render on eframe's own device; with no wgpu, or
