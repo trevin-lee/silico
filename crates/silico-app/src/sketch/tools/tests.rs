@@ -2538,9 +2538,14 @@ fn only_a_read_at_or_past_the_revision_an_extend_made_lets_it_go() {
     let r2 = r1.next().unwrap();
     let r3 = r2.next().unwrap();
     let mut desk = Desk::new(Choice::Extend, walled());
-    // Planned on r0's read; its answer made r2 (an undo's r1 came between, its read still
-    // to come).
+    // Planned on r0's read. Before any answer, a read of r1 (an undo's, sent before it):
+    // newer than the read it was planned on, but nothing says it holds the extend. Held.
     desk.frame(&click(8.0, 0.2));
+    desk.revision = r1;
+    desk.publish();
+    desk.frame(&click(8.0, 0.2));
+    assert_eq!(desk.edits.len(), 1, "{:?}", desk.edits);
+    // Its answer made r2.
     desk.mode.tools.extend_made(r2);
     // r1's read: newer than the read it was planned on, older than what it made. Held.
     desk.revision = r1;
@@ -2559,13 +2564,17 @@ fn only_a_read_at_or_past_the_revision_an_extend_made_lets_it_go() {
     desk.frame(&click(8.0, 0.2));
     assert_eq!(desk.edits.len(), 2, "{:?}", desk.edits);
     // Refused, it's let go; the next click's extend makes r4, whose read comes before its
-    // answer: the answer lets it go at once.
+    // answer, and a late read of r0 after that: r4 was seen, so the answer lets it go at
+    // once.
     desk.mode.tools.extend_refused();
     desk.frame(&click(8.0, 0.2));
     assert_eq!(desk.edits.len(), 3);
-    desk.revision = r3.next().unwrap();
+    let r4 = r3.next().unwrap();
+    desk.revision = r4;
     desk.publish();
-    desk.mode.tools.extend_made(r3.next().unwrap());
+    desk.revision = r0;
+    desk.publish();
+    desk.mode.tools.extend_made(r4);
     desk.frame(&click(8.0, 0.2));
     assert_eq!(desk.edits.len(), 4, "{:?}", desk.edits);
 }
