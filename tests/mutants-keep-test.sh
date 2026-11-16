@@ -9,6 +9,12 @@
 #   pixi run test-ci-decisions   (or bash tests/mutants-keep-test.sh)
 set -euo pipefail
 
+# What a job's environment says about the run is the cases' to give, never the job's: the
+# gate runs this test, and a re-run of the gate (GITHUB_RUN_ATTEMPT=2) once failed it, the
+# marker kept saying the gate's attempt where a case wants the default's. Nor does a case
+# write the gate's own summary (GITHUB_STEP_SUMMARY).
+unset GITHUB_RUN_ATTEMPT GITHUB_STEP_SUMMARY
+
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/silico-mutants-keep.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
@@ -133,5 +139,15 @@ pass
 if bash "$keep" "$out" "" >/dev/null 2>&1; then fail "an empty results directory was taken"; fi
 [ -f "$out/caught.txt" ] || fail "an empty results directory: mutants.out was touched"
 pass
+
+# Run as a re-run of the gate runs it, the job's attempt and summary set: it passes, and its
+# cases leave that summary as it was. (Once, from the outer run only.)
+if [ -z "${SILICO_KEEP_TEST_INNER:-}" ]; then
+  echo "the gate's own summary" >"$tmp/gate-summary.md"
+  SILICO_KEEP_TEST_INNER=1 GITHUB_RUN_ATTEMPT=2 GITHUB_STEP_SUMMARY=$tmp/gate-summary.md \
+    bash "${BASH_SOURCE[0]}" >"$tmp/inner.log" 2>&1 || fail "run as a gate's re-run (attempt 2), it failed: $(cat "$tmp/inner.log")"
+  [ "$(cat "$tmp/gate-summary.md")" = "the gate's own summary" ] || fail "run as a gate's job, it wrote the job's summary"
+  pass
+fi
 
 echo "mutants-keep: $passed cases passed"
