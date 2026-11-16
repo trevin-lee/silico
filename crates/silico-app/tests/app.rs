@@ -47280,3 +47280,172 @@ fn the_modify_box_takes_the_keyboard_back_after_the_question_and_the_offer_that_
     );
     assert_eq!(never_waits::waits(), 0);
 }
+
+#[test]
+fn a_field_drawn_off_of_its_own_once_the_question_has_gone_is_given_no_focus_when_it_turns_on() {
+    // #497's review, round 5: the name field held the keyboard as ⌘W's question came; the
+    // question's Save starts the close, so the field is drawn off (an edit then would be
+    // dropped, #298's review) with no modal left: the keyboard is let go there. When the
+    // save is refused and the field turns on again, it's not given the keyboard back.
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    // The save held behind a check, and the folder made read-only, so it's refused.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let folder = path.parent().unwrap().to_owned();
+    let was = std::fs::metadata(&folder).unwrap().permissions();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    on_button(&h, "Save").click_accesskit();
+    step_until(&mut h, "closing, the question gone", |h| {
+        h.state().tabs()[0].closing() && !anywhere(h, question)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!name_field(&h).is_focused());
+        assert!(name_field(&h).accesskit_node().is_disabled());
+    }
+    hold.release();
+    check.wait();
+    step_until(&mut h, "the close refused", |h| {
+        !h.state().tabs()[0].closing() && h.state().tabs()[0].edits.idle()
+    });
+    std::fs::set_permissions(&folder, was).unwrap();
+    step_until(&mut h, "the field on", |h| {
+        !name_field(h).accesskit_node().is_disabled()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(
+            !name_field(&h).is_focused(),
+            "the keyboard given back to a field let go of while it was off"
+        );
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_field_gone_while_the_offer_is_still_up_is_given_nothing_when_it_comes_back() {
+    // #497's review, round 5: the Modify box held the keyboard as ⌘W's question came; an
+    // offer came under it, shown once the question had gone. While the offer is up the box
+    // goes (its place behind the eye) and is let go of there; it comes back under the
+    // offer, and once the offer has gone it's not given the keyboard: it was gone.
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    step_until(&mut h, "the first box closed", |h| {
+        sketch_mode(h).unwrap().edit_box.is_none()
+    });
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    assert!(modify_field(&h).is_some_and(|field| field.is_focused()));
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    offer_come(&f, &mut h);
+    let cancel = on_button(&h, "Cancel").rect().center();
+    pointer_click(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    step(&mut h);
+    assert!(modify_field(&h).is_some());
+    // The box's place behind the eye: looking up from 10 above the sketch's plane.
+    let camera = view(&h).camera().clone();
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Perspective {
+            field_of_view: 45.0,
+        },
+        eye: [0.0, 0.0, 10.0],
+        target: [0.0, 0.0, 20.0],
+        up: [0.0, 1.0, 0.0],
+    });
+    step_until(&mut h, "the box gone", |h| modify_field(h).is_none());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(prompt(&h).is_some());
+    view_mut(&mut h).set_camera(camera);
+    step_until(&mut h, "the box back", |h| modify_field(h).is_some());
+    step(&mut h);
+    assert!(prompt(&h).is_some());
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(
+            modify_field(&h).is_some_and(|field| !field.is_focused()),
+            "the keyboard given back to a box let go of while it was gone"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn close_asked_in_the_frame_a_tab_with_an_offer_is_shown_asks_over_the_offer() {
+    // #497's review, round 5: ⌘W's Close is decided after the frame is drawn. A click on
+    // another tab's button, in the frame ⌘W comes, shows that tab, whose over-define
+    // offer came while it was hidden: the Close asked of the tab ⌘W was pressed in (its
+    // edits held) is asked over the offer, which waits under the question and shows once
+    // the question has gone.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs, the other shown", |h| {
+        h.state().tabs().len() == 2 && shows(h, "Timeline", "Pin")
+    });
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the other's edit held", |h| {
+        let tab = &h.state().tabs()[1];
+        tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
+    });
+    offer_come(&f, &mut h);
+    assert!(prompt(&h).is_none(), "the hidden tab's offer drawn");
+    // A click on boxed.silico's tab, pressed and let go, then ⌘W, in one frame.
+    let at = h
+        .get_by_role_and_label(Role::Button, "boxed.silico *")
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    for pressed in [true, false] {
+        events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events.push(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to other.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(
+            prompt(&h).is_none(),
+            "the offer drawn while the question is up"
+        );
+        assert!(sketch_mode(&h).unwrap().offer().is_some());
+    }
+    let cancel = on_button(&h, "Cancel").rect().center();
+    pointer_click(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    assert_eq!(h.state().tabs().len(), 2);
+    assert_eq!(never_waits::waits(), 0);
+}
