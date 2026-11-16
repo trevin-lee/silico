@@ -1,7 +1,7 @@
 //! Running `silico serve` in the CLI's tests as an MCP client starts it: its stdin and
 //! stdout piped, its stdout's lines as they come, each checked to be one JSON-RPC message,
 //! requests sent and their replies waited for, and its end waited for, each failing past
-//! [`SERVE_DEADLINE`] rather than hanging.
+//! what's left of the test's [`BUDGET`] rather than hanging.
 // Each test program that includes this uses only some of it.
 #![allow(dead_code)]
 
@@ -9,20 +9,11 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use serde_json::Value;
 
-/// How long a test waits on `silico serve` for one thing it asserts, a reply or its end:
-/// there only so a server that's hung fails the test, saying what it waited for, rather
-/// than hanging it. A server answers `initialize` in about 0.2 s, and in 4 s with twenty
-/// times as many busy threads as CPUs; but on CI's runner the CLI's tests stalled together
-/// for about a minute, twice (#513's and #514's gates, 2026-11-16: a copy of `silico` and
-/// a run of it taking 42 s, 0.14 s on other runs), and the servers started then had no
-/// reply to `initialize` in the 60 s these waited. So well past that, and under the
-/// 300 s nextest gives the tests that run a server (.config/nextest.toml), so a hang is
-/// said here rather than killed with nothing to say.
-pub const SERVE_DEADLINE: Duration = Duration::from_secs(240);
+use crate::run::{BUDGET, began, left};
 
 /// A 40 × 20 × 10 box.
 pub const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
@@ -34,6 +25,7 @@ pub const INITIALIZE: &str = r#"{"jsonrpc": "2.0", "id": 0, "method": "initializ
 /// `stderr`, its log at `log` (or the default), with the workers beside it (the render
 /// worker started only by a render).
 pub fn serve(dir: &Path, log: Option<&str>, stderr: Stdio) -> Child {
+    began();
     let mut command = Command::new(env!("CARGO_BIN_EXE_silico"));
     command
         .args(["serve", "--workspace"])
@@ -52,6 +44,7 @@ pub fn serve(dir: &Path, log: Option<&str>, stderr: Stdio) -> Child {
 /// (the ones built beside it), no log, and its cache's secret in the cache home `home`,
 /// written as [`give_secret`](crate::run::give_secret) writes one.
 pub fn serve_working(dir: &Path, home: &Path, stderr: Stdio) -> Child {
+    began();
     crate::run::give_secret(&home.join("silico").join("cache-secret"));
     let silico = Path::new(env!("CARGO_BIN_EXE_silico"));
     for worker in [
@@ -116,14 +109,17 @@ pub fn ask_line(stdin: &mut ChildStdin, lines: &Receiver<String>, line: &str, id
     writeln!(stdin, "{line}").unwrap();
     let id: Value = serde_json::from_str(id).unwrap();
     let asked = Instant::now();
+    let until = asked + left();
     let mut before = 0;
     loop {
-        let line = match lines.recv_timeout(SERVE_DEADLINE.saturating_sub(asked.elapsed())) {
+        let line = match lines.recv_timeout(until.saturating_duration_since(Instant::now())) {
             Ok(line) => line,
             Err(RecvTimeoutError::Timeout) => panic!(
-                "silico serve sent no reply to request {id} ({method}) in {:?}, the most a test \
-                 waits for one ({SERVE_DEADLINE:?}): it's hung; {before} other messages came meanwhile",
-                asked.elapsed()
+                "silico serve sent no reply to request {id} ({method}) in {:?}, when the test's \
+                 {BUDGET:?} ran out ({:?} since it began): it's hung; {before} other messages came \
+                 meanwhile",
+                asked.elapsed(),
+                began().elapsed()
             ),
             Err(RecvTimeoutError::Disconnected) => panic!(
                 "silico serve's stdout closed {:?} after request {id} ({method}), with no reply \
@@ -153,16 +149,20 @@ pub fn json_rpc(line: &str) -> Value {
     message
 }
 
-/// How `child` ended, failing if it doesn't within [`SERVE_DEADLINE`].
+/// How `child` ended, failing if it doesn't within what's left of the test's [`BUDGET`].
 pub fn exited(mut child: Child) -> ExitStatus {
     let (done, exited) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = done.send(child.wait());
     });
-    match exited.recv_timeout(SERVE_DEADLINE) {
+    let asked = Instant::now();
+    match exited.recv_timeout(left()) {
         Ok(status) => status.unwrap(),
         Err(_) => panic!(
-            "silico serve didn't end in {SERVE_DEADLINE:?}, the most a test waits for it: it's hung"
+            "silico serve didn't end in {:?}, when the test's {BUDGET:?} ran out ({:?} since it \
+             began): it's hung",
+            asked.elapsed(),
+            began().elapsed()
         ),
     }
 }

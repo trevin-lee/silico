@@ -105,18 +105,15 @@ slow-timeout = { period = "60s", terminate-after = 17 }
 filter = 'package(silico-kernel) & binary(=pool_slot_spawn_fails)'
 test-group = 'thread-exhausting'
 
-# The CLI's tests share four threads (the `cli` group above).
+# The CLI's tests share four threads (the `cli` group above), and each has five minutes: a
+# test waits on silico, its runs and its server's replies, for 270 s in all (`BUDGET`,
+# tests/common/run.rs), there only for a hang, past CI's runner's stalls of up to about
+# 100 s, so a hang is said by the test rather than killed by nextest with nothing to say.
+# (The bracket test whose name says `oracle` keeps the ten minutes of `stress|oracle`'s
+# override above, which it matches first.)
 [[profile.default.overrides]]
 filter = 'package(silico-cli)'
 test-group = 'cli'
-
-# The CLI's tests that run `silico serve` (tests/serve.rs, tests/bracket.rs): each waits up
-# to 240 s for a reply or the server's end (SERVE_DEADLINE, tests/common/serve.rs), there
-# only for a hang, past CI's runner's stalls of about a minute. Five minutes, so a hang is
-# said by the test rather than killed by nextest with nothing to say. Named here: renaming
-# either test file means renaming it here.
-[[profile.default.overrides]]
-filter = 'package(silico-cli) & (binary(=serve) | binary(=bracket))'
 slow-timeout = { period = "60s", terminate-after = 5 }
 
 [[profile.default.overrides]]
