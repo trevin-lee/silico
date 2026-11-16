@@ -12635,6 +12635,29 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// What the reload banner shown lists as changed, once its diff answers: each row's
+    /// feature, field, and text. A banner whose diff was refused fails the test.
+    fn banner_listed(tab: &mut Tab, sessions: &FakeSessions) -> Vec<(String, String, String)> {
+        taken_until(tab, sessions, |tab| {
+            tab.reloaded
+                .as_ref()
+                .is_some_and(|reloaded| !matches!(reloaded.changes, Changes::Asking))
+        });
+        match &tab.reloaded.as_ref().unwrap().changes {
+            Changes::Listed(listed) => listed
+                .rows
+                .iter()
+                .map(|row| (row.feature.clone(), row.field.clone(), row.text.clone()))
+                .collect(),
+            other => panic!("the reload's changes not listed: {other:?}"),
+        }
+    }
+
+    /// `(feature, field, text)`, as [`banner_listed`] gives a row.
+    fn listed_row(feature: &str, field: &str, text: &str) -> (String, String, String) {
+        (feature.to_owned(), field.to_owned(), text.to_owned())
+    }
+
     /// No reload unlisted.
     const NONE_UNLISTED: Vec<(Revision, Revision)> = Vec::new();
 
@@ -13443,6 +13466,14 @@ mod tests {
             resets + 1,
             "the reload announced more than once"
         );
+        // The banner names what the other program changed: the pin's radius, 0.5 → 0.6, as
+        // BLOCK and the file it wrote differ, and nothing else.
+        assert_eq!(
+            banner_listed(&mut tab, &sessions),
+            vec![listed_row("Pin", "radius", "0.5 → 0.6")]
+        );
+        assert_eq!(banner(&tab), Some((rev(1), rev(2))));
+        assert_eq!(banner_unlisted(&tab), NONE_UNLISTED);
     }
 
     #[test]
@@ -13561,6 +13592,14 @@ mod tests {
             assert_eq!(tab.resets, resets, "save as: {save_as}");
             assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
             assert_eq!(revision_now(&tab, &sessions), rev(5), "save as: {save_as}");
+            // The banner names what the second write changed: the pin, Bolt then Nut, and
+            // nothing else (both writes are BLOCK but for that name).
+            assert_eq!(
+                banner_listed(&mut tab, &sessions),
+                vec![listed_row("Nut", "name", r#""Bolt" → "Nut""#)],
+                "save as: {save_as}"
+            );
+            assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
         }
     }
 
