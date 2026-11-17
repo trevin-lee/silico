@@ -119,6 +119,11 @@ fn main() -> ExitCode {
             );
             problems.extend(missing);
         }
+        // After the lists of known cases, so a case listed there keeps its own entry.
+        let (rest, no_solid) = silico_oracle::without_freecads_no_solid(report.differences);
+        report.differences = rest;
+        let mut known = known;
+        known.extend(no_solid);
         notes.extend(excused);
         problems.extend(stale);
         Ok((

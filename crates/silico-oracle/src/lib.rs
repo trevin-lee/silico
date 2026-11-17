@@ -68,6 +68,45 @@ pub fn outcomes(cases: &[Case]) -> Result<Vec<(Outcome, Outcome)>, String> {
     Ok(found)
 }
 
+/// `differences` less those where FreeCAD's result is no solid and Silico refuses it as
+/// such: FreeCAD built a shape whose volume is below zero (a solid turned inside out) or
+/// that its own `isValid` finds invalid, and Silico refused the case as an invalid result
+/// (the kernel's "gave an invalid result, which was refused"). The second list says each, as
+/// known. It's `generate::KNOWN`'s generated_15_96 as a rule: OCCT 7.9.3 turns some torus
+/// booleans inside out, FreeCAD 1.1.3 keeps them, and Silico refuses them (docs/ports/booleans.md,
+/// Known wrong results). Each case the sweeps found, rebuilt as the oracle builds it, against
+/// the volume integrated by hand, slice by slice (the exact area of the annuli's intersection
+/// at each height, adaptive Gauss-Kronrod, which gives a torus's 2π²Rr² and two spheres' lens
+/// to 1e-13): generated_111_374, a torus cut a torus, FreeCAD's -6480.64 where it's 5902.990;
+/// generated_161_99, a fuse, -50386.75 and invalid where it's 53261.001; generated_19_400
+/// -146172.65 where it's 6576.118; generated_24_431 -77962.89 where it's 2737.074;
+/// generated_41_99 -78796.32 where it's 7379.488. Nothing else is excused: Silico refusing
+/// for another reason, or FreeCAD's result a sound solid, is still a difference.
+pub fn without_freecads_no_solid(differences: Vec<Difference>) -> (Vec<Difference>, Vec<String>) {
+    let mut known = Vec::new();
+    let rest = differences
+        .into_iter()
+        .filter(|d| {
+            let (Outcome::Failed(ours), Outcome::Built(theirs)) = (&d.ours, &d.theirs) else {
+                return true;
+            };
+            let refused_invalid = ours.starts_with("invalid_result: ")
+                && ours.contains(" gave an invalid result, which was refused");
+            let no_solid = theirs.volume < 0.0 || !theirs.valid;
+            if refused_invalid && no_solid {
+                known.push(format!(
+                    "{d} (known: FreeCAD's result is no solid, volume {} and valid {}, which Silico refuses as invalid)",
+                    theirs.volume, theirs.valid
+                ));
+                false
+            } else {
+                true
+            }
+        })
+        .collect();
+    (rest, known)
+}
+
 /// What a run of cases found.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Report {
@@ -115,4 +154,94 @@ pub fn run(cases: &[Case]) -> Result<Report, String> {
         }
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Difference, Measured, Outcome, without_freecads_no_solid};
+
+    /// generated_111_374's two sides, as the sweep of seed 111 found them: Silico's refusal
+    /// word for word, and FreeCAD's cut turned inside out (its volume and validity as
+    /// FreeCAD 1.1.3 measured them, the rest made up).
+    fn case(ours: Outcome, volume: f64, valid: bool) -> Difference {
+        let theirs = Outcome::Built(Measured {
+            volume,
+            area: 8873.33,
+            bounds: Some([[-20.0; 3], [20.0; 3]]),
+            center: Some([0.0; 3]),
+            faces: 8,
+            edges: 12,
+            vertices: 6,
+            valid,
+        });
+        Difference {
+            case: "generated_111_374".to_owned(),
+            how: vec!["FreeCAD built it; Silico failed: ...".to_owned()],
+            ours,
+            theirs,
+        }
+    }
+
+    fn refused_invalid() -> Outcome {
+        Outcome::Failed(
+            "invalid_result: Cut gave an invalid result, which was refused: the cut's result \
+             isn't a valid solid. Suggestion: faces or edges of the two shapes nearly meet: move \
+             one so they clearly overlap or stay clearly apart."
+                .to_owned(),
+        )
+    }
+
+    #[test]
+    fn freecads_inside_out_or_invalid_solid_that_silico_refuses_as_invalid_is_known() {
+        // Inside out (111_374, -6480.64, valid), and inside out and invalid (161_99).
+        for (volume, valid) in [(-6480.640578694009, true), (-50386.75037071653, false)] {
+            let (rest, known) =
+                without_freecads_no_solid(vec![case(refused_invalid(), volume, valid)]);
+            assert!(rest.is_empty(), "{volume} {valid}: {rest:?}");
+            assert_eq!(known.len(), 1);
+            assert!(
+                known[0].starts_with("generated_111_374: FreeCAD built it")
+                    && known[0].contains(&format!("volume {volume} and valid {valid}")),
+                "{known:?}"
+            );
+        }
+        // A positive volume FreeCAD itself finds invalid.
+        let (rest, known) =
+            without_freecads_no_solid(vec![case(refused_invalid(), 5902.99, false)]);
+        assert!(rest.is_empty() && known.len() == 1, "{rest:?}");
+    }
+
+    #[test]
+    fn a_sound_freecad_solid_or_another_refusal_of_silicos_is_still_a_difference() {
+        let kept = |d: Difference| {
+            let (rest, known) = without_freecads_no_solid(vec![d]);
+            assert!(known.is_empty(), "{known:?}");
+            assert_eq!(rest.len(), 1);
+        };
+        // FreeCAD's solid sound: Silico's refusal is a difference, however it's worded.
+        kept(case(refused_invalid(), 5902.987769501616, true));
+        kept(case(refused_invalid(), 0.0, true));
+        // FreeCAD's no solid, but Silico refused for another reason, or was lost.
+        kept(case(
+            Outcome::Failed("kernel_failed: Cut failed. Suggestion: ...".to_owned()),
+            -6480.64,
+            true,
+        ));
+        kept(case(
+            Outcome::Failed(
+                "invalid_result: Cut gave an empty result, which was refused".to_owned(),
+            ),
+            -6480.64,
+            false,
+        ));
+        kept(case(
+            Outcome::Lost("the worker crashed".to_owned()),
+            -6480.64,
+            true,
+        ));
+        // Silico built it: a difference whatever FreeCAD's is.
+        let mut built = case(refused_invalid(), -6480.64, true);
+        built.ours = built.theirs.clone();
+        kept(built);
+    }
 }

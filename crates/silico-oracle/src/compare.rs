@@ -56,9 +56,30 @@ impl Tolerance {
         center: 1e-5,
     };
 
+    /// A boolean with a torus operand, or anything made from one: its volume, area, and
+    /// center are each side's measured by OCCT's default, fixed-order integration (FreeCAD's
+    /// way), which on faces trimmed by a torus's intersection curves is off the right value by
+    /// up to 1.2%, and off by a different amount on each side, as the two OCCT builds
+    /// approximate those curves a hair differently. generated_105_120, a torus common a torus:
+    /// FreeCAD's way measures 380.2391 on Silico's side and 380.2010 on FreeCAD's (1.0e-4
+    /// apart), where Silico's precise volume of its shape (`Model`'s fingerprint) is 375.819721
+    /// and the volume integrated by hand, slice by slice (the exact area of the annuli's
+    /// intersection at each height, adaptive Gauss-Kronrod), is 375.8197210: Silico's shape
+    /// is right to 1e-9, and the difference is the measurement's. Seed 130's generated_130_136
+    /// (1.4e-5 apart) and seed 143's generated_143_95 (area, 1.3e-5) the same. The box is the
+    /// curved boolean's, which isn't integrated. Comparing precise measures instead is
+    /// #538's.
+    pub const TORUS_BOOLEAN: Tolerance = Tolerance {
+        relative: 3e-4,
+        bounds: 1e-7,
+        center: 3e-4,
+    };
+
     /// The tolerance for a case's shape.
     pub fn of(shape: &Shape) -> Tolerance {
-        if has_curved_boolean(shape) {
+        if has_torus_boolean(shape) {
+            Tolerance::TORUS_BOOLEAN
+        } else if has_curved_boolean(shape) {
             Tolerance::CURVED_BOOLEAN
         } else if is_curved(shape) {
             Tolerance::CURVED
@@ -97,6 +118,35 @@ fn has_curved_boolean(shape: &Shape) -> bool {
         Shape::Translate { shape, .. }
         | Shape::Fillet { shape, .. }
         | Shape::Chamfer { shape, .. } => has_curved_boolean(shape),
+        Shape::Block { .. }
+        | Shape::Cylinder { .. }
+        | Shape::Sphere { .. }
+        | Shape::Cone { .. }
+        | Shape::Torus { .. }
+        | Shape::Extrude { .. }
+        | Shape::Revolve { .. }
+        | Shape::Brep { .. } => false,
+    }
+}
+
+/// Whether `shape` is a torus, moved or not.
+fn is_torus(shape: &Shape) -> bool {
+    match shape {
+        Shape::Torus { .. } => true,
+        Shape::Translate { shape, .. } => is_torus(shape),
+        _ => false,
+    }
+}
+
+/// Whether `shape` is, or is made from, a boolean with a torus operand.
+fn has_torus_boolean(shape: &Shape) -> bool {
+    match shape {
+        Shape::Fuse { base, tool } | Shape::Cut { base, tool } | Shape::Common { base, tool } => {
+            is_torus(base) || is_torus(tool) || has_torus_boolean(base) || has_torus_boolean(tool)
+        }
+        Shape::Translate { shape, .. }
+        | Shape::Fillet { shape, .. }
+        | Shape::Chamfer { shape, .. } => has_torus_boolean(shape),
         Shape::Block { .. }
         | Shape::Cylinder { .. }
         | Shape::Sphere { .. }
@@ -333,6 +383,7 @@ mod tests {
             Tolerance::PLANAR,
             Tolerance::CURVED,
             Tolerance::CURVED_BOOLEAN,
+            Tolerance::TORUS_BOOLEAN,
         ] {
             let theirs = Outcome::Built(block());
             // The box's size is 30: its corners and center are allowed 30 × the tolerance.
@@ -546,7 +597,60 @@ mod tests {
                 Tolerance::CURVED,
             ),
         ];
-        for (shape, tolerance) in cases.into_iter().chain(more) {
+        let torus = || Shape::Torus {
+            major_radius: 5.0,
+            minor_radius: 1.0,
+        };
+        let torus_booleans = [
+            // A torus as either operand, moved or not.
+            (
+                Shape::Common {
+                    base: boxed(torus()),
+                    tool: boxed(moved(torus())),
+                },
+                Tolerance::TORUS_BOOLEAN,
+            ),
+            (
+                Shape::Cut {
+                    base: boxed(cylinder()),
+                    tool: boxed(moved(torus())),
+                },
+                Tolerance::TORUS_BOOLEAN,
+            ),
+            // Anything made from one.
+            (
+                Shape::Fuse {
+                    base: boxed(Shape::Fuse {
+                        base: boxed(block()),
+                        tool: boxed(torus()),
+                    }),
+                    tool: boxed(block()),
+                },
+                Tolerance::TORUS_BOOLEAN,
+            ),
+            (
+                Shape::Chamfer {
+                    shape: boxed(Shape::Cut {
+                        base: boxed(block()),
+                        tool: boxed(torus()),
+                    }),
+                    edges: vec![1],
+                    size: Chamfer::Equal { distance: 0.1 },
+                    flip: false,
+                },
+                Tolerance::TORUS_BOOLEAN,
+            ),
+            // A torus alone or moved, and a boolean of other curved shapes, aren't.
+            (moved(torus()), Tolerance::CURVED),
+            (
+                Shape::Common {
+                    base: boxed(sphere()),
+                    tool: boxed(moved(cylinder())),
+                },
+                Tolerance::CURVED_BOOLEAN,
+            ),
+        ];
+        for (shape, tolerance) in cases.into_iter().chain(more).chain(torus_booleans) {
             assert_eq!(Tolerance::of(&shape), tolerance, "{shape:?}");
         }
     }

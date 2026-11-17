@@ -1250,6 +1250,24 @@ pub const KNOWN: &[Known] = &[
         shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
         why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which the symmetric k0000020 would mirror an end of n0000005 about n0000005 itself, which Silico refuses (#se-a-curve-s-own-point-constrained, #se-the-merged-sketch-is-gated); FreeCAD makes the merge, its solve succeeding (0, 12 degrees of freedom), in 10 of 10 runs alone and 1 of 3 whole sweeps, and rolls it back (#se-any-result-whose-solve-is-worse) in the other two, but an answer that varies is no oracle",
     },
+    // `sketch-edit-sweep --seed 105 --count 500`'s case 102.
+    Known {
+        case: "edit_105_102",
+        shows: Shows::VariesMade,
+        why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, which Silico places at the kept point's place (#se-the-first-point-the-request-names) and its solve from there is clean, so it makes the merge; FreeCAD's solve, from the points apart, makes it too in 13 of 13 runs alone, and fails (-1) in 3 of 3 whole sweeps (its allocator's order, docs/ports/sketcher.md:51), which its Coincident command rolls back (#se-any-result-whose-solve-is-worse), but an answer that varies is no oracle; where FreeCAD makes the merge, the two are compared",
+    },
+    // `sketch-edit-sweep --seed 121 --count 500`'s case 137.
+    Known {
+        case: "edit_121_137",
+        shows: Shows::Varies(Rule::MergeSolveUnbuildable),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, whose solve puts the symmetric k0000022's two points at one place, which Silico refuses (#se-so-does-any-refusal-of-the to #se-a-line-the-solve-shortens-to); FreeCAD's merge is rolled back (#se-any-result-whose-solve-is-worse), in a form the note gives in 13 of 13 runs alone, and in 3 of 3 whole sweeps as a conflict with constraints redundant as well (-3, a rollback not measured elsewhere), but an answer that varies is no oracle",
+    },
+    // `sketch-extend-sweep --seed 140 --count 500`'s case 255.
+    Known {
+        case: "extend_140_255",
+        shows: Shows::Varies(Rule::ExtendFrame),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: the line n0000005's end p0000001 moved by -7.813 mm, whose drag's solve fails, which Silico refuses (#se-a-frame-that-isn-t-a); FreeCAD's drag fails as well, and its extend raises \"Not able to extend geometry\" (#se-extend-unchecked), in 13 of 13 runs alone and 2 of 3 whole sweeps, and makes the edit (solve 0, 20 degrees of freedom) in the other, but an answer that varies is no oracle",
+    },
 ];
 
 /// Whether `v`'s Silico side is a refusal by a rule of `want`'s kind, whatever it names (a
@@ -2834,7 +2852,14 @@ fn implied_on(p: &Prepared, theirs: Option<&Theirs>) -> Option<String> {
 /// [`Rule::MergeSolveWorse`]: constraints found redundant (-2), nothing newly conflicting or
 /// malformed, and every constraint Silico's refusal names among those FreeCAD newly finds
 /// redundant (by its name, `s_` and the ID), so a redundancy of other constraints isn't
-/// taken for it.
+/// taken for it. Or found conflicting (-3), nothing newly malformed, and every constraint
+/// Silico's refusal names among those FreeCAD newly finds redundant or conflicting: Silico's
+/// solve starts from the kept point's place (#se-the-first-point-the-request-names) and
+/// FreeCAD's from the points apart, and from there PlaneGCS can call the same dependent
+/// constraints conflicting rather than redundant. Both refuse the merge as worse than the
+/// sketch before it (the sweeps' edit_169_486 and edit_175_299, FreeCAD's -3 in 3 of 3 runs
+/// alone and their nights' sweeps, conflicting [3, 6, 10, 14, 15] in 169_486, conflicting [12]
+/// and 13 redundant in 175_299; and edit_158_347, -3 in its sweep and -2 in a run alone).
 fn redundant_as_named(p: &Prepared, theirs: Option<&Theirs>) -> bool {
     let (SilicoSide::Refused(r), Some(Theirs::Edited(fc))) = (&p.silico, theirs) else {
         return false;
@@ -2847,14 +2872,26 @@ fn redundant_as_named(p: &Prepared, theirs: Option<&Theirs>) -> bool {
             .copied()
             .collect()
     };
-    let named: BTreeSet<String> = new(&a.redundant, &b.redundant)
-        .into_iter()
-        .filter_map(|i| i.checked_sub(1).and_then(|i| fc.constraints.get(i)))
-        .map(|c| c.name.trim_start_matches("s_").to_owned())
-        .collect();
-    a.code == -2
-        && new(&a.conflicting, &b.conflicting).is_empty()
-        && new(&a.malformed, &b.malformed).is_empty()
+    let names = |indices: Vec<usize>| -> BTreeSet<String> {
+        indices
+            .into_iter()
+            .filter_map(|i| i.checked_sub(1).and_then(|i| fc.constraints.get(i)))
+            .map(|c| c.name.trim_start_matches("s_").to_owned())
+            .collect()
+    };
+    let (redundant, conflicting) = (
+        new(&a.redundant, &b.redundant),
+        new(&a.conflicting, &b.conflicting),
+    );
+    let named: BTreeSet<String> = match a.code {
+        -2 if conflicting.is_empty() => names(redundant),
+        -3 if !conflicting.is_empty() => names(redundant)
+            .union(&names(conflicting))
+            .cloned()
+            .collect(),
+        _ => return false,
+    };
+    new(&a.malformed, &b.malformed).is_empty()
         && !r.elements.is_empty()
         && r.elements.iter().all(|id| named.contains(id))
 }
@@ -3530,9 +3567,16 @@ const DRAG_BAND: f64 = 5e-7;
 /// The extend cases at an arc's shared end whose FreeCAD solve after setRange fails (-1) in
 /// some runs and not in others, each measured in 10 runs (#se-a-line-s-end-goes-through):
 /// `extend_32_115` failed 5, the seed-43 sweep's `extend_43_274` 5, and the seed-42 sweep's
-/// `extend_42_165` 5. The case file's (`extend_arc_start_with_tangent`, `extend_arc_order_probe`)
-/// and the seed-32 sweep's 22 others solved in all 10, so a failure there is a difference.
-const SOLVE_VARIES: &[&str] = &["extend_32_115", "extend_43_274", "extend_42_165"];
+/// `extend_42_165` 5; and the seed-140 sweep's `extend_140_36`, which failed in 1 of 3 whole
+/// sweeps and solved in 13 of 13 runs alone. The case file's (`extend_arc_start_with_tangent`,
+/// `extend_arc_order_probe`) and the seed-32 sweep's 22 others solved in all 10, so a failure
+/// there is a difference.
+const SOLVE_VARIES: &[&str] = &[
+    "extend_32_115",
+    "extend_43_274",
+    "extend_42_165",
+    "extend_140_36",
+];
 
 /// The sweep's line extends whose solve, from the end written at the target in both
 /// (#se-extend-built), FreeCAD 1.1.3 settles otherwise run to run, the sketch's free places landing

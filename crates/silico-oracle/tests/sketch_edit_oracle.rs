@@ -4863,6 +4863,98 @@ fn a_merge_its_command_judges_worse_is_refused_and_agrees_with_freecads_rollback
 }
 
 #[test]
+fn a_merge_its_command_judges_worse_agrees_with_freecads_rollback_as_a_conflict_too() {
+    // The nightly sweeps' edit_169_486, edit_175_299, and edit_158_347: Silico's merge solve,
+    // from the kept point's place, finds constraints redundant that the sketch's before didn't,
+    // so its command refuses it (MergeSolveWorse); FreeCAD's, from the points apart, calls the
+    // dependent constraints conflicting (-3: 169_486 and 175_299 in 3 of 3 runs alone and their
+    // nights' sweeps, 158_347 in its sweep) or redundant (-2: 158_347 in a run alone), which its
+    // Coincident command rolls back. Both refuse the merge as worse: agreement either way,
+    // where each constraint Silico names is among those FreeCAD newly finds redundant or
+    // conflicting.
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared: Vec<Prepared> = [(169u64, 486usize), (175, 299), (158, 347)]
+        .into_iter()
+        .map(|(seed, n)| {
+            let mut sweep = silico_oracle::generate::sketch_edit_cases(seed, 500).unwrap();
+            prepare(&sweep.swap_remove(n), &mut worker).unwrap()
+        })
+        .collect();
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        assert_eq!(
+            rule(p),
+            Some(Rule::MergeSolveWorse),
+            "{}: {:?}",
+            p.name,
+            p.silico
+        );
+        let Some(Theirs::Edited(edited)) = fc else {
+            panic!("{}: {fc:?}", p.name);
+        };
+        assert!(
+            [-2, -3].contains(&edited.after.code),
+            "{}: {edited:?}",
+            p.name
+        );
+        let v = verdict(p, fc.as_ref());
+        agrees(&v);
+        assert!(
+            v.refused && v.modulo.iter().any(|c| c == "se-merge-built"),
+            "{v:?}"
+        );
+        // FreeCAD's rollback as a conflict, whatever this run gave: the constraints Silico
+        // names conflicting (-3), nothing else redundant. Agrees.
+        let SilicoSide::Refused(r) = &p.silico else {
+            panic!("{:?}", p.silico);
+        };
+        let named: Vec<usize> = (1..=edited.constraints.len())
+            .filter(|i| {
+                r.elements
+                    .iter()
+                    .any(|id| edited.constraints[i - 1].name == format!("s_{id}"))
+            })
+            .collect();
+        assert_eq!(named.len(), r.elements.len(), "{}: {r:?}", p.name);
+        let as_conflict = {
+            let named = named.clone();
+            doctored(fc, move |fc| {
+                fc.after.code = -3;
+                fc.after.conflicting = named;
+                fc.after.redundant = fc.before.redundant.clone();
+            })
+        };
+        let v = verdict(p, Some(&as_conflict));
+        agrees(&v);
+        assert!(v.refused, "{}: {v:?}", p.name);
+        // From there: Silico's named constraints in neither list, nothing newly conflicting,
+        // or a constraint newly malformed: a difference each.
+        let as_conflict = Some(as_conflict);
+        let unnamed = (1..=edited.constraints.len())
+            .find(|i| !named.contains(i) && !edited.before.conflicting.contains(i))
+            .unwrap();
+        let changes: Vec<(&str, Doctoring)> = vec![
+            (
+                "other constraints conflicting",
+                Box::new(move |fc| fc.after.conflicting = vec![unnamed]),
+            ),
+            (
+                "nothing newly conflicting",
+                Box::new(|fc| fc.after.conflicting = fc.before.conflicting.clone()),
+            ),
+            (
+                "a constraint malformed",
+                Box::new(move |fc| fc.after.malformed.push(unnamed)),
+            ),
+        ];
+        for (what, change) in changes {
+            let v = verdict(p, Some(&doctored(&as_conflict, |fc| change(fc))));
+            assert!(!v.how.is_empty(), "{}: {what}: {v:?}", p.name);
+        }
+    }
+}
+
+#[test]
 fn a_merge_whose_solve_conflicts_from_the_kept_points_place_is_excused_where_freecads_solves() {
     // `sketch-edit-sweep --seed 90 --count 500`'s case 370: p0000002 merged into p0000004
     // leaves n0000005 upright where it starts from the kept point's place, and Silico's solve
