@@ -16666,7 +16666,7 @@
             ]
           },
           "NamedView": {
-            "description": "A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from\n−Y, `right` from +X, `top` from +Z, and the corners combine them.",
+            "description": "A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from\n−Y, `right` from +X, `top` from +Z, and the corners and edges combine them.",
             "enum": [
               "front",
               "back",
@@ -16681,7 +16681,19 @@
               "bottom_front_left",
               "bottom_front_right",
               "bottom_back_left",
-              "bottom_back_right"
+              "bottom_back_right",
+              "top_front",
+              "top_back",
+              "top_left",
+              "top_right",
+              "bottom_front",
+              "bottom_back",
+              "bottom_left",
+              "bottom_right",
+              "front_left",
+              "front_right",
+              "back_left",
+              "back_right"
             ],
             "type": "string"
           },
@@ -21567,7 +21579,7 @@
             ]
           },
           "NamedView": {
-            "description": "A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from\n−Y, `right` from +X, `top` from +Z, and the corners combine them.",
+            "description": "A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from\n−Y, `right` from +X, `top` from +Z, and the corners and edges combine them.",
             "enum": [
               "front",
               "back",
@@ -21582,7 +21594,19 @@
               "bottom_front_left",
               "bottom_front_right",
               "bottom_back_left",
-              "bottom_back_right"
+              "bottom_back_right",
+              "top_front",
+              "top_back",
+              "top_left",
+              "top_right",
+              "bottom_front",
+              "bottom_back",
+              "bottom_left",
+              "bottom_right",
+              "front_left",
+              "front_right",
+              "back_left",
+              "back_right"
             ],
             "type": "string"
           },

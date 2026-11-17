@@ -31,8 +31,9 @@ use crate::sheet::{self, Sheet};
 use crate::shortcuts::{self, Command};
 use crate::sketch::{self, bar::BarAction};
 use crate::start::{self, Warm};
-use crate::tab::{DiskChoice, Tab, said};
+use crate::tab::{DiskChoice, StoppedAt, Tab, TimelineStep, said};
 use crate::theme::{self, FieldKind};
+use crate::toast::{Toast, Toasts};
 use crate::toolbar;
 
 /// How long past [`DISK_CHECK_INTERVAL`] the idle frame comes: a comparison is due once the
@@ -54,6 +55,18 @@ pub const FILTERS_SAID: &str =
 /// does nothing in a dialog, the dialog's OK or Cancel comes first.
 pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload drops what it holds.";
 
+/// What the toast says once a stop the person asked for has stopped the rebuild (the
+/// prototype's `stopRebuild`): how far it got, as `status` counts the plan's steps, if it
+/// says, and the key that starts it again, `keys` (Rebuild's, `Ctrl+B`, `⌘B` on macOS).
+pub fn stopped_words(at: StoppedAt, keys: &str) -> String {
+    match at {
+        StoppedAt::Step { done, steps } => {
+            format!("Rebuild stopped at step {done} of {steps}. Rebuild ({keys}) resumes it.")
+        }
+        StoppedAt::Uncounted => format!("Rebuild stopped. Rebuild ({keys}) resumes it."),
+    }
+}
+
 /// The selection filters' keys pressed this frame, X, E, and V (`crate::shortcuts`), each
 /// taken and its kind given, in that order; none taken while a sketch is open (`in_sketch`),
 /// whose X is Construction and whose picking is its own.
@@ -72,36 +85,31 @@ pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
     .collect()
 }
 
-/// The toast's layer: of the order under the modals ([`modal::UNDER_MODALS`]).
-fn toast_layer() -> egui::LayerId {
-    egui::LayerId::new(modal::UNDER_MODALS, egui::Id::new("toast"))
-}
-
-/// A toast saying `text` over `canvas`'s bottom right (the prototype's `.toast`): drawn in
-/// its own area, above the panes and under any modal ([`modal::UNDER_MODALS`]; the
-/// prototype's `#toasts`, z 650, under `.backdrop`, 700), so one asked while a modal is open
-/// is drawn at once under it, dimmed, its time running; taking no input. SEAM: the
-/// prototype's info icon and its fade, which the UI port adds.
-fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
-    let corner =
-        canvas.right_bottom() - egui::vec2(theme::TOAST_MARGIN_RIGHT, theme::TOAST_MARGIN_BOTTOM);
-    egui::Area::new(toast_layer().id)
-        .order(modal::UNDER_MODALS)
-        .pivot(egui::Align2::RIGHT_BOTTOM)
-        .fixed_pos(corner)
-        .interactable(false)
-        .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(theme::TOAST_BG)
-                .stroke(egui::Stroke::new(theme::BORDER_WIDTH, theme::TOAST_BORDER))
-                .corner_radius(theme::TOAST_CORNER_RADIUS)
-                .shadow(theme::TOAST_SHADOW)
-                .inner_margin(theme::TOAST_PADDING)
-                .show(ui, |ui| {
-                    ui.set_max_width(theme::TOAST_MAX_WIDTH);
-                    ui.label(egui::RichText::new(text).color(theme::TOAST_TEXT));
+/// The timeline's arrows pressed this frame (interact.js's `keydown`: → and ←), each taken,
+/// in the order pressed: a press and each repeat of one held down, as a browser's list
+/// walks; with Shift too, as the prototype takes them, but never with Alt, Ctrl or Command
+/// (the prototype's `altKey` and `isMod` go elsewhere).
+fn timeline_steps(ui: &mut Ui) -> Vec<TimelineStep> {
+    ui.input_mut(|input| {
+        let mut steps = Vec::new();
+        input.events.retain(|event| match event {
+            egui::Event::Key {
+                key: key @ (Key::ArrowRight | Key::ArrowLeft),
+                pressed: true,
+                modifiers,
+                ..
+            } if !modifiers.alt && !modifiers.ctrl && !modifiers.command && !modifiers.mac_cmd => {
+                steps.push(if *key == Key::ArrowRight {
+                    TimelineStep::Next
+                } else {
+                    TimelineStep::Previous
                 });
+                false
+            }
+            _ => true,
         });
+        steps
+    })
 }
 
 /// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
@@ -512,9 +520,10 @@ pub struct App<P: Clients + 'static> {
     ///
     /// [`Pickable::new`]: silico_render::render::Pickable::new
     boxing: Option<crate::boxes::Build>,
-    /// The toast shown over the canvas's bottom right (DESIGN.md's *Toasts*), and when it
-    /// was shown, by egui's clock: F5's word on where the filters are, or a box's.
-    toast: Option<(String, f64)>,
+    /// The toasts shown over the canvas's bottom right (DESIGN.md's *Toasts*), each with
+    /// when it was shown, by egui's clock: F5's word on where the filters are, a box's, an
+    /// undo's, a save's, a stop's.
+    toasts: Toasts,
 }
 
 /// A row of Show changes' "Their change (on disk)": the changed feature's name in the key
@@ -615,7 +624,7 @@ impl<P: Clients + 'static> App<P> {
             silico: "silico".to_owned(),
             documents: directories::UserDirs::new()
                 .and_then(|dirs| dirs.document_dir().map(std::path::Path::to_path_buf)),
-            toast: None,
+            toasts: Toasts::default(),
             boxing: None,
         }
     }
@@ -969,6 +978,12 @@ impl<P: Clients + 'static> App<P> {
                 })
                 .inner;
             self.start_act(ui, act, &mut next_frame);
+            // What the tabs asked to say meanwhile is dropped, as a tab not shown's is (see
+            // below): never shown later out of its context.
+            for tab in &mut self.tabs {
+                tab.take_toasts();
+                tab.take_stopped();
+            }
             self.after_drawing(ui, next_frame, top);
             return;
         }
@@ -1050,23 +1065,30 @@ impl<P: Clients + 'static> App<P> {
             // Where sketch mode's panels float.
             self.canvas = Some(canvas);
             self.disk_banner(ui, canvas, &mut next_frame);
-            self.show_toast(ui, canvas);
+            self.toasts.show(ui.ctx(), canvas);
         });
         let modify_layer = self.sketch_canvas(ui, &mut next_frame);
         self.raise_toast(ui.ctx(), modify_layer);
-        // A toast the tab shown asked for this frame (a box's), drawn from the next; one a tab
-        // not shown asked for (its drag ended as it was left) dropped, never shown later out
-        // of its context.
+        // The toasts the tab shown asked for this frame (a box's, an undo's, a save's, a
+        // stop's), drawn from the next, in the order asked; those a tab not shown asked for
+        // (its drag ended as it was left) dropped, never shown later out of its context.
         let active = self.active_place();
-        let mut asked = None;
+        let mut asked = Vec::new();
+        let rebuild_keys = Command::Rebuild.keys_text(ui.ctx());
         for (at, tab) in self.tabs.iter_mut().enumerate() {
-            let toast = tab.take_toast();
+            let mut toasts = tab.take_toasts();
+            if let Some(at) = tab.take_stopped() {
+                toasts.push(Toast::info(stopped_words(at, &rebuild_keys)));
+            }
             if Some(at) == active {
-                asked = toast;
+                asked = toasts;
             }
         }
-        if let Some(text) = asked {
-            self.toast = Some((text, ui.input(|input| input.time)));
+        if !asked.is_empty() {
+            let now = ui.input(|input| input.time);
+            for toast in asked {
+                self.toasts.push(toast, now);
+            }
             ui.ctx().request_repaint();
         }
         self.after_drawing(ui, next_frame, top);
@@ -1467,10 +1489,13 @@ impl<P: Clients + 'static> App<P> {
     /// text field. Outside a text field too, `?` opens the shortcut sheet; F6 fits the shown
     /// tab's view, Home gives its home view, and Ctrl+1 to Ctrl+7 its standard views
     /// (SolidWorks' numbering); Ctrl+Shift+B rebuilds everything, ignoring the cache; and,
-    /// with a feature selected, F2 types its name over in its own field and Del (or ⌫)
-    /// deletes it (the prototype's `keydown`), Esc dropping a name being typed and the
-    /// document's commands (Save, Close, Undo, and the rest) sending it before they act.
+    /// with a feature selected, F2 types its name over in its own field, Del (or ⌫)
+    /// deletes it, and → and ← select the timeline's next or previous feature, clamped at
+    /// its ends, with no menu open nor a widget focused (the prototype's `keydown`), Esc
+    /// dropping a name being typed and the document's commands (Save, Close, Undo, and the
+    /// rest) sending it before they act.
     /// In sketch mode, Del (or ⌫) deletes the sketch's selection instead, never a feature,
+    /// the arrows walk nothing,
     /// F2 says why it renames nothing (as its menu item is off), and Ctrl+Enter finishes
     /// the sketch.
     /// With a modal open (the sheet, What's Wrong, and the over-define prompt too), none
@@ -1587,6 +1612,13 @@ impl<P: Clients + 'static> App<P> {
                 save_panel = !tab.editing() && !tab.closing() && !tab.saving_as();
             } else if tab.unsaved() && !tab.editing() {
                 tab.save(&sessions, false);
+            } else if !tab.editing() && !tab.nothing_to_save() {
+                // Nothing unsaved, but the file not known to match (no comparison ended yet,
+                // or it changed, went, or can't be read): the save queued. With a transaction
+                // open (its edits undone back to `begin`'s document), it's the commit, the
+                // core's answer deciding; with none, it only asks `nothing_to_save` again,
+                // sending nothing.
+                tab.save(&sessions, false);
             }
         }
         if free(self)
@@ -1597,9 +1629,14 @@ impl<P: Clients + 'static> App<P> {
             }
             if keys.undo && tab.undoable() {
                 tab.step(&sessions, true);
+            } else if keys.undo {
+                // The prototype's `undo` with nothing to take back: said so, where it's so.
+                tab.nothing_to_step(true);
             }
             if keys.redo && tab.redoable() {
                 tab.step(&sessions, false);
+            } else if keys.redo {
+                tab.nothing_to_step(false);
             }
         }
         if save_panel && free(self) {
@@ -1770,6 +1807,16 @@ impl<P: Clients + 'static> App<P> {
         // F5: where the filters are (the prototype's, no command of the registry's).
         let filters_said =
             !typing && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::F5));
+        // → and ←: the timeline's next or previous feature (the prototype's, no command of
+        // the registry's), never a field's keys, nor a menu's (which step its items), nor
+        // with a widget focused (egui moves the focus by them), nor in sketch mode (whose
+        // keys go no further, as the prototype's sketch takes them).
+        let focused = ui.ctx().memory(|memory| memory.focused()).is_some();
+        let steps = if typing || focused || in_sketch || egui::Popup::is_any_open(ui.ctx()) {
+            Vec::new()
+        } else {
+            timeline_steps(ui)
+        };
         // No document shown (the start page): nothing below acts, but an Esc taken asks for
         // its frame, as one with a document shown does.
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
@@ -1786,7 +1833,8 @@ impl<P: Clients + 'static> App<P> {
             // The toolbar shows SOLID, whose SELECT panel holds the filters, whenever no
             // sketch is open: there's no other tab to switch from (a sketch's SKETCH is its
             // mode's, left by Finish or Cancel).
-            self.toast = Some((FILTERS_SAID.to_owned(), ui.input(|input| input.time)));
+            let now = ui.input(|input| input.time);
+            self.toasts.push(Toast::info(FILTERS_SAID), now);
         }
         let selected = tab.selection().feature().cloned();
         // Each only where its menu item would be on: else its reason is said, as the item's
@@ -1819,6 +1867,9 @@ impl<P: Clients + 'static> App<P> {
                 Some(Some(why)) => tab.message = Some(why),
                 None => {}
             }
+        }
+        for step in steps {
+            tab.select_beside(step);
         }
         // Whether Esc goes on down its chain (section 3's order, the prototype's `escChain`):
         // a dialog's Esc, or `Tab::escape`. Not with a feature's name being typed: the name
@@ -1913,7 +1964,15 @@ impl<P: Clients + 'static> App<P> {
         )
     }
 
-    /// The toast shown this frame, if one is, raised over everything else of its order
+    /// The newest toast shown now, if one is, and when it was shown, by egui's clock.
+    pub fn toast(&self) -> Option<(&str, f64)> {
+        self.toasts
+            .shown()
+            .last()
+            .map(|shown| (shown.toast.text.as_str(), shown.at))
+    }
+
+    /// The toasts shown this frame, if any are, raised over everything else of its order
     /// (egui's `Middle`, under every modal): over sketch mode's bar and palette and the
     /// timeline's rename field, as the prototype's `#toasts` (z 650) are over `.sketch-bar`
     /// (26) and `.palette` (22), so a press that raises one of them (egui raises an area
@@ -1922,37 +1981,19 @@ impl<P: Clients + 'static> App<P> {
     /// sort keeps the order of the layers that each ask to be on top, so a box first shown
     /// after the toast would stay over it, but a layer's sublayer is placed straight after it.
     fn raise_toast(&self, ctx: &egui::Context, modify: Option<egui::LayerId>) {
-        if self.toast.is_none() {
+        if self.toasts.shown().is_empty() {
             return;
         }
-        let layer = toast_layer();
+        let layer = crate::toast::layer();
         ctx.move_to_top(layer);
         if let Some(modify) = modify {
             ctx.set_sublayer(modify, layer);
         }
     }
 
-    /// The toast, if one is shown, over `canvas`'s bottom right, until
-    /// [`theme::TOAST_SECONDS`] have passed since it was shown; a frame asked for then, to
-    /// take it down.
-    fn show_toast(&mut self, ui: &Ui, canvas: egui::Rect) {
-        let Some((text, at)) = &self.toast else {
-            return;
-        };
-        let now = ui.input(|input| input.time);
-        let left = theme::TOAST_SECONDS - (now - at);
-        if left.is_nan() || left <= 0.0 {
-            self.toast = None;
-            return;
-        }
-        toast(ui.ctx(), canvas, text);
-        ui.ctx()
-            .request_repaint_after(Duration::from_secs_f64(left));
-    }
-
-    /// The toast shown now, if one is, and when it was shown, by egui's clock.
-    pub fn toast(&self) -> Option<(&str, f64)> {
-        self.toast.as_ref().map(|(text, at)| (text.as_str(), *at))
+    /// Every toast shown now, oldest first, each with when it was shown.
+    pub fn toasts(&self) -> &[crate::toast::Shown] {
+        self.toasts.shown()
     }
 
     /// Reload the tab of session `id` (Trevin's ask of 2026-11-09): asking first, naming
@@ -1968,7 +2009,7 @@ impl<P: Clients + 'static> App<P> {
         if tab.in_dialog() {
             // As Rebuild everything does nothing in a dialog: the dialog's OK or Cancel
             // first.
-            self.toast = Some((RELOAD_IN_DIALOG.to_owned(), now));
+            self.toasts.push(Toast::info(RELOAD_IN_DIALOG), now);
             return;
         }
         // An untitled part's edits are all it is: it's only rebuilt, never asked about.
@@ -3400,6 +3441,20 @@ mod tests {
     use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
     use crate::theme;
+
+    #[test]
+    fn a_stop_says_how_far_it_got_as_status_counted_it_or_only_that_it_stopped() {
+        use crate::tab::StoppedAt;
+        // The prototype's `stopRebuild` words, with the app's key.
+        assert_eq!(
+            super::stopped_words(StoppedAt::Step { done: 3, steps: 4 }, "Ctrl+B"),
+            "Rebuild stopped at step 3 of 4. Rebuild (Ctrl+B) resumes it."
+        );
+        assert_eq!(
+            super::stopped_words(StoppedAt::Uncounted, "⌘B"),
+            "Rebuild stopped. Rebuild (⌘B) resumes it."
+        );
+    }
 
     #[test]
     fn the_sketch_bars_room_is_clear_of_the_viewcube_unless_that_leaves_a_name_too_little() {
