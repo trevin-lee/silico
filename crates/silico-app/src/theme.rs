@@ -766,6 +766,13 @@ pub const TOOLTIP_SHADOW: Shadow = Shadow {
     color: with_alpha(GRAY_0, 153),
 };
 
+/// How long a view transition takes, in seconds (DESIGN.md's *egui mapping*: "a 200 ms view
+/// transition"; the prototype's `animateTo` takes 220 ms by default, DESIGN.md the 200):
+/// Home, Fit, a named view, a ViewCube click, and Look At ease to their view over it
+/// (`crate::transition`). The app's own, not egui's `animation_time`, which only says
+/// whether the view moves at all (0: it jumps).
+pub const VIEW_TRANSITION_SECONDS: f64 = 0.2;
+
 /// The ViewCube's side, and its margin from the canvas's top and right (the prototype's
 /// viewport.js:101, `CUBE` and `CUBE_M`).
 pub const VIEW_CUBE_SIDE: f32 = 92.0;
@@ -2840,6 +2847,8 @@ mod tests {
         // viewport.js:101: `CUBE = 92, CUBE_M = 16`.
         assert_eq!(VIEW_CUBE_SIDE, 92.0);
         assert_eq!(VIEW_CUBE_MARGIN, 16.0);
+        // DESIGN.md's *egui mapping*: "a 200 ms view transition".
+        assert_eq!(VIEW_TRANSITION_SECONDS, 0.2);
         // `.nav-bar`: 12 from the bottom; `.nav-bar .ab-btn` 24 high, 3 of padding, and a
         // 1 border. Across: five buttons of `min-width: 26px`, the display menu's two 14
         // icons, 4 apart, in 5 of padding at each side, the grid's 26, the separator's 1

@@ -36,19 +36,20 @@ use tempfile::TempDir;
 use ui::{
     A_BOX, ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT,
     FakeBrowser, In, PLATE, PLATE_END, SKETCHED_EXAMPLE, TRIAD_DOT, TWO_BOXES, added, advance,
-    answer_question, anywhere, arrow_dots, arrow_shafts, begin_sketch_on, body_of, boxed,
-    button_event, choose, chosen, click_in_one_frame, click_over_two_frames, close_window, create,
-    create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag, edit_plates_pad,
-    every_face, everything, f2_typed, faces_made_by, failing_kernel, field, fields_of,
-    from_the_front, hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state,
-    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
-    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
-    open_export, pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away,
-    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
-    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
-    stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
-    tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
-    view_label, view_label_node, view_mut, wheel, window_told, written,
+    animation_time, answer_question, anywhere, apply_look, arrow_dots, arrow_shafts,
+    begin_sketch_on, body_of, boxed, button_event, choose, chosen, click_in_one_frame,
+    click_over_two_frames, close_window, create, create_sketch, cursor, dialog, dialog_length,
+    dialog_open, double_click, drag, edit_plates_pad, every_face, everything, f2_typed,
+    faces_made_by, failing_kernel, field, fields_of, from_the_front, hand_clock, hover_item,
+    image_centre, in_status_bar, lavapipe_render_state, leave_sketch, leave_sketch_unsettled,
+    left_down_at, left_up_at, looks_from, meshes_settled, modify, modify_field, move_to,
+    name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export, pad_extent,
+    pads_extent, plain_read, plates_pad_from_the_front, pointer_away, press, prompt, redo_by_key,
+    rename_field, repaint_delay, retype, reversed_ticked, save_as_of, select, selected_names,
+    settled, shapes_painted, sketch_mode, sketch_read, sorted_fields, stand_in_sessions, step,
+    step_until, tab_named, tessellated, text_of, the_viewport, tooltip_title, triad_origin,
+    type_in, type_name, undo_by_key, up, view, view_direction, view_label, view_label_node,
+    view_mut, wheel, window_told, written,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -112,7 +113,7 @@ impl Fixture {
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
         // The app's look, as main.rs gives it: its fonts above all, without which every
         // text lays out empty and a field's cursor never leaves its start.
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 
@@ -342,7 +343,7 @@ fn in_window(
             .with_size((window + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the panes", |h| {
         h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
@@ -1121,7 +1122,7 @@ fn at_the_windows_least_width_the_app_bar_toolbar_and_status_bar_fit() {
             .with_size((least.0 + 2.0 * MARGIN, least.1 + 2.0 * MARGIN))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the timeline read", |h| {
         h.state()
@@ -2855,7 +2856,7 @@ fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
             };
             h.set_render_every_step(true);
             // The app's fonts, look, and icons, as main.rs sets them, so the shot has words.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("blocks.silico", BLOCK_AND_PLATE);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "its features", |h| {
@@ -3115,7 +3116,7 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
                 App::new(Arc::clone(&f.sessions)),
             )
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
     assert!(f.kernel.wait_running(2, WAIT));
@@ -3890,7 +3891,7 @@ fn the_window_for_missing_workers_says_each_and_quits() {
         |ui, app: &mut Missing| app.frame(ui),
         Missing::new(lines.clone()),
     );
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     // Laid out again in the app's fonts, so the click lands where Quit is drawn.
     h.step();
     for line in &lines {
@@ -9209,7 +9210,7 @@ fn a_stopped_rebuild_with_nothing_published_reads_nothing_more_and_asks_for_no_f
                 App::new(Arc::clone(&f.sessions)),
             )
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     let (mut h, hold) = first_rebuild_stopped_in(&f, h);
     quiet_wakes(&mut h);
     let woken = h.state().wakes();
@@ -10550,7 +10551,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h.state_mut().open(path.to_str().unwrap(), false);
         (h, record)
     }
@@ -12537,7 +12538,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             // Each frame drawn: egui's paint callbacks prepared and painted, as a window's.
             h.set_render_every_step(true);
             let path = f.file("box.silico", A_BOX);
@@ -12750,7 +12751,7 @@ fn a_viewport_with_no_renderer_says_why_in_its_pane() {
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     step(&mut h);
     // With no document, the start page shows, and no viewport.
     assert!(h.query_by_role_and_label(Role::Pane, "Viewport").is_none());
@@ -12848,7 +12849,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h.state_mut().open(path.to_str().unwrap(), false);
         meshes_settled(&mut h);
         h.state_mut().tabs_mut()[0].watch = Some(watching(&seen));
@@ -13684,7 +13685,7 @@ impl Fixture {
         let h = Harness::builder()
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 
@@ -14952,7 +14953,7 @@ fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             // As main.rs does, once at startup.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -15271,7 +15272,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             // As main.rs does, once at startup.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             step(&mut h);
             let ppp = h.ctx.pixels_per_point();
@@ -15438,7 +15439,7 @@ impl Fixture {
         let h = Harness::builder()
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 
@@ -16318,7 +16319,7 @@ fn the_start_page_draws_in_the_themes_colours_on_lavapipe() {
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             recents_read(&mut h);
             for _ in 0..5 {
@@ -16420,7 +16421,7 @@ impl Fixture {
     /// `names` open, each the example, the last shown.
     fn themed_with(&self, names: &[&str]) -> AppHarness {
         let mut h = self.app();
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         for name in names {
             let path = self.file(name, EXAMPLE);
             open_and_wait(&mut h, &path);
@@ -16936,7 +16937,7 @@ fn the_app_bar_draws_the_shown_tab_in_gray_200_on_lavapipe() {
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("bracket.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -17530,7 +17531,7 @@ fn toolbar_with(
             },
             stub,
         );
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.step();
     h.step();
     h
@@ -17881,7 +17882,7 @@ fn the_toolbar_draws_solid_in_gray_200_and_its_hovered_button_in_gray_300_on_lav
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("bracket.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -18835,7 +18836,7 @@ fn the_browsers_rows_are_filled_as_the_prototype_fills_them_and_its_mark_is_red_
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("sketched.silico", SKETCHED_FAILING);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -19276,7 +19277,7 @@ fn the_timeline_draws_a_selected_item_blue_and_a_failed_one_red_on_lavapipe() {
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("ladder.silico", LADDER);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -20036,7 +20037,7 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             // Two features, each healthy, with no warning's line along its bottom, which
             // would take the ring's place (`.warn`'s `box-shadow`, after
@@ -21036,6 +21037,440 @@ fn f6_is_the_navigation_bars_fit_and_home_the_view_cubes_home() {
         .click();
     step(&mut h);
     assert_eq!(view(&h).camera(), &home);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- View transitions (DESIGN.md's *egui mapping*; the prototype's `VP.animateTo`) ----
+//
+// Expected values by hand from the prototype's ease, `2t²` to the middle and `1 − (2 − 2t)²/2`
+// after it, over the app's 200 ms at the fixture's sixtieth of a second a frame (12 frames):
+// 3 frames in, 0.125 of the way; 6, half; 7, 1 − (5/6)²/2 = 47/72; and the azimuth and the
+// elevation each moved by that much, the azimuth the short way round.
+
+use silico_app::viewport::ViewAsk;
+use silico_core::views::NamedView;
+
+/// The camera the fake renderer was last given.
+fn drawn_camera(record: &Record) -> silico_protocol::Camera {
+    record.lock().unwrap().frames.last().unwrap().camera.clone()
+}
+
+/// The azimuth and the elevation of `camera`'s view, in degrees, as the prototype's camera
+/// holds them: the azimuth from the front (−y) toward +x, the elevation up from level.
+fn azimuth_and_elevation(camera: &silico_protocol::Camera) -> (f64, f64) {
+    let d = view_direction(camera);
+    (
+        libm::atan2(d[0], -d[1]).to_degrees(),
+        libm::asin(d[2]).to_degrees(),
+    )
+}
+
+/// `frames` frames stepped with a transition under way through each, its label `said`, a
+/// frame asked for at once after each.
+#[track_caller]
+fn transition_frames(h: &mut AppHarness, frames: usize, said: &str) {
+    for frame in 0..frames {
+        step(h);
+        assert!(view(h).transition().is_some(), "ended at frame {frame}");
+        assert_eq!(view_label(h), said);
+        assert_eq!(repaint_delay(h), Some(Duration::ZERO));
+    }
+}
+
+/// The app's own frames idle: one asked for at most [`IDLE_FRAME`] on, never at once.
+fn frames_idle(h: &AppHarness) -> bool {
+    repaint_delay(h).is_some_and(|delay| delay > Duration::from_millis(100) && delay <= IDLE_FRAME)
+}
+
+#[test]
+fn a_named_view_eases_there_over_200_ms_and_ends_on_the_camera_a_jump_gives() {
+    // With egui's animation time at 0, as the harness sets it, Ctrl+4 and Ctrl+1 are taken
+    // in the frame they're given: the right view's camera and the front's, the cut's box's
+    // centre their target. At egui's own 0.2, the right view asked (as Ctrl+4 and the
+    // cube's menu ask it) is taken that frame and the front drawn, then eased from: 3 frames on (0.05 s) the azimuth 0.125 of 90°,
+    // 11.25°, level, the eye as far out; 6 frames on half, 45°, the height halfway between
+    // the two views'; 12 frames on (0.2 s) the right view's camera to the bit, as the jump
+    // gave it. The label names the front until that frame and the right from it; a frame
+    // is asked for at once until then, and the frames are idle after.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+    step(&mut h);
+    let right = view(&h).camera().clone();
+    assert!(view(&h).transition().is_none());
+    assert!(looks_from(&right, [1.0, 0.0, 0.0]));
+    assert_eq!(view_label(&h), "Orthographic · Right");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let front = view(&h).camera().clone();
+    assert!(view(&h).transition().is_none());
+    assert!(looks_from(&front, [0.0, -1.0, 0.0]));
+    assert_eq!(drawn_camera(&record), front);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    let target = [20.0, 10.0, 5.0];
+    near(front.target, target, 1e-12);
+    near(right.target, target, 1e-12);
+    let out = |camera: &silico_protocol::Camera| {
+        let d = minus(camera.eye, camera.target);
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    };
+    assert!((out(&front) - out(&right)).abs() < 1e-9);
+    let heights = (ortho_height(&front), ortho_height(&right));
+    assert_ne!(heights.0, heights.1);
+
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    step(&mut h);
+    let start = h.ctx.input(|input| input.time);
+    assert!(view(&h).transition().is_some());
+    assert_eq!(view(&h).camera(), &front);
+    assert_eq!(drawn_camera(&record), front);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    let frame = 1.0 / 60.0;
+    let elapsed = |h: &AppHarness| h.ctx.input(|input| input.time) - start;
+
+    transition_frames(&mut h, 3, "Orthographic · Front");
+    assert!((elapsed(&h) - 3.0 * frame).abs() < 1e-6, "{}", elapsed(&h));
+    let quarter = view(&h).camera().clone();
+    assert_eq!(drawn_camera(&record), quarter);
+    let (azimuth, elevation) = azimuth_and_elevation(&quarter);
+    assert!((azimuth - 11.25).abs() < 1e-4, "{azimuth}");
+    assert!(elevation.abs() < 1e-9, "{elevation}");
+    near(quarter.target, target, 1e-9);
+    assert!((out(&quarter) - out(&front)).abs() < 1e-9);
+    near(quarter.up, [0.0, 0.0, 1.0], 1e-12);
+
+    transition_frames(&mut h, 3, "Orthographic · Front");
+    let half = view(&h).camera().clone();
+    assert_eq!(drawn_camera(&record), half);
+    let (azimuth, _) = azimuth_and_elevation(&half);
+    assert!((azimuth - 45.0).abs() < 1e-4, "{azimuth}");
+    let between = (heights.0 + heights.1) / 2.0;
+    assert!(
+        (ortho_height(&half) - between).abs() < 1e-6 * between,
+        "{} against {between}",
+        ortho_height(&half)
+    );
+
+    transition_frames(&mut h, 5, "Orthographic · Front");
+    step(&mut h);
+    assert!((elapsed(&h) - 12.0 * frame).abs() < 1e-6, "{}", elapsed(&h));
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(drawn_camera(&record), right);
+    assert_eq!(view_label(&h), "Orthographic · Right");
+    meshes_settled(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(frames_idle(&h), "{:?}", repaint_delay(&h));
+    assert_eq!(view(&h).camera(), &right);
+    // The right view asked again where it is: nothing to ease, taken at once.
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &right);
+    // The top asked, then the front 2 frames on: the front eased to from where the top's
+    // had reached, the label naming the right, where the first began, until the front's
+    // end, then the front, to the bit.
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Top));
+    step(&mut h);
+    transition_frames(&mut h, 2, "Orthographic · Right");
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Front));
+    transition_frames(&mut h, 12, "Orthographic · Right");
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &front);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_middle_drag_or_the_wheel_mid_transition_ends_it_where_the_view_had_reached() {
+    // From the front, the right view asked, 6 frames: half the way, 45°. Then the middle
+    // button pressed: that frame ends it where it was drawn, what the press was on, so at
+    // 45°: the pan's 40 points left move the target 40 points' worth along that view's
+    // right, (cos 45°, sin 45°, 0), and the view never goes on to the right. Then the top
+    // view from there (its azimuth 0, its right +x), 3 frames, and the wheel: its frame
+    // moves it on a fourth (2 · (1/3)² = 2/9 of the way: the azimuth 45° · 7/9 = 35°, the
+    // elevation 90° · 2/9 = 20°) and ends it, the zoom keeping that view's direction.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    step(&mut h);
+    transition_frames(&mut h, 6, "Orthographic · Front");
+    let press = |h: &AppHarness, at: eframe::egui::Pos2, pressed: bool| {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    };
+    press(&h, at, true);
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    let reached = view(&h).camera().clone();
+    let (azimuth, elevation) = azimuth_and_elevation(&reached);
+    assert!((azimuth - 45.0).abs() < 1e-4, "{azimuth}");
+    assert!(elevation.abs() < 1e-9, "{elevation}");
+    // Named for the view it's at once the transition ends: none.
+    assert_eq!(view_label(&h), "Orthographic");
+    let to = at - eframe::egui::vec2(40.0, 0.0);
+    h.hover_at(to);
+    step(&mut h);
+    press(&h, to, false);
+    step(&mut h);
+    let mm = ortho_height(&reached) / f64::from(the_viewport(&h).height());
+    let a = 45f64.to_radians();
+    let panned = view(&h).camera().clone();
+    let along = [40.0 * mm * libm::cos(a), 40.0 * mm * libm::sin(a), 0.0];
+    near(
+        panned.target,
+        std::array::from_fn(|k| reached.target[k] + along[k]),
+        1e-3 * mm,
+    );
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &panned);
+
+    h.hover_at(at);
+    step(&mut h);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Top));
+    step(&mut h);
+    transition_frames(&mut h, 3, "Orthographic");
+    h.event(eframe::egui::Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, 50.0),
+        phase: eframe::egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    let zoomed = view(&h).camera().clone();
+    let (azimuth, elevation) = azimuth_and_elevation(&zoomed);
+    assert!((azimuth - 35.0).abs() < 1e-4, "{azimuth}");
+    assert!((elevation - 20.0).abs() < 1e-4, "{elevation}");
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &zoomed);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_a_face_during_a_transition_ends_it_where_it_was_drawn_and_selects_the_face() {
+    // At egui's 0.2, Ctrl+1 from the home view, two frames more, then a click on the box's
+    // front face: its press ends the transition with the camera it pressed on, unmoved, so
+    // the pick asked of it is answered and the face selected by its name.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    step(&mut h);
+    step(&mut h);
+    assert!(view(&h).transition().is_some());
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    assert!(view(&h).transition().is_some());
+    let drawn = view(&h).camera().clone();
+    let centre = pixel_at(&h, at);
+    answering(&record, Some((1, Face(3), centre)), None);
+    button_event(
+        &h,
+        at,
+        eframe::egui::PointerButton::Primary,
+        true,
+        Modifiers::NONE,
+    );
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &drawn);
+    button_event(
+        &h,
+        at,
+        eframe::egui::PointerButton::Primary,
+        false,
+        Modifiers::NONE,
+    );
+    step(&mut h);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_press_in_the_frame_a_transitions_time_runs_out_lands_on_the_view_asked_for() {
+    // At egui's 0.2 the right view asked from the front, 11 frames of its 12 stepped (the
+    // last drawn 11/12 of its time in, ease 1 − (1/6)²/2 = 71/72 of the way), then the middle
+    // button pressed in the twelfth: its time is up, so the press ends it on the right view
+    // to the bit, named, not where the eleventh drew it, 1.25° short.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+    step(&mut h);
+    let right = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    transition_frames(&mut h, 12, "Orthographic · Front");
+    let (azimuth, _) = azimuth_and_elevation(view(&h).camera());
+    assert!((azimuth - 90.0 * 71.0 / 72.0).abs() < 1e-3, "{azimuth}");
+    let middle = |h: &AppHarness, pressed: bool| {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    };
+    middle(&h, true);
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(view_label(&h), "Orthographic · Right");
+    middle(&h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_projection_chosen_mid_transition_takes_the_view_asked_for_in_it() {
+    // At egui's 0, Ctrl+4 then the cube menu's Perspective: the right view in perspective,
+    // named so. Back to the front, orthographic; then at 0.2 the right view asked and, 3
+    // frames on, Perspective chosen: the transition ends on that same camera, named.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let choose = |h: &mut AppHarness, word: &str| {
+        h.get_by_role_and_label(Role::Menu, "View cube options")
+            .get_by_label(word)
+            .click();
+        step(h);
+        step(h);
+    };
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+    step(&mut h);
+    cube_options(&mut h);
+    choose(&mut h, "Perspective");
+    let right = view(&h).camera().clone();
+    assert!(view(&h).perspective());
+    assert!(looks_from(&right, [1.0, 0.0, 0.0]));
+    assert_eq!(view_label(&h), "Perspective · Right");
+    cube_options(&mut h);
+    choose(&mut h, "Orthographic");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    animation_time(&h, 0.2);
+    cube_options(&mut h);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    transition_frames(&mut h, 3, "Orthographic · Front");
+    choose(&mut h, "Perspective");
+    assert!(view(&h).transition().is_none());
+    assert!(view(&h).perspective());
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(view_label(&h), "Perspective · Right");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A view asked for, by name, and how.
+type Asked = (&'static str, fn(&mut AppHarness));
+
+#[test]
+fn home_fit_and_look_at_ease_to_the_camera_each_jump_gives() {
+    // From the front panned off, each of Home (its key and the cube's), F6, the navigation
+    // bar's Fit, and Look At at the left face: at egui's animation time 0 the view it gives
+    // at once; at 0.2 a transition under way from the frame it's asked in, a frame asked for
+    // at once, and at its end the same camera to the bit.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let mut start = view(&h).camera().clone();
+    start.eye[0] += 7.0;
+    start.target[0] += 7.0;
+    let asks: [Asked; 5] = [
+        ("Home", |h| h.key_press(Key::Home)),
+        ("the cube's Home", |h| {
+            h.get_by_role_and_label(Role::Group, "ViewCube")
+                .get_by_label("Home view")
+                .click();
+        }),
+        ("F6", |h| h.key_press(Key::F6)),
+        ("Fit", |h| {
+            h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+                .get_by_label("Fit")
+                .click();
+        }),
+        ("Look At", |h| {
+            h.state_mut().tabs_mut()[0].look_at_face([-1.0, 0.0, 0.0]);
+        }),
+    ];
+    for (name, ask) in asks {
+        animation_time(&h, 0.0);
+        view_mut(&mut h).set_camera(start.clone());
+        step(&mut h);
+        ask(&mut h);
+        step(&mut h);
+        step(&mut h);
+        assert!(view(&h).transition().is_none(), "{name}");
+        let jumped = view(&h).camera().clone();
+        assert_ne!(jumped, start, "{name}");
+        animation_time(&h, 0.2);
+        view_mut(&mut h).set_camera(start.clone());
+        // Settled, any read it wants answered, and the frames idle.
+        meshes_settled(&mut h);
+        step_until(&mut h, "idle frames", frames_idle);
+        ask(&mut h);
+        step(&mut h);
+        // Under way, and the next frame asked for at once, even where it began in a frame
+        // with no input and the camera not yet moved (Look At's), or after the frame's own
+        // ask (the cube's and the bar's are taken after the canvas is drawn).
+        assert!(view(&h).transition().is_some(), "{name}");
+        assert_eq!(repaint_delay(&h), Some(Duration::ZERO), "{name}");
+        step(&mut h);
+        assert!(view(&h).transition().is_some(), "{name}");
+        assert_ne!(view(&h).camera(), &jumped, "{name}");
+        step_until(&mut h, "the transition's end", |h| {
+            view(h).transition().is_none()
+        });
+        assert_eq!(view(&h).camera(), &jumped, "{name}");
+    }
+    // A camera set as a control sets it, mid-transition: taken, and the transition over.
+    h.key_press(Key::Home);
+    step(&mut h);
+    assert!(view(&h).transition().is_some());
+    view_mut(&mut h).set_camera(start.clone());
+    for _ in 0..15 {
+        step(&mut h);
+    }
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &start);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -30250,7 +30685,7 @@ fn opened_scaled(
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
     // The app's look, as main.rs gives it and `Fixture::app` does.
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the timeline read", |h| {
         h.state()
@@ -34555,7 +34990,7 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
             };
             h.set_render_every_step(true);
             // In the theme, its fonts and icons, as main.rs applies them: for the screenshot.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
             meshes_settled(&mut h);
@@ -36648,7 +37083,7 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
             meshes_settled(&mut h);
@@ -38441,7 +38876,7 @@ fn on_lavapipe_a_features_card_is_titled_by_its_name_and_its_message_wraps_acros
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("blocks.silico", THREE_BLOCKS);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "rebuilt with its two errors", |h| {
@@ -38498,7 +38933,7 @@ fn on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings() {
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("blocks.silico", THREE_BLOCKS);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "rebuilt with its two errors", |h| {
@@ -39237,7 +39672,7 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
         h.set_render_every_step(true);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         let path = f.file("block.silico", BLOCK_AND_SKETCH);
         h.state_mut().open(path.to_str().unwrap(), false);
         step_until(&mut h, "rebuilt", |h| status_said(h, "Rebuilt").is_some());
@@ -39274,7 +39709,7 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
 /// a field's text is laid out and typed in as it is for a person.
 fn opened_themed(f: &Fixture, name: &str, text: &str) -> AppHarness {
     let (h, _) = f.opened(name, text);
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h
 }
 
@@ -40653,7 +41088,7 @@ fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_car
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             // Opened with the pin already widened (an upstream edit made before it was
             // saved): the broken fillet builds nothing, so the cut's body is drawn, whose
             // elements the real box's mesh has, as a built fillet's it wouldn't.
@@ -42805,7 +43240,13 @@ fn select_others_boxes_are_kept_through_the_body_hidden_and_the_tab_hidden_made_
     // The tab hidden mid-drag (its drag's end given it unshown, as another document's tab is
     // shown over it), and shown again.
     h.hover_at(at);
-    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    button_event(
+        &h,
+        at,
+        eframe::egui::PointerButton::Primary,
+        true,
+        Modifiers::NONE,
+    );
     step(&mut h);
     // Another box (another key, so its meshes aren't the box's: the core gives a model's
     // meshes to every session that reads them, each tab making their boxes).
@@ -44953,7 +45394,7 @@ fn on_lavapipe_a_shown_sketchs_line_is_drawn_on_its_face_in_eguis_image_and_its_
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("box.silico", &boxed_front_line());
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -51855,3 +52296,603 @@ fn the_plane_whose_item_has_the_keys_focus_is_lit() {
 }
 
 // ---- #487: while a modal asks, nothing behind it takes input ----
+
+// ---- The start page's thumbnails (`silico_app::thumbs`) ----
+
+/// Sessions on the fake kernel that render through the core's stand-in renderer, which
+/// answers each render with `PNG {width}x{height}` and records its scene; each file compared
+/// on disk, and reloaded when it changes, if `watch`.
+fn thumbnailed_with(watch: bool) -> (Fixture, Arc<silico_core::fake::FakeRenderer>) {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let sketches = FakeSketches::new();
+    let renderer = Arc::new(silico_core::fake::FakeRenderer::new());
+    let sessions = stand_in_sessions(&dir, &kernel, &sketches);
+    let sessions = if watch {
+        let now: Clock = Arc::new(Instant::now);
+        sessions
+            .watching_disk(Duration::ZERO, Arc::new(plain_read), now)
+            .unwrap()
+    } else {
+        sessions
+    };
+    let sessions = sessions.rendering(Arc::clone(&renderer));
+    let f = Fixture {
+        dir,
+        kernel,
+        sketches,
+        sessions: Arc::new(sessions),
+    };
+    (f, renderer)
+}
+
+/// [`thumbnailed_with`], not watching the disk.
+fn thumbnailed() -> (Fixture, Arc<silico_core::fake::FakeRenderer>) {
+    thumbnailed_with(false)
+}
+
+impl Fixture {
+    /// Where these tests keep the thumbnails: beside the recent documents, not yet made.
+    fn thumbs_folder(&self) -> PathBuf {
+        self.dir.path().join("app-data").join("thumbnails")
+    }
+
+    /// The app keeping its recent documents and their thumbnails, the list read.
+    fn thumbnailing(&self) -> AppHarness {
+        let (file, folder) = (self.recents_file(), self.thumbs_folder());
+        let mut h = self.app_made(|app| {
+            app.remembering(Recents::at(file))
+                .thumbnailing(silico_app::thumbs::Thumbs::at(folder))
+        });
+        recents_read(&mut h);
+        h
+    }
+
+    /// The list of recent documents written as `paths`, before the app reads it.
+    fn listing(&self, paths: &[&Path]) {
+        std::fs::create_dir_all(self.recents_file().parent().unwrap()).unwrap();
+        let lines: Vec<&str> = paths.iter().map(|path| path.to_str().unwrap()).collect();
+        std::fs::write(
+            self.recents_file(),
+            format!("silico recent-documents 1\n{}\n", lines.join("\n")),
+        )
+        .unwrap();
+    }
+
+    /// The names of the files in the thumbnails' folder, sorted: none before it's made.
+    fn thumb_files(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.thumbs_folder()) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+/// The name a thumbnail of `bytes` is kept by: their SHA-256 in lower-case hex, `.png`.
+fn thumb_of(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(bytes);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{hex}.png")
+}
+
+/// The app's thumbnails.
+fn thumbs(h: &AppHarness) -> &silico_app::thumbs::Thumbs {
+    h.state().thumbs().unwrap()
+}
+
+/// A PNG, 260 by 160, of one colour, as the png crate encodes it.
+fn plain_png(rgb: [u8; 3]) -> Vec<u8> {
+    let (width, height) = (260, 160);
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    let data: Vec<u8> = (0..width * height).flat_map(|_| rgb).collect();
+    writer.write_image_data(&data).unwrap();
+    writer.finish().unwrap();
+    out
+}
+
+/// The picture in the thumbnail's place of the recent document `name`'s row, if one is drawn
+/// there: the texture of a rectangle filling the place inside its 1-point border.
+fn thumb_drawn(h: &AppHarness, name: &str) -> Option<eframe::egui::TextureId> {
+    use silico_app::theme;
+    let row = h.get_by_role_and_label(Role::Button, name).rect();
+    // `.recent-row`'s 6 in from its left, 52 by 40 on its middle; its border 1 wide.
+    let thumb = eframe::egui::Rect::from_min_size(
+        eframe::egui::pos2(row.left() + 6.0, row.center().y - 20.0),
+        eframe::egui::vec2(52.0, 40.0),
+    );
+    let inside = thumb.shrink(1.0);
+    assert_eq!(
+        (theme::START_RECENT_PADDING_LEFT, theme::START_THUMB_WIDTH),
+        (6.0, 52.0)
+    );
+    shapes_painted(h).into_iter().find_map(|shape| match shape {
+        eframe::egui::Shape::Rect(rect)
+            if (rect.rect.min - inside.min).length() < 1e-3
+                && (rect.rect.max - inside.max).length() < 1e-3 =>
+        {
+            rect.brush.map(|brush| brush.fill_texture_id)
+        }
+        _ => None,
+    })
+}
+
+/// The app bar's Home clicked: the start page shown over the tabs.
+fn home_shown(h: &mut AppHarness) {
+    home_button(h).click();
+    step_until(h, "the start page", start_shown);
+}
+
+/// The tab `name` closed by its Close, and gone.
+fn closed(h: &mut AppHarness, name: &str) {
+    h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
+        .click();
+    step_until(h, "the tab closed", |h| {
+        h.state().tabs().iter().all(|tab| tab.name() != name)
+    });
+}
+
+/// `n` frames stepped: time for anything that would be sent to be sent and answered.
+fn frames(h: &mut AppHarness, n: usize) {
+    for _ in 0..n {
+        step(h);
+    }
+}
+
+/// `n` frames stepped 10 ms apart: time too for the thumbnails' thread, and the commands, to
+/// answer what any of them asked.
+fn paced_frames(h: &mut AppHarness, n: usize) {
+    for _ in 0..n {
+        step(h);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn saves_and_reloads_with_the_start_page_hidden_draw_nothing_and_closing_draws_once() {
+    let (f, renderer) = thumbnailed_with(true);
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    // Saved twice, each a revision built outside a transaction: nothing drawn.
+    for (from, to) in [("Hole", "Bore"), ("Bore", "Drill")] {
+        f2_typed(&mut h, from, to);
+        h.key_press(Key::Enter);
+        step_until(&mut h, "renamed", |h| {
+            h.state().tabs()[0].edits.idle() && shows(h, "Timeline", to)
+        });
+        let saves = h.state().tabs()[0].saves;
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, Key::S);
+        step_until(&mut h, "saved", |h| {
+            let tab = &h.state().tabs()[0];
+            tab.saves == saves + 1 && !tab.unsettled() && !tab.transaction
+        });
+        frames(&mut h, 10);
+    }
+    // Changed on disk twice by another program, each reloaded: nothing drawn.
+    for note in ["An agent's first edit", "An agent's second edit"] {
+        let text = EXAMPLE.replace("Clearance for an M5 bolt", note);
+        std::fs::write(&path, &text).unwrap();
+        step_until(&mut h, "reloaded", |h| {
+            text_of(&f.sessions, h) == text
+                && h.state().tabs()[0].published == Some(h.state().tabs()[0].revision)
+        });
+        frames(&mut h, 10);
+    }
+    assert!(
+        renderer.sent().is_empty(),
+        "nothing drawn with the start page hidden"
+    );
+    // Closed: drawn once, as the file holds it, from Home's view at 260 by 160.
+    closed(&mut h, "block.silico");
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("An agent's second edit"));
+    step_until(&mut h, "its thumbnail kept", |_| {
+        f.thumb_files() == [thumb_of(&bytes)]
+    });
+    assert_eq!(
+        std::fs::read(f.thumbs_folder().join(thumb_of(&bytes))).unwrap(),
+        b"PNG 260x160"
+    );
+    frames(&mut h, 10);
+    let sent = renderer.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].width, sent[0].height), (260, 160));
+    // Home's view, the top, front, right corner: the eye on (1, -1, 1) from the target.
+    let camera = &sent[0].camera;
+    let toward: Vec<f64> = (0..3).map(|i| camera.eye[i] - camera.target[i]).collect();
+    let length = toward.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let corner = 1.0 / 3.0f64.sqrt();
+    for (got, want) in toward.iter().zip([corner, -corner, corner]) {
+        assert!((got / length - want).abs() < 1e-12, "{toward:?}");
+    }
+    assert_eq!(thumbs(&h).renders_written, 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn showing_home_draws_each_open_tab_once_and_closing_it_then_draws_nothing_more() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    frames(&mut h, 10);
+    assert!(renderer.sent().is_empty(), "nothing drawn as it opens");
+    home_shown(&mut h);
+    step_until(&mut h, "its thumbnail kept", |h| {
+        thumbs(h).renders_written == 1 && f.thumb_files() == [thumb_of(EXAMPLE.as_bytes())]
+    });
+    frames(&mut h, 20);
+    assert_eq!(
+        renderer.sent().len(),
+        1,
+        "once while the start page is shown"
+    );
+    // Closed from the app bar, the start page still shown: its revision has its picture.
+    closed(&mut h, "block.silico");
+    frames(&mut h, 20);
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(thumbs(&h).renders_written, 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_part_whose_bytes_have_a_picture_is_not_drawn_again() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    let picture = plain_png([200, 40, 40]);
+    let kept = f.thumbs_folder().join(thumb_of(EXAMPLE.as_bytes()));
+    std::fs::write(&kept, &picture).unwrap();
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "its picture shown", |h| {
+        thumbs(h).picture(path.to_str().unwrap()).is_some()
+    });
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    home_shown(&mut h);
+    step_until(&mut h, "its picture found", |h| {
+        thumbs(h).already_pictured == 1
+    });
+    // Nor as it closes: its revision is known to have one.
+    closed(&mut h, "block.silico");
+    frames(&mut h, 20);
+    assert!(renderer.sent().is_empty());
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert_eq!(std::fs::read(&kept).unwrap(), picture);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_shows_a_parts_picture_only_for_the_bytes_it_was_drawn_from() {
+    let (f, renderer) = thumbnailed();
+    let drawn = f.file("drawn.silico", EXAMPLE);
+    let corrupt = f.file("corrupt.silico", TWO_BOXES);
+    let bare = f.file("bare.silico", A_BOX);
+    let gone = f.dir.path().join("gone.silico");
+    let folder = f.thumbs_folder();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join(thumb_of(EXAMPLE.as_bytes())),
+        plain_png([200, 40, 40]),
+    )
+    .unwrap();
+    // A corrupt picture: a PNG's signature, then nothing a PNG is.
+    std::fs::write(
+        folder.join(thumb_of(TWO_BOXES.as_bytes())),
+        b"\x89PNG\r\n\x1a\nnot the rest of one",
+    )
+    .unwrap();
+    f.listing(&[&drawn, &corrupt, &bare, &gone]);
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "the drawn part's picture", |h| {
+        thumbs(h).picture(drawn.to_str().unwrap()).is_some()
+    });
+    step(&mut h);
+    let texture = thumbs(&h).picture(drawn.to_str().unwrap()).unwrap();
+    // The cell inside its border, 50 by 38, at two pixels a point.
+    assert_eq!(texture.size(), [100, 76]);
+    let id = texture.id();
+    assert_eq!(thumb_drawn(&h, "drawn.silico"), Some(id));
+    // The others' icons: a corrupt picture, none, and a document not found.
+    for name in ["corrupt.silico", "bare.silico", "gone.silico"] {
+        assert_eq!(thumb_drawn(&h, name), None, "{name}");
+    }
+    assert!(renderer.sent().is_empty(), "nothing opened, nothing drawn");
+    drop(h);
+    // Changed by another program: its picture is of bytes it no longer has. The next start
+    // shows its icon.
+    std::fs::write(&drawn, SKETCHED_EXAMPLE).unwrap();
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "the pictures looked for", |h| thumbs(h).looks >= 1);
+    step(&mut h);
+    assert!(thumbs(&h).picture(drawn.to_str().unwrap()).is_none());
+    assert_eq!(thumb_drawn(&h, "drawn.silico"), None);
+    // Opened, and the start page shown over it: drawn for the bytes it has now.
+    open_and_wait(&mut h, &drawn);
+    settled(&mut h);
+    home_shown(&mut h);
+    step_until(&mut h, "drawn again", |_| {
+        f.thumb_files()
+            .contains(&thumb_of(SKETCHED_EXAMPLE.as_bytes()))
+    });
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_looks_again_each_time_it_is_shown() {
+    let (f, _renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    std::fs::write(
+        f.thumbs_folder().join(thumb_of(EXAMPLE.as_bytes())),
+        plain_png([200, 40, 40]),
+    )
+    .unwrap();
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "its picture shown", |h| {
+        thumbs(h).picture(path.to_str().unwrap()).is_some()
+    });
+    // Opened (the list as it was: it was first already), then changed on disk by another
+    // program while the start page is hidden.
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    std::fs::write(&path, SKETCHED_EXAMPLE).unwrap();
+    frames(&mut h, 10);
+    let looks = thumbs(&h).looks;
+    // Shown again: looked at again, so its picture, of bytes it no longer has, isn't shown.
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    assert!(thumbs(&h).picture(path.to_str().unwrap()).is_none());
+    // Not looked at again while it stays shown, its list the same.
+    let looks = thumbs(&h).looks;
+    paced_frames(&mut h, 20);
+    assert_eq!(thumbs(&h).looks, looks);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_picture_looked_at_again_keeps_its_texture_until_its_documents_bytes_change() {
+    let (f, _renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    for (text, rgb) in [(EXAMPLE, [200, 40, 40]), (SKETCHED_EXAMPLE, [40, 40, 200])] {
+        std::fs::write(
+            f.thumbs_folder().join(thumb_of(text.as_bytes())),
+            plain_png(rgb),
+        )
+        .unwrap();
+    }
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    let shown = |h: &AppHarness| {
+        thumbs(h)
+            .picture(path.to_str().unwrap())
+            .map(eframe::egui::TextureHandle::id)
+    };
+    step_until(&mut h, "its picture shown", |h| shown(h).is_some());
+    let first = shown(&h).unwrap();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    // Shown again, its bytes the same: looked at again, its picture's texture kept.
+    let looks = thumbs(&h).looks;
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    assert_eq!(shown(&h), Some(first));
+    // Its bytes changed by another program to those of the other picture kept: that one,
+    // uploaded.
+    std::fs::write(&path, SKETCHED_EXAMPLE).unwrap();
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    let looks = thumbs(&h).looks;
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    let second = shown(&h).unwrap();
+    assert_ne!(second, first);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_render_refused_leaves_the_icon_and_says_nothing() {
+    let (f, renderer) = thumbnailed();
+    renderer.fail_with(Error::new(
+        ErrorCode::WorkerCrashed,
+        "the render worker crashed",
+    ));
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    home_shown(&mut h);
+    step_until(&mut h, "the refusal taken", |h| {
+        thumbs(h).renders_dropped == 1
+    });
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert!(f.thumb_files().is_empty());
+    assert!(!anywhere(&h, "render worker"));
+    assert!(h.state().tabs()[0].message.is_none());
+    // Not tried again while the start page stays shown, nor while it's hidden; tried again
+    // once it's shown again.
+    paced_frames(&mut h, 20);
+    assert_eq!((renderer.sent().len(), thumbs(&h).renders_dropped), (1, 1));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    paced_frames(&mut h, 20);
+    assert_eq!(renderer.sent().len(), 1);
+    home_shown(&mut h);
+    step_until(&mut h, "tried again", |h| thumbs(h).renders_dropped == 2);
+    assert_eq!(renderer.sent().len(), 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_untitled_part_is_never_drawn() {
+    let (f, renderer) = thumbnailed();
+    let mut h = f.thumbnailing();
+    new_part(&mut h);
+    settled(&mut h);
+    home_shown(&mut h);
+    frames(&mut h, 20);
+    closed(&mut h, "Untitled");
+    frames(&mut h, 20);
+    let thumbs = thumbs(&h);
+    assert_eq!(
+        (thumbs.renders_written, thumbs.renders_dropped),
+        (0, 0),
+        "no render asked"
+    );
+    assert!(renderer.sent().is_empty());
+    assert!(f.thumb_files().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Frames stepped until every tab's model is built at its revision, nothing of it under way.
+fn all_settled(h: &mut AppHarness) {
+    step_until(h, "every tab settled", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .all(|tab| tab.edits.idle() && !tab.unsettled() && tab.published == Some(tab.revision))
+    });
+}
+
+#[test]
+fn closed_tabs_go_at_once_and_their_pictures_and_closes_follow() {
+    let (f, renderer) = thumbnailed();
+    let names = ["a.silico", "b.silico", "c.silico"];
+    let texts: Vec<String> = names
+        .iter()
+        .map(|name| EXAMPLE.replace("Clearance for an M5 bolt", name))
+        .collect();
+    let paths: Vec<PathBuf> = names
+        .iter()
+        .zip(&texts)
+        .map(|(name, text)| f.file(name, text))
+        .collect();
+    let mut h = f.thumbnailing();
+    for path in &paths {
+        open_and_wait(&mut h, path);
+    }
+    all_settled(&mut h);
+    frames(&mut h, 10);
+    // Every render's meshing held, so no picture can be drawn.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    for name in names {
+        h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
+            .click();
+        // Gone by the next frame, its picture still to draw.
+        step(&mut h);
+        step(&mut h);
+        assert!(
+            h.state().tabs().iter().all(|tab| tab.name() != name),
+            "{name} waited on its picture"
+        );
+    }
+    frames(&mut h, 10);
+    assert!(f.thumb_files().is_empty());
+    assert!(renderer.sent().is_empty());
+    hold.release();
+    let mut want: Vec<String> = texts.iter().map(|text| thumb_of(text.as_bytes())).collect();
+    want.sort();
+    step_until(&mut h, "every picture written", |_| f.thumb_files() == want);
+    assert_eq!(renderer.sent().len(), 3);
+    // And each session closed: each file opens again, which a session holding it refuses.
+    for path in &paths {
+        step_until(&mut h, "its session closed", |_| {
+            let opened = f.sessions.open(path, false).wait();
+            let closes = opened.result.is_ok();
+            if let Ok(opened) = opened.result {
+                f.sessions.close(&opened.session).wait().result.unwrap();
+            }
+            closes
+        });
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_quit_draws_nothing() {
+    let (f, renderer) = thumbnailed();
+    let saved = f.file("saved.silico", EXAMPLE);
+    let edited = f.file(
+        "edited.silico",
+        &EXAMPLE.replace("Clearance for an M5 bolt", "Edited"),
+    );
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &saved);
+    open_and_wait(&mut h, &edited);
+    all_settled(&mut h);
+    step_until(&mut h, "its timeline", |h| shows(h, "Timeline", "Hole"));
+    // The second edited, so the quit asks; the first saved and built.
+    f2_typed(&mut h, "Hole", "Bore");
+    h.key_press(Key::Enter);
+    step_until(&mut h, "renamed", |h| {
+        tab_named(h, "edited.silico").transaction && shows(h, "Timeline", "Bore")
+    });
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step_until(&mut h, "every tab closed", |h| h.state().tabs().is_empty());
+    frames(&mut h, 20);
+    assert!(renderer.sent().is_empty(), "a quit drew a picture");
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn reopening_a_part_whose_session_is_still_closing_waits_for_the_close_and_then_opens() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    all_settled(&mut h);
+    frames(&mut h, 10);
+    // Its render's meshing held: its session stays open, drawing, after its tab has gone.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    closed(&mut h, "block.silico");
+    step_until(&mut h, "listed in Recent", |h| {
+        recent_names(h) == ["block.silico"]
+    });
+    // Clicked in Recent at once: held, not refused, and nothing opened yet.
+    h.get_by_role_and_label(Role::Button, "block.silico")
+        .click();
+    // Long enough for a refusal, which the core gives at once, to be said.
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs().is_empty(),
+        "opened before its session closed"
+    );
+    assert_eq!(h.state().message(), None, "the reopen was refused");
+    assert!(f.thumb_files().is_empty());
+    hold.release();
+    step_until(&mut h, "reopened", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .any(|tab| tab.name() == "block.silico")
+    });
+    assert_eq!(f.thumb_files(), [thumb_of(EXAMPLE.as_bytes())]);
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}

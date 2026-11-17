@@ -25,6 +25,10 @@
 //! A view is at a named one by the prototype's rule ([`navigate::at_view`]): its elevation
 //! and its azimuth each within a hundredth of a radian of the view's, the top and the bottom
 //! at any azimuth.
+//! The viewport gives the label the camera drawn, but while a view transition is under way
+//! the one it named as the transition began (`View::labelled_camera`), as the prototype's
+//! `onView` writes its label again only once its transition ends; the triad always the
+//! camera drawn.
 //!
 //! Neither takes the pointer (`pointer-events: none`), and neither hides in sketch mode or
 //! under a dialog: the prototype draws both whenever the canvas shows. Each is data first

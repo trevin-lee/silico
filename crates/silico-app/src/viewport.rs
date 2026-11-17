@@ -47,6 +47,7 @@ use crate::renderer::{Change, Element, FrameData, Picking, PixelRect, Present, T
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::theme;
+use crate::transition::{Motion, Step, Transition};
 
 /// The first delay before a read refused for the moment is asked again; each refusal after
 /// it doubles it, up to [`RETRY_MOST`].
@@ -559,6 +560,9 @@ pub struct View {
     pub(crate) wheel_held: bool,
     /// What sketch mode adds to a fit, as the tab last set it.
     framing: navigate::Framing,
+    /// A view transition under way (`crate::transition`): Home, Fit, a named view, a
+    /// ViewCube click, or Look At easing to its view, `camera` the camera drawn this frame.
+    transition: Option<Transition>,
 }
 
 /// The views the registry's view commands give, by their keys (F6, Home, Ctrl+1 to Ctrl+7)
@@ -633,6 +637,7 @@ impl Default for View {
             read_published: 0,
             wheel_held: false,
             framing: navigate::Framing::default(),
+            transition: None,
         }
     }
 }
@@ -724,10 +729,52 @@ impl View {
         self.framing = framing;
     }
 
-    /// Looks through `camera`, as a control of the person's does.
+    /// Looks through `camera`, as a control of the person's does: at once, ending any
+    /// transition under way.
     pub fn set_camera(&mut self, camera: Camera) {
+        self.transition = None;
         self.camera = camera;
         self.placed = true;
+    }
+
+    /// The view transition under way, if one is: [`camera`](Self::camera) is the camera it
+    /// has reached, the one drawn.
+    pub fn transition(&self) -> Option<&Transition> {
+        self.transition.as_ref()
+    }
+
+    /// The camera the view label names: the one drawn, but while a transition is under way
+    /// the one it named before it began, as the prototype's label is written again only once
+    /// its transition ends (interact.js's `onView`, called from `stepAnim` at its end).
+    pub fn labelled_camera(&self) -> &Camera {
+        self.transition
+            .as_ref()
+            .map_or(&self.camera, Transition::labelled)
+    }
+
+    /// The transition under way moved on to `now`, egui's clock: the camera where it has
+    /// reached, or, once its time is up, the view it was asked for, exactly, and it ends. A
+    /// press on the canvas this frame (`pressed`) ends it while it's still moving, the camera
+    /// left where it was drawn last frame, what the person pressed on; once its time is up,
+    /// the press is on the view asked for. Each camera raised to the least the bodies allow,
+    /// as every camera a control makes is (`navigate::clamped`), which leaves the view asked
+    /// for, already raised, as it was unless the bodies changed meanwhile.
+    fn advance(&mut self, now: f64, pressed: bool) {
+        let Some(transition) = &self.transition else {
+            return;
+        };
+        let camera = match transition.at(now) {
+            Step::Moving(_) if pressed => {
+                self.transition = None;
+                return;
+            }
+            Step::Moving(camera) => camera,
+            Step::Ended(camera) => {
+                self.transition = None;
+                camera
+            }
+        };
+        self.camera = navigate::clamped(camera, self.rows, self.drawn_boxes());
     }
 
     /// The bodies whose meshes the tab holds, by number.
@@ -1162,14 +1209,38 @@ impl View {
     }
 
     /// The camera moved to `camera`, if a control made one, its view raised to the least the
-    /// bodies allow if it's under it (`navigate::clamped`). Whether it was taken.
+    /// bodies allow if it's under it (`navigate::clamped`), at once, ending any transition
+    /// under way where it had reached. Whether it was taken.
     fn moved(&mut self, camera: Option<Camera>) -> bool {
         let Some(camera) = camera else {
             return false;
         };
+        self.transition = None;
         self.camera = navigate::clamped(camera, self.rows, self.drawn_boxes());
         self.placed = true;
         true
+    }
+
+    /// The view worked out whole as `camera` (Home's, a fit's, a named view's, Look At's), if
+    /// one was, raised to the least the bodies allow as [`moved`](Self::moved) raises it, and
+    /// moved to as `motion` says: eased to from the camera as it is, from where any transition
+    /// under way has reached (its label kept), or, for a jump or a camera already there,
+    /// taken at once.
+    fn go_to(&mut self, camera: Option<Camera>, motion: Motion) {
+        let Some(camera) = camera else {
+            return;
+        };
+        let to = navigate::clamped(camera, self.rows, self.drawn_boxes());
+        self.placed = true;
+        let labelled = self.transition.take().map_or_else(
+            || self.camera.clone(),
+            |under_way| under_way.labelled().clone(),
+        );
+        if motion.seconds > 0.0 && to != self.camera {
+            self.transition = Some(Transition::new(self.camera.clone(), to, labelled, motion));
+        } else {
+            self.camera = to;
+        }
     }
 
     /// Zooms by `scroll` points toward `cursor`, in a view `height` points high: an
@@ -1208,16 +1279,16 @@ impl View {
 
     /// The named view `view` of the bodies' boxes and the open sketch's (a cube's, with
     /// none), clear of sketch mode's bands, in the view's projection.
-    fn look_from(&mut self, view: NamedView, size_px: [u32; 2]) {
+    fn look_from(&mut self, view: NamedView, size_px: [u32; 2], motion: Motion) {
         let bounds = self.fit_bounds().unwrap_or(NO_BOX);
         let camera = navigate::named_in(view, bounds, size_px[0], size_px[1], self.framing.inset)
             .and_then(|camera| navigate::projected(&camera, self.perspective));
-        self.moved(camera);
+        self.go_to(camera, motion);
     }
 
     /// Look At: the view square to a plane from `toward`, `up` up the image, fitted to the
     /// boxes a named view fits, in the view's projection.
-    fn look_at(&mut self, toward: [f64; 3], up: [f64; 3], size_px: [u32; 2]) {
+    fn look_at(&mut self, toward: [f64; 3], up: [f64; 3], size_px: [u32; 2], motion: Motion) {
         let bounds = self.fit_bounds().unwrap_or(NO_BOX);
         let camera = navigate::look_at(
             toward,
@@ -1228,12 +1299,12 @@ impl View {
             self.framing.inset,
         )
         .and_then(|camera| navigate::projected(&camera, self.perspective));
-        self.moved(camera);
+        self.go_to(camera, motion);
     }
 
     /// Fits the view to the bodies' boxes and the open sketch's (F6), looking as it looks,
     /// clear of sketch mode's bands.
-    fn fit(&mut self, size_px: [u32; 2]) {
+    fn fit(&mut self, size_px: [u32; 2], motion: Motion) {
         if let Some(bounds) = self.fit_bounds() {
             let camera = navigate::fit_in(
                 &self.camera,
@@ -1242,22 +1313,28 @@ impl View {
                 size_px[1],
                 self.framing.inset,
             );
-            self.moved(camera);
+            self.go_to(camera, motion);
         }
     }
 
-    /// The view `ask` asks for, given now, in a pane `size_px` pixels in size.
-    fn give(&mut self, ask: ViewAsk, size_px: [u32; 2]) {
+    /// The view `ask` asks for, given now, in a pane `size_px` pixels in size, moved to as
+    /// `motion` says.
+    fn give(&mut self, ask: ViewAsk, size_px: [u32; 2], motion: Motion) {
         match ask {
-            ViewAsk::Named(named) => self.look_from(named, size_px),
-            ViewAsk::Fit => self.fit(size_px),
-            ViewAsk::LookAt { toward, up } => self.look_at(toward, up, size_px),
+            ViewAsk::Named(named) => self.look_from(named, size_px, motion),
+            ViewAsk::Fit => self.fit(size_px, motion),
+            ViewAsk::LookAt { toward, up } => self.look_at(toward, up, size_px, motion),
         }
     }
 
-    /// The view made perspective, or orthographic.
+    /// The view made perspective, or orthographic: at once, and if a transition is under way,
+    /// its view, which it ends, so the view is the one asked for, in the projection asked.
     fn project(&mut self, perspective: bool) {
-        let camera = navigate::projected(&self.camera, perspective);
+        let from = self
+            .transition
+            .as_ref()
+            .map_or(&self.camera, Transition::to);
+        let camera = navigate::projected(from, perspective);
         if self.moved(camera) {
             self.perspective = perspective;
         }
@@ -1577,9 +1654,10 @@ impl View {
         // The canvas's own middle double-click (`crate::clicks`), whatever was clicked just
         // before; its clicks counted every frame, a view asked for or not.
         let middle_double = crate::clicks::double_clicked_by(response, PointerButton::Middle);
+        let motion = Motion::of(ui.ctx());
         match self.asked.take() {
-            Some(ask) => self.give(ask, size_px),
-            None if middle_double => self.fit(size_px),
+            Some(ask) => self.give(ask, size_px, motion),
+            None if middle_double => self.fit(size_px, motion),
             None => {}
         }
     }
@@ -1864,6 +1942,12 @@ pub fn show<P: Clients + 'static>(
         return;
     };
     let now = drawing.now();
+    // A transition under way moved on before anything of this frame reads the camera; but a
+    // press on the canvas (to select, to drag, for a menu) ends one still moving where it was
+    // drawn last frame, what the person pressed on, so the press and what it's of are of one
+    // view.
+    let pressed = response.hovered() && ui.input(|input| input.pointer.any_pressed());
+    tab.view.advance(ui.input(|input| input.time), pressed);
     let now_hidden: BTreeSet<FeatureId> = tab
         .browser
         .bodies()
@@ -2118,7 +2202,7 @@ pub fn show<P: Clients + 'static>(
     if let Some(triad) = crate::triad::triad(&view.camera, rect) {
         painter.extend(triad.shapes(&painter));
     }
-    let label = crate::triad::view_label(&view.camera, rect);
+    let label = crate::triad::view_label(view.labelled_camera(), rect);
     // Over the bodies, under the ViewCube and the bar, in the pane's own layer: what the
     // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
     // the bar's, registered after, come first. A camera they change is drawn next frame.
@@ -2144,6 +2228,11 @@ pub fn show<P: Clients + 'static>(
     // The bar's Look At, as Ctrl+8's: square to the face selected, or to the sketch.
     if navigation_bar(ui, rect, &mut tab.view, size_px) {
         tab.look_at();
+    }
+    // A transition under way, or begun this frame (by an ask, the ViewCube, or the bar's
+    // Fit): the next frame moves it on.
+    if tab.view.transition.is_some() {
+        ui.ctx().request_repaint();
     }
     // An empty part's hint, above the bar: Create Sketch, as the toolbar's.
     crate::canvas_hint::empty_part(ui, rect, tab, sessions);
@@ -2959,7 +3048,7 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             }
         }
         if let Some(ask) = chosen {
-            view.give(ask, size_px);
+            view.give(ask, size_px, Motion::of(&ctx));
         }
     });
 }
@@ -3048,7 +3137,7 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
                 let word = Command::Fit.label();
                 let fit = bar::styled_button(ui, &[Icon::Fit], None, word, true, None, style);
                 if bar::tooltip(fit, word, Command::Fit.shown(&ctx), None).clicked() {
-                    view.fit(size_px);
+                    view.fit(size_px, Motion::of(&ctx));
                 }
                 let word = Command::LookAt.label();
                 let look = bar::styled_button(ui, &[Icon::LookAt], None, word, true, None, style);

@@ -243,6 +243,23 @@ pub fn close_window<P: AppKernel>(h: &mut AppUi<P>) {
         .clear();
 }
 
+/// egui's `animation_time`, in every style, `seconds`: what decides whether the viewport eases
+/// to a view worked out whole (Home, Fit, a named view, Look At) or takes it at once
+/// (`silico_app::transition::Motion::of`). The view transitions' own tests set it above 0.
+pub fn animation_time<S>(h: &Harness<'_, S>, seconds: f32) {
+    h.ctx.all_styles_mut(|style| style.animation_time = seconds);
+}
+
+/// The app's look applied to a harness, as main.rs applies it (`theme::apply`: its fonts,
+/// without which every text lays out empty, and its style), but for egui's animation time,
+/// kept at egui_kittest's 0, which `theme::apply` would set to egui's own 0.2: the tests
+/// look at the app a frame at a time, each view asked for taken at once. A test of motion
+/// sets it again ([`animation_time`]).
+pub fn apply_look<S>(h: &Harness<'_, S>) {
+    silico_app::theme::apply(&h.ctx);
+    animation_time(h, 0.0);
+}
+
 /// The delay the last frame asked for the next one at.
 pub fn repaint_delay<P: AppKernel>(h: &AppUi<P>) -> Option<Duration> {
     h.output()
