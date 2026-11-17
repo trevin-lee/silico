@@ -374,6 +374,36 @@ impl OnTop {
     }
 }
 
+/// The document's keys taken this frame ([`App::command_keys`]), and the tab shown as they
+/// came, acted on where each came among the frame's events ([`App::act_document_keys`]):
+/// one after the frame's first left release once the canvas has had it, so an edit that
+/// release made (a line let go, a Finish clicked) is saved, undone, finished, or asked
+/// about, as an edit made before the frame is (#523); one before it as it's taken, before
+/// the canvas has the release (#535's review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DocumentKeys {
+    tab: SessionId,
+    /// ⌘S (Ctrl+S): Save, or an untitled part's Save panel.
+    save: bool,
+    /// ⌘↵ (Ctrl+Enter): Finish Sketch.
+    finish: bool,
+    /// ⌘Z: Undo.
+    undo: bool,
+    /// ⌘⇧Z or Ctrl+Y: Redo.
+    redo: bool,
+    /// ⌘R: Reload.
+    reload: bool,
+    /// ⌘W: Close.
+    close: bool,
+}
+
+impl DocumentKeys {
+    /// Whether any key is here.
+    fn any(&self) -> bool {
+        self.save || self.finish || self.undo || self.redo || self.reload || self.close
+    }
+}
+
 /// What a native dialog's answer goes to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Browsed {
@@ -509,10 +539,11 @@ pub struct App<P: Clients + 'static> {
     /// top as it did, the earliest first: given it back once that modal has gone, as
     /// SolidWorks' and Windows' dialogs give the focus back to the control that held it.
     focus_behind: Vec<(egui::Id, OnTop)>,
-    /// The tab ⌘W (Ctrl+W) asked to close this frame: closed, or asked about, once the canvas
-    /// has had the frame's events (`after_drawing`), so an edit a release before the key made
-    /// (a line's) is asked about, as an edit made before the frame is.
-    close_key: Option<SessionId>,
+    /// The document's keys pressed this frame after its first left release, Save, Finish,
+    /// Undo, Redo, Reload, and Close: acted on once the canvas has had the frame's events
+    /// (`after_drawing`), so an edit that release made (a line's) is in what they act on, as
+    /// an edit made before the frame is.
+    document_keys: Option<DocumentKeys>,
     /// The canvas's place in the window, as the panes last laid it out: where sketch mode's
     /// palette floats.
     canvas: Option<egui::Rect>,
@@ -652,7 +683,7 @@ impl<P: Clients + 'static> App<P> {
             waker_set: false,
             modal_key: None,
             focus_behind: Vec::new(),
-            close_key: None,
+            document_keys: None,
             canvas: None,
             drawing: crate::viewport::Drawing::default(),
             browser: None,
@@ -1449,15 +1480,8 @@ impl<P: Clients + 'static> App<P> {
                 }
             }
         }
-        // ⌘W's Close (`command_keys`), decided now the canvas has had the frame's events:
-        // a release among them before the key (a line's, a dimension's) has made its edit,
-        // which the close then asks about, as one made in an earlier frame. Not over a
-        // question asked meanwhile (a click's), as no key acts under one; an over-define
-        // offer come meanwhile waits under the close's question.
-        if let Some(id) = self.close_key.take()
-            && self.on_top() <= OnTop::Offer
-        {
-            self.close(id);
+        if let Some(keys) = self.document_keys.take() {
+            self.act_document_keys(ui, keys);
         }
         self.ask(ui, &mut next_frame);
         next_frame |= self.next_quit_save(ui.ctx());
@@ -1865,6 +1889,71 @@ impl<P: Clients + 'static> App<P> {
         asked && self.send_rename_if(crate::feature_menu::Renaming::focused)
     }
 
+    /// The document's keys `keys` acted on: those pressed before the frame's first left
+    /// release (or in a frame with none) as they're taken, before the canvas has the frame's
+    /// events; those after it once the canvas has had them, so the release (a line's, a
+    /// dimension's, a Finish's click) has made its edit, which each then acts on, as on one
+    /// made in an earlier frame. On the tab shown as they came, in the order they always
+    /// were: Save, Finish, Undo, Redo, an untitled part's Save panel, Reload, and Close. None
+    /// over a question asked meanwhile (a click's, or one a key before it asked), as no key
+    /// acts under one; an over-define offer come meanwhile (a click on another tab's button
+    /// shows a tab whose offer came while it was hidden) waits under a question asked.
+    fn act_document_keys(&mut self, ui: &Ui, keys: DocumentKeys) {
+        let sessions = Arc::clone(&self.sessions);
+        let id = keys.tab;
+        let free = |app: &Self| app.on_top() <= OnTop::Offer;
+        // An untitled part's Save asks where, through the Save panel, once the tab is let go:
+        // with no edits too, as its first save writes the document all the same.
+        let mut save_panel = false;
+        if keys.save
+            && free(self)
+            && let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
+        {
+            if tab.is_untitled() {
+                // Not while a Save As of its runs: its answer gives it its file.
+                save_panel = !tab.editing() && !tab.closing() && !tab.saving_as();
+            } else if tab.unsaved() && !tab.editing() {
+                tab.save(&sessions, false);
+            } else if !tab.editing() && !tab.nothing_to_save() {
+                // Nothing unsaved, but the file not known to match (no comparison ended yet,
+                // or it changed, went, or can't be read): the save queued. With a transaction
+                // open (its edits undone back to `begin`'s document), it's the commit, the
+                // core's answer deciding; with none, it only asks `nothing_to_save` again,
+                // sending nothing.
+                tab.save(&sessions, false);
+            }
+        }
+        if free(self)
+            && let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
+        {
+            if keys.finish {
+                tab.finish_sketch(&sessions, true);
+            }
+            if keys.undo && tab.undoable() {
+                tab.step(&sessions, true);
+            } else if keys.undo {
+                // The prototype's `undo` with nothing to take back: said so, where it's so.
+                tab.nothing_to_step(true);
+            }
+            if keys.redo && tab.redoable() {
+                tab.step(&sessions, false);
+            } else if keys.redo {
+                tab.nothing_to_step(false);
+            }
+        }
+        if save_panel && free(self) {
+            let ctx = ui.ctx().clone();
+            self.ask_save_as(id, false, &ctx);
+        }
+        if keys.reload && free(self) {
+            let now = ui.input(|input| input.time);
+            self.reload(id, now);
+        }
+        if keys.close && free(self) {
+            self.close(id);
+        }
+    }
+
     /// The keyboard's commands with no modal open: [`keys`](Self::keys)'s, a name being
     /// typed already sent where one asks it. Whether the frame after is to be asked for: a
     /// command started, or an Esc taken past Home and Select Other's menu (whose Esc leaves
@@ -1945,18 +2034,24 @@ impl<P: Clients + 'static> App<P> {
         // the Shift aside): a Redo, as Ctrl+Y is, never an Undo. Rebuild everything before
         // Rebuild for the same reason, taken while typing too, so it's never a Rebuild; but
         // done only outside a text field.
-        let redo = take(ui, Command::Redo);
-        let (save, close, undo) = (
-            take(ui, Command::Save),
-            take(ui, Command::Close),
-            take(ui, Command::Undo),
-        );
+        //
+        // The document's keys, each taken with where it came among the frame's events: after
+        // its first left release or not (`DocumentKeys`), each read before it's taken, and
+        // Undo's after Redo's ⌘⇧Z is taken.
+        let placed = |ui: &mut Ui, command| {
+            let late = shortcuts::after_release(ui.ctx(), command);
+            (take(ui, command), late)
+        };
+        let (redo, redo_late) = placed(ui, Command::Redo);
+        let (save, save_late) = placed(ui, Command::Save);
+        let (close, close_late) = placed(ui, Command::Close);
+        let (undo, undo_late) = placed(ui, Command::Undo);
         let rebuild_all = take(ui, Command::RebuildAll) && !typing;
         let rebuild = take(ui, Command::Rebuild);
         // ⌘R (Ctrl+R elsewhere) before sketch mode's letters, though R alone is Rectangle's
         // and an exact chord's. Done while typing too, as Save is: it's no key of a field's,
         // and what it would drop is asked about first.
-        let reload = take(ui, Command::Reload);
+        let (reload, reload_late) = placed(ui, Command::Reload);
         // Esc, pressed: with a menu open (a feature's right-click menu, a drop-down) it closes
         // the menu alone, as the prototype's `keydown` has it, left for the menu to take;
         // else it's taken here, and whatever it does below, the frame after is asked for
@@ -1990,7 +2085,11 @@ impl<P: Clients + 'static> App<P> {
             .and_then(|at| self.tabs.get(at))
             .is_some_and(Tab::in_sketch);
         // Ctrl+Enter (⌘↵) finishes the sketch, as the toolbar's Finish Sketch does.
-        let finish = in_sketch && take(ui, Command::FinishSketch);
+        let (finish, finish_late) = if in_sketch {
+            placed(ui, Command::FinishSketch)
+        } else {
+            (false, false)
+        };
         // Del (or ⌫) in sketch mode deletes the sketch's selection, never a feature (the
         // prototype's `keydown` gives a sketch its own keys and goes no further).
         let (sketch_delete, delete) = (delete && in_sketch, delete && !in_sketch);
@@ -2117,39 +2216,8 @@ impl<P: Clients + 'static> App<P> {
         if sketch_enter {
             tab.sketch_enter(sessions);
         }
-        // An untitled part's Save asks where, through the Save panel, once the tab is let go:
-        // with no edits too, as its first save writes the document all the same.
-        let mut save_panel = None;
-        if save && tab.is_untitled() {
-            // Not while a Save As of its runs: its answer gives it its file.
-            if !tab.editing() && !tab.closing() && !tab.saving_as() {
-                save_panel = Some(tab.id);
-            }
-        } else if save && tab.unsaved() && !tab.editing() {
-            tab.save(sessions, false);
-        } else if save && !tab.editing() && !tab.nothing_to_save() {
-            // Nothing unsaved, but the file not known to match (no comparison ended yet, or it
-            // changed, went, or can't be read): the save queued. With a transaction open (its
-            // edits undone back to `begin`'s document), it's the commit, the core's answer
-            // deciding; with none, it only asks `nothing_to_save` again, sending nothing.
-            tab.save(sessions, false);
-        }
         if sketch_delete {
             tab.sketch_delete(sessions);
-        }
-        if finish {
-            tab.finish_sketch(sessions, true);
-        }
-        if undo && tab.undoable() {
-            tab.step(sessions, true);
-        } else if undo {
-            // The prototype's `undo` with nothing to take back: said so, where it's so.
-            tab.nothing_to_step(true);
-        }
-        if redo && tab.redoable() {
-            tab.step(sessions, false);
-        } else if redo {
-            tab.nothing_to_step(false);
         }
         if rebuild_all {
             tab.rebuild_all(sessions);
@@ -2167,17 +2235,24 @@ impl<P: Clients + 'static> App<P> {
         if chain && !in_dialog {
             tab.escape(sessions);
         }
-        if let Some(id) = save_panel {
-            let ctx = ui.ctx().clone();
-            self.ask_save_as(id, false, &ctx);
-        }
-        if reload && let Some(id) = self.active {
-            let now = ui.input(|input| input.time);
-            self.reload(id, now);
-        }
-        if close {
-            // Asked once the canvas has had the frame's events (`after_drawing`).
-            self.close_key = self.active;
+        // Save, Finish, Undo, Redo, Reload, and Close: each pressed before the frame's first
+        // left release acted on now, before the canvas has it; each after it once the canvas
+        // has had the frame's events (`after_drawing`).
+        if let Some(tab) = self.active {
+            let pressed = |late: bool| DocumentKeys {
+                tab,
+                save: save && save_late == late,
+                finish: finish && finish_late == late,
+                undo: undo && undo_late == late,
+                redo: redo && redo_late == late,
+                reload: reload && reload_late == late,
+                close: close && close_late == late,
+            };
+            let (now, later) = (pressed(false), pressed(true));
+            self.document_keys = later.any().then_some(later);
+            if now.any() {
+                self.act_document_keys(ui, now);
+            }
         }
         (
             save || undo

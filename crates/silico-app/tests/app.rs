@@ -51645,6 +51645,487 @@ fn a_line_let_go_before_close_in_one_frame_with_nothing_edited_before_asks_and_i
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// Whether `sketch` holds a line whose ends lie within half a millimetre of `a` and `b`, in
+/// either direction.
+fn line_near(sketch: &silico_core::document::Sketch, a: [f64; 2], b: [f64; 2]) -> bool {
+    let near = |id: &str, at: [f64; 2]| {
+        sketch.points.iter().any(|point| {
+            point.id.as_str() == id
+                && (point.x.mm() - at[0]).abs() <= 0.5
+                && (point.y.mm() - at[1]).abs() <= 0.5
+        })
+    };
+    sketch.lines.iter().any(|line| {
+        let (from, to) = (line.from.as_str(), line.to.as_str());
+        (near(from, a) && near(to, b)) || (near(from, b) && near(to, a))
+    })
+}
+
+/// [`boxed_line_tool`], a click-drag line drawn from the top view's (40, 50) to (45, 60) and
+/// answered: an edit made before the frame a test's key comes in.
+fn boxed_line_drawn(f: &Fixture) -> AppHarness {
+    let mut h = boxed_line_tool(f);
+    pane_press(&mut h, [40.0, 50.0]);
+    pane_move(&mut h, [42.0, 55.0]);
+    pane_move(&mut h, [45.0, 60.0]);
+    pane_release(&mut h, [45.0, 60.0]);
+    settled(&mut h);
+    let sketch = sketch_of_text(f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [40.0, 50.0], [45.0, 60.0]), "{sketch:?}");
+    h
+}
+
+#[test]
+fn a_line_let_go_before_undo_in_one_frame_is_what_the_undo_takes_back() {
+    // #523: the release, then ⌘Z, in one frame: Undo is decided once the canvas has had the
+    // frame's events, so it waits behind the line's add and takes the line back, the line
+    // drawn before it kept (decided before the release, it took that one back instead).
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::Z, command));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [40.0, 50.0], [45.0, 60.0]), "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_redo_in_one_frame_leaves_nothing_to_redo() {
+    // #523: a line drawn and undone; then the release of another, then ⌘⇧Z, in one frame:
+    // Redo is decided once the canvas has had the frame's events, after the new line's add,
+    // which leaves nothing to redo (decided before the release, it put the undone line back).
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    assert!(h.state().tabs()[0].redoable());
+    line_held(&mut h);
+    let_go_then(&mut h, key_event(Key::Z, command | Modifiers::SHIFT));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [40.0, 50.0], [45.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert!(!h.state().tabs()[0].redoable());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_reload_in_one_frame_with_nothing_edited_before_is_asked_about() {
+    // #523: the release, then ⌘R, in one frame, with no edit before: Reload is decided once
+    // the canvas has had the frame's events, so the line's add is an edit it would drop,
+    // and it asks first, as it does of an edit made in an earlier frame (decided before the
+    // release, it reloaded at once, asking nothing).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    assert!(!h.state().tabs()[0].unsaved());
+    let sent = line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::R, command));
+    let asked = "Reload example.silico from disk?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 0, "reloaded unasked");
+    let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert!(
+        added.contains(&Sent::SketchEdit("sketch_add")),
+        "the line wasn't added: {added:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_finish_in_one_frame_is_in_the_finished_sketch() {
+    // #523: the release, then ⌘↵, in one frame: Finish is decided once the canvas has had the
+    // frame's events, so the line is added and then the sketch finished with it (decided
+    // before the release, sketch mode had gone when the release came, and the line with it).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::Enter, command));
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_let_go_before_save_in_one_frame_is_saved_with_the_sketchs_line() {
+    // #523: a line drawn; then the toolbar's Finish Sketch let go, then ⌘S, in one frame:
+    // Save is decided once the window has had the frame's events, so the click has ended
+    // sketch mode, whose edits Save waits for, and Save writes the line (decided before the
+    // release, sketch mode was still open, and Save did nothing).
+    use eframe::egui::PointerButton;
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let path = f.dir.path().join("example.silico");
+    let on_disk = |path: &Path| {
+        let saved = std::fs::read(path).unwrap();
+        let document = silico_core::document::read(&saved).unwrap();
+        document
+            .features
+            .into_iter()
+            .find_map(|feature| match feature.operation {
+                silico_core::document::Operation::Sketch(sketch) => Some(sketch),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(on_disk(&path).lines.len(), 4);
+    let at = toolbar_finish(&h).rect().center();
+    h.hover_at(at);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_some());
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    events.push(eframe::egui::Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key_event(Key::S, command));
+    step(&mut h);
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    let sketch = on_disk(&path);
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [40.0, 50.0], [45.0, 60.0]), "{sketch:?}");
+    assert!(!h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_then_a_line_let_go_in_one_frame_undoes_the_line_before() {
+    // #535's review: ⌘Z, then the release, in one frame: each document key acts where it
+    // came among the frame's events, so this Undo, before the release, takes back the line
+    // drawn before, and the release then adds its line, as on main.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Z, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [40.0, 50.0], [45.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_then_a_line_let_go_in_one_frame_finishes_the_sketch_without_it() {
+    // #535's review: ⌘↵, then the release, in one frame: Finish, before the release, ends
+    // sketch mode with the line still held, so its gesture is cut short and adds nothing, as
+    // a gesture held as a modal comes is.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Enter, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 4, "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_then_finish_let_go_in_one_frame_saves_nothing_as_sketch_mode_was_open() {
+    // #535's review: ⌘S, then Finish Sketch's release, in one frame: Save, before the
+    // release, finds sketch mode open, whose edits it waits for, and saves nothing; the
+    // click then finishes the sketch, its line in the document but not in the file.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let path = f.dir.path().join("example.silico");
+    let lines_on_disk = |path: &Path| {
+        let saved = std::fs::read(path).unwrap();
+        let document = silico_core::document::read(&saved).unwrap();
+        document
+            .features
+            .into_iter()
+            .find_map(|feature| match feature.operation {
+                silico_core::document::Operation::Sketch(sketch) => Some(sketch.lines.len()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(lines_on_disk(&path), 4);
+    let at = toolbar_finish(&h).rect().center();
+    h.hover_at(at);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::S, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    assert_eq!(lines_on_disk(&path), 4);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_in_the_frame_a_click_opens_export_is_dropped_and_export_stays_up() {
+    // #535's review: a document key after the frame's release is decided once the window
+    // has had it, and not over a question that click opened, as no key acts under one: a
+    // click on File's Export… and ⌘Z in one frame leave the rename in, its undo count as it
+    // was, and Export's dialog up.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    renamed(&mut h, "K", "PinK");
+    settled(&mut h);
+    let undos = |h: &AppHarness| h.state().tabs()[0].transaction().map(|t| t.undo);
+    let before = undos(&h);
+    assert!(before.is_some_and(|undo| undo > 0), "{before:?}");
+    assert!(h.state().tabs()[0].undoable());
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    let at = h
+        .get_by_role_and_label(Role::Button, "Export…")
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    for pressed in [true, false] {
+        events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events.push(key_event(Key::Z, command));
+    step(&mut h);
+    step_until(&mut h, "the export dialog", |h| anywhere(h, EXPORT_EXAMPLE));
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(anywhere(&h, EXPORT_EXAMPLE), "Export's dialog gone");
+    }
+    settled(&mut h);
+    assert_eq!(undos(&h), before);
+    assert!(shows(&h, "Timeline", "PinK"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn close_then_a_line_let_go_in_one_frame_closes_the_clean_tab() {
+    // #535's review: ⌘W, then the release, in one frame: Close, before the release, finds
+    // the tab clean and closes it at once, the line held cut short, the file as it was.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    let path = f.dir.path().join("example.silico");
+    let on_disk = std::fs::read(&path).unwrap();
+    assert!(!h.state().tabs()[0].unsaved());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::W, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), on_disk);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_then_a_line_let_go_in_one_frame_redoes_the_line_before_and_adds_the_line() {
+    // #535's review: a line drawn and undone; then ⌘⇧Z, then the release of another, in
+    // one frame: Redo, before the release, puts the undone line back, and the release then
+    // adds its own (decided after the release, the new line would have left nothing to
+    // redo).
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    line_held(&mut h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Z, command | Modifiers::SHIFT));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    assert!(line_near(&sketch, [40.0, 50.0], [45.0, 60.0]), "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether a toast saying `words` is shown.
+fn toast_shown(h: &AppHarness, words: &str) -> bool {
+    toasts_shown(h).iter().any(|(text, _, _)| text == words)
+}
+
+/// Whether a toast saying `words` showed in the frame just stepped or in any stepped until
+/// everything has answered, and three frames on.
+fn said_while_settling(h: &mut AppHarness, words: &str) -> bool {
+    let mut said = toast_shown(h, words);
+    for _ in 0..3 {
+        step(h);
+        said |= toast_shown(h, words);
+    }
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let tab = &h.state().tabs()[0];
+        if tab.edits.idle() && !tab.applying() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never settled");
+        step(h);
+        said |= toast_shown(h, words);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for _ in 0..3 {
+        step(h);
+        said |= toast_shown(h, words);
+    }
+    said
+}
+
+/// [`boxed_line_tool`], a line pressed and held, then `key` and the release in one frame
+/// in the order `key_first` says; the frame.
+fn key_and_release(h: &mut AppHarness, key: eframe::egui::Event, key_first: bool) {
+    use eframe::egui::{Event, PointerButton};
+    let at = top_screen(h, [30.0, 60.0]);
+    let release = Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    };
+    let events = &mut h.input_mut().events;
+    if key_first {
+        events.extend([key, release]);
+    } else {
+        events.extend([release, key]);
+    }
+    step(h);
+}
+
+#[test]
+fn undo_with_nothing_to_undo_then_a_line_let_go_says_so_and_adds_the_line() {
+    // #535 with #514: sketch mode with no edit since it opened; ⌘Z, then the release, in one
+    // frame: Undo, before the release, finds nothing to undo and says so, and the release
+    // then adds the line, which stays.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    assert!(!h.state().tabs()[0].undoable());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    key_and_release(&mut h, key_event(Key::Z, command), true);
+    assert!(said_while_settling(&mut h, NOTHING_TO_UNDO));
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_with_nothing_to_redo_by_side_of_the_release_says_so_only_before_it() {
+    // #535 with #514: sketch mode with nothing undone. ⌘⇧Z before the release finds nothing
+    // to redo and says so; after it, the release's add is under way, whose answer would move
+    // the counts, so it says nothing, as Redo pressed while an edit is under way doesn't.
+    // The line is added either way.
+    use silico_app::tab::NOTHING_TO_REDO;
+    for key_first in [true, false] {
+        let f = fixture();
+        let mut h = boxed_line_tool(&f);
+        assert!(!h.state().tabs()[0].redoable());
+        line_held(&mut h);
+        let command = command_modifiers(&h);
+        key_and_release(
+            &mut h,
+            key_event(Key::Z, command | Modifiers::SHIFT),
+            key_first,
+        );
+        let said = said_while_settling(&mut h, NOTHING_TO_REDO);
+        let sketch = sketch_of_text(&f, &h, "s0000001");
+        assert_eq!(said, key_first, "{key_first}");
+        assert_eq!(sketch.lines.len(), 5, "{key_first}: {sketch:?}");
+        assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
 #[test]
 fn the_toast_stays_over_the_modify_box_and_the_palette_after_a_press_on_the_palette() {
     // #497's review, round 4: the prototype's `#toasts` (z 650) are over `.modify-box` (40),
