@@ -320,8 +320,8 @@ pub fn not_opened_asking(names: &[String]) -> String {
 }
 
 /// What a toast says of the files dropped on the window while `modal`, one that asks
-/// nothing (the shortcut sheet, What's Wrong), is open over it, `names`, none of which was
-/// opened.
+/// nothing (the shortcut sheet, What's Wrong, the command search), is open over it, `names`,
+/// none of which was opened.
 pub fn not_opened_until_closed(modal: &str, names: &[String]) -> String {
     format!("Close {modal} first: {} not opened", listed(names))
 }

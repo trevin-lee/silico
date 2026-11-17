@@ -755,5 +755,8 @@ crates/silico-core/src/recompute.rs | sweep_step | replace / with * | #511
 crates/silico-app/src/canvas_hint.rs | empty_part | replace * with / | #518
 crates/silico-app/src/canvas_hint.rs | empty_part | replace * with / | #518
 crates/silico-app/src/toolbar.rs | forget_planes_drawn | replace forget_planes_drawn with () | #518
+crates/silico-app/src/search.rs | place | replace * with / | #528
+crates/silico-app/src/search.rs | boxed | replace - with + | #528
+crates/silico-app/src/search.rs | boxed | replace - with / | #528
 crates/silico-app/src/app.rs | App<P>::take_drops | replace |= with &= | #522
 crates/silico-app/src/start.rs | when | replace > with >= | #522

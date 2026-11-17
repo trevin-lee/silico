@@ -190,6 +190,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             // None, as the app's frames (its theme's VIEWPORT_FRAME_BG).
                             background: None,
                             lines: &[],
+                            planes: &[],
                         })
                         .map_err(|f| f.to_string())?;
                     queue.submit([commands]);
@@ -320,6 +321,7 @@ fn edge_batch(
                     vertices: None,
                     background: Some([0x00, 0x00, 0x00]),
                     lines: &[],
+                    planes: &[],
                 })
                 .map_err(|f| f.to_string())?;
             let placed = renderer.placed();
@@ -455,6 +457,7 @@ fn sketch_lines(
                     // None, as the app's frames (its theme's VIEWPORT_FRAME_BG).
                     background: None,
                     lines: if drawn { &sets } else { &[] },
+                    planes: &[],
                 })
                 .map_err(|f| f.to_string())?;
             let placed = renderer.placed();
