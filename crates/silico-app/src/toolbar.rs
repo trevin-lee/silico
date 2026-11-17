@@ -1050,13 +1050,17 @@ fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
 
 /// Create Sketch's planes, a menu of their own for a screen reader, labelled Create Sketch:
 /// a click on one closes the menu, and is the plane a sketch is started on. The one menu of
-/// them, which Create Sketch's button opens, and its item in CREATE's drop-down, and the
-/// canvas's context menu over nothing (`crate::canvas_menu`).
+/// them, which Create Sketch's button opens, and its item in CREATE's drop-down, the
+/// canvas's context menu over nothing (`crate::canvas_menu`), and the empty part's hint
+/// (`crate::canvas_hint`), marking the pass it's drawn in ([`planes_drawn_this_pass`]).
 ///
 /// While they're drawn, the viewport draws all three origin planes, the one whose item the
 /// pointer is on (or has the keys' focus) lit (`crate::planes`, the prototype's
 /// `startPickPlane`).
 pub(crate) fn planes(ui: &mut Ui) -> Option<OriginPlane> {
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(planes_drawn(), pass));
     let mut chosen = None;
     let mut lit = None;
     crate::menu::node(ui, CREATE_SKETCH.label, |ui| {
@@ -1073,6 +1077,26 @@ pub(crate) fn planes(ui: &mut Ui) -> Option<OriginPlane> {
     });
     crate::planes::menu_drawn(ui.ctx(), lit);
     chosen
+}
+
+/// Where egui's memory keeps the pass in which Create Sketch's planes ([`planes`]) were last
+/// drawn.
+fn planes_drawn() -> egui::Id {
+    egui::Id::new("create-sketch-planes-drawn")
+}
+
+/// Whether Create Sketch's planes were drawn in this pass so far (the prototype's plane
+/// pick, `S.pickPlane`): the toolbar's and the canvas's menu's, each drawn before the
+/// canvas's hint reads it.
+pub(crate) fn planes_drawn_this_pass(ctx: &egui::Context) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|data| data.get_temp::<u64>(planes_drawn()))
+        .is_some_and(|drawn| drawn == pass)
+}
+
+/// The planes' drawing forgotten: the hint's own menu of them, which it doesn't hide from.
+pub(crate) fn forget_planes_drawn(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove::<u64>(planes_drawn()));
 }
 
 // ---- Finish Sketch (`.tb-finish`) ----
