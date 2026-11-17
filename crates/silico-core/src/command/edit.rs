@@ -1130,6 +1130,12 @@ pub(super) fn remove_feature(
     id: &FeatureId,
 ) -> Result<(chain::Removed, Candidate), Problems> {
     place_of(checked.document(), id)?;
+    // Every feature that can't do without it, all at once (a pattern copying it and a
+    // fillet naming its edges alike: docs/design/m6.0-patterns.md, section 6).
+    let refusals = chain::removal_refusals(checked, id);
+    if !refusals.is_empty() {
+        return Err(Problems::of(refusals));
+    }
     let removed = chain::remove(checked, id)?;
     let candidate = candidate(&removed.document, "feature")?;
     Ok((removed, candidate))

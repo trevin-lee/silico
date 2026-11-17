@@ -4467,6 +4467,17 @@
             "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|x_axis|y_axis)$",
             "type": "string"
           },
+          "AxisReference": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginAxis"
+              },
+              {
+                "$ref": "#/$defs/ElementName"
+              }
+            ],
+            "description": "A polar pattern's axis: x, y, or z, the model's axes through the origin (their sense is reversed's alone), or a straight edge of the base's solid, from its start to its end, or a circular edge, about its circle's axis through its centre, by its stable name."
+          },
           "AxisToken": {
             "description": "A global axis, signed, as a sketch on a face names its x.",
             "enum": [
@@ -4496,6 +4507,47 @@
             "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
             "type": "number"
           },
+          "Copies": {
+            "description": "What a pattern or mirror copies (`copies`).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "The tools of `features`, each a pad, pocket, revolve, or groove in the base's chain:\na set, read in any order and written sorted.",
+                "properties": {
+                  "features": {
+                    "items": {
+                      "$ref": "#/$defs/FeatureId"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "features",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "features"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The base's whole solid.",
+                "properties": {
+                  "type": {
+                    "const": "solid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "Direction": {
             "description": "How two curves meeting at a point run there: on in the `same` direction (a smooth\njoin), or back the `opposite` way (a cusp).",
             "enum": [
@@ -4503,6 +4555,17 @@
               "opposite"
             ],
             "type": "string"
+          },
+          "DirectionReference": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginAxis"
+              },
+              {
+                "$ref": "#/$defs/ElementName"
+              }
+            ],
+            "description": "A linear pattern's direction: x, y, or z, the model's axes from the origin (their sense is reversed's alone), or a straight edge, from its start to its end, or a planar face, along its outward normal, of the base's solid by its stable name."
           },
           "ElementId": {
             "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
@@ -4553,6 +4616,16 @@
             "const": 1,
             "description": "The feature's version: changing a feature type's behaviour bumps it, and a document keeps the behaviour it was made with. 1 for every type so far."
           },
+          "Instance": {
+            "description": "An instance of a pattern: its steps from the original along each direction, direction 1 first, trailing zeros left off, as its copies' names write it (C2, C2,1): [2], [2, 1], [0, 1].",
+            "items": {
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
           "Length": {
             "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
             "type": "number"
@@ -4564,6 +4637,87 @@
               "right"
             ],
             "type": "string"
+          },
+          "LinearDirection": {
+            "additionalProperties": false,
+            "description": "One of a linear pattern's directions: what it steps along, which way, how far, and how\nmany instances, the original included.",
+            "properties": {
+              "along": {
+                "$ref": "#/$defs/DirectionReference"
+              },
+              "count": {
+                "description": "The instances along it, the original included: 1 to 1,000, the directions' counts\nmultiplied at most 1,000.",
+                "maximum": 1000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "distribution": {
+                "$ref": "#/$defs/LinearDistribution"
+              },
+              "reversed": {
+                "description": "Turns the direction round.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "along",
+              "reversed",
+              "distribution",
+              "count"
+            ],
+            "type": "object"
+          },
+          "LinearDistribution": {
+            "description": "How a linear pattern's direction spreads its instances: over `length` from the first to\nthe last, or `length` between neighbours.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "`length` from the first instance to the last.",
+                "properties": {
+                  "length": {
+                    "$ref": "#/$defs/Length"
+                  },
+                  "type": {
+                    "const": "extent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "length"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "`length` between neighbours.",
+                "properties": {
+                  "length": {
+                    "$ref": "#/$defs/Length"
+                  },
+                  "type": {
+                    "const": "spacing",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "length"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "MirrorPlane": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginPlane"
+              },
+              {
+                "$ref": "#/$defs/ElementName"
+              }
+            ],
+            "description": "A mirror's plane: xy, xz, or yz, the origin's planes, or a planar face of the base's solid by its stable name."
           },
           "Name": {
             "description": "A display name, which needn't be unique.",
@@ -5030,6 +5184,114 @@
                   "extent"
                 ],
                 "type": "object"
+              },
+              {
+                "description": "`base`'s solid with copies of `copies` placed along one or two `directions`, each\ninstance's steps along them by place, `skip`'s instances left out\n(docs/design/m6.0-patterns.md, section 2).",
+                "properties": {
+                  "base": {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  "copies": {
+                    "$ref": "#/$defs/Copies"
+                  },
+                  "directions": {
+                    "items": {
+                      "$ref": "#/$defs/LinearDirection"
+                    },
+                    "maxItems": 2,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "skip": {
+                    "items": {
+                      "$ref": "#/$defs/Instance"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "linear_pattern",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "base",
+                  "copies",
+                  "directions",
+                  "skip"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`base`'s solid with copies of `copies` turned about `axis`, right-handed, or\nleft-handed when `reversed`, `count` instances the original included, `skip`'s left\nout.",
+                "properties": {
+                  "axis": {
+                    "$ref": "#/$defs/AxisReference"
+                  },
+                  "base": {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  "copies": {
+                    "$ref": "#/$defs/Copies"
+                  },
+                  "count": {
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "distribution": {
+                    "$ref": "#/$defs/PolarDistribution"
+                  },
+                  "reversed": {
+                    "type": "boolean"
+                  },
+                  "skip": {
+                    "items": {
+                      "$ref": "#/$defs/Instance"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "polar_pattern",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "base",
+                  "copies",
+                  "axis",
+                  "reversed",
+                  "distribution",
+                  "count",
+                  "skip"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`base`'s solid with `copies` mirrored about `plane`, merged into it.",
+                "properties": {
+                  "base": {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  "copies": {
+                    "$ref": "#/$defs/Copies"
+                  },
+                  "plane": {
+                    "$ref": "#/$defs/MirrorPlane"
+                  },
+                  "type": {
+                    "const": "mirror",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "base",
+                  "copies",
+                  "plane"
+                ],
+                "type": "object"
               }
             ],
             "properties": {
@@ -5083,6 +5345,15 @@
             ],
             "type": "object",
             "unevaluatedProperties": false
+          },
+          "OriginAxis": {
+            "description": "One of the model's axes from the origin, along +X, +Y, or +Z, as the origin's planes are\n`xy`, `xz`, `yz`; its sense is a pattern's `reversed`'s alone (Fable, 2026-11-10). Not a\nrevolve's `x_axis`, which is its sketch's, nor a face sketch's `+x`.",
+            "enum": [
+              "x",
+              "y",
+              "z"
+            ],
+            "type": "string"
           },
           "OriginPlane": {
             "description": "One of the origin's planes, oriented as FreeCAD's (D6). On `xy`, the sketch's x is +X\nand its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal −Y); on `yz`, x is +Y and\ny +Z (normal +X).",
@@ -5240,6 +5511,47 @@
                 "required": [
                   "type",
                   "reversed"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "PolarDistribution": {
+            "description": "How a polar pattern spreads its instances: over `angle` from the first to the last\n(exactly 360 spreads them over a whole turn), or `angle` between neighbours.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "`angle` from the first instance to the last; 360 spreads them over a whole turn.",
+                "properties": {
+                  "angle": {
+                    "$ref": "#/$defs/Angle"
+                  },
+                  "type": {
+                    "const": "extent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "angle"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "`angle` between neighbours.",
+                "properties": {
+                  "angle": {
+                    "$ref": "#/$defs/Angle"
+                  },
+                  "type": {
+                    "const": "spacing",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "angle"
                 ],
                 "type": "object"
               }
@@ -5992,6 +6304,17 @@
             "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|x_axis|y_axis)$",
             "type": "string"
           },
+          "AxisReference": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginAxis"
+              },
+              {
+                "$ref": "#/$defs/ElementName"
+              }
+            ],
+            "description": "A polar pattern's axis: x, y, or z, the model's axes through the origin (their sense is reversed's alone), or a straight edge of the base's solid, from its start to its end, or a circular edge, about its circle's axis through its centre, by its stable name."
+          },
           "AxisToken": {
             "description": "A global axis, signed, as a sketch on a face names its x.",
             "enum": [
@@ -6071,6 +6394,47 @@
             "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
             "type": "number"
           },
+          "Copies": {
+            "description": "What a pattern or mirror copies (`copies`).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "The tools of `features`, each a pad, pocket, revolve, or groove in the base's chain:\na set, read in any order and written sorted.",
+                "properties": {
+                  "features": {
+                    "items": {
+                      "$ref": "#/$defs/FeatureId"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "features",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "features"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The base's whole solid.",
+                "properties": {
+                  "type": {
+                    "const": "solid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "Direction": {
             "description": "How two curves meeting at a point run there: on in the `same` direction (a smooth\njoin), or back the `opposite` way (a cusp).",
             "enum": [
@@ -6078,6 +6442,17 @@
               "opposite"
             ],
             "type": "string"
+          },
+          "DirectionReference": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginAxis"
+              },
+              {
+                "$ref": "#/$defs/ElementName"
+              }
+            ],
+            "description": "A linear pattern's direction: x, y, or z, the model's axes from the origin (their sense is reversed's alone), or a straight edge, from its start to its end, or a planar face, along its outward normal, of the base's solid by its stable name."
           },
           "ElementId": {
             "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
@@ -6663,6 +7038,114 @@
                   "extent"
                 ],
                 "type": "object"
+              },
+              {
+                "description": "`base`'s solid with copies of `copies` placed along one or two `directions`, each\ninstance's steps along them by place, `skip`'s instances left out\n(docs/design/m6.0-patterns.md, section 2).",
+                "properties": {
+                  "base": {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  "copies": {
+                    "$ref": "#/$defs/Copies"
+                  },
+                  "directions": {
+                    "items": {
+                      "$ref": "#/$defs/LinearDirection"
+                    },
+                    "maxItems": 2,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "skip": {
+                    "items": {
+                      "$ref": "#/$defs/Instance"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "linear_pattern",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "base",
+                  "copies",
+                  "directions",
+                  "skip"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`base`'s solid with copies of `copies` turned about `axis`, right-handed, or\nleft-handed when `reversed`, `count` instances the original included, `skip`'s left\nout.",
+                "properties": {
+                  "axis": {
+                    "$ref": "#/$defs/AxisReference"
+                  },
+                  "base": {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  "copies": {
+                    "$ref": "#/$defs/Copies"
+                  },
+                  "count": {
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "distribution": {
+                    "$ref": "#/$defs/PolarDistribution"
+                  },
+                  "reversed": {
+                    "type": "boolean"
+                  },
+                  "skip": {
+                    "items": {
+                      "$ref": "#/$defs/Instance"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "polar_pattern",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "base",
+                  "copies",
+                  "axis",
+                  "reversed",
+                  "distribution",
+                  "count",
+                  "skip"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`base`'s solid with `copies` mirrored about `plane`, merged into it.",
+                "properties": {
+                  "base": {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  "copies": {
+                    "$ref": "#/$defs/Copies"
+                  },
+                  "plane": {
+                    "$ref": "#/$defs/MirrorPlane"
+                  },
+                  "type": {
+                    "const": "mirror",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "base",
+                  "copies",
+                  "plane"
+                ],
+                "type": "object"
               }
             ],
             "properties": {
@@ -6766,6 +7249,16 @@
             ],
             "type": "string"
           },
+          "Instance": {
+            "description": "An instance of a pattern: its steps from the original along each direction, direction 1 first, trailing zeros left off, as its copies' names write it (C2, C2,1): [2], [2, 1], [0, 1].",
+            "items": {
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
           "Length": {
             "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
             "type": "number"
@@ -6778,9 +7271,90 @@
             ],
             "type": "string"
           },
+          "LinearDirection": {
+            "additionalProperties": false,
+            "description": "One of a linear pattern's directions: what it steps along, which way, how far, and how\nmany instances, the original included.",
+            "properties": {
+              "along": {
+                "$ref": "#/$defs/DirectionReference"
+              },
+              "count": {
+                "description": "The instances along it, the original included: 1 to 1,000, the directions' counts\nmultiplied at most 1,000.",
+                "maximum": 1000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "distribution": {
+                "$ref": "#/$defs/LinearDistribution"
+              },
+              "reversed": {
+                "description": "Turns the direction round.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "along",
+              "reversed",
+              "distribution",
+              "count"
+            ],
+            "type": "object"
+          },
+          "LinearDistribution": {
+            "description": "How a linear pattern's direction spreads its instances: over `length` from the first to\nthe last, or `length` between neighbours.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "`length` from the first instance to the last.",
+                "properties": {
+                  "length": {
+                    "$ref": "#/$defs/Length"
+                  },
+                  "type": {
+                    "const": "extent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "length"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "`length` between neighbours.",
+                "properties": {
+                  "length": {
+                    "$ref": "#/$defs/Length"
+                  },
+                  "type": {
+                    "const": "spacing",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "length"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "Measure": {
             "description": "A volume (mm³) or area (mm²): a number, to at most 6 decimals.",
             "type": "number"
+          },
+          "MirrorPlane": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginPlane"
+              },
+              {
+                "$ref": "#/$defs/ElementName"
+              }
+            ],
+            "description": "A mirror's plane: xy, xz, or yz, the origin's planes, or a planar face of the base's solid by its stable name."
           },
           "Model": {
             "additionalProperties": false,
@@ -6845,6 +7419,15 @@
               "gap"
             ],
             "type": "object"
+          },
+          "OriginAxis": {
+            "description": "One of the model's axes from the origin, along +X, +Y, or +Z, as the origin's planes are\n`xy`, `xz`, `yz`; its sense is a pattern's `reversed`'s alone (Fable, 2026-11-10). Not a\nrevolve's `x_axis`, which is its sketch's, nor a face sketch's `+x`.",
+            "enum": [
+              "x",
+              "y",
+              "z"
+            ],
+            "type": "string"
           },
           "OriginPlane": {
             "description": "One of the origin's planes, oriented as FreeCAD's (D6). On `xy`, the sketch's x is +X\nand its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal −Y); on `yz`, x is +Y and\ny +Z (normal +X).",
@@ -7013,6 +7596,47 @@
                 "required": [
                   "type",
                   "reversed"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "PolarDistribution": {
+            "description": "How a polar pattern spreads its instances: over `angle` from the first to the last\n(exactly 360 spreads them over a whole turn), or `angle` between neighbours.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "`angle` from the first instance to the last; 360 spreads them over a whole turn.",
+                "properties": {
+                  "angle": {
+                    "$ref": "#/$defs/Angle"
+                  },
+                  "type": {
+                    "const": "extent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "angle"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "`angle` between neighbours.",
+                "properties": {
+                  "angle": {
+                    "$ref": "#/$defs/Angle"
+                  },
+                  "type": {
+                    "const": "spacing",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "angle"
                 ],
                 "type": "object"
               }
@@ -8510,7 +9134,7 @@
         "readOnlyHint": false,
         "title": "Remove a feature"
       },
-      "description": "Remove one feature; its JSON is returned. The feature that consumed it takes its base, listed in `rewired`. Refused, naming both, where nothing can stand in: a chain's first feature under one that needs a base, a feature's sketch, or a feature whose elements another names. To put it back, give `add_feature` the returned feature without its `fingerprint`, `before` the feature that followed it (inside a transaction, the fingerprint `begin` saw is kept), then `set_field` `base` back on each `rewired` entry whose `to` is null; or remove inside a transaction and `rollback`. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "Remove one feature; its JSON is returned. The feature that consumed it takes its base, listed in `rewired`. Refused, naming both, where nothing can stand in: a chain's first feature under one that needs a base, a feature's sketch, a feature whose elements another names, or an original a pattern copies. To put it back, give `add_feature` the returned feature without its `fingerprint`, `before` the feature that followed it (inside a transaction, the fingerprint `begin` saw is kept), then `set_field` `base` back on each `rewired` entry whose `to` is null; or remove inside a transaction and `rollback`. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$defs": {
           "FeatureId": {
@@ -8525,7 +9149,7 @@
         "properties": {
           "feature": {
             "$ref": "#/$defs/FeatureId",
-            "description": "The feature to remove, by ID. The feature that consumed it takes its base. Refused,\nnaming both, where nothing can stand in: a chain's root under a feature that needs a\nbase, a feature whose sketch it is, or one that names its elements."
+            "description": "The feature to remove, by ID. The feature that consumed it takes its base. Refused,\nnaming both, where nothing can stand in: a chain's root under a feature that needs a\nbase, a feature whose sketch it is, one that names its elements, or an original a\npattern copies."
           },
           "revision": {
             "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
@@ -8557,6 +9181,17 @@
             "description": "What a revolve or groove turns about: x_axis (the sketch's, from its origin along +x), y_axis (along +y), or the ID of a line of the sketch, construction or not, from its `from` point to its `to`.",
             "pattern": "^([0123456789abcdefghjkmnpqrstvwxyz]{8}|x_axis|y_axis)$",
             "type": "string"
+          },
+          "AxisReference": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginAxis"
+              },
+              {
+                "$ref": "#/$defs/ElementName"
+              }
+            ],
+            "description": "A polar pattern's axis: x, y, or z, the model's axes through the origin (their sense is reversed's alone), or a straight edge of the base's solid, from its start to its end, or a circular edge, about its circle's axis through its centre, by its stable name."
           },
           "AxisToken": {
             "description": "A global axis, signed, as a sketch on a face names its x.",
@@ -8637,6 +9272,47 @@
             "description": "A value the solver works out, in millimetres: a number, read correctly rounded to the nearest 64-bit float, and written in full as the shortest decimal that reads back as it. Within a kilometre of the origin.",
             "type": "number"
           },
+          "Copies": {
+            "description": "What a pattern or mirror copies (`copies`).",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "The tools of `features`, each a pad, pocket, revolve, or groove in the base's chain:\na set, read in any order and written sorted.",
+                "properties": {
+                  "features": {
+                    "items": {
+                      "$ref": "#/$defs/FeatureId"
+                    },
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "features",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "features"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "The base's whole solid.",
+                "properties": {
+                  "type": {
+                    "const": "solid",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "Direction": {
             "description": "How two curves meeting at a point run there: on in the `same` direction (a smooth\njoin), or back the `opposite` way (a cusp).",
             "enum": [
@@ -8644,6 +9320,17 @@
               "opposite"
             ],
             "type": "string"
+          },
+          "DirectionReference": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginAxis"
+              },
+              {
+                "$ref": "#/$defs/ElementName"
+              }
+            ],
+            "description": "A linear pattern's direction: x, y, or z, the model's axes from the origin (their sense is reversed's alone), or a straight edge, from its start to its end, or a planar face, along its outward normal, of the base's solid by its stable name."
           },
           "ElementId": {
             "description": "A sketch element's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u), unique within its sketch.",
@@ -9229,6 +9916,114 @@
                   "extent"
                 ],
                 "type": "object"
+              },
+              {
+                "description": "`base`'s solid with copies of `copies` placed along one or two `directions`, each\ninstance's steps along them by place, `skip`'s instances left out\n(docs/design/m6.0-patterns.md, section 2).",
+                "properties": {
+                  "base": {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  "copies": {
+                    "$ref": "#/$defs/Copies"
+                  },
+                  "directions": {
+                    "items": {
+                      "$ref": "#/$defs/LinearDirection"
+                    },
+                    "maxItems": 2,
+                    "minItems": 1,
+                    "type": "array"
+                  },
+                  "skip": {
+                    "items": {
+                      "$ref": "#/$defs/Instance"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "linear_pattern",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "base",
+                  "copies",
+                  "directions",
+                  "skip"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`base`'s solid with copies of `copies` turned about `axis`, right-handed, or\nleft-handed when `reversed`, `count` instances the original included, `skip`'s left\nout.",
+                "properties": {
+                  "axis": {
+                    "$ref": "#/$defs/AxisReference"
+                  },
+                  "base": {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  "copies": {
+                    "$ref": "#/$defs/Copies"
+                  },
+                  "count": {
+                    "maximum": 1000,
+                    "minimum": 1,
+                    "type": "integer"
+                  },
+                  "distribution": {
+                    "$ref": "#/$defs/PolarDistribution"
+                  },
+                  "reversed": {
+                    "type": "boolean"
+                  },
+                  "skip": {
+                    "items": {
+                      "$ref": "#/$defs/Instance"
+                    },
+                    "type": "array"
+                  },
+                  "type": {
+                    "const": "polar_pattern",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "base",
+                  "copies",
+                  "axis",
+                  "reversed",
+                  "distribution",
+                  "count",
+                  "skip"
+                ],
+                "type": "object"
+              },
+              {
+                "description": "`base`'s solid with `copies` mirrored about `plane`, merged into it.",
+                "properties": {
+                  "base": {
+                    "$ref": "#/$defs/FeatureId"
+                  },
+                  "copies": {
+                    "$ref": "#/$defs/Copies"
+                  },
+                  "plane": {
+                    "$ref": "#/$defs/MirrorPlane"
+                  },
+                  "type": {
+                    "const": "mirror",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "base",
+                  "copies",
+                  "plane"
+                ],
+                "type": "object"
               }
             ],
             "properties": {
@@ -9332,6 +10127,16 @@
             ],
             "type": "string"
           },
+          "Instance": {
+            "description": "An instance of a pattern: its steps from the original along each direction, direction 1 first, trailing zeros left off, as its copies' names write it (C2, C2,1): [2], [2, 1], [0, 1].",
+            "items": {
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "minItems": 1,
+            "type": "array"
+          },
           "Length": {
             "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
             "type": "number"
@@ -9344,9 +10149,90 @@
             ],
             "type": "string"
           },
+          "LinearDirection": {
+            "additionalProperties": false,
+            "description": "One of a linear pattern's directions: what it steps along, which way, how far, and how\nmany instances, the original included.",
+            "properties": {
+              "along": {
+                "$ref": "#/$defs/DirectionReference"
+              },
+              "count": {
+                "description": "The instances along it, the original included: 1 to 1,000, the directions' counts\nmultiplied at most 1,000.",
+                "maximum": 1000,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "distribution": {
+                "$ref": "#/$defs/LinearDistribution"
+              },
+              "reversed": {
+                "description": "Turns the direction round.",
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "along",
+              "reversed",
+              "distribution",
+              "count"
+            ],
+            "type": "object"
+          },
+          "LinearDistribution": {
+            "description": "How a linear pattern's direction spreads its instances: over `length` from the first to\nthe last, or `length` between neighbours.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "`length` from the first instance to the last.",
+                "properties": {
+                  "length": {
+                    "$ref": "#/$defs/Length"
+                  },
+                  "type": {
+                    "const": "extent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "length"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "`length` between neighbours.",
+                "properties": {
+                  "length": {
+                    "$ref": "#/$defs/Length"
+                  },
+                  "type": {
+                    "const": "spacing",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "length"
+                ],
+                "type": "object"
+              }
+            ]
+          },
           "Measure": {
             "description": "A volume (mm³) or area (mm²): a number, to at most 6 decimals.",
             "type": "number"
+          },
+          "MirrorPlane": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OriginPlane"
+              },
+              {
+                "$ref": "#/$defs/ElementName"
+              }
+            ],
+            "description": "A mirror's plane: xy, xz, or yz, the origin's planes, or a planar face of the base's solid by its stable name."
           },
           "Model": {
             "additionalProperties": false,
@@ -9411,6 +10297,15 @@
               "gap"
             ],
             "type": "object"
+          },
+          "OriginAxis": {
+            "description": "One of the model's axes from the origin, along +X, +Y, or +Z, as the origin's planes are\n`xy`, `xz`, `yz`; its sense is a pattern's `reversed`'s alone (Fable, 2026-11-10). Not a\nrevolve's `x_axis`, which is its sketch's, nor a face sketch's `+x`.",
+            "enum": [
+              "x",
+              "y",
+              "z"
+            ],
+            "type": "string"
           },
           "OriginPlane": {
             "description": "One of the origin's planes, oriented as FreeCAD's (D6). On `xy`, the sketch's x is +X\nand its y +Y (normal +Z); on `xz`, x is +X and y +Z (normal −Y); on `yz`, x is +Y and\ny +Z (normal +X).",
@@ -9579,6 +10474,47 @@
                 "required": [
                   "type",
                   "reversed"
+                ],
+                "type": "object"
+              }
+            ]
+          },
+          "PolarDistribution": {
+            "description": "How a polar pattern spreads its instances: over `angle` from the first to the last\n(exactly 360 spreads them over a whole turn), or `angle` between neighbours.",
+            "oneOf": [
+              {
+                "additionalProperties": false,
+                "description": "`angle` from the first instance to the last; 360 spreads them over a whole turn.",
+                "properties": {
+                  "angle": {
+                    "$ref": "#/$defs/Angle"
+                  },
+                  "type": {
+                    "const": "extent",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "angle"
+                ],
+                "type": "object"
+              },
+              {
+                "additionalProperties": false,
+                "description": "`angle` between neighbours.",
+                "properties": {
+                  "angle": {
+                    "$ref": "#/$defs/Angle"
+                  },
+                  "type": {
+                    "const": "spacing",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "angle"
                 ],
                 "type": "object"
               }
@@ -18340,7 +19276,7 @@
         "readOnlyHint": false,
         "title": "Move a feature"
       },
-      "description": "Move one feature before another, or to the end (`before: null`), rewiring the chains it leaves and joins: its consumer takes its base, it builds on the last feature of its chain before the new place, and the next one builds on it, each change listed in `rewired`. Refused, naming both, where a child would come before its parent (its sketch, its tool, a feature whose elements it names). Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "Move one feature before another, or to the end (`before: null`), rewiring the chains it leaves and joins: its consumer takes its base, it builds on the last feature of its chain before the new place, and the next one builds on it, each change listed in `rewired`. Refused, naming both, where a child would come before its parent (its sketch, its tool, a feature whose elements it names, an original it copies). Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$defs": {
           "FeatureId": {
@@ -18366,7 +19302,7 @@
           },
           "feature": {
             "$ref": "#/$defs/FeatureId",
-            "description": "The feature to move, by ID. Its consumer takes its base; it takes as its base the\nlast feature of its chain before the new place, and the chain's next feature after\nthat place takes it as its base. Refused, naming both, where a child would come\nbefore its parent: before its sketch or its tool, after a feature using it as its\nsketch, or where a feature's base would no longer be built from a feature whose\nelements it names."
+            "description": "The feature to move, by ID. Its consumer takes its base; it takes as its base the\nlast feature of its chain before the new place, and the chain's next feature after\nthat place takes it as its base. Refused, naming both, where a child would come\nbefore its parent: before its sketch, its tool, or an original it copies, after a\nfeature using it as its sketch or copying it, or where a feature's base would no\nlonger be built from a feature whose elements it names or an original it copies."
           },
           "revision": {
             "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
@@ -18910,7 +19846,7 @@
         "readOnlyHint": false,
         "title": "Suppress a feature"
       },
-      "description": "Suppress one feature (`suppressed: true`) or unsuppress it (`false`). A suppressed feature isn't built: a feature that consumes it builds on the nearest unsuppressed feature up its chain, so suppressing a part's first hole leaves the part. Its dependents go with it: a feature whose sketch it is, one naming its elements, and one left with an input it needs and nothing unsuppressed up its chain. Unsuppressing a feature unsuppresses what it needs (its sketch, the features its names come from, its chain's first feature if every one is suppressed); what depends on it stays suppressed. Each list is in `suppressed` and `unsuppressed`, in timeline order. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
+      "description": "Suppress one feature (`suppressed: true`) or unsuppress it (`false`). A suppressed feature isn't built: a feature that consumes it builds on the nearest unsuppressed feature up its chain, so suppressing a part's first hole leaves the part. Its dependents go with it: a feature whose sketch it is, one naming its elements, a pattern copying it, and one left with an input it needs and nothing unsuppressed up its chain. Unsuppressing a feature unsuppresses what it needs (its sketch, the features its names come from, a pattern's originals, its chain's first feature if every one is suppressed); what depends on it stays suppressed. Each list is in `suppressed` and `unsuppressed`, in timeline order. Give the revision the edit was made against. Edit inside a transaction: `begin`, the edits, then `commit` to save them or `rollback` to undo them all. An edit made outside one is saved to the file at once, with no undo but another edit. After an edit, read with `model: \"current\"`, which waits for the edit's rebuild; `published` answers at once from the newest model rebuilt, which may be older.",
       "inputSchema": {
         "$defs": {
           "FeatureId": {
@@ -18938,7 +19874,7 @@
             "type": "string"
           },
           "suppressed": {
-            "description": "True to suppress it: it isn't built, and a feature that consumes it builds on the\nnearest unsuppressed feature up its chain; its dependents go with it (a feature whose\nsketch it is, one naming its elements, and one left with an input it needs and nothing\nunsuppressed up its chain). False to unsuppress it, with its sketch, the makers of the\nnames it stores, and, for an input it needs with nothing unsuppressed up its chain,\nthat chain's first feature; what depends on it stays suppressed.",
+            "description": "True to suppress it: it isn't built, and a feature that consumes it builds on the\nnearest unsuppressed feature up its chain; its dependents go with it (a feature whose\nsketch it is, one naming its elements, a pattern copying it, and one left with an\ninput it needs and nothing unsuppressed up its chain). False to unsuppress it, with\nits sketch, the makers of the names it stores, a pattern's originals, and, for an\ninput it needs with nothing unsuppressed up its chain, that chain's first feature;\nwhat depends on it stays suppressed.",
             "type": "boolean"
           }
         },
@@ -19794,7 +20730,7 @@
                 "description": "Its ID. Unique, but in a document the gate refuses for an ID used twice."
               },
               "inputs": {
-                "description": "The features it names: its `base` and `tool`, then its `sketch`, then, for a sketch on\na face, the feature its `plane.face` begins with, in that order.",
+                "description": "The features it names: its `base` and `tool`, then its `sketch`, then, for a sketch on\na face, the feature its `plane.face` begins with, then a pattern's originals in\ntimeline order, each once.",
                 "items": {
                   "$ref": "#/$defs/FeatureId"
                 },

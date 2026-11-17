@@ -679,7 +679,8 @@ pub struct RemoveFeatureRequestSchema {
     pub revision: u64,
     /// The feature to remove, by ID. The feature that consumed it takes its base. Refused,
     /// naming both, where nothing can stand in: a chain's root under a feature that needs a
-    /// base, a feature whose sketch it is, or one that names its elements.
+    /// base, a feature whose sketch it is, one that names its elements, or an original a
+    /// pattern copies.
     pub feature: FeatureId,
 }
 
@@ -754,9 +755,9 @@ pub struct MoveFeatureRequestSchema {
     /// The feature to move, by ID. Its consumer takes its base; it takes as its base the
     /// last feature of its chain before the new place, and the chain's next feature after
     /// that place takes it as its base. Refused, naming both, where a child would come
-    /// before its parent: before its sketch or its tool, after a feature using it as its
-    /// sketch, or where a feature's base would no longer be built from a feature whose
-    /// elements it names.
+    /// before its parent: before its sketch, its tool, or an original it copies, after a
+    /// feature using it as its sketch or copying it, or where a feature's base would no
+    /// longer be built from a feature whose elements it names or an original it copies.
     pub feature: FeatureId,
     /// The feature to move it before, by ID, or null for the end.
     pub before: Option<FeatureId>,
@@ -799,10 +800,11 @@ pub struct SuppressFeatureRequestSchema {
     pub feature: FeatureId,
     /// True to suppress it: it isn't built, and a feature that consumes it builds on the
     /// nearest unsuppressed feature up its chain; its dependents go with it (a feature whose
-    /// sketch it is, one naming its elements, and one left with an input it needs and nothing
-    /// unsuppressed up its chain). False to unsuppress it, with its sketch, the makers of the
-    /// names it stores, and, for an input it needs with nothing unsuppressed up its chain,
-    /// that chain's first feature; what depends on it stays suppressed.
+    /// sketch it is, one naming its elements, a pattern copying it, and one left with an
+    /// input it needs and nothing unsuppressed up its chain). False to unsuppress it, with
+    /// its sketch, the makers of the names it stores, a pattern's originals, and, for an
+    /// input it needs with nothing unsuppressed up its chain, that chain's first feature;
+    /// what depends on it stays suppressed.
     pub suppressed: bool,
 }
 

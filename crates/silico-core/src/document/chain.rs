@@ -175,30 +175,8 @@ pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
     let index = Index::of(document);
     let at = index.place(id).ok_or_else(|| no_feature(id, "feature"))?;
     let removed = &document.features[at];
-    if let Some((child, why)) = children(document, &index, id).next() {
-        return Err(Error::new(
-            ErrorCode::InvalidInput,
-            format!(
-                "{} {}, so {} can't be removed",
-                child.id,
-                why.why(id),
-                removed.id
-            ),
-        )
-        .with_feature(removed.id.as_str())
-        .with_parameter("feature")
-        .with_suggestion(match why {
-            Child::Sketch => format!("remove {} first", child.id),
-            // A sketch's stored name is its face's; a fillet's or chamfer's, its edges'.
-            Child::Names if matches!(child.operation, Operation::Sketch(_)) => format!(
-                "remove {} first, or set its plane.face to another feature's face",
-                child.id
-            ),
-            Child::Names => format!(
-                "remove {} first, or set its edges to names of other features' elements",
-                child.id
-            ),
-        }));
+    if let Some(refusal) = removal_refusals(checked, id).into_iter().next() {
+        return Err(refusal);
     }
     let mut edited = document.clone();
     if let Some((c, field)) = index.consumer(id) {
@@ -224,6 +202,50 @@ pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
         index: at,
         rewired,
     })
+}
+
+/// Every refusal of removing `id` for a feature that can't do without it, one a child, in
+/// timeline order, naming both (the design's `remove_feature`, and a pattern's originals,
+/// docs/design/m6.0-patterns.md, section 6): its sketch's users, the features naming its
+/// elements, and the patterns copying it. [`remove`] refuses with the first; `remove_feature`
+/// gives them all at once. None for a feature the document hasn't.
+pub fn removal_refusals(checked: &Checked, id: &FeatureId) -> Vec<Error> {
+    let document = checked.document();
+    let index = Index::of(document);
+    let Some(removed) = index.place(id).and_then(|at| document.features.get(at)) else {
+        return Vec::new();
+    };
+    children(document, &index, id)
+        .map(|(child, why)| {
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "{} {}, so {} can't be removed",
+                    child.id,
+                    why.why(id),
+                    removed.id
+                ),
+            )
+            .with_feature(removed.id.as_str())
+            .with_parameter("feature")
+            .with_suggestion(match why {
+                Child::Sketch => format!("remove {} first", child.id),
+                // A sketch's stored name is its face's; a fillet's or chamfer's, its edges'.
+                Child::Names if matches!(child.operation, Operation::Sketch(_)) => format!(
+                    "remove {} first, or set its plane.face to another feature's face",
+                    child.id
+                ),
+                Child::Names => format!(
+                    "remove {} first, or set its edges to names of other features' elements",
+                    child.id
+                ),
+                Child::Copies => format!(
+                    "remove {} first, or take {} out of its copies.features",
+                    child.id, removed.id
+                ),
+            })
+        })
+        .collect()
 }
 
 /// The feature `id` moved before the feature `before`, or to the end for none (the design's
@@ -306,28 +328,45 @@ pub fn move_feature(
     {
         return Err(come_before(moving, tool, "which it uses as its tool"));
     }
+    // A pattern before an original it copies (docs/design/m6.0-patterns.md, section 6).
+    if let Some(original) = moving
+        .operation
+        .originals()
+        .iter()
+        .find(|original| others(original).is_some_and(|p| p >= place_to))
+    {
+        return Err(come_before(moving, original, "which it copies"));
+    }
     // A feature whose elements it names, or that names its elements, is the lineage
     // rule's to refuse (open item 2b), below: a stored name whose makers its base was built
     // from must keep them.
     if let Some((child, why)) = children(document, &index, id)
-        .filter(|(_, why)| *why == Child::Sketch)
+        .filter(|(_, why)| matches!(why, Child::Sketch | Child::Copies))
         .find(|(child, _)| others(&child.id).is_some_and(|p| p < place_to))
     {
+        let (which, suggestion) = match why {
+            Child::Copies => (
+                "copies it".to_owned(),
+                format!(
+                    "move {} after it too, or take {} out of {}'s copies.features",
+                    child.id, moving.id, child.id
+                ),
+            ),
+            _ => (
+                why.why(id),
+                format!(
+                    "move {} after {} first, or move {} before it",
+                    child.id, moving.id, moving.id
+                ),
+            ),
+        };
         return Err(Error::new(
             ErrorCode::InvalidInput,
-            format!(
-                "{} would come after {}, which {}",
-                moving.id,
-                child.id,
-                why.why(id)
-            ),
+            format!("{} would come after {}, which {which}", moving.id, child.id),
         )
         .with_feature(moving.id.as_str())
         .with_parameter("before")
-        .with_suggestion(format!(
-            "move {} after {} first, or move {} before it",
-            child.id, moving.id, moving.id
-        )));
+        .with_suggestion(suggestion));
     }
 
     let base = base_of(&moving.operation);
@@ -710,12 +749,14 @@ impl<'a> Lineage<'a> {
     }
 }
 
-/// Why a feature can't do without another: it's its sketch, or it stores names of its
-/// elements.
+/// Why a feature can't do without another: it's its sketch, it stores names of its
+/// elements, or it's an original it copies (a pattern is a child of each original,
+/// docs/design/m6.0-patterns.md, section 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Child {
     Sketch,
     Names,
+    Copies,
 }
 
 impl Child {
@@ -724,12 +765,14 @@ impl Child {
         match self {
             Child::Sketch => format!("uses {parent} as its sketch"),
             Child::Names => format!("names {parent}'s elements"),
+            Child::Copies => format!("copies {parent}"),
         }
     }
 }
 
-/// The features that can't do without `id` where they are: those whose sketch it is, and
-/// those storing a name one of whose makers it is, in timeline order, each with why.
+/// The features that can't do without `id` where they are: those whose sketch it is, those
+/// storing a name one of whose makers it is, and the patterns copying it, in timeline order,
+/// each with why.
 fn children<'a>(
     document: &'a Document,
     index: &'a Index,
@@ -742,6 +785,8 @@ fn children<'a>(
         .filter_map(move |f| {
             if f.operation.sketch() == Some(id) {
                 Some((f, Child::Sketch))
+            } else if f.operation.originals().contains(id) {
+                Some((f, Child::Copies))
             } else if makers_named(index, f).contains(&id) {
                 Some((f, Child::Names))
             } else {

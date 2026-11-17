@@ -846,10 +846,21 @@ impl Checked {
     /// can be mended).
     pub fn try_new(document: Document) -> Result<Self, (Document, Invalid)> {
         match validate(&document) {
-            Ok(()) => Ok(Checked {
-                index: FeatureIndex::new(document.features.iter().map(|f| &f.id)),
-                document,
-            }),
+            Ok(()) => {
+                // A pattern's `copies.features` and `skip` are sets, held as the file writes
+                // them once the gate takes them, so `skip.N` names the same instance in the
+                // model as in the text (docs/design/m6.0-patterns.md, section 2.1).
+                let mut document = document;
+                for feature in &mut document.features {
+                    if feature.operation.copies().is_some() {
+                        feature.operation = feature.operation.in_written_order();
+                    }
+                }
+                Ok(Checked {
+                    index: FeatureIndex::new(document.features.iter().map(|f| &f.id)),
+                    document,
+                })
+            }
             Err(invalid) => Err((document, invalid)),
         }
     }

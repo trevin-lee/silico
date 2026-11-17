@@ -1727,7 +1727,7 @@ mod tests {
     use super::*;
 
     /// One feature of each type, written by hand, with every member it may have.
-    const FEATURES: [&str; 15] = [
+    const FEATURES: [&str; 18] = [
         r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "suppressed": true, "position": [0, 0, 0], "length": 1, "width": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
         r#"{"id": "b0000002", "type": "cylinder", "v": 1, "name": "C", "suppressed": true, "position": [0, 0, 0], "radius": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 3, "edges": 3, "vertices": 2}}"#,
         r#"{"id": "b0000003", "type": "sphere", "v": 1, "name": "S", "suppressed": true, "position": [0, 0, 0], "radius": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 1, "edges": 3, "vertices": 2}}"#,
@@ -1743,6 +1743,9 @@ mod tests {
         r#"{"id": "b000000d", "type": "pocket", "v": 1, "name": "P", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "extent": {"type": "through_all", "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
         r#"{"id": "b000000e", "type": "revolve", "v": 1, "name": "R", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
         r#"{"id": "b000000f", "type": "groove", "v": 1, "name": "G", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000g", "type": "linear_pattern", "v": 1, "name": "L", "suppressed": true, "base": "b000000c", "copies": {"type": "features", "features": ["b000000c"]}, "directions": [{"along": "x", "reversed": false, "distribution": {"type": "extent", "length": 80}, "count": 3}], "skip": [[2]], "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000h", "type": "polar_pattern", "v": 1, "name": "P", "suppressed": true, "base": "b000000c", "copies": {"type": "solid"}, "axis": "z", "reversed": false, "distribution": {"type": "spacing", "angle": 30}, "count": 4, "skip": [], "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000j", "type": "mirror", "v": 1, "name": "M", "suppressed": true, "base": "b000000c", "copies": {"type": "features", "features": ["b000000c"]}, "plane": "yz", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
     ];
 
     #[test]

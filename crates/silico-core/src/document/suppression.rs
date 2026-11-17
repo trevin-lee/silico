@@ -42,6 +42,10 @@ pub(crate) enum Cause {
     Lost { field: NameField, maker: usize },
     /// An input it needs (`base` or `tool`) has no unsuppressed feature up its chain.
     Chain(&'static str),
+    /// An original it copies is suppressed (docs/design/m6.0-patterns.md, section 6): a
+    /// pattern is a child of each original, as SolidWorks' is; which, by its place in
+    /// `copies.features`.
+    Copies(usize),
 }
 
 /// The place, in `features`, of the feature whose solid stands for each feature's: itself,
@@ -380,6 +384,13 @@ pub(crate) fn suppressed_parent(
     {
         return Some(lost);
     }
+    for (i, original) in feature.operation.originals().iter().enumerate() {
+        if let Some(p) = before(original)
+            && suppressed(p)
+        {
+            return Some((p, Cause::Copies(i)));
+        }
+    }
     for (field, input) in feature.operation.inputs() {
         if !needs(&feature.operation, field) {
             continue;
@@ -564,6 +575,10 @@ pub(crate) fn unsuppressed_dependent(
                 ),
             )
         }
+        Cause::Copies(i) => (
+            format!("copies.features.{i}"),
+            format!("it copies {p}, which {is}"),
+        ),
         Cause::Chain(field) => (
             field.to_owned(),
             if parent.suppressed {
@@ -718,6 +733,9 @@ fn unsuppressing(
                     .into_iter()
                     .map(|(_, p)| p),
             );
+            // A pattern's originals: it's their child (docs/design/m6.0-patterns.md,
+            // section 6).
+            direct.extend(feature.operation.originals().iter().filter_map(before));
         }
         let Some(w) = chains.pop_first() else {
             break;
