@@ -1880,3 +1880,64 @@ fn every_case_measured_to_vary_in_its_solve_is_still_a_generated_arc_extend_sili
         );
     }
 }
+
+#[test]
+fn an_arc_extends_failed_or_unbuildable_solve_is_the_rule_only_at_an_end_another_curve_shares() {
+    // The arc a0000004's end p0000002 alone, and shared with the line n0000005 to (5, 5): its
+    // extend's solve refused (by hand), by each code.
+    let lone = arc_sketch();
+    let (s, ..) = arc_30_120();
+    let (p1, p2, p3) = (s.points["p1"], s.points["p2"], s.points["p3"]);
+    let shared = sketch_of(
+        &[
+            ("p0000001", p1[0], p1[1]),
+            ("p0000002", p2[0], p2[1]),
+            ("p0000003", p3[0], p3[1]),
+            ("p0000006", 5.0, 5.0),
+        ],
+        &[("n0000005", "p0000002", "p0000006")],
+        &[],
+        &[("a0000004", "p0000003", "p0000001", "p0000002")],
+        &[],
+    );
+    let refused = |sketch: &Sketch, code: silico_core::ErrorCode| {
+        let edit = extend("a0000004", ExtendEnd::End, ExtendBy::Angle(10.0));
+        let mut worker = silico_core::sketch::SketchWorker::start().unwrap();
+        let Ok(Ok(edited)) = silico_edit(sketch, &edit, &mut worker) else {
+            panic!("not extended");
+        };
+        let translation = Translation::new(&edited.sketch).unwrap();
+        let model = sketch::freecad_sketch(&edited.sketch, &translation).unwrap();
+        let ours = Ours {
+            dofs: 0,
+            conflicting: Vec::new(),
+            redundant: Vec::new(),
+            partially_redundant: Vec::new(),
+            outcome: Err(silico_core::Error::new(code, "by hand")),
+        };
+        rule(&prepared_with(
+            sketch.clone(),
+            edit,
+            SilicoSide::Edited(Box::new(SilicoEdited {
+                edited,
+                model,
+                ours,
+            })),
+        ))
+    };
+    for code in [
+        silico_core::ErrorCode::SolveFailed,
+        silico_core::ErrorCode::InvalidResult,
+    ] {
+        assert_eq!(refused(&lone, code), None, "{code:?}");
+        assert_eq!(
+            refused(&shared, code),
+            Some(Rule::ExtendSolveFails),
+            "{code:?}"
+        );
+    }
+    assert_eq!(
+        refused(&shared, silico_core::ErrorCode::OverConstrained),
+        None
+    );
+}

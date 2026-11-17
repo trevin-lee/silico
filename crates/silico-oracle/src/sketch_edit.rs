@@ -1103,9 +1103,6 @@ pub struct Verdict {
     /// ([`rolled_back()`]): the one outcome of FreeCAD's that a [`Shows::VariesMade`] case
     /// leaves uncompared.
     pub rolled_back: bool,
-    /// FreeCAD made the edit, its solve after it succeeding (0): the one outcome of FreeCAD's
-    /// that a [`Shows::VariesEdited`] case leaves uncompared.
-    pub freecad_made: bool,
     /// The case itself has a problem, or the harness: its sketch not drawn as it solves or
     /// not solving, FreeCAD's model of it malformed or conflicting before the edit, or the
     /// harness's own code around FreeCAD's edit failing.
@@ -1152,13 +1149,6 @@ pub enum Shows {
     /// or crashed, hung, or raised, the two are compared as in any case. Silico not making the
     /// edit, or a problem of the case's, is compared, and the known case a problem.
     VariesMade,
-    /// An edit both sides make, Silico's ([`Verdict::made`]) and FreeCAD's, its solve
-    /// succeeding ([`Verdict::freecad_made`]), the case itself without a problem, where FreeCAD
-    /// 1.1.3 lands on one of several results by its process's state, not by the case: shown as
-    /// known, its report with it, whichever it lands on, never as a difference. FreeCAD
-    /// failing, raising, crashing, or hanging is compared as in any case. Silico not making the
-    /// edit, or a problem of the case's, is compared, and the known case a problem.
-    VariesEdited,
 }
 
 /// The case file's differences the note doesn't explain, each reported with its judgment;
@@ -1278,12 +1268,6 @@ pub const KNOWN: &[Known] = &[
         shows: Shows::Varies(Rule::ExtendFrame),
         why: "FreeCAD 1.1.3 isn't the same run to run here: the line n0000005's end p0000001 moved by -7.813 mm, whose drag's solve fails, which Silico refuses (#se-a-frame-that-isn-t-a); FreeCAD's drag fails as well, and its extend raises \"Not able to extend geometry\" (#se-extend-unchecked), in 13 of 13 runs alone and 2 of 3 whole sweeps, and makes the edit (solve 0, 20 degrees of freedom) in the other, but an answer that varies is no oracle",
     },
-    // `sketch-extend-sweep --seed 146 --count 500`'s case 424.
-    Known {
-        case: "extend_146_424",
-        shows: Shows::VariesEdited,
-        why: "FreeCAD 1.1.3 lands on one of two results here by its process's state, not by the case: the drag passes through the tail line's flip, and FreeCAD orders its unknowns by memory address (docs/ports/sketcher.md:51), which picks the solution it lands in, p0000012 at x 36.259989762 with the tangent arc a0000017's radius 4.877, or at 35.873736898 with radius 3.947, switching with unrelated state (sketches opened before, constraints renamed, a centre's y one ulp off; the smallest reproduction is n0000005 horizontal, n0000013 parallel, and the tangent arc). Silico's is exactly FreeCAD's second, every run; the night's sweep and three runs alone gave the first (#328, investigated 2026-11-16), so an answer that varies is no oracle",
-    },
 ];
 
 /// Whether `v`'s Silico side is a refusal by a rule of `want`'s kind, whatever it names (a
@@ -1295,26 +1279,21 @@ fn same_kind(v: &Verdict, want: &Rule) -> bool {
             .is_some_and(|r| std::mem::discriminant(r) == std::mem::discriminant(want))
 }
 
-/// Whether a [`Shows::Varies`], [`Shows::VariesMade`], or [`Shows::VariesEdited`] case's Silico side, in `v`, is still
+/// Whether a [`Shows::Varies`] or [`Shows::VariesMade`] case's Silico side, in `v`, is still
 /// the one its entry holds it to, so the entry isn't stale, whatever FreeCAD answered.
 fn still_varies(shows: &Shows, v: &Verdict) -> bool {
     match shows {
         Shows::Difference(_) => false,
         Shows::Varies(rule) => same_kind(v, rule),
-        Shows::VariesMade | Shows::VariesEdited => !v.problem && v.made,
+        Shows::VariesMade => !v.problem && v.made,
     }
 }
 
 /// Whether `v` is shown as a varying case's known outcome, not compared: a [`Shows::Varies`]
 /// case whatever FreeCAD answered, a [`Shows::VariesMade`] one only where FreeCAD's merge
-/// was rolled back, and a [`Shows::VariesEdited`] one only where FreeCAD made the edit.
+/// was rolled back.
 fn shown_as_varying(shows: &Shows, v: &Verdict) -> bool {
-    still_varies(shows, v)
-        && match shows {
-            Shows::VariesMade => v.rolled_back,
-            Shows::VariesEdited => v.freecad_made,
-            Shows::Difference(_) | Shows::Varies(_) => true,
-        }
+    still_varies(shows, v) && (!matches!(shows, Shows::VariesMade) || v.rolled_back)
 }
 
 /// `verdicts` less the [`KNOWN`] differences that showed: the cases that differ, a line for
@@ -1344,7 +1323,7 @@ pub fn without_known(
                 ));
                 continue;
             }
-            Shows::VariesMade | Shows::VariesEdited => {
+            Shows::VariesMade => {
                 missing.push(format!(
                     "{}: FreeCAD varies run to run here, but Silico no longer makes the edit ({}); it now reads: {}",
                     k.case,
@@ -1635,7 +1614,6 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         rule: rule(p),
         made: matches!(&p.silico, SilicoSide::Edited(s) if s.ours.outcome.is_ok()),
         rolled_back: rolled_back(p, theirs),
-        freecad_made: matches!(theirs, Some(Theirs::Edited(fc)) if fc.after.code == 0),
         problem: !p.problems.is_empty(),
         ..Verdict::default()
     };
@@ -1776,7 +1754,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     v.modulo.push("se-where-trim-finds-intersections".to_owned());
                 }
                 let dragged = match freecad_unreproducible(p) {
-                    Some(Unreproducible::Drag(why)) => {
+                    Some(Unreproducible::Drag(why) | Unreproducible::Frame(why)) => {
                         v.excused.push(why);
                         true
                     }
@@ -1966,8 +1944,8 @@ pub enum Rule {
     ExtendArcToNothing,
     /// An arc swept a whole turn or more (#se-an-arc-swept-a-whole-turn).
     ExtendWholeTurn,
-    /// An arc's extend whose solve fails from the written end, or gives a result that can't be
-    /// built (#se-an-arc-swept-a-whole-turn).
+    /// An arc's extend at an end another curve shares whose solve fails from the written end, or
+    /// gives a result that can't be built (#se-an-arc-swept-a-whole-turn).
     ExtendSolveFails,
     /// A result the gate would refuse, refused as the extend's (#se-each-result-is-checked-by-the).
     ExtendGated,
@@ -2148,16 +2126,17 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
             let Err(e) = &s.ours.outcome else {
                 return None;
             };
-            if let Edit::Extend { curve, .. } = &p.edit {
-                // An arc's: its end is written, not dragged (#se-a-line-s-end-goes-through). Its
-                // solve failing, or giving a result that can't be built (a curve collapsed,
-                // `extend_158_266`), as a merge's solve may (#se-so-does-any-refusal-of-the).
-                let arc = shape.members.get(curve).is_some_and(|m| m.kind == "arc");
+            if matches!(p.edit, Edit::Extend { .. }) {
+                // An arc's end another curve shares: Silico's write moves the shared point, where
+                // FreeCAD's setRange moves only the arc's end (#se-a-line-s-end-goes-through), so
+                // the two solves start apart, and Silico's can fail from there (`extend_43_212`)
+                // or give a result that can't be built (a curve collapsed, `extend_158_266`). At
+                // an end no other curve shares, the two start alike, so either is a difference.
                 let fails = matches!(
                     e.code(),
                     silico_core::ErrorCode::SolveFailed | silico_core::ErrorCode::InvalidResult
                 );
-                return (arc && fails).then_some(Rule::ExtendSolveFails);
+                return (fails && shared_arc_end(p).is_some()).then_some(Rule::ExtendSolveFails);
             }
             if !matches!(p.edit, Edit::Merge { .. }) {
                 return None;
@@ -3599,7 +3578,41 @@ enum Unreproducible {
     /// reference dimension isn't a constraint, so Silico's drag rightly ignores it (Worker 1,
     /// #259): the difference is FreeCAD's.
     Drag(String),
+    /// A line's drag FreeCAD takes to one of two frames by its process's state
+    /// ([`FRAME_VARIES`]), where Silico's frame is pinned to the one recorded: no place or
+    /// radius before the solve is compared, and after it only points neither solve moved;
+    /// the constraints, the degrees of freedom, the diagnostics, and the outcome in full.
+    Frame(String),
 }
+
+/// A line's extend whose drag FreeCAD 1.1.3 takes to one of two frames by its process's state,
+/// not by the case, and Silico's frame, the other of them, by a point's x and an arc's radius
+/// after the edit, before the solve.
+struct FrameVaries {
+    case: &'static str,
+    point: &'static str,
+    x: f64,
+    arc: &'static str,
+    radius: f64,
+}
+
+/// The extends whose drag FreeCAD 1.1.3 takes to one of two frames run to run. `extend_146_424`
+/// (#328, investigated 2026-11-16): the drag passes through the tail line's flip, and FreeCAD
+/// orders its unknowns by memory address (docs/ports/sketcher.md:51), which picks the solution
+/// it lands in, p0000012 at x 36.259989762 with the tangent arc a0000017's radius 4.877007391, or
+/// at x 35.873736898 with radius 3.947421693, switching with unrelated state (sketches opened
+/// before, constraints renamed, a centre's y one ulp off; its smallest reproduction is n0000005
+/// horizontal, n0000013 parallel, and the tangent arc). FreeCAD gave the first in the night's
+/// sweep and in runs alone, and the second in whole sweeps (2026-11-16, the CI VM); Silico's is
+/// the second, every run, pinned here within [`DRAG_BAND`], so a change of Silico's frame is
+/// compared.
+const FRAME_VARIES: &[FrameVaries] = &[FrameVaries {
+    case: "extend_146_424",
+    point: "p0000012",
+    x: 35.873736898,
+    arc: "a0000017",
+    radius: 3.947421692848017,
+}];
 
 /// How far apart the two sides' points a line's drag moved may be, in mm, before the solve
 /// and after it:
@@ -3697,6 +3710,27 @@ fn freecad_unreproducible(p: &Prepared) -> Option<Unreproducible> {
     };
     let shape = Shape::of(&p.sketch);
     let member = shape.members.get(curve)?;
+    if let (Some(f), SilicoSide::Edited(s), "line") = (
+        FRAME_VARIES.iter().find(|f| f.case == p.name),
+        &p.silico,
+        member.kind,
+    ) {
+        let edited = Shape::of(&s.edited.sketch);
+        let pinned = edited
+            .points
+            .get(f.point)
+            .is_some_and(|at| (at[0] - f.x).abs() <= DRAG_BAND)
+            && edited
+                .radii
+                .get(f.arc)
+                .is_some_and(|r| (r - f.radius).abs() <= DRAG_BAND);
+        return pinned.then(|| {
+            Unreproducible::Frame(format!(
+                "harness limit: FreeCAD 1.1.3's drag of line {curve} lands on one of two frames by its process's state, not by the case, and Silico's is the other, {} at x {} and {}'s radius {} (FRAME_VARIES), so the places it settles aren't compared: none before the solve, and after it only points neither solve moved; the constraints, the degrees of freedom, the diagnostics, and the outcome in full",
+                f.point, f.x, f.arc, f.radius
+            ))
+        });
+    }
     match member.kind {
         "line" => reference_reaches(p, curve).then(|| {
             Unreproducible::Drag(format!(

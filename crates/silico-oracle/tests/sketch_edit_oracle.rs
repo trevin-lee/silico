@@ -1017,90 +1017,85 @@ fn an_arc_extend_whose_solve_gives_a_result_the_file_cant_hold_is_the_solve_fail
 }
 
 #[test]
-fn an_extend_both_make_where_freecads_result_varies_hides_only_freecads_edit() {
-    let known = [sketch_edit::Known {
-        case: "c",
-        shows: sketch_edit::Shows::VariesEdited,
-        why: "FreeCAD varies",
-    }];
-    // Both made it, FreeCAD elsewhere: shown as known, never a difference, never stale.
-    let v = Verdict {
-        case: "c".to_owned(),
-        how: vec!["after the edit, before the solve: p0000012 apart".to_owned()],
-        made: true,
-        freecad_made: true,
-        ..Verdict::default()
-    };
-    let (differ, shown, stale) = without_known(vec![v], &known);
-    assert!(
-        differ.is_empty() && stale.is_empty(),
-        "{differ:?} {stale:?}"
-    );
-    assert_eq!(shown.len(), 1, "{shown:?}");
-    assert!(shown[0].contains("varies run to run"), "{shown:?}");
-    // FreeCAD landing where Silico does: shown as having agreed this run, nothing stale.
-    let v = Verdict {
-        case: "c".to_owned(),
-        made: true,
-        freecad_made: true,
-        ..Verdict::default()
-    };
-    let (differ, shown, stale) = without_known(vec![v], &known);
-    assert!(
-        differ.is_empty() && stale.is_empty(),
-        "{differ:?} {stale:?}"
-    );
-    assert!(
-        shown.len() == 1 && shown[0].contains("agreed this run"),
-        "{shown:?}"
-    );
-    // FreeCAD not making it (its extend raising, its solve failing): compared, a difference,
-    // the entry not stale.
-    let v = Verdict {
-        case: "c".to_owned(),
-        how: vec!["Silico made the edit; FreeCAD raised".to_owned()],
-        made: true,
-        ..Verdict::default()
-    };
-    let (differ, shown, stale) = without_known(vec![v], &known);
-    assert_eq!(differ.len(), 1, "{differ:?}");
-    assert!(shown.is_empty() && stale.is_empty(), "{shown:?} {stale:?}");
-    // Silico not making it, or a problem of the case's: compared, and the entry stale.
-    for (made, problem) in [(false, false), (true, true)] {
-        let v = Verdict {
-            case: "c".to_owned(),
-            how: vec!["it differs".to_owned()],
-            made,
-            freecad_made: true,
-            problem,
-            ..Verdict::default()
-        };
-        let (differ, shown, stale) = without_known(vec![v], &known);
-        assert_eq!(differ.len(), 1, "{made} {problem}: {differ:?}");
-        assert!(shown.is_empty(), "{shown:?}");
-        assert_eq!(stale.len(), 1, "{made} {problem}: {stale:?}");
-    }
-}
-
-#[test]
-fn an_extend_through_a_lines_flip_freecad_lands_either_side_of_is_known_as_varying() {
-    // `sketch-extend-sweep --seed 146 --count 500`'s case 424 (KNOWN, VariesEdited): Silico
-    // makes the edit, and FreeCAD's, whichever of its two results this run lands on, is shown
-    // as known or agrees, never a difference, and the entry isn't stale.
+fn an_extend_through_a_lines_flip_freecad_lands_either_side_of_compares_all_but_its_places() {
+    // `sketch-extend-sweep --seed 146 --count 500`'s case 424 (FRAME_VARIES): FreeCAD's drag
+    // lands on one of two frames by its process's state, and Silico's on the other, pinned:
+    // p0000012 at x 35.873736898 and a0000017's radius 3.947421693. Only the places the drag
+    // settles go uncompared; the rest is compared, so this run's FreeCAD agrees whichever frame
+    // it lands on.
     let mut sweep = silico_oracle::generate::sketch_extend_cases(146, 500).unwrap();
     let case = sweep.swap_remove(424);
     assert_eq!(case.name, "extend_146_424");
     let mut worker = SketchWorker::start().unwrap();
     let p = prepare(&case, &mut worker).unwrap();
     assert!(p.problems.is_empty(), "{:?}", p.problems);
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    assert!(s.ours.outcome.is_ok(), "{:?}", s.ours);
     let theirs = freecad_outcomes(std::slice::from_ref(&p)).unwrap();
     let v = verdict(&p, theirs[0].as_ref());
-    assert!(v.made && v.freecad_made, "{v:?}");
-    let (differ, _, stale) = without_known(vec![v], KNOWN);
+    agrees(&v);
     assert!(
-        differ.is_empty() && stale.is_empty(),
-        "{differ:?} {stale:?}"
+        v.excused
+            .iter()
+            .any(|e| e.contains("lands on one of two frames") && e.contains("p0000012")),
+        "{v:?}"
     );
+    // FreeCAD's frame the other of the two, or anywhere: still only places.
+    let elsewhere = doctored(&theirs[0], |fc| {
+        for list in [&mut fc.edited, &mut fc.geometry] {
+            for g in list.iter_mut() {
+                for at in g.points.values_mut() {
+                    at[0] += 0.386;
+                }
+            }
+        }
+    });
+    agrees(&verdict(&p, Some(&elsewhere)));
+    // Silico's degrees of freedom otherwise: a difference, the frame's places notwithstanding.
+    let mut fewer = p.clone();
+    let SilicoSide::Edited(s) = &mut fewer.silico else {
+        panic!("{:?}", fewer.silico);
+    };
+    s.ours.dofs += 1;
+    let v = verdict(&fewer, theirs[0].as_ref());
+    assert!(
+        v.how.iter().any(|h| h.contains("degrees of freedom")),
+        "{v:?}"
+    );
+    // FreeCAD not making the edit, its solve failing (-1) or its extend raising: a difference.
+    let failed = doctored(&theirs[0], |fc| fc.after.code = -1);
+    assert!(!verdict(&p, Some(&failed)).how.is_empty());
+    let raised = Theirs::Failed("Not able to extend geometry".to_owned());
+    assert!(!verdict(&p, Some(&raised)).how.is_empty());
+    // Silico's frame moved off the one pinned (p0000012 by 1e-5 mm, past the drag's band of
+    // 5e-7): its places compared, a difference.
+    let off = changed(&case, &p, |sketch| {
+        let point = sketch
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000012"))
+            .unwrap();
+        point.x = silico_core::document::Coordinate::new(point.x.mm() + 1e-5).unwrap();
+    });
+    let v = verdict(&off, theirs[0].as_ref());
+    assert!(
+        !v.how.is_empty() && !v.excused.iter().any(|e| e.contains("two frames")),
+        "{v:?}"
+    );
+    // A report beyond places is no known case either: KNOWN holds no entry that hides it.
+    let v = Verdict {
+        case: "extend_146_424".into(),
+        how: vec![
+            "degrees of freedom: Silico 3, FreeCAD 2; constraint k0000020 missing in Silico's"
+                .into(),
+        ],
+        made: true,
+        ..Verdict::default()
+    };
+    let (differ, _, _) = without_known(vec![v], KNOWN);
+    assert_eq!(differ.len(), 1);
 }
 
 #[test]
@@ -4132,9 +4127,11 @@ fn an_extend_whose_solve_fails_from_the_written_end_is_refused_and_excused_where
         let v = verdict(p, Some(&other));
         assert!(v.excused.is_empty() && !v.how.is_empty(), "{v:?}");
     }
-    // The same refusal for the arc's end: FreeCAD's arc with its end turned on by the
-    // request's angle about the drawn centre, its start where it was drawn, is excused; its
-    // start turned instead (FreeCAD's own edit of the start) is a difference.
+    // The same refusal for the arc's end, p0000019, which no other curve shares: Silico's write
+    // and FreeCAD's setRange start the two solves alike there (#se-a-line-s-end-goes-through),
+    // so a solve Silico fails where FreeCAD's succeeds is no rule's, and a difference even with
+    // FreeCAD's arc turned exactly as requested (its end on by the request's angle about the
+    // drawn centre, its start where it was drawn); its start turned instead too.
     let mut at_end = p.clone();
     let Edit::Extend { end, by, .. } = &mut at_end.edit else {
         panic!("{:?}", at_end.edit)
@@ -4167,9 +4164,15 @@ fn an_extend_whose_solve_fails_from_the_written_end_is_refused_and_excused_where
         *g.points.get_mut("3").unwrap() = centre;
         g.radius = Some(radius);
     });
+    assert_eq!(rule(&at_end), None, "{:?}", at_end.silico);
     let v = verdict(&at_end, Some(&end_turned));
-    agrees(&v);
-    assert_eq!(v.excused.len(), 1, "{v:?}");
+    assert!(v.excused.is_empty() && !v.how.is_empty(), "{v:?}");
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h.contains("FreeCAD's solve gave 0") && h.contains("solve_failed")),
+        "{v:?}"
+    );
     // Its end turned as requested, but its start moved 1e-6 too: a difference.
     let Theirs::Edited(start_moved) = &end_turned else {
         unreachable!()
