@@ -14,6 +14,7 @@ pub mod bar;
 pub mod box_select;
 pub mod boxes;
 pub mod browse;
+mod canvas_hint;
 pub mod canvas_menu;
 pub mod changes;
 pub mod clicks;
