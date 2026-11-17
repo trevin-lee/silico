@@ -27436,14 +27436,22 @@ fn an_undo_behind_a_click_waiting_on_a_stopped_rebuild_runs_once_the_stop_is_see
     }
     stop_the_held_rebuild(&f, &mut h);
     // Let go in a later poll, not in its press's call: said in the status bar, not toasted
-    // (the app takes a tab's toast in the frame that sets it).
+    // (the app takes a tab's toast in the frame that sets it). The Undo, once it's done, is
+    // (its own toast, "Undid: …").
     step_until(&mut h, "the Vertical let go", |h| {
         h.state().tabs()[0]
             .message
             .as_deref()
             .is_some_and(|said| said.starts_with("Vertical wasn't added: "))
     });
-    assert_eq!(toast_said(&h), None);
+    assert!(
+        !h.state()
+            .toasts()
+            .iter()
+            .any(|shown| shown.toast.text.starts_with("Vertical")),
+        "{:?}",
+        h.state().toasts()
+    );
     settled(&mut h);
     let tab = &h.state().tabs()[0];
     let said = tab.message.clone().unwrap_or_default();
@@ -48109,6 +48117,497 @@ fn a_drags_release_sends_the_value_it_held_back_in_the_releases_own_frame() {
     settled(&mut h);
     assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
     assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Toasts (the prototype audit's item 19: app.js's `toast`, styles.css's `#toasts`) ----
+
+/// The toasts shown, oldest first: each one's words, icon, and when it was shown.
+fn toasts_shown(h: &AppHarness) -> Vec<(String, silico_app::toast::Kind, f64)> {
+    h.state()
+        .toasts()
+        .iter()
+        .map(|shown| (shown.toast.text.clone(), shown.toast.kind, shown.at))
+        .collect()
+}
+
+/// The newest toast's words, if one shows.
+fn newest_toast(h: &AppHarness) -> Option<String> {
+    h.state().toast().map(|(text, _)| text.to_owned())
+}
+
+/// Frames stepped until the newest toast says `text`, and it's drawn (from the frame after
+/// the one that asks for it).
+#[track_caller]
+fn toasted(h: &mut AppHarness, text: &str) {
+    step_until(h, text, |h| {
+        newest_toast(h).as_deref() == Some(text) && anywhere(h, text)
+    });
+}
+
+/// The name, in the accessibility tree, of the icon drawn 8 left of the toast saying `text`
+/// and centred across its line (`.toast`'s `gap: 8px`, `align-items: center`).
+fn toast_icon(h: &AppHarness, text: &str) -> Option<String> {
+    let words = h.get_by_label(text).rect();
+    h.query_all_by_role(Role::Image)
+        .find(|node| {
+            let icon = node.rect();
+            (icon.center().y - words.center().y).abs() <= 1.0
+                && (words.left() - icon.right() - 8.0).abs() <= 0.5
+        })
+        .and_then(|node| node.accesskit_node().label())
+}
+
+/// Command+`key` pressed, and a frame stepped.
+fn command_key(h: &mut AppHarness, key: eframe::egui::Key) {
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+    step(h);
+}
+
+#[test]
+fn toasts_stack_newest_last_each_taken_down_on_its_own_clock_asking_no_frame_once_gone() {
+    use eframe::egui::Key;
+    use silico_app::toast::Kind;
+    // Two shown a second apart (Undo with nothing to undo, then F5): both up, the newer
+    // under the older, each with the info icon; the first gone 3.8 s after it was shown
+    // with the second still up, then the second 3.8 s after it; then no frame asked for but
+    // the idle one.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    settled(&mut h);
+    let time = |h: &AppHarness| h.ctx.input(|input| input.time);
+    let frame = 1.0 / 60.0;
+    assert!(toasts_shown(&h).is_empty());
+    command_key(&mut h, Key::Z);
+    step_until(&mut h, "Undo's toast", |h| !toasts_shown(h).is_empty());
+    let first = toasts_shown(&h)[0].2;
+    while time(&h) < first + 1.0 {
+        step(&mut h);
+    }
+    h.key_press(Key::F5);
+    step(&mut h);
+    step(&mut h);
+    let shown = toasts_shown(&h);
+    assert_eq!(
+        shown
+            .iter()
+            .map(|(text, kind, _)| (text.as_str(), *kind))
+            .collect::<Vec<_>>(),
+        [
+            ("Nothing to undo", Kind::Info),
+            (silico_app::app::FILTERS_SAID, Kind::Info),
+        ]
+    );
+    let second = shown[1].2;
+    assert!(
+        (1.0..1.0 + 2.0 * frame).contains(&(second - first)),
+        "{first} {second}"
+    );
+    // Stacked: the newer under the older, 6 between their frames, so 22 between their
+    // words (each frame padded 7 over and under inside a border of 1), their right edges
+    // in line, 12 + 1 + 8 in from the canvas's right.
+    let older = h.get_by_label("Nothing to undo").rect();
+    let newer = h.get_by_label(silico_app::app::FILTERS_SAID).rect();
+    assert!(
+        (newer.top() - older.bottom() - 22.0).abs() <= 1.5,
+        "{older:?} {newer:?}"
+    );
+    let right = the_viewport(&h).right() - 12.0 - 1.0 - 8.0;
+    assert!((older.right() - right).abs() <= 1.0, "{older:?}");
+    assert!((newer.right() - right).abs() <= 1.0, "{newer:?}");
+    for text in ["Nothing to undo", silico_app::app::FILTERS_SAID] {
+        assert_eq!(toast_icon(&h, text).as_deref(), Some("Info"), "{text}");
+    }
+    // Up and whole, shown at once, with nothing fading: the frames come to ask for none at
+    // once, long before either fades.
+    step_until(&mut h, "no frame asked for at once", |h| {
+        repaint_delay(h) != Some(Duration::ZERO)
+    });
+    assert!(time(&h) - second < 1.0, "{}", time(&h) - second);
+    assert_eq!(toasts_shown(&h).len(), 2);
+    // Fading out over the last of its time (egui's animation time, the app's 1/12 s): each
+    // frame asked for at once then, so the fade is drawn.
+    while time(&h) - first < 3.8 - 1.0 / 24.0 {
+        step(&mut h);
+    }
+    assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
+    // The first taken down at 3.8 s, the second still up.
+    let mut frames = 0;
+    while toasts_shown(&h).len() == 2 {
+        assert!(time(&h) - first < 3.8, "up past its time");
+        step(&mut h);
+        frames += 1;
+        assert!(frames < 100_000, "never taken down");
+    }
+    let up = time(&h) - first;
+    assert!((3.8..3.8 + frame).contains(&up), "{up}");
+    assert_eq!(
+        newest_toast(&h).as_deref(),
+        Some(silico_app::app::FILTERS_SAID)
+    );
+    assert_eq!(toasts_shown(&h).len(), 1);
+    step(&mut h);
+    assert!(!anywhere(&h, "Nothing to undo"));
+    assert!(anywhere(&h, silico_app::app::FILTERS_SAID));
+    // The second at its own 3.8 s.
+    while !toasts_shown(&h).is_empty() {
+        assert!(time(&h) - second < 3.8, "up past its time");
+        step(&mut h);
+        frames += 1;
+        assert!(frames < 100_000, "never taken down");
+    }
+    let up = time(&h) - second;
+    assert!((3.8..3.8 + frame).contains(&up), "{up}");
+    step(&mut h);
+    assert!(!anywhere(&h, silico_app::app::FILTERS_SAID));
+    // None shown: the frame asked for is the idle one.
+    let delay = repaint_delay(&h);
+    assert!(
+        delay.is_some_and(|delay| {
+            delay > silico_core::disk::DISK_CHECK_INTERVAL && delay <= IDLE_FRAME
+        }),
+        "{delay:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_say_the_step_they_took_once_it_is_done_or_that_there_was_none() {
+    use eframe::egui::Key;
+    // The prototype's `undo` and `redo`: "Undid: " or "Redid: " and the step, as Undo's and
+    // Redo's tooltips name it ("Rename Pin", the name it replaced); with nothing to step,
+    // "Nothing to undo" and "Nothing to redo".
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    command_key(&mut h, Key::Z);
+    toasted(&mut h, "Nothing to undo");
+    command_key(&mut h, Key::Y);
+    toasted(&mut h, "Nothing to redo");
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    // Said once the core has answered, never at the press: the session at the undo's new
+    // revision when it shows.
+    let before = h.state().tabs()[0].revision;
+    command_key(&mut h, Key::Z);
+    toasted(&mut h, "Undid: Rename Pin");
+    assert!(h.state().tabs()[0].revision > before);
+    assert_eq!(toast_icon(&h, "Undid: Rename Pin").as_deref(), Some("Info"));
+    settled(&mut h);
+    let before = h.state().tabs()[0].revision;
+    redo_by_key(&mut h);
+    toasted(&mut h, "Redid: Rename Pin");
+    assert!(h.state().tabs()[0].revision > before);
+    // Undone back to the file's document: nothing more to undo, said so.
+    undo_by_key(&mut h);
+    toasted(&mut h, "Undid: Rename Pin");
+    step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
+    command_key(&mut h, Key::Z);
+    toasted(&mut h, "Nothing to undo");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_says_what_it_wrote_at_which_revision_once_done_or_that_the_file_matches() {
+    use eframe::egui::Key;
+    use silico_app::toast::Kind;
+    // The prototype's `save`: "Saved <file> (revision N)" with its check icon, N the
+    // session's revision after the save (1 as opened, 2 after the rename, 3 once the save
+    // writes it, by hand); or "Nothing to save: <file> matches the file.", of a file
+    // `status` found unchanged.
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared", file_unchanged);
+    let matches = "Nothing to save: example.silico matches the file.";
+    command_key(&mut h, Key::S);
+    toasted(&mut h, matches);
+    assert_eq!(toast_icon(&h, matches).as_deref(), Some("Info"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    command_key(&mut h, Key::S);
+    let saved = "Saved example.silico (revision 3)";
+    toasted(&mut h, saved);
+    // Written by then, and the status bar says so too.
+    assert!(std::fs::read_to_string(&path).unwrap().contains("Pinx"));
+    let newest = toasts_shown(&h).pop().unwrap();
+    assert_eq!(newest.1, Kind::Check);
+    assert_eq!(toast_icon(&h, saved).as_deref(), Some("Done"));
+    step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared again", file_unchanged);
+    command_key(&mut h, Key::S);
+    toasted(&mut h, matches);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether the first tab's last `status` found its file as the session last read or wrote it.
+fn file_unchanged(h: &AppHarness) -> bool {
+    h.state().tabs()[0]
+        .status
+        .as_ref()
+        .is_some_and(|status| status.disk == Some(silico_core::disk::Disk::Unchanged))
+}
+
+/// Command+`key` pressed once, then held: 30 of the system's repeats of it, each a frame.
+fn command_key_held(h: &mut AppHarness, key: eframe::egui::Key) {
+    use eframe::egui::{Event, Modifiers};
+    command_key(h, key);
+    for _ in 0..30 {
+        h.event(Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: Modifiers::COMMAND,
+        });
+        step(h);
+    }
+    step(h);
+}
+
+#[test]
+fn save_with_its_edits_undone_and_the_file_not_known_to_match_sends_the_commit() {
+    use eframe::egui::Key;
+    use silico_core::disk::{Disk, Found};
+    // The pin renamed, then undone back to the file's document: nothing unsaved, but the
+    // transaction open; then the file can't be read (the watch's reader says so). Save sends
+    // the commit in the frame it's pressed, the core's answer deciding: it writes nothing and
+    // ends the transaction, and "matches the file" isn't said.
+    let unreadable = Arc::new(AtomicBool::new(false));
+    let read: Reader = {
+        let unreadable = Arc::clone(&unreadable);
+        Arc::new(move |path: &Path| {
+            if unreadable.load(Ordering::SeqCst) {
+                Found::Unreadable
+            } else {
+                plain_read(path)
+            }
+        })
+    };
+    let f = fixture_reading(Some(read));
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    undo_by_key(&mut h);
+    step_until(&mut h, "undone back", |h| {
+        !h.state().tabs()[0].unsaved() && h.state().tabs()[0].transaction
+    });
+    unreadable.store(true, Ordering::SeqCst);
+    step_until(&mut h, "the file found unreadable", |h| {
+        h.state().tabs()[0]
+            .status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(Disk::Unreadable))
+    });
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    command_key(&mut h, Key::S);
+    assert_eq!(h.state().tabs()[0].saves, 1, "the commit sent at the press");
+    step_until(&mut h, "the transaction ended", |h| {
+        !h.state().tabs()[0].transaction
+    });
+    assert!(
+        !toasts_shown(&h)
+            .iter()
+            .any(|(text, ..)| text.starts_with("Nothing to save")),
+        "{:?}",
+        toasts_shown(&h)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_held_with_nothing_to_undo_shows_one_toast() {
+    // #514's review: each repeat of a held key asks again; a toast saying what one shown
+    // says, with its icon, isn't stacked again.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    command_key_held(&mut h, eframe::egui::Key::Z);
+    let shown: Vec<String> = toasts_shown(&h).into_iter().map(|t| t.0).collect();
+    assert_eq!(shown, ["Nothing to undo"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_held_on_a_clean_titled_part_shows_one_toast() {
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared", file_unchanged);
+    command_key_held(&mut h, eframe::egui::Key::S);
+    let shown: Vec<String> = toasts_shown(&h).into_iter().map(|t| t.0).collect();
+    assert_eq!(shown, ["Nothing to save: example.silico matches the file."]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_with_a_dialog_open_say_nothing_to_undo_or_redo_of_nothing() {
+    use eframe::egui::Key;
+    // A dialog open holds Undo off with its Cancel to come: "Nothing to undo" isn't said.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    settled(&mut h);
+    double_click(&mut h, "Timeline", "Block");
+    step_until(&mut h, "its dialog", dialog_open);
+    settled(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!h.state().tabs()[0].unsettled());
+    command_key(&mut h, Key::Z);
+    command_key(&mut h, Key::Y);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(dialog_open(&h));
+    assert_eq!(toasts_shown(&h), []);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_with_a_sketch_drag_pressed_say_nothing_to_undo_or_redo_of_nothing() {
+    use eframe::egui::Key;
+    use silico_app::sketch::PointerAction::{Press, Release};
+    // A point pressed in sketch mode and held, its drag not begun: Undo is held off till its
+    // end, whose edit is to come. "Nothing to undo" isn't said. Its points under defined
+    // (`counting`), so a press on one grabs it.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    sketch_events(&f, &mut h, &[pointer(Press, 50.0, 30.0)]);
+    step(&mut h);
+    assert!(the_drag(&h).is_some_and(|d| d.under_way() && !d.in_flight()));
+    assert!(!h.state().tabs()[0].unsettled());
+    command_key(&mut h, Key::Z);
+    command_key(&mut h, Key::Y);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(the_drag(&h).is_some_and(|d| d.under_way()));
+    assert_eq!(toasts_shown(&h), []);
+    sketch_events(&f, &mut h, &[pointer(Release, 50.0, 30.0)]);
+    step(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_answered_while_home_is_shown_is_not_said_once_the_document_is_shown_again() {
+    use eframe::egui::Key;
+    // The block's length edited, its rebuild held, so a save waits on it; Home shown, then
+    // the rebuild let go: the save answers while Home is shown, and what the tab would say
+    // is dropped, as a tab not shown's is, never shown later out of its context.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    settled(&mut h);
+    let hold = edit_the_block_held(&f, &mut h);
+    command_key(&mut h, Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    hold.release();
+    step_until(&mut h, "saved", |h| !h.state().tabs()[0].unsaved());
+    assert!(std::fs::read_to_string(&path).unwrap().contains("41"));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(start_shown(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        !toasts_shown(&h)
+            .iter()
+            .any(|(text, ..)| text.starts_with("Saved")),
+        "{:?}",
+        toasts_shown(&h)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// From a rebuild of the example whose hole (its cut) is held, the block and the pin built:
+/// 3 of its plan's 4 steps, by hand (the block made at the origin; the pin made, then moved
+/// to its position, a primitive off the origin being two steps; the cut), `stop` stopping it:
+/// the toast says how far it got and Rebuild's key, off macOS, once `status` says it
+/// stopped.
+fn a_stop_said(stop: impl Fn(&mut AppHarness)) {
+    let f = fixture();
+    let hold = f.kernel.hold(|op| matches!(op, Op::Boolean { .. }));
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app();
+    h.ctx.set_os(eframe::egui::os::OperatingSystem::Nix);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    let progress = |h: &AppHarness| {
+        h.state()
+            .tabs()
+            .first()
+            .and_then(|tab| tab.status.as_ref())
+            .and_then(|status| status.rebuild.progress.as_ref())
+            .map(|progress| (progress.done, progress.steps))
+    };
+    // The hole's cut started (and held): the block and the pin are built by then.
+    step_until(&mut h, "the hole's cut started", |_| {
+        f.kernel
+            .calls()
+            .iter()
+            .any(|call| matches!(call.op, Op::Boolean { .. }))
+    });
+    step_until(&mut h, "its status read", |h| progress(h).is_some());
+    assert_eq!(progress(&h), Some((3, 4)));
+    assert!(toasts_shown(&h).is_empty());
+    stop(&mut h);
+    let said = "Rebuild stopped at step 3 of 4. Rebuild (Ctrl+B) resumes it.";
+    toasted(&mut h, said);
+    assert!(rebuild_stopped(&h));
+    assert_eq!(toast_icon(&h, said).as_deref(), Some("Info"));
+    // The status bar says it too.
+    assert_eq!(
+        status_said(&h, "Rebuild stopped").as_deref(),
+        Some("Rebuild stopped at 3 of 4")
+    );
+    // Said once.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(toasts_shown(&h).len(), 1);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_stop_button_says_how_far_the_rebuild_got_and_the_key_that_resumes_it() {
+    a_stop_said(|h| {
+        h.get_by_role_and_label(Role::Button, "Stop").click();
+        step(h);
+    });
+}
+
+#[test]
+fn esc_says_how_far_the_rebuild_it_stopped_got_and_the_key_that_resumes_it() {
+    a_stop_said(|h| {
+        h.key_press(eframe::egui::Key::Escape);
+        step(h);
+    });
 }
 
 // ---- #487: while a modal asks, nothing behind it takes input ----

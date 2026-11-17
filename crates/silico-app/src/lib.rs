@@ -45,6 +45,7 @@ pub mod status;
 pub mod tab;
 pub mod theme;
 pub mod timeline;
+pub mod toast;
 pub mod toolbar;
 pub mod triad;
 pub mod viewport;
