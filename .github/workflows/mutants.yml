@@ -61,9 +61,13 @@ on:
         description: "Empty for a real run. Set only by the filler (filler.yml): a, the commits main gained since its last such run, or b<k>, the k-th slice of the source; such a run yields to real ones, stops after an hour, tests its mutants in random order, and fails only on misses not in .github/mutants-triaged.txt"
         default: ""
 
-# actions: write, for a real run's plan to cancel filler runs.
+# Read only, but for the plan's actions: write (below), the one job that cancels runs. That
+# keeps the token out of the shards' own checkouts and environments, but it isn't a boundary
+# between jobs: every runner on the VM runs its jobs as the one runner user, so code a shard
+# builds and runs could reach a token another job on the VM holds at the time. What keeps
+# untrusted code off the VM is that only write-access users start this workflow, on refs
+# they choose.
 permissions:
-  actions: write
   contents: read
 
 env:
@@ -78,6 +82,10 @@ jobs:
     # a real run's plan never waits behind shards to cancel filler.
     runs-on: [self-hosted, linux, x64, control]
     timeout-minutes: 10
+    # For a real run's plan to cancel filler runs (.github/cancel-filler.sh).
+    permissions:
+      actions: write
+      contents: read
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
       count: ${{ steps.plan.outputs.count }}
@@ -85,7 +93,7 @@ jobs:
       tests_why: ${{ steps.plan.outputs.tests_why }}
     steps:
       # Every commit, to list the ref's mutants as its shards will find them.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: Toolchains
@@ -271,7 +279,7 @@ jobs:
           rm -rf "$results"
           mkdir -p "$results"
           echo "SILICO_MUTANTS_RESULTS=$results" >>"$GITHUB_ENV"
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: Toolchains
@@ -432,7 +440,7 @@ jobs:
       # whose outcomes weren't kept on the VM. An upload that fails (the account's artifact
       # storage full, as on 2026-11-09) fails nothing. Kept two days, a filler run's one: at GitHub's default of 90 days, the shards filled the
       # account's artifact storage (3.25 GB on 2026-11-08) and every upload failed.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() }}
         continue-on-error: true
         with:
@@ -456,14 +464,14 @@ jobs:
     steps:
       # Only the triaged list, from the branch this runs on (also clearing what an earlier
       # job left in the workspace).
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           sparse-checkout: .github/mutants-triaged.txt
           sparse-checkout-cone-mode: false
       # Only for a shard whose outcomes weren't kept whole on the VM (its keep step failed, or
       # its runner was lost after uploading): a download that fails, or takes past its few
       # minutes, fails nothing and leaves the summary its time.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
         timeout-minutes: 3
         with:
@@ -715,7 +723,7 @@ jobs:
             rm -rf "$HOME/.cache/silico/mutants-results/$GITHUB_RUN_ID/all"
             cp -R all "$HOME/.cache/silico/mutants-results/$GITHUB_RUN_ID/all"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() }}
         continue-on-error: true
         with:

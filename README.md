@@ -59,6 +59,28 @@ pixi run oracle  # every oracle case, compared with FreeCAD
 
 The CLI (`target/debug/silico`) checks, formats, shows, and exports documents: `silico check FILE`, `silico fmt FILE`, `silico export FILE out.3mf` ([docs/cli.md](docs/cli.md)). To connect an agent, run `silico serve --workspace DIR` as an MCP server over stdio; [docs/mcp.md](docs/mcp.md) covers setup and the workflow.
 
+## Pull requests and CI
+
+CI runs on the maintainer's own machine, through self-hosted GitHub Actions runners, so it never runs a fork's code: a pull request from a fork gets no gate (its run waits for an approval no maintainer gives, and approved, its `gate` job is skipped), and it can't be merged until its exact commit passes the gate as a branch of this repository.
+
+Pushing a fork's commit here runs it on those runners, with this repository's token, before any gate has looked at it: a workflow it adds or edits runs on the push, and the gate builds and runs its build scripts, proc macros, tests, and pixi tasks. So only the maintainer does it, by hand, after reading the change:
+
+```bash
+gh pr checkout N    # the fork's head, locally
+git fetch origin
+git diff --stat origin/main...HEAD -- .github .cargo pixi.toml pixi.lock Cargo.lock \
+  rust-toolchain.toml 'tests/*.sh' '**/build.rs'
+```
+
+If that lists anything, don't push it: a change to CI, the toolchain, the dependencies, or a build script comes in as the maintainer's own commit, not a fork's. Otherwise, read every changed file that runs (build scripts, proc macros, tests, scripts), not only the feature, then:
+
+```bash
+git push origin HEAD:refs/heads/fork-pr-N       # the same commit, as a branch here
+gh pr create --draft --fill --head fork-pr-N    # its gate runs on that pull request
+```
+
+The gate posts its verdict as the commit status `silico/gate`, which `main` requires, on that commit, so the fork's pull request shows it too, and either pull request can then be merged. Each new push to the fork is read and pushed again the same way. Never approve a fork's workflow run: GitHub would run its workflow files, which a fork can change, on the self-hosted runners.
+
 ## Read more
 
 - [ARCHITECTURE.md](ARCHITECTURE.md): the design and its invariants.

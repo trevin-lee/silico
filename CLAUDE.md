@@ -50,6 +50,7 @@ Tests stand in for line-by-line human review, so they have to be able to fail.
 - One short-lived branch per task, off `main`. Squash-merge only after `/adversarial-review` approves. Never rewrite `main`.
 - Conventional commits. The scope is the crate name without the `silico-` prefix: `feat(sketch): …`, `fix(kernel): …`, `docs: …`.
 - Commit subjects say what the project gains. No version numbers in subjects.
+- Never push a fork's commits to this repository, nor approve a fork's workflow run: either runs its code on the self-hosted runners. Gating a fork's pull request is the maintainer's step alone, by hand (README.md, "Pull requests and CI").
 
 ## Skills
 
