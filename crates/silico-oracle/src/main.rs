@@ -20,6 +20,11 @@
 //!   ([`sketch_edit::dump`]).
 //! - `silico-oracle sketch-extend-sweep`, with the same options: the same random sketches,
 //!   each with one of its lines or arcs extended (`silico_core::extend`).
+//!
+//!   In either sketch sweep, a case that differs is run through FreeCAD twice more, each
+//!   alone in a FreeCAD of its own ([`sketch_edit::rerun`]): where FreeCAD's runs disagree,
+//!   only the differences every run of it gives are reported, the rest listed (`varies:`)
+//!   with what of FreeCAD's answer varied, and the cases it varied on counted.
 //! - `silico-oracle corpus DIR`: the STEP files in DIR, as FreeCAD reads them, each as it is
 //!   and moved; Silico also meshes each (`pixi run corpus` fetches them first).
 //!
@@ -76,7 +81,14 @@ fn main() -> ExitCode {
                     .map(|c| c.to_string()),
             );
         }
-        let verdicts = sketch_edit::run(&edits)?;
+        // A sweep's differing cases are run through FreeCAD again, alone, and judged against
+        // every run (`sketch_edit::rerun`); the hand cases aren't.
+        let (verdicts, reruns) = if matches!(source, Source::Sweep) {
+            sketch_edit::rerun::run_rerunning(&edits)?
+        } else {
+            (sketch_edit::run(&edits)?, Vec::new())
+        };
+        let varying = varying(&reruns, &verdicts);
         let mut excused: Vec<String> = verdicts
             .iter()
             .flat_map(|v| {
@@ -90,6 +102,7 @@ fn main() -> ExitCode {
         excused.extend(shown);
         let (mut problems, mut notes, known) = without_known(source, &cases, &mut report)?;
         notes.extend(excused);
+        notes.extend(reruns.iter().map(ToString::to_string));
         problems.extend(stale);
         Ok((
             cases.len() + sketches.len() + feature_count + measure_count + edits.len(),
@@ -98,10 +111,11 @@ fn main() -> ExitCode {
             known,
             notes,
             sketch_differences,
+            varying,
         ))
     });
     match ran {
-        Ok((count, report, problems, known, notes, sketch_differences)) => {
+        Ok((count, report, problems, known, notes, sketch_differences, varying)) => {
             for d in &report.differences {
                 let _ = writeln!(out, "{d}");
             }
@@ -126,6 +140,14 @@ fn main() -> ExitCode {
                     report.refused.join(", ")
                 ),
             };
+            if !varying.is_empty() {
+                let _ = writeln!(
+                    out,
+                    "FreeCAD's answer varied run to run on {}, which differ only where every run of it reproduces the difference: {}",
+                    varying.len(),
+                    varying.join(", ")
+                );
+            }
             if !problems.is_empty() {
                 let _ = writeln!(out, "{} more problems with the cases", problems.len());
             }
@@ -140,6 +162,25 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The cases whose runs of FreeCAD varied, by name, in the sweep's order: each marked
+/// "(still differs)" where a difference every run reproduces is left.
+fn varying(reruns: &[sketch_edit::rerun::Rerun], verdicts: &[sketch_edit::Verdict]) -> Vec<String> {
+    reruns
+        .iter()
+        .filter(|r| matches!(r.reran, sketch_edit::rerun::Reran::Varied { .. }))
+        .map(|r| {
+            let differs = verdicts
+                .iter()
+                .any(|v| v.case == r.case && !v.how.is_empty());
+            if differs {
+                format!("{} (still differs)", r.case)
+            } else {
+                r.case.clone()
+            }
+        })
+        .collect()
 }
 
 /// What's said of a run's differences beside them: its problems, its notes, and the known

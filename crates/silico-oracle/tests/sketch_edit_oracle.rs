@@ -14,6 +14,7 @@ use silico_core::document::{
 };
 use silico_core::sketch::{SketchWorker, Translation};
 use silico_oracle::sketch::{FreecadGeometry, freecad_sketch};
+use silico_oracle::sketch_edit::rerun::{REPRODUCED, Reran, rejudge};
 use silico_oracle::sketch_edit::{
     self, Edit, EditCase, ExtendBy, FcConstraint, FcGeometry, FreecadEdit, FreecadEdited, KNOWN,
     PlacedSolve, Plan, Prepared, Refusal, Rule, SilicoSide, Theirs, Verdict, freecad_outcomes,
@@ -5466,4 +5467,240 @@ fn a_trimmed_end_two_cutters_cut_at_one_place_is_excused_only_for_freecads_other
             && !v.how.iter().any(|h| h.contains(joined)),
         "{v}"
     );
+}
+
+// ---- The sweeps' reruns (#541): FreeCAD varying run to run ----
+
+/// split_level_line (the level line (0, 0) to (10, 0) split at x 4), its FreeCAD outcome
+/// from one run, and FreeCAD's outcome with the split point, n0000003's end and w0000001's
+/// start (FreeCAD's geometry 0 at 2 and 1 at 1), at x `at`, before the solve and after it.
+fn split_at(at: f64) -> (EditCase, Prepared, Option<Theirs>, Theirs) {
+    let (mut cases, mut prepared, mut theirs) = both(&["split_level_line"]);
+    let (case, p, fc) = (cases.remove(0), prepared.remove(0), theirs.remove(0));
+    agrees(&verdict(&p, fc.as_ref()));
+    let slid = doctored(&fc, |fc| {
+        for list in [&mut fc.edited, &mut fc.geometry] {
+            for (g, pos) in [(0, "2"), (1, "1")] {
+                let place = list[g].points.get_mut(pos).unwrap();
+                assert_eq!(*place, [4.0, 0.0], "geometry {g} at {pos}");
+                place[0] = at;
+            }
+        }
+    });
+    (case, p, fc, slid)
+}
+
+/// What FreeCAD's runs gave, where they varied.
+fn varied_as(reran: &Reran) -> (&[String], &[String]) {
+    match reran {
+        Reran::Varied { varied, uncompared } => (varied, uncompared),
+        other => panic!("FreeCAD's runs didn't vary: {other:?}"),
+    }
+}
+
+#[test]
+fn a_sweep_case_freecad_slides_otherwise_in_one_run_is_left_uncompared_only_there() {
+    // FreeCAD's sweep run leaves the split point, free to slide along the line, at x 4.5, and
+    // its two runs alone at 4, where Silico's is: the places differ in the sweep's run alone,
+    // at the two FreeCAD places that are Silico's w0000000, each 0.5 mm apart, before the
+    // solve and after it. Every difference is one of those, so none is compared.
+    let (_, p, fc, slid) = split_at(4.5);
+    let first = verdict(&p, Some(&slid));
+    assert!(first.how.iter().any(|h| h.contains("w0000000")), "{first}");
+    let runs = [Some(slid), fc.clone(), fc.clone()];
+    let (v, reran) = rejudge(&p, &runs);
+    agrees(&v);
+    let (varied, uncompared) = varied_as(&reran);
+    assert_eq!(
+        varied,
+        [
+            "its places after the edit, before the solve (2 places or radii, up to 5e-1 mm apart)",
+            "its places after the solve (2 places or radii, up to 5e-1 mm apart)",
+        ]
+    );
+    // Each of the sweep's run's differences, said as that run gave it.
+    let said: Vec<String> = first.how.iter().map(|h| format!("{h} (run 1)")).collect();
+    assert_eq!(uncompared, said);
+    // Where every run slides it, FreeCAD reproduces its answer: compared in full.
+    let (_, p, _, slid) = split_at(4.5);
+    let runs = [Some(slid.clone()), Some(slid.clone()), Some(slid)];
+    let (v, reran) = rejudge(&p, &runs);
+    assert_eq!(reran, Reran::Alike);
+    assert_eq!(v, first);
+}
+
+#[test]
+fn a_difference_every_run_of_freecad_reproduces_is_kept_beside_one_it_varies_on() {
+    // Silico's horizontal k0000004 dropped: FreeCAD's Horizontal unmatched and one freedom
+    // more (2 against 1, the split point's slide and the line's tilt), against every run of
+    // FreeCAD; and the sweep's run sliding the split point to 4.5, which the runs alone don't.
+    // Only the slide is left uncompared.
+    let (case, p, fc, slid) = split_at(4.5);
+    let p = changed(&case, &p, |s| {
+        s.constraints.retain(|c| c.id != id("k0000004"));
+    });
+    let reproduced = [
+        "FreeCAD has Horizontal(n0000003) (from k0000004), Silico hasn't",
+        "degrees of freedom 2 against FreeCAD's 1",
+    ];
+    let first = verdict(&p, Some(&slid));
+    assert!(first.how.len() > reproduced.len(), "{first}");
+    let (v, reran) = rejudge(&p, &[Some(slid), fc.clone(), fc]);
+    assert_eq!(v.how, reproduced, "{v}");
+    let (_, uncompared) = varied_as(&reran);
+    assert_eq!(uncompared.len(), first.how.len() - reproduced.len());
+    assert!(
+        uncompared
+            .iter()
+            .all(|u| u.contains("w0000000") && u.ends_with("(run 1)")),
+        "{uncompared:?}"
+    );
+}
+
+#[test]
+fn freecads_runs_within_the_drag_band_of_each_other_are_one_answer() {
+    // The sweep's run 4e-7 mm off Silico's split point (past the comparison's 1e-8), the runs
+    // alone on it: within REPRODUCED (5e-7) of each other, so FreeCAD's answer is the same,
+    // and Silico's 4e-7 from it a difference. 6e-7 off, FreeCAD's answer varies there, and
+    // what only the sweep's run gives isn't compared.
+    assert_eq!(REPRODUCED, 5e-7);
+    let (_, p, fc, near) = split_at(4.0 + 4e-7);
+    let first = verdict(&p, Some(&near));
+    assert!(!first.how.is_empty(), "{first}");
+    let (v, reran) = rejudge(&p, &[Some(near), fc.clone(), fc.clone()]);
+    assert_eq!(reran, Reran::Alike);
+    assert_eq!(v, first);
+    let (_, p, fc, far) = split_at(4.0 + 6e-7);
+    let (v, reran) = rejudge(&p, &[Some(far), fc.clone(), fc]);
+    agrees(&v);
+    varied_as(&reran);
+}
+
+#[test]
+fn where_freecad_raises_in_one_run_its_edits_in_the_others_are_compared() {
+    // FreeCAD's split raising in one run and made in the other two, alike: what the two give
+    // against Silico's is compared, a difference whichever run raised; what the raise gives
+    // isn't.
+    let raised = Theirs::Failed("ValueError: split failed".to_owned());
+    let refused =
+        "FreeCAD refused (its edit raised: ValueError: split failed); Silico made the edit";
+    let (case, p, fc, _) = split_at(4.0);
+    let outcome = "its outcome (run 1 raised \"ValueError: split failed\", run 2 made the edit, run 3 made the edit)";
+    // The sweep's run raising, Silico's edit as FreeCAD's alone: no difference left.
+    let (v, reran) = rejudge(&p, &[Some(raised.clone()), fc.clone(), fc.clone()]);
+    agrees(&v);
+    let (varied, uncompared) = varied_as(&reran);
+    assert_eq!(varied, [outcome]);
+    assert_eq!(uncompared, [format!("{refused} (run 1)")]);
+    // Silico's horizontal dropped (as above): its two differences, from the two runs that
+    // made the edit, whichever raised.
+    let p = changed(&case, &p, |s| {
+        s.constraints.retain(|c| c.id != id("k0000004"));
+    });
+    let reproduced = [
+        "FreeCAD has Horizontal(n0000003) (from k0000004), Silico hasn't",
+        "degrees of freedom 2 against FreeCAD's 1",
+    ];
+    for runs in [
+        [Some(raised.clone()), fc.clone(), fc.clone()],
+        [fc.clone(), Some(raised.clone()), fc.clone()],
+    ] {
+        let (v, reran) = rejudge(&p, &runs);
+        assert_eq!(v.how, reproduced, "{v}");
+        let (_, uncompared) = varied_as(&reran);
+        assert_eq!(uncompared.len(), 1, "{uncompared:?}");
+        assert!(uncompared[0].starts_with(refused), "{uncompared:?}");
+    }
+}
+
+#[test]
+fn a_difference_is_reproduced_whatever_freecad_says_beside_it() {
+    // FreeCAD's solve failing (-1) in every run, where Silico's solves: a difference each run
+    // gives, though the values FreeCAD's line lists beside it differ, its length k0000005
+    // 10.5 in the second run (which that run gives as a difference of its own, left
+    // uncompared).
+    let (_, p, fc, _) = split_at(4.0);
+    let failed = doctored(&fc, |fc| fc.after.code = -1);
+    let longer = doctored(&Some(failed.clone()), |fc| {
+        let length = fc
+            .constraints
+            .iter_mut()
+            .find(|c| c.name == "s_k0000005")
+            .unwrap();
+        assert_eq!(length.value, 10.0);
+        length.value = 10.5;
+    });
+    let first = verdict(&p, Some(&failed));
+    assert_eq!(first.how.len(), 1, "{first}");
+    assert!(
+        first.how[0].starts_with("FreeCAD's solve gave -1 (degrees of freedom 1, values ")
+            && first.how[0].ends_with("), Silico's a solution"),
+        "{first}"
+    );
+    let (v, reran) = rejudge(&p, &[Some(failed.clone()), Some(longer), Some(failed)]);
+    assert_eq!(v.how, first.how, "{v}");
+    let (varied, uncompared) = varied_as(&reran);
+    assert_eq!(varied, ["its constraints"]);
+    assert!(
+        uncompared
+            .iter()
+            .any(|u| u.contains("10.5") && u.ends_with("(run 2)")),
+        "{uncompared:?}"
+    );
+    assert!(
+        !uncompared
+            .iter()
+            .any(|u| u.starts_with("FreeCAD's solve gave")),
+        "{uncompared:?}"
+    );
+}
+
+#[test]
+fn a_refusal_the_note_doesnt_give_is_a_difference_whatever_freecads_runs_answer() {
+    // Silico refusing the split for a reason of no rule of the note's: a difference against
+    // the edit FreeCAD made and against its raise alike, so its runs varying leaves it whole.
+    let (_, p, fc, _) = split_at(4.0);
+    let p = Prepared {
+        silico: SilicoSide::Refused(Refusal::from("refused by hand")),
+        ..p
+    };
+    assert_eq!(rule(&p), None);
+    let raised = Theirs::Failed("ValueError: split failed".to_owned());
+    let first = verdict(&p, fc.as_ref());
+    assert_eq!(first.how.len(), 1, "{first}");
+    let (v, reran) = rejudge(&p, &[fc.clone(), Some(raised), fc]);
+    assert_eq!(v, first);
+    let (varied, uncompared) = varied_as(&reran);
+    assert_eq!(varied.len(), 1, "{varied:?}");
+    assert!(uncompared.is_empty(), "{uncompared:?}");
+}
+
+#[test]
+fn a_rerun_the_harness_fails_on_or_a_crash_ended_alike_leaves_the_first_run_compared() {
+    let (_, p, fc, slid) = split_at(4.5);
+    let first = verdict(&p, Some(&slid));
+    // The harness's own failure in a run alone: the sweep's run's verdict, unjudged.
+    let harness = Theirs::Harness("KeyError: 'geometry'".to_owned());
+    let (v, reran) = rejudge(&p, &[Some(slid), fc, Some(harness)]);
+    assert_eq!(v, first);
+    assert!(
+        matches!(&reran, Reran::Unjudged(why) if why.contains("run 3") && why.contains("KeyError")),
+        "{reran:?}"
+    );
+    // FreeCAD crashing every run, the same way, its last output aside: one answer.
+    let crashed = |tail: &str| {
+        Theirs::Lost(format!(
+            "FreeCAD crashed building it by a segmentation fault (signal: 11 (SIGSEGV)); its last output:\n{tail}"
+        ))
+    };
+    let first = verdict(&p, Some(&crashed("at 0x7f01")));
+    assert_eq!(first.how.len(), 1, "{first}");
+    let runs = [
+        Some(crashed("at 0x7f01")),
+        Some(crashed("at 0x7f02")),
+        Some(crashed("at 0x7f03")),
+    ];
+    let (v, reran) = rejudge(&p, &runs);
+    assert_eq!(reran, Reran::Alike);
+    assert_eq!(v, first);
 }

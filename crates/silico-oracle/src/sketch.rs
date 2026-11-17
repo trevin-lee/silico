@@ -579,17 +579,42 @@ pub fn silico_solve(case: &SketchCase, worker: &mut dyn SketchSolver) -> Result<
 
 /// How `ours` and `theirs` differ for `case`, whose FreeCAD model is `model`.
 pub fn compare(model: &FreecadSketch, ours: &Ours, theirs: &FreecadSolved) -> Vec<String> {
-    compare_outcomes(model, ours, theirs, true)
+    compare_outcomes(model, ours, theirs, true, Details::Full)
+}
+
+/// How much of FreeCAD's side a difference's line says beside what it compares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Details {
+    /// All of it, for a reader.
+    Full,
+    /// Only what the line compares: what FreeCAD's side says beside it (its values, its
+    /// degrees of freedom beside a solve's code, how a refusal of its is worded, what it last
+    /// wrote before a crash) left out, so the line reads the same for two of FreeCAD's runs
+    /// that differ only there. The sweeps' reruns tell by it which differences FreeCAD's runs
+    /// reproduce (`sketch_edit::rerun`).
+    Keyed,
+}
+
+impl Details {
+    /// `detail` as a line with these details says it.
+    pub fn say(self, detail: impl FnOnce() -> String) -> String {
+        match self {
+            Details::Full => detail(),
+            Details::Keyed => "...".to_owned(),
+        }
+    }
 }
 
 /// As [`compare`], comparing where each side put the points, the radii, and the reference
 /// values only if `geometry`: the sketch edits' oracle leaves them out where the port note
-/// says the two start their solves from different places.
+/// says the two start their solves from different places. Each line says FreeCAD's side as
+/// `details` says.
 pub fn compare_outcomes(
     model: &FreecadSketch,
     ours: &Ours,
     theirs: &FreecadSolved,
     geometry: bool,
+    details: Details,
 ) -> Vec<String> {
     let mut how = Vec::new();
     // FreeCAD's indices, from 1, to Silico's IDs; its coincidences are none of Silico's.
@@ -644,9 +669,11 @@ pub fn compare_outcomes(
         (-3 | -4, Err(e)) if code(e) == ErrorCode::OverConstrained => {}
         (-1, Err(e)) if matches!(code(e), ErrorCode::SolveFailed | ErrorCode::InvalidResult) => {}
         (code, outcome) => how.push(format!(
-            "FreeCAD's solve gave {code} (degrees of freedom {}, values {:?}), Silico's {}",
-            theirs.dof,
-            theirs.values,
+            "FreeCAD's solve gave {code} ({}), Silico's {}",
+            details.say(|| format!(
+                "degrees of freedom {}, values {:?}",
+                theirs.dof, theirs.values
+            )),
             match outcome {
                 Ok(_) => "a solution".to_owned(),
                 Err(e) => e.to_string(),

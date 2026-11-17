@@ -29,7 +29,9 @@ use silico_core::sketch_judge::{Judged, MERGE, judge};
 use silico_protocol::{LENGTH_TOLERANCE, arc_from_points};
 
 use crate::freecad;
-use crate::sketch::{self, FreecadGeometry, FreecadSketch, FreecadSolved, Ours, SketchCase};
+use crate::sketch::{
+    self, Details, FreecadGeometry, FreecadSketch, FreecadSolved, Ours, SketchCase,
+};
 
 /// The directory of sketch-edit cases in an oracle directory.
 pub const DIR: &str = "sketch-edits";
@@ -1468,8 +1470,19 @@ struct Sent<'a> {
 /// Runs `cases` through Silico (`silico-sketch-worker` beside the running executable) and
 /// FreeCAD, and gives each case's verdict, in order.
 pub fn run(cases: &[EditCase]) -> Result<Vec<Verdict>, String> {
+    let (prepared, theirs) = both_sides(cases)?;
+    Ok(prepared
+        .iter()
+        .zip(&theirs)
+        .map(|(p, fc)| verdict(p, fc.as_ref()))
+        .collect())
+}
+
+/// `cases` prepared through Silico (`silico-sketch-worker` beside the running executable),
+/// and FreeCAD's outcome of each, in one run of FreeCAD.
+fn both_sides(cases: &[EditCase]) -> Result<(Vec<Prepared>, Vec<Option<Theirs>>), String> {
     if cases.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     // Silico's worker first: a missing one is found before FreeCAD's run, not after.
     let mut worker = silico_core::sketch::SketchWorker::start().map_err(|e| e.to_string())?;
@@ -1478,11 +1491,7 @@ pub fn run(cases: &[EditCase]) -> Result<Vec<Verdict>, String> {
         prepared.push(prepare(case, &mut worker)?);
     }
     let theirs = freecad_outcomes(&prepared)?;
-    Ok(prepared
-        .iter()
-        .zip(&theirs)
-        .map(|(p, fc)| verdict(p, fc.as_ref()))
-        .collect())
+    Ok((prepared, theirs))
 }
 
 /// What FreeCAD made of each prepared case, in order, in one run of FreeCAD: none for a
@@ -1608,6 +1617,11 @@ fn silico_refused(p: &Prepared) -> Option<String> {
 
 /// How `p` came out, FreeCAD's side `theirs` (none when its plan refuses).
 pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
+    judged(p, theirs, Details::Full)
+}
+
+/// As [`verdict`], each difference saying FreeCAD's side as `details` says.
+fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
     let mut v = Verdict {
         case: p.name.clone(),
         how: p.problems.clone(),
@@ -1652,7 +1666,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
     // Coincident command would refuse what the edit made. A crash or hang is none of these:
     // it's its own outcome, compared on its own.
     let fc_refusal: Option<String> = match (theirs, &p.plan) {
-        (Some(Theirs::Lost(why)), _) => return lost(p, v, why),
+        (Some(Theirs::Lost(why)), _) => return lost(p, v, why, details),
         (_, Plan::Refuses(why)) => Some(why.clone()),
         (Some(Theirs::Failed(why)), _) => Some(format!("its edit raised: {why}")),
         (Some(Theirs::Edited(fc)), _) => merge_refusal(p, fc),
@@ -1705,9 +1719,10 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                 };
                 match r.pinned() {
                     Some(pinned) if !agrees => v.how.push(format!(
-                        "both refused, but the note has FreeCAD {} ({NOTE}{}): Silico's refusal ({ours}); FreeCAD's: {theirs_why}",
+                        "both refused, but the note has FreeCAD {} ({NOTE}{}): Silico's refusal ({ours}); FreeCAD's: {}",
                         pinned.does(),
-                        cited(&r.lines())
+                        cited(&r.lines()),
+                        details.say(|| theirs_why.clone())
                     )),
                     _ => {
                         v.refused = true;
@@ -1716,7 +1731,8 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                 }
             }
             None => v.how.push(format!(
-                "both refused, but Silico's refusal isn't one the note gives ({ours}); FreeCAD's: {theirs_why}"
+                "both refused, but Silico's refusal isn't one the note gives ({ours}); FreeCAD's: {}",
+                details.say(|| theirs_why.clone())
             )),
         },
         (Some(ours), None) => {
@@ -1729,7 +1745,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                 Some(excuse) => v.excused.push(excuse),
                 None => v.how.push(format!(
                     "Silico refused ({ours}); FreeCAD made the edit ({})",
-                    summary(fc)
+                    details.say(|| summary(fc))
                 )),
             }
         }
@@ -1742,7 +1758,8 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                 v.modulo.extend(["se-the-first-point-the-request-names", "se-so-does-any-refusal-of-the"].map(String::from));
             } else {
                 v.how.push(format!(
-                    "FreeCAD refused ({theirs_why}); Silico made the edit"
+                    "FreeCAD refused ({}); Silico made the edit",
+                    details.say(|| theirs_why.clone())
                 ));
             }
         }
@@ -1788,7 +1805,15 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     dragged,
                     settles,
                 };
-                let how = compare_edited(p, s, fc, &unsettled, &mut v.excused, &mut v.modulo);
+                let how = compare_edited(
+                    p,
+                    s,
+                    fc,
+                    &unsettled,
+                    details,
+                    &mut v.excused,
+                    &mut v.modulo,
+                );
                 v.how.extend(how);
             }
         }
@@ -1801,8 +1826,9 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
 /// 1.1.3 crashes on (splitting a point, #se-split-index-refusals), and FreeCAD crashed as the note
 /// says, by a segmentation fault (killed by SIGSEGV, or, on Linux, where its handler catches it,
 /// exiting with status 1 after the handler's line: [`freecad::SEGFAULT`]), not otherwise and
-/// not by hanging; anything else is a difference. Only how it ended is read, never its output.
-fn lost(p: &Prepared, mut v: Verdict, why: &str) -> Verdict {
+/// not by hanging; anything else is a difference. Only how it ended is read, never its output,
+/// which a difference says only as `details` says.
+fn lost(p: &Prepared, mut v: Verdict, why: &str, details: Details) -> Verdict {
     let crashes = match &p.silico {
         SilicoSide::Refused(_) => rule(p).filter(|r| r.pinned() == Some(Pinned::Crashes)),
         _ => None,
@@ -1824,6 +1850,10 @@ fn lost(p: &Prepared, mut v: Verdict, why: &str) -> Verdict {
                     _ => "Silico made the edit".to_owned(),
                 },
                 SilicoSide::Gated(_) => "Silico's result is gated".to_owned(),
+            };
+            let why = match details {
+                Details::Full => why,
+                Details::Keyed => ended,
             };
             v.how.push(format!(
                 "FreeCAD crashed or hung ({why}), its own outcome, never a refusal, which the note gives only for a split of a point ({NOTE}#se-split-index-refusals); {silico}"
@@ -4363,12 +4393,13 @@ impl Touched {
 }
 
 /// How Silico's edited sketch and FreeCAD's differ, both edited and solved, but for what
-/// `unsettled` leaves unsettled.
+/// `unsettled` leaves unsettled, each difference saying FreeCAD's side as `details` says.
 fn compare_edited(
     p: &Prepared,
     s: &SilicoEdited,
     fc: &FreecadEdited,
     unsettled: &Unsettled<'_>,
+    details: Details,
     excused: &mut Vec<String>,
     modulo: &mut Vec<String>,
 ) -> Vec<String> {
@@ -4509,8 +4540,9 @@ fn compare_edited(
         }
         let Some(m) = by_id.get(&g.id) else {
             how.push(format!(
-                "FreeCAD has a {} ({:?}) that Silico hasn't",
-                g.kind, g.points
+                "FreeCAD has a {} ({}) that Silico hasn't",
+                g.kind,
+                details.say(|| format!("{:?}", g.points))
             ));
             continue;
         };
@@ -4970,6 +5002,7 @@ fn compare_edited(
         &ours,
         &theirs,
         !unsettled.any(),
+        details,
     ));
     // The points the drag moved, and the radii of the curves they're on, after the solve,
     // within its band; none where FreeCAD's solve settles them otherwise run to run.
@@ -5074,6 +5107,9 @@ fn compare_edited(
     }
     how
 }
+
+#[path = "sketch_edit_rerun.rs"]
+pub mod rerun;
 
 #[cfg(test)]
 #[path = "sketch_edit_tests.rs"]
