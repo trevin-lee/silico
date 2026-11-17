@@ -1435,14 +1435,13 @@ impl Renderer {
             }
             _ => None,
         };
-        let (planes_drawn, plane_draws) = if planes.is_empty() {
-            (0, Vec::new())
+        let plane_draws = if planes.is_empty() {
+            Vec::new()
         } else {
-            planes::draw(ctx, plane_meshes, planes, view, pixels_per_point)?
+            let (drawn, draws) = planes::draw(ctx, plane_meshes, planes, view, pixels_per_point)?;
+            tracing::debug!(planes = planes.len(), drawn, "planes");
+            draws
         };
-        if !planes.is_empty() {
-            tracing::debug!(planes = planes.len(), drawn = planes_drawn, "planes");
-        }
         *placed = placing.elapsed();
         let highlighted = drawn.iter().any(|(_, lit)| lit.any());
         let config = TargetConfiguration {

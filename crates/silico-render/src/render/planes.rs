@@ -159,10 +159,10 @@ pub(super) fn draw(
             continue;
         }
         drawn += 1;
-        if plane.fill[3] > 0 {
+        if shown(plane.fill) {
             fills.push(fill(ctx, meshes, plane, view)?);
         }
-        if plane.outline[3] > 0 {
+        if shown(plane.outline) {
             let mut batch = outlines
                 .batch(format!("Plane{i}"))
                 .world_from_obj(glam::Affine3A::IDENTITY)
@@ -226,13 +226,7 @@ fn fill(
         [dot(f.right, d), dot(f.up, d), dot(f.back, d)]
     };
     let (u, v) = (rotated(plane.u), rotated(plane.v));
-    let n = cross(u, v);
-    let length = dot(n, n).sqrt();
-    let normal = if length > 0.0 {
-        n.map(|c| c / length)
-    } else {
-        [0.0; 3]
-    };
+    let normal = unit_normal(u, v);
     let mut instance = GpuMeshInstance::new(mesh);
     instance.world_from_mesh = glam::Affine3A::from_cols(
         vec3(u).into(),
@@ -243,6 +237,24 @@ fn fill(
     // Both sides, as the prototype's `DoubleSide`: GpuMeshInstance::new's, said here.
     instance.cull_mode = None;
     Ok(instance)
+}
+
+/// Whether a plane's fill or outline of `colour` (its alpha unmultiplied) is drawn: only with
+/// an alpha above 0, so one of alpha 0 uploads no mesh and adds no line.
+fn shown(colour: [u8; 4]) -> bool {
+    colour[3] > 0
+}
+
+/// `u` × `v` made a unit vector: the fill's third axis, square to its plane; zero where `u`
+/// and `v` are parallel or either is zero, as no plane is square to them.
+fn unit_normal(u: [f64; 3], v: [f64; 3]) -> [f64; 3] {
+    let n = cross(u, v);
+    let length = dot(n, n).sqrt();
+    if length > 0.0 {
+        n.map(|c| c / length)
+    } else {
+        [0.0; 3]
+    }
 }
 
 /// The unit square in `fill` (sRGB, its alpha unmultiplied), as a GPU mesh.
@@ -337,5 +349,42 @@ where
             })
             .collect();
         self.0.draw(render_pipelines, phase, pass, &inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{shown, unit_normal};
+
+    #[test]
+    fn a_fill_or_outline_is_drawn_only_with_an_alpha_above_zero() {
+        assert!(!shown([0, 0, 0, 0]));
+        assert!(!shown([255, 255, 255, 0]));
+        assert!(shown([0, 0, 0, 1]));
+        assert!(shown([159, 159, 159, 20]));
+        assert!(shown([70, 118, 255, 255]));
+    }
+
+    #[test]
+    fn the_fills_normal_is_u_cross_v_made_a_unit_and_zero_for_parallel_sides() {
+        // By hand: (1, 0, 0) × (0, 4, −3) = (0·(−3) − 0·4, 0·0 − 1·(−3), 1·4 − 0·0)
+        // = (0, 3, 4), of length 5: (0, 3/5, 4/5).
+        assert_eq!(
+            unit_normal([1.0, 0.0, 0.0], [0.0, 4.0, -3.0]),
+            [0.0, 0.6, 0.8]
+        );
+        // Its sides the other way round: the other side, (0, −3/5, −4/5).
+        assert_eq!(
+            unit_normal([0.0, 4.0, -3.0], [1.0, 0.0, 0.0]),
+            [0.0, -0.6, -0.8]
+        );
+        // (2, 0, 0) × (0, 3, 0) = (0, 0, 6): +z.
+        assert_eq!(
+            unit_normal([2.0, 0.0, 0.0], [0.0, 3.0, 0.0]),
+            [0.0, 0.0, 1.0]
+        );
+        // Parallel sides, and a side of zero: no plane is square to them.
+        assert_eq!(unit_normal([1.0, 2.0, 3.0], [2.0, 4.0, 6.0]), [0.0; 3]);
+        assert_eq!(unit_normal([0.0; 3], [0.0, 1.0, 0.0]), [0.0; 3]);
     }
 }
