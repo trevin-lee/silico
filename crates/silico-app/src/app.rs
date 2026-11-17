@@ -4138,6 +4138,35 @@ mod tests {
     }
 
     #[test]
+    fn a_command_the_search_ran_runs_once_its_keys_pressed_in_the_same_pass_too() {
+        use eframe::egui::{Context, Event, Key, Modifiers, RawInput};
+
+        // The search's command (`queued`) counts as its keys pressed; pressed as well in
+        // the pass it's done in, it's the same press, so it's done (the sheet opens).
+        let (mut app, _dir) = app();
+        let question = Event::Key {
+            key: Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let ctx = Context::default();
+        ctx.run_ui(
+            RawInput {
+                events: vec![question],
+                ..Default::default()
+            },
+            |ui| {
+                app.command_keys(ui, Some(crate::shortcuts::Command::Shortcuts));
+            },
+        )
+        .textures_delta
+        .clear();
+        assert!(app.sheet.is_some());
+    }
+
+    #[test]
     fn a_filter_the_search_ran_is_toggled_once_its_key_pressed_with_it_or_not() {
         use eframe::egui::{Event, Key, Modifiers};
         use egui_kittest::Harness;

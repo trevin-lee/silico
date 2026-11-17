@@ -891,23 +891,48 @@ mod tests {
 
     #[test]
     fn each_command_has_the_prototypes_icon() {
-        // app.js's `CMD`, each command's `icon` (the command search's row shows it, and a
-        // chevron where `CMD` gives none).
-        for (command, icon) in [
+        // app.js's `CMD`, each command's `icon`, or none where it gives none (Suppress and
+        // the two Find commands aren't in `CMD`: none). The command search's row shows it, and
+        // a chevron for none. Every command in the registry is in the table, once.
+        let table = [
             (Command::New, Some(Icon::NewDoc)),
             (Command::Open, Some(Icon::Open)),
             (Command::Save, Some(Icon::Save)),
+            (Command::SaveAs, None),
+            (Command::Close, None),
             (Command::Undo, Some(Icon::Undo)),
             (Command::Redo, Some(Icon::Redo)),
             (Command::Search, Some(Icon::Search)),
+            (Command::Rename, None),
+            (Command::Delete, None),
+            (Command::Suppress, None),
+            (Command::FindInBrowser, None),
+            (Command::FindInTimeline, None),
             (Command::Rebuild, Some(Icon::Rebuild)),
+            (Command::RebuildAll, None),
+            (Command::Reload, None),
             (Command::Stop, Some(Icon::Stop)),
+            (Command::WhatsWrong, Some(Icon::Error)),
+            (Command::Fit, Some(Icon::Fit)),
+            (Command::Home, Some(Icon::Home)),
+            (Command::Front, None),
+            (Command::Back, None),
+            (Command::Left, None),
+            (Command::Right, None),
+            (Command::Top, None),
+            (Command::Bottom, None),
+            (Command::Isometric, None),
+            (Command::LookAt, Some(Icon::LookAt)),
+            (Command::Orbit, Some(Icon::Orbit)),
+            (Command::Pan, Some(Icon::Pan)),
+            (Command::Zoom, Some(Icon::Zoom)),
+            (Command::ClearSelection, None),
             (Command::FilterFace, Some(Icon::SelFace)),
             (Command::FilterEdge, Some(Icon::SelEdge)),
             (Command::FilterVertex, Some(Icon::SelVertex)),
-            (Command::Fit, Some(Icon::Fit)),
-            (Command::Home, Some(Icon::Home)),
-            (Command::LookAt, Some(Icon::LookAt)),
+            (Command::Hide, None),
+            (Command::Ok, None),
+            (Command::Cancel, None),
             (Command::Line, Some(Icon::Line)),
             (Command::Rectangle, Some(Icon::Rect)),
             (Command::Circle, Some(Icon::Circle)),
@@ -916,9 +941,17 @@ mod tests {
             (Command::Trim, Some(Icon::Trim)),
             (Command::Dimension, Some(Icon::Dimension)),
             (Command::Construction, Some(Icon::Construction)),
-            (Command::Cancel, None),
-        ] {
-            assert_eq!(command.entry().icon, icon, "{command:?}");
+            (Command::FinishSketch, Some(Icon::Check)),
+            (Command::Shortcuts, Some(Icon::Help)),
+        ];
+        assert_eq!(table.len(), REGISTRY.len());
+        for entry in &REGISTRY {
+            let mine: Vec<_> = table
+                .iter()
+                .filter(|(command, _)| *command == entry.command)
+                .collect();
+            assert_eq!(mine.len(), 1, "{:?} in the table", entry.command);
+            assert_eq!(entry.icon, mine[0].1, "{:?}", entry.command);
         }
     }
 

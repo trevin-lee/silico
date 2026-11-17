@@ -51028,23 +51028,3 @@ fn behind_the_command_search_the_window_takes_no_click_until_esc_closes_it() {
     item_takes_a_click(&mut h, "Block", "k7f2qx3m");
     assert_eq!(never_waits::waits(), 0);
 }
-
-#[test]
-fn a_command_the_search_ran_runs_once_its_keys_pressed_in_the_frame_it_runs_or_not() {
-    // The search's command runs the frame after, as its keys would: its keys pressed in
-    // that frame too are the same press, so it runs (here, the sheet opens), never undone.
-    let f = fixture();
-    let mut h = f.app();
-    step(&mut h);
-    open_search(&mut h);
-    search_for(&mut h, "help", "Keyboard shortcuts Help");
-    h.key_press(Key::Enter);
-    step(&mut h);
-    assert!(!search_open(&h));
-    h.key_press(Key::Questionmark);
-    for _ in 0..3 {
-        step(&mut h);
-    }
-    assert!(sheet_open(&h));
-    assert_eq!(never_waits::waits(), 0);
-}
