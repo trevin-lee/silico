@@ -48261,6 +48261,15 @@ fn frames(h: &mut AppHarness, n: usize) {
     }
 }
 
+/// `n` frames stepped 10 ms apart: time too for the thumbnails' thread, and the commands, to
+/// answer what any of them asked.
+fn paced_frames(h: &mut AppHarness, n: usize) {
+    for _ in 0..n {
+        step(h);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 #[test]
 fn saves_and_reloads_with_the_start_page_hidden_draw_nothing_and_closing_draws_once() {
     let (f, renderer) = thumbnailed_with(true);
@@ -48462,6 +48471,51 @@ fn the_start_page_looks_again_each_time_it_is_shown() {
     home_shown(&mut h);
     step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
     assert!(thumbs(&h).picture(path.to_str().unwrap()).is_none());
+    // Not looked at again while it stays shown, its list the same.
+    let looks = thumbs(&h).looks;
+    paced_frames(&mut h, 20);
+    assert_eq!(thumbs(&h).looks, looks);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_picture_looked_at_again_keeps_its_texture_until_its_documents_bytes_change() {
+    let (f, _renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    for (text, rgb) in [(EXAMPLE, [200, 40, 40]), (SKETCHED_EXAMPLE, [40, 40, 200])] {
+        std::fs::write(
+            f.thumbs_folder().join(thumb_of(text.as_bytes())),
+            plain_png(rgb),
+        )
+        .unwrap();
+    }
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    let shown = |h: &AppHarness| {
+        thumbs(h)
+            .picture(path.to_str().unwrap())
+            .map(eframe::egui::TextureHandle::id)
+    };
+    step_until(&mut h, "its picture shown", |h| shown(h).is_some());
+    let first = shown(&h).unwrap();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    // Shown again, its bytes the same: looked at again, its picture's texture kept.
+    let looks = thumbs(&h).looks;
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    assert_eq!(shown(&h), Some(first));
+    // Its bytes changed by another program to those of the other picture kept: that one,
+    // uploaded.
+    std::fs::write(&path, SKETCHED_EXAMPLE).unwrap();
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    let looks = thumbs(&h).looks;
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    let second = shown(&h).unwrap();
+    assert_ne!(second, first);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -48485,6 +48539,17 @@ fn a_render_refused_leaves_the_icon_and_says_nothing() {
     assert!(f.thumb_files().is_empty());
     assert!(!anywhere(&h, "render worker"));
     assert!(h.state().tabs()[0].message.is_none());
+    // Not tried again while the start page stays shown, nor while it's hidden; tried again
+    // once it's shown again.
+    paced_frames(&mut h, 20);
+    assert_eq!((renderer.sent().len(), thumbs(&h).renders_dropped), (1, 1));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    paced_frames(&mut h, 20);
+    assert_eq!(renderer.sent().len(), 1);
+    home_shown(&mut h);
+    step_until(&mut h, "tried again", |h| thumbs(h).renders_dropped == 2);
+    assert_eq!(renderer.sent().len(), 2);
     assert_eq!(never_waits::waits(), 0);
 }
 

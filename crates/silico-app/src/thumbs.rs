@@ -80,10 +80,11 @@ pub const LEFT_OVER_AGE: Duration = Duration::from_secs(60 * 60);
 /// render to linear filtering).
 pub const PICTURE_SCALE: f32 = 2.0;
 
-/// The picture's place in the cell: inside its 1-point border (`box-sizing: border-box`).
+/// The picture's place in the cell: inside its 1-point border (`box-sizing: border-box`), at
+/// each side.
 pub const CELL: egui::Vec2 = egui::vec2(
-    theme::START_THUMB_WIDTH - 2.0 * theme::BORDER_WIDTH,
-    theme::START_THUMB_HEIGHT - 2.0 * theme::BORDER_WIDTH,
+    theme::START_THUMB_WIDTH - theme::BORDER_WIDTH - theme::BORDER_WIDTH,
+    theme::START_THUMB_HEIGHT - theme::BORDER_WIDTH - theme::BORDER_WIDTH,
 );
 
 /// A picture's size in pixels as the thread gives it: [`CELL`] at [`PICTURE_SCALE`], 100 by
@@ -169,7 +170,8 @@ fn read_picture(file: &Path) -> Option<ColorImage> {
 }
 
 /// `png` decoded and cut to [`PICTURE`] as `object-fit: cover` cuts it ([`cover`]): none if
-/// it isn't a PNG the `png` crate decodes, or either side is 0 or more than [`MAX_SIDE`].
+/// it isn't a PNG the `png` crate decodes (which refuses a side of 0), or either side is more
+/// than [`MAX_SIDE`].
 pub fn picture(png: &[u8]) -> Option<ColorImage> {
     let image = decode(png)?;
     Some(cover(&image, PICTURE))
@@ -188,7 +190,7 @@ pub fn decode(png: &[u8]) -> Option<ColorImage> {
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().ok()?;
     let (width, height) = (reader.info().width, reader.info().height);
-    if width == 0 || height == 0 || width > MAX_SIDE || height > MAX_SIDE {
+    if width > MAX_SIDE || height > MAX_SIDE {
         return None;
     }
     let mut bytes = vec![0; reader.output_buffer_size()?];
@@ -1082,6 +1084,15 @@ mod tests {
             grey.pixels,
             [Color32::from_gray(7), Color32::from_gray(200)]
         );
+        // Grey with alpha: grey 7, opaque, then grey 200 at 128.
+        let grey_alpha = png_of(2, 1, png::ColorType::GrayscaleAlpha, &[7, 255, 200, 128]);
+        assert_eq!(
+            decode(&grey_alpha).unwrap().pixels,
+            [
+                Color32::from_rgba_unmultiplied(7, 7, 7, 255),
+                Color32::from_rgba_unmultiplied(200, 200, 200, 128)
+            ]
+        );
         // Three rows of an odd width, RGB: each row read from its own line.
         let data: Vec<u8> = (0..3 * 3 * 3).map(|n| n as u8).collect();
         let rgb = decode(&png_of(3, 3, png::ColorType::Rgb, &data)).unwrap();
@@ -1109,6 +1120,7 @@ mod tests {
         }
         // One pixel more than the longest side, either way.
         assert!(decode(&plain_png(MAX_SIDE, 1, [0, 0, 0])).is_some());
+        assert!(decode(&plain_png(1, MAX_SIDE, [0, 0, 0])).is_some());
         assert!(decode(&plain_png(MAX_SIDE + 1, 1, [0, 0, 0])).is_none());
         assert!(decode(&plain_png(1, MAX_SIDE + 1, [0, 0, 0])).is_none());
     }
@@ -1125,6 +1137,46 @@ mod tests {
         png.extend(&ihdr);
         png.extend(crc(&ihdr).to_be_bytes());
         assert!(decode(&png).is_none());
+    }
+
+    /// `png` with a `tEXt` chunk of `len` bytes (a keyword of one letter, its null, and text)
+    /// after its header for each of `lens`.
+    fn with_text(png: &[u8], lens: &[usize]) -> Vec<u8> {
+        // The signature (8) and the header chunk: its length (4), type (4), data (13), and
+        // CRC (4).
+        let (head, rest) = png.split_at(8 + 4 + 4 + 13 + 4);
+        let mut out = head.to_vec();
+        for &len in lens {
+            let mut chunk = b"tEXt".to_vec();
+            chunk.extend(b"k\0");
+            chunk.resize(4 + len, b'a');
+            out.extend(u32::try_from(len).unwrap().to_be_bytes());
+            out.extend(&chunk);
+            out.extend(crc(&chunk).to_be_bytes());
+        }
+        out.extend(rest);
+        out
+    }
+
+    #[test]
+    fn the_decoder_may_allocate_nine_mebibytes_and_no_more() {
+        // Its allowance: the largest picture's 16-bit RGBA, 1024 · 1024 · 8 = 8 MiB, and
+        // 1 MiB of room, 9 MiB (9,437,184 bytes). A text chunk costs the first time its
+        // length twice (the decoder's chunk buffer grown to it from 128 bytes, doubling,
+        // then the text kept), and after that once (the buffer kept).
+        const MIB: usize = 1 << 20;
+        let good = plain_png(2, 2, [1, 2, 3]);
+        assert!(decode(&with_text(&good, &[MIB / 2])).is_some());
+        // Three texts of 2 MiB and one of 0.5 MiB: 2 MiB − 128 for the buffer, and 6.5 MiB
+        // kept, 8.5 MiB − 128 (8,912,768): within it, but past 8 MiB.
+        let within = with_text(&good, &[2 * MIB, 2 * MIB, 2 * MIB, MIB / 2]);
+        assert_eq!(
+            decode(&within).map(|image| image.pixels),
+            Some(vec![Color32::from_rgb(1, 2, 3); 4])
+        );
+        // A text of 1 MiB more: 9.5 MiB − 128, past it.
+        let past = with_text(&good, &[2 * MIB, 2 * MIB, 2 * MIB, MIB / 2, MIB]);
+        assert!(decode(&past).is_none());
     }
 
     /// PNG's CRC-32 (ISO 3309), bit by bit, as its specification's appendix gives it.
@@ -1199,6 +1251,15 @@ mod tests {
         // = 10), the corner, 225, wholly in the last (225 / 2.25 = 100).
         let cut = cover(&greys(3, 3, &[0, 0, 0, 0, 90, 0, 0, 0, 225]), [2, 2]);
         assert_eq!(cut.pixels, [10, 10, 10, 110].map(Color32::from_gray),);
+    }
+
+    #[test]
+    fn a_picture_narrower_than_the_cell_keeps_its_width_and_its_middle_rows() {
+        // 2 by 4 into 2 by 2: each pixel one of the image's (2 / 2 across, 4 / 2 down, the
+        // smaller), the width kept whole and a row cut off each end.
+        let image = greys(2, 4, &[10, 20, 30, 40, 50, 60, 70, 80]);
+        let cut = cover(&image, [2, 2]);
+        assert_eq!(cut.pixels, [30, 40, 50, 60].map(Color32::from_gray));
     }
 
     #[test]
@@ -1566,5 +1627,103 @@ mod tests {
             thumbs.drawing.get(&two),
             Some(Drawing::Rendering { revision, key, .. }) if *revision == three && key == ABC
         ));
+    }
+    #[test]
+    fn the_pictures_are_kept_beside_the_recent_documents() {
+        let recents = Recents::default_file();
+        let folder = Thumbs::default_folder();
+        assert_eq!(recents.is_some(), folder.is_some());
+        if let (Some(recents), Some(folder)) = (recents, folder) {
+            assert_eq!(folder.parent(), recents.parent());
+            assert_eq!(folder.file_name().unwrap(), "thumbnails");
+        }
+    }
+
+    #[test]
+    fn the_thread_asks_the_window_for_a_frame_when_it_tells_something() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let ctx = egui::Context::default();
+        let asked = Arc::new(AtomicU64::new(0));
+        let counted = Arc::clone(&asked);
+        ctx.set_request_repaint_callback(move |_| {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let thumbs = Thumbs::at(dir.path().join(FOLDER_NAME));
+        thumbs.waking(&ctx);
+        assert_eq!(asked.load(Ordering::SeqCst), 0);
+        thumbs.ask(Ask::Look(Vec::new()));
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        while asked.load(Ordering::SeqCst) == 0 {
+            assert!(std::time::Instant::now() < deadline, "no frame asked for");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn a_closing_tabs_text_refused_drops_its_picture_and_still_closes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let secret = dir.path().join("secret");
+        let kernel = Arc::new(silico_core::fake::FakeKernel::new(1).unwrap());
+        let sessions = Arc::new(Sessions::with_stand_ins(
+            kernel,
+            move |cache| silico_core::cache::Cache::with_secret(cache, &secret),
+            || {
+                Ok(Box::new(silico_core::fake::FakeSketches::new())
+                    as Box<dyn silico_core::sketch::SketchSolver>)
+            },
+        ));
+        let (mut thumbs, asked, _tell) = listening();
+        let refused = Response {
+            session: None,
+            model: None,
+            result: Err(silico_core::command::Problems::from(
+                silico_core::Error::new(
+                    silico_core::ErrorCode::WorkerCrashed,
+                    "the text wasn't read",
+                ),
+            )),
+        };
+        thumbs.closing(Closing {
+            session: SessionId::parse("s1").unwrap(),
+            revision: Revision::from_number(3).unwrap(),
+            path: "/a/part.silico".to_owned(),
+            stage: Stage::Drawing(Box::new(Out {
+                text: Waiting::Taken(refused),
+                rendering: Waiting::Taken(rendered(3)),
+            })),
+        });
+        thumbs.poll_closing(&sessions);
+        assert_eq!((thumbs.renders_written, thumbs.renders_dropped), (0, 1));
+        assert!(asked.try_recv().is_err(), "nothing to write");
+        assert!(thumbs.pictured.is_empty());
+        assert!(matches!(
+            thumbs.closing.as_slice(),
+            [Closing {
+                stage: Stage::Closing(_),
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn a_file_a_write_left_is_removed_once_more_than_an_hour_old() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path();
+        let name = format!("{ABC}.png.4242.1.new");
+        let file = folder.join(&name);
+        std::fs::write(&file, b"").unwrap();
+        let written = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(written)
+            .unwrap();
+        // 59 minutes, then exactly an hour: kept. A second more: removed.
+        for (age, kept) in [(59 * 60, true), (60 * 60, true), (60 * 60 + 1, false)] {
+            prune(folder, None, written + Duration::from_secs(age));
+            assert_eq!(names(folder) == [name.clone()], kept, "{age} s");
+        }
     }
 }
