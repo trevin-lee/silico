@@ -48742,6 +48742,9 @@ fn toasts_stack_newest_last_each_taken_down_on_its_own_clock_asking_no_frame_onc
     // the idle one.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    // The fade's time is egui's animation time, the app's egui's own 0.2 s (`theme::apply`):
+    // the harness keeps it at 0 (`apply_look`, #519), with which a toast goes unfaded.
+    animation_time(&h, 0.2);
     meshes_settled(&mut h);
     settled(&mut h);
     let time = |h: &AppHarness| h.ctx.input(|input| input.time);
@@ -48794,7 +48797,7 @@ fn toasts_stack_newest_last_each_taken_down_on_its_own_clock_asking_no_frame_onc
     });
     assert!(time(&h) - second < 1.0, "{}", time(&h) - second);
     assert_eq!(toasts_shown(&h).len(), 2);
-    // Fading out over the last of its time (egui's animation time, the app's 1/12 s): each
+    // Fading out over the last of its time (egui's animation time, the app's 0.2 s): each
     // frame asked for at once then, so the fade is drawn.
     while time(&h) - first < 3.8 - 1.0 / 24.0 {
         step(&mut h);
