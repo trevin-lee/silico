@@ -19,6 +19,7 @@ use crate::icons::{Icon, IconSize};
 use crate::recent::{Recent, Recents};
 use crate::shortcuts::Command;
 use crate::theme;
+use crate::thumbs::Thumbs;
 use crate::wake::Wake;
 
 /// How the warm start (decision 10) stands.
@@ -207,6 +208,8 @@ pub(crate) enum Act {
 pub(crate) struct Shown<'a> {
     /// The documents opened lately, if the app keeps a list.
     pub recents: Option<&'a Recents>,
+    /// Their thumbnails, if the app keeps them.
+    pub thumbs: Option<&'a Thumbs>,
     /// Whether Copy MCP config knows a workspace to name: if not, it says so.
     pub workspace_known: bool,
 }
@@ -238,7 +241,7 @@ pub(crate) fn page(ui: &mut Ui, shown: &Shown<'_>) -> Act {
                     ui.add_space(theme::START_COLUMN_GAP);
                     ui.vertical(|ui| {
                         ui.set_width(right);
-                        recent(ui, shown.recents, &mut act);
+                        recent(ui, shown, &mut act);
                     });
                 });
                 ui.add_space(theme::START_PADDING_BOTTOM);
@@ -555,7 +558,8 @@ pub const NOT_KEPT: &str =
 
 /// The right column: the recent documents, newest first, labelled `Recent` for the
 /// accessibility tree, each a button by its file's name.
-fn recent(ui: &mut Ui, recents: Option<&Recents>, act: &mut Act) {
+fn recent(ui: &mut Ui, shown: &Shown<'_>, act: &mut Act) {
+    let recents = shown.recents;
     header(ui, "Recent");
     ui.scope_builder(UiBuilder::new().id_salt("recent"), |ui| {
         ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
@@ -574,7 +578,8 @@ fn recent(ui: &mut Ui, recents: Option<&Recents>, act: &mut Act) {
             return;
         }
         for recent in recents.map(Recents::list).unwrap_or_default() {
-            if row(ui, recent).clicked() {
+            let picture = shown.thumbs.and_then(|thumbs| thumbs.picture(&recent.path));
+            if row(ui, recent, picture).clicked() {
                 *act = Act::Recent(recent.path.clone());
             }
             ui.add_space(theme::START_RECENT_ROW_GAP);
@@ -582,9 +587,10 @@ fn recent(ui: &mut Ui, recents: Option<&Recents>, act: &mut Act) {
     });
 }
 
-/// A recent document's row: its thumbnail's place (the document's icon; a warning's if
-/// nothing was at its path), its name and its folder, and "not found" if nothing was.
-fn row(ui: &mut Ui, recent: &Recent) -> Response {
+/// A recent document's row: its thumbnail's place (`picture`, the part drawn, if it has one
+/// and is there; else the document's icon, or a warning's if nothing was at its path), its
+/// name and its folder, and "not found" if nothing was.
+fn row(ui: &mut Ui, recent: &Recent, picture: Option<&egui::TextureHandle>) -> Response {
     let size = Vec2::new(ui.available_width(), theme::START_RECENT_ROW_HEIGHT);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let name = recent.name().to_owned();
@@ -623,15 +629,19 @@ fn row(ui: &mut Ui, recent: &Recent) -> Response {
         Stroke::new(1.0, theme::PANEL_BORDER),
         StrokeKind::Inside,
     );
-    let (icon, tint) = if recent.missing {
-        (Icon::Warn, theme::TEXT_DISABLED)
+    if let Some(picture) = picture.filter(|_| !recent.missing) {
+        crate::thumbs::paint(ui.painter(), thumb, picture);
     } else {
-        (Icon::Doc, theme::TEXT_SUBDUED)
-    };
-    icon.image(IconSize::Small).tint(tint).paint_at(
-        ui,
-        Rect::from_center_size(thumb.center(), Vec2::splat(crate::icons::ICON_SIZE)),
-    );
+        let (icon, tint) = if recent.missing {
+            (Icon::Warn, theme::TEXT_DISABLED)
+        } else {
+            (Icon::Doc, theme::TEXT_SUBDUED)
+        };
+        icon.image(IconSize::Small).tint(tint).paint_at(
+            ui,
+            Rect::from_center_size(thumb.center(), Vec2::splat(crate::icons::ICON_SIZE)),
+        );
+    }
     let left = thumb.right() + theme::START_RECENT_COLUMN_GAP;
     let width = (rect.right() - theme::START_RECENT_PADDING_RIGHT - left).max(0.0);
     let mut name_job = LayoutJob::single_section(
@@ -1077,6 +1087,7 @@ mod tests {
         assert_eq!(columns(816.0), (48.0, 336.0, 432.0));
         let shown = Shown {
             recents: None,
+            thumbs: None,
             workspace_known: true,
         };
         let mut h = drawn(|ui| {
@@ -1229,6 +1240,7 @@ mod tests {
     fn the_actions_and_their_key_caps_are_drawn_as_st_action_and_kbd() {
         let shown = Shown {
             recents: None,
+            thumbs: None,
             workspace_known: true,
         };
         let mut h = drawn(|ui| {
@@ -1434,6 +1446,7 @@ mod tests {
     fn copy_mcp_config_is_drawn_as_a_ghost_btn() {
         let shown = Shown {
             recents: None,
+            thumbs: None,
             workspace_known: true,
         };
         let mut h = drawn(|ui| {
@@ -1518,6 +1531,7 @@ mod tests {
         let recents = listing(&[bracket.to_str().unwrap(), gone.to_str().unwrap()]);
         let shown = Shown {
             recents: Some(&recents),
+            thumbs: None,
             workspace_known: true,
         };
         let mut h = drawn(|ui| {
@@ -1676,6 +1690,7 @@ mod tests {
         let recents = Recents::unkept();
         let shown = Shown {
             recents: Some(&recents),
+            thumbs: None,
             workspace_known: true,
         };
         let h = drawn(|ui| {

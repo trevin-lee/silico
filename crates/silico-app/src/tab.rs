@@ -1266,6 +1266,10 @@ pub struct Tab {
     checked: Option<(Revision, Option<Revision>)>,
     pub edits: Edits,
     under: Vec<Under>,
+    /// Whether its picture for the start page is drawn as it closes (`crate::thumbs`): set
+    /// each frame by the app's thumbnails, and the picture asked, if it is, taken by them.
+    pub draws_on_close: bool,
+    closing_picture: Option<crate::thumbs::Closing>,
     /// How many saves it has sent: what a test counts.
     pub saves: u64,
     /// How many Rebuilds it has sent: what a test counts.
@@ -1645,6 +1649,8 @@ impl Tab {
             checked: None,
             edits: Edits::default(),
             under: Vec::new(),
+            draws_on_close: false,
+            closing_picture: None,
             saves: 0,
             rebuilds: 0,
             rebuilds_all: 0,
@@ -3145,7 +3151,7 @@ impl Tab {
             }
         }
         if close {
-            self.under.push(Under::Close(sessions.close(&self.id)));
+            self.send_close(sessions);
         }
         if std::mem::take(&mut self.roll_back) {
             self.under.push(Under::Rollback {
@@ -4668,7 +4674,7 @@ impl Tab {
                 }
                 Queued::Save { then_close } if !self.transaction => {
                     if then_close {
-                        self.under.push(Under::Close(sessions.close(&self.id)));
+                        self.send_close(sessions);
                         self.edits.queue.clear();
                     } else {
                         // No transaction open once the edits before it answered: the
@@ -4679,7 +4685,7 @@ impl Tab {
                 Queued::Revert { then_close } if !self.transaction => {
                     self.land(Lands::Everything, self.revision);
                     if then_close {
-                        self.under.push(Under::Close(sessions.close(&self.id)));
+                        self.send_close(sessions);
                         self.edits.queue.clear();
                     }
                 }
@@ -5198,6 +5204,36 @@ impl Tab {
         self.advance(sessions);
     }
 
+    /// `close` sent: or, if it [`draws_on_close`](Self::draws_on_close) and has a file, no
+    /// transaction, and its model built at its revision, its picture asked
+    /// (`crate::thumbs::Closing`), which closes the session once it's drawn, and the tab
+    /// closed at once.
+    fn send_close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let built = sessions.published(&self.id).result.ok().map(|p| p.revision);
+        if let Some(path) = self
+            .path
+            .clone()
+            .filter(|_| self.draws_on_close && !self.transaction && built == Some(self.revision))
+        {
+            // Gone at once: the app's thumbnails draw it and close its session, which can't
+            // refuse (there's no transaction), so the tab never waits on its picture.
+            self.closing_picture = Some(crate::thumbs::Closing::sent(
+                sessions,
+                self.id,
+                self.revision,
+                path,
+            ));
+            self.closed = true;
+            return;
+        }
+        self.under.push(Under::Close(sessions.close(&self.id)));
+    }
+
+    /// The picture asked as it closed, if one was, for the app's thumbnails to take.
+    pub(crate) fn take_closing_picture(&mut self) -> Option<crate::thumbs::Closing> {
+        self.closing_picture.take()
+    }
+
     /// Close, its edits saved or dropped first (`close` is refused inside a transaction,
     /// decision 22); any waiting dropped.
     pub fn close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
@@ -5208,7 +5244,7 @@ impl Tab {
             return;
         }
         self.edits.queue.clear();
-        self.under.push(Under::Close(sessions.close(&self.id)));
+        self.send_close(sessions);
     }
 
     /// Undo or redo one edit of the transaction, once the edits made before it have

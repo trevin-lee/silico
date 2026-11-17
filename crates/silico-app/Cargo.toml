@@ -31,6 +31,10 @@ silico-render.workspace = true
 rfd.workspace = true
 # Where the list of recent documents is kept: the platform's app-data folder (`recent`).
 directories.workspace = true
+# The start page's thumbnails: each kept by the SHA-256 of its document's bytes, and decoded
+# from the render's PNG (`thumbs`).
+sha2.workspace = true
+png.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
