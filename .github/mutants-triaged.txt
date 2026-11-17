@@ -758,3 +758,11 @@ crates/silico-app/src/toolbar.rs | forget_planes_drawn | replace forget_planes_d
 crates/silico-app/src/search.rs | place | replace * with / | #528
 crates/silico-app/src/search.rs | boxed | replace - with + | #528
 crates/silico-app/src/search.rs | boxed | replace - with / | #528
+# Equivalent (#535). `DocumentKeys::any` as `true`: it only decides whether an empty set of
+# document keys is kept for after the canvas (`later`) or acted on at once (`now`), and
+# acting on a set with every key false does nothing (each key's action is behind its own
+# flag). `after_release`'s `press > release` as `>=`: both are indexes into the same frame's
+# events, and a key press and a pointer release are never the same event, so they're never
+# equal.
+crates/silico-app/src/app.rs | DocumentKeys::any | replace DocumentKeys::any -> bool with true | #535
+crates/silico-app/src/shortcuts.rs | after_release | replace > with >= | #535
