@@ -1645,15 +1645,17 @@ fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
         if !fc.before.malformed.is_empty() || !fc.before.conflicting.is_empty() {
             v.problem = true;
             v.how.push(format!(
-                "FreeCAD's model of the sketch, before the edit, has malformed constraints {:?} and conflicting {:?}",
-                fc.before.malformed, fc.before.conflicting
+                "FreeCAD's model of the sketch, before the edit, has malformed constraints {} and conflicting {}",
+                details.say(|| format!("{:?}", fc.before.malformed)),
+                details.say(|| format!("{:?}", fc.before.conflicting))
             ));
         }
     }
     if let Some(Theirs::Harness(why)) = theirs {
         v.problem = true;
         v.how.push(format!(
-            "the harness's FreeCAD side failed, not FreeCAD's edit: {why}"
+            "the harness's FreeCAD side failed, not FreeCAD's edit: {}",
+            details.say(|| why.clone())
         ));
         return finish(v);
     }
@@ -1669,14 +1671,28 @@ fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
     // FreeCAD's refusal, if it refused: its edit raised, its plan refuses, or (a merge) its
     // Coincident command would refuse what the edit made. A crash or hang is none of these:
     // it's its own outcome, compared on its own.
+    // A difference in what kind of outcome the two gave, keyed by Silico's alone: whatever
+    // FreeCAD's outcome, raised, crashed, made, or refused otherwise, it isn't Silico's.
+    let apart = |full: String| {
+        details.key(
+            || full,
+            || {
+                format!(
+                    "FreeCAD's outcome isn't one the note gives beside Silico's: {}",
+                    silico_outcome(p)
+                )
+            },
+        )
+    };
     let fc_refusal: Option<String> = match (theirs, &p.plan) {
         (Some(Theirs::Lost(why)), _) => return lost(p, v, why, details),
         (_, Plan::Refuses(why)) => Some(why.clone()),
         (Some(Theirs::Failed(why)), _) => Some(format!("its edit raised: {why}")),
         (Some(Theirs::Edited(fc)), _) => merge_refusal(p, fc),
         (Some(Theirs::Harness(_)), _) | (None, Plan::Run { .. }) => {
-            v.how
-                .push("FreeCAD was run on it and gave no outcome".to_owned());
+            v.how.push(apart(
+                "FreeCAD was run on it and gave no outcome".to_owned(),
+            ));
             return finish(v);
         }
     };
@@ -1722,35 +1738,33 @@ fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
                     Some(Pinned::Crashes | Pinned::Edits) => false,
                 };
                 match r.pinned() {
-                    Some(pinned) if !agrees => v.how.push(format!(
-                        "both refused, but the note has FreeCAD {} ({NOTE}{}): Silico's refusal ({ours}); FreeCAD's: {}",
+                    Some(pinned) if !agrees => v.how.push(apart(format!(
+                        "both refused, but the note has FreeCAD {} ({NOTE}{}): Silico's refusal ({ours}); FreeCAD's: {theirs_why}",
                         pinned.does(),
                         cited(&r.lines()),
-                        details.say(|| theirs_why.clone())
-                    )),
+                    ))),
                     _ => {
                         v.refused = true;
                         v.modulo.extend(r.lines().into_iter().map(String::from));
                     }
                 }
             }
-            None => v.how.push(format!(
-                "both refused, but Silico's refusal isn't one the note gives ({ours}); FreeCAD's: {}",
-                details.say(|| theirs_why.clone())
-            )),
+            None => v.how.push(apart(format!(
+                "both refused, but Silico's refusal isn't one the note gives ({ours}); FreeCAD's: {theirs_why}"
+            ))),
         },
         (Some(ours), None) => {
             let Some(Theirs::Edited(fc)) = theirs else {
                 v.how
-                    .push(format!("Silico refused ({ours}); FreeCAD gave nothing"));
+                    .push(apart(format!("Silico refused ({ours}); FreeCAD gave nothing")));
                 return finish(v);
             };
             match rule(p).and_then(|r| excused(p, &r, fc)) {
                 Some(excuse) => v.excused.push(excuse),
-                None => v.how.push(format!(
+                None => v.how.push(apart(format!(
                     "Silico refused ({ours}); FreeCAD made the edit ({})",
-                    details.say(|| summary(fc))
-                )),
+                    summary(fc)
+                ))),
             }
         }
         (None, Some(theirs_why)) => {
@@ -1761,10 +1775,9 @@ fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
                 v.excused.push(excuse);
                 v.modulo.extend(["se-the-first-point-the-request-names", "se-so-does-any-refusal-of-the"].map(String::from));
             } else {
-                v.how.push(format!(
-                    "FreeCAD refused ({}); Silico made the edit",
-                    details.say(|| theirs_why.clone())
-                ));
+                v.how.push(apart(format!(
+                    "FreeCAD refused ({theirs_why}); Silico made the edit"
+                )));
             }
         }
         (None, None) => {
@@ -1857,9 +1870,11 @@ fn lost(p: &Prepared, mut v: Verdict, why: &str, details: Details) -> Verdict {
                 },
                 SilicoSide::Gated(_) => "Silico's result is gated".to_owned(),
             };
-            v.how.push(format!(
-                "FreeCAD crashed or hung ({}), its own outcome, never a refusal, which the note gives only for a split of a point ({NOTE}#se-split-index-refusals); {silico}",
-                details.say(|| why.to_owned())
+            v.how.push(details.key(
+                || format!(
+                    "FreeCAD crashed or hung ({why}), its own outcome, never a refusal, which the note gives only for a split of a point ({NOTE}#se-split-index-refusals); {silico}"
+                ),
+                || format!("FreeCAD's outcome isn't one the note gives beside Silico's: {}", silico_outcome(p)),
             ));
         }
     }
@@ -1889,6 +1904,18 @@ pub fn note_line(anchor: &str) -> Option<usize> {
         .lines()
         .position(|l| l.contains(&tag))
         .map(|i| i + 1)
+}
+
+/// Silico's outcome of `p`, as a difference in the kind of outcome is keyed by it
+/// ([`Details::Keyed`]).
+fn silico_outcome(p: &Prepared) -> String {
+    match &p.silico {
+        SilicoSide::Gated(_) => "Silico's result is gated".to_owned(),
+        _ => silico_refused(p).map_or_else(
+            || "Silico made the edit".to_owned(),
+            |why| format!("Silico refused ({why})"),
+        ),
+    }
 }
 
 fn finish(mut v: Verdict) -> Verdict {
@@ -4544,7 +4571,7 @@ fn compare_edited(
         let Some(m) = by_id.get(&g.id) else {
             how.push(format!(
                 "FreeCAD has a {} ({}) that Silico hasn't",
-                g.kind,
+                details.say(|| g.kind.clone()),
                 details.say(|| format!("{:?}", g.points))
             ));
             continue;
@@ -4556,7 +4583,8 @@ fn compare_edited(
                 if member.kind != g.kind {
                     how.push(format!(
                         "Silico's {m} is a {}, FreeCAD's a {}",
-                        member.kind, g.kind
+                        member.kind,
+                        details.say(|| g.kind.clone())
                     ));
                 }
                 let piece = split_circle
@@ -4570,7 +4598,7 @@ fn compare_edited(
                     how.push(format!(
                         "Silico's {m} is {}construction, FreeCAD's {}",
                         if member.construction { "" } else { "not " },
-                        if g.construction { "is" } else { "isn't" }
+                        details.say(|| if g.construction { "is" } else { "isn't" }.to_owned())
                     ));
                 }
             }
@@ -4578,7 +4606,7 @@ fn compare_edited(
             None if g.kind == "point" && after.points.contains_key(m) => {}
             None => how.push(format!(
                 "FreeCAD keeps {} {m} (geometry {}), which Silico's edit removed",
-                g.kind,
+                details.say(|| g.kind.clone()),
                 details.say(|| i.to_string())
             )),
         }
@@ -4626,7 +4654,7 @@ fn compare_edited(
             let places: Vec<String> = group.iter().map(|&pl| describe(pl)).collect();
             how.push(format!(
                 "FreeCAD joins {}, which are Silico's points {} apart ({NOTE}#se-share-a-point)",
-                places.join(", "),
+                details.say(|| places.join(", ")),
                 points.into_iter().collect::<Vec<_>>().join(", ")
             ));
         }
@@ -4649,7 +4677,7 @@ fn compare_edited(
                 .collect();
             how.push(format!(
                 "Silico's point {point} is one point, which FreeCAD has apart: {} ({NOTE}#se-share-a-point)",
-                split.join(" ")
+                details.say(|| split.join(" "))
             ));
         }
     }
@@ -4760,7 +4788,7 @@ fn compare_edited(
                     {
                         how.push(format!(
                             "after the edit, before the solve, FreeCAD's {} is at {}, not where the case drew it, {:?}, as its setRange leaves the neighbour's end (#se-a-line-s-end-goes-through)",
-                            describe((gi, pos)),
+                            details.say(|| describe((gi, pos))),
                             details.say(|| format!("{:?}", shown(*at))),
                             shown(*drawn)
                         ));
@@ -4774,7 +4802,7 @@ fn compare_edited(
                     how.push(format!(
                         "after the edit, before the solve, Silico's point {point} is at {:?}, FreeCAD's {} at {}",
                         shown(*ours),
-                        describe((gi, pos)),
+                        details.say(|| describe((gi, pos))),
                         details.say(|| format!("{:?}", shown(*at)))
                     ));
                 }
@@ -4891,7 +4919,10 @@ fn compare_edited(
             } else {
                 format!(" (from {name})")
             };
-            how.push(format!("FreeCAD has {k}{named}, Silico hasn't"));
+            how.push(format!(
+                "FreeCAD has {}, Silico hasn't",
+                details.say(|| format!("{k}{named}"))
+            ));
         }
     }
     // The solve, by the sketch oracle's rules, FreeCAD's results in the model's terms.
@@ -4920,7 +4951,9 @@ fn compare_edited(
             {
                 let k = key(&c.kind, &c.refs, c.driving, &fc_name_place);
                 how.push(format!(
-                    "FreeCAD finds its {k}, which Silico hasn't, {name}"
+                    "FreeCAD finds its {}, which Silico hasn't, {}",
+                    details.say(|| k.to_string()),
+                    details.say(|| name.to_owned())
                 ));
             }
         }

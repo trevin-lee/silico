@@ -598,9 +598,14 @@ pub enum Details {
 impl Details {
     /// `detail` as a line with these details says it.
     pub fn say(self, detail: impl FnOnce() -> String) -> String {
+        self.key(detail, || "...".to_owned())
+    }
+
+    /// A whole line as these details say it: `full`, or its `keyed` form.
+    pub fn key(self, full: impl FnOnce() -> String, keyed: impl FnOnce() -> String) -> String {
         match self {
-            Details::Full => detail(),
-            Details::Keyed => "...".to_owned(),
+            Details::Full => full(),
+            Details::Keyed => keyed(),
         }
     }
 }
@@ -664,8 +669,8 @@ pub fn compare_outcomes_apart(
     }
     if !theirs.malformed.is_empty() {
         how.push(format!(
-            "FreeCAD found constraints malformed: {:?}",
-            ids(&theirs.malformed)
+            "FreeCAD found constraints malformed: {}",
+            details.say(|| format!("{:?}", ids(&theirs.malformed)))
         ));
     }
     // How each ended. FreeCAD refuses a sketch with redundant constraints: as redundant (−2)
@@ -690,7 +695,8 @@ pub fn compare_outcomes_apart(
         (-3 | -4, Err(e)) if code(e) == ErrorCode::OverConstrained => {}
         (-1, Err(e)) if matches!(code(e), ErrorCode::SolveFailed | ErrorCode::InvalidResult) => {}
         (code, outcome) => how.push(format!(
-            "FreeCAD's solve gave {code} ({}), Silico's {}",
+            "FreeCAD's solve gave {} ({}), Silico's {}",
+            details.say(|| code.to_string()),
             details.say(|| format!(
                 "degrees of freedom {}, values {:?}",
                 theirs.dof, theirs.values

@@ -5,8 +5,9 @@
 //! each alone in a FreeCAD of its own, and judged again against every run
 //! ([`rejudge`]). Where FreeCAD's runs agree (their numbers within [`REPRODUCED`] of the first
 //! run's), the case is compared as it was. Where they disagree, a difference is still reported
-//! wherever every run gives it, read without FreeCAD's side of it (where it put a point, its
-//! degrees of freedom, how it worded a refusal): a difference is left uncompared only where
+//! wherever every run gives it, read with Silico's side and the line's kind alone (FreeCAD's
+//! content, its places, kinds, names, values, counts, and the kind of outcome it gave, left
+//! out, [`Details::Keyed`]): a difference is left uncompared only where
 //! some run of FreeCAD agrees with Silico there, within the comparison's own tolerance, and
 //! it's listed with what of FreeCAD's answer varied. A difference of Silico's in what FreeCAD
 //! reproduced is never left out, nor one from where every run of FreeCAD is.
