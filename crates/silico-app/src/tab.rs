@@ -4777,20 +4777,11 @@ impl Tab {
                     asked_at,
                 } => {
                     let state = self.state_of(self.revision);
-                    // Sketch mode's floor read as it comes up from the mode it was asked in,
-                    // if that's still open, else as the step carries it: Create Sketch's
-                    // floor, the state its add came to, is known only once that add has
-                    // answered, which the undo may have waited for, and which writes it into
-                    // the step too, for a Finish or a Cancel that closed the mode meanwhile
-                    // (#549's review).
-                    let floor = self
-                        .sketch
-                        .as_ref()
-                        .filter(|mode| Some(mode.serial) == sketch)
-                        .and_then(|mode| mode.undo_floor.or(mode.opened_at))
-                        .or(floor);
                     // Come up with nothing to step, nothing before it under way: sketch
-                    // mode's undo with the session at its floor already (one queued behind
+                    // mode's undo with the session at its floor already (`floor`, as asked, or
+                    // Create Sketch's, the state its add came to, which that add, answered
+                    // after the undo was asked, wrote into it: [`Under::AddSketch`]'s answer,
+                    // whether or not sketch mode is still open; one queued behind
                     // another that got there, or behind a change that left it there, Create
                     // Sketch's add among them: never past it); no transaction open (it
                     // waited behind a first edit whose refusal rolled back the transaction
