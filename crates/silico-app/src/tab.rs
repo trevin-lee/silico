@@ -4759,18 +4759,37 @@ impl Tab {
                     sketch,
                 } => {
                     let state = self.state_of(self.revision);
-                    // Sketch mode's undo, come up with the session at its floor already (one
-                    // queued behind another that got there, or behind a change that left it
-                    // there): dropped, never past it.
-                    if undo && floor.is_some_and(|floor| self.state_of(floor) == state) {
-                        continue;
-                    }
-                    // Come up with no transaction open (it waited behind a first edit whose
-                    // refusal rolled back the transaction begun for it, or behind a save):
-                    // nothing before it under way and nothing to step, so said, as the
-                    // prototype's `undo` says it, and nothing sent (`undo` and `redo` are
-                    // refused outside a transaction).
-                    if !self.transaction {
+                    // Sketch mode's floor read as it comes up from the mode it was asked in,
+                    // if that's still open, never only as it was at the press: Create Sketch's
+                    // floor, the state its add came to, is known only once that add has
+                    // answered, which the undo may have waited for (#549's review).
+                    let floor = self
+                        .sketch
+                        .as_ref()
+                        .filter(|mode| Some(mode.serial) == sketch)
+                        .and_then(|mode| mode.undo_floor.or(mode.opened_at))
+                        .or(floor);
+                    // Come up with nothing to step, nothing before it under way: sketch
+                    // mode's undo with the session at its floor already (one queued behind
+                    // another that got there, or behind a change that left it there, Create
+                    // Sketch's add among them: never past it); no transaction open (it
+                    // waited behind a first edit whose refusal rolled back the transaction
+                    // begun for it, or behind a save: `undo` and `redo` are refused outside
+                    // one); or none to step as the status of the tab's revision counts them
+                    // (it waited behind a first move, suppression, or deletion the core
+                    // refused, which leaves its transaction open and empty). Said, as the
+                    // prototype's `undo` says it, and nothing sent, so the core's refusal
+                    // never takes the place of what the change's refusal said.
+                    let at_floor = undo && floor.is_some_and(|floor| self.state_of(floor) == state);
+                    let none_counted = self.synced()
+                        && self.transaction().is_none_or(|transaction| {
+                            if undo {
+                                transaction.undo == 0
+                            } else {
+                                transaction.redo == 0
+                            }
+                        });
+                    if at_floor || !self.transaction || none_counted {
                         self.toasts.push(Toast::info(if undo {
                             NOTHING_TO_UNDO
                         } else {
@@ -15013,6 +15032,31 @@ mod tests {
 
     #[test]
     fn a_refused_undo_in_sketch_mode_gives_its_redo_nothing_to_give_back() {
+        // An undo in sketch mode the core refuses (#351): sent against a revision the session
+        // isn't at, a transaction open with an edit in it to undo, so the stale revision alone
+        // refuses it. Said; none of the mode's own edits undone, so none for its Redo.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
+        tab.sketch = Some(SketchMode::new(3, None));
+        tab.message = None;
+        tab.under.push(Under::Step {
+            running: sessions.undo(&tab.id, rev(99), None),
+            undo: true,
+            sketch: Some(3),
+            offered: false,
+            lands: Lands::Nothing,
+            said: None,
+        });
+        taken_until(&mut tab, &sessions, |tab| !tab.stepping());
+        assert!(tab.message.is_some(), "the undo wasn't refused");
+        assert_eq!(tab.sketch.as_ref().map(|mode| mode.undone), Some(0));
+        assert!(!tab.redoable());
+    }
+
+    #[test]
+    fn an_undo_asked_in_sketch_mode_with_no_transaction_open_says_so_and_sends_nothing() {
         // An undo in sketch mode with nothing to undo (no transaction is open): said, and
         // never sent, as the core refuses `undo` outside a transaction (#544: an undo that
         // waited behind a first edit the core refused comes up so); none of the mode's own
@@ -15029,6 +15073,91 @@ mod tests {
             [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)]
         );
         assert_eq!(tab.sketch.as_ref().map(|mode| mode.undone), Some(0));
+    }
+
+    #[test]
+    fn undo_asked_as_create_sketchs_add_is_sent_never_undoes_the_sketch() {
+        // #549's review: Create Sketch, then Undo before its add answers, with no transaction
+        // open and with one open (a rename before it). The undo waits for the add, and comes
+        // up at sketch mode's floor, the state the add came to, known only once it answered:
+        // nothing undone, said so; the sketch and sketch mode stay.
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        for open in [false, true] {
+            let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+            });
+            if open {
+                tab.rename(&sessions, pin.clone(), "PinA");
+                polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
+            }
+            assert_eq!(tab.transaction, open);
+            tab.take_toasts();
+            let from = tab.sent.len();
+            tab.create_sketch(&sessions, silico_core::document::OriginPlane::Xy);
+            assert!(tab.undoable(), "{open}");
+            tab.step(&sessions, true);
+            polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
+            let sent = &tab.sent[from..];
+            assert!(sent.contains(&Sent::Add), "{open}: {sent:?}");
+            assert!(
+                !sent.iter().any(|sent| matches!(sent, Sent::Undo(_))),
+                "{open}: {sent:?}"
+            );
+            let mode = tab.sketch.as_ref().expect("sketch mode left");
+            let sketch = mode.sketch.clone().expect("no sketch added");
+            let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
+            assert!(
+                text.contains(sketch.as_str()),
+                "{open}: the sketch is gone: {text}"
+            );
+            assert_eq!(
+                toasts_said(tab.take_toasts()),
+                [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)],
+                "{open}"
+            );
+        }
+    }
+
+    #[test]
+    fn undo_asked_behind_a_refused_first_move_suppression_or_deletion_says_nothing_to_undo() {
+        // #549's review: no transaction open; a move, a suppression, or a deletion of a
+        // feature the document doesn't hold, then Undo before any answer: it waits behind the
+        // change. The core refuses the change, which leaves the transaction begun for it open
+        // and empty: the undo comes up with nothing to undo as the status counts it, said so
+        // and never sent, so the change's refusal stays said.
+        let ghost = FeatureId::new("q9999999").unwrap();
+        for which in ["move", "suppress", "remove"] {
+            let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+            });
+            assert!(!tab.transaction);
+            let from = tab.sent.len();
+            match which {
+                "move" => tab.move_feature(&sessions, ghost.clone(), None),
+                "suppress" => tab.suppress_feature(&sessions, ghost.clone(), true),
+                _ => tab.remove_feature(&sessions, ghost.clone()),
+            }
+            assert!(tab.undoable(), "{which}");
+            tab.step(&sessions, true);
+            polled_until(&mut tab, &sessions, Tab::quiet);
+            let said = tab.message.clone().unwrap_or_default();
+            assert!(said.contains("q9999999"), "{which}: {said:?}");
+            let sent = &tab.sent[from..];
+            assert_eq!(sent.first(), Some(&Sent::Begin), "{which}: {sent:?}");
+            assert_eq!(sent.len(), 2, "{which}: {sent:?}");
+            assert!(
+                !sent.iter().any(|sent| matches!(sent, Sent::Undo(_))),
+                "{which}: {sent:?}"
+            );
+            assert!(tab.transaction, "{which}");
+            assert_eq!(
+                toasts_said(tab.take_toasts()),
+                [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)],
+                "{which}"
+            );
+        }
     }
 
     #[test]
