@@ -74,9 +74,10 @@ permissions:
   actions: write
   contents: read
 
-# One decision at a time.
+# One decision at a time. A workflow_run of a fork's run (skipped, below) is a group of its
+# own, so it never displaces the decision waiting its turn.
 concurrency:
-  group: filler
+  group: filler${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name != github.repository && '-fork' || '' }}
 
 jobs:
   fill:
@@ -88,7 +89,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, control]
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           sparse-checkout: .github
       - name: Fill
@@ -127,9 +128,12 @@ jobs:
           # If no clock run is queued, running, or waiting its turn, the chain was lost: start
           # it again (this runs whenever a real run ends, so that's soon after).
           # Best effort: a clock disabled on purpose, or GitHub not answering, mustn't stop the
-          # filler deciding (a failed look counts as the clock running).
-          clock=$(gh run list --workflow filler-clock.yml --limit 10 --json status \
-            --jq '[.[] | select(.status != "completed")] | length') || clock=1
+          # filler deciding (a failed look counts as the clock running). Only runs its schedule
+          # or a dispatch started: a fork's pull request runs its own copy of the clock, under
+          # its name.
+          clock=$(gh run list --workflow filler-clock.yml --limit 10 --json status,event \
+            --jq '[.[] | select(.status != "completed" and (.event == "schedule" or .event == "workflow_dispatch"))]
+              | length') || clock=1
           if [ "$clock" -eq 0 ]; then
             if [ "$DRY" = true ]; then
               report "The clock isn't running (dry: not started)"
@@ -260,9 +264,11 @@ jobs:
           # The latest filler run on this branch whose title matches $1, captured as x. Every
           # run started counts, going or finished (cut off or cancelled too): so two filler
           # runs going at once never take the same work, and no slice or range is tried
-          # forever (what a cut-off run didn't reach, later turns of the rotation do).
+          # forever (what a cut-off run didn't reach, later turns of the rotation do). Only
+          # dispatched runs, as this starts them: a fork's pull request's run of its own copy
+          # of mutants.yml, on a branch it calls main, can be titled as it likes.
           last() {
-            gh run list --workflow mutants.yml --branch "$BRANCH" --limit 300 \
+            gh run list --workflow mutants.yml --branch "$BRANCH" --event workflow_dispatch --limit 300 \
               --json displayTitle --jq "[.[].displayTitle | capture(\"$1\").x][0] // empty"
           }
           head=$(gh api "repos/$GH_REPO/commits/main" --jq .sha)
