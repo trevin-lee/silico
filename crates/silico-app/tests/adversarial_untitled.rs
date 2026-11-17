@@ -23,8 +23,8 @@ use silico_core::command::{SessionId, Sessions};
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use tempfile::TempDir;
 use ui::{
-    A_BOX, FakeBrowser, answer_question, anywhere, begin_sketch_on, close_window, new_part,
-    stand_in_sessions, step, step_until, tab_named, window_told,
+    A_BOX, FakeBrowser, answer_question, anywhere, apply_look, begin_sketch_on, close_window,
+    new_part, stand_in_sessions, step, step_until, tab_named, window_told,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -53,7 +53,7 @@ impl Fixture {
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
         // The app's look, as main.rs gives it: its fonts above all.
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 }

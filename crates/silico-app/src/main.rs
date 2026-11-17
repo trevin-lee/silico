@@ -13,6 +13,7 @@ use silico_app::pane_widths::KeptLayout;
 use silico_app::recent::Recents;
 use silico_app::start::Warm;
 use silico_app::theme;
+use silico_app::thumbs::Thumbs;
 use silico_core::command::Sessions;
 
 fn main() -> ExitCode {
@@ -61,9 +62,10 @@ fn main() -> ExitCode {
         tracing::warn!("the workers can't be warmed ahead of the first rebuild: {e}");
         warm.cold();
     }
-    // Read off the UI thread, from the platform's app-data folder: the recent documents, and
-    // the side panes' widths beside them.
+    // Read off the UI thread, from the platform's app-data folder: the recent documents, their
+    // thumbnails, and the side panes' widths beside them.
     let recents = Recents::default_file().map(Recents::at);
+    let thumbs = Thumbs::default_folder().map(Thumbs::at);
     let widths = KeptLayout::default_file().map(KeptLayout::at);
     let silico = silico_beside();
     let ran = eframe::run_native(
@@ -78,6 +80,10 @@ fn main() -> ExitCode {
                 .serving_with(silico);
             let app = match recents {
                 Some(recents) => app.remembering(recents),
+                None => app,
+            };
+            let app = match thumbs {
+                Some(thumbs) => app.thumbnailing(thumbs),
                 None => app,
             };
             let app = match widths {

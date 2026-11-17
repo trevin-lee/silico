@@ -27,8 +27,8 @@ use silico_core::disk::Clock;
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use tempfile::TempDir;
 use ui::{
-    EXAMPLE, SKETCHED_EXAMPLE, in_status_bar, plain_read, redo_by_key, settled, stand_in_sessions,
-    step, step_until, tooltip, tooltip_title, type_name, undo_by_key,
+    EXAMPLE, SKETCHED_EXAMPLE, apply_look, in_status_bar, plain_read, redo_by_key, settled,
+    stand_in_sessions, step, step_until, tooltip, tooltip_title, type_name, undo_by_key,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -65,7 +65,7 @@ impl Fixture {
         let mut h = Harness::builder()
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h.state_mut().open(path.to_str().unwrap(), false);
         step_until(&mut h, "the timeline read", |h| {
             h.state()

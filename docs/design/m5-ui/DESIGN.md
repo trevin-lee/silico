@@ -152,11 +152,11 @@ All colours are re_ui 0.38.1 dark-theme values (resolved through `color_table.ro
 | Shortcut sheet | `egui::Modal` with a `TextEdit` filter and three `columns` |
 | Command search | An `Area` anchored top centre with a `TextEdit` and a list; arrows/Enter via `ctx.input` |
 | Tooltips | `on_hover_ui` with a title, key caps, one-line description (egui's 0.5 s delay) |
-| Toasts | An `Area` anchored bottom-right of the canvas, faded by `ctx.animate_value_with_time` |
+| Toasts | An `Area` anchored bottom-right of the canvas, faded by `ctx.animate_value_with_time` (*as built*: each shown whole at once and faded out over the last egui `animation_time` of its time, by its own age, `crate::toast`) |
 | Key caps | Painted `Frame`s (Gray.250 fill, Gray.350 stroke, 3 radius); `Modifiers::COMMAND` renders ⌘ on macOS and Ctrl elsewhere |
 | Focus | egui's focus ring set to Blue.525 1 px plus a 2 px halo (`focus_halo_stroke`), focus order left to right, top to bottom: app bar, toolbar, browser, canvas, properties, timeline, status |
 
-Nothing uses blur, gradients, or animation beyond a 200 ms view transition (egui `animate_value`), the step spinner, and toasts; `prefers-reduced-motion` turns the transitions off.
+Nothing uses blur, gradients, or animation beyond a 200 ms view transition (egui `animate_value`; *as built*, eased by the prototype's quadratic in-out on egui's clock, `crate::transition`, as `animate_value` eases one number linearly), the step spinner, and toasts; `prefers-reduced-motion` turns the transitions off (*as built*: egui's `animation_time` at 0 does, the app having no such setting yet).
 
 ## Keyboard
 

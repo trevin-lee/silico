@@ -583,10 +583,16 @@ pub const BOX_SELECT_CROSSING_DASH: [f32; 2] = [4.0, 3.0];
 /// bottom-right of the canvas): Gray.200 inside a Gray.250 border, `--r`'s corners, a menu's
 /// shadow (`0 6px 18px`, black at 60%), padded 7 over and under, 10 at the left and 8 at the
 /// right, at most 420 wide, its text as the body's; 12 in from the canvas's right and 58 up
-/// from its foot; shown for 3.8 seconds (app.js's `toast`).
+/// from its foot; shown for 3.8 seconds (app.js's `toast`). Several stack in a column, 6
+/// apart, the newest last (`#toasts`' `gap: 6px`); each has its icon at the left, 8 from its
+/// words (`.toast`'s `gap: 8px`), in the words' colour (`svg.i`'s `currentColor`). Its 420
+/// counts its border and padding (`box-sizing: border-box`).
 pub const TOAST_BG: Color32 = GRAY_200;
 pub const TOAST_BORDER: Color32 = GRAY_250;
 pub const TOAST_TEXT: Color32 = TEXT_DEFAULT;
+pub const TOAST_ICON: Color32 = TOAST_TEXT;
+pub const TOAST_GAP: f32 = 6.0;
+pub const TOAST_ICON_GAP: f32 = 8.0;
 pub const TOAST_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
 pub const TOAST_SHADOW: Shadow = Shadow {
     offset: [0, 6],
@@ -748,6 +754,13 @@ pub const TOOLTIP_SHADOW: Shadow = Shadow {
     spread: 0,
     color: with_alpha(GRAY_0, 153),
 };
+
+/// How long a view transition takes, in seconds (DESIGN.md's *egui mapping*: "a 200 ms view
+/// transition"; the prototype's `animateTo` takes 220 ms by default, DESIGN.md the 200):
+/// Home, Fit, a named view, a ViewCube click, and Look At ease to their view over it
+/// (`crate::transition`). The app's own, not egui's `animation_time`, which only says
+/// whether the view moves at all (0: it jumps).
+pub const VIEW_TRANSITION_SECONDS: f64 = 0.2;
 
 /// The ViewCube's side, and its margin from the canvas's top and right (the prototype's
 /// viewport.js:101, `CUBE` and `CUBE_M`).
@@ -2896,6 +2909,8 @@ mod tests {
         // viewport.js:101: `CUBE = 92, CUBE_M = 16`.
         assert_eq!(VIEW_CUBE_SIDE, 92.0);
         assert_eq!(VIEW_CUBE_MARGIN, 16.0);
+        // DESIGN.md's *egui mapping*: "a 200 ms view transition".
+        assert_eq!(VIEW_TRANSITION_SECONDS, 0.2);
         // `.nav-bar`: 12 from the bottom; `.nav-bar .ab-btn` 24 high, 3 of padding, and a
         // 1 border. Across: five buttons of `min-width: 26px`, the display menu's two 14
         // icons, 4 apart, in 5 of padding at each side, the grid's 26, the separator's 1

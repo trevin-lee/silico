@@ -32,8 +32,10 @@ use crate::sheet::{self, Sheet};
 use crate::shortcuts::{self, Command};
 use crate::sketch::{self, bar::BarAction};
 use crate::start::{self, Warm};
-use crate::tab::{DiskChoice, Tab, TimelineStep, said};
+use crate::tab::{DiskChoice, StoppedAt, Tab, TimelineStep, said};
 use crate::theme::{self, FieldKind};
+use crate::thumbs::Thumbs;
+use crate::toast::{Toast, Toasts};
 use crate::toolbar;
 
 /// How long past [`DISK_CHECK_INTERVAL`] the idle frame comes: a comparison is due once the
@@ -54,6 +56,18 @@ pub const FILTERS_SAID: &str =
 /// What Reload says with a feature dialog open (⌘R, Ctrl+R elsewhere): as Rebuild everything
 /// does nothing in a dialog, the dialog's OK or Cancel comes first.
 pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload drops what it holds.";
+
+/// What the toast says once a stop the person asked for has stopped the rebuild (the
+/// prototype's `stopRebuild`): how far it got, as `status` counts the plan's steps, if it
+/// says, and the key that starts it again, `keys` (Rebuild's, `Ctrl+B`, `⌘B` on macOS).
+pub fn stopped_words(at: StoppedAt, keys: &str) -> String {
+    match at {
+        StoppedAt::Step { done, steps } => {
+            format!("Rebuild stopped at step {done} of {steps}. Rebuild ({keys}) resumes it.")
+        }
+        StoppedAt::Uncounted => format!("Rebuild stopped. Rebuild ({keys}) resumes it."),
+    }
+}
 
 /// The selection filters' keys pressed this frame, X, E, and V (`crate::shortcuts`), each
 /// taken and its kind given, in that order; none taken while a sketch is open (`in_sketch`),
@@ -129,38 +143,6 @@ fn timeline_steps(ui: &mut Ui) -> Vec<TimelineStep> {
         });
         steps
     })
-}
-
-/// The toast's layer: of the order under the modals ([`modal::UNDER_MODALS`]).
-fn toast_layer() -> egui::LayerId {
-    egui::LayerId::new(modal::UNDER_MODALS, egui::Id::new("toast"))
-}
-
-/// A toast saying `text` over `canvas`'s bottom right (the prototype's `.toast`): drawn in
-/// its own area, above the panes and under any modal ([`modal::UNDER_MODALS`]; the
-/// prototype's `#toasts`, z 650, under `.backdrop`, 700), so one asked while a modal is open
-/// is drawn at once under it, dimmed, its time running; taking no input. SEAM: the
-/// prototype's info icon and its fade, which the UI port adds.
-fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
-    let corner =
-        canvas.right_bottom() - egui::vec2(theme::TOAST_MARGIN_RIGHT, theme::TOAST_MARGIN_BOTTOM);
-    egui::Area::new(toast_layer().id)
-        .order(modal::UNDER_MODALS)
-        .pivot(egui::Align2::RIGHT_BOTTOM)
-        .fixed_pos(corner)
-        .interactable(false)
-        .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(theme::TOAST_BG)
-                .stroke(egui::Stroke::new(theme::BORDER_WIDTH, theme::TOAST_BORDER))
-                .corner_radius(theme::TOAST_CORNER_RADIUS)
-                .shadow(theme::TOAST_SHADOW)
-                .inner_margin(theme::TOAST_PADDING)
-                .show(ui, |ui| {
-                    ui.set_max_width(theme::TOAST_MAX_WIDTH);
-                    ui.label(egui::RichText::new(text).color(theme::TOAST_TEXT));
-                });
-        });
 }
 
 /// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
@@ -535,6 +517,11 @@ pub struct App<P: Clients + 'static> {
     tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
+    /// The start page's thumbnails, if the app keeps them.
+    thumbs: Option<Thumbs>,
+    /// Opens asked of documents whose sessions the thumbnails are still closing (their tabs
+    /// gone), each path with `create`: sent once that close has answered.
+    held_opens: Vec<(String, bool)>,
     /// The side panes' widths, as dragged, and where they're kept, if anywhere.
     columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
@@ -549,9 +536,10 @@ pub struct App<P: Clients + 'static> {
     ///
     /// [`Pickable::new`]: silico_render::render::Pickable::new
     boxing: Option<crate::boxes::Build>,
-    /// The toast shown over the canvas's bottom right (DESIGN.md's *Toasts*), and when it
-    /// was shown, by egui's clock: F5's word on where the filters are, or a box's.
-    toast: Option<(String, f64)>,
+    /// The toasts shown over the canvas's bottom right (DESIGN.md's *Toasts*), each with
+    /// when it was shown, by egui's clock: F5's word on where the filters are, a box's, an
+    /// undo's, a save's, a stop's.
+    toasts: Toasts,
 }
 
 /// A row of Show changes' "Their change (on disk)": the changed feature's name in the key
@@ -649,12 +637,14 @@ impl<P: Clients + 'static> App<P> {
             home: false,
             tab_in_view: None,
             recents: None,
+            thumbs: None,
+            held_opens: Vec::new(),
             columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
             documents: directories::UserDirs::new()
                 .and_then(|dirs| dirs.document_dir().map(std::path::Path::to_path_buf)),
-            toast: None,
+            toasts: Toasts::default(),
             boxing: None,
         }
     }
@@ -680,6 +670,19 @@ impl<P: Clients + 'static> App<P> {
     pub fn remembering(mut self, recents: Recents) -> Self {
         self.recents = Some(recents);
         self
+    }
+
+    /// The app, drawing a thumbnail of each document for its start page's Recent as its tab
+    /// closes and as the start page is shown over it (`crate::thumbs`), kept by `thumbs`.
+    #[must_use]
+    pub fn thumbnailing(mut self, thumbs: Thumbs) -> Self {
+        self.thumbs = Some(thumbs);
+        self
+    }
+
+    /// The start page's thumbnails, if the app keeps them.
+    pub fn thumbs(&self) -> Option<&Thumbs> {
+        self.thumbs.as_ref()
     }
 
     /// The app, laying its side panes out as `layout` keeps them (their widths, and whether
@@ -873,8 +876,19 @@ impl<P: Clients + 'static> App<P> {
         &mut self.tabs
     }
 
-    /// Opens the document at `path`, as the Open dialog does: a tab once it has opened.
+    /// Opens the document at `path`, as the Open dialog does: a tab once it has opened. Of a
+    /// document whose tab just closed while its session is still closing (its picture
+    /// drawn first, `crate::thumbs`), once that close has answered, since the core refuses
+    /// an open of a file another session holds.
     pub fn open(&mut self, path: &str, create: bool) {
+        if self
+            .thumbs
+            .as_ref()
+            .is_some_and(|thumbs| thumbs.still_closing(path))
+        {
+            self.held_opens.push((path.to_owned(), create));
+            return;
+        }
         let running = self.sessions.open(path, create);
         self.opening(Part::File(path.to_owned()), running);
     }
@@ -920,6 +934,9 @@ impl<P: Clients + 'static> App<P> {
             if let Some(recents) = &self.recents {
                 recents.waking(ui.ctx());
             }
+            if let Some(thumbs) = &self.thumbs {
+                thumbs.waking(ui.ctx());
+            }
             self.columns.waking(ui.ctx());
             if let Some(warm) = &self.warm {
                 warm.waking(ui.ctx());
@@ -927,6 +944,24 @@ impl<P: Clients + 'static> App<P> {
             self.waker_set = true;
         }
         self.poll();
+        let start_shown = self.start_shown();
+        if let Some(thumbs) = &mut self.thumbs {
+            thumbs.frame(
+                ui.ctx(),
+                &self.sessions,
+                &mut self.tabs,
+                self.recents.as_ref(),
+                start_shown,
+                // A quit draws nothing: the window closes with its last tab, before a picture
+                // could be written. Its question counts, since its answer closes tabs at once.
+                self.quitting || matches!(self.asking, Some(Asking::Quit)),
+            );
+        }
+        // An open held for a session closing: sent once it has closed.
+        let held = std::mem::take(&mut self.held_opens);
+        for (path, create) in held {
+            self.open(&path, create);
+        }
         // The candidate a card's row was hovered on last frame, lit in the canvas from now.
         for tab in &mut self.tabs {
             if tab.take_candidate_hover() {
@@ -1005,12 +1040,19 @@ impl<P: Clients + 'static> App<P> {
                     }
                     let shown = start::Shown {
                         recents: self.recents.as_ref(),
+                        thumbs: self.thumbs.as_ref(),
                         workspace_known: self.workspace().is_some(),
                     };
                     start::page(ui, &shown)
                 })
                 .inner;
             self.start_act(ui, act, &mut next_frame);
+            // What the tabs asked to say meanwhile is dropped, as a tab not shown's is (see
+            // below): never shown later out of its context.
+            for tab in &mut self.tabs {
+                tab.take_toasts();
+                tab.take_stopped();
+            }
             self.after_drawing(ui, next_frame, top);
             return;
         }
@@ -1092,23 +1134,30 @@ impl<P: Clients + 'static> App<P> {
             // Where sketch mode's panels float.
             self.canvas = Some(canvas);
             self.disk_banner(ui, canvas, &mut next_frame);
-            self.show_toast(ui, canvas);
+            self.toasts.show(ui.ctx(), canvas);
         });
         let modify_layer = self.sketch_canvas(ui, &mut next_frame);
         self.raise_toast(ui.ctx(), modify_layer);
-        // A toast the tab shown asked for this frame (a box's), drawn from the next; one a tab
-        // not shown asked for (its drag ended as it was left) dropped, never shown later out
-        // of its context.
+        // The toasts the tab shown asked for this frame (a box's, an undo's, a save's, a
+        // stop's), drawn from the next, in the order asked; those a tab not shown asked for
+        // (its drag ended as it was left) dropped, never shown later out of its context.
         let active = self.active_place();
-        let mut asked = None;
+        let mut asked = Vec::new();
+        let rebuild_keys = Command::Rebuild.keys_text(ui.ctx());
         for (at, tab) in self.tabs.iter_mut().enumerate() {
-            let toast = tab.take_toast();
+            let mut toasts = tab.take_toasts();
+            if let Some(at) = tab.take_stopped() {
+                toasts.push(Toast::info(stopped_words(at, &rebuild_keys)));
+            }
             if Some(at) == active {
-                asked = toast;
+                asked = toasts;
             }
         }
-        if let Some(text) = asked {
-            self.toast = Some((text, ui.input(|input| input.time)));
+        if !asked.is_empty() {
+            let now = ui.input(|input| input.time);
+            for toast in asked {
+                self.toasts.push(toast, now);
+            }
             ui.ctx().request_repaint();
         }
         self.after_drawing(ui, next_frame, top);
@@ -1200,6 +1249,7 @@ impl<P: Clients + 'static> App<P> {
             .opening
             .iter()
             .any(|opening| opening.part.path().is_some_and(same))
+            || self.held_opens.iter().any(|(held, _)| same(held))
         {
             return false;
         }
@@ -1365,6 +1415,14 @@ impl<P: Clients + 'static> App<P> {
         // A tab's save or revert was refused: it stays, holding its edits, and a quit stops.
         for name in refused {
             self.close_refused(&name);
+        }
+        // The pictures asked as tabs closed, taken before the tabs go: they answer after.
+        if let Some(thumbs) = &mut self.thumbs {
+            for tab in &mut self.tabs {
+                if let Some(closing) = tab.take_closing_picture() {
+                    thumbs.closing(closing);
+                }
+            }
         }
         let open_numbers = &mut self.open_numbers;
         self.tabs.retain(|tab| {
@@ -1831,7 +1889,8 @@ impl<P: Clients + 'static> App<P> {
             // The toolbar shows SOLID, whose SELECT panel holds the filters, whenever no
             // sketch is open: there's no other tab to switch from (a sketch's SKETCH is its
             // mode's, left by Finish or Cancel).
-            self.toast = Some((FILTERS_SAID.to_owned(), ui.input(|input| input.time)));
+            let now = ui.input(|input| input.time);
+            self.toasts.push(Toast::info(FILTERS_SAID), now);
         }
         let selected = tab.selection().feature().cloned();
         // Each only where its menu item would be on: else its reason is said, as the item's
@@ -1910,6 +1969,12 @@ impl<P: Clients + 'static> App<P> {
             }
         } else if save && tab.unsaved() && !tab.editing() {
             tab.save(sessions, false);
+        } else if save && !tab.editing() && !tab.nothing_to_save() {
+            // Nothing unsaved, but the file not known to match (no comparison ended yet, or it
+            // changed, went, or can't be read): the save queued. With a transaction open (its
+            // edits undone back to `begin`'s document), it's the commit, the core's answer
+            // deciding; with none, it only asks `nothing_to_save` again, sending nothing.
+            tab.save(sessions, false);
         }
         if sketch_delete {
             tab.sketch_delete(sessions);
@@ -1919,9 +1984,14 @@ impl<P: Clients + 'static> App<P> {
         }
         if undo && tab.undoable() {
             tab.step(sessions, true);
+        } else if undo {
+            // The prototype's `undo` with nothing to take back: said so, where it's so.
+            tab.nothing_to_step(true);
         }
         if redo && tab.redoable() {
             tab.step(sessions, false);
+        } else if redo {
+            tab.nothing_to_step(false);
         }
         if rebuild_all {
             tab.rebuild_all(sessions);
@@ -2212,7 +2282,15 @@ impl<P: Clients + 'static> App<P> {
         true
     }
 
-    /// The toast shown this frame, if one is, raised over everything else of its order
+    /// The newest toast shown now, if one is, and when it was shown, by egui's clock.
+    pub fn toast(&self) -> Option<(&str, f64)> {
+        self.toasts
+            .shown()
+            .last()
+            .map(|shown| (shown.toast.text.as_str(), shown.at))
+    }
+
+    /// The toasts shown this frame, if any are, raised over everything else of its order
     /// (egui's `Middle`, under every modal): over sketch mode's bar and palette and the
     /// timeline's rename field, as the prototype's `#toasts` (z 650) are over `.sketch-bar`
     /// (26) and `.palette` (22), so a press that raises one of them (egui raises an area
@@ -2221,37 +2299,19 @@ impl<P: Clients + 'static> App<P> {
     /// sort keeps the order of the layers that each ask to be on top, so a box first shown
     /// after the toast would stay over it, but a layer's sublayer is placed straight after it.
     fn raise_toast(&self, ctx: &egui::Context, modify: Option<egui::LayerId>) {
-        if self.toast.is_none() {
+        if self.toasts.shown().is_empty() {
             return;
         }
-        let layer = toast_layer();
+        let layer = crate::toast::layer();
         ctx.move_to_top(layer);
         if let Some(modify) = modify {
             ctx.set_sublayer(modify, layer);
         }
     }
 
-    /// The toast, if one is shown, over `canvas`'s bottom right, until
-    /// [`theme::TOAST_SECONDS`] have passed since it was shown; a frame asked for then, to
-    /// take it down.
-    fn show_toast(&mut self, ui: &Ui, canvas: egui::Rect) {
-        let Some((text, at)) = &self.toast else {
-            return;
-        };
-        let now = ui.input(|input| input.time);
-        let left = theme::TOAST_SECONDS - (now - at);
-        if left.is_nan() || left <= 0.0 {
-            self.toast = None;
-            return;
-        }
-        toast(ui.ctx(), canvas, text);
-        ui.ctx()
-            .request_repaint_after(Duration::from_secs_f64(left));
-    }
-
-    /// The toast shown now, if one is, and when it was shown, by egui's clock.
-    pub fn toast(&self) -> Option<(&str, f64)> {
-        self.toast.as_ref().map(|(text, at)| (text.as_str(), *at))
+    /// Every toast shown now, oldest first, each with when it was shown.
+    pub fn toasts(&self) -> &[crate::toast::Shown] {
+        self.toasts.shown()
     }
 
     /// Reload the tab of session `id` (Trevin's ask of 2026-11-09): asking first, naming
@@ -2267,7 +2327,7 @@ impl<P: Clients + 'static> App<P> {
             // As Rebuild everything does nothing in a dialog: the dialog's OK or Cancel
             // first.
             Err(Some(why)) => {
-                self.toast = Some((why.to_owned(), now));
+                self.toasts.push(Toast::info(why), now);
                 return;
             }
         }
@@ -3694,6 +3754,20 @@ mod tests {
     use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
     use crate::theme;
+
+    #[test]
+    fn a_stop_says_how_far_it_got_as_status_counted_it_or_only_that_it_stopped() {
+        use crate::tab::StoppedAt;
+        // The prototype's `stopRebuild` words, with the app's key.
+        assert_eq!(
+            super::stopped_words(StoppedAt::Step { done: 3, steps: 4 }, "Ctrl+B"),
+            "Rebuild stopped at step 3 of 4. Rebuild (Ctrl+B) resumes it."
+        );
+        assert_eq!(
+            super::stopped_words(StoppedAt::Uncounted, "⌘B"),
+            "Rebuild stopped. Rebuild (⌘B) resumes it."
+        );
+    }
 
     #[test]
     fn the_sketch_bars_room_is_clear_of_the_viewcube_unless_that_leaves_a_name_too_little() {
