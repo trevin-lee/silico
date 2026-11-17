@@ -903,6 +903,28 @@ pub const NAVIGATION_BAR_SEPARATOR_MARGIN: f32 = 3.0;
 /// the button's).
 pub const NAVIGATION_BAR_MENU_GAP: f32 = 4.0;
 
+/// A hint over the canvas (`.canvas-hint`, `crate::canvas_hint`): Gray.200 inside a 1
+/// Gray.250 border, `--r`'s corners, the navigation bar's shadow (`0 4px 14px`, black at
+/// half), padded 6 above and below, 8 at its right and 12 at its left, 10 between its icon,
+/// its words, and its button; its words body text ([`TEXT_DEFAULT`], the page's colour),
+/// their emphasis [`TEXT_STRONG`] (`.strong`), and its icon their colour (`currentColor`).
+pub const CANVAS_HINT_BG: Color32 = FLOATING_BG;
+pub const CANVAS_HINT_BORDER: Color32 = PANEL_BORDER;
+pub const CANVAS_HINT_SHADOW: Shadow = NAVIGATION_BAR_SHADOW;
+pub const CANVAS_HINT_PADDING: Margin = Margin {
+    left: 12,
+    right: 8,
+    top: 6,
+    bottom: 6,
+};
+pub const CANVAS_HINT_GAP: f32 = 10.0;
+pub const CANVAS_HINT_TEXT: Color32 = TEXT_DEFAULT;
+pub const CANVAS_HINT_STRONG: Color32 = TEXT_STRONG;
+/// Where the empty part's hint stands, centred across the canvas: its bottom 64 above the
+/// canvas's (app.js's `top:auto;bottom:64px`, over `.canvas-hint`'s `top: 18px`), clear of
+/// the navigation bar under it.
+pub const CANVAS_HINT_BOTTOM: f32 = 64.0;
+
 /// A small button's height (`.btn`): Copy MCP config, and the dialogs' buttons.
 pub const BUTTON_HEIGHT: f32 = 22.0;
 
@@ -2262,6 +2284,13 @@ mod tests {
             ("TOOLTIP_SHADOW", TOOLTIP_SHADOW.color, [0, 0, 0], 0.6),
             // `.modal`'s shadow, `rgba(0,0,0,.7)`.
             ("MODAL_SHADOW", MODAL_SHADOW.color, [0, 0, 0], 0.7),
+            // `.canvas-hint`'s shadow, `rgba(0,0,0,.5)`.
+            (
+                "CANVAS_HINT_SHADOW",
+                CANVAS_HINT_SHADOW.color,
+                [0, 0, 0],
+                0.5,
+            ),
             // `.canvas-banner .btn-secondary`, `rgba(255,255,255,.08)`, `.16` hovered.
             ("BANNER_BUTTON_BG", BANNER_BUTTON_BG, [255, 255, 255], 0.08),
             (
@@ -2956,6 +2985,43 @@ mod tests {
         );
         // The display menu 4 above its button (`r.top - 4`).
         assert_eq!(NAVIGATION_BAR_MENU_GAP, 4.0);
+    }
+
+    /// A hint over the canvas, typed from styles.css's `.canvas-hint` and app.js's empty
+    /// part's `top:auto;bottom:64px`.
+    #[test]
+    fn the_canvas_hints_look_is_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `bottom: 64px`; `gap: 10px; padding: 6px 8px 6px 12px; background: var(--g200);
+        // border: 1px solid var(--g250); border-radius: var(--r); box-shadow: 0 4px 14px
+        // rgba(0,0,0,.5)`; the page's text `var(--g750)`, `.strong`'s `var(--g1000)`.
+        assert_eq!(CANVAS_HINT_BOTTOM, 64.0);
+        assert_eq!(CANVAS_HINT_GAP, 10.0);
+        assert_eq!(
+            CANVAS_HINT_PADDING,
+            Margin {
+                left: 12,
+                right: 8,
+                top: 6,
+                bottom: 6
+            }
+        );
+        assert_eq!(CANVAS_HINT_BG, opaque(0x212121));
+        assert_eq!(CANVAS_HINT_BORDER, opaque(0x272626));
+        assert_eq!(NORMAL_CORNER_RADIUS, 6);
+        assert_eq!(
+            (
+                CANVAS_HINT_SHADOW.offset,
+                CANVAS_HINT_SHADOW.blur,
+                CANVAS_HINT_SHADOW.spread,
+            ),
+            ([0, 4], 14, 0)
+        );
+        assert_eq!(CANVAS_HINT_TEXT, opaque(0xcfcfcf));
+        assert_eq!(CANVAS_HINT_STRONG, opaque(0xffffff));
     }
 
     // ---- A key cap's border, as `.kbd` draws it (border 1/1/2/1, radius 3, border-box) ----
