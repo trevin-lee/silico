@@ -134,16 +134,10 @@ fn write(name: &Name, out: &mut String) {
         // even one of one offset, is FreeCAD's (N10, decided 2026-11-16).
         Name::Copy { instance, of, .. } => {
             write(of, out);
-            match instance.offsets() {
-                [1] => {}
-                [k] => {
-                    out.push_str(";_");
-                    out.push_str(&k.to_string());
-                }
-                _ => {
-                    out.push_str(";_");
-                    out.push_str(&instance.to_string());
-                }
+            // Copy k of one direction is written `k`, so its postfix is `_k`, as FreeCAD's.
+            if instance.offsets() != [1] {
+                out.push_str(";_");
+                out.push_str(&instance.to_string());
             }
         }
     }
