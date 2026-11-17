@@ -1113,6 +1113,14 @@ pub struct Verdict {
     /// things, which only two solves that both succeeded give (`rerun` compares them against
     /// the runs of FreeCAD whose solve succeeded).
     pub solved: usize,
+    /// In an edit whose places the comparison takes only where neither solve moved them
+    /// (points merged from apart, a shared arc end, an unreproducible drag), each point
+    /// Silico's solve didn't move, and whether FreeCAD's places of it are Silico's, within the
+    /// comparison's tolerance, whether or not FreeCAD's solve moved it.
+    pub unmoved: BTreeMap<String, bool>,
+    /// Of [`Verdict::how`], by index, the differences of such a point, a place FreeCAD's solve
+    /// didn't move either but put elsewhere than Silico's: by the point.
+    pub unmoved_lines: BTreeMap<usize, String>,
 }
 
 impl std::fmt::Display for Verdict {
@@ -1833,6 +1841,13 @@ fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
                 );
                 v.how.extend(compared.how);
                 v.solved = compared.solved.len();
+                let first_solved = v.how.len();
+                v.unmoved = compared.unmoved;
+                v.unmoved_lines = compared
+                    .unmoved_lines
+                    .into_iter()
+                    .map(|(n, point)| (first_solved + n, point))
+                    .collect();
                 v.how.extend(compared.solved);
             }
         }
@@ -5092,6 +5107,8 @@ fn compare_edited(
     // one (#se-the-first-point-the-request-names); what the solves move from different starts, or
     // settle otherwise each run, isn't compared by place.
     let none_merged = BTreeSet::new();
+    let mut unmoved = BTreeMap::new();
+    let mut unmoved_lines = BTreeMap::new();
     if let (true, Ok(solution), 0) = (unsettled.any(), &s.ours.outcome, theirs.code) {
         let merged = merged.unwrap_or(&none_merged);
         let near = |a: [f64; 2], b: [f64; 2]| {
@@ -5122,10 +5139,6 @@ fn compare_edited(
             let Some(theirs) = places.get(id.as_str()) else {
                 continue;
             };
-            let moved = !near(ours, *start) || theirs.iter().any(|(was, at)| !near(*was, *at));
-            if merged.contains(id.as_str()) || moved {
-                continue;
-            }
             // Each solve left it within 1e-8 mm of its start, so the two are within twice that
             // of each other where the starts are one (`edit_52_349`: 8e-9 one way and 9e-9 the
             // other); farther, the edit started them apart.
@@ -5133,7 +5146,18 @@ fn compare_edited(
                 (a[0] - b[0]).abs() <= 2.0 * sketch::TOLERANCE
                     && (a[1] - b[1]).abs() <= 2.0 * sketch::TOLERANCE
             };
+            if merged.contains(id.as_str()) || !near(ours, *start) {
+                continue;
+            }
+            // A point Silico's solve didn't move: whether FreeCAD's places of it are Silico's,
+            // whether or not FreeCAD's solve moved it, for the sweeps' reruns.
+            let agrees = theirs.iter().all(|(_, at)| alike(ours, *at));
+            unmoved.insert(id.as_str().to_owned(), agrees);
+            if theirs.iter().any(|(was, at)| !near(*was, *at)) {
+                continue;
+            }
             if let Some((_, at)) = theirs.iter().find(|(_, at)| !alike(ours, *at)) {
+                unmoved_lines.insert(solved.len(), id.as_str().to_owned());
                 solved.push(format!(
                     "after the solve, Silico's point {id}, which neither solve moved, is at {ours:?}, FreeCAD's at {}",
                     details.say(|| format!("{at:?}"))
@@ -5141,14 +5165,23 @@ fn compare_edited(
             }
         }
     }
-    Compared { how, solved }
+    Compared {
+        how,
+        solved,
+        unmoved,
+        unmoved_lines,
+    }
 }
 
 /// How Silico's edited sketch and FreeCAD's differ: in all but where the solves put things,
-/// and in that, which only two solves that both succeeded give.
+/// and in that, which only two solves that both succeeded give; and, in an unsettled edit,
+/// each point Silico's solve didn't move ([`Verdict::unmoved`], [`Verdict::unmoved_lines`],
+/// by index into `solved`).
 struct Compared {
     how: Vec<String>,
     solved: Vec<String>,
+    unmoved: BTreeMap<String, bool>,
+    unmoved_lines: BTreeMap<usize, String>,
 }
 
 #[path = "sketch_edit_rerun.rs"]

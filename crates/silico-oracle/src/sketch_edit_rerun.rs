@@ -14,7 +14,7 @@
 //!
 //! The hand cases and the gate's tests don't rerun: [`run_rerunning`] is the sweeps' alone.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
     DRAG_BAND, EditCase, FcGeometry, FreecadEdited, Plan, Prepared, SilicoSide, Theirs, Verdict,
@@ -246,6 +246,23 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
     // Each run's differences, each kept (a difference every compared run gives, or a place
     // every run whose solve succeeded gives) or not, and whether it compares where the solves
     // put things.
+    // A point Silico's solve didn't move, which a compared run gives as a difference where
+    // FreeCAD's solve didn't move it either: kept unless some run has it at Silico's place. A
+    // run whose solve moved it doesn't compare it, which isn't agreeing with Silico.
+    let agreed: BTreeSet<&str> = full
+        .iter()
+        .flat_map(|f| f.unmoved.iter())
+        .filter(|(_, agrees)| **agrees)
+        .map(|(point, _)| point.as_str())
+        .collect();
+    let mut held: Vec<String> = Vec::new();
+    for f in compared.iter().filter_map(|&i| full.get(i)) {
+        for point in f.unmoved_lines.values() {
+            if !agreed.contains(point.as_str()) && !held.contains(point) {
+                held.push(point.clone());
+            }
+        }
+    }
     let marked = |i: usize| -> Vec<(String, bool, bool)> {
         let (Some(f), Some(k)) = (full.get(i), keyed.get(i)) else {
             return Vec::new();
@@ -267,7 +284,10 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
             .enumerate()
             .map(|(n, (line, key))| {
                 let place = n >= first_solved;
-                let keep = take(&mut left, key) || (place && take(&mut left_solved, key));
+                let keep = take(&mut left, key)
+                    || (place && take(&mut left_solved, key))
+                    || (compared.contains(&i)
+                        && f.unmoved_lines.get(&n).is_some_and(|q| held.contains(q)));
                 (line.clone(), keep, place)
             })
             .collect()
@@ -283,6 +303,22 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
         && !solved.contains(&base)
     {
         kept_lines.extend(marked(at).into_iter().filter(|(_, _, place)| *place));
+    }
+    // Each held point's difference, from the first compared run that gives it, where the
+    // base doesn't.
+    for point in &held {
+        if based.unmoved_lines.values().any(|q| q == point) {
+            continue;
+        }
+        let given = compared.iter().filter_map(|&i| full.get(i)).find_map(|f| {
+            f.unmoved_lines
+                .iter()
+                .find(|(_, q)| *q == point)
+                .and_then(|(&n, _)| f.how.get(n))
+        });
+        if let Some(line) = given {
+            kept_lines.push((line.clone(), true, true));
+        }
     }
     kept_lines.retain(|(_, keep, _)| *keep);
     v.solved = kept_lines.iter().filter(|(_, _, place)| *place).count();

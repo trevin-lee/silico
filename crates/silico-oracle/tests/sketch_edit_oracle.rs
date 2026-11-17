@@ -6454,3 +6454,104 @@ fn a_shared_arc_ends_neighbour_freecad_moves_otherwise_each_run_is_kept() {
         kind,
     );
 }
+
+#[test]
+fn a_point_silicos_edit_writes_off_is_kept_where_a_run_of_freecad_moves_it_elsewhere() {
+    // extend_line_with_reference_length: a drag a reference reaches, so after the solve only
+    // the points neither solve moved are compared by place; its lone point p0000006, drawn at
+    // (20, 20), written by Silico's edit (changed here) at (21, 20), where Silico's solve
+    // leaves it. FreeCAD's solve leaves it at (20, 20) in two runs and moves it 1e-6 in the
+    // third, which then doesn't compare it: that isn't agreeing with Silico, so the difference
+    // is kept, whichever run moved it. Where a run has it at Silico's place, it isn't.
+    let (cases, prepared, theirs) = both(&["extend_line_with_reference_length"]);
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let q = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000006"))
+            .unwrap();
+        q.x = silico_core::document::Coordinate::new(21.0).unwrap();
+    });
+    let at = |x: f64| {
+        doctored(&theirs[0], |fc| {
+            for g in &mut fc.geometry {
+                for place in g.points.values_mut() {
+                    if *place == [20.0, 20.0] {
+                        place[0] = x;
+                    }
+                }
+            }
+        })
+    };
+    let (left, nudged, there) = (at(20.0), at(20.0 + 1e-6), at(21.0));
+    let kind = "Silico's point p0000006, which neither solve moved";
+    let first = verdict(&p, Some(&left));
+    assert!(first.how.iter().any(|h| h.contains(kind)), "{first}");
+    assert!(
+        !verdict(&p, Some(&nudged))
+            .how
+            .iter()
+            .any(|h| h.contains(kind)),
+        "the run whose solve moves it doesn't compare it"
+    );
+    for runs in [
+        [left.clone(), nudged.clone(), left.clone()],
+        [nudged.clone(), left.clone(), left.clone()],
+    ] {
+        let (v, reran) = rejudge(&p, &runs.map(Some));
+        assert_eq!(
+            v.how.iter().filter(|h| h.contains(kind)).count(),
+            1,
+            "{v}\n{reran:?}"
+        );
+    }
+    let (v, reran) = rejudge(&p, &[Some(left), Some(nudged), Some(there)]);
+    assert!(!v.how.iter().any(|h| h.contains(kind)), "{v}\n{reran:?}");
+}
+
+#[test]
+fn a_circle_on_a_dragged_end_freecads_runs_size_otherwise_is_kept_where_silicos_differs() {
+    // extend_probe_line_end_by_5, with a circle c0000099 of radius 2 about the dragged end
+    // p0000002 in Silico's result (no hand case has one): its radius after FreeCAD's solve 1,
+    // 1 + 1e-6 and 1 - 1e-6 more than Silico's in its three runs, past the drag's band of
+    // every one.
+    let (cases, prepared, theirs) = both(&["extend_probe_line_end_by_5"]);
+    let SilicoSide::Edited(s) = &prepared[0].silico else {
+        panic!("{:?}", prepared[0].silico);
+    };
+    let mut edited = s.edited.clone();
+    edited
+        .sketch
+        .circles
+        .push(silico_core::document::SketchCircle {
+            id: id("c0000099"),
+            center: id("p0000002"),
+            radius: silico_core::document::Coordinate::new(2.0).unwrap(),
+            construction: false,
+        });
+    edited.added.push(id("c0000099"));
+    let mut worker = SketchWorker::start().unwrap();
+    let silico = silico_side(&cases[0].document, cases[0].feature, edited, &mut worker).unwrap();
+    assert!(matches!(silico, SilicoSide::Edited(_)), "{silico:?}");
+    let p = Prepared {
+        silico,
+        ..prepared[0].clone()
+    };
+    let circled = |by: f64| {
+        doctored(&theirs[0], |fc| {
+            let centre = fc.geometry[0].points["2"];
+            fc.geometry.push(FcGeometry {
+                id: 99,
+                kind: "circle".to_owned(),
+                points: std::collections::BTreeMap::from([("3".to_owned(), centre)]),
+                radius: Some(2.0 + by),
+                construction: false,
+            });
+        })
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [circled(1.0), circled(1.0 + 1e-6), circled(1.0 - 1e-6)],
+        "whose points the drag moved, has radius",
+    );
+}
