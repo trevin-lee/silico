@@ -583,10 +583,16 @@ pub const BOX_SELECT_CROSSING_DASH: [f32; 2] = [4.0, 3.0];
 /// bottom-right of the canvas): Gray.200 inside a Gray.250 border, `--r`'s corners, a menu's
 /// shadow (`0 6px 18px`, black at 60%), padded 7 over and under, 10 at the left and 8 at the
 /// right, at most 420 wide, its text as the body's; 12 in from the canvas's right and 58 up
-/// from its foot; shown for 3.8 seconds (app.js's `toast`).
+/// from its foot; shown for 3.8 seconds (app.js's `toast`). Several stack in a column, 6
+/// apart, the newest last (`#toasts`' `gap: 6px`); each has its icon at the left, 8 from its
+/// words (`.toast`'s `gap: 8px`), in the words' colour (`svg.i`'s `currentColor`). Its 420
+/// counts its border and padding (`box-sizing: border-box`).
 pub const TOAST_BG: Color32 = GRAY_200;
 pub const TOAST_BORDER: Color32 = GRAY_250;
 pub const TOAST_TEXT: Color32 = TEXT_DEFAULT;
+pub const TOAST_ICON: Color32 = TOAST_TEXT;
+pub const TOAST_GAP: f32 = 6.0;
+pub const TOAST_ICON_GAP: f32 = 8.0;
 pub const TOAST_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
 pub const TOAST_SHADOW: Shadow = Shadow {
     offset: [0, 6],

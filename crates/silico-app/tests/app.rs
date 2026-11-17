@@ -27436,14 +27436,22 @@ fn an_undo_behind_a_click_waiting_on_a_stopped_rebuild_runs_once_the_stop_is_see
     }
     stop_the_held_rebuild(&f, &mut h);
     // Let go in a later poll, not in its press's call: said in the status bar, not toasted
-    // (the app takes a tab's toast in the frame that sets it).
+    // (the app takes a tab's toast in the frame that sets it). The Undo, once it's done, is
+    // (its own toast, "Undid: …").
     step_until(&mut h, "the Vertical let go", |h| {
         h.state().tabs()[0]
             .message
             .as_deref()
             .is_some_and(|said| said.starts_with("Vertical wasn't added: "))
     });
-    assert_eq!(toast_said(&h), None);
+    assert!(
+        !h.state()
+            .toasts()
+            .iter()
+            .any(|shown| shown.toast.text.starts_with("Vertical")),
+        "{:?}",
+        h.state().toasts()
+    );
     settled(&mut h);
     let tab = &h.state().tabs()[0];
     let said = tab.message.clone().unwrap_or_default();
@@ -48111,604 +48119,495 @@ fn a_drags_release_sends_the_value_it_held_back_in_the_releases_own_frame() {
     assert_eq!(never_waits::waits(), 0);
 }
 
-// ---- The start page's thumbnails (`silico_app::thumbs`) ----
+// ---- Toasts (the prototype audit's item 19: app.js's `toast`, styles.css's `#toasts`) ----
 
-/// Sessions on the fake kernel that render through the core's stand-in renderer, which
-/// answers each render with `PNG {width}x{height}` and records its scene; each file compared
-/// on disk, and reloaded when it changes, if `watch`.
-fn thumbnailed_with(watch: bool) -> (Fixture, Arc<silico_core::fake::FakeRenderer>) {
-    let dir = tempfile::tempdir().unwrap();
-    let kernel = Arc::new(FakeKernel::new(2).unwrap());
-    let sketches = FakeSketches::new();
-    let renderer = Arc::new(silico_core::fake::FakeRenderer::new());
-    let sessions = stand_in_sessions(&dir, &kernel, &sketches);
-    let sessions = if watch {
-        let now: Clock = Arc::new(Instant::now);
-        sessions
-            .watching_disk(Duration::ZERO, Arc::new(plain_read), now)
-            .unwrap()
-    } else {
-        sessions
-    };
-    let sessions = sessions.rendering(Arc::clone(&renderer));
-    let f = Fixture {
-        dir,
-        kernel,
-        sketches,
-        sessions: Arc::new(sessions),
-    };
-    (f, renderer)
+/// The toasts shown, oldest first: each one's words, icon, and when it was shown.
+fn toasts_shown(h: &AppHarness) -> Vec<(String, silico_app::toast::Kind, f64)> {
+    h.state()
+        .toasts()
+        .iter()
+        .map(|shown| (shown.toast.text.clone(), shown.toast.kind, shown.at))
+        .collect()
 }
 
-/// [`thumbnailed_with`], not watching the disk.
-fn thumbnailed() -> (Fixture, Arc<silico_core::fake::FakeRenderer>) {
-    thumbnailed_with(false)
+/// The newest toast's words, if one shows.
+fn newest_toast(h: &AppHarness) -> Option<String> {
+    h.state().toast().map(|(text, _)| text.to_owned())
 }
 
-impl Fixture {
-    /// Where these tests keep the thumbnails: beside the recent documents, not yet made.
-    fn thumbs_folder(&self) -> PathBuf {
-        self.dir.path().join("app-data").join("thumbnails")
-    }
-
-    /// The app keeping its recent documents and their thumbnails, the list read.
-    fn thumbnailing(&self) -> AppHarness {
-        let (file, folder) = (self.recents_file(), self.thumbs_folder());
-        let mut h = self.app_made(|app| {
-            app.remembering(Recents::at(file))
-                .thumbnailing(silico_app::thumbs::Thumbs::at(folder))
-        });
-        recents_read(&mut h);
-        h
-    }
-
-    /// The list of recent documents written as `paths`, before the app reads it.
-    fn listing(&self, paths: &[&Path]) {
-        std::fs::create_dir_all(self.recents_file().parent().unwrap()).unwrap();
-        let lines: Vec<&str> = paths.iter().map(|path| path.to_str().unwrap()).collect();
-        std::fs::write(
-            self.recents_file(),
-            format!("silico recent-documents 1\n{}\n", lines.join("\n")),
-        )
-        .unwrap();
-    }
-
-    /// The names of the files in the thumbnails' folder, sorted: none before it's made.
-    fn thumb_files(&self) -> Vec<String> {
-        let Ok(entries) = std::fs::read_dir(self.thumbs_folder()) else {
-            return Vec::new();
-        };
-        let mut names: Vec<String> = entries
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        names.sort();
-        names
-    }
-}
-
-/// The name a thumbnail of `bytes` is kept by: their SHA-256 in lower-case hex, `.png`.
-fn thumb_of(bytes: &[u8]) -> String {
-    use sha2::Digest as _;
-    let digest = sha2::Sha256::digest(bytes);
-    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("{hex}.png")
-}
-
-/// The app's thumbnails.
-fn thumbs(h: &AppHarness) -> &silico_app::thumbs::Thumbs {
-    h.state().thumbs().unwrap()
-}
-
-/// A PNG, 260 by 160, of one colour, as the png crate encodes it.
-fn plain_png(rgb: [u8; 3]) -> Vec<u8> {
-    let (width, height) = (260, 160);
-    let mut out = Vec::new();
-    let mut encoder = png::Encoder::new(&mut out, width, height);
-    encoder.set_color(png::ColorType::Rgb);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().unwrap();
-    let data: Vec<u8> = (0..width * height).flat_map(|_| rgb).collect();
-    writer.write_image_data(&data).unwrap();
-    writer.finish().unwrap();
-    out
-}
-
-/// The picture in the thumbnail's place of the recent document `name`'s row, if one is drawn
-/// there: the texture of a rectangle filling the place inside its 1-point border.
-fn thumb_drawn(h: &AppHarness, name: &str) -> Option<eframe::egui::TextureId> {
-    use silico_app::theme;
-    let row = h.get_by_role_and_label(Role::Button, name).rect();
-    // `.recent-row`'s 6 in from its left, 52 by 40 on its middle; its border 1 wide.
-    let thumb = eframe::egui::Rect::from_min_size(
-        eframe::egui::pos2(row.left() + 6.0, row.center().y - 20.0),
-        eframe::egui::vec2(52.0, 40.0),
-    );
-    let inside = thumb.shrink(1.0);
-    assert_eq!(
-        (theme::START_RECENT_PADDING_LEFT, theme::START_THUMB_WIDTH),
-        (6.0, 52.0)
-    );
-    shapes_painted(h).into_iter().find_map(|shape| match shape {
-        eframe::egui::Shape::Rect(rect)
-            if (rect.rect.min - inside.min).length() < 1e-3
-                && (rect.rect.max - inside.max).length() < 1e-3 =>
-        {
-            rect.brush.map(|brush| brush.fill_texture_id)
-        }
-        _ => None,
-    })
-}
-
-/// The app bar's Home clicked: the start page shown over the tabs.
-fn home_shown(h: &mut AppHarness) {
-    home_button(h).click();
-    step_until(h, "the start page", start_shown);
-}
-
-/// The tab `name` closed by its Close, and gone.
-fn closed(h: &mut AppHarness, name: &str) {
-    h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
-        .click();
-    step_until(h, "the tab closed", |h| {
-        h.state().tabs().iter().all(|tab| tab.name() != name)
+/// Frames stepped until the newest toast says `text`, and it's drawn (from the frame after
+/// the one that asks for it).
+#[track_caller]
+fn toasted(h: &mut AppHarness, text: &str) {
+    step_until(h, text, |h| {
+        newest_toast(h).as_deref() == Some(text) && anywhere(h, text)
     });
 }
 
-/// `n` frames stepped: time for anything that would be sent to be sent and answered.
-fn frames(h: &mut AppHarness, n: usize) {
-    for _ in 0..n {
-        step(h);
-    }
+/// The name, in the accessibility tree, of the icon drawn 8 left of the toast saying `text`
+/// and centred across its line (`.toast`'s `gap: 8px`, `align-items: center`).
+fn toast_icon(h: &AppHarness, text: &str) -> Option<String> {
+    let words = h.get_by_label(text).rect();
+    h.query_all_by_role(Role::Image)
+        .find(|node| {
+            let icon = node.rect();
+            (icon.center().y - words.center().y).abs() <= 1.0
+                && (words.left() - icon.right() - 8.0).abs() <= 0.5
+        })
+        .and_then(|node| node.accesskit_node().label())
 }
 
-/// `n` frames stepped 10 ms apart: time too for the thumbnails' thread, and the commands, to
-/// answer what any of them asked.
-fn paced_frames(h: &mut AppHarness, n: usize) {
-    for _ in 0..n {
-        step(h);
-        std::thread::sleep(Duration::from_millis(10));
-    }
+/// Command+`key` pressed, and a frame stepped.
+fn command_key(h: &mut AppHarness, key: eframe::egui::Key) {
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+    step(h);
 }
 
 #[test]
-fn saves_and_reloads_with_the_start_page_hidden_draw_nothing_and_closing_draws_once() {
-    let (f, renderer) = thumbnailed_with(true);
-    let path = f.file("block.silico", EXAMPLE);
-    let mut h = f.thumbnailing();
-    open_and_wait(&mut h, &path);
+fn toasts_stack_newest_last_each_taken_down_on_its_own_clock_asking_no_frame_once_gone() {
+    use eframe::egui::Key;
+    use silico_app::toast::Kind;
+    // Two shown a second apart (Undo with nothing to undo, then F5): both up, the newer
+    // under the older, each with the info icon; the first gone 3.8 s after it was shown
+    // with the second still up, then the second 3.8 s after it; then no frame asked for but
+    // the idle one.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
     settled(&mut h);
-    // Saved twice, each a revision built outside a transaction: nothing drawn.
-    for (from, to) in [("Hole", "Bore"), ("Bore", "Drill")] {
-        f2_typed(&mut h, from, to);
-        h.key_press(Key::Enter);
-        step_until(&mut h, "renamed", |h| {
-            h.state().tabs()[0].edits.idle() && shows(h, "Timeline", to)
-        });
-        let saves = h.state().tabs()[0].saves;
-        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, Key::S);
-        step_until(&mut h, "saved", |h| {
-            let tab = &h.state().tabs()[0];
-            tab.saves == saves + 1 && !tab.unsettled() && !tab.transaction
-        });
-        frames(&mut h, 10);
+    let time = |h: &AppHarness| h.ctx.input(|input| input.time);
+    let frame = 1.0 / 60.0;
+    assert!(toasts_shown(&h).is_empty());
+    command_key(&mut h, Key::Z);
+    step_until(&mut h, "Undo's toast", |h| !toasts_shown(h).is_empty());
+    let first = toasts_shown(&h)[0].2;
+    while time(&h) < first + 1.0 {
+        step(&mut h);
     }
-    // Changed on disk twice by another program, each reloaded: nothing drawn.
-    for note in ["An agent's first edit", "An agent's second edit"] {
-        let text = EXAMPLE.replace("Clearance for an M5 bolt", note);
-        std::fs::write(&path, &text).unwrap();
-        step_until(&mut h, "reloaded", |h| {
-            text_of(&f.sessions, h) == text
-                && h.state().tabs()[0].published == Some(h.state().tabs()[0].revision)
-        });
-        frames(&mut h, 10);
-    }
-    assert!(
-        renderer.sent().is_empty(),
-        "nothing drawn with the start page hidden"
-    );
-    // Closed: drawn once, as the file holds it, from Home's view at 260 by 160.
-    closed(&mut h, "block.silico");
-    let bytes = std::fs::read(&path).unwrap();
-    assert!(String::from_utf8_lossy(&bytes).contains("An agent's second edit"));
-    step_until(&mut h, "its thumbnail kept", |_| {
-        f.thumb_files() == [thumb_of(&bytes)]
-    });
-    assert_eq!(
-        std::fs::read(f.thumbs_folder().join(thumb_of(&bytes))).unwrap(),
-        b"PNG 260x160"
-    );
-    frames(&mut h, 10);
-    let sent = renderer.sent();
-    assert_eq!(sent.len(), 1);
-    assert_eq!((sent[0].width, sent[0].height), (260, 160));
-    // Home's view, the top, front, right corner: the eye on (1, -1, 1) from the target.
-    let camera = &sent[0].camera;
-    let toward: Vec<f64> = (0..3).map(|i| camera.eye[i] - camera.target[i]).collect();
-    let length = toward.iter().map(|x| x * x).sum::<f64>().sqrt();
-    let corner = 1.0 / 3.0f64.sqrt();
-    for (got, want) in toward.iter().zip([corner, -corner, corner]) {
-        assert!((got / length - want).abs() < 1e-12, "{toward:?}");
-    }
-    assert_eq!(thumbs(&h).renders_written, 1);
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn showing_home_draws_each_open_tab_once_and_closing_it_then_draws_nothing_more() {
-    let (f, renderer) = thumbnailed();
-    let path = f.file("block.silico", EXAMPLE);
-    let mut h = f.thumbnailing();
-    open_and_wait(&mut h, &path);
-    settled(&mut h);
-    frames(&mut h, 10);
-    assert!(renderer.sent().is_empty(), "nothing drawn as it opens");
-    home_shown(&mut h);
-    step_until(&mut h, "its thumbnail kept", |h| {
-        thumbs(h).renders_written == 1 && f.thumb_files() == [thumb_of(EXAMPLE.as_bytes())]
-    });
-    frames(&mut h, 20);
-    assert_eq!(
-        renderer.sent().len(),
-        1,
-        "once while the start page is shown"
-    );
-    // Closed from the app bar, the start page still shown: its revision has its picture.
-    closed(&mut h, "block.silico");
-    frames(&mut h, 20);
-    assert_eq!(renderer.sent().len(), 1);
-    assert_eq!(thumbs(&h).renders_written, 1);
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn a_part_whose_bytes_have_a_picture_is_not_drawn_again() {
-    let (f, renderer) = thumbnailed();
-    let path = f.file("block.silico", EXAMPLE);
-    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
-    let picture = plain_png([200, 40, 40]);
-    let kept = f.thumbs_folder().join(thumb_of(EXAMPLE.as_bytes()));
-    std::fs::write(&kept, &picture).unwrap();
-    f.listing(&[&path]);
-    let mut h = f.thumbnailing();
-    step_until(&mut h, "its picture shown", |h| {
-        thumbs(h).picture(path.to_str().unwrap()).is_some()
-    });
-    open_and_wait(&mut h, &path);
-    settled(&mut h);
-    home_shown(&mut h);
-    step_until(&mut h, "its picture found", |h| {
-        thumbs(h).already_pictured == 1
-    });
-    // Nor as it closes: its revision is known to have one.
-    closed(&mut h, "block.silico");
-    frames(&mut h, 20);
-    assert!(renderer.sent().is_empty());
-    assert_eq!(thumbs(&h).renders_written, 0);
-    assert_eq!(std::fs::read(&kept).unwrap(), picture);
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn the_start_page_shows_a_parts_picture_only_for_the_bytes_it_was_drawn_from() {
-    let (f, renderer) = thumbnailed();
-    let drawn = f.file("drawn.silico", EXAMPLE);
-    let corrupt = f.file("corrupt.silico", TWO_BOXES);
-    let bare = f.file("bare.silico", A_BOX);
-    let gone = f.dir.path().join("gone.silico");
-    let folder = f.thumbs_folder();
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(
-        folder.join(thumb_of(EXAMPLE.as_bytes())),
-        plain_png([200, 40, 40]),
-    )
-    .unwrap();
-    // A corrupt picture: a PNG's signature, then nothing a PNG is.
-    std::fs::write(
-        folder.join(thumb_of(TWO_BOXES.as_bytes())),
-        b"\x89PNG\r\n\x1a\nnot the rest of one",
-    )
-    .unwrap();
-    f.listing(&[&drawn, &corrupt, &bare, &gone]);
-    let mut h = f.thumbnailing();
-    step_until(&mut h, "the drawn part's picture", |h| {
-        thumbs(h).picture(drawn.to_str().unwrap()).is_some()
-    });
+    h.key_press(Key::F5);
     step(&mut h);
-    let texture = thumbs(&h).picture(drawn.to_str().unwrap()).unwrap();
-    // The cell inside its border, 50 by 38, at two pixels a point.
-    assert_eq!(texture.size(), [100, 76]);
-    let id = texture.id();
-    assert_eq!(thumb_drawn(&h, "drawn.silico"), Some(id));
-    // The others' icons: a corrupt picture, none, and a document not found.
-    for name in ["corrupt.silico", "bare.silico", "gone.silico"] {
-        assert_eq!(thumb_drawn(&h, name), None, "{name}");
-    }
-    assert!(renderer.sent().is_empty(), "nothing opened, nothing drawn");
-    drop(h);
-    // Changed by another program: its picture is of bytes it no longer has. The next start
-    // shows its icon.
-    std::fs::write(&drawn, SKETCHED_EXAMPLE).unwrap();
-    let mut h = f.thumbnailing();
-    step_until(&mut h, "the pictures looked for", |h| thumbs(h).looks >= 1);
     step(&mut h);
-    assert!(thumbs(&h).picture(drawn.to_str().unwrap()).is_none());
-    assert_eq!(thumb_drawn(&h, "drawn.silico"), None);
-    // Opened, and the start page shown over it: drawn for the bytes it has now.
-    open_and_wait(&mut h, &drawn);
-    settled(&mut h);
-    home_shown(&mut h);
-    step_until(&mut h, "drawn again", |_| {
-        f.thumb_files()
-            .contains(&thumb_of(SKETCHED_EXAMPLE.as_bytes()))
-    });
-    assert_eq!(renderer.sent().len(), 1);
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn the_start_page_looks_again_each_time_it_is_shown() {
-    let (f, _renderer) = thumbnailed();
-    let path = f.file("block.silico", EXAMPLE);
-    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
-    std::fs::write(
-        f.thumbs_folder().join(thumb_of(EXAMPLE.as_bytes())),
-        plain_png([200, 40, 40]),
-    )
-    .unwrap();
-    f.listing(&[&path]);
-    let mut h = f.thumbnailing();
-    step_until(&mut h, "its picture shown", |h| {
-        thumbs(h).picture(path.to_str().unwrap()).is_some()
-    });
-    // Opened (the list as it was: it was first already), then changed on disk by another
-    // program while the start page is hidden.
-    open_and_wait(&mut h, &path);
-    settled(&mut h);
-    std::fs::write(&path, SKETCHED_EXAMPLE).unwrap();
-    frames(&mut h, 10);
-    let looks = thumbs(&h).looks;
-    // Shown again: looked at again, so its picture, of bytes it no longer has, isn't shown.
-    home_shown(&mut h);
-    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
-    assert!(thumbs(&h).picture(path.to_str().unwrap()).is_none());
-    // Not looked at again while it stays shown, its list the same.
-    let looks = thumbs(&h).looks;
-    paced_frames(&mut h, 20);
-    assert_eq!(thumbs(&h).looks, looks);
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn a_picture_looked_at_again_keeps_its_texture_until_its_documents_bytes_change() {
-    let (f, _renderer) = thumbnailed();
-    let path = f.file("block.silico", EXAMPLE);
-    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
-    for (text, rgb) in [(EXAMPLE, [200, 40, 40]), (SKETCHED_EXAMPLE, [40, 40, 200])] {
-        std::fs::write(
-            f.thumbs_folder().join(thumb_of(text.as_bytes())),
-            plain_png(rgb),
-        )
-        .unwrap();
-    }
-    f.listing(&[&path]);
-    let mut h = f.thumbnailing();
-    let shown = |h: &AppHarness| {
-        thumbs(h)
-            .picture(path.to_str().unwrap())
-            .map(eframe::egui::TextureHandle::id)
-    };
-    step_until(&mut h, "its picture shown", |h| shown(h).is_some());
-    let first = shown(&h).unwrap();
-    open_and_wait(&mut h, &path);
-    settled(&mut h);
-    // Shown again, its bytes the same: looked at again, its picture's texture kept.
-    let looks = thumbs(&h).looks;
-    home_shown(&mut h);
-    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
-    assert_eq!(shown(&h), Some(first));
-    // Its bytes changed by another program to those of the other picture kept: that one,
-    // uploaded.
-    std::fs::write(&path, SKETCHED_EXAMPLE).unwrap();
-    h.key_press(eframe::egui::Key::Escape);
-    step_until(&mut h, "the document", |h| !start_shown(h));
-    let looks = thumbs(&h).looks;
-    home_shown(&mut h);
-    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
-    let second = shown(&h).unwrap();
-    assert_ne!(second, first);
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn a_render_refused_leaves_the_icon_and_says_nothing() {
-    let (f, renderer) = thumbnailed();
-    renderer.fail_with(Error::new(
-        ErrorCode::WorkerCrashed,
-        "the render worker crashed",
-    ));
-    let path = f.file("block.silico", EXAMPLE);
-    let mut h = f.thumbnailing();
-    open_and_wait(&mut h, &path);
-    settled(&mut h);
-    home_shown(&mut h);
-    step_until(&mut h, "the refusal taken", |h| {
-        thumbs(h).renders_dropped == 1
-    });
-    assert_eq!(renderer.sent().len(), 1);
-    assert_eq!(thumbs(&h).renders_written, 0);
-    assert!(f.thumb_files().is_empty());
-    assert!(!anywhere(&h, "render worker"));
-    assert!(h.state().tabs()[0].message.is_none());
-    // Not tried again while the start page stays shown, nor while it's hidden; tried again
-    // once it's shown again.
-    paced_frames(&mut h, 20);
-    assert_eq!((renderer.sent().len(), thumbs(&h).renders_dropped), (1, 1));
-    h.key_press(eframe::egui::Key::Escape);
-    step_until(&mut h, "the document", |h| !start_shown(h));
-    paced_frames(&mut h, 20);
-    assert_eq!(renderer.sent().len(), 1);
-    home_shown(&mut h);
-    step_until(&mut h, "tried again", |h| thumbs(h).renders_dropped == 2);
-    assert_eq!(renderer.sent().len(), 2);
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn an_untitled_part_is_never_drawn() {
-    let (f, renderer) = thumbnailed();
-    let mut h = f.thumbnailing();
-    new_part(&mut h);
-    settled(&mut h);
-    home_shown(&mut h);
-    frames(&mut h, 20);
-    closed(&mut h, "Untitled");
-    frames(&mut h, 20);
-    let thumbs = thumbs(&h);
+    let shown = toasts_shown(&h);
     assert_eq!(
-        (thumbs.renders_written, thumbs.renders_dropped),
-        (0, 0),
-        "no render asked"
-    );
-    assert!(renderer.sent().is_empty());
-    assert!(f.thumb_files().is_empty());
-    assert_eq!(never_waits::waits(), 0);
-}
-
-/// Frames stepped until every tab's model is built at its revision, nothing of it under way.
-fn all_settled(h: &mut AppHarness) {
-    step_until(h, "every tab settled", |h| {
-        h.state()
-            .tabs()
+        shown
             .iter()
-            .all(|tab| tab.edits.idle() && !tab.unsettled() && tab.published == Some(tab.revision))
+            .map(|(text, kind, _)| (text.as_str(), *kind))
+            .collect::<Vec<_>>(),
+        [
+            ("Nothing to undo", Kind::Info),
+            (silico_app::app::FILTERS_SAID, Kind::Info),
+        ]
+    );
+    let second = shown[1].2;
+    assert!(
+        (1.0..1.0 + 2.0 * frame).contains(&(second - first)),
+        "{first} {second}"
+    );
+    // Stacked: the newer under the older, 6 between their frames, so 22 between their
+    // words (each frame padded 7 over and under inside a border of 1), their right edges
+    // in line, 12 + 1 + 8 in from the canvas's right.
+    let older = h.get_by_label("Nothing to undo").rect();
+    let newer = h.get_by_label(silico_app::app::FILTERS_SAID).rect();
+    assert!(
+        (newer.top() - older.bottom() - 22.0).abs() <= 1.5,
+        "{older:?} {newer:?}"
+    );
+    let right = the_viewport(&h).right() - 12.0 - 1.0 - 8.0;
+    assert!((older.right() - right).abs() <= 1.0, "{older:?}");
+    assert!((newer.right() - right).abs() <= 1.0, "{newer:?}");
+    for text in ["Nothing to undo", silico_app::app::FILTERS_SAID] {
+        assert_eq!(toast_icon(&h, text).as_deref(), Some("Info"), "{text}");
+    }
+    // Up and whole, shown at once, with nothing fading: the frames come to ask for none at
+    // once, long before either fades.
+    step_until(&mut h, "no frame asked for at once", |h| {
+        repaint_delay(h) != Some(Duration::ZERO)
     });
+    assert!(time(&h) - second < 1.0, "{}", time(&h) - second);
+    assert_eq!(toasts_shown(&h).len(), 2);
+    // Fading out over the last of its time (egui's animation time, the app's 1/12 s): each
+    // frame asked for at once then, so the fade is drawn.
+    while time(&h) - first < 3.8 - 1.0 / 24.0 {
+        step(&mut h);
+    }
+    assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
+    // The first taken down at 3.8 s, the second still up.
+    let mut frames = 0;
+    while toasts_shown(&h).len() == 2 {
+        assert!(time(&h) - first < 3.8, "up past its time");
+        step(&mut h);
+        frames += 1;
+        assert!(frames < 100_000, "never taken down");
+    }
+    let up = time(&h) - first;
+    assert!((3.8..3.8 + frame).contains(&up), "{up}");
+    assert_eq!(
+        newest_toast(&h).as_deref(),
+        Some(silico_app::app::FILTERS_SAID)
+    );
+    assert_eq!(toasts_shown(&h).len(), 1);
+    step(&mut h);
+    assert!(!anywhere(&h, "Nothing to undo"));
+    assert!(anywhere(&h, silico_app::app::FILTERS_SAID));
+    // The second at its own 3.8 s.
+    while !toasts_shown(&h).is_empty() {
+        assert!(time(&h) - second < 3.8, "up past its time");
+        step(&mut h);
+        frames += 1;
+        assert!(frames < 100_000, "never taken down");
+    }
+    let up = time(&h) - second;
+    assert!((3.8..3.8 + frame).contains(&up), "{up}");
+    step(&mut h);
+    assert!(!anywhere(&h, silico_app::app::FILTERS_SAID));
+    // None shown: the frame asked for is the idle one.
+    let delay = repaint_delay(&h);
+    assert!(
+        delay.is_some_and(|delay| {
+            delay > silico_core::disk::DISK_CHECK_INTERVAL && delay <= IDLE_FRAME
+        }),
+        "{delay:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
-fn closed_tabs_go_at_once_and_their_pictures_and_closes_follow() {
-    let (f, renderer) = thumbnailed();
-    let names = ["a.silico", "b.silico", "c.silico"];
-    let texts: Vec<String> = names
-        .iter()
-        .map(|name| EXAMPLE.replace("Clearance for an M5 bolt", name))
-        .collect();
-    let paths: Vec<PathBuf> = names
-        .iter()
-        .zip(&texts)
-        .map(|(name, text)| f.file(name, text))
-        .collect();
-    let mut h = f.thumbnailing();
-    for path in &paths {
-        open_and_wait(&mut h, path);
+fn undo_and_redo_say_the_step_they_took_once_it_is_done_or_that_there_was_none() {
+    use eframe::egui::Key;
+    // The prototype's `undo` and `redo`: "Undid: " or "Redid: " and the step, as Undo's and
+    // Redo's tooltips name it ("Rename Pin", the name it replaced); with nothing to step,
+    // "Nothing to undo" and "Nothing to redo".
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    command_key(&mut h, Key::Z);
+    toasted(&mut h, "Nothing to undo");
+    command_key(&mut h, Key::Y);
+    toasted(&mut h, "Nothing to redo");
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    // Said once the core has answered, never at the press: the session at the undo's new
+    // revision when it shows.
+    let before = h.state().tabs()[0].revision;
+    command_key(&mut h, Key::Z);
+    toasted(&mut h, "Undid: Rename Pin");
+    assert!(h.state().tabs()[0].revision > before);
+    assert_eq!(toast_icon(&h, "Undid: Rename Pin").as_deref(), Some("Info"));
+    settled(&mut h);
+    let before = h.state().tabs()[0].revision;
+    redo_by_key(&mut h);
+    toasted(&mut h, "Redid: Rename Pin");
+    assert!(h.state().tabs()[0].revision > before);
+    // Undone back to the file's document: nothing more to undo, said so.
+    undo_by_key(&mut h);
+    toasted(&mut h, "Undid: Rename Pin");
+    step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
+    command_key(&mut h, Key::Z);
+    toasted(&mut h, "Nothing to undo");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_says_what_it_wrote_at_which_revision_once_done_or_that_the_file_matches() {
+    use eframe::egui::Key;
+    use silico_app::toast::Kind;
+    // The prototype's `save`: "Saved <file> (revision N)" with its check icon, N the
+    // session's revision after the save (1 as opened, 2 after the rename, 3 once the save
+    // writes it, by hand); or "Nothing to save: <file> matches the file.", of a file
+    // `status` found unchanged.
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared", file_unchanged);
+    let matches = "Nothing to save: example.silico matches the file.";
+    command_key(&mut h, Key::S);
+    toasted(&mut h, matches);
+    assert_eq!(toast_icon(&h, matches).as_deref(), Some("Info"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    command_key(&mut h, Key::S);
+    let saved = "Saved example.silico (revision 3)";
+    toasted(&mut h, saved);
+    // Written by then, and the status bar says so too.
+    assert!(std::fs::read_to_string(&path).unwrap().contains("Pinx"));
+    let newest = toasts_shown(&h).pop().unwrap();
+    assert_eq!(newest.1, Kind::Check);
+    assert_eq!(toast_icon(&h, saved).as_deref(), Some("Done"));
+    step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared again", file_unchanged);
+    command_key(&mut h, Key::S);
+    toasted(&mut h, matches);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether the first tab's last `status` found its file as the session last read or wrote it.
+fn file_unchanged(h: &AppHarness) -> bool {
+    h.state().tabs()[0]
+        .status
+        .as_ref()
+        .is_some_and(|status| status.disk == Some(silico_core::disk::Disk::Unchanged))
+}
+
+/// Command+`key` pressed once, then held: 30 of the system's repeats of it, each a frame.
+fn command_key_held(h: &mut AppHarness, key: eframe::egui::Key) {
+    use eframe::egui::{Event, Modifiers};
+    command_key(h, key);
+    for _ in 0..30 {
+        h.event(Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: Modifiers::COMMAND,
+        });
+        step(h);
     }
-    all_settled(&mut h);
-    frames(&mut h, 10);
-    // Every render's meshing held, so no picture can be drawn.
-    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
-    for name in names {
-        h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
-            .click();
-        // Gone by the next frame, its picture still to draw.
-        step(&mut h);
-        step(&mut h);
-        assert!(
-            h.state().tabs().iter().all(|tab| tab.name() != name),
-            "{name} waited on its picture"
-        );
-    }
-    frames(&mut h, 10);
-    assert!(f.thumb_files().is_empty());
-    assert!(renderer.sent().is_empty());
-    hold.release();
-    let mut want: Vec<String> = texts.iter().map(|text| thumb_of(text.as_bytes())).collect();
-    want.sort();
-    step_until(&mut h, "every picture written", |_| f.thumb_files() == want);
-    assert_eq!(renderer.sent().len(), 3);
-    // And each session closed: each file opens again, which a session holding it refuses.
-    for path in &paths {
-        step_until(&mut h, "its session closed", |_| {
-            let opened = f.sessions.open(path, false).wait();
-            let closes = opened.result.is_ok();
-            if let Ok(opened) = opened.result {
-                f.sessions.close(&opened.session).wait().result.unwrap();
+    step(h);
+}
+
+#[test]
+fn save_with_its_edits_undone_and_the_file_not_known_to_match_sends_the_commit() {
+    use eframe::egui::Key;
+    use silico_core::disk::{Disk, Found};
+    // The pin renamed, then undone back to the file's document: nothing unsaved, but the
+    // transaction open; then the file can't be read (the watch's reader says so). Save sends
+    // the commit in the frame it's pressed, the core's answer deciding: it writes nothing and
+    // ends the transaction, and "matches the file" isn't said.
+    let unreadable = Arc::new(AtomicBool::new(false));
+    let read: Reader = {
+        let unreadable = Arc::clone(&unreadable);
+        Arc::new(move |path: &Path| {
+            if unreadable.load(Ordering::SeqCst) {
+                Found::Unreadable
+            } else {
+                plain_read(path)
             }
-            closes
-        });
-    }
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn a_quit_draws_nothing() {
-    let (f, renderer) = thumbnailed();
-    let saved = f.file("saved.silico", EXAMPLE);
-    let edited = f.file(
-        "edited.silico",
-        &EXAMPLE.replace("Clearance for an M5 bolt", "Edited"),
+        })
+    };
+    let f = fixture_reading(Some(read));
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    undo_by_key(&mut h);
+    step_until(&mut h, "undone back", |h| {
+        !h.state().tabs()[0].unsaved() && h.state().tabs()[0].transaction
+    });
+    unreadable.store(true, Ordering::SeqCst);
+    step_until(&mut h, "the file found unreadable", |h| {
+        h.state().tabs()[0]
+            .status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(Disk::Unreadable))
+    });
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    command_key(&mut h, Key::S);
+    assert_eq!(h.state().tabs()[0].saves, 1, "the commit sent at the press");
+    step_until(&mut h, "the transaction ended", |h| {
+        !h.state().tabs()[0].transaction
+    });
+    assert!(
+        !toasts_shown(&h)
+            .iter()
+            .any(|(text, ..)| text.starts_with("Nothing to save")),
+        "{:?}",
+        toasts_shown(&h)
     );
-    let mut h = f.thumbnailing();
-    open_and_wait(&mut h, &saved);
-    open_and_wait(&mut h, &edited);
-    all_settled(&mut h);
-    step_until(&mut h, "its timeline", |h| shows(h, "Timeline", "Hole"));
-    // The second edited, so the quit asks; the first saved and built.
-    f2_typed(&mut h, "Hole", "Bore");
-    h.key_press(Key::Enter);
-    step_until(&mut h, "renamed", |h| {
-        tab_named(h, "edited.silico").transaction && shows(h, "Timeline", "Bore")
-    });
-    close_window(&mut h);
-    step_until(&mut h, "the question", |h| {
-        h.query_by_label_contains("Save changes before quitting?")
-            .is_some()
-    });
-    h.get_by_role_and_label(Role::Button, "Don't save")
-        .click_accesskit();
-    step_until(&mut h, "every tab closed", |h| h.state().tabs().is_empty());
-    frames(&mut h, 20);
-    assert!(renderer.sent().is_empty(), "a quit drew a picture");
-    assert_eq!(thumbs(&h).renders_written, 0);
     assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
-fn reopening_a_part_whose_session_is_still_closing_waits_for_the_close_and_then_opens() {
-    let (f, renderer) = thumbnailed();
-    let path = f.file("block.silico", EXAMPLE);
-    let mut h = f.thumbnailing();
-    open_and_wait(&mut h, &path);
-    all_settled(&mut h);
-    frames(&mut h, 10);
-    // Its render's meshing held: its session stays open, drawing, after its tab has gone.
-    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
-    closed(&mut h, "block.silico");
-    step_until(&mut h, "listed in Recent", |h| {
-        recent_names(h) == ["block.silico"]
-    });
-    // Clicked in Recent at once: held, not refused, and nothing opened yet.
-    h.get_by_role_and_label(Role::Button, "block.silico")
-        .click();
-    // Long enough for a refusal, which the core gives at once, to be said.
-    let until = Instant::now() + Duration::from_millis(500);
-    while Instant::now() < until {
+fn undo_held_with_nothing_to_undo_shows_one_toast() {
+    // #514's review: each repeat of a held key asks again; a toast saying what one shown
+    // says, with its icon, isn't stacked again.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    command_key_held(&mut h, eframe::egui::Key::Z);
+    let shown: Vec<String> = toasts_shown(&h).into_iter().map(|t| t.0).collect();
+    assert_eq!(shown, ["Nothing to undo"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_held_on_a_clean_titled_part_shows_one_toast() {
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared", file_unchanged);
+    command_key_held(&mut h, eframe::egui::Key::S);
+    let shown: Vec<String> = toasts_shown(&h).into_iter().map(|t| t.0).collect();
+    assert_eq!(shown, ["Nothing to save: example.silico matches the file."]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_with_a_dialog_open_say_nothing_to_undo_or_redo_of_nothing() {
+    use eframe::egui::Key;
+    // A dialog open holds Undo off with its Cancel to come: "Nothing to undo" isn't said.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    settled(&mut h);
+    double_click(&mut h, "Timeline", "Block");
+    step_until(&mut h, "its dialog", dialog_open);
+    settled(&mut h);
+    for _ in 0..10 {
         step(&mut h);
     }
-    assert!(
-        h.state().tabs().is_empty(),
-        "opened before its session closed"
-    );
-    assert_eq!(h.state().message(), None, "the reopen was refused");
-    assert!(f.thumb_files().is_empty());
+    assert!(!h.state().tabs()[0].unsettled());
+    command_key(&mut h, Key::Z);
+    command_key(&mut h, Key::Y);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(dialog_open(&h));
+    assert_eq!(toasts_shown(&h), []);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_with_a_sketch_drag_pressed_say_nothing_to_undo_or_redo_of_nothing() {
+    use eframe::egui::Key;
+    use silico_app::sketch::PointerAction::{Press, Release};
+    // A point pressed in sketch mode and held, its drag not begun: Undo is held off till its
+    // end, whose edit is to come. "Nothing to undo" isn't said. Its points under defined
+    // (`counting`), so a press on one grabs it.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    sketch_events(&f, &mut h, &[pointer(Press, 50.0, 30.0)]);
+    step(&mut h);
+    assert!(the_drag(&h).is_some_and(|d| d.under_way() && !d.in_flight()));
+    assert!(!h.state().tabs()[0].unsettled());
+    command_key(&mut h, Key::Z);
+    command_key(&mut h, Key::Y);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(the_drag(&h).is_some_and(|d| d.under_way()));
+    assert_eq!(toasts_shown(&h), []);
+    sketch_events(&f, &mut h, &[pointer(Release, 50.0, 30.0)]);
+    step(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_answered_while_home_is_shown_is_not_said_once_the_document_is_shown_again() {
+    use eframe::egui::Key;
+    // The block's length edited, its rebuild held, so a save waits on it; Home shown, then
+    // the rebuild let go: the save answers while Home is shown, and what the tab would say
+    // is dropped, as a tab not shown's is, never shown later out of its context.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    settled(&mut h);
+    let hold = edit_the_block_held(&f, &mut h);
+    command_key(&mut h, Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
     hold.release();
-    step_until(&mut h, "reopened", |h| {
+    step_until(&mut h, "saved", |h| !h.state().tabs()[0].unsaved());
+    assert!(std::fs::read_to_string(&path).unwrap().contains("41"));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(start_shown(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        !toasts_shown(&h)
+            .iter()
+            .any(|(text, ..)| text.starts_with("Saved")),
+        "{:?}",
+        toasts_shown(&h)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// From a rebuild of the example whose hole (its cut) is held, the block and the pin built:
+/// 3 of its plan's 4 steps, by hand (the block made at the origin; the pin made, then moved
+/// to its position, a primitive off the origin being two steps; the cut), `stop` stopping it:
+/// the toast says how far it got and Rebuild's key, off macOS, once `status` says it
+/// stopped.
+fn a_stop_said(stop: impl Fn(&mut AppHarness)) {
+    let f = fixture();
+    let hold = f.kernel.hold(|op| matches!(op, Op::Boolean { .. }));
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app();
+    h.ctx.set_os(eframe::egui::os::OperatingSystem::Nix);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    let progress = |h: &AppHarness| {
         h.state()
             .tabs()
+            .first()
+            .and_then(|tab| tab.status.as_ref())
+            .and_then(|status| status.rebuild.progress.as_ref())
+            .map(|progress| (progress.done, progress.steps))
+    };
+    // The hole's cut started (and held): the block and the pin are built by then.
+    step_until(&mut h, "the hole's cut started", |_| {
+        f.kernel
+            .calls()
             .iter()
-            .any(|tab| tab.name() == "block.silico")
+            .any(|call| matches!(call.op, Op::Boolean { .. }))
     });
-    assert_eq!(f.thumb_files(), [thumb_of(EXAMPLE.as_bytes())]);
-    assert_eq!(renderer.sent().len(), 1);
+    step_until(&mut h, "its status read", |h| progress(h).is_some());
+    assert_eq!(progress(&h), Some((3, 4)));
+    assert!(toasts_shown(&h).is_empty());
+    stop(&mut h);
+    let said = "Rebuild stopped at step 3 of 4. Rebuild (Ctrl+B) resumes it.";
+    toasted(&mut h, said);
+    assert!(rebuild_stopped(&h));
+    assert_eq!(toast_icon(&h, said).as_deref(), Some("Info"));
+    // The status bar says it too.
+    assert_eq!(
+        status_said(&h, "Rebuild stopped").as_deref(),
+        Some("Rebuild stopped at 3 of 4")
+    );
+    // Said once.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(toasts_shown(&h).len(), 1);
+    hold.release();
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_stop_button_says_how_far_the_rebuild_got_and_the_key_that_resumes_it() {
+    a_stop_said(|h| {
+        h.get_by_role_and_label(Role::Button, "Stop").click();
+        step(h);
+    });
+}
+
+#[test]
+fn esc_says_how_far_the_rebuild_it_stopped_got_and_the_key_that_resumes_it() {
+    a_stop_said(|h| {
+        h.key_press(eframe::egui::Key::Escape);
+        step(h);
+    });
 }
 
 // ---- #487: while a modal asks, nothing behind it takes input ----
@@ -51502,5 +51401,605 @@ fn the_timelines_arrows_walk_nothing_while_the_gate_refuses_the_document() {
         pressed_with(&mut h, Modifiers::NONE, key);
         assert_eq!(feature_selected(&h).as_deref(), Some(HOLE_ID), "{key:?}");
     }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The start page's thumbnails (`silico_app::thumbs`) ----
+
+/// Sessions on the fake kernel that render through the core's stand-in renderer, which
+/// answers each render with `PNG {width}x{height}` and records its scene; each file compared
+/// on disk, and reloaded when it changes, if `watch`.
+fn thumbnailed_with(watch: bool) -> (Fixture, Arc<silico_core::fake::FakeRenderer>) {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let sketches = FakeSketches::new();
+    let renderer = Arc::new(silico_core::fake::FakeRenderer::new());
+    let sessions = stand_in_sessions(&dir, &kernel, &sketches);
+    let sessions = if watch {
+        let now: Clock = Arc::new(Instant::now);
+        sessions
+            .watching_disk(Duration::ZERO, Arc::new(plain_read), now)
+            .unwrap()
+    } else {
+        sessions
+    };
+    let sessions = sessions.rendering(Arc::clone(&renderer));
+    let f = Fixture {
+        dir,
+        kernel,
+        sketches,
+        sessions: Arc::new(sessions),
+    };
+    (f, renderer)
+}
+
+/// [`thumbnailed_with`], not watching the disk.
+fn thumbnailed() -> (Fixture, Arc<silico_core::fake::FakeRenderer>) {
+    thumbnailed_with(false)
+}
+
+impl Fixture {
+    /// Where these tests keep the thumbnails: beside the recent documents, not yet made.
+    fn thumbs_folder(&self) -> PathBuf {
+        self.dir.path().join("app-data").join("thumbnails")
+    }
+
+    /// The app keeping its recent documents and their thumbnails, the list read.
+    fn thumbnailing(&self) -> AppHarness {
+        let (file, folder) = (self.recents_file(), self.thumbs_folder());
+        let mut h = self.app_made(|app| {
+            app.remembering(Recents::at(file))
+                .thumbnailing(silico_app::thumbs::Thumbs::at(folder))
+        });
+        recents_read(&mut h);
+        h
+    }
+
+    /// The list of recent documents written as `paths`, before the app reads it.
+    fn listing(&self, paths: &[&Path]) {
+        std::fs::create_dir_all(self.recents_file().parent().unwrap()).unwrap();
+        let lines: Vec<&str> = paths.iter().map(|path| path.to_str().unwrap()).collect();
+        std::fs::write(
+            self.recents_file(),
+            format!("silico recent-documents 1\n{}\n", lines.join("\n")),
+        )
+        .unwrap();
+    }
+
+    /// The names of the files in the thumbnails' folder, sorted: none before it's made.
+    fn thumb_files(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.thumbs_folder()) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+/// The name a thumbnail of `bytes` is kept by: their SHA-256 in lower-case hex, `.png`.
+fn thumb_of(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(bytes);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{hex}.png")
+}
+
+/// The app's thumbnails.
+fn thumbs(h: &AppHarness) -> &silico_app::thumbs::Thumbs {
+    h.state().thumbs().unwrap()
+}
+
+/// A PNG, 260 by 160, of one colour, as the png crate encodes it.
+fn plain_png(rgb: [u8; 3]) -> Vec<u8> {
+    let (width, height) = (260, 160);
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    let data: Vec<u8> = (0..width * height).flat_map(|_| rgb).collect();
+    writer.write_image_data(&data).unwrap();
+    writer.finish().unwrap();
+    out
+}
+
+/// The picture in the thumbnail's place of the recent document `name`'s row, if one is drawn
+/// there: the texture of a rectangle filling the place inside its 1-point border.
+fn thumb_drawn(h: &AppHarness, name: &str) -> Option<eframe::egui::TextureId> {
+    use silico_app::theme;
+    let row = h.get_by_role_and_label(Role::Button, name).rect();
+    // `.recent-row`'s 6 in from its left, 52 by 40 on its middle; its border 1 wide.
+    let thumb = eframe::egui::Rect::from_min_size(
+        eframe::egui::pos2(row.left() + 6.0, row.center().y - 20.0),
+        eframe::egui::vec2(52.0, 40.0),
+    );
+    let inside = thumb.shrink(1.0);
+    assert_eq!(
+        (theme::START_RECENT_PADDING_LEFT, theme::START_THUMB_WIDTH),
+        (6.0, 52.0)
+    );
+    shapes_painted(h).into_iter().find_map(|shape| match shape {
+        eframe::egui::Shape::Rect(rect)
+            if (rect.rect.min - inside.min).length() < 1e-3
+                && (rect.rect.max - inside.max).length() < 1e-3 =>
+        {
+            rect.brush.map(|brush| brush.fill_texture_id)
+        }
+        _ => None,
+    })
+}
+
+/// The app bar's Home clicked: the start page shown over the tabs.
+fn home_shown(h: &mut AppHarness) {
+    home_button(h).click();
+    step_until(h, "the start page", start_shown);
+}
+
+/// The tab `name` closed by its Close, and gone.
+fn closed(h: &mut AppHarness, name: &str) {
+    h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
+        .click();
+    step_until(h, "the tab closed", |h| {
+        h.state().tabs().iter().all(|tab| tab.name() != name)
+    });
+}
+
+/// `n` frames stepped: time for anything that would be sent to be sent and answered.
+fn frames(h: &mut AppHarness, n: usize) {
+    for _ in 0..n {
+        step(h);
+    }
+}
+
+/// `n` frames stepped 10 ms apart: time too for the thumbnails' thread, and the commands, to
+/// answer what any of them asked.
+fn paced_frames(h: &mut AppHarness, n: usize) {
+    for _ in 0..n {
+        step(h);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn saves_and_reloads_with_the_start_page_hidden_draw_nothing_and_closing_draws_once() {
+    let (f, renderer) = thumbnailed_with(true);
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    // Saved twice, each a revision built outside a transaction: nothing drawn.
+    for (from, to) in [("Hole", "Bore"), ("Bore", "Drill")] {
+        f2_typed(&mut h, from, to);
+        h.key_press(Key::Enter);
+        step_until(&mut h, "renamed", |h| {
+            h.state().tabs()[0].edits.idle() && shows(h, "Timeline", to)
+        });
+        let saves = h.state().tabs()[0].saves;
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, Key::S);
+        step_until(&mut h, "saved", |h| {
+            let tab = &h.state().tabs()[0];
+            tab.saves == saves + 1 && !tab.unsettled() && !tab.transaction
+        });
+        frames(&mut h, 10);
+    }
+    // Changed on disk twice by another program, each reloaded: nothing drawn.
+    for note in ["An agent's first edit", "An agent's second edit"] {
+        let text = EXAMPLE.replace("Clearance for an M5 bolt", note);
+        std::fs::write(&path, &text).unwrap();
+        step_until(&mut h, "reloaded", |h| {
+            text_of(&f.sessions, h) == text
+                && h.state().tabs()[0].published == Some(h.state().tabs()[0].revision)
+        });
+        frames(&mut h, 10);
+    }
+    assert!(
+        renderer.sent().is_empty(),
+        "nothing drawn with the start page hidden"
+    );
+    // Closed: drawn once, as the file holds it, from Home's view at 260 by 160.
+    closed(&mut h, "block.silico");
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("An agent's second edit"));
+    step_until(&mut h, "its thumbnail kept", |_| {
+        f.thumb_files() == [thumb_of(&bytes)]
+    });
+    assert_eq!(
+        std::fs::read(f.thumbs_folder().join(thumb_of(&bytes))).unwrap(),
+        b"PNG 260x160"
+    );
+    frames(&mut h, 10);
+    let sent = renderer.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].width, sent[0].height), (260, 160));
+    // Home's view, the top, front, right corner: the eye on (1, -1, 1) from the target.
+    let camera = &sent[0].camera;
+    let toward: Vec<f64> = (0..3).map(|i| camera.eye[i] - camera.target[i]).collect();
+    let length = toward.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let corner = 1.0 / 3.0f64.sqrt();
+    for (got, want) in toward.iter().zip([corner, -corner, corner]) {
+        assert!((got / length - want).abs() < 1e-12, "{toward:?}");
+    }
+    assert_eq!(thumbs(&h).renders_written, 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn showing_home_draws_each_open_tab_once_and_closing_it_then_draws_nothing_more() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    frames(&mut h, 10);
+    assert!(renderer.sent().is_empty(), "nothing drawn as it opens");
+    home_shown(&mut h);
+    step_until(&mut h, "its thumbnail kept", |h| {
+        thumbs(h).renders_written == 1 && f.thumb_files() == [thumb_of(EXAMPLE.as_bytes())]
+    });
+    frames(&mut h, 20);
+    assert_eq!(
+        renderer.sent().len(),
+        1,
+        "once while the start page is shown"
+    );
+    // Closed from the app bar, the start page still shown: its revision has its picture.
+    closed(&mut h, "block.silico");
+    frames(&mut h, 20);
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(thumbs(&h).renders_written, 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_part_whose_bytes_have_a_picture_is_not_drawn_again() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    let picture = plain_png([200, 40, 40]);
+    let kept = f.thumbs_folder().join(thumb_of(EXAMPLE.as_bytes()));
+    std::fs::write(&kept, &picture).unwrap();
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "its picture shown", |h| {
+        thumbs(h).picture(path.to_str().unwrap()).is_some()
+    });
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    home_shown(&mut h);
+    step_until(&mut h, "its picture found", |h| {
+        thumbs(h).already_pictured == 1
+    });
+    // Nor as it closes: its revision is known to have one.
+    closed(&mut h, "block.silico");
+    frames(&mut h, 20);
+    assert!(renderer.sent().is_empty());
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert_eq!(std::fs::read(&kept).unwrap(), picture);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_shows_a_parts_picture_only_for_the_bytes_it_was_drawn_from() {
+    let (f, renderer) = thumbnailed();
+    let drawn = f.file("drawn.silico", EXAMPLE);
+    let corrupt = f.file("corrupt.silico", TWO_BOXES);
+    let bare = f.file("bare.silico", A_BOX);
+    let gone = f.dir.path().join("gone.silico");
+    let folder = f.thumbs_folder();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join(thumb_of(EXAMPLE.as_bytes())),
+        plain_png([200, 40, 40]),
+    )
+    .unwrap();
+    // A corrupt picture: a PNG's signature, then nothing a PNG is.
+    std::fs::write(
+        folder.join(thumb_of(TWO_BOXES.as_bytes())),
+        b"\x89PNG\r\n\x1a\nnot the rest of one",
+    )
+    .unwrap();
+    f.listing(&[&drawn, &corrupt, &bare, &gone]);
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "the drawn part's picture", |h| {
+        thumbs(h).picture(drawn.to_str().unwrap()).is_some()
+    });
+    step(&mut h);
+    let texture = thumbs(&h).picture(drawn.to_str().unwrap()).unwrap();
+    // The cell inside its border, 50 by 38, at two pixels a point.
+    assert_eq!(texture.size(), [100, 76]);
+    let id = texture.id();
+    assert_eq!(thumb_drawn(&h, "drawn.silico"), Some(id));
+    // The others' icons: a corrupt picture, none, and a document not found.
+    for name in ["corrupt.silico", "bare.silico", "gone.silico"] {
+        assert_eq!(thumb_drawn(&h, name), None, "{name}");
+    }
+    assert!(renderer.sent().is_empty(), "nothing opened, nothing drawn");
+    drop(h);
+    // Changed by another program: its picture is of bytes it no longer has. The next start
+    // shows its icon.
+    std::fs::write(&drawn, SKETCHED_EXAMPLE).unwrap();
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "the pictures looked for", |h| thumbs(h).looks >= 1);
+    step(&mut h);
+    assert!(thumbs(&h).picture(drawn.to_str().unwrap()).is_none());
+    assert_eq!(thumb_drawn(&h, "drawn.silico"), None);
+    // Opened, and the start page shown over it: drawn for the bytes it has now.
+    open_and_wait(&mut h, &drawn);
+    settled(&mut h);
+    home_shown(&mut h);
+    step_until(&mut h, "drawn again", |_| {
+        f.thumb_files()
+            .contains(&thumb_of(SKETCHED_EXAMPLE.as_bytes()))
+    });
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_looks_again_each_time_it_is_shown() {
+    let (f, _renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    std::fs::write(
+        f.thumbs_folder().join(thumb_of(EXAMPLE.as_bytes())),
+        plain_png([200, 40, 40]),
+    )
+    .unwrap();
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "its picture shown", |h| {
+        thumbs(h).picture(path.to_str().unwrap()).is_some()
+    });
+    // Opened (the list as it was: it was first already), then changed on disk by another
+    // program while the start page is hidden.
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    std::fs::write(&path, SKETCHED_EXAMPLE).unwrap();
+    frames(&mut h, 10);
+    let looks = thumbs(&h).looks;
+    // Shown again: looked at again, so its picture, of bytes it no longer has, isn't shown.
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    assert!(thumbs(&h).picture(path.to_str().unwrap()).is_none());
+    // Not looked at again while it stays shown, its list the same.
+    let looks = thumbs(&h).looks;
+    paced_frames(&mut h, 20);
+    assert_eq!(thumbs(&h).looks, looks);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_picture_looked_at_again_keeps_its_texture_until_its_documents_bytes_change() {
+    let (f, _renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    for (text, rgb) in [(EXAMPLE, [200, 40, 40]), (SKETCHED_EXAMPLE, [40, 40, 200])] {
+        std::fs::write(
+            f.thumbs_folder().join(thumb_of(text.as_bytes())),
+            plain_png(rgb),
+        )
+        .unwrap();
+    }
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    let shown = |h: &AppHarness| {
+        thumbs(h)
+            .picture(path.to_str().unwrap())
+            .map(eframe::egui::TextureHandle::id)
+    };
+    step_until(&mut h, "its picture shown", |h| shown(h).is_some());
+    let first = shown(&h).unwrap();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    // Shown again, its bytes the same: looked at again, its picture's texture kept.
+    let looks = thumbs(&h).looks;
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    assert_eq!(shown(&h), Some(first));
+    // Its bytes changed by another program to those of the other picture kept: that one,
+    // uploaded.
+    std::fs::write(&path, SKETCHED_EXAMPLE).unwrap();
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    let looks = thumbs(&h).looks;
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    let second = shown(&h).unwrap();
+    assert_ne!(second, first);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_render_refused_leaves_the_icon_and_says_nothing() {
+    let (f, renderer) = thumbnailed();
+    renderer.fail_with(Error::new(
+        ErrorCode::WorkerCrashed,
+        "the render worker crashed",
+    ));
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    home_shown(&mut h);
+    step_until(&mut h, "the refusal taken", |h| {
+        thumbs(h).renders_dropped == 1
+    });
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert!(f.thumb_files().is_empty());
+    assert!(!anywhere(&h, "render worker"));
+    assert!(h.state().tabs()[0].message.is_none());
+    // Not tried again while the start page stays shown, nor while it's hidden; tried again
+    // once it's shown again.
+    paced_frames(&mut h, 20);
+    assert_eq!((renderer.sent().len(), thumbs(&h).renders_dropped), (1, 1));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    paced_frames(&mut h, 20);
+    assert_eq!(renderer.sent().len(), 1);
+    home_shown(&mut h);
+    step_until(&mut h, "tried again", |h| thumbs(h).renders_dropped == 2);
+    assert_eq!(renderer.sent().len(), 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_untitled_part_is_never_drawn() {
+    let (f, renderer) = thumbnailed();
+    let mut h = f.thumbnailing();
+    new_part(&mut h);
+    settled(&mut h);
+    home_shown(&mut h);
+    frames(&mut h, 20);
+    closed(&mut h, "Untitled");
+    frames(&mut h, 20);
+    let thumbs = thumbs(&h);
+    assert_eq!(
+        (thumbs.renders_written, thumbs.renders_dropped),
+        (0, 0),
+        "no render asked"
+    );
+    assert!(renderer.sent().is_empty());
+    assert!(f.thumb_files().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Frames stepped until every tab's model is built at its revision, nothing of it under way.
+fn all_settled(h: &mut AppHarness) {
+    step_until(h, "every tab settled", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .all(|tab| tab.edits.idle() && !tab.unsettled() && tab.published == Some(tab.revision))
+    });
+}
+
+#[test]
+fn closed_tabs_go_at_once_and_their_pictures_and_closes_follow() {
+    let (f, renderer) = thumbnailed();
+    let names = ["a.silico", "b.silico", "c.silico"];
+    let texts: Vec<String> = names
+        .iter()
+        .map(|name| EXAMPLE.replace("Clearance for an M5 bolt", name))
+        .collect();
+    let paths: Vec<PathBuf> = names
+        .iter()
+        .zip(&texts)
+        .map(|(name, text)| f.file(name, text))
+        .collect();
+    let mut h = f.thumbnailing();
+    for path in &paths {
+        open_and_wait(&mut h, path);
+    }
+    all_settled(&mut h);
+    frames(&mut h, 10);
+    // Every render's meshing held, so no picture can be drawn.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    for name in names {
+        h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
+            .click();
+        // Gone by the next frame, its picture still to draw.
+        step(&mut h);
+        step(&mut h);
+        assert!(
+            h.state().tabs().iter().all(|tab| tab.name() != name),
+            "{name} waited on its picture"
+        );
+    }
+    frames(&mut h, 10);
+    assert!(f.thumb_files().is_empty());
+    assert!(renderer.sent().is_empty());
+    hold.release();
+    let mut want: Vec<String> = texts.iter().map(|text| thumb_of(text.as_bytes())).collect();
+    want.sort();
+    step_until(&mut h, "every picture written", |_| f.thumb_files() == want);
+    assert_eq!(renderer.sent().len(), 3);
+    // And each session closed: each file opens again, which a session holding it refuses.
+    for path in &paths {
+        step_until(&mut h, "its session closed", |_| {
+            let opened = f.sessions.open(path, false).wait();
+            let closes = opened.result.is_ok();
+            if let Ok(opened) = opened.result {
+                f.sessions.close(&opened.session).wait().result.unwrap();
+            }
+            closes
+        });
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_quit_draws_nothing() {
+    let (f, renderer) = thumbnailed();
+    let saved = f.file("saved.silico", EXAMPLE);
+    let edited = f.file(
+        "edited.silico",
+        &EXAMPLE.replace("Clearance for an M5 bolt", "Edited"),
+    );
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &saved);
+    open_and_wait(&mut h, &edited);
+    all_settled(&mut h);
+    step_until(&mut h, "its timeline", |h| shows(h, "Timeline", "Hole"));
+    // The second edited, so the quit asks; the first saved and built.
+    f2_typed(&mut h, "Hole", "Bore");
+    h.key_press(Key::Enter);
+    step_until(&mut h, "renamed", |h| {
+        tab_named(h, "edited.silico").transaction && shows(h, "Timeline", "Bore")
+    });
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step_until(&mut h, "every tab closed", |h| h.state().tabs().is_empty());
+    frames(&mut h, 20);
+    assert!(renderer.sent().is_empty(), "a quit drew a picture");
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn reopening_a_part_whose_session_is_still_closing_waits_for_the_close_and_then_opens() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    all_settled(&mut h);
+    frames(&mut h, 10);
+    // Its render's meshing held: its session stays open, drawing, after its tab has gone.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    closed(&mut h, "block.silico");
+    step_until(&mut h, "listed in Recent", |h| {
+        recent_names(h) == ["block.silico"]
+    });
+    // Clicked in Recent at once: held, not refused, and nothing opened yet.
+    h.get_by_role_and_label(Role::Button, "block.silico")
+        .click();
+    // Long enough for a refusal, which the core gives at once, to be said.
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs().is_empty(),
+        "opened before its session closed"
+    );
+    assert_eq!(h.state().message(), None, "the reopen was refused");
+    assert!(f.thumb_files().is_empty());
+    hold.release();
+    step_until(&mut h, "reopened", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .any(|tab| tab.name() == "block.silico")
+    });
+    assert_eq!(f.thumb_files(), [thumb_of(EXAMPLE.as_bytes())]);
+    assert_eq!(renderer.sent().len(), 1);
     assert_eq!(never_waits::waits(), 0);
 }
