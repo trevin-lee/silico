@@ -2507,21 +2507,22 @@ impl Tab {
                 .any(|under| matches!(under, Under::Step { .. }))
     }
 
-    /// Whether Undo can step: an edit still to answer (the undo waits behind it), or an
-    /// edit to undo as the status of the tab's newest revision counts them; never while
-    /// another step is under way, whose answer moves the counts, nor while a dialog is open,
-    /// whose Cancel undoes its edits, nor while sketch mode's drag is under way (from its
-    /// press to its end's answer, [`Drag::under_way`]), whose end lands an edit of its own;
-    /// once that has answered, its edit is undone as any other's, whether or not the read of
-    /// it ever comes (its rebuild stopped, or failing). In sketch mode,
-    /// as SolidWorks allows, but never past the state it opened at.
+    /// Whether Undo can step: a change still to answer (the undo waits behind it, as
+    /// SolidWorks' Undo takes back what was just done: the first edit's too, whose `begin`
+    /// is still to answer, #544), or an edit to undo as the status of the tab's newest
+    /// revision counts them; never while another step is under way, whose answer moves the
+    /// counts, nor while a dialog is open, whose Cancel undoes its edits, nor while sketch
+    /// mode's drag is under way (from its press to its end's answer, [`Drag::under_way`]),
+    /// whose end lands an edit of its own; once that has answered, its edit is undone as any
+    /// other's, whether or not the read of it ever comes (its rebuild stopped, or failing).
+    /// In sketch mode, as SolidWorks allows, but never past the state it opened at.
     pub fn undoable(&self) -> bool {
-        self.transaction
+        (self.transaction || self.beginning)
             && !self.in_dialog()
             && !self.drag.as_ref().is_some_and(Drag::under_way)
             && self.sketch_lets_undo()
             && !self.stepping()
-            && (!self.edits.idle()
+            && (self.change_under_way()
                 || (self.synced()
                     && self
                         .transaction()
@@ -2741,14 +2742,24 @@ impl Tab {
 
     /// Whether sketch mode, if it's open, lets an undo step: it has opened (everything asked
     /// before it has answered), and the session isn't at the state it opened at (for Create
-    /// Sketch, the state its add came to).
+    /// Sketch, the state its add came to), or a change is still to answer, which the undo
+    /// waits for (one that leaves the session there drops it, never past it: [`advance`]).
+    ///
+    /// [`advance`]: Self::advance
     fn sketch_lets_undo(&self) -> bool {
         let Some(mode) = &self.sketch else {
             return true;
         };
-        mode.undo_floor
-            .or(mode.opened_at)
-            .is_some_and(|floor| self.state_of(self.revision) != self.state_of(floor))
+        mode.undo_floor.or(mode.opened_at).is_some_and(|floor| {
+            self.state_of(self.revision) != self.state_of(floor) || self.change_under_way()
+        })
+    }
+
+    /// Whether a change of the tab's is still to answer: an edit in flight or queued, or a
+    /// move, a suppression, a deletion, an add, a sketch edit, or a drag, queued or running
+    /// ([`changing`](Self::changing)). An undo asked meanwhile waits behind it.
+    fn change_under_way(&self) -> bool {
+        !self.edits.idle() || self.changing()
     }
 
     /// The name of the sketch open, as its browser row gives it ("Sketch" until it's added
@@ -4749,8 +4760,22 @@ impl Tab {
                 } => {
                     let state = self.state_of(self.revision);
                     // Sketch mode's undo, come up with the session at its floor already (one
-                    // queued behind another that got there): dropped, never past it.
+                    // queued behind another that got there, or behind a change that left it
+                    // there): dropped, never past it.
                     if undo && floor.is_some_and(|floor| self.state_of(floor) == state) {
+                        continue;
+                    }
+                    // Come up with no transaction open (it waited behind a first edit whose
+                    // refusal rolled back the transaction begun for it, or behind a save):
+                    // nothing before it under way and nothing to step, so said, as the
+                    // prototype's `undo` says it, and nothing sent (`undo` and `redo` are
+                    // refused outside a transaction).
+                    if !self.transaction {
+                        self.toasts.push(Toast::info(if undo {
+                            NOTHING_TO_UNDO
+                        } else {
+                            NOTHING_TO_REDO
+                        }));
                         continue;
                     }
                     // What it takes back or gives back, named as Undo's or Redo's tooltip
@@ -13086,6 +13111,50 @@ mod tests {
     }
 
     #[test]
+    fn undo_asked_as_the_first_edit_begins_waits_for_it_and_takes_it_back() {
+        // #544: no transaction open; a rename, its `begin` and its edit sent, neither
+        // answered. Undo is on (it waits behind them, as SolidWorks' Undo takes back what was
+        // just done), "Nothing to undo" isn't said, and the undo, sent once they've answered,
+        // takes the rename back: Pin is Pin again, with the rename to redo.
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        assert!(!tab.transaction && !tab.undoable());
+        let sent = tab.sent.len();
+        tab.rename(&sessions, pin.clone(), "PinA");
+        assert!(tab.beginning && !tab.transaction);
+        assert!(tab.undoable());
+        tab.nothing_to_step(true);
+        tab.step(&sessions, true);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet()
+                && tab.synced()
+                && tab
+                    .timeline
+                    .as_ref()
+                    .is_some_and(|timeline| timeline.revision == tab.revision)
+        });
+        assert_eq!(
+            tab.sent[sent..],
+            [Sent::Begin, Sent::Edit("name".to_owned()), Sent::Undo(None)]
+        );
+        assert_eq!(
+            tab.entry(pin.as_str()).map(|entry| entry.name.as_str()),
+            Some("Pin")
+        );
+        let counts = tab.transaction().map(|counts| (counts.undo, counts.redo));
+        assert_eq!(counts, Some((0, 1)));
+        assert!(
+            !toasts_said(tab.take_toasts())
+                .iter()
+                .any(|(text, _)| text == NOTHING_TO_UNDO)
+        );
+    }
+
+    #[test]
     fn an_undo_or_a_redo_is_said_once_its_answer_is_taken_never_as_it_is_sent() {
         use crate::toast::Kind::Info;
         // The pin renamed: one step, "Rename Pin" (by hand). Its undo and its redo, each
@@ -13875,6 +13944,40 @@ mod tests {
         assert!(!tab.transaction);
         assert_eq!(tab.unsaved_edits(), 0);
         assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    }
+
+    #[test]
+    fn undo_asked_behind_a_refused_first_edit_says_nothing_to_undo_and_sends_nothing() {
+        // #544: no transaction open; a radius of -1 typed for the pin (refused by the gate),
+        // then Undo before any answer is taken: it waits behind the edit. The refusal rolls
+        // back the transaction begun for it, so the undo comes up with nothing to undo and no
+        // transaction: said so, once, and never sent (the core refuses `undo` outside one).
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert!(!tab.transaction);
+        // The save's own toast let go.
+        tab.take_toasts();
+        let from = tab.sent.len();
+        tab.edit(&sessions, field_set(&pin, "radius", "-1"));
+        assert!(tab.undoable());
+        tab.step(&sessions, true);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(
+            said.contains("radius"),
+            "the radius wasn't refused: {said:?}"
+        );
+        assert_eq!(
+            tab.sent[from..],
+            [Sent::Begin, Sent::Edit("radius".to_owned()), Sent::Rollback]
+        );
+        assert!(!tab.transaction);
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)]
+        );
     }
 
     #[test]
@@ -14910,15 +15013,21 @@ mod tests {
 
     #[test]
     fn a_refused_undo_in_sketch_mode_gives_its_redo_nothing_to_give_back() {
-        // An undo in sketch mode with nothing to undo (no transaction is open): refused, and
-        // said; none of the mode's own edits undone, so none for its Redo.
+        // An undo in sketch mode with nothing to undo (no transaction is open): said, and
+        // never sent, as the core refuses `undo` outside a transaction (#544: an undo that
+        // waited behind a first edit the core refused comes up so); none of the mode's own
+        // edits undone, so none for its Redo.
         let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
         assert!(!tab.transaction);
         tab.sketch = Some(SketchMode::new(3, None));
+        let sent = tab.sent.clone();
         tab.step(&sessions, true);
-        assert!(tab.stepping(), "nothing asked");
-        taken_until(&mut tab, &sessions, |tab| !tab.stepping());
-        assert!(tab.message.is_some(), "the undo wasn't refused");
+        assert!(!tab.stepping(), "an undo still asked");
+        assert_eq!(tab.sent, sent, "the undo was sent");
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)]
+        );
         assert_eq!(tab.sketch.as_ref().map(|mode| mode.undone), Some(0));
     }
 
