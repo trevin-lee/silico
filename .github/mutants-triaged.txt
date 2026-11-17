@@ -342,6 +342,10 @@ crates/silico-app/src/main.rs | main | replace main -> ExitCode with Default::de
 crates/silico-app/src/main.rs | options | replace options -> eframe::NativeOptions with Default::default() | #298
 crates/silico-app/src/main.rs | options | delete field renderer from struct eframe::NativeOptions expression | #298
 crates/silico-app/src/main.rs | options | delete field viewport from struct eframe::NativeOptions expression | #298
+crates/silico-app/src/thumbs.rs | cover | replace || with && | #531
+crates/silico-app/src/thumbs.rs | cover | replace || with && | #531
+crates/silico-app/src/thumbs.rs | cover | replace || with && | #531
+crates/silico-app/src/thumbs.rs | spans | replace > with >= | #531
 crates/silico-app/src/app.rs | <impl eframe::App for App<P>>::ui | replace <impl eframe::App for App<P>>::ui with () | #298
 crates/silico-app/src/missing.rs | <impl eframe::App for Missing>::ui | replace <impl eframe::App for Missing>::ui with () | #298
 # The app bar as macOS's title bar (#361): `TITLE_BAR_IS_APP_BAR` is false off macOS, where

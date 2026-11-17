@@ -23,6 +23,7 @@ use crate::icons::{Icon, IconSize};
 use crate::recent::{Recent, Recents};
 use crate::shortcuts::Command;
 use crate::theme;
+use crate::thumbs::Thumbs;
 use crate::wake::Wake;
 
 /// How the warm start (decision 10) stands.
@@ -215,6 +216,8 @@ pub(crate) enum Act {
 pub(crate) struct Shown<'a> {
     /// The documents opened lately, if the app keeps a list.
     pub recents: Option<&'a Recents>,
+    /// Their thumbnails, if the app keeps them.
+    pub thumbs: Option<&'a Thumbs>,
     /// Whether Copy MCP config knows a workspace to name: if not, it says so.
     pub workspace_known: bool,
     /// Now, by the wall clock: what each recent document's time is said against ([`when`]).
@@ -755,7 +758,8 @@ fn recent(ui: &mut Ui, shown: &Shown<'_>, act: &mut Act) {
             if at > 0 {
                 ui.add_space(theme::START_RECENT_ROW_GAP);
             }
-            match row(ui, id, recent, shown.now, zone) {
+            let picture = shown.thumbs.and_then(|thumbs| thumbs.picture(&recent.path));
+            match row(ui, id, recent, picture, shown.now, zone) {
                 Row::Opened => *act = Act::Recent(recent.path.clone()),
                 Row::Removed => *act = Act::Remove(recent.path.clone()),
                 Row::None => {}
@@ -898,13 +902,20 @@ enum Row {
 /// What a missing recent document's row offers in place of its time (`.link`).
 pub const REMOVE_FROM_LIST: &str = "Remove from list";
 
-/// A recent document's row, `id`: its thumbnail's place (the document's icon; a warning's if
-/// nothing was at its path), its name and its folder, and "not found" if nothing was; at its
-/// right (`.when`), when it was modified, said at `now` in `zone` ([`when`]; nothing if the
-/// clock gave no time), or, if it's missing,
-/// [`REMOVE_FROM_LIST`], a link that takes its own click. Its name and folder are cut short
-/// before that column and the grid's gap.
-fn row(ui: &mut Ui, id: Id, recent: &Recent, now: Option<Timestamp>, zone: &TimeZone) -> Row {
+/// A recent document's row, `id`: its thumbnail's place (`picture`, the part drawn, if it has
+/// one and is there; else the document's icon, or a warning's if nothing was at its path), its
+/// name and its folder, and "not found" if nothing was; at its right (`.when`), when it was
+/// modified, said at `now` in `zone` ([`when`]; nothing if the clock gave no time), or, if
+/// it's missing, [`REMOVE_FROM_LIST`], a link that takes its own click. Its name and folder are
+/// cut short before that column and the grid's gap.
+fn row(
+    ui: &mut Ui,
+    id: Id,
+    recent: &Recent,
+    picture: Option<&egui::TextureHandle>,
+    now: Option<Timestamp>,
+    zone: &TimeZone,
+) -> Row {
     let size = Vec2::new(ui.available_width(), theme::START_RECENT_ROW_HEIGHT);
     let (_, rect) = ui.allocate_space(size);
     let response = ui.interact(rect, id, Sense::click());
@@ -955,7 +966,7 @@ fn row(ui: &mut Ui, id: Id, recent: &Recent, now: Option<Timestamp>, zone: &Time
         Row::None
     };
     if ui.is_rect_visible(rect) {
-        paint_row(ui, &response, rect, recent, over_link, when_size.x);
+        paint_row(ui, &response, rect, recent, picture, over_link, when_size.x);
     }
     let Some(text) = when_text else {
         return asked;
@@ -1005,12 +1016,14 @@ fn row(ui: &mut Ui, id: Id, recent: &Recent, now: Option<Timestamp>, zone: &Time
 }
 
 /// A recent document's row, but its right column, `when_width` wide: its fill hovered or
-/// focused (or `over_link`), the focus ring, the thumbnail's place, and its name and folder.
+/// focused (or `over_link`), the focus ring, the thumbnail's place (`picture`, or an icon),
+/// and its name and folder.
 fn paint_row(
     ui: &Ui,
     response: &Response,
     rect: Rect,
     recent: &Recent,
+    picture: Option<&egui::TextureHandle>,
     over_link: bool,
     when_width: f32,
 ) {
@@ -1036,15 +1049,19 @@ fn paint_row(
         Stroke::new(1.0, theme::PANEL_BORDER),
         StrokeKind::Inside,
     );
-    let (icon, tint) = if recent.missing {
-        (Icon::Warn, theme::TEXT_DISABLED)
+    if let Some(picture) = picture.filter(|_| !recent.missing) {
+        crate::thumbs::paint(ui.painter(), thumb, picture);
     } else {
-        (Icon::Doc, theme::TEXT_SUBDUED)
-    };
-    icon.image(IconSize::Small).tint(tint).paint_at(
-        ui,
-        Rect::from_center_size(thumb.center(), Vec2::splat(crate::icons::ICON_SIZE)),
-    );
+        let (icon, tint) = if recent.missing {
+            (Icon::Warn, theme::TEXT_DISABLED)
+        } else {
+            (Icon::Doc, theme::TEXT_SUBDUED)
+        };
+        icon.image(IconSize::Small).tint(tint).paint_at(
+            ui,
+            Rect::from_center_size(thumb.center(), Vec2::splat(crate::icons::ICON_SIZE)),
+        );
+    }
     let left = thumb.right() + theme::START_RECENT_COLUMN_GAP;
     // The grid's gap stands before the right column, even an empty one.
     let width = (rect.right()
@@ -1502,6 +1519,7 @@ mod tests {
         assert_eq!(columns(816.0), (48.0, 336.0, 432.0));
         let shown = Shown {
             recents: None,
+            thumbs: None,
             workspace_known: true,
             now: Some(NOW),
             keys: true,
@@ -1671,6 +1689,7 @@ mod tests {
     fn the_actions_and_their_key_caps_are_drawn_as_st_action_and_kbd() {
         let shown = Shown {
             recents: None,
+            thumbs: None,
             workspace_known: true,
             now: Some(NOW),
             keys: true,
@@ -1884,6 +1903,7 @@ mod tests {
     fn copy_mcp_config_is_drawn_as_a_ghost_btn() {
         let shown = Shown {
             recents: None,
+            thumbs: None,
             workspace_known: true,
             now: Some(NOW),
             keys: true,
@@ -1980,6 +2000,7 @@ mod tests {
         let recents = listing(&[bracket.to_str().unwrap(), gone.to_str().unwrap()]);
         let shown = Shown {
             recents: Some(&recents),
+            thumbs: None,
             workspace_known: true,
             now: Some(NOW),
             keys: true,
@@ -2156,6 +2177,7 @@ mod tests {
         let recents = Recents::unkept();
         let shown = Shown {
             recents: Some(&recents),
+            thumbs: None,
             workspace_known: true,
             now: Some(NOW),
             keys: true,
@@ -2378,6 +2400,7 @@ mod tests {
         let mut h = drawn(|ui| {
             let shown = Shown {
                 recents: Some(&recents),
+                thumbs: None,
                 workspace_known: true,
                 now: Some(NOW),
                 keys: true,
@@ -2495,6 +2518,7 @@ mod tests {
         let mut h = drawn(|ui| {
             let shown = Shown {
                 recents: Some(&recents),
+                thumbs: None,
                 workspace_known: true,
                 now: Some(NOW),
                 keys: keys.get(),
@@ -2584,6 +2608,7 @@ mod tests {
         let recents = listing(&[one.to_str().unwrap()]);
         let shown = Shown {
             recents: Some(&recents),
+            thumbs: None,
             workspace_known: true,
             now: Some(NOW),
             keys: true,
@@ -2658,6 +2683,7 @@ mod tests {
         let empty = Recents::unkept();
         let shown = Shown {
             recents: Some(&empty),
+            thumbs: None,
             workspace_known: true,
             now: Some(NOW),
             keys: true,
@@ -2749,6 +2775,7 @@ mod tests {
         let recents = listing(&[one.to_str().unwrap()]);
         let shown = Shown {
             recents: Some(&recents),
+            thumbs: None,
             workspace_known: true,
             now: Some(NOW),
             keys: true,
