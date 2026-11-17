@@ -757,15 +757,23 @@ pub fn joined(ctx: &egui::Context, caps: &[String]) -> String {
 }
 
 /// What a key's cap says where the prototype names it otherwise than egui (its `KEYNAME`):
-/// Esc, ↵ for Enter, and Del, which is ⌫ on macOS (its Backspace).
+/// Esc, ↵ for Enter, and Del, which is ⌫ on macOS (its Backspace); and the start page's ↑
+/// and ↓ (app.js's `renderStart`), where egui has triangles.
 fn key_name(key: Key) -> &'static str {
     match key {
         Key::Escape => "Esc",
         Key::Enter => "↵",
         Key::Delete => "Del",
         Key::Backspace => "⌫",
+        Key::ArrowUp => "↑",
+        Key::ArrowDown => "↓",
         key => key.symbol_or_name(),
     }
+}
+
+/// The cap of `key` alone, as the prototype names it (`key_name`).
+pub fn key_cap(key: Key) -> String {
+    key_name(key).to_owned()
 }
 
 /// A cap for each of `chord`'s modifiers, Command (Ctrl off macOS) first, then Shift, then

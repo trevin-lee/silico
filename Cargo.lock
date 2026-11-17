@@ -6776,6 +6776,7 @@ dependencies = [
  "egui_extras",
  "egui_kittest",
  "egui_tiles",
+ "jiff",
  "libm",
  "lyon_tessellation",
  "png 0.18.1",

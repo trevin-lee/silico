@@ -53,6 +53,24 @@ pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN)
 pub const FILTERS_SAID: &str =
     "F5 shows the selection filters. They live in the toolbar, under SELECT.";
 
+/// The wall clock the start page says each recent document's time against: a test's, to set
+/// by hand, or [`system_time`]. None when it gives no time, and then no time is said.
+pub type WallClock = Arc<dyn Fn() -> Option<jiff::Timestamp> + Send + Sync>;
+
+/// The system's clock as a time, if it can be one (jiff's `Timestamp::now` would panic on a
+/// clock outside its range).
+pub fn system_time() -> Option<jiff::Timestamp> {
+    jiff::Timestamp::try_from(std::time::SystemTime::now()).ok()
+}
+
+/// What's said of a path that can't be used because it isn't UTF-8 (an Open's pick, a drop).
+fn not_utf8(path: &std::ffi::OsStr) -> String {
+    format!(
+        "{} can't be used: its path isn't UTF-8",
+        std::path::Path::new(path).display()
+    )
+}
+
 /// What Reload says with a feature dialog open (⌘R, Ctrl+R elsewhere): as Rebuild everything
 /// does nothing in a dialog, the dialog's OK or Cancel comes first.
 pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload drops what it holds.";
@@ -517,6 +535,12 @@ pub struct App<P: Clients + 'static> {
     tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
+    /// Whether the start page was shown last frame: shown again, its documents are looked
+    /// for again (their times, and which are missing). True at first, as the list's thread
+    /// looks for them as it starts.
+    start_was_shown: bool,
+    /// The wall clock the start page's times are said against.
+    wall: WallClock,
     /// The start page's thumbnails, if the app keeps them.
     thumbs: Option<Thumbs>,
     /// Opens asked of documents whose sessions the thumbnails are still closing (their tabs
@@ -637,6 +661,8 @@ impl<P: Clients + 'static> App<P> {
             home: false,
             tab_in_view: None,
             recents: None,
+            start_was_shown: true,
+            wall: Arc::new(system_time),
             thumbs: None,
             held_opens: Vec::new(),
             columns: crate::columns::Columns::new(),
@@ -662,6 +688,14 @@ impl<P: Clients + 'static> App<P> {
     #[must_use]
     pub fn documents_folder(mut self, documents: Option<PathBuf>) -> Self {
         self.documents = documents;
+        self
+    }
+
+    /// The app, its start page saying each recent document's time against `wall` (a test's
+    /// clock), not the system's.
+    #[must_use]
+    pub fn dated(mut self, wall: WallClock) -> Self {
+        self.wall = wall;
         self
     }
 
@@ -943,7 +977,7 @@ impl<P: Clients + 'static> App<P> {
             }
             self.waker_set = true;
         }
-        self.poll();
+        self.poll(ui.input(|input| input.time));
         let start_shown = self.start_shown();
         if let Some(thumbs) = &mut self.thumbs {
             thumbs.frame(
@@ -972,6 +1006,8 @@ impl<P: Clients + 'static> App<P> {
         // acts, so it comes first in the tab's queue.
         let renamed = self.rename_clicked_away(ui.ctx());
         let (mut next_frame, dialog_key) = self.keys(ui);
+        // Files dropped on the window, opened as Open's pick is.
+        next_frame |= self.take_drops(ui);
         // Under a modal (the shortcut sheet, What's Wrong, and the over-define prompt too; one
         // its keys just opened, `?`, as well), the window takes no input (#487): drawn inert,
         // so no button behind it is clicked, by the pointer or through the accessibility tree,
@@ -1028,10 +1064,26 @@ impl<P: Clients + 'static> App<P> {
                 tab.canvas_unshown();
             }
         }
-        if self.start_shown() {
+        let start_shown = self.start_shown();
+        if start_shown && !self.start_was_shown {
+            // Shown again: each recent document looked for again, off this thread, so a
+            // document saved meanwhile shows its new time.
+            if let Some(recents) = &self.recents {
+                recents.look();
+            }
+        }
+        self.start_was_shown = start_shown;
+        if start_shown {
             // The start page alone between the bars: no toolbar, panes, or dialog.
             self.status_bar(ui, &mut next_frame);
-            let act = egui::CentralPanel::default()
+            // Recent's arrow keys: never a field's, nor under a modal (the sheet's too) or a
+            // menu.
+            let keys = self.asking.is_none()
+                && self.sheet.is_none()
+                && !ui.ctx().text_edit_focused()
+                && !egui::Popup::is_any_open(ui.ctx());
+            let now = (self.wall)();
+            let (act, page) = egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(theme::PANEL_BG))
                 .show(ui, |ui| {
                     if self.tabs.is_empty() {
@@ -1042,8 +1094,10 @@ impl<P: Clients + 'static> App<P> {
                         recents: self.recents.as_ref(),
                         thumbs: self.thumbs.as_ref(),
                         workspace_known: self.workspace().is_some(),
+                        now,
+                        keys,
                     };
-                    start::page(ui, &shown)
+                    (start::page(ui, &shown), ui.max_rect())
                 })
                 .inner;
             self.start_act(ui, act, &mut next_frame);
@@ -1053,6 +1107,10 @@ impl<P: Clients + 'static> App<P> {
                 tab.take_toasts();
                 tab.take_stopped();
             }
+            // The app's own (a drop's refusal, a removal from Recent), over the page's
+            // bottom right.
+            self.toasts.show(ui.ctx(), page);
+            self.raise_toast(ui.ctx(), None);
             self.after_drawing(ui, next_frame, top);
             return;
         }
@@ -1217,8 +1275,10 @@ impl<P: Clients + 'static> App<P> {
         tab.finish_rename(&self.sessions, renaming.feature, &renaming.text)
     }
 
-    /// What the start page's `act` asks: a new untitled part, Open's panel, a recent
-    /// document opened (or its tab shown, if it's open), or the MCP config copied.
+    /// What the start page's `act` asks: a new untitled part, Open's panel, the shortcut
+    /// sheet, a recent document opened (or its tab shown, if it's open), a missing one
+    /// removed from Recent (said in a toast, as the prototype's `openRecent` says it), or
+    /// the MCP config copied.
     fn start_act(&mut self, ui: &Ui, act: start::Act, next_frame: &mut bool) {
         match act {
             start::Act::None => {}
@@ -1227,14 +1287,89 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             start::Act::Open => self.ask_open(ui.ctx()),
+            start::Act::Shortcuts => self.sheet = Some(Sheet::default()),
             start::Act::Recent(path) => *next_frame |= self.open_recent(&path),
+            // Said once the list's thread tells it's done (`poll`).
+            start::Act::Remove(path) => {
+                if let Some(recents) = &self.recents {
+                    recents.remove(&path);
+                }
+            }
             start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
         }
     }
 
-    /// The recent document at `path` opened: its tab shown if it's open, nothing done if its
-    /// open is under way (a double-click, or a second click before the first answers), else
-    /// opened. Both compared by their absolute paths. Whether an open was started.
+    /// The files dropped on the window this frame, in the order dropped (DESIGN.md's start
+    /// page: "Drop a .silico file anywhere in this window to open it"), with a document
+    /// shown or none: each `.silico` one ([`start::names_a_document`]) opened as Open's pick
+    /// is, its refusals the same, or its tab shown if it's open already, as a recent
+    /// document's click does; the rest named in a toast, none of them opened. None is opened
+    /// while a quit closes the tabs, or while a question is asked over the window (New,
+    /// Open, and Recent can't be reached then either, and an open answering mid-quit would
+    /// leave a tab the quit never closes): each is named in a toast, unopened. Whether an
+    /// open was started.
+    fn take_drops(&mut self, ui: &Ui) -> bool {
+        let dropped: Vec<PathBuf> = ui.input(|input| {
+            input
+                .raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path().to_path_buf())
+                .collect()
+        });
+        if dropped.is_empty() {
+            return false;
+        }
+        let name = |path: &PathBuf| {
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        };
+        let now = ui.input(|input| input.time);
+        // Under a modal, as no other input acts behind one (#487): said, and opened by none.
+        let top = self.on_top();
+        if self.quitting || top != OnTop::Window {
+            let names: Vec<String> = dropped.iter().map(name).collect();
+            let said = match top {
+                _ if self.quitting => start::not_opened_quitting(&names),
+                OnTop::Sheet => start::not_opened_until_closed("the shortcut sheet", &names),
+                OnTop::WhatsWrong => start::not_opened_until_closed("What's Wrong", &names),
+                OnTop::Search => start::not_opened_until_closed("the command search", &names),
+                OnTop::Asking | OnTop::Offer | OnTop::Window => start::not_opened_asking(&names),
+            };
+            self.toasts.push(Toast::info(said), now);
+            ui.ctx().request_repaint();
+            return false;
+        }
+        let mut started = false;
+        let mut refused = Vec::new();
+        for path in dropped {
+            if !start::names_a_document(&path) {
+                refused.push(name(&path));
+                continue;
+            }
+            match path.into_os_string().into_string() {
+                Ok(path) => started |= self.open_recent(&path),
+                Err(path) => {
+                    // As Open's pick of such a path is said.
+                    self.message = Some(not_utf8(&path));
+                    self.message_from = None;
+                }
+            }
+        }
+        if !refused.is_empty() {
+            self.toasts
+                .push(Toast::info(start::not_documents(&refused)), now);
+            ui.ctx().request_repaint();
+        }
+        started
+    }
+
+    /// The recent document at `path` (or a document dropped on the window) opened: its tab
+    /// shown if it's open, nothing done if its open is under way (a double-click, a second
+    /// click before the first answers, or the same file dropped twice), else opened. Both
+    /// compared by their absolute paths. Whether an open was started.
     fn open_recent(&mut self, path: &str) -> bool {
         let same = |other: &str| {
             std::path::absolute(other).is_ok_and(|at| at == std::path::Path::new(path))
@@ -1363,10 +1498,30 @@ impl<P: Clients + 'static> App<P> {
 
     /// The opens under way and every tab polled; tabs whose sessions closed dropped; and
     /// what the recent documents' thread has told, a document it dropped said.
-    fn poll(&mut self) {
+    fn poll(&mut self, now: f64) {
         self.columns.poll();
-        let gone = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
-        for recent in gone {
+        let polled = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
+        // Said once the list's thread has dropped it, its list without it taken just now.
+        if let Some(path) = polled.removed.last() {
+            self.toasts.push(
+                Toast::check(format!(
+                    "Removed {} from Recent",
+                    crate::recent::name_of(path)
+                )),
+                now,
+            );
+        }
+        // Its list's file couldn't be written: still listed, as the file has it.
+        if let Some(path) = polled.not_removed.last() {
+            self.toasts.push(
+                Toast::info(format!(
+                    "{} couldn't be removed from Recent: its list couldn't be written",
+                    crate::recent::name_of(path)
+                )),
+                now,
+            );
+        }
+        for recent in polled.gone {
             self.message = Some(format!(
                 "{} isn't in {} any more, so it's no longer listed in Recent",
                 recent.name(),
@@ -2388,10 +2543,7 @@ impl<P: Clients + 'static> App<P> {
         let path = match path.into_os_string().into_string() {
             Ok(path) => path,
             Err(path) => {
-                self.message = Some(format!(
-                    "{} can't be used: its path isn't UTF-8",
-                    std::path::Path::new(&path).display()
-                ));
+                self.message = Some(not_utf8(&path));
                 self.message_from = None;
                 if let Browsed::SaveAs {
                     session,
@@ -3759,6 +3911,25 @@ mod tests {
     use crate::theme;
 
     #[test]
+    fn the_system_time_is_the_clock_std_reads() {
+        // std's clock read on either side of it: the time it gives lies between them.
+        let seconds = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        };
+        let before = i64::try_from(seconds()).unwrap();
+        let given = super::system_time().unwrap().as_second();
+        let after = i64::try_from(seconds()).unwrap();
+        assert!(
+            before <= given && given <= after,
+            "{before} <= {given} <= {after}"
+        );
+        assert!(before > 1_700_000_000, "{before}");
+    }
+
+    #[test]
     fn a_stop_says_how_far_it_got_as_status_counted_it_or_only_that_it_stopped() {
         use crate::tab::StoppedAt;
         // The prototype's `stopRebuild` words, with the app's key.
@@ -4096,7 +4267,7 @@ mod tests {
         assert_eq!(app.active, Some(third));
         // The third's tab closed: the first is shown in its place.
         assert!(app.sessions().close(&third).wait().result.is_ok());
-        app.poll();
+        app.poll(0.0);
         assert_eq!(app.active, Some(first));
         // The second, answering now, was asked after every open still open: it's shown.
         app.take_opens(vec![two]);
@@ -4152,7 +4323,7 @@ mod tests {
         let (first, second) = (session(&one), session(&two));
         app.take_opens(vec![one, two]);
         assert!(app.sessions().close(&first).wait().result.is_ok());
-        app.poll();
+        app.poll(0.0);
         assert_eq!(names(&app), ["two.silico"]);
         assert_eq!(app.open_numbers.keys().collect::<Vec<_>>(), [&second]);
     }
@@ -4170,7 +4341,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while app.tabs().is_empty() {
             assert!(std::time::Instant::now() < deadline, "never opened");
-            app.poll();
+            app.poll(0.0);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         // Opened: a click shows its tab, from Home, and opens nothing.
