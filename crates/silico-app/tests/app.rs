@@ -52127,6 +52127,75 @@ fn redo_with_nothing_to_redo_by_side_of_the_release_says_so_only_before_it() {
 }
 
 #[test]
+fn undo_right_after_the_first_line_is_let_go_takes_the_line_back() {
+    // #544: sketch mode with no edit since it opened; a line let go, then ⌘Z in the same
+    // frame or the next, its add (and the `begin` sent for it) still to answer. Undo waits
+    // for the add and takes the line back, as SolidWorks' Undo takes back the line just
+    // drawn; "Nothing to undo" is never said, and the line is there to redo.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    for next_frame in [false, true] {
+        let f = fixture();
+        let mut h = boxed_line_tool(&f);
+        settled(&mut h);
+        assert!(!h.state().tabs()[0].undoable());
+        let sent = line_held(&mut h);
+        let command = command_modifiers(&h);
+        if next_frame {
+            pane_release(&mut h, [30.0, 60.0]);
+            let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+            assert!(
+                added.contains(&Sent::SketchEdit("sketch_add")),
+                "the line wasn't sent: {added:?}"
+            );
+            h.input_mut().events.push(key_event(Key::Z, command));
+            step(&mut h);
+        } else {
+            let_go_then(&mut h, key_event(Key::Z, command));
+        }
+        let said = said_while_settling(&mut h, NOTHING_TO_UNDO);
+        settled(&mut h);
+        let tab = &h.state().tabs()[0];
+        let added = tab.sent[sent.len()..].to_vec();
+        let add = added
+            .iter()
+            .position(|sent| sent == &Sent::SketchEdit("sketch_add"));
+        let undo = added.iter().position(|sent| matches!(sent, Sent::Undo(_)));
+        assert!(
+            add.is_some_and(|add| undo.is_some_and(|undo| add < undo)),
+            "{next_frame}: {added:?}"
+        );
+        assert!(!said, "{next_frame}: said there was nothing to undo");
+        assert!(tab.redoable(), "{next_frame}");
+        let sketch = sketch_of_text(&f, &h, "s0000001");
+        assert_eq!(sketch.lines.len(), 4, "{next_frame}: {sketch:?}");
+        assert!(
+            !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+            "{next_frame}: {sketch:?}"
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn undo_in_sketch_mode_with_nothing_drawn_says_nothing_to_undo() {
+    // #544's other side: sketch mode with no edit since it opened and nothing under way:
+    // ⌘Z says "Nothing to undo" and sends nothing; the sketch keeps its four lines.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].unsettled());
+    let sent = h.state().tabs()[0].sent.clone();
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    assert!(said_while_settling(&mut h, NOTHING_TO_UNDO));
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn the_toast_stays_over_the_modify_box_and_the_palette_after_a_press_on_the_palette() {
     // #497's review, round 4: the prototype's `#toasts` (z 650) are over `.modify-box` (40),
     // `.sketch-bar` (26) and `.palette` (22); all of one egui order here, the toast is
