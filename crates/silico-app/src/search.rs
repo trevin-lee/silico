@@ -501,6 +501,9 @@ fn label(ui: &mut Ui, rect: Rect, said: &str) {
 #[cfg(test)]
 mod tests {
     use eframe::egui::Pos2;
+    use egui::epaint::{RectShape, TextShape};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
 
     use super::*;
 
@@ -660,6 +663,272 @@ mod tests {
         // A window narrower than the box: the box its width, from its left.
         let narrow = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 600.0));
         assert_eq!(place(narrow, 1).x_range(), egui::Rangef::new(0.0, 400.0));
+    }
+
+    // ---- The box as drawn: styles.css's `.palette-modal`, `.pm-input`, `.pm-list`, `.mi`,
+    // and `.pm-foot`, in a 1200 × 900 window. Its left (1200 − 520) / 2 = 340, its border's
+    // inside 341 to 859, its top 96.
+
+    /// The search over a 1200 × 900 window for `query`, every command on, as the app runs
+    /// it each frame: its keys, then the box.
+    fn shown(query: &str) -> Harness<'static, Search> {
+        let mut h = Harness::builder()
+            .with_size(vec2(1200.0, 900.0))
+            .build_ui_state(
+                |ui, search: &mut Search| {
+                    let row = |command: Command| Row {
+                        label: command.label(),
+                        can: Can::Run,
+                    };
+                    keys(ui, search, &row);
+                    show(ui.ctx(), search, &row);
+                },
+                Search {
+                    query: query.to_owned(),
+                    ..Search::default()
+                },
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    /// Every shape the last frame painted, nested ones flattened.
+    fn painted(h: &Harness<'_, Search>) -> Vec<Shape> {
+        fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+                shape => out.push(shape.clone()),
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &h.output().shapes {
+            flatten(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    fn rects(h: &Harness<'_, Search>) -> Vec<RectShape> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The one text painted whose text is `text`.
+    #[track_caller]
+    fn text(h: &Harness<'_, Search>, text: &str) -> TextShape {
+        let mut found: Vec<TextShape> = painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Text(shown) if shown.galley.text() == text => Some(shown),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} painted {} times", found.len());
+        found.remove(0)
+    }
+
+    /// The rules painted in the search's rule colour: each one's ends.
+    fn rules(h: &Harness<'_, Search>) -> Vec<[Pos2; 2]> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::LineSegment { points, stroke } if stroke.color == theme::SEARCH_RULE => {
+                    Some(points)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[track_caller]
+    fn near(a: f32, b: f32) {
+        assert!((a - b).abs() < 0.01, "{a} isn't {b}");
+    }
+
+    #[track_caller]
+    fn near_rect(a: Rect, b: Rect) {
+        assert!(
+            (a.min - b.min).abs().max_elem() < 0.01 && (a.max - b.max).abs().max_elem() < 0.01,
+            "{a:?} isn't {b:?}"
+        );
+    }
+
+    /// `rows` ↓ pressed, a frame each, and frames for the list to scroll.
+    fn down(h: &mut Harness<'_, Search>, rows: usize) {
+        for _ in 0..rows {
+            h.key_press(Key::ArrowDown);
+            h.run_steps(1);
+        }
+        h.run_steps(8);
+    }
+
+    /// The list's row `at` (from the top of the list for the query), where it's drawn.
+    fn row_rect(h: &Harness<'_, Search>, at: usize) -> Rect {
+        h.query_all_by_role(egui::accesskit::Role::ListBoxOption)
+            .nth(at)
+            .map(|row| row.rect())
+            .unwrap_or_else(|| panic!("no row {at}"))
+    }
+
+    #[test]
+    fn the_field_row_is_38_high_its_icon_12_in_its_field_8_after_and_its_rule_its_last_point() {
+        let h = shown("");
+        // `.pm-input`: 38 high from the border's inside (97 to 135), its `border-bottom`
+        // the last point of it (its middle at 134.5), across the border's inside.
+        let rules = rules(&h);
+        assert!(
+            rules.contains(&[pos2(341.0, 134.5), pos2(859.0, 134.5)]),
+            "{rules:?}"
+        );
+        // The icon (14 square) `padding: 0 12px` in, centred on what's above the rule
+        // (97 to 134, its middle 115.5): from (353, 108.5), drawn on whole points (109);
+        // tinted Gray.550.
+        let icon: Vec<Rect> = rects(&h)
+            .into_iter()
+            .filter(|shape| shape.brush.is_some() && shape.fill == theme::SEARCH_ICON)
+            .map(|shape| shape.rect)
+            .collect();
+        assert_eq!(icon.len(), 1, "{icon:?}");
+        near_rect(
+            icon[0],
+            Rect::from_min_size(pos2(353.0, 109.0), Vec2::splat(14.0)),
+        );
+        // The field `gap: 8px` after the icon, to the padding's 12 before the border: 375
+        // to 847.
+        let field = h
+            .get_by_role_and_label(egui::accesskit::Role::TextInput, TITLE)
+            .rect();
+        near_rect(
+            field,
+            Rect::from_min_max(pos2(375.0, 97.0), pos2(847.0, 134.0)),
+        );
+    }
+
+    #[test]
+    fn the_list_is_under_the_field_its_rows_28_high_in_its_4_and_the_lit_row_lit() {
+        let mut h = shown("");
+        // `.pm-list` from the field's row (135), 340 high at most (40 rows want more), across
+        // the border's inside; its rows (`.mi`, 28 high) in its `padding: 4px`.
+        let list = h
+            .get_by_role_and_label(egui::accesskit::Role::ListBox, TITLE)
+            .rect();
+        near_rect(
+            list,
+            Rect::from_min_max(pos2(341.0, 135.0), pos2(859.0, 475.0)),
+        );
+        near_rect(
+            row_rect(&h, 0),
+            Rect::from_min_max(pos2(345.0, 139.0), pos2(855.0, 167.0)),
+        );
+        // The first row lit (`.mi.hl`), and only it: its fill over its rect.
+        let lit = |h: &Harness<'_, Search>| -> Vec<Rect> {
+            rects(h)
+                .into_iter()
+                .filter(|shape| shape.fill == theme::MENU_ITEM_HOVER_BG)
+                .map(|shape| shape.rect)
+                .collect()
+        };
+        assert_eq!(lit(&h).len(), 1, "{:?}", lit(&h));
+        near_rect(lit(&h)[0], row_rect(&h, 0));
+        // Two down: the third lit, 2 × 28 lower.
+        down(&mut h, 2);
+        assert_eq!(lit(&h).len(), 1, "{:?}", lit(&h));
+        near_rect(
+            lit(&h)[0],
+            Rect::from_min_max(pos2(345.0, 195.0), pos2(855.0, 223.0)),
+        );
+    }
+
+    #[test]
+    fn a_row_moved_to_by_the_keys_is_scrolled_into_view_and_the_wheel_alone_scrolls_freely() {
+        // 40 rows in 332 of list: the 16th starts 15 × 28 = 420 down, past the list's
+        // bottom, until ↓ brings it into view.
+        let mut h = shown("");
+        let inside = Rect::from_min_max(pos2(345.0, 139.0), pos2(855.0, 471.0));
+        assert!(row_rect(&h, 15).top() > inside.bottom());
+        down(&mut h, 15);
+        let row = row_rect(&h, 15);
+        assert!(
+            row.top() >= inside.top() - 0.01 && row.bottom() <= inside.bottom() + 0.01,
+            "{row:?} out of {inside:?}"
+        );
+        // The wheel over the list, no key: it scrolls, the lit first row left out of view
+        // (never brought back each frame).
+        let mut h = shown("");
+        h.event(egui::Event::PointerMoved(pos2(600.0, 300.0)));
+        for _ in 0..10 {
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: Vec2::new(0.0, -5.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.run_steps(8);
+        assert!(
+            row_rect(&h, 0).bottom() < inside.top(),
+            "{:?}",
+            row_rect(&h, 0)
+        );
+    }
+
+    #[test]
+    fn the_foot_is_under_its_rule_each_keys_caps_then_its_words_14_apart_and_mcp_at_its_right() {
+        let h = shown("");
+        // `.pm-foot` from the list's bottom (475): its `border-top` (its middle at 475.5)
+        // across the border's inside, then `padding: 6px 12px` and a 16 line, its middle at
+        // 475 + 1 + 6 + 8 = 490.
+        let rules = rules(&h);
+        assert!(
+            rules.contains(&[pos2(341.0, 475.5), pos2(859.0, 475.5)]),
+            "{rules:?}"
+        );
+        let middle = 490.0;
+        let caps: Vec<Rect> = rects(&h)
+            .into_iter()
+            .filter(|shape| shape.fill == theme::KEY_CAP_BG && shape.rect.top() > 475.0)
+            .map(|shape| shape.rect)
+            .collect();
+        // Each part from the padding's 12 in (353), its caps side by side, its words at
+        // their right, the next part `gap: 14px` after; each cap 16 high on the middle.
+        let mut x = 353.0;
+        let mut at = 0;
+        for (keys, words, said) in [
+            (2, " move", "↑↓ move"),
+            (1, " run", "↵ run"),
+            (1, " close", "Esc close"),
+        ] {
+            for cap in &caps[at..at + keys] {
+                near(cap.left(), x);
+                near(cap.top(), middle - 8.0);
+                near(cap.bottom(), middle + 8.0);
+                x = cap.right();
+            }
+            at += keys;
+            let shown = text(&h, words);
+            near(shown.pos.x, x);
+            near(shown.pos.y + shown.galley.size().y / 2.0, middle);
+            let part = h.get_by_label(said).rect();
+            near(part.top(), middle - 8.0);
+            near(part.bottom(), middle + 8.0);
+            near(part.right(), x + shown.galley.size().x);
+            x = part.right() + 14.0;
+        }
+        assert_eq!(at, caps.len(), "{caps:?}");
+        // MCP's line at the right, the padding's 12 before the border (847), on the middle.
+        let mcp = text(&h, MCP);
+        near(mcp.pos.x + mcp.galley.size().x, 847.0);
+        near(mcp.pos.y + mcp.galley.size().y / 2.0, middle);
+        near_rect(
+            h.get_by_label(MCP).rect(),
+            Rect::from_min_size(mcp.pos, mcp.galley.size()),
+        );
     }
 
     #[test]

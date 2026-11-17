@@ -890,6 +890,39 @@ mod tests {
     }
 
     #[test]
+    fn each_command_has_the_prototypes_icon() {
+        // app.js's `CMD`, each command's `icon` (the command search's row shows it, and a
+        // chevron where `CMD` gives none).
+        for (command, icon) in [
+            (Command::New, Some(Icon::NewDoc)),
+            (Command::Open, Some(Icon::Open)),
+            (Command::Save, Some(Icon::Save)),
+            (Command::Undo, Some(Icon::Undo)),
+            (Command::Redo, Some(Icon::Redo)),
+            (Command::Search, Some(Icon::Search)),
+            (Command::Rebuild, Some(Icon::Rebuild)),
+            (Command::Stop, Some(Icon::Stop)),
+            (Command::FilterFace, Some(Icon::SelFace)),
+            (Command::FilterEdge, Some(Icon::SelEdge)),
+            (Command::FilterVertex, Some(Icon::SelVertex)),
+            (Command::Fit, Some(Icon::Fit)),
+            (Command::Home, Some(Icon::Home)),
+            (Command::LookAt, Some(Icon::LookAt)),
+            (Command::Line, Some(Icon::Line)),
+            (Command::Rectangle, Some(Icon::Rect)),
+            (Command::Circle, Some(Icon::Circle)),
+            (Command::Arc, Some(Icon::Arc)),
+            (Command::Point, Some(Icon::Point)),
+            (Command::Trim, Some(Icon::Trim)),
+            (Command::Dimension, Some(Icon::Dimension)),
+            (Command::Construction, Some(Icon::Construction)),
+            (Command::Cancel, None),
+        ] {
+            assert_eq!(command.entry().icon, icon, "{command:?}");
+        }
+    }
+
+    #[test]
     fn every_command_is_in_the_registry_once_under_its_own_entry() {
         let mut seen = std::collections::BTreeSet::new();
         for entry in &REGISTRY {

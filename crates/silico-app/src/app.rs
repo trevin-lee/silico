@@ -4138,6 +4138,48 @@ mod tests {
     }
 
     #[test]
+    fn a_filter_the_search_ran_is_toggled_once_its_key_pressed_with_it_or_not() {
+        use eframe::egui::{Event, Key, Modifiers};
+        use egui_kittest::Harness;
+
+        use crate::toolbar::FilterKind;
+
+        // The search's queued filter counts as its key pressed: alone, once; with its key
+        // pressed in the same frame too, still once (either is the press).
+        struct Seen {
+            queued: Option<crate::shortcuts::Command>,
+            taken: Vec<FilterKind>,
+        }
+        let mut h = Harness::builder().build_ui_state(
+            |ui, seen: &mut Seen| {
+                let taken = super::filter_keys(ui, false, seen.queued);
+                seen.taken.extend(taken);
+            },
+            Seen {
+                queued: None,
+                taken: Vec::new(),
+            },
+        );
+        h.run();
+        for pressed in [false, true] {
+            h.state_mut().taken.clear();
+            h.state_mut().queued = Some(crate::shortcuts::Command::FilterEdge);
+            if pressed {
+                h.event(Event::Key {
+                    key: Key::E,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                });
+            }
+            h.step();
+            h.state_mut().queued = None;
+            assert_eq!(h.state().taken, [FilterKind::Edges], "pressed: {pressed}");
+        }
+    }
+
+    #[test]
     fn x_e_and_v_are_the_filters_outside_a_sketch_and_left_for_it_inside_one() {
         use eframe::egui::{Event, Key, Modifiers};
         use egui_kittest::Harness;

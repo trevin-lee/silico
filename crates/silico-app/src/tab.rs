@@ -12032,6 +12032,16 @@ mod tests {
     }
 
     #[test]
+    fn select_is_shown_outside_sketches_and_not_in_one() {
+        // SELECT's panel and its keys (the search lists them by it): outside sketches, where
+        // the toolbar shows SOLID; not in sketch mode, where X is Construction.
+        let (_dir, _sessions, mut tab) = opened_on(BROKEN_ROUND, |_| {});
+        assert!(tab.select_shown());
+        tab.sketch = Some(crate::sketch::SketchMode::new(1, None));
+        assert!(!tab.select_shown());
+    }
+
+    #[test]
     fn a_repair_with_a_sketch_open_is_refused_saying_why_and_made_once_it_closes() {
         let (_dir, sessions, mut tab) = opened_on(BROKEN_ROUND, |_| {});
         published_quietly(&mut tab, &sessions);
