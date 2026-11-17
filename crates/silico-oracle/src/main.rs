@@ -20,6 +20,11 @@
 //!   ([`sketch_edit::dump`]).
 //! - `silico-oracle sketch-extend-sweep`, with the same options: the same random sketches,
 //!   each with one of its lines or arcs extended (`silico_core::extend`).
+//!
+//!   In either sketch sweep, a case that differs is run through FreeCAD twice more, each
+//!   alone in a FreeCAD of its own ([`sketch_edit::rerun`]): where FreeCAD's runs disagree,
+//!   only the differences every run of it gives are reported, the rest listed (`varies:`)
+//!   with what of FreeCAD's answer varied, and the cases it varied on counted.
 //! - `silico-oracle corpus DIR`: the STEP files in DIR, as FreeCAD reads them, each as it is
 //!   and moved; Silico also meshes each (`pixi run corpus` fetches them first).
 //!
@@ -76,7 +81,13 @@ fn main() -> ExitCode {
                     .map(|c| c.to_string()),
             );
         }
-        let verdicts = sketch_edit::run(&edits)?;
+        // A sweep's differing cases are run through FreeCAD again, alone, and judged against
+        // every run (`sketch_edit::rerun`); the hand cases aren't.
+        let (verdicts, reruns) = if matches!(source, Source::Sweep) {
+            sketch_edit::rerun::run_rerunning(&edits)?
+        } else {
+            (sketch_edit::run(&edits)?, Vec::new())
+        };
         let mut excused: Vec<String> = verdicts
             .iter()
             .flat_map(|v| {
@@ -86,10 +97,12 @@ fn main() -> ExitCode {
             })
             .collect();
         let (differ, shown, stale) = sketch_edit::without_known(verdicts, sketch_edit::KNOWN);
+        let varying = varying(&reruns, &differ);
         sketch_differences.extend(differ.iter().map(ToString::to_string));
         excused.extend(shown);
         let (mut problems, mut notes, known) = without_known(source, &cases, &mut report)?;
         notes.extend(excused);
+        notes.extend(reruns.iter().map(ToString::to_string));
         problems.extend(stale);
         Ok((
             cases.len() + sketches.len() + feature_count + measure_count + edits.len(),
@@ -98,10 +111,11 @@ fn main() -> ExitCode {
             known,
             notes,
             sketch_differences,
+            varying,
         ))
     });
     match ran {
-        Ok((count, report, problems, known, notes, sketch_differences)) => {
+        Ok((count, report, problems, known, notes, sketch_differences, varying)) => {
             for d in &report.differences {
                 let _ = writeln!(out, "{d}");
             }
@@ -126,6 +140,9 @@ fn main() -> ExitCode {
                     report.refused.join(", ")
                 ),
             };
+            if let Some(said) = varying_said(&varying) {
+                let _ = writeln!(out, "{said}");
+            }
             if !problems.is_empty() {
                 let _ = writeln!(out, "{} more problems with the cases", problems.len());
             }
@@ -140,6 +157,35 @@ fn main() -> ExitCode {
             ExitCode::from(2)
         }
     }
+}
+
+/// The cases whose runs of FreeCAD varied, by name, in the sweep's order: each marked
+/// "(still differs)" where it's among the cases that `differ`, a difference every run
+/// reproduces left and no known case's.
+fn varying(reruns: &[sketch_edit::rerun::Rerun], differ: &[sketch_edit::Verdict]) -> Vec<String> {
+    reruns
+        .iter()
+        .filter(|r| matches!(r.reran, sketch_edit::rerun::Reran::Varied { .. }))
+        .map(|r| {
+            let differs = differ.iter().any(|v| v.case == r.case);
+            if differs {
+                format!("{} (still differs)", r.case)
+            } else {
+                r.case.clone()
+            }
+        })
+        .collect()
+}
+
+/// The summary's line of the cases FreeCAD's runs varied on, if any did.
+fn varying_said(varying: &[String]) -> Option<String> {
+    (!varying.is_empty()).then(|| {
+        format!(
+            "FreeCAD's answer varied run to run on {}, which differ only where every run of it reproduces the difference: {}",
+            varying.len(),
+            varying.join(", ")
+        )
+    })
 }
 
 /// What's said of a run's differences beside them: its problems, its notes, and the known
@@ -328,7 +374,45 @@ fn cases() -> Result<Asked, String> {
 mod tests {
     use silico_oracle::{Difference, Measured, Outcome, Report, Shape, Validity};
 
-    use super::{Case, Source, without_known};
+    use silico_oracle::sketch_edit::Verdict;
+    use silico_oracle::sketch_edit::rerun::{Reran, Rerun};
+
+    use super::{Case, Source, varying, varying_said, without_known};
+
+    #[test]
+    fn the_cases_freecad_varied_on_are_named_and_counted_each_still_differing_marked() {
+        // Four rerun cases: two varied, one of them among the cases still differing; one
+        // alike, though it differs; one not run again.
+        let rerun = |case: &str, reran: Reran| Rerun {
+            case: case.to_owned(),
+            runs: 3,
+            reran,
+        };
+        let varied = || Reran::Varied {
+            varied: vec!["its constraints".to_owned()],
+            uncompared: Vec::new(),
+        };
+        let reruns = [
+            rerun("edit_1_2", varied()),
+            rerun("edit_1_3", Reran::Alike),
+            rerun("edit_1_4", varied()),
+            rerun("edit_1_5", Reran::Unjudged("not run again".to_owned())),
+        ];
+        let differ = |case: &str| Verdict {
+            case: case.to_owned(),
+            how: vec!["a difference".to_owned()],
+            ..Verdict::default()
+        };
+        let named = varying(&reruns, &[differ("edit_1_3"), differ("edit_1_4")]);
+        assert_eq!(named, ["edit_1_2", "edit_1_4 (still differs)"]);
+        assert_eq!(
+            varying_said(&named).as_deref(),
+            Some(
+                "FreeCAD's answer varied run to run on 2, which differ only where every run of it reproduces the difference: edit_1_2, edit_1_4 (still differs)"
+            )
+        );
+        assert_eq!(varying_said(&[]), None);
+    }
 
     /// generated_111_374 as the seed-111 sweep found it (FreeCAD's cut turned inside out,
     /// Silico's refusal of it as invalid), in a report of its own.
