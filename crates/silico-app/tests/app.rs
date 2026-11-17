@@ -17128,6 +17128,31 @@ fn recents_arrows_are_not_taken_under_a_question_or_with_a_menu_open() {
 }
 
 #[test]
+fn a_file_dropped_under_the_command_search_isnt_opened() {
+    // The command search is a modal too (#487, #528): a drop under it is said and opens
+    // nothing.
+    let f = fixture();
+    let b = f.file("b.silico", EXAMPLE);
+    let mut h = f.app();
+    step(&mut h);
+    h.key_press(Key::S);
+    step_until(&mut h, "the search", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Search commands")
+            .is_some()
+    });
+    dropped(&mut h, &[&b]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Close the command search first: b.silico not opened")
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_file_dropped_under_the_shortcut_sheet_isnt_opened_until_it_closes() {
     // No input acts behind a modal (#487), the sheet's too: the drop is said, and opens
     // nothing, until the sheet has gone.
