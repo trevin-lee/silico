@@ -1039,7 +1039,7 @@ fn an_extend_through_a_lines_flip_freecad_lands_either_side_of_compares_all_but_
     assert!(
         v.excused
             .iter()
-            .any(|e| e.contains("lands on one of two frames") && e.contains("p0000012")),
+            .any(|e| e.contains("lands on one of two frames") && e.contains("7 points")),
         "{v:?}"
     );
     // FreeCAD's frame the other of the two, or anywhere: still only places.
@@ -1069,21 +1069,55 @@ fn an_extend_through_a_lines_flip_freecad_lands_either_side_of_compares_all_but_
     assert!(!verdict(&p, Some(&failed)).how.is_empty());
     let raised = Theirs::Failed("Not able to extend geometry".to_owned());
     assert!(!verdict(&p, Some(&raised)).how.is_empty());
-    // Silico's frame moved off the one pinned (p0000012 by 1e-5 mm, past the drag's band of
-    // 5e-7): its places compared, a difference.
-    let off = changed(&case, &p, |sketch| {
-        let point = sketch
-            .points
-            .iter_mut()
-            .find(|q| q.id == id("p0000012"))
-            .unwrap();
-        point.x = silico_core::document::Coordinate::new(point.x.mm() + 1e-5).unwrap();
-    });
-    let v = verdict(&off, theirs[0].as_ref());
-    assert!(
-        !v.how.is_empty() && !v.excused.iter().any(|e| e.contains("two frames")),
-        "{v:?}"
-    );
+    // Silico's frame off the one pinned anywhere: its places compared, a difference. The
+    // reviewer's p0000012 y by 1e-3 mm; each coordinate of each of the seven points the drag
+    // moved (the extend's `modified`), alone, by 1e-5 mm, past the drag's band of 5e-7; a point
+    // it didn't move; and each circle's radius. (An arc's radius is its centre's distance to its
+    // start, both pinned points.)
+    let off = |change: &dyn Fn(&mut Sketch)| {
+        let off = changed(&case, &p, change);
+        let v = verdict(&off, theirs[0].as_ref());
+        assert!(
+            !v.how.is_empty() && !v.excused.iter().any(|e| e.contains("two frames")),
+            "{v:?}"
+        );
+    };
+    let nudge = |id: ElementId, axis: usize, by: f64| {
+        move |sketch: &mut Sketch| {
+            let q = sketch.points.iter_mut().find(|q| q.id == id).unwrap();
+            let c = if axis == 0 { &mut q.x } else { &mut q.y };
+            *c = silico_core::document::Coordinate::new(c.mm() + by).unwrap();
+        }
+    };
+    off(&nudge(id("p0000012"), 1, 1e-3));
+    let moved = [
+        "p0000001", "p0000002", "p0000003", "p0000012", "p0000015", "p0000016", "p0000030",
+    ];
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    let modified: Vec<&str> = s.edited.modified.iter().map(ElementId::as_str).collect();
+    assert_eq!(modified, moved);
+    for point in moved {
+        for axis in [0, 1] {
+            off(&nudge(id(point), axis, 1e-5));
+        }
+    }
+    let unmoved = p
+        .sketch
+        .points
+        .iter()
+        .map(|q| q.id.clone())
+        .find(|q| !moved.contains(&q.as_str()))
+        .unwrap();
+    off(&nudge(unmoved, 0, 1e-5));
+    for circle in &p.sketch.circles {
+        let circle = circle.id.clone();
+        off(&move |sketch: &mut Sketch| {
+            let c = sketch.circles.iter_mut().find(|c| c.id == circle).unwrap();
+            c.radius = silico_core::document::Coordinate::new(c.radius.mm() + 1e-5).unwrap();
+        });
+    }
     // A report beyond places is no known case either: KNOWN holds no entry that hides it.
     let v = Verdict {
         case: "extend_146_424".into(),

@@ -3579,21 +3579,19 @@ enum Unreproducible {
     /// #259): the difference is FreeCAD's.
     Drag(String),
     /// A line's drag FreeCAD takes to one of two frames by its process's state
-    /// ([`FRAME_VARIES`]), where Silico's frame is pinned to the one recorded: no place or
-    /// radius before the solve is compared, and after it only points neither solve moved;
+    /// ([`FRAME_VARIES`]), where Silico's whole frame is the one recorded ([`frame_pinned`]:
+    /// every point at both coordinates, and every circle's radius): no place or radius before
+    /// the solve is compared, and after it only points neither solve moved;
     /// the constraints, the degrees of freedom, the diagnostics, and the outcome in full.
     Frame(String),
 }
 
 /// A line's extend whose drag FreeCAD 1.1.3 takes to one of two frames by its process's state,
-/// not by the case, and Silico's frame, the other of them, by a point's x and an arc's radius
-/// after the edit, before the solve.
+/// not by the case, and Silico's frame, the other of them: every point its drag moved, by ID,
+/// at both coordinates, as Silico's edited sketch has it before the solve.
 struct FrameVaries {
     case: &'static str,
-    point: &'static str,
-    x: f64,
-    arc: &'static str,
-    radius: f64,
+    moved: &'static [(&'static str, [f64; 2])],
 }
 
 /// The extends whose drag FreeCAD 1.1.3 takes to one of two frames run to run. `extend_146_424`
@@ -3603,16 +3601,53 @@ struct FrameVaries {
 /// at x 35.873736898 with radius 3.947421693, switching with unrelated state (sketches opened
 /// before, constraints renamed, a centre's y one ulp off; its smallest reproduction is n0000005
 /// horizontal, n0000013 parallel, and the tangent arc). FreeCAD gave the first in the night's
-/// sweep and in runs alone, and the second in whole sweeps (2026-11-16, the CI VM); Silico's is
-/// the second, every run, pinned here within [`DRAG_BAND`], so a change of Silico's frame is
-/// compared.
+/// sweep and in runs alone, and the second in whole sweeps (2026-11-16, the CI VM). Silico's is
+/// the second, every run, pinned here whole ([`frame_pinned`]): the seven points its drag moved
+/// (the extend's `modified`), each coordinate within [`DRAG_BAND`] of the value recorded from
+/// its edited sketch, so a change of Silico's frame is compared.
 const FRAME_VARIES: &[FrameVaries] = &[FrameVaries {
     case: "extend_146_424",
-    point: "p0000012",
-    x: 35.873736898,
-    arc: "a0000017",
-    radius: 3.947421692848017,
+    moved: &[
+        ("p0000001", [-19.89140000000732, -0.6069999999994561]),
+        ("p0000002", [54.388, -0.607]),
+        ("p0000003", [54.38800000003654, 24.471]),
+        ("p0000012", [35.87373689791268, -0.6069999999994561]),
+        ("p0000015", [35.87373689791268, -4.554421692847473]),
+        ("p0000016", [37.09852620417462, -0.801818706061701]),
+        ("p0000030", [17.24830000001461, -0.6069999999994561]),
+    ],
 }];
+
+/// Whether Silico's edited sketch, before the solve, is the frame `f` records: the same points
+/// as the case's drawing, each moved one within [`DRAG_BAND`] of its recorded place in both
+/// coordinates, every other within it of where the case drew it, and every circle's radius
+/// within it of the drawn one. An arc's radius is its centre's distance to its start, both
+/// points, so it's pinned with them.
+fn frame_pinned(p: &Prepared, s: &SilicoEdited, f: &FrameVaries) -> bool {
+    let (drawn, edited) = (Shape::of(&p.sketch), Shape::of(&s.edited.sketch));
+    let within = |a: [f64; 2], b: [f64; 2]| {
+        (a[0] - b[0]).abs() <= DRAG_BAND && (a[1] - b[1]).abs() <= DRAG_BAND
+    };
+    let same_points = drawn.points.keys().eq(edited.points.keys());
+    let placed =
+        edited.points.iter().all(
+            |(id, at)| match f.moved.iter().find(|(moved, _)| moved == id) {
+                Some((_, recorded)) => within(*at, *recorded),
+                None => drawn.points.get(id).is_some_and(|d| within(*at, *d)),
+            },
+        );
+    let circles = edited
+        .members
+        .iter()
+        .filter(|(_, m)| m.kind == "circle")
+        .all(
+            |(id, _)| match (edited.radii.get(id), drawn.radii.get(id)) {
+                (Some(r), Some(d)) => (r - d).abs() <= DRAG_BAND,
+                _ => false,
+            },
+        );
+    same_points && placed && circles
+}
 
 /// How far apart the two sides' points a line's drag moved may be, in mm, before the solve
 /// and after it:
@@ -3715,19 +3750,10 @@ fn freecad_unreproducible(p: &Prepared) -> Option<Unreproducible> {
         &p.silico,
         member.kind,
     ) {
-        let edited = Shape::of(&s.edited.sketch);
-        let pinned = edited
-            .points
-            .get(f.point)
-            .is_some_and(|at| (at[0] - f.x).abs() <= DRAG_BAND)
-            && edited
-                .radii
-                .get(f.arc)
-                .is_some_and(|r| (r - f.radius).abs() <= DRAG_BAND);
-        return pinned.then(|| {
+        return frame_pinned(p, s, f).then(|| {
             Unreproducible::Frame(format!(
-                "harness limit: FreeCAD 1.1.3's drag of line {curve} lands on one of two frames by its process's state, not by the case, and Silico's is the other, {} at x {} and {}'s radius {} (FRAME_VARIES), so the places it settles aren't compared: none before the solve, and after it only points neither solve moved; the constraints, the degrees of freedom, the diagnostics, and the outcome in full",
-                f.point, f.x, f.arc, f.radius
+                "harness limit: FreeCAD 1.1.3's drag of line {curve} lands on one of two frames by its process's state, not by the case, and Silico's is the other, each of the {} points it moved where FRAME_VARIES records it, so the places it settles aren't compared: none before the solve, and after it only points neither solve moved; the constraints, the degrees of freedom, the diagnostics, and the outcome in full",
+                f.moved.len()
             ))
         });
     }
