@@ -61,9 +61,9 @@ on:
         description: "Empty for a real run. Set only by the filler (filler.yml): a, the commits main gained since its last such run, or b<k>, the k-th slice of the source; such a run yields to real ones, stops after an hour, tests its mutants in random order, and fails only on misses not in .github/mutants-triaged.txt"
         default: ""
 
-# actions: write, for a real run's plan to cancel filler runs.
+# Read only, but for the plan's actions: write (below): the shards build and run the ref's
+# code, and hold no token that can start or cancel runs.
 permissions:
-  actions: write
   contents: read
 
 env:
@@ -78,6 +78,10 @@ jobs:
     # a real run's plan never waits behind shards to cancel filler.
     runs-on: [self-hosted, linux, x64, control]
     timeout-minutes: 10
+    # For a real run's plan to cancel filler runs (.github/cancel-filler.sh).
+    permissions:
+      actions: write
+      contents: read
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
       count: ${{ steps.plan.outputs.count }}

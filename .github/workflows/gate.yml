@@ -34,8 +34,12 @@ jobs:
     # own merge commit, so a fork can change this line or add a workflow of its own. The guard
     # is the repository's Actions setting that requires approval for every outside
     # contributor's run; never approve one. A fork's change is gated by pushing its head to a
-    # branch of this repository. Every other workflow starts only from a schedule, a dispatch
-    # (write access), a push, or a workflow_run of those, on this repository's own refs.
+    # branch of this repository (README.md, "Pull requests and CI"). Every other workflow
+    # starts only from a schedule, a dispatch (write access), a push, or a workflow_run of
+    # those, on this repository's own refs.
+    #
+    # A job skipped by its `if` counts as passed for a required check, so this job's check
+    # ("gate") isn't what main's branch protection requires: `verdict`'s status, below, is.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: [self-hosted, linux, x64, pve, gate]
     timeout-minutes: 120
@@ -61,3 +65,35 @@ jobs:
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
+
+  verdict:
+    # The gate's verdict as a commit status, silico/gate, on the commit a pull request shows
+    # (its head; a push's or a dispatch's own commit), which main's branch protection
+    # requires. Only this job posts it, when the gate ran to an end, passed or failed (a
+    # failure replaces an earlier pass on the same commit). A pull request whose gate was
+    # skipped (a fork's) or cancelled before its first verdict has none: its required check
+    # reads "Expected, waiting for status to be reported", and it can't be merged. A fork's
+    # head gated as a branch of this repository is the same commit, so the fork's pull
+    # request gets that status too. A job of its own, so the one write permission is never
+    # held by the gate's build; it checks out and runs nothing from the repository.
+    needs: gate
+    if: ${{ always() && (needs.gate.result == 'success' || needs.gate.result == 'failure') }}
+    runs-on: [self-hosted, linux, x64, control]
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: Post silico/gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          STATE: ${{ needs.gate.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          printf '{"state":"%s","context":"silico/gate","description":"The gate: %s","target_url":"%s"}' \
+            "$STATE" "$STATE" "$RUN_URL" |
+            curl -fsS --retry 3 -X POST -o /dev/null \
+              -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+              --data-binary @- "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/statuses/$SHA"
+          echo "silico/gate: $STATE on $SHA"

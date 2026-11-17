@@ -80,6 +80,10 @@ concurrency:
 
 jobs:
   fill:
+    # A workflow_run fires for a run of any workflow by these names, a fork's pull request's
+    # included (a fork can name one of its own "mutants"): only this repository's own runs
+    # count. Nothing of the run's is read either way: this file and its checkout are main's.
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository }}
     # On a runner labelled control (silico-13, -14), for short jobs only.
     runs-on: [self-hosted, linux, x64, control]
     timeout-minutes: 5
