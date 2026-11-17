@@ -88,7 +88,6 @@ fn main() -> ExitCode {
         } else {
             (sketch_edit::run(&edits)?, Vec::new())
         };
-        let varying = varying(&reruns, &verdicts);
         let mut excused: Vec<String> = verdicts
             .iter()
             .flat_map(|v| {
@@ -98,6 +97,7 @@ fn main() -> ExitCode {
             })
             .collect();
         let (differ, shown, stale) = sketch_edit::without_known(verdicts, sketch_edit::KNOWN);
+        let varying = varying(&reruns, &differ);
         sketch_differences.extend(differ.iter().map(ToString::to_string));
         excused.extend(shown);
         let (mut problems, mut notes, known) = without_known(source, &cases, &mut report)?;
@@ -165,15 +165,14 @@ fn main() -> ExitCode {
 }
 
 /// The cases whose runs of FreeCAD varied, by name, in the sweep's order: each marked
-/// "(still differs)" where a difference every run reproduces is left.
-fn varying(reruns: &[sketch_edit::rerun::Rerun], verdicts: &[sketch_edit::Verdict]) -> Vec<String> {
+/// "(still differs)" where it's among the cases that `differ`, a difference every run
+/// reproduces left and no known case's.
+fn varying(reruns: &[sketch_edit::rerun::Rerun], differ: &[sketch_edit::Verdict]) -> Vec<String> {
     reruns
         .iter()
         .filter(|r| matches!(r.reran, sketch_edit::rerun::Reran::Varied { .. }))
         .map(|r| {
-            let differs = verdicts
-                .iter()
-                .any(|v| v.case == r.case && !v.how.is_empty());
+            let differs = differ.iter().any(|v| v.case == r.case);
             if differs {
                 format!("{} (still differs)", r.case)
             } else {
