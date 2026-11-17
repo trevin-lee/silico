@@ -48614,6 +48614,9 @@ fn toasts_stack_newest_last_each_taken_down_on_its_own_clock_asking_no_frame_onc
     // the idle one.
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    // The fade this test reads: egui's own animation time, 1/12 s, which the fixtures leave
+    // at 0 (`apply_look`) so a view asked for is taken at once.
+    animation_time(&h, 1.0 / 12.0);
     meshes_settled(&mut h);
     settled(&mut h);
     let time = |h: &AppHarness| h.ctx.input(|input| input.time);
