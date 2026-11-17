@@ -154,8 +154,10 @@ pub fn rerun_differing(
 /// values, how it worded a refusal or ended), as often as the run giving it least often does;
 /// so a difference is left uncompared only where some run of FreeCAD agrees with Silico there,
 /// within the comparison's own tolerance. The runs compared are those where FreeCAD made the
-/// edit as Silico did, if two or more did (its answer there reproduced among them, whatever it
-/// made of the case in another run), and every run otherwise; and where Silico's solve
+/// edit as Silico did, if any did, and every run otherwise: what FreeCAD's edit makes
+/// (its constraints, its degrees of freedom and diagnostics, its places before the solve) is
+/// its edit code's, compared wherever it made the edit, and only what kind of outcome it gave
+/// in another run (a raise, a crash, a rollback) is left uncompared; and where Silico's solve
 /// succeeded and some of those runs' solves failed, where the solves put things is compared
 /// against the runs whose solve succeeded, one or more ([`Verdict::solved`]). The verdict is
 /// the first compared run's, with those differences. A refusal of Silico's by no rule of the
@@ -221,7 +223,7 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
     let made: Vec<usize> = (0..snapped.len())
         .filter(|&i| made_as_silico(p, &snapped[i]))
         .collect();
-    let compared: Vec<usize> = if made.len() >= 2 {
+    let compared: Vec<usize> = if !made.is_empty() {
         made
     } else {
         (0..snapped.len()).collect()

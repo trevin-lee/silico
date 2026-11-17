@@ -4504,7 +4504,7 @@ fn compare_edited(
             "Silico's edit made {} new curves ({}), FreeCAD's {}",
             new_ours.len(),
             new_ours.join(", "),
-            new_fc.len()
+            details.say(|| new_fc.len().to_string())
         ));
     }
     let fc_member = |g: i32| -> Option<String> {
@@ -4577,8 +4577,9 @@ fn compare_edited(
             // A lone point of FreeCAD's that Silico's curves now use (a split at it).
             None if g.kind == "point" && after.points.contains_key(m) => {}
             None => how.push(format!(
-                "FreeCAD keeps {} {m} (geometry {i}), which Silico's edit removed",
-                g.kind
+                "FreeCAD keeps {} {m} (geometry {}), which Silico's edit removed",
+                g.kind,
+                details.say(|| i.to_string())
             )),
         }
     }
