@@ -5,9 +5,11 @@
 //! each alone in a FreeCAD of its own, and judged again against every run
 //! ([`rejudge`]). Where FreeCAD's runs agree (their numbers within [`REPRODUCED`] of the first
 //! run's), the case is compared as it was. Where they disagree, a difference is still reported
-//! wherever every run reproduces it: only the differences some run of FreeCAD doesn't give
-//! are left uncompared, and they're listed with what of FreeCAD's answer varied. A difference
-//! of Silico's in what FreeCAD reproduced is never left out.
+//! wherever every run gives it, read without FreeCAD's side of it (where it put a point, its
+//! degrees of freedom, how it worded a refusal): a difference is left uncompared only where
+//! some run of FreeCAD agrees with Silico there, within the comparison's own tolerance, and
+//! it's listed with what of FreeCAD's answer varied. A difference of Silico's in what FreeCAD
+//! reproduced is never left out, nor one from where every run of FreeCAD is.
 //!
 //! The hand cases and the gate's tests don't rerun: [`run_rerunning`] is the sweeps' alone.
 
@@ -87,29 +89,51 @@ impl std::fmt::Display for Rerun {
 /// runs gave.
 pub fn run_rerunning(cases: &[EditCase]) -> Result<(Vec<Verdict>, Vec<Rerun>), String> {
     let (prepared, theirs) = both_sides(cases)?;
+    rerun_differing(&prepared, theirs, MOST_RERUN, |p| {
+        Ok(freecad_outcomes(std::slice::from_ref(p))?
+            .into_iter()
+            .next()
+            .flatten())
+    })
+}
+
+/// Each of `prepared`'s verdicts against FreeCAD's `first` run of it, in order; and each that
+/// differs, up to `most` of them in order, run [`RERUNS`] times more through `alone` (FreeCAD's
+/// outcome of the one case, in a FreeCAD of its own) and judged by [`rejudge`]. A differing
+/// case past `most` is compared as its first run has it, and said to be
+/// ([`Reran::Unjudged`]).
+pub fn rerun_differing(
+    prepared: &[Prepared],
+    first: Vec<Option<Theirs>>,
+    most: usize,
+    mut alone: impl FnMut(&Prepared) -> Result<Option<Theirs>, String>,
+) -> Result<(Vec<Verdict>, Vec<Rerun>), String> {
     let mut verdicts = Vec::with_capacity(prepared.len());
     let mut reruns = Vec::new();
-    for (p, first) in prepared.iter().zip(theirs) {
+    let mut rerun = 0usize;
+    for (p, first) in prepared.iter().zip(first) {
         let v = verdict(p, first.as_ref());
         if v.how.is_empty() || !matches!(p.plan, Plan::Run { .. }) {
             verdicts.push(v);
             continue;
         }
-        if reruns.len() == MOST_RERUN {
+        if rerun >= most {
+            tracing::warn!(case = %p.name, most, "a differing case not run again");
             reruns.push(Rerun {
                 case: p.name.clone(),
                 runs: 1,
                 reran: Reran::Unjudged(format!(
-                    "not run again: the sweep runs at most {MOST_RERUN} of its differing cases again"
+                    "not run again: the sweep runs at most {most} of its differing cases again"
                 )),
             });
             verdicts.push(v);
             continue;
         }
+        rerun += 1;
         let _span = tracing::info_span!("sketch_edit_rerun", case = %p.name).entered();
         let mut runs = vec![first];
         for _ in 0..RERUNS {
-            runs.extend(freecad_outcomes(std::slice::from_ref(p))?);
+            runs.push(alone(p)?);
         }
         let (v, reran) = rejudge(p, &runs);
         reruns.push(Rerun {
@@ -125,14 +149,19 @@ pub fn run_rerunning(cases: &[EditCase]) -> Result<(Vec<Verdict>, Vec<Rerun>), S
 /// `p`'s verdict against FreeCAD's `runs` of it (the sweep's first), and what they gave. Each
 /// run after the first is taken as the first's wherever its numbers are within [`REPRODUCED`]
 /// of it ([`snapped`]). Runs that agree: the first run's verdict, [`Reran::Alike`]. Runs that
-/// don't: a difference is kept where each run compared gives it, read without what FreeCAD
-/// says beside what's compared ([`Details::Keyed`]), as often as the run giving it least
-/// often does; the runs compared are those where FreeCAD made the edit as Silico did, if two
-/// or more did (its answer there reproduced among them, whatever it made of the case in
-/// another run), and every run otherwise. The verdict is the first compared run's, with those
-/// differences. A refusal of Silico's by no rule of the note's is a difference whatever
-/// FreeCAD answers, so it's kept whole; and a run the harness failed on, or FreeCAD wasn't
-/// run for, leaves the first run's verdict as it is ([`Reran::Unjudged`]).
+/// don't: a difference is kept where each run compared gives it, read without FreeCAD's side
+/// of it ([`Details::Keyed`]: where FreeCAD put a point, a radius, its degrees of freedom, its
+/// values, how it worded a refusal or ended), as often as the run giving it least often does;
+/// so a difference is left uncompared only where some run of FreeCAD agrees with Silico there,
+/// within the comparison's own tolerance. The runs compared are those where FreeCAD made the
+/// edit as Silico did, if two or more did (its answer there reproduced among them, whatever it
+/// made of the case in another run), and every run otherwise; and where Silico's solve
+/// succeeded and some of those runs' solves failed, where the solves put things is compared
+/// against the runs whose solve succeeded, one or more ([`Verdict::solved`]). The verdict is
+/// the first compared run's, with those differences. A refusal of Silico's by no rule of the
+/// note's is a difference whatever FreeCAD answers, so it's kept whole; and a run the harness
+/// failed on, or FreeCAD wasn't run for, leaves the first run's verdict as it is
+/// ([`Reran::Unjudged`]).
 pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
     let Some((Some(first), rest)) = runs.split_first() else {
         return (
@@ -182,7 +211,7 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
     if full
         .iter()
         .zip(&keyed)
-        .any(|(f, k)| f.how.len() != k.how.len())
+        .any(|(f, k)| f.how.len() != k.how.len() || f.solved != k.solved)
     {
         return unjudged(
             "the harness's own fault: a run's differences read otherwise without FreeCAD's details"
@@ -197,52 +226,75 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
     } else {
         (0..snapped.len()).collect()
     };
-    let count = |v: &Verdict| {
-        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
-        for line in &v.how {
-            *counts.entry(line.clone()).or_default() += 1;
-        }
-        counts
+    // Where Silico's solve succeeded, the compared runs whose solve did too, if not all did.
+    let silico_solved = matches!(&p.silico, SilicoSide::Edited(s) if s.ours.outcome.is_ok());
+    let solved: Vec<usize> = compared
+        .iter()
+        .copied()
+        .filter(|&i| matches!(&snapped[i], Theirs::Edited(fc) if fc.after.code == 0))
+        .collect();
+    let solved = if silico_solved && solved.len() < compared.len() {
+        solved
+    } else {
+        Vec::new()
     };
-    // Each keyed difference, as often as the compared run giving it least often gives it.
-    let mut kept = compared
-        .first()
-        .and_then(|&i| keyed.get(i))
-        .map(count)
-        .unwrap_or_default();
-    for &i in compared.iter().skip(1) {
-        let Some(counts) = keyed.get(i).map(count) else {
-            continue;
+    let kept = common(&compared, |i| keyed.get(i).map(|k| &k.how[..]));
+    let kept_solved = common(&solved, |i| keyed.get(i).map(solved_lines));
+    // Each run's differences, each kept (a difference every compared run gives, or a place
+    // every run whose solve succeeded gives) or not, and whether it compares where the solves
+    // put things.
+    let marked = |i: usize| -> Vec<(String, bool, bool)> {
+        let (Some(f), Some(k)) = (full.get(i), keyed.get(i)) else {
+            return Vec::new();
         };
-        for (line, n) in &mut kept {
-            *n = (*n).min(counts.get(line).copied().unwrap_or(0));
-        }
-    }
+        let mut left = if compared.contains(&i) {
+            kept.clone()
+        } else {
+            BTreeMap::new()
+        };
+        let mut left_solved = if solved.contains(&i) {
+            kept_solved.clone()
+        } else {
+            BTreeMap::new()
+        };
+        let first_solved = k.how.len().saturating_sub(k.solved);
+        f.how
+            .iter()
+            .zip(&k.how)
+            .enumerate()
+            .map(|(n, (line, key))| {
+                let place = n >= first_solved;
+                let keep = take(&mut left, key) || (place && take(&mut left_solved, key));
+                (line.clone(), keep, place)
+            })
+            .collect()
+    };
     let base = compared.first().copied().unwrap_or(0);
-    let (Some(based), Some(base_keys)) = (full.get(base), keyed.get(base)) else {
+    let Some(based) = full.get(base) else {
         return unjudged("the harness's own fault: no run to compare".to_owned());
     };
     let mut v = based.clone();
-    let mut left = kept.clone();
-    v.how = based
-        .how
-        .iter()
-        .zip(&base_keys.how)
-        .filter(|(_, key)| take(&mut left, key))
-        .map(|(line, _)| line.clone())
-        .collect();
+    let mut kept_lines = marked(base);
+    // The places from the first run whose solve succeeded, where the base's failed.
+    if let Some(&at) = solved.first()
+        && !solved.contains(&base)
+    {
+        kept_lines.extend(marked(at).into_iter().filter(|(_, _, place)| *place));
+    }
+    kept_lines.retain(|(_, keep, _)| *keep);
+    v.solved = kept_lines.iter().filter(|(_, _, place)| *place).count();
+    v.how = kept_lines.into_iter().map(|(line, _, _)| line).collect();
     // What each run gave that isn't kept, with the runs that gave it, in the runs' order.
     let mut uncompared: Vec<(String, Vec<usize>)> = Vec::new();
-    for (i, (f, k)) in full.iter().zip(&keyed).enumerate() {
-        let mut left = kept.clone();
-        for (line, key) in f.how.iter().zip(&k.how) {
-            if compared.contains(&i) && take(&mut left, key) {
+    for i in 0..full.len() {
+        for (line, keep, _) in marked(i) {
+            if keep {
                 continue;
             }
-            match uncompared.iter_mut().find(|(l, _)| l == line) {
+            match uncompared.iter_mut().find(|(l, _)| *l == line) {
                 Some((_, runs)) if !runs.contains(&(i + 1)) => runs.push(i + 1),
                 Some(_) => {}
-                None => uncompared.push((line.clone(), vec![i + 1])),
+                None => uncompared.push((line, vec![i + 1])),
             }
         }
     }
@@ -254,6 +306,39 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
         })
         .collect();
     (v, Reran::Varied { varied, uncompared })
+}
+
+/// A keyed verdict's last differences, those comparing where the solves put things.
+fn solved_lines(v: &Verdict) -> &[String] {
+    v.how
+        .get(v.how.len().saturating_sub(v.solved)..)
+        .unwrap_or(&[])
+}
+
+/// The differences every one of `runs` gives (each run's by `lines`), each as many times as
+/// the run giving it least often does; none for no runs.
+fn common<'a>(
+    runs: &[usize],
+    lines: impl Fn(usize) -> Option<&'a [String]>,
+) -> BTreeMap<String, usize> {
+    let count = |i: usize| {
+        let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+        for line in lines(i).unwrap_or(&[]) {
+            *counts.entry(line.clone()).or_default() += 1;
+        }
+        counts
+    };
+    let Some((&first, rest)) = runs.split_first() else {
+        return BTreeMap::new();
+    };
+    let mut kept = count(first);
+    for &i in rest {
+        let counts = count(i);
+        for (line, n) in &mut kept {
+            *n = (*n).min(counts.get(line).copied().unwrap_or(0));
+        }
+    }
+    kept
 }
 
 /// Takes one of `key` from `left`, if there's one left.
@@ -275,11 +360,11 @@ fn made_as_silico(p: &Prepared, t: &Theirs) -> bool {
         && matches!(t, Theirs::Edited(fc) if merge_refusal(p, fc).is_none())
 }
 
-/// `run` taken as `first` wherever it gives the same answer: each place, radius, and
-/// constraint value of its geometry and constraints matched with `first`'s (the same index,
-/// ID, and kind; the same constraint kind and references) and within [`REPRODUCED`] of it is
-/// `first`'s, exactly; and a crash or hang ended the same way (its first line) is `first`'s,
-/// what FreeCAD last wrote before it aside. Anything else is `run`'s own.
+/// `run` taken as `first` wherever it gives the same answer: each place and radius of a curve
+/// `first` has too (the same ID and kind), and each value of a constraint it has too (the same
+/// name, kind, and references), within [`REPRODUCED`] of `first`'s is `first`'s, exactly,
+/// whatever else either has; and a crash or hang ended the same way (its first line) is
+/// `first`'s, what FreeCAD last wrote before it aside. Anything else is `run`'s own.
 pub fn snapped(first: &Theirs, run: &Theirs) -> Theirs {
     match (first, run) {
         (Theirs::Lost(a), Theirs::Lost(b)) if a.lines().next() == b.lines().next() => first.clone(),
@@ -287,11 +372,13 @@ pub fn snapped(first: &Theirs, run: &Theirs) -> Theirs {
             let mut out: FreecadEdited = (**b).clone();
             snap_geometry(&a.edited, &mut out.edited);
             snap_geometry(&a.geometry, &mut out.geometry);
-            if a.constraints.len() == out.constraints.len() {
-                for (want, got) in a.constraints.iter().zip(&mut out.constraints) {
-                    if want.kind == got.kind && want.refs == got.refs {
-                        snap(want.value, &mut got.value);
-                    }
+            for got in &mut out.constraints {
+                if let Some(want) = a
+                    .constraints
+                    .iter()
+                    .find(|w| w.name == got.name && w.kind == got.kind && w.refs == got.refs)
+                {
+                    snap(want.value, &mut got.value);
                 }
             }
             if let (Some(want), Some(got)) = (&a.placed, &mut out.placed) {
@@ -304,13 +391,10 @@ pub fn snapped(first: &Theirs, run: &Theirs) -> Theirs {
 }
 
 fn snap_geometry(first: &[FcGeometry], run: &mut [FcGeometry]) {
-    if first.len() != run.len() {
-        return;
-    }
-    for (want, got) in first.iter().zip(run) {
-        if want.id != got.id || want.kind != got.kind {
+    for got in run {
+        let Some(want) = first.iter().find(|w| w.id == got.id && w.kind == got.kind) else {
             continue;
-        }
+        };
         for (pos, at) in &mut got.points {
             if let Some(w) = want.points.get(pos) {
                 snap(w[0], &mut at[0]);

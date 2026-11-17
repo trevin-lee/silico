@@ -616,7 +616,22 @@ pub fn compare_outcomes(
     geometry: bool,
     details: Details,
 ) -> Vec<String> {
+    let (mut how, solved) = compare_outcomes_apart(model, ours, theirs, geometry, details);
+    how.extend(solved);
+    how
+}
+
+/// As [`compare_outcomes`], in two parts: how the solves' diagnoses and outcomes differ, and
+/// how where they put things does, which only two solves that both succeeded give.
+pub fn compare_outcomes_apart(
+    model: &FreecadSketch,
+    ours: &Ours,
+    theirs: &FreecadSolved,
+    geometry: bool,
+    details: Details,
+) -> (Vec<String>, Vec<String>) {
     let mut how = Vec::new();
+    let mut solved = Vec::new();
     // FreeCAD's indices, from 1, to Silico's IDs; its coincidences are none of Silico's.
     let ids = |list: &[usize]| -> Vec<String> {
         list.iter()
@@ -627,7 +642,8 @@ pub fn compare_outcomes(
     if ours.dofs != theirs.dof {
         how.push(format!(
             "degrees of freedom {} against FreeCAD's {}",
-            ours.dofs, theirs.dof
+            ours.dofs,
+            details.say(|| theirs.dof.to_string())
         ));
     }
     for (name, ours, theirs) in [
@@ -640,7 +656,10 @@ pub fn compare_outcomes(
         ),
     ] {
         if *ours != theirs {
-            how.push(format!("{name} {ours:?} against FreeCAD's {theirs:?}"));
+            how.push(format!(
+                "{name} {ours:?} against FreeCAD's {}",
+                details.say(|| format!("{theirs:?}"))
+            ));
         }
     }
     if !theirs.malformed.is_empty() {
@@ -660,7 +679,9 @@ pub fn compare_outcomes(
     let redundant =
         !ids(&theirs.redundant).is_empty() || !ids(&theirs.partially_redundant).is_empty();
     match (theirs.code, &ours.outcome) {
-        (0, Ok(solution)) if geometry => how.extend(compare_solutions(model, solution, theirs)),
+        (0, Ok(solution)) if geometry => {
+            solved.extend(compare_solutions(model, solution, theirs, details));
+        }
         (0, Ok(_)) => {}
         (-2, Ok(_)) => {}
         (-2, Err(e)) if code(e) == ErrorCode::OverConstrained => {}
@@ -680,13 +701,14 @@ pub fn compare_outcomes(
             }
         )),
     }
-    how
+    (how, solved)
 }
 
 fn compare_solutions(
     model: &FreecadSketch,
     ours: &SketchSolution,
     theirs: &FreecadSolved,
+    details: Details,
 ) -> Vec<String> {
     let mut how = Vec::new();
     let near = |a: f64, b: f64| (a - b).abs() <= TOLERANCE;
@@ -694,14 +716,20 @@ fn compare_solutions(
         let p = [x.mm(), y.mm()];
         match theirs.points.get(id.as_str()) {
             Some(q) if near(p[0], q[0]) && near(p[1], q[1]) => {}
-            other => how.push(format!("point {id} at {p:?}, FreeCAD's at {other:?}")),
+            other => how.push(format!(
+                "point {id} at {p:?}, FreeCAD's at {}",
+                details.say(|| format!("{other:?}"))
+            )),
         }
     }
     for (id, r) in &ours.radii {
         let r = r.mm();
         match theirs.radii.get(id.as_str()) {
             Some(q) if near(r, *q) => {}
-            other => how.push(format!("circle {id}'s radius {r}, FreeCAD's {other:?}")),
+            other => how.push(format!(
+                "circle {id}'s radius {r}, FreeCAD's {}",
+                details.say(|| format!("{other:?}"))
+            )),
         }
     }
     for (i, c) in model.constraints.iter().enumerate() {
@@ -714,7 +742,10 @@ fn compare_solutions(
         if let Some(want) = c.locked
             && libm::remainder(value - want, TAU).abs() > 1e-12
         {
-            how.push(format!("tangency {id} locked at {value}, Silico's {want}"));
+            how.push(format!(
+                "tangency {id} locked at {}, Silico's {want}",
+                details.say(|| value.to_string())
+            ));
         }
         let Some(element) = ElementId::new(id) else {
             continue;
@@ -727,7 +758,8 @@ fn compare_solutions(
             };
             if (ours - theirs).abs() > 1e-7 {
                 how.push(format!(
-                    "reference {id} measures {ours}, FreeCAD's {theirs}"
+                    "reference {id} measures {ours}, FreeCAD's {}",
+                    details.say(|| theirs.to_string())
                 ));
             }
         }

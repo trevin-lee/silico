@@ -1109,6 +1109,10 @@ pub struct Verdict {
     /// not solving, FreeCAD's model of it malformed or conflicting before the edit, or the
     /// harness's own code around FreeCAD's edit failing.
     pub problem: bool,
+    /// How many of [`Verdict::how`]'s last differences compare where the two solves put
+    /// things, which only two solves that both succeeded give (`rerun` compares them against
+    /// the runs of FreeCAD whose solve succeeded).
+    pub solved: usize,
 }
 
 impl std::fmt::Display for Verdict {
@@ -1805,7 +1809,7 @@ fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
                     dragged,
                     settles,
                 };
-                let how = compare_edited(
+                let compared = compare_edited(
                     p,
                     s,
                     fc,
@@ -1814,7 +1818,9 @@ fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
                     &mut v.excused,
                     &mut v.modulo,
                 );
-                v.how.extend(how);
+                v.how.extend(compared.how);
+                v.solved = compared.solved.len();
+                v.how.extend(compared.solved);
             }
         }
     }
@@ -1851,12 +1857,9 @@ fn lost(p: &Prepared, mut v: Verdict, why: &str, details: Details) -> Verdict {
                 },
                 SilicoSide::Gated(_) => "Silico's result is gated".to_owned(),
             };
-            let why = match details {
-                Details::Full => why,
-                Details::Keyed => ended,
-            };
             v.how.push(format!(
-                "FreeCAD crashed or hung ({why}), its own outcome, never a refusal, which the note gives only for a split of a point ({NOTE}#se-split-index-refusals); {silico}"
+                "FreeCAD crashed or hung ({}), its own outcome, never a refusal, which the note gives only for a split of a point ({NOTE}#se-split-index-refusals); {silico}",
+                details.say(|| why.to_owned())
             ));
         }
     }
@@ -4402,7 +4405,7 @@ fn compare_edited(
     details: Details,
     excused: &mut Vec<String>,
     modulo: &mut Vec<String>,
-) -> Vec<String> {
+) -> Compared {
     let Unsettled {
         merged,
         band,
@@ -4755,9 +4758,9 @@ fn compare_edited(
                         && libm::hypot(at[0] - drawn[0], at[1] - drawn[1]) > sketch::TOLERANCE
                     {
                         how.push(format!(
-                            "after the edit, before the solve, FreeCAD's {} is at {:?}, not where the case drew it, {:?}, as its setRange leaves the neighbour's end (#se-a-line-s-end-goes-through)",
+                            "after the edit, before the solve, FreeCAD's {} is at {}, not where the case drew it, {:?}, as its setRange leaves the neighbour's end (#se-a-line-s-end-goes-through)",
                             describe((gi, pos)),
-                            shown(*at),
+                            details.say(|| format!("{:?}", shown(*at))),
                             shown(*drawn)
                         ));
                     }
@@ -4768,10 +4771,10 @@ fn compare_edited(
                         || (ours[1] - at[1]).abs() > within(&point))
                 {
                     how.push(format!(
-                        "after the edit, before the solve, Silico's point {point} is at {:?}, FreeCAD's {} at {:?}",
+                        "after the edit, before the solve, Silico's point {point} is at {:?}, FreeCAD's {} at {}",
                         shown(*ours),
                         describe((gi, pos)),
-                        shown(*at)
+                        details.say(|| format!("{:?}", shown(*at)))
                     ));
                 }
             }
@@ -4780,7 +4783,8 @@ fn compare_edited(
                 && (ours - r).abs() > round_within(&m)
             {
                 how.push(format!(
-                    "after the edit, before the solve, Silico's {m} has radius {ours}, FreeCAD's {r}"
+                    "after the edit, before the solve, Silico's {m} has radius {ours}, FreeCAD's {}",
+                    details.say(|| r.to_string())
                 ));
             }
         }
@@ -4869,7 +4873,7 @@ fn compare_edited(
                 how.push(format!(
                     "{k} is {v} in Silico's ({}), {} in FreeCAD's",
                     oc.id.as_deref().unwrap_or("?"),
-                    tc.value
+                    details.say(|| tc.value.to_string())
                 ));
             }
         }
@@ -4997,13 +5001,9 @@ fn compare_edited(
         code: if flaky.is_some() { 0 } else { theirs.code },
         ..theirs
     };
-    how.extend(sketch::compare_outcomes(
-        model,
-        &ours,
-        &theirs,
-        !unsettled.any(),
-        details,
-    ));
+    let (outcome, mut solved) =
+        sketch::compare_outcomes_apart(model, &ours, &theirs, !unsettled.any(), details);
+    how.extend(outcome);
     // The points the drag moved, and the radii of the curves they're on, after the solve,
     // within its band; none where FreeCAD's solve settles them otherwise run to run.
     if let (Ok(solution), 0, false) = (&s.ours.outcome, theirs.code, settles) {
@@ -5013,19 +5013,19 @@ fn compare_edited(
             };
             let (Some(ours), Some(at)) = (solution.points.get(&id), theirs.points.get(point))
             else {
-                how.push(format!(
-                    "after the solve, Silico's point {point}, which the drag moved, has no place on one side: Silico's {:?}, FreeCAD's {:?}",
+                solved.push(format!(
+                    "after the solve, Silico's point {point}, which the drag moved, has no place on one side: Silico's {:?}, FreeCAD's {}",
                     solution.points.get(&id).map(|q| [q[0].mm(), q[1].mm()]),
-                    theirs.points.get(point)
+                    details.say(|| format!("{:?}", theirs.points.get(point)))
                 ));
                 continue;
             };
             let ours = [ours[0].mm(), ours[1].mm()];
             if (ours[0] - at[0]).abs() > DRAG_BAND || (ours[1] - at[1]).abs() > DRAG_BAND {
-                how.push(format!(
-                    "after the solve, Silico's point {point}, which the drag moved, is at {:?}, FreeCAD's at {:?}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
+                solved.push(format!(
+                    "after the solve, Silico's point {point}, which the drag moved, is at {:?}, FreeCAD's at {}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
                     shown(ours),
-                    shown(*at)
+                    details.say(|| format!("{:?}", shown(*at)))
                 ));
             }
         }
@@ -5038,17 +5038,18 @@ fn compare_edited(
                 continue;
             };
             let (Some(ours), Some(r)) = (solution.radii.get(&id), theirs.radii.get(round)) else {
-                how.push(format!(
-                    "after the solve, Silico's {round}, whose points the drag moved, has no radius on one side: Silico's {:?}, FreeCAD's {:?}",
+                solved.push(format!(
+                    "after the solve, Silico's {round}, whose points the drag moved, has no radius on one side: Silico's {:?}, FreeCAD's {}",
                     solution.radii.get(&id).map(|r| r.mm()),
-                    theirs.radii.get(round)
+                    details.say(|| format!("{:?}", theirs.radii.get(round)))
                 ));
                 continue;
             };
             if (ours.mm() - r).abs() > DRAG_BAND {
-                how.push(format!(
-                    "after the solve, Silico's {round}, whose points the drag moved, has radius {}, FreeCAD's {r}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
-                    ours.mm()
+                solved.push(format!(
+                    "after the solve, Silico's {round}, whose points the drag moved, has radius {}, FreeCAD's {}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
+                    ours.mm(),
+                    details.say(|| r.to_string())
                 ));
             }
         }
@@ -5099,13 +5100,21 @@ fn compare_edited(
                     && (a[1] - b[1]).abs() <= 2.0 * sketch::TOLERANCE
             };
             if let Some((_, at)) = theirs.iter().find(|(_, at)| !alike(ours, *at)) {
-                how.push(format!(
-                    "after the solve, Silico's point {id}, which neither solve moved, is at {ours:?}, FreeCAD's at {at:?}"
+                solved.push(format!(
+                    "after the solve, Silico's point {id}, which neither solve moved, is at {ours:?}, FreeCAD's at {}",
+                    details.say(|| format!("{at:?}"))
                 ));
             }
         }
     }
-    how
+    Compared { how, solved }
+}
+
+/// How Silico's edited sketch and FreeCAD's differ: in all but where the solves put things,
+/// and in that, which only two solves that both succeeded give.
+struct Compared {
+    how: Vec<String>,
+    solved: Vec<String>,
 }
 
 #[path = "sketch_edit_rerun.rs"]
