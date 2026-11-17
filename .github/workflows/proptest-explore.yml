@@ -83,7 +83,7 @@ jobs:
       go: ${{ steps.room.outputs.go }}
       overdue: ${{ steps.room.outputs.overdue }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           sparse-checkout: .github
       - id: room
@@ -113,7 +113,7 @@ jobs:
           rm -rf "$results"
           mkdir -p "$results"
           echo "SILICO_EXPLORE_RESULTS=$results" >>"$GITHUB_ENV"
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Toolchains
         run: bash .github/tools.sh
       - name: Test scratch
@@ -175,7 +175,7 @@ jobs:
       # GitHub's UI, and the report's fallback should the VM's copy be gone. An upload that
       # fails (the account's artifact storage full) fails nothing: the report reads the VM's.
       # Kept two days, as a mutants shard's are.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() }}
         continue-on-error: true
         with:
@@ -198,13 +198,13 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           sparse-checkout: .github
       # Only if the VM has no copy of what the exploration found (below): a download that
       # fails, or takes past its few minutes, fails nothing. None if the exploration stopped
       # before it wrote anything: the report says so.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
         timeout-minutes: 3
         with:

@@ -51,7 +51,7 @@ jobs:
       actions: write
       contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           sparse-checkout: .github
       - env:
@@ -74,7 +74,7 @@ jobs:
       extend_cases: ${{ steps.extends.outputs.cases }}
       extend_status: ${{ steps.extends.outputs.status }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Toolchains
         id: toolchains
         run: bash .github/tools.sh
@@ -142,7 +142,7 @@ jobs:
       contents: read
       issues: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Report
         env:
           GH_TOKEN: ${{ github.token }}

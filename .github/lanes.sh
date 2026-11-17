@@ -45,9 +45,12 @@ free_for() {
 # most of its cases, and the day's minimum is still owed. With "ended" as $3 too, those going
 # are left out: the minimum is owed until one ends, so a real run deciding whether a sweep
 # going is overdue (cancel-filler.sh) doesn't count that sweep as the day's (the filler and
-# the exploration's room ask only while none is going). Needs gh, and BRANCH.
+# the exploration's room ask only while none is going). Only dispatched runs, as the filler
+# starts them: a fork's pull request's run of its own copy, on a branch it calls main, can be
+# titled as it likes. Needs gh, and BRANCH.
 sweeps() {
-  gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --limit 100 --json displayTitle,createdAt,conclusion,status \
+  gh run list --workflow oracle-sweep.yml --branch "$BRANCH" --event workflow_dispatch --limit 100 \
+    --json displayTitle,createdAt,conclusion,status \
     --jq "[.[] | select((.displayTitle | startswith(\"filler \"))
             and now - (.createdAt | fromdateiso8601) < $1
             and (\"${2-}\" != \"uncancelled\" or .conclusion != \"cancelled\")
@@ -59,12 +62,14 @@ sweeps() {
 # for hours). One cancelled, or skipped for want of room, doesn't count, nor one whose starved
 # build left no time for a round, which ends passed: its step "Rounds ran" is skipped
 # (proptest-explore.yml). Nor one going: the day's minimum is owed until one ends. None in a
-# day, the exploration is overdue (proptest-room.sh). Needs gh, GH_REPO, and BRANCH; fails
-# if a look at GitHub does, whatever the caller's shell options.
+# day, the exploration is overdue (proptest-room.sh). Only runs its schedule or a dispatch
+# started, not a fork's pull request's run of its own copy. Needs gh, GH_REPO, and BRANCH;
+# fails if a look at GitHub does, whatever the caller's shell options.
 explored() {
   local runs run ended count=0
-  runs=$(gh run list --workflow proptest-explore.yml --branch "$BRANCH" --limit 50 --json databaseId,createdAt \
-    --jq ".[] | select(now - (.createdAt | fromdateiso8601) < $((2 * $1))) | .databaseId") || return 1
+  runs=$(gh run list --workflow proptest-explore.yml --branch "$BRANCH" --limit 50 --json databaseId,createdAt,event \
+    --jq ".[] | select((.event == \"schedule\" or .event == \"workflow_dispatch\")
+      and now - (.createdAt | fromdateiso8601) < $((2 * $1))) | .databaseId") || return 1
   for run in $runs; do
     ended=$(gh api "repos/$GH_REPO/actions/runs/$run/jobs?per_page=100" --jq \
       "[.jobs[] | select(.name == \"explore\" and (.conclusion == \"success\" or .conclusion == \"failure\")

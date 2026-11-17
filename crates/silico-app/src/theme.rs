@@ -1930,6 +1930,16 @@ pub const START_THUMB_WIDTH: f32 = 52.0;
 pub const START_THUMB_HEIGHT: f32 = 40.0;
 pub const START_THUMB_BG: Color32 = GRAY_0;
 
+/// The note under Recent that a dropped document opens (`.drop-note`): the space above it
+/// (`.recent`'s `margin-bottom: 30px`, the larger of the two margins that meet there while
+/// Samples isn't built; the note's own is 26), its padding, and its border, 1 px dashed in
+/// Gray.350, its dashes and gaps each 3 long, as a browser draws a 1 px dashed border.
+pub const START_DROP_NOTE_MARGIN: f32 = 30.0;
+pub const START_DROP_NOTE_PADDING: f32 = 14.0;
+pub const START_DROP_NOTE_BORDER: Color32 = GRAY_350;
+pub const START_DROP_NOTE_DASH: f32 = 3.0;
+pub const START_DROP_NOTE_DASH_GAP: f32 = 3.0;
+
 // ---- Type (DESIGN.md, *Type*) ----
 
 /// Body text: 12 points (`re_ui`'s Body), on a 16 point line where a caller sets one.
