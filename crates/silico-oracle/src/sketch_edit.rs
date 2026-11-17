@@ -1103,6 +1103,9 @@ pub struct Verdict {
     /// ([`rolled_back()`]): the one outcome of FreeCAD's that a [`Shows::VariesMade`] case
     /// leaves uncompared.
     pub rolled_back: bool,
+    /// FreeCAD made the edit, its solve after it succeeding (0): the one outcome of FreeCAD's
+    /// that a [`Shows::VariesEdited`] case leaves uncompared.
+    pub freecad_made: bool,
     /// The case itself has a problem, or the harness: its sketch not drawn as it solves or
     /// not solving, FreeCAD's model of it malformed or conflicting before the edit, or the
     /// harness's own code around FreeCAD's edit failing.
@@ -1149,6 +1152,13 @@ pub enum Shows {
     /// or crashed, hung, or raised, the two are compared as in any case. Silico not making the
     /// edit, or a problem of the case's, is compared, and the known case a problem.
     VariesMade,
+    /// An edit both sides make, Silico's ([`Verdict::made`]) and FreeCAD's, its solve
+    /// succeeding ([`Verdict::freecad_made`]), the case itself without a problem, where FreeCAD
+    /// 1.1.3 lands on one of several results by its process's state, not by the case: shown as
+    /// known, its report with it, whichever it lands on, never as a difference. FreeCAD
+    /// failing, raising, crashing, or hanging is compared as in any case. Silico not making the
+    /// edit, or a problem of the case's, is compared, and the known case a problem.
+    VariesEdited,
 }
 
 /// The case file's differences the note doesn't explain, each reported with its judgment;
@@ -1268,6 +1278,12 @@ pub const KNOWN: &[Known] = &[
         shows: Shows::Varies(Rule::ExtendFrame),
         why: "FreeCAD 1.1.3 isn't the same run to run here: the line n0000005's end p0000001 moved by -7.813 mm, whose drag's solve fails, which Silico refuses (#se-a-frame-that-isn-t-a); FreeCAD's drag fails as well, and its extend raises \"Not able to extend geometry\" (#se-extend-unchecked), in 13 of 13 runs alone and 2 of 3 whole sweeps, and makes the edit (solve 0, 20 degrees of freedom) in the other, but an answer that varies is no oracle",
     },
+    // `sketch-extend-sweep --seed 146 --count 500`'s case 424.
+    Known {
+        case: "extend_146_424",
+        shows: Shows::VariesEdited,
+        why: "FreeCAD 1.1.3 lands on one of two results here by its process's state, not by the case: the drag passes through the tail line's flip, and FreeCAD orders its unknowns by memory address (docs/ports/sketcher.md:51), which picks the solution it lands in, p0000012 at x 36.259989762 with the tangent arc a0000017's radius 4.877, or at 35.873736898 with radius 3.947, switching with unrelated state (sketches opened before, constraints renamed, a centre's y one ulp off; the smallest reproduction is n0000005 horizontal, n0000013 parallel, and the tangent arc). Silico's is exactly FreeCAD's second, every run; the night's sweep and three runs alone gave the first (#328, investigated 2026-11-16), so an answer that varies is no oracle",
+    },
 ];
 
 /// Whether `v`'s Silico side is a refusal by a rule of `want`'s kind, whatever it names (a
@@ -1279,21 +1295,26 @@ fn same_kind(v: &Verdict, want: &Rule) -> bool {
             .is_some_and(|r| std::mem::discriminant(r) == std::mem::discriminant(want))
 }
 
-/// Whether a [`Shows::Varies`] or [`Shows::VariesMade`] case's Silico side, in `v`, is still
+/// Whether a [`Shows::Varies`], [`Shows::VariesMade`], or [`Shows::VariesEdited`] case's Silico side, in `v`, is still
 /// the one its entry holds it to, so the entry isn't stale, whatever FreeCAD answered.
 fn still_varies(shows: &Shows, v: &Verdict) -> bool {
     match shows {
         Shows::Difference(_) => false,
         Shows::Varies(rule) => same_kind(v, rule),
-        Shows::VariesMade => !v.problem && v.made,
+        Shows::VariesMade | Shows::VariesEdited => !v.problem && v.made,
     }
 }
 
 /// Whether `v` is shown as a varying case's known outcome, not compared: a [`Shows::Varies`]
 /// case whatever FreeCAD answered, a [`Shows::VariesMade`] one only where FreeCAD's merge
-/// was rolled back.
+/// was rolled back, and a [`Shows::VariesEdited`] one only where FreeCAD made the edit.
 fn shown_as_varying(shows: &Shows, v: &Verdict) -> bool {
-    still_varies(shows, v) && (!matches!(shows, Shows::VariesMade) || v.rolled_back)
+    still_varies(shows, v)
+        && match shows {
+            Shows::VariesMade => v.rolled_back,
+            Shows::VariesEdited => v.freecad_made,
+            Shows::Difference(_) | Shows::Varies(_) => true,
+        }
 }
 
 /// `verdicts` less the [`KNOWN`] differences that showed: the cases that differ, a line for
@@ -1323,7 +1344,7 @@ pub fn without_known(
                 ));
                 continue;
             }
-            Shows::VariesMade => {
+            Shows::VariesMade | Shows::VariesEdited => {
                 missing.push(format!(
                     "{}: FreeCAD varies run to run here, but Silico no longer makes the edit ({}); it now reads: {}",
                     k.case,
@@ -1614,6 +1635,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         rule: rule(p),
         made: matches!(&p.silico, SilicoSide::Edited(s) if s.ours.outcome.is_ok()),
         rolled_back: rolled_back(p, theirs),
+        freecad_made: matches!(theirs, Some(Theirs::Edited(fc)) if fc.after.code == 0),
         problem: !p.problems.is_empty(),
         ..Verdict::default()
     };
@@ -1944,7 +1966,8 @@ pub enum Rule {
     ExtendArcToNothing,
     /// An arc swept a whole turn or more (#se-an-arc-swept-a-whole-turn).
     ExtendWholeTurn,
-    /// An arc's extend whose solve fails from the written end (#se-an-arc-swept-a-whole-turn).
+    /// An arc's extend whose solve fails from the written end, or gives a result that can't be
+    /// built (#se-an-arc-swept-a-whole-turn).
     ExtendSolveFails,
     /// A result the gate would refuse, refused as the extend's (#se-each-result-is-checked-by-the).
     ExtendGated,
@@ -2126,10 +2149,15 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
                 return None;
             };
             if let Edit::Extend { curve, .. } = &p.edit {
-                // An arc's: its end is written, not dragged (#se-a-line-s-end-goes-through).
+                // An arc's: its end is written, not dragged (#se-a-line-s-end-goes-through). Its
+                // solve failing, or giving a result that can't be built (a curve collapsed,
+                // `extend_158_266`), as a merge's solve may (#se-so-does-any-refusal-of-the).
                 let arc = shape.members.get(curve).is_some_and(|m| m.kind == "arc");
-                return (arc && e.code() == silico_core::ErrorCode::SolveFailed)
-                    .then_some(Rule::ExtendSolveFails);
+                let fails = matches!(
+                    e.code(),
+                    silico_core::ErrorCode::SolveFailed | silico_core::ErrorCode::InvalidResult
+                );
+                return (arc && fails).then_some(Rule::ExtendSolveFails);
             }
             if !matches!(p.edit, Edit::Merge { .. }) {
                 return None;
@@ -2671,7 +2699,7 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
         // names it.
         Rule::ExtendSolveFails => (fc.after.code == 0 && arc_as_requested(p, fc)).then(|| {
             format!(
-                "an extend whose solve fails from the written end: Silico refuses it ({NOTE}#se-an-arc-swept-a-whole-turn), where FreeCAD's solve succeeds"
+                "an extend whose solve fails, or gives a result the file can't hold, from the written end: Silico refuses it ({NOTE}#se-an-arc-swept-a-whole-turn), where FreeCAD's solve succeeds"
             )
         }),
         Rule::ExtendWholeTurn => range_wrapped(p, fc).then(|| format!(
@@ -2849,22 +2877,32 @@ fn implied_on(p: &Prepared, theirs: Option<&Theirs>) -> Option<String> {
 }
 
 /// Whether FreeCAD's merge, refused for a worse solve, is the measured one for Silico's
-/// [`Rule::MergeSolveWorse`]: constraints found redundant (-2), nothing newly conflicting or
-/// malformed, and every constraint Silico's refusal names among those FreeCAD newly finds
-/// redundant (by its name, `s_` and the ID), so a redundancy of other constraints isn't
-/// taken for it. Or found conflicting (-3), nothing newly malformed, and every constraint
-/// Silico's refusal names among those FreeCAD newly finds redundant or conflicting: Silico's
-/// solve starts from the kept point's place (#se-the-first-point-the-request-names) and
-/// FreeCAD's from the points apart, and from there PlaneGCS can call the same dependent
-/// constraints conflicting rather than redundant. Both refuse the merge as worse than the
-/// sketch before it (the sweeps' edit_169_486 and edit_175_299, FreeCAD's -3 in 3 of 3 runs
-/// alone and their nights' sweeps, conflicting [3, 6, 10, 14, 15] in 169_486, conflicting [12]
-/// and 13 redundant in 175_299; and edit_158_347, -3 in its sweep and -2 in a run alone).
+/// [`Rule::MergeSolveWorse`]. FreeCAD's solve from the points apart: constraints found
+/// redundant (-2), nothing newly conflicting or malformed, and every constraint Silico's
+/// refusal names among those FreeCAD newly finds redundant (by its name, `s_` and the ID), so
+/// a redundancy of other constraints isn't taken for it; or found conflicting (-3), nothing
+/// newly malformed, and every constraint Silico's refusal names among those FreeCAD newly finds
+/// redundant or conflicting. And, for points merged from apart, FreeCAD's solve of the same
+/// merge from Silico's start, the kept point's place ([`FreecadEdited::placed`]), worse in one
+/// of the same two ways by the same constraints: a solve that's clean from where Silico's
+/// starts says Silico's refusal is wrong, whatever FreeCAD's own start gives (the merge's
+/// solve is a function of where it starts, #se-the-first-point-the-request-names). Even from
+/// that one start, FreeCAD can call conflicting what Silico calls redundant, likely as Silico
+/// merges the points into one where FreeCAD keeps them two and adds a Coincident, a constraint
+/// more for PlaneGCS to rank the dependent ones against: `edit_158_347`'s placed solve gave -3,
+/// Symmetric s_k0000030 conflicting and 14 redundant, in a run whose solve from the points
+/// apart gave -2 (2026-11-16, the CI VM). So the start isn't why the codes differ, and either
+/// code by the named constraints agrees. Both refuse the merge as worse than the sketch before
+/// it (the sweeps' edit_169_486 and edit_175_299, FreeCAD's -3 in 3 of 3 runs alone and their
+/// nights' sweeps, conflicting [3, 6, 10, 14, 15] in 169_486, conflicting [12] and 13 redundant
+/// in 175_299, whose placed solve gave -2 with the 13 redundant; and edit_158_347, -3 in its
+/// sweep and -2 in a run alone). edit_169_486 has no placed solve, so only FreeCAD's own start
+/// is compared there.
 fn redundant_as_named(p: &Prepared, theirs: Option<&Theirs>) -> bool {
     let (SilicoSide::Refused(r), Some(Theirs::Edited(fc))) = (&p.silico, theirs) else {
         return false;
     };
-    let (b, a) = (&fc.before, &fc.after);
+    let b = &fc.before;
     let new = |after: &[usize], before: &[usize]| -> Vec<usize> {
         after
             .iter()
@@ -2879,21 +2917,30 @@ fn redundant_as_named(p: &Prepared, theirs: Option<&Theirs>) -> bool {
             .map(|c| c.name.trim_start_matches("s_").to_owned())
             .collect()
     };
-    let (redundant, conflicting) = (
-        new(&a.redundant, &b.redundant),
-        new(&a.conflicting, &b.conflicting),
-    );
-    let named: BTreeSet<String> = match a.code {
-        -2 if conflicting.is_empty() => names(redundant),
-        -3 if !conflicting.is_empty() => names(redundant)
-            .union(&names(conflicting))
-            .cloned()
-            .collect(),
-        _ => return false,
+    // Whether a solve of the merge is worse than the sketch's before it by the constraints
+    // Silico names.
+    let worse_as_named = |a: &Diagnosis| {
+        let (redundant, conflicting) = (
+            new(&a.redundant, &b.redundant),
+            new(&a.conflicting, &b.conflicting),
+        );
+        let named: BTreeSet<String> = match a.code {
+            -2 if conflicting.is_empty() => names(redundant),
+            -3 if !conflicting.is_empty() => names(redundant)
+                .union(&names(conflicting))
+                .cloned()
+                .collect(),
+            _ => return false,
+        };
+        new(&a.malformed, &b.malformed).is_empty()
+            && !r.elements.is_empty()
+            && r.elements.iter().all(|id| named.contains(id))
     };
-    new(&a.malformed, &b.malformed).is_empty()
-        && !r.elements.is_empty()
-        && r.elements.iter().all(|id| named.contains(id))
+    worse_as_named(&fc.after)
+        && fc
+            .placed
+            .as_ref()
+            .is_none_or(|placed| worse_as_named(&placed.solve))
 }
 
 /// Why Silico's merge, made, is the note's where FreeCAD's Coincident command rolls it back

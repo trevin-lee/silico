@@ -44,12 +44,14 @@ impl Tolerance {
         center: 1e-8,
     };
 
-    /// A boolean with a curved shape in it, or anything made from one: the intersection
-    /// curves are approximations, which the two OCCT builds make a hair differently
-    /// (FreeCAD runs its booleans in parallel, Silico in order). Over the 1083 such cases the
-    /// largest differences were 1.2e-6 in volume, 5e-7 in area, 6.3e-7 in the center (a
-    /// sphere common a torus), and 1.2e-8 in the box: past the roadmap's 1e-6 for curved
-    /// shapes, so this is looser.
+    /// A boolean with a curved shape in it but no torus operand ([`Tolerance::TORUS_BOOLEAN`]
+    /// takes those), or anything made from one: the intersection curves are approximations,
+    /// which the two OCCT builds make a hair differently (FreeCAD runs its booleans in
+    /// parallel, Silico in order). Over the 1083 such cases measured when it was set, torus
+    /// booleans among them, the largest differences were 1.2e-6 in volume, 5e-7 in area,
+    /// 6.3e-7 in the center, and 1.2e-8 in the box: past the roadmap's 1e-6 for curved shapes,
+    /// so this is looser. The center's largest was a sphere common a torus, now
+    /// `TORUS_BOOLEAN`'s; the largest among the cases left to this one wasn't measured apart.
     pub const CURVED_BOOLEAN: Tolerance = Tolerance {
         relative: 1e-5,
         bounds: 1e-7,

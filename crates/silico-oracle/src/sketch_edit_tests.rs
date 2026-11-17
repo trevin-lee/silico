@@ -1852,3 +1852,31 @@ fn an_anchor_is_cited_with_the_line_it_stands_on() {
         format!("#se-merge-built (line {line}), #se-extend-built (line {other}), #{missing}")
     );
 }
+
+#[test]
+fn every_case_measured_to_vary_in_its_solve_is_still_a_generated_arc_extend_silico_makes() {
+    // SOLVE_VARIES excuses FreeCAD's failed solve only at an extended arc's shared end where
+    // Silico's solved: each entry has to name a case a sweep still makes, and of that kind, or
+    // it excuses nothing and is stale (a generator change renumbering them, say).
+    let mut worker = silico_core::sketch::SketchWorker::start().unwrap();
+    for name in SOLVE_VARIES {
+        let mut parts = name.split('_');
+        let (Some("extend"), Some(seed), Some(n), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            panic!("{name}: not a generated extend's name");
+        };
+        let (seed, n): (u64, usize) = (seed.parse().unwrap(), n.parse().unwrap());
+        let mut cases = crate::generate::sketch_extend_cases(seed, n + 1).unwrap();
+        let case = cases.swap_remove(n);
+        assert_eq!(case.name, *name);
+        let p = prepare(&case, &mut worker).unwrap();
+        assert!(p.problems.is_empty(), "{name}: {:?}", p.problems);
+        assert!(shared_arc_end(&p).is_some(), "{name}: {:?}", p.edit);
+        assert!(
+            matches!(&p.silico, SilicoSide::Edited(s) if s.ours.outcome.is_ok()),
+            "{name}: {:?}",
+            p.silico
+        );
+    }
+}
