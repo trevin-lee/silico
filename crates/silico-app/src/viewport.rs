@@ -2190,6 +2190,8 @@ pub fn show<P: Clients + 'static>(
     if tab.view.transition.is_some() {
         ui.ctx().request_repaint();
     }
+    // An empty part's hint, above the bar: Create Sketch, as the toolbar's.
+    crate::canvas_hint::empty_part(ui, rect, tab, sessions);
 }
 
 /// The faces `feature` made in `bodies`, as each face's name says ([`Name::feature`]), in
