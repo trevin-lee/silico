@@ -1172,6 +1172,13 @@ enum OwnRead {
     Check,
 }
 
+/// A step along the timeline's order ([`Tab::select_beside`]): → or ←.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineStep {
+    Next,
+    Previous,
+}
+
 /// One open document.
 pub struct Tab {
     pub id: SessionId,
@@ -6560,6 +6567,42 @@ impl Tab {
     pub fn show_in_timeline(&mut self, id: FeatureId) {
         self.selection.select_feature(id.clone());
         self.timeline_scroll = Some(id);
+    }
+
+    /// → or ← (interact.js's `keydown`), `step`: the feature after or before the one
+    /// selected as itself, in the timeline's order, selected alone as a click on its item
+    /// selects it, and the timeline scrolled to it. The first and the last stay as they are
+    /// (the prototype's clamp). Nothing without a feature selected as itself (a body's row,
+    /// elements, or nothing selected), with the timeline unread, or while the gate refuses
+    /// the document (its timeline may list an ID used twice, twice).
+    pub fn select_beside(&mut self, step: TimelineStep) {
+        let Some(id) = self.selection.feature().filter(|id| {
+            self.selection
+                .selected_as(id, crate::selection::SelectedAs::Itself)
+        }) else {
+            return;
+        };
+        let Some(entries) = self
+            .timeline
+            .as_ref()
+            .filter(|timeline| timeline.problems == 0)
+            .and_then(|timeline| timeline.features.as_ref())
+        else {
+            return;
+        };
+        let Some(at) = entries.iter().position(|entry| &entry.id == id) else {
+            return;
+        };
+        let to = match step {
+            TimelineStep::Next => at.saturating_add(1),
+            TimelineStep::Previous => at.saturating_sub(1),
+        };
+        let Some(next) = entries.get(to).filter(|_| to != at) else {
+            return;
+        };
+        let next = next.id.clone();
+        self.selected_in = crate::feature_menu::Place::Timeline;
+        self.show_in_timeline(next);
     }
 
     /// The feature the timeline is to scroll to, if one is.
@@ -13196,6 +13239,29 @@ mod tests {
             .unwrap_or_default()
     }
 
+    /// What the reload banner shown lists as changed, once its diff answers: each row's
+    /// feature, field, and text. A banner whose diff was refused fails the test.
+    fn banner_listed(tab: &mut Tab, sessions: &FakeSessions) -> Vec<(String, String, String)> {
+        taken_until(tab, sessions, |tab| {
+            tab.reloaded
+                .as_ref()
+                .is_some_and(|reloaded| !matches!(reloaded.changes, Changes::Asking))
+        });
+        match &tab.reloaded.as_ref().unwrap().changes {
+            Changes::Listed(listed) => listed
+                .rows
+                .iter()
+                .map(|row| (row.feature.clone(), row.field.clone(), row.text.clone()))
+                .collect(),
+            other => panic!("the reload's changes not listed: {other:?}"),
+        }
+    }
+
+    /// `(feature, field, text)`, as [`banner_listed`] gives a row.
+    fn listed_row(feature: &str, field: &str, text: &str) -> (String, String, String) {
+        (feature.to_owned(), field.to_owned(), text.to_owned())
+    }
+
     /// No reload unlisted.
     const NONE_UNLISTED: Vec<(Revision, Revision)> = Vec::new();
 
@@ -14004,6 +14070,14 @@ mod tests {
             resets + 1,
             "the reload announced more than once"
         );
+        // The banner names what the other program changed: the pin's radius, 0.5 → 0.6, as
+        // BLOCK and the file it wrote differ, and nothing else.
+        assert_eq!(
+            banner_listed(&mut tab, &sessions),
+            vec![listed_row("Pin", "radius", "0.5 → 0.6")]
+        );
+        assert_eq!(banner(&tab), Some((rev(1), rev(2))));
+        assert_eq!(banner_unlisted(&tab), NONE_UNLISTED);
     }
 
     #[test]
@@ -14122,6 +14196,14 @@ mod tests {
             assert_eq!(tab.resets, resets, "save as: {save_as}");
             assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
             assert_eq!(revision_now(&tab, &sessions), rev(5), "save as: {save_as}");
+            // The banner names what the second write changed: the pin, Bolt then Nut, and
+            // nothing else (both writes are BLOCK but for that name).
+            assert_eq!(
+                banner_listed(&mut tab, &sessions),
+                vec![listed_row("Nut", "name", r#""Bolt" → "Nut""#)],
+                "save as: {save_as}"
+            );
+            assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
         }
     }
 
