@@ -1941,3 +1941,48 @@ fn an_arc_extends_failed_or_unbuildable_solve_is_the_rule_only_at_an_end_another
         None
     );
 }
+
+#[test]
+fn every_frame_varies_entry_is_still_a_generated_line_extend_moving_what_it_records_and_no_circle()
+{
+    // FRAME_VARIES pins a frame by the points its drag moves alone: each entry has to name a
+    // case a sweep still makes, a line's extend Silico makes, whose drag moves exactly the points
+    // it records, and with no circle, whose radius frame_pinned doesn't hold (an entry with one
+    // fails here until the pin and a test of it come back).
+    let mut worker = silico_core::sketch::SketchWorker::start().unwrap();
+    for f in FRAME_VARIES {
+        let mut parts = f.case.split('_');
+        let (Some("extend"), Some(seed), Some(n), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            panic!("{}: not a generated extend's name", f.case);
+        };
+        let (seed, n): (u64, usize) = (seed.parse().unwrap(), n.parse().unwrap());
+        let mut cases = crate::generate::sketch_extend_cases(seed, n + 1).unwrap();
+        let case = cases.swap_remove(n);
+        assert_eq!(case.name, f.case);
+        let p = prepare(&case, &mut worker).unwrap();
+        assert!(p.problems.is_empty(), "{}: {:?}", f.case, p.problems);
+        assert!(
+            p.sketch.circles.is_empty(),
+            "{}: {:?}",
+            f.case,
+            p.sketch.circles
+        );
+        let Edit::Extend { curve, .. } = &p.edit else {
+            panic!("{}: {:?}", f.case, p.edit);
+        };
+        assert_eq!(
+            Shape::of(&p.sketch).members.get(curve).map(|m| m.kind),
+            Some("line")
+        );
+        let SilicoSide::Edited(s) = &p.silico else {
+            panic!("{}: {:?}", f.case, p.silico);
+        };
+        assert!(s.ours.outcome.is_ok(), "{}: {:?}", f.case, s.ours);
+        let modified: Vec<&str> = s.edited.modified.iter().map(ElementId::as_str).collect();
+        let recorded: Vec<&str> = f.moved.iter().map(|(id, _)| *id).collect();
+        assert_eq!(modified, recorded, "{}", f.case);
+        assert!(frame_pinned(&p, s, f), "{}", f.case);
+    }
+}

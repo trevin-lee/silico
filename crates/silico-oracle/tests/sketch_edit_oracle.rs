@@ -1019,10 +1019,11 @@ fn an_arc_extend_whose_solve_gives_a_result_the_file_cant_hold_is_the_solve_fail
 #[test]
 fn an_extend_through_a_lines_flip_freecad_lands_either_side_of_compares_all_but_its_places() {
     // `sketch-extend-sweep --seed 146 --count 500`'s case 424 (FRAME_VARIES): FreeCAD's drag
-    // lands on one of two frames by its process's state, and Silico's on the other, pinned:
-    // p0000012 at x 35.873736898 and a0000017's radius 3.947421693. Only the places the drag
-    // settles go uncompared; the rest is compared, so this run's FreeCAD agrees whichever frame
-    // it lands on.
+    // lands on one of two frames by its process's state, and Silico's on the other, pinned whole:
+    // each of the seven points its drag moved at both coordinates (p0000012 at x 35.873736898,
+    // which puts a0000017's radius at 3.947421693), every other point where the case drew it.
+    // Only the places the drag settles go uncompared; the rest is compared, so this run's
+    // FreeCAD agrees whichever frame it lands on.
     let mut sweep = silico_oracle::generate::sketch_extend_cases(146, 500).unwrap();
     let case = sweep.swap_remove(424);
     assert_eq!(case.name, "extend_146_424");
@@ -1071,9 +1072,9 @@ fn an_extend_through_a_lines_flip_freecad_lands_either_side_of_compares_all_but_
     assert!(!verdict(&p, Some(&raised)).how.is_empty());
     // Silico's frame off the one pinned anywhere: its places compared, a difference. The
     // reviewer's p0000012 y by 1e-3 mm; each coordinate of each of the seven points the drag
-    // moved (the extend's `modified`), alone, by 1e-5 mm, past the drag's band of 5e-7; a point
-    // it didn't move; and each circle's radius. (An arc's radius is its centre's distance to its
-    // start, both pinned points.)
+    // moved (the extend's `modified`), alone, by 1e-5 mm, past the drag's band of 5e-7; and a
+    // point it didn't move. (An arc's radius is its centre's distance to its start, both pinned
+    // points; the sketch has no circle.)
     let off = |change: &dyn Fn(&mut Sketch)| {
         let off = changed(&case, &p, change);
         let v = verdict(&off, theirs[0].as_ref());
@@ -1111,13 +1112,6 @@ fn an_extend_through_a_lines_flip_freecad_lands_either_side_of_compares_all_but_
         .find(|q| !moved.contains(&q.as_str()))
         .unwrap();
     off(&nudge(unmoved, 0, 1e-5));
-    for circle in &p.sketch.circles {
-        let circle = circle.id.clone();
-        off(&move |sketch: &mut Sketch| {
-            let c = sketch.circles.iter_mut().find(|c| c.id == circle).unwrap();
-            c.radius = silico_core::document::Coordinate::new(c.radius.mm() + 1e-5).unwrap();
-        });
-    }
     // A report beyond places is no known case either: KNOWN holds no entry that hides it.
     let v = Verdict {
         case: "extend_146_424".into(),

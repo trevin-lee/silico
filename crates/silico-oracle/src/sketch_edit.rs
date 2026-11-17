@@ -3580,8 +3580,7 @@ enum Unreproducible {
     Drag(String),
     /// A line's drag FreeCAD takes to one of two frames by its process's state
     /// ([`FRAME_VARIES`]), where Silico's whole frame is the one recorded ([`frame_pinned`]:
-    /// every point at both coordinates, and every circle's radius): no place or radius before
-    /// the solve is compared, and after it only points neither solve moved;
+    /// every point at both coordinates): no place or radius before the solve is compared, and after it only points neither solve moved;
     /// the constraints, the degrees of freedom, the diagnostics, and the outcome in full.
     Frame(String),
 }
@@ -3620,9 +3619,10 @@ const FRAME_VARIES: &[FrameVaries] = &[FrameVaries {
 
 /// Whether Silico's edited sketch, before the solve, is the frame `f` records: the same points
 /// as the case's drawing, each moved one within [`DRAG_BAND`] of its recorded place in both
-/// coordinates, every other within it of where the case drew it, and every circle's radius
-/// within it of the drawn one. An arc's radius is its centre's distance to its start, both
-/// points, so it's pinned with them.
+/// coordinates, and every other within it of where the case drew it. An arc's radius is its
+/// centre's distance to its start, both points, so it's pinned with them. A circle's radius is
+/// its own, and no entry's case has a circle (the entries' test holds them to that), so none is
+/// pinned.
 fn frame_pinned(p: &Prepared, s: &SilicoEdited, f: &FrameVaries) -> bool {
     let (drawn, edited) = (Shape::of(&p.sketch), Shape::of(&s.edited.sketch));
     let within = |a: [f64; 2], b: [f64; 2]| {
@@ -3636,17 +3636,7 @@ fn frame_pinned(p: &Prepared, s: &SilicoEdited, f: &FrameVaries) -> bool {
                 None => drawn.points.get(id).is_some_and(|d| within(*at, *d)),
             },
         );
-    let circles = edited
-        .members
-        .iter()
-        .filter(|(_, m)| m.kind == "circle")
-        .all(
-            |(id, _)| match (edited.radii.get(id), drawn.radii.get(id)) {
-                (Some(r), Some(d)) => (r - d).abs() <= DRAG_BAND,
-                _ => false,
-            },
-        );
-    same_points && placed && circles
+    same_points && placed
 }
 
 /// How far apart the two sides' points a line's drag moved may be, in mm, before the solve
