@@ -42,7 +42,10 @@ fn thousandths(x: f64) -> f64 {
 }
 
 /// Generated cases whose difference from FreeCAD is understood, as the corpus's are
-/// ([`crate::corpus::Known`]): reported as known wherever a sweep makes them.
+/// ([`crate::corpus::Known`]): reported as known wherever a sweep makes them. Their kind
+/// beyond this one case, FreeCAD's result inside out or invalid where Silico refuses it as
+/// invalid, is a rule ([`crate::without_freecads_no_solid`], with the sweeps' cases measured),
+/// applied after this list.
 pub const KNOWN: &[crate::corpus::Known] = &[crate::corpus::Known {
     case: "generated_15_96",
     difference: "FreeCAD built it; Silico failed: invalid_result: Cut gave an invalid result, \

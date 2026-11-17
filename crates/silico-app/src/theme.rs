@@ -511,6 +511,17 @@ pub const VIEWPORT_EDGE_WIDTH: f32 = 1.5;
 /// A shown sketch's curves drawn among the bodies (the prototype's `syncSketchLines`
 /// lines), their width in points.
 pub const VIEWPORT_SKETCH_WIDTH: f32 = 1.5;
+/// An origin plane's fill (`crate::planes`, the prototype's `buildPlanes`): `#9f9f9f` at
+/// 0.08.
+pub const VIEWPORT_PLANE_FILL: Rgba8 = rgba8_of(GRAY_600, 20);
+/// Its outline: `#9f9f9f` at 0.6.
+pub const VIEWPORT_PLANE_OUTLINE: Rgba8 = rgba8_of(GRAY_600, 153);
+/// Its outline's width, in points: the prototype's 1 px.
+pub const VIEWPORT_PLANE_WIDTH: f32 = 1.0;
+/// A hovered origin plane's fill (`VP.setPlanes`' hover): `#186add` at 0.32.
+pub const VIEWPORT_PLANE_HOVER_FILL: Rgba8 = rgba8_of(SELECTION_BG, 82);
+/// Its outline: `#4676ff` at 0.6.
+pub const VIEWPORT_PLANE_HOVER_OUTLINE: Rgba8 = rgba8_of(FOCUS, 153);
 /// A hovered face's tint: white, mixed in at [`VIEWPORT_HOVER_TINT_AMOUNT`].
 pub const VIEWPORT_HOVER_TINT: Rgba8 = rgba8(0xffffff);
 /// How much of [`VIEWPORT_HOVER_TINT`] a hovered face takes.
@@ -1706,6 +1717,52 @@ pub const SHEET_NOTE_MARGIN: f32 = 6.0;
 pub const SHEET_NOTE_PADDING: f32 = 8.0;
 pub const SHEET_NOTE_BORDER: Color32 = PANEL_BORDER;
 
+// ---- The command search (`.palette-modal`; DESIGN.md's *Command search*) ----
+
+/// The box (`.palette-modal`): 520 wide, its border in it (`box-sizing: border-box`), 96 from
+/// the window's top and centred across it; Gray.200 inside a 1 px Gray.350 border, `--r`'s
+/// corners, and a modal's shadow (`0 15px 50px rgba(0,0,0,.7)`).
+pub const SEARCH_WIDTH: f32 = 520.0;
+pub const SEARCH_TOP: f32 = 96.0;
+pub const SEARCH_BG: Color32 = FLOATING_BG;
+pub const SEARCH_BORDER: Color32 = STROKE_STRONG;
+pub const SEARCH_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
+pub const SEARCH_SHADOW: Shadow = Shadow {
+    offset: [0, 15],
+    blur: 50,
+    spread: 0,
+    color: with_alpha(GRAY_0, 179),
+};
+/// Its backdrop over the window (the prototype's inline `background: rgba(0,0,0,.35)`).
+pub const SEARCH_BACKDROP: Color32 = with_alpha(GRAY_0, 89);
+/// Its field's row (`.pm-input`): 38 high, its 1 px Gray.250 rule under it in that; padded
+/// 12 at its sides, the search icon (Gray.550) 8 before the field, whose words are 13 high
+/// in Gray.1000.
+pub const SEARCH_INPUT_HEIGHT: f32 = 38.0;
+pub const SEARCH_INPUT_PADDING: f32 = 12.0;
+pub const SEARCH_INPUT_GAP: f32 = 8.0;
+pub const SEARCH_INPUT_SIZE: f32 = 13.0;
+pub const SEARCH_INPUT_TEXT: Color32 = TEXT_STRONG;
+pub const SEARCH_ICON: Color32 = TEXT_SUBDUED;
+pub const SEARCH_RULE: Color32 = PANEL_BORDER;
+/// Its list (`.pm-list`): at most 340 high, its padding of 4 in that, scrolling past it; each
+/// row a menu's item (`.menu .mi`) 28 high (`.palette-modal .mi`).
+pub const SEARCH_LIST_MAX_HEIGHT: f32 = 340.0;
+pub const SEARCH_LIST_PADDING: f32 = 4.0;
+pub const SEARCH_ROW_HEIGHT: f32 = 28.0;
+/// Its foot (`.pm-foot`): over a 1 px Gray.250 rule, padded 6 over and under and 12 at its
+/// sides, its parts 14 apart, 10.5 high in Gray.550 on a line of the body's, its keys as key
+/// caps.
+pub const SEARCH_FOOT_PADDING: Margin = Margin {
+    left: 12,
+    right: 12,
+    top: 6,
+    bottom: 6,
+};
+pub const SEARCH_FOOT_GAP: f32 = 14.0;
+pub const SEARCH_FOOT_SIZE: f32 = 10.5;
+pub const SEARCH_FOOT_TEXT: Color32 = TEXT_SUBDUED;
+
 // ---- Banners over the canvas (`.canvas-banner`) ----
 
 /// A banner's place over the canvas: 10 from its left and top, 148 from its right, clear of
@@ -2343,6 +2400,57 @@ mod tests {
         assert_eq!(VIEWPORT_GRID_AXIS_ALPHA, of_255(0.9));
     }
 
+    /// The command search's tokens, typed from styles.css's `.palette-modal` rules and
+    /// renderPalette's backdrop (`rgba(0,0,0,.35)`), not from the constants they're made of.
+    #[test]
+    fn the_command_searchs_tokens_are_the_prototypes() {
+        assert_eq!(SEARCH_WIDTH, 520.0);
+        assert_eq!(SEARCH_TOP, 96.0);
+        assert_eq!(SEARCH_BG, Color32::from_rgb(0x21, 0x21, 0x21));
+        assert_eq!(SEARCH_BORDER, Color32::from_rgb(0x52, 0x51, 0x51));
+        assert_eq!(SEARCH_CORNER_RADIUS, 6);
+        assert_eq!(
+            SEARCH_SHADOW,
+            Shadow {
+                offset: [0, 15],
+                blur: 50,
+                spread: 0,
+                color: Color32::from_rgba_unmultiplied(0, 0, 0, 179),
+            }
+        );
+        assert_eq!(
+            SEARCH_BACKDROP,
+            Color32::from_rgba_unmultiplied(0, 0, 0, 89)
+        );
+        assert_eq!(
+            (SEARCH_INPUT_HEIGHT, SEARCH_INPUT_PADDING, SEARCH_INPUT_GAP),
+            (38.0, 12.0, 8.0)
+        );
+        assert_eq!(SEARCH_INPUT_SIZE, 13.0);
+        assert_eq!(SEARCH_INPUT_TEXT, Color32::from_rgb(0xff, 0xff, 0xff));
+        assert_eq!(SEARCH_ICON, Color32::from_rgb(0x93, 0x90, 0x90));
+        assert_eq!(SEARCH_RULE, Color32::from_rgb(0x27, 0x26, 0x26));
+        assert_eq!(
+            (
+                SEARCH_LIST_MAX_HEIGHT,
+                SEARCH_LIST_PADDING,
+                SEARCH_ROW_HEIGHT
+            ),
+            (340.0, 4.0, 28.0)
+        );
+        assert_eq!(
+            SEARCH_FOOT_PADDING,
+            Margin {
+                left: 12,
+                right: 12,
+                top: 6,
+                bottom: 6
+            }
+        );
+        assert_eq!((SEARCH_FOOT_GAP, SEARCH_FOOT_SIZE), (14.0, 10.5));
+        assert_eq!(SEARCH_FOOT_TEXT, Color32::from_rgb(0x93, 0x90, 0x90));
+    }
+
     /// The prototype's colours for the tokens built from others, typed from its sources.
     #[test]
     fn the_tokens_named_for_others_are_the_prototypes_colours() {
@@ -2456,9 +2564,33 @@ mod tests {
                 VIEWPORT_FEATURE_HOVER_TINT,
                 [0xd4, 0xdb, 0xff, 0xff],
             ),
+            // viewport.js's `buildPlanes` and `VP.setPlanes`: `#9f9f9f` at `opacity: 0.08`
+            // filled (0.08 × 255 = 20.4), `lineMesh(…, '#9f9f9f', 1, 0.6)` outlined (153);
+            // hovered `#186add` at 0.32 (81.6), its outline `#4676ff` at the outline's 0.6.
+            (
+                "VIEWPORT_PLANE_FILL",
+                VIEWPORT_PLANE_FILL,
+                [0x9f, 0x9f, 0x9f, 20],
+            ),
+            (
+                "VIEWPORT_PLANE_OUTLINE",
+                VIEWPORT_PLANE_OUTLINE,
+                [0x9f, 0x9f, 0x9f, 153],
+            ),
+            (
+                "VIEWPORT_PLANE_HOVER_FILL",
+                VIEWPORT_PLANE_HOVER_FILL,
+                [0x18, 0x6a, 0xdd, 82],
+            ),
+            (
+                "VIEWPORT_PLANE_HOVER_OUTLINE",
+                VIEWPORT_PLANE_HOVER_OUTLINE,
+                [0x46, 0x76, 0xff, 153],
+            ),
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        assert_eq!(VIEWPORT_PLANE_WIDTH, 1.0);
         // viewport.js's `applyHighlight`: a maker's face `uTintAmt.value = 0.4` (DESIGN.md's
         // "tint 40%").
         assert_eq!(VIEWPORT_FEATURE_HOVER_TINT_AMOUNT, 0.4);
