@@ -36,6 +36,7 @@ mod properties;
 pub mod recent;
 pub mod renderer;
 mod repair;
+pub mod search;
 pub mod select_other;
 pub mod selection;
 mod sheet;
@@ -53,7 +54,7 @@ pub mod transition;
 pub mod triad;
 pub mod viewport;
 mod wake;
-mod whats_wrong;
+pub mod whats_wrong;
 mod words;
 
 pub use app::App;

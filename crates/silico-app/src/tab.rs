@@ -567,6 +567,15 @@ pub const LOOK_AT_UNMEASURED: &str = "Look At: the face selected isn't measured 
 /// selection view says why.
 pub const LOOK_AT_UNMEASURABLE: &str = "Look At: the face selected couldn't be measured.";
 
+/// What Look At turns the view square to ([`Tab::look_at_target`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LookAtTarget {
+    /// The sketch's plane, from `toward`, its normal toward the eye, `up` up the image.
+    Sketch { toward: [f64; 3], up: [f64; 3] },
+    /// A planar face, from its outward unit normal.
+    Face([f64; 3]),
+}
+
 /// What Look At says in sketch mode before the sketch's first read has come. Once it has, a
 /// sketch the rebuild couldn't place (on a face not found) says the read's own error.
 pub const LOOK_AT_UNREAD: &str = "Look At: the sketch isn't read yet.";
@@ -2149,20 +2158,32 @@ impl Tab {
     /// fits what a named view fits. Else what's missing is said, and the view stays.
     pub fn look_at(&mut self) {
         use crate::viewport::ViewAsk;
-        let asked = match self.sketch.as_ref() {
+        match self.look_at_target() {
+            Ok(LookAtTarget::Sketch { toward, up }) => {
+                self.view.ask(ViewAsk::LookAt { toward, up })
+            }
+            Ok(LookAtTarget::Face(toward)) => self.look_at_face(toward),
+            Err(said) => self.toasts.push(Toast::info(said)),
+        }
+    }
+
+    /// What Look At turns the view square to now ([`look_at`](Self::look_at)): the sketch's
+    /// plane in sketch mode, else the one planar face selected; or what it says instead, as
+    /// its toast, which the command search's row says too.
+    pub fn look_at_target(&self) -> Result<LookAtTarget, String> {
+        match self.sketch.as_ref() {
             Some(mode) => match mode.drawable().map(|read| &read.plane) {
-                Some(Ok(plane)) => Ok((plane.normal(), plane.y_axis())),
+                Some(Ok(plane)) => Ok(LookAtTarget::Sketch {
+                    toward: plane.normal(),
+                    up: plane.y_axis(),
+                }),
                 Some(Err(error)) => Err(format!("Look At: {}", error.message())),
                 None => Err(LOOK_AT_UNREAD.to_owned()),
             },
-            None => match self.selected_plane_normal() {
-                Ok(toward) => return self.look_at_face(toward),
-                Err(said) => Err(said.to_owned()),
-            },
-        };
-        match asked {
-            Ok((toward, up)) => self.view.ask(ViewAsk::LookAt { toward, up }),
-            Err(said) => self.toasts.push(Toast::info(said)),
+            None => self
+                .selected_plane_normal()
+                .map(LookAtTarget::Face)
+                .map_err(str::to_owned),
         }
     }
 
@@ -6276,18 +6297,57 @@ impl Tab {
     /// H (DESIGN.md, *Keyboard*: Fusion's V, moved to H): the selected feature hidden or
     /// shown, if the browser lists it (a body or a sketch); nothing otherwise.
     pub fn toggle_selected_shown(&mut self) {
-        let Some(id) = self.selection.feature().cloned() else {
-            return;
-        };
-        let listed = self
-            .browser
+        if let Some(id) = self.hideable() {
+            self.toggle_shown(Hideable::Feature(id));
+        }
+    }
+
+    /// The feature H hides or shows ([`toggle_selected_shown`](Self::toggle_selected_shown)),
+    /// if one is: the feature selected, if the browser lists it, a body or a sketch, with
+    /// its eye.
+    pub fn hideable(&self) -> Option<FeatureId> {
+        let id = self.selection.feature()?;
+        self.browser
             .bodies
             .iter()
             .chain(self.browser.sketches())
-            .any(|row| row.id == id);
-        if listed {
-            self.toggle_shown(Hideable::Feature(id));
+            .any(|row| row.id == *id)
+            .then(|| id.clone())
+    }
+
+    /// Whether Reload can run now (its keys, File's Reload, and the command search), or why
+    /// not: never while the tab closes (its close drops the edits already), and not in a
+    /// dialog, as Rebuild everything isn't, its words [`crate::app::RELOAD_IN_DIALOG`].
+    pub fn reloadable(&self) -> Result<(), Option<&'static str>> {
+        if self.closing() {
+            Err(None)
+        } else if self.in_dialog() {
+            Err(Some(crate::app::RELOAD_IN_DIALOG))
+        } else {
+            Ok(())
         }
+    }
+
+    /// Whether SELECT's Clear selection is on: something selected, and no dialog's box taking
+    /// the picks.
+    pub fn selection_clearable(&self) -> bool {
+        !self.selection.is_empty() && !self.in_dialog()
+    }
+
+    /// Whether SELECT's panel and its keys (X, E, V, and Clear selection) apply: outside
+    /// sketches, where the toolbar shows SOLID and X is no Construction.
+    pub fn select_shown(&self) -> bool {
+        !self.in_sketch()
+    }
+
+    /// Whether Del, in sketch mode, deletes something ([`sketch_delete`](Self::sketch_delete)):
+    /// the tab not closing, the sketch known, and a selection that makes a deletion.
+    pub fn sketch_deletable(&self) -> bool {
+        !self.closing()
+            && self
+                .sketch
+                .as_ref()
+                .is_some_and(|mode| mode.sketch.is_some() && mode.deletion().is_some())
     }
 
     /// Whether a dialog of `kind` can open: none open or loading, no sketch open, the tab not
@@ -7690,7 +7750,7 @@ impl Tab {
     /// joined (`sketch_join`), once what's asked before has answered; the selection let
     /// go. A refusal is said. Nothing with nothing selected, or before the sketch is known.
     pub fn sketch_delete<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if self.closing() {
+        if !self.sketch_deletable() {
             return;
         }
         let Some(mode) = self.sketch.as_mut() else {
@@ -12268,6 +12328,16 @@ mod tests {
             Some(crate::repair::STALE),
             "{case}: Remove"
         );
+    }
+
+    #[test]
+    fn select_is_shown_outside_sketches_and_not_in_one() {
+        // SELECT's panel and its keys (the search lists them by it): outside sketches, where
+        // the toolbar shows SOLID; not in sketch mode, where X is Construction.
+        let (_dir, _sessions, mut tab) = opened_on(BROKEN_ROUND, |_| {});
+        assert!(tab.select_shown());
+        tab.sketch = Some(crate::sketch::SketchMode::new(1, None));
+        assert!(!tab.select_shown());
     }
 
     #[test]

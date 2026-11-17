@@ -28,7 +28,7 @@ use crate::theme;
 pub(crate) const TITLE: &str = "What's wrong";
 
 /// What its list says with nothing wrong (the prototype's), and while it's being read.
-pub(crate) const NOTHING_WRONG: &str = "No problems. Every feature built.";
+pub const NOTHING_WRONG: &str = "No problems. Every feature built.";
 pub(crate) const READING: &str = "Reading what's wrong…";
 
 /// What the person asked of it this frame.

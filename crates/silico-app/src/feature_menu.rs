@@ -324,8 +324,15 @@ fn draw(ui: &mut Ui, name: &str, shown: Vec<Shown>) -> Option<Item> {
 /// what was clicked, the menu closed.
 pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> {
     let shown = items(tab, entry, place, ui.ctx());
+    Some(act_of(draw(ui, &entry.name, shown)?, entry, place))
+}
+
+/// What `item` asks for the feature `entry`, shown at `place`: the menus' and the command
+/// search's (Suppress, Unsuppress for one suppressed; Find in browser from the timeline,
+/// Find in timeline from the browser).
+pub fn act_of(item: Item, entry: &Entry, place: Place) -> Act {
     let id = entry.id.clone();
-    Some(match draw(ui, &entry.name, shown)? {
+    match item {
         Item::Edit => Act::Edit(id),
         Item::Rename => Act::Rename(id, place),
         Item::Suppress => Act::Suppress(id, !entry.suppressed),
@@ -334,7 +341,7 @@ pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> 
             Place::Browser => Act::FindInTimeline(id),
         },
         Item::Delete => Act::Delete(id),
-    })
+    }
 }
 
 /// The menu of the origin's row `name` (its point, an axis, or a plane): the browser's
