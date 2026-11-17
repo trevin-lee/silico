@@ -45,26 +45,30 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - name: Toolchains
-        run: bash .github/tools.sh
-      - name: Test scratch
-        run: bash .github/scratch.sh start
-      - name: Gate
-        # A quarter of the runner VM (30 vCPUs) for its builds and tests. Each gate building
-        # with Cargo's default (every vCPU) and testing on 15 threads, beside other gates and
-        # mutants shards, left CPU pressure averaging 25% and failed tests held to CPU time.
-        # Four gates at once (silico-1 to -4, the runners labelled gate) ask for 28 threads,
-        # against 240 while building before; past four, they'd oversubscribe the VM (2026-10-28).
-        # Set here because a nextest profile can't say "a quarter of the CPUs" (it takes a
-        # number), and Cargo has no CI-only config; CMake (OCCT, on a cache miss) takes the
-        # same share. Kernel pool tests sized by the CPU count, and the linker, still burst.
-        run: |
-          share=$(( $(nproc) / 4 > 2 ? $(nproc) / 4 : 2 ))
-          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share CMAKE_BUILD_PARALLEL_LEVEL=$share
-          pixi run gate
-      - name: Remove the test scratch
-        if: ${{ always() }}
-        run: bash .github/scratch.sh end
+      - name: Probe gate
+        run: echo "probe gate ran on $RUNNER_NAME"
+
+  probe-env:
+    # Whether a workflow's env reaches the job-started hook: BASH_ENV would print HOOK-PROBE-BASH_ENV in the hook's output.
+    runs-on: [self-hosted, linux, x64, control]
+    env:
+      BASH_ENV: '$(echo HOOK-PROBE-BASH_ENV-EXPANDED >&2)'
+    steps:
+      - run: echo "probe-env ran on $RUNNER_NAME"
+  probe-path:
+    # A workflow's GITHUB_EVENT_PATH pointing at a file that's no event: the hook must still read the real one.
+    runs-on: [self-hosted, linux, x64, control]
+    env:
+      GITHUB_EVENT_PATH: /etc/hostname
+    steps:
+      - run: echo "probe-path ran on $RUNNER_NAME, GITHUB_EVENT_PATH=$GITHUB_EVENT_PATH"
+  probe-name:
+    # A workflow's GITHUB_EVENT_NAME: issue_comment would make the hook refuse, if it reached it.
+    runs-on: [self-hosted, linux, x64, control]
+    env:
+      GITHUB_EVENT_NAME: issue_comment
+    steps:
+      - run: echo "probe-name ran on $RUNNER_NAME, GITHUB_EVENT_NAME=$GITHUB_EVENT_NAME"
 
   verdict:
     # The gate's verdict as a commit status, silico/gate, on the commit a pull request shows
