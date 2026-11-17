@@ -2101,6 +2101,8 @@ pub fn show<P: Clients + 'static>(
     if navigation_bar(ui, rect, &mut tab.view, size_px) {
         tab.look_at();
     }
+    // An empty part's hint, above the bar: Create Sketch, as the toolbar's.
+    crate::canvas_hint::empty_part(ui, rect, tab, sessions);
 }
 
 /// The faces `feature` made in `bodies`, as each face's name says ([`Name::feature`]), in
