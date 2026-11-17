@@ -211,16 +211,6 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
         .iter()
         .map(|t| judged(p, Some(t), Details::Keyed))
         .collect();
-    if full
-        .iter()
-        .zip(&keyed)
-        .any(|(f, k)| f.how.len() != k.how.len() || f.solved != k.solved)
-    {
-        return unjudged(
-            "the harness's own fault: a run's differences read otherwise without FreeCAD's details"
-                .to_owned(),
-        );
-    }
     let made: Vec<usize> = (0..snapped.len())
         .filter(|&i| made_as_silico(p, &snapped[i]))
         .collect();
@@ -229,18 +219,13 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
     } else {
         (0..snapped.len()).collect()
     };
-    // Where Silico's solve succeeded, the compared runs whose solve did too, if not all did.
-    let silico_solved = matches!(&p.silico, SilicoSide::Edited(s) if s.ours.outcome.is_ok());
+    // The compared runs whose solve succeeded: only they give where the solves put things,
+    // and only where Silico's succeeded too (none of a run's places otherwise).
     let solved: Vec<usize> = compared
         .iter()
         .copied()
         .filter(|&i| matches!(&snapped[i], Theirs::Edited(fc) if fc.after.code == 0))
         .collect();
-    let solved = if silico_solved && solved.len() < compared.len() {
-        solved
-    } else {
-        Vec::new()
-    };
     let kept = common(&compared, |i| keyed.get(i).map(|k| &k.how[..]));
     let kept_solved = common(&solved, |i| keyed.get(i).map(solved_lines));
     // Each run's differences, each kept (a difference every compared run gives, or a place
@@ -287,7 +272,7 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
                 let keep = take(&mut left, key)
                     || (place && take(&mut left_solved, key))
                     || (compared.contains(&i)
-                        && f.unmoved_lines.get(&n).is_some_and(|q| held.contains(q)));
+                        && f.unmoved_lines.get(line).is_some_and(|q| held.contains(q)));
                 (line.clone(), keep, place)
             })
             .collect()
@@ -314,7 +299,7 @@ pub fn rejudge(p: &Prepared, runs: &[Option<Theirs>]) -> (Verdict, Reran) {
             f.unmoved_lines
                 .iter()
                 .find(|(_, q)| *q == point)
-                .and_then(|(&n, _)| f.how.get(n))
+                .map(|(line, _)| line)
         });
         if let Some(line) = given {
             kept_lines.push((line.clone(), true, true));
@@ -602,4 +587,188 @@ fn places_varied(
     Some(format!(
         "{places} places or radii, up to {farthest:e} mm apart"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::Diagnosis;
+    use super::*;
+
+    fn solve() -> Diagnosis {
+        Diagnosis {
+            code: 0,
+            dof: 0,
+            conflicting: Vec::new(),
+            redundant: Vec::new(),
+            partially_redundant: Vec::new(),
+            malformed: Vec::new(),
+        }
+    }
+
+    /// A circle about `centre` of radius `radius`, its ID `id`.
+    fn circle(id: i64, centre: [f64; 2], radius: f64) -> FcGeometry {
+        FcGeometry {
+            id,
+            kind: "circle".to_owned(),
+            points: BTreeMap::from([("3".to_owned(), centre)]),
+            radius: Some(radius),
+            construction: false,
+        }
+    }
+
+    /// A line from `a` to `b`, its ID `id`.
+    fn line(id: i64, a: [f64; 2], b: [f64; 2]) -> FcGeometry {
+        FcGeometry {
+            id,
+            kind: "line".to_owned(),
+            points: BTreeMap::from([("1".to_owned(), a), ("2".to_owned(), b)]),
+            radius: None,
+            construction: false,
+        }
+    }
+
+    /// FreeCAD's edit with `geometry` after the solve and nothing else.
+    fn edited(geometry: Vec<FcGeometry>) -> Theirs {
+        Theirs::Edited(Box::new(FreecadEdited {
+            before: solve(),
+            ids_before: Vec::new(),
+            edited: Vec::new(),
+            geometry,
+            constraints: Vec::new(),
+            after: solve(),
+            applied: Vec::new(),
+            placed: None,
+        }))
+    }
+
+    /// What varied between a run of `first` and two of `other`, after the solve.
+    fn after_solve(first: Vec<FcGeometry>, other: Vec<FcGeometry>) -> Vec<String> {
+        varied(&[edited(first), edited(other.clone()), edited(other)])
+    }
+
+    fn said(how: &str) -> Vec<String> {
+        vec![format!("its places after the solve ({how})")]
+    }
+
+    #[test]
+    fn places_varied_counts_each_place_and_radius_apart_and_the_farthest() {
+        // The line's end 0.5 off in x and 2 off in y (2 the farthest, of a point), the
+        // circle's radius 0.25 off and its centre where it was: 2 places or radii, up to 2.
+        let first = vec![line(1, [0.0, 0.0], [4.0, 1.0]), circle(2, [9.0, 9.0], 2.0)];
+        let other = vec![line(1, [0.0, 0.0], [4.5, 3.0]), circle(2, [9.0, 9.0], 2.25)];
+        assert_eq!(
+            after_solve(first.clone(), other),
+            said("2 places or radii, up to 2e0 mm apart")
+        );
+        // The radius alone 0.25 off: 1, up to 0.25 (and not 2.25 + 2 or 2.25 / 2).
+        let other = vec![line(1, [0.0, 0.0], [4.0, 1.0]), circle(2, [9.0, 9.0], 2.25)];
+        assert_eq!(
+            after_solve(first.clone(), other),
+            said("1 places or radii, up to 2.5e-1 mm apart")
+        );
+        // The end alone 0.5 off in y, x where it was: 1, up to 0.5.
+        let other = vec![line(1, [0.0, 0.0], [4.0, 1.5]), circle(2, [9.0, 9.0], 2.0)];
+        assert_eq!(
+            after_solve(first, other),
+            said("1 places or radii, up to 5e-1 mm apart")
+        );
+    }
+
+    #[test]
+    fn places_varied_says_curves_otherwise_whichever_one_of_them_differs() {
+        // Each run's curves the first's but in one respect: then they aren't the same, and
+        // no place is counted.
+        let base = || vec![line(1, [0.0, 0.0], [4.0, 1.0]), circle(2, [9.0, 9.0], 2.0)];
+        let other_ways: Vec<(&str, Vec<FcGeometry>)> = vec![
+            ("a curve more", {
+                let mut g = base();
+                g.push(line(3, [5.0, 5.0], [6.0, 6.0]));
+                g
+            }),
+            ("another ID", {
+                let mut g = base();
+                g[0].id = 7;
+                g
+            }),
+            ("another kind", {
+                let mut g = base();
+                g[0].kind = "arc".to_owned();
+                g
+            }),
+            ("construction", {
+                let mut g = base();
+                g[0].construction = true;
+                g
+            }),
+            ("other points", {
+                let mut g = base();
+                g[0].points.insert("3".to_owned(), [2.0, 0.5]);
+                g
+            }),
+            ("a radius", {
+                let mut g = base();
+                g[0].radius = Some(1.0);
+                g
+            }),
+        ];
+        for (how, other) in other_ways {
+            assert_eq!(
+                after_solve(base(), other),
+                said("its curves aren't the same"),
+                "{how}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_rerun_case_is_said_as_its_runs_gave_it() {
+        let rerun = |reran: Reran| Rerun {
+            case: "edit_1_2".to_owned(),
+            runs: 3,
+            reran,
+        };
+        assert_eq!(
+            rerun(Reran::Alike).to_string(),
+            "rerun: edit_1_2: FreeCAD gave the same answer in all 3 runs, so the case is compared in full"
+        );
+        assert_eq!(
+            rerun(Reran::Varied {
+                varied: vec!["its constraints".to_owned(), "its solve (x)".to_owned()],
+                uncompared: Vec::new(),
+            })
+            .to_string(),
+            "varies: edit_1_2: FreeCAD's 3 runs differ in its constraints; its solve (x), but every difference is one each run gives, so the case is compared in full"
+        );
+        assert_eq!(
+            rerun(Reran::Varied {
+                varied: vec!["its constraints".to_owned()],
+                uncompared: vec!["a (run 1)".to_owned(), "b (run 2, 3)".to_owned()],
+            })
+            .to_string(),
+            "varies: edit_1_2: FreeCAD's 3 runs differ in its constraints, so what some run doesn't give isn't compared: a (run 1); b (run 2, 3)"
+        );
+        assert_eq!(
+            rerun(Reran::Unjudged("why".to_owned())).to_string(),
+            "rerun: edit_1_2: why"
+        );
+    }
+
+    #[test]
+    fn take_takes_each_key_as_many_times_as_it_has() {
+        let mut left = BTreeMap::from([("a".to_owned(), 2), ("b".to_owned(), 0)]);
+        assert_eq!(
+            [
+                take(&mut left, "a"),
+                take(&mut left, "a"),
+                take(&mut left, "a"),
+                take(&mut left, "b"),
+                take(&mut left, "c"),
+            ],
+            [true, true, false, false, false]
+        );
+        assert_eq!(
+            left,
+            BTreeMap::from([("a".to_owned(), 0), ("b".to_owned(), 0)])
+        );
+    }
 }

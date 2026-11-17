@@ -140,13 +140,8 @@ fn main() -> ExitCode {
                     report.refused.join(", ")
                 ),
             };
-            if !varying.is_empty() {
-                let _ = writeln!(
-                    out,
-                    "FreeCAD's answer varied run to run on {}, which differ only where every run of it reproduces the difference: {}",
-                    varying.len(),
-                    varying.join(", ")
-                );
+            if let Some(said) = varying_said(&varying) {
+                let _ = writeln!(out, "{said}");
             }
             if !problems.is_empty() {
                 let _ = writeln!(out, "{} more problems with the cases", problems.len());
@@ -180,6 +175,17 @@ fn varying(reruns: &[sketch_edit::rerun::Rerun], differ: &[sketch_edit::Verdict]
             }
         })
         .collect()
+}
+
+/// The summary's line of the cases FreeCAD's runs varied on, if any did.
+fn varying_said(varying: &[String]) -> Option<String> {
+    (!varying.is_empty()).then(|| {
+        format!(
+            "FreeCAD's answer varied run to run on {}, which differ only where every run of it reproduces the difference: {}",
+            varying.len(),
+            varying.join(", ")
+        )
+    })
 }
 
 /// What's said of a run's differences beside them: its problems, its notes, and the known
@@ -368,7 +374,45 @@ fn cases() -> Result<Asked, String> {
 mod tests {
     use silico_oracle::{Difference, Measured, Outcome, Report, Shape, Validity};
 
-    use super::{Case, Source, without_known};
+    use silico_oracle::sketch_edit::Verdict;
+    use silico_oracle::sketch_edit::rerun::{Reran, Rerun};
+
+    use super::{Case, Source, varying, varying_said, without_known};
+
+    #[test]
+    fn the_cases_freecad_varied_on_are_named_and_counted_each_still_differing_marked() {
+        // Four rerun cases: two varied, one of them among the cases still differing; one
+        // alike, though it differs; one not run again.
+        let rerun = |case: &str, reran: Reran| Rerun {
+            case: case.to_owned(),
+            runs: 3,
+            reran,
+        };
+        let varied = || Reran::Varied {
+            varied: vec!["its constraints".to_owned()],
+            uncompared: Vec::new(),
+        };
+        let reruns = [
+            rerun("edit_1_2", varied()),
+            rerun("edit_1_3", Reran::Alike),
+            rerun("edit_1_4", varied()),
+            rerun("edit_1_5", Reran::Unjudged("not run again".to_owned())),
+        ];
+        let differ = |case: &str| Verdict {
+            case: case.to_owned(),
+            how: vec!["a difference".to_owned()],
+            ..Verdict::default()
+        };
+        let named = varying(&reruns, &[differ("edit_1_3"), differ("edit_1_4")]);
+        assert_eq!(named, ["edit_1_2", "edit_1_4 (still differs)"]);
+        assert_eq!(
+            varying_said(&named).as_deref(),
+            Some(
+                "FreeCAD's answer varied run to run on 2, which differ only where every run of it reproduces the difference: edit_1_2, edit_1_4 (still differs)"
+            )
+        );
+        assert_eq!(varying_said(&[]), None);
+    }
 
     /// generated_111_374 as the seed-111 sweep found it (FreeCAD's cut turned inside out,
     /// Silico's refusal of it as invalid), in a report of its own.

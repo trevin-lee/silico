@@ -6555,3 +6555,58 @@ fn a_circle_on_a_dragged_end_freecads_runs_size_otherwise_is_kept_where_silicos_
         "whose points the drag moved, has radius",
     );
 }
+
+#[test]
+fn a_difference_one_run_gives_more_often_than_another_is_kept_as_often_as_the_other() {
+    // FreeCAD's result with copies of its piece w0000001 added: three in the sweep's run, one
+    // in each run alone, so the piece is unmatched and FreeCAD has four lines Silico hasn't,
+    // all alike, in the sweep's run and two in each other. Each run gives that difference, at
+    // least twice: kept twice; the sweep's other two left uncompared, said once, as its.
+    let (_, p, fc, _) = split_at(4.0);
+    let copies = |n: i64| {
+        doctored(&fc, |fc| {
+            for k in 0..n {
+                let mut g = fc.geometry[1].clone();
+                g.id = 90 + k;
+                fc.geometry.push(g);
+            }
+        })
+    };
+    let kind = "FreeCAD has a line (";
+    let given = |t: &Theirs| {
+        verdict(&p, Some(t))
+            .how
+            .iter()
+            .filter(|h| h.starts_with(kind))
+            .count()
+    };
+    assert_eq!((given(&copies(3)), given(&copies(1))), (4, 2));
+    let (v, reran) = rejudge(&p, &[Some(copies(3)), Some(copies(1)), Some(copies(1))]);
+    assert_eq!(
+        v.how.iter().filter(|h| h.starts_with(kind)).count(),
+        2,
+        "{v}\n{reran:?}"
+    );
+    let (_, uncompared) = varied_as(&reran);
+    let said: Vec<&String> = uncompared.iter().filter(|u| u.starts_with(kind)).collect();
+    assert_eq!(said.len(), 1, "{uncompared:?}");
+    assert!(said[0].ends_with(" that Silico hasn't (run 1)"), "{said:?}");
+}
+
+#[test]
+fn a_sweeps_run_with_reruns_gives_each_cases_verdict_and_reruns_none_that_agree() {
+    // Two hand cases that agree with FreeCAD: their verdicts, by name, in order, no
+    // difference, and no case run again.
+    let all = sketch_edit::load(Path::new(CASES)).unwrap();
+    let cases: Vec<EditCase> = all
+        .into_iter()
+        .filter(|c| c.name == "split_level_line" || c.name == "merge_touching_ends")
+        .collect();
+    let (verdicts, reruns) = silico_oracle::sketch_edit::rerun::run_rerunning(&cases).unwrap();
+    let names: Vec<&str> = verdicts.iter().map(|v| v.case.as_str()).collect();
+    let expected: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, expected);
+    assert_eq!(names.len(), 2);
+    verdicts.iter().for_each(agrees);
+    assert!(reruns.is_empty(), "{reruns:?}");
+}

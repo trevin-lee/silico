@@ -1118,9 +1118,10 @@ pub struct Verdict {
     /// Silico's solve didn't move, and whether FreeCAD's places of it are Silico's, within the
     /// comparison's tolerance, whether or not FreeCAD's solve moved it.
     pub unmoved: BTreeMap<String, bool>,
-    /// Of [`Verdict::how`], by index, the differences of such a point, a place FreeCAD's solve
-    /// didn't move either but put elsewhere than Silico's: by the point.
-    pub unmoved_lines: BTreeMap<usize, String>,
+    /// Of [`Verdict::how`], the differences of such a point, a place FreeCAD's solve didn't
+    /// move either but put elsewhere than Silico's, each with the point (a line names its
+    /// point and both places, so it's one point's alone).
+    pub unmoved_lines: BTreeMap<String, String>,
 }
 
 impl std::fmt::Display for Verdict {
@@ -1679,19 +1680,10 @@ fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
     // FreeCAD's refusal, if it refused: its edit raised, its plan refuses, or (a merge) its
     // Coincident command would refuse what the edit made. A crash or hang is none of these:
     // it's its own outcome, compared on its own.
-    // A difference in what kind of outcome the two gave, keyed by Silico's alone: whatever
-    // FreeCAD's outcome, raised, crashed, made, or refused otherwise, it isn't Silico's.
-    let apart = |full: String| {
-        details.key(
-            || full,
-            || {
-                format!(
-                    "FreeCAD's outcome isn't one the note gives beside Silico's: {}",
-                    silico_outcome(p)
-                )
-            },
-        )
-    };
+    // A difference in what kind of outcome the two gave, keyed by its kind alone: whatever
+    // FreeCAD's outcome, raised, crashed, made, or refused otherwise, it isn't one the note
+    // gives beside Silico's, which is the case's own, the same in every run.
+    let apart = |full: String| details.key(|| full, || OUTCOME_APART.to_owned());
     let fc_refusal: Option<String> = match (theirs, &p.plan) {
         (Some(Theirs::Lost(why)), _) => return lost(p, v, why, details),
         (_, Plan::Refuses(why)) => Some(why.clone()),
@@ -1841,13 +1833,8 @@ fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
                 );
                 v.how.extend(compared.how);
                 v.solved = compared.solved.len();
-                let first_solved = v.how.len();
                 v.unmoved = compared.unmoved;
-                v.unmoved_lines = compared
-                    .unmoved_lines
-                    .into_iter()
-                    .map(|(n, point)| (first_solved + n, point))
-                    .collect();
+                v.unmoved_lines = compared.unmoved_lines;
                 v.how.extend(compared.solved);
             }
         }
@@ -1889,7 +1876,7 @@ fn lost(p: &Prepared, mut v: Verdict, why: &str, details: Details) -> Verdict {
                 || format!(
                     "FreeCAD crashed or hung ({why}), its own outcome, never a refusal, which the note gives only for a split of a point ({NOTE}#se-split-index-refusals); {silico}"
                 ),
-                || format!("FreeCAD's outcome isn't one the note gives beside Silico's: {}", silico_outcome(p)),
+                || OUTCOME_APART.to_owned(),
             ));
         }
     }
@@ -1921,17 +1908,8 @@ pub fn note_line(anchor: &str) -> Option<usize> {
         .map(|i| i + 1)
 }
 
-/// Silico's outcome of `p`, as a difference in the kind of outcome is keyed by it
-/// ([`Details::Keyed`]).
-fn silico_outcome(p: &Prepared) -> String {
-    match &p.silico {
-        SilicoSide::Gated(_) => "Silico's result is gated".to_owned(),
-        _ => silico_refused(p).map_or_else(
-            || "Silico made the edit".to_owned(),
-            |why| format!("Silico refused ({why})"),
-        ),
-    }
-}
+/// A difference in the kind of outcome the two sides gave, as [`Details::Keyed`] reads it.
+const OUTCOME_APART: &str = "FreeCAD's outcome isn't one the note gives beside Silico's";
 
 fn finish(mut v: Verdict) -> Verdict {
     // In the note's order, as a reader follows them.
@@ -5157,11 +5135,12 @@ fn compare_edited(
                 continue;
             }
             if let Some((_, at)) = theirs.iter().find(|(_, at)| !alike(ours, *at)) {
-                unmoved_lines.insert(solved.len(), id.as_str().to_owned());
-                solved.push(format!(
+                let line = format!(
                     "after the solve, Silico's point {id}, which neither solve moved, is at {ours:?}, FreeCAD's at {}",
                     details.say(|| format!("{at:?}"))
-                ));
+                );
+                unmoved_lines.insert(line.clone(), id.as_str().to_owned());
+                solved.push(line);
             }
         }
     }
@@ -5175,13 +5154,12 @@ fn compare_edited(
 
 /// How Silico's edited sketch and FreeCAD's differ: in all but where the solves put things,
 /// and in that, which only two solves that both succeeded give; and, in an unsettled edit,
-/// each point Silico's solve didn't move ([`Verdict::unmoved`], [`Verdict::unmoved_lines`],
-/// by index into `solved`).
+/// each point Silico's solve didn't move ([`Verdict::unmoved`], [`Verdict::unmoved_lines`]).
 struct Compared {
     how: Vec<String>,
     solved: Vec<String>,
     unmoved: BTreeMap<String, bool>,
-    unmoved_lines: BTreeMap<usize, String>,
+    unmoved_lines: BTreeMap<String, String>,
 }
 
 #[path = "sketch_edit_rerun.rs"]
