@@ -94,19 +94,20 @@ pub struct Excepted {
     pub drift: BTreeSet<FeatureId>,
 }
 
-/// The features `feature` names, as [`Entry::inputs`] lists them: what it uses, a pattern's
-/// originals in timeline order (the file writes them by ID), each feature once.
+/// The features `feature` names, as [`Entry::inputs`] lists them: what it uses, then a
+/// pattern's originals in timeline order (the file writes them by ID), each original once
+/// and none that's named already (its base).
 fn inputs(document: &Document, feature: &crate::document::Feature) -> Vec<FeatureId> {
     let originals = feature.operation.originals();
     // What it uses, but its originals, which `uses` gives last: its base first, even where
     // it's an original too.
     let uses: Vec<FeatureId> = feature.operation.uses().collect();
     let mut inputs: Vec<FeatureId> = Vec::new();
-    for used in uses.iter().take(uses.len().saturating_sub(originals.len())) {
-        if !inputs.contains(used) {
-            inputs.push(used.clone());
-        }
-    }
+    inputs.extend(
+        uses.iter()
+            .take(uses.len().saturating_sub(originals.len()))
+            .cloned(),
+    );
     let mut placed: Vec<(usize, &FeatureId)> = originals
         .iter()
         .filter_map(|original| {

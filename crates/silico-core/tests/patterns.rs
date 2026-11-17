@@ -564,3 +564,166 @@ fn a_pattern_is_a_child_of_each_original_in_the_designs_edits() {
         .unwrap();
     assert_eq!(ids(&mirror.inputs), ["q0000001"]);
 }
+
+#[test]
+fn each_patterns_rebuild_is_refused_naming_it_until_m6_3_builds_them() {
+    // M6.2 reads and checks the three types; M6.3 builds them. Until then each fails at
+    // the rebuild, naming itself, and what's built on it waits on it.
+    let engine =
+        silico_core::recompute::Recompute::new(silico_core::fake::FakeKernel::new(2).unwrap())
+            .with_sketches(silico_core::fake::FakeSketches::new());
+    let plate = plate();
+    let features: Vec<String> = plate.features[..4]
+        .iter()
+        .map(|f| silico_core::document::write_feature(f).unwrap())
+        .collect();
+    for (pattern, word) in [
+        (
+            r#"{"id": "m0000001", "type": "mirror", "v": 1, "name": "Other notch", "base": "q0000001", "copies": {"type": "features", "features": ["q0000001"]}, "plane": "yz"}"#,
+            "mirror",
+        ),
+        (
+            r#"{"id": "m0000001", "type": "linear_pattern", "v": 1, "name": "Notches", "base": "q0000001", "copies": {"type": "solid"}, "directions": [{"along": "x", "reversed": true, "distribution": {"type": "spacing", "length": 10}, "count": 2}], "skip": []}"#,
+            "linear_pattern",
+        ),
+        (
+            r#"{"id": "m0000001", "type": "polar_pattern", "v": 1, "name": "Notches", "base": "q0000001", "copies": {"type": "features", "features": ["q0000001"]}, "axis": "z", "reversed": false, "distribution": {"type": "extent", "angle": 360}, "count": 4, "skip": []}"#,
+            "polar_pattern",
+        ),
+    ] {
+        let text = format!(
+            "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"naming\": 6, \"features\": [{}, {pattern}, {}]}}",
+            features.join(", "),
+            r#"{"id": "c0000001", "type": "chamfer", "v": 1, "name": "Rim", "base": "m0000001", "edges": ["p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000001)"], "size": {"distance": 0.5}}"#
+        );
+        let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
+        let Ok(silico_core::recompute::RunOutcome::Published(model)) = engine.start(checked).wait()
+        else {
+            panic!("not published");
+        };
+        let errors: Vec<&silico_core::Error> = model.errors().collect();
+        assert_eq!(errors.len(), 1, "{word}: {errors:?}");
+        let error = errors[0];
+        assert_eq!(error.code(), silico_core::ErrorCode::InvalidInput);
+        assert_eq!(error.feature(), Some("m0000001"));
+        assert_eq!(
+            error.message(),
+            format!(
+                "{word} m0000001 isn't built yet: this Silico reads and checks a {word}, and builds none"
+            )
+        );
+        // The pocket under it built; the chamfer on it waits on it.
+        assert!(matches!(
+            model.outcome(&id("q0000001")),
+            Some(silico_core::recompute::FeatureOutcome::Built { .. })
+        ));
+        assert!(matches!(
+            model.outcome(&id("c0000001")),
+            Some(silico_core::recompute::FeatureOutcome::Blocked { .. })
+        ));
+    }
+}
+
+/// What a command answered, within a minute.
+fn answered<T>(running: silico_core::command::Running<T>) -> silico_core::command::Response<T> {
+    running
+        .wait_timeout(std::time::Duration::from_secs(60))
+        .unwrap_or_else(|_| panic!("no answer"))
+}
+
+#[test]
+fn removing_an_original_through_the_command_lists_every_feature_that_cant_do_without_it() {
+    // `remove_feature` gives the pattern's refusal and the chamfer's at once
+    // (docs/design/m6.0-patterns.md, section 6), the pattern's as the design writes it.
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let sketches = silico_core::fake::FakeSketches::new();
+    let sessions = silico_core::command::Sessions::with_stand_ins(
+        std::sync::Arc::new(silico_core::fake::FakeKernel::new(2).unwrap()),
+        move |cache| silico_core::cache::Cache::with_secret(cache, &secret),
+        move || Ok(Box::new(sketches.clone()) as Box<dyn silico_core::sketch::SketchSolver>),
+    );
+    let path = dir.path().join("plate.silico");
+    std::fs::write(&path, plate_text()).unwrap();
+    let session = answered(sessions.open(&path, false)).session.unwrap();
+    let response = answered(sessions.remove_feature(&session.id, session.revision, id("q0000002")));
+    let problems = response.result.unwrap_err();
+    let written: Vec<String> = problems
+        .errors()
+        .iter()
+        .map(|error| wire(&error.to_wire(), Layout::Canonical).unwrap())
+        .collect();
+    let section6 = section("## 6. Timeline edits", "## 7. The dialogs");
+    let examples = blocks(&section6, "json");
+    assert_eq!(written.len(), 2, "{written:?}");
+    assert_eq!(written[0], examples[5]);
+    assert!(
+        written[1].contains(
+            "\"message\": \"c0000001 names q0000002's elements, so q0000002 can't be removed\""
+        ),
+        "{}",
+        written[1]
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), plate_text());
+}
+
+#[test]
+fn a_patterns_originals_are_listed_in_timeline_order_not_their_ids() {
+    // Two pockets, z0000001 before a0000002, copied by a pattern on a chamfer after both:
+    // the timeline lists the chamfer, then z0000001, then a0000002, where the file writes
+    // the originals a0000002 first.
+    let plate = self::plate();
+    let mut features: Vec<String> = plate.features[..2]
+        .iter()
+        .map(|f| silico_core::document::write_feature(f).unwrap())
+        .collect();
+    let hole = |hole: &str, base: &str| {
+        format!(
+            r#"{{"id": "{hole}", "type": "pocket", "v": 1, "name": "Hole {hole}", "base": "{base}", "sketch": "s0000001", "extent": {{"type": "one_side", "length": 1, "reversed": true}}}}"#
+        )
+    };
+    features.push(hole("z0000001", "p0000001"));
+    features.push(hole("a0000002", "z0000001"));
+    features.push(r#"{"id": "c0000001", "type": "chamfer", "v": 1, "name": "Rim", "base": "a0000002", "edges": ["p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000001)"], "size": {"distance": 0.5}}"#.to_owned());
+    features.push(r#"{"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "Holes", "base": "c0000001", "copies": {"type": "features", "features": ["a0000002", "z0000001"]}, "directions": [{"along": "x", "reversed": false, "distribution": {"type": "extent", "length": 80}, "count": 3}], "skip": []}"#.to_owned());
+    let text = format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"naming\": 6, \"features\": [{}]}}",
+        features.join(", ")
+    );
+    let document = read(text.as_bytes()).unwrap();
+    let timeline = silico_core::timeline::timeline(
+        &document,
+        None,
+        &silico_core::timeline::Excepted::default(),
+    );
+    let grid = timeline
+        .features
+        .iter()
+        .find(|e| e.id == id("t0000001"))
+        .unwrap();
+    let inputs: Vec<&str> = grid.inputs.iter().map(FeatureId::as_str).collect();
+    assert_eq!(inputs, ["c0000001", "z0000001", "a0000002"]);
+}
+
+#[test]
+fn a_step_of_exactly_occts_tolerance_is_refused_and_one_past_it_taken() {
+    // A nanometre over 10 steps is 1e-7 mm a step, OCCT's own tolerance, where a copy lies
+    // on the one before it: refused. Over 9 steps it's 1.1e-7 mm: taken.
+    let over = |count: u32| {
+        edited(
+            &plate_text(),
+            DIRECTION_0,
+            &format!(
+                "\"distribution\": {{\"type\": \"extent\", \"length\": 0.000001}},\n          \"count\": {count}"
+            ),
+        )
+    };
+    let at = refused(&over(11));
+    assert_eq!(at.len(), 1, "{at:?}");
+    assert!(
+        at[0].contains("puts its 11 instances 1e-7 mm apart (0.000001 mm in 10 steps)"),
+        "{}",
+        at[0]
+    );
+    assert!(refused(&over(10)).is_empty());
+}
