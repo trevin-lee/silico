@@ -12728,6 +12728,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     edges: true,
                     vertices: None,
                     lines: Vec::new(),
+                    planes: Vec::new(),
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
                 ViewRenderer::forget(renderer, 1);
@@ -18038,14 +18039,23 @@ fn the_browser_lists_the_document_then_origin_bodies_and_sketches_each_row_with_
     assert!(bodies.query_by_label("Triangle").is_none());
     let sketches = browser(&h).get_by_role_and_label(Role::Group, "Sketches");
     assert!(sketches.query_by_label("Triangle").is_some());
-    // An eye on each row of a thing that can be hidden; a caret on the document's and each
-    // header's.
-    for name in ["Origin", "X", "XY", "Washer", "Plate", "Triangle"] {
+    // An eye on each row of a thing that can be hidden, an origin plane's closed (they open
+    // hidden, as the prototype's do), and the Origin folder's, the planes'; a caret on the
+    // document's and each header's.
+    for name in ["Origin", "X", "Washer", "Plate", "Triangle"] {
         assert!(
             browser(&h)
                 .query_by_label(&format!("Hide {name}"))
                 .is_some(),
             "{name}"
+        );
+    }
+    for named in ["XY", "origin planes"] {
+        assert!(
+            browser(&h)
+                .query_by_label(&format!("Show {named}"))
+                .is_some(),
+            "{named}"
         );
     }
     for name in ["sketched", "Origin", "Bodies", "Sketches"] {
@@ -45861,11 +45871,12 @@ fn look_at_before_the_sketchs_first_read_says_so_and_the_view_stays() {
     let mut h = f.app();
     step(&mut h);
     new_part(&mut h);
+    // The toolbar is there once the tab is: queried, not got, so a frame still showing the
+    // start page waits rather than failing.
     step_until(&mut h, "Create Sketch on", |h| {
-        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Create Sketch")
-            .accesskit_node()
-            .is_disabled()
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
     });
     f.sketches.hold();
     create_sketch(&mut h, "XY plane");
@@ -51847,6 +51858,447 @@ fn the_timelines_arrows_walk_nothing_while_the_gate_refuses_the_document() {
     }
     assert_eq!(never_waits::waits(), 0);
 }
+
+// ---- The origin planes drawn in the viewport (the prototype's `buildPlanes`, `VP.setPlanes`) ----
+
+/// The newest recorded frame's planes.
+fn last_planes(record: &Record) -> Vec<silico_render::render::Plane> {
+    record
+        .lock()
+        .unwrap()
+        .frames
+        .last()
+        .map(|frame| frame.planes.clone())
+        .unwrap_or_default()
+}
+
+/// The origin plane `name` as the prototype draws it, typed from viewport.js, not the app:
+/// `PLANES`' U and V (XY's x and y, XZ's x and z, YZ's y and z) and `Geo.rectShape(-4, -4,
+/// 46, 46)`, so its corner (−4, −4) and its sides 50 long; `#9f9f9f` at 0.08 (20 of 255)
+/// filled, at 0.6 (153) outlined, 1 px; hovered (`VP.setPlanes`' `on`), `#186add` at 0.32
+/// (82), outlined `#4676ff`.
+fn plane_by_hand(name: &str, hovered: bool) -> silico_render::render::Plane {
+    let (origin, u, v) = match name {
+        "XY" => ([-4.0, -4.0, 0.0], [50.0, 0.0, 0.0], [0.0, 50.0, 0.0]),
+        "XZ" => ([-4.0, 0.0, -4.0], [50.0, 0.0, 0.0], [0.0, 0.0, 50.0]),
+        "YZ" => ([0.0, -4.0, -4.0], [0.0, 50.0, 0.0], [0.0, 0.0, 50.0]),
+        _ => unreachable!("{name}"),
+    };
+    let (fill, outline) = if hovered {
+        ([0x18, 0x6a, 0xdd, 82], [0x46, 0x76, 0xff, 153])
+    } else {
+        ([0x9f, 0x9f, 0x9f, 20], [0x9f, 0x9f, 0x9f, 153])
+    };
+    silico_render::render::Plane {
+        origin,
+        u,
+        v,
+        fill,
+        outline,
+        width: 1.0,
+    }
+}
+
+/// Stepped until the newest frame's planes are `want` (each by name, hovered or not), then
+/// ten frames more, each the same.
+fn planes_become(h: &mut AppHarness, record: &Record, want: &[(&str, bool)]) {
+    let want: Vec<silico_render::render::Plane> = want
+        .iter()
+        .map(|(name, hovered)| plane_by_hand(name, *hovered))
+        .collect();
+    step_until(h, &format!("the planes {want:?}"), |_| {
+        last_planes(record) == want
+    });
+    for _ in 0..10 {
+        step(h);
+        assert_eq!(last_planes(record), want);
+    }
+}
+
+/// The browser's eye labelled `label` clicked, then the pointer taken off the browser (a
+/// plane's row under it would light its plane).
+fn click_browser_eye(h: &mut AppHarness, label: &str) {
+    browser(h).get_by_label(label).click();
+    step(h);
+    step(h);
+    pointer_away(h);
+}
+
+#[test]
+fn the_origin_planes_open_hidden_and_each_eye_draws_or_hides_its_plane_in_the_frame() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "a frame", |_| {
+        !record.lock().unwrap().frames.is_empty()
+    });
+    // Hidden as they open (the prototype's `vis.planes`, all false): no plane drawn.
+    planes_become(&mut h, &record, &[]);
+    click_browser_eye(&mut h, "Show XZ");
+    planes_become(&mut h, &record, &[("XZ", false)]);
+    click_browser_eye(&mut h, "Show XY");
+    planes_become(&mut h, &record, &[("XY", false), ("XZ", false)]);
+    click_browser_eye(&mut h, "Show YZ");
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", false)],
+    );
+    click_browser_eye(&mut h, "Hide XZ");
+    planes_become(&mut h, &record, &[("XY", false), ("YZ", false)]);
+    click_browser_eye(&mut h, "Hide XY");
+    click_browser_eye(&mut h, "Hide YZ");
+    planes_become(&mut h, &record, &[]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_origin_folders_eye_is_open_while_any_plane_shows_and_shows_or_hides_them_all() {
+    // The prototype's folder row: `eye: Object.values(S.vis.planes).some(Boolean)`, and its
+    // click `on = !any`, every plane set to it.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "a frame", |_| {
+        !record.lock().unwrap().frames.is_empty()
+    });
+    assert!(browser(&h).query_by_label("Hide origin planes").is_none());
+    click_browser_eye(&mut h, "Show origin planes");
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", false)],
+    );
+    for name in ["XY", "XZ", "YZ"] {
+        assert!(
+            browser(&h)
+                .query_by_label(&format!("Hide {name}"))
+                .is_some()
+        );
+    }
+    click_browser_eye(&mut h, "Hide origin planes");
+    planes_become(&mut h, &record, &[]);
+    // One plane shown: the folder's eye open, and its click hides that one.
+    click_browser_eye(&mut h, "Show YZ");
+    planes_become(&mut h, &record, &[("YZ", false)]);
+    assert!(browser(&h).query_by_label("Show origin planes").is_none());
+    click_browser_eye(&mut h, "Hide origin planes");
+    planes_become(&mut h, &record, &[]);
+    assert!(browser(&h).query_by_label("Show YZ").is_some());
+    // The origin point's and the axes' eyes are their own, untouched.
+    for name in ["Origin", "X", "Y", "Z"] {
+        assert!(
+            browser(&h)
+                .query_by_label(&format!("Hide {name}"))
+                .is_some()
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_planes_row_under_the_pointer_draws_it_in_the_hovers_colours_shown_or_not() {
+    // The prototype's `planeRow`: a plane its row picks out is shown, hidden or not, in
+    // `#186add` at 0.32 outlined `#4676ff`; the app's origin rows don't select, so the
+    // pointer on the row is what lights it.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "a frame", |_| {
+        !record.lock().unwrap().frames.is_empty()
+    });
+    let row = |h: &AppHarness, name: &str| browser(h).get_by_label(name).rect().center();
+    let at = row(&h, "YZ");
+    h.hover_at(at);
+    planes_become(&mut h, &record, &[("YZ", true)]);
+    pointer_away(&mut h);
+    planes_become(&mut h, &record, &[]);
+    // XZ shown: it stays plain beside YZ lit, and lit itself once its row is under the
+    // pointer.
+    click_browser_eye(&mut h, "Show XZ");
+    let at = row(&h, "YZ");
+    h.hover_at(at);
+    planes_become(&mut h, &record, &[("XZ", false), ("YZ", true)]);
+    let at = row(&h, "XZ");
+    h.hover_at(at);
+    planes_become(&mut h, &record, &[("XZ", true)]);
+    // The origin point's row lights nothing.
+    let at = row(&h, "X");
+    h.hover_at(at);
+    planes_become(&mut h, &record, &[("XZ", false)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn create_sketchs_planes_show_all_three_origin_planes_the_one_pointed_at_lit() {
+    // The prototype's `startPickPlane`: all three shown, the one under the pointer lit
+    // (`VP.setPlanes({ XY: true, XZ: true, YZ: true }, hp)`); in the app, the menu's item
+    // for it. Closed, the planes go back to their eyes (`endPickPlane`).
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    // The toolbar is there once the tab is: queried, not got, so a frame still showing the
+    // start page waits rather than failing.
+    step_until(&mut h, "Create Sketch on", |h| {
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    click_browser_eye(&mut h, "Show XY");
+    planes_become(&mut h, &record, &[("XY", false)]);
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "XZ plane")
+            .is_some()
+    });
+    let at = h
+        .get_by_role_and_label(Role::Button, "XZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", true), ("YZ", false)],
+    );
+    let at = h
+        .get_by_role_and_label(Role::Button, "YZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", true)],
+    );
+    h.key_press(Key::Escape);
+    step_until(&mut h, "its planes closed", |h| {
+        h.query_by_role_and_label(Role::Button, "XZ plane")
+            .is_none()
+    });
+    pointer_away(&mut h);
+    planes_become(&mut h, &record, &[("XY", false)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_create_sketch_planes_show_the_origin_planes_and_close_with_it() {
+    // The canvas's menu is drawn after the frame is built: its planes are drawn from the
+    // frame after, and the frame after it closes draws none, each asked for.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    planes_become(&mut h, &record, &[]);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    let at = h
+        .get_by_role_and_label(Role::Button, "XY plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", true), ("XZ", false), ("YZ", false)],
+    );
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    planes_become(&mut h, &record, &[]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// The council's round 1 on #507.
+
+#[test]
+fn a_plane_shown_raises_the_least_view_but_one_hovered_never_moves_it() {
+    // From −y onto (20, 10, 5), zoomed to the least the body allows (its box, 40 by 20 by 10
+    // from the origin, reaches √525 = 22.9 mm from there). XY's square reaches √1997 = 44.69
+    // mm (to its corner (46, 46, 0)), so at 48 … rows its least is rows · 44.69 / 2^19 · 1.01,
+    // past the body's. Hovering YZ's row there (its square reaching √3377 mm) leaves the view
+    // as it is, and draws no plane, the view too small for it; XY's eye opened raises the view
+    // to XY's least, every frame drawn at it or above.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "the body drawn", |_| {
+        record
+            .lock()
+            .unwrap()
+            .frames
+            .last()
+            .is_some_and(|frame| !frame.bodies.is_empty())
+    });
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 1e-5 },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    // The body hidden and shown again: the view raised to the least it allows.
+    click_browser_eye(&mut h, "Hide Hole");
+    click_browser_eye(&mut h, "Show Hole");
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let rows = f64::from(record.lock().unwrap().frames.last().unwrap().size_px[1]);
+    let least = |squared: f64| rows * squared.sqrt() / 524_288.0 * 1.01;
+    let at_body = view(&h).camera().clone();
+    let body = ortho_height(&at_body);
+    assert!(body > 1e-5, "raised to the body's least: {body}");
+    assert!(
+        body < least(1997.0) * 0.99,
+        "{body} under XY's {}",
+        least(1997.0)
+    );
+    // YZ's row hovered: nothing moves, nothing drawn.
+    let at = browser(&h).get_by_label("YZ").rect().center();
+    h.hover_at(at);
+    for _ in 0..5 {
+        step(&mut h);
+        assert_eq!(*view(&h).camera(), at_body);
+        assert!(last_planes(&record).is_empty());
+    }
+    pointer_away(&mut h);
+    assert_eq!(*view(&h).camera(), at_body);
+    // XY's eye opened: raised to XY's least, and XY drawn.
+    click_browser_eye(&mut h, "Show XY");
+    planes_become(&mut h, &record, &[("XY", false)]);
+    let record = record.lock().unwrap();
+    let frame = record.frames.last().unwrap();
+    let height = ortho_height(&frame.camera);
+    assert!(
+        height >= least(1997.0) * (1.0 - 1e-12),
+        "{height} under {}",
+        least(1997.0)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn create_sketchs_planes_left_open_with_the_pointer_still_ask_for_no_frame() {
+    // Open from the canvas's menu (drawn after the viewport's frame) and from the toolbar's
+    // button, the pointer resting on a plane's item: once the frames catch up, each asks for
+    // the next at the idle interval, not at once.
+    use eframe::egui::{Key, Modifiers};
+    let idle = |h: &AppHarness| {
+        let frame = Duration::from_millis(250);
+        let delay = repaint_delay(h);
+        assert!(
+            delay.is_some_and(|delay| delay >= IDLE_FRAME - frame && delay <= IDLE_FRAME),
+            "{delay:?}"
+        );
+    };
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    let at = h
+        .get_by_role_and_label(Role::Button, "XZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", true), ("YZ", false)],
+    );
+    for _ in 0..5 {
+        step(&mut h);
+        idle(&h);
+    }
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    planes_become(&mut h, &record, &[]);
+    // The toolbar's.
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "YZ plane")
+            .is_some()
+    });
+    let at = h
+        .get_by_role_and_label(Role::Button, "YZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", true)],
+    );
+    for _ in 0..5 {
+        step(&mut h);
+        idle(&h);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_plane_whose_item_has_the_keys_focus_is_lit() {
+    // The toolbar's Create Sketch planes, the pointer off them, Tab stepping the focus: each
+    // plane's item focused lights its plane, the other two plain. (The canvas's menu holds
+    // the keys for its own items, its planes the pointer's: canvas_menu.rs's SEAM.)
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    // The toolbar is there once the tab is: queried, not got, so a frame still showing the
+    // start page waits rather than failing.
+    step_until(&mut h, "Create Sketch on", |h| {
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "XZ plane")
+            .is_some()
+    });
+    pointer_away(&mut h);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", false)],
+    );
+    let names = [("XY plane", "XY"), ("XZ plane", "XZ"), ("YZ plane", "YZ")];
+    let mut visited = Vec::new();
+    for _ in 0..40 {
+        if h.query_by_role_and_label(Role::Button, "XY plane")
+            .is_none()
+        {
+            break;
+        }
+        h.key_press(Key::Tab);
+        step(&mut h);
+        step(&mut h);
+        let focused = names.iter().find(|(label, _)| {
+            h.query_by_role_and_label(Role::Button, label)
+                .is_some_and(|node| node.accesskit_node().is_focused())
+        });
+        if let Some((_, lit)) = focused {
+            let want: Vec<(&str, bool)> = ["XY", "XZ", "YZ"]
+                .iter()
+                .map(|name| (*name, name == lit))
+                .collect();
+            planes_become(&mut h, &record, &want);
+            if !visited.contains(lit) {
+                visited.push(*lit);
+            }
+        }
+    }
+    assert_eq!(visited, ["XY", "XZ", "YZ"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #487: while a modal asks, nothing behind it takes input ----
 
 // ---- The start page's thumbnails (`silico_app::thumbs`) ----
 

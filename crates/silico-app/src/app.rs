@@ -1114,6 +1114,9 @@ impl<P: Clients + 'static> App<P> {
             }
             ui.ctx().request_repaint();
         }
+        // Every menu drawn: Create Sketch's planes as the viewport's frame took them, or the
+        // next frame asked for.
+        crate::planes::settle(ui.ctx());
         self.after_drawing(ui, next_frame, top);
     }
 

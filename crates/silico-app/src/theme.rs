@@ -511,6 +511,17 @@ pub const VIEWPORT_EDGE_WIDTH: f32 = 1.5;
 /// A shown sketch's curves drawn among the bodies (the prototype's `syncSketchLines`
 /// lines), their width in points.
 pub const VIEWPORT_SKETCH_WIDTH: f32 = 1.5;
+/// An origin plane's fill (`crate::planes`, the prototype's `buildPlanes`): `#9f9f9f` at
+/// 0.08.
+pub const VIEWPORT_PLANE_FILL: Rgba8 = rgba8_of(GRAY_600, 20);
+/// Its outline: `#9f9f9f` at 0.6.
+pub const VIEWPORT_PLANE_OUTLINE: Rgba8 = rgba8_of(GRAY_600, 153);
+/// Its outline's width, in points: the prototype's 1 px.
+pub const VIEWPORT_PLANE_WIDTH: f32 = 1.0;
+/// A hovered origin plane's fill (`VP.setPlanes`' hover): `#186add` at 0.32.
+pub const VIEWPORT_PLANE_HOVER_FILL: Rgba8 = rgba8_of(SELECTION_BG, 82);
+/// Its outline: `#4676ff` at 0.6.
+pub const VIEWPORT_PLANE_HOVER_OUTLINE: Rgba8 = rgba8_of(FOCUS, 153);
 /// A hovered face's tint: white, mixed in at [`VIEWPORT_HOVER_TINT_AMOUNT`].
 pub const VIEWPORT_HOVER_TINT: Rgba8 = rgba8(0xffffff);
 /// How much of [`VIEWPORT_HOVER_TINT`] a hovered face takes.
@@ -2456,9 +2467,33 @@ mod tests {
                 VIEWPORT_FEATURE_HOVER_TINT,
                 [0xd4, 0xdb, 0xff, 0xff],
             ),
+            // viewport.js's `buildPlanes` and `VP.setPlanes`: `#9f9f9f` at `opacity: 0.08`
+            // filled (0.08 × 255 = 20.4), `lineMesh(…, '#9f9f9f', 1, 0.6)` outlined (153);
+            // hovered `#186add` at 0.32 (81.6), its outline `#4676ff` at the outline's 0.6.
+            (
+                "VIEWPORT_PLANE_FILL",
+                VIEWPORT_PLANE_FILL,
+                [0x9f, 0x9f, 0x9f, 20],
+            ),
+            (
+                "VIEWPORT_PLANE_OUTLINE",
+                VIEWPORT_PLANE_OUTLINE,
+                [0x9f, 0x9f, 0x9f, 153],
+            ),
+            (
+                "VIEWPORT_PLANE_HOVER_FILL",
+                VIEWPORT_PLANE_HOVER_FILL,
+                [0x18, 0x6a, 0xdd, 82],
+            ),
+            (
+                "VIEWPORT_PLANE_HOVER_OUTLINE",
+                VIEWPORT_PLANE_HOVER_OUTLINE,
+                [0x46, 0x76, 0xff, 153],
+            ),
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        assert_eq!(VIEWPORT_PLANE_WIDTH, 1.0);
         // viewport.js's `applyHighlight`: a maker's face `uTintAmt.value = 0.4` (DESIGN.md's
         // "tint 40%").
         assert_eq!(VIEWPORT_FEATURE_HOVER_TINT_AMOUNT, 0.4);

@@ -1053,19 +1053,29 @@ fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
 /// them, which Create Sketch's button opens, and its item in CREATE's drop-down, the
 /// canvas's context menu over nothing (`crate::canvas_menu`), and the empty part's hint
 /// (`crate::canvas_hint`), marking the pass it's drawn in ([`planes_drawn_this_pass`]).
+///
+/// While they're drawn, the viewport draws all three origin planes, the one whose item the
+/// pointer is on (or has the keys' focus) lit (`crate::planes`, the prototype's
+/// `startPickPlane`).
 pub(crate) fn planes(ui: &mut Ui) -> Option<OriginPlane> {
     let pass = ui.ctx().cumulative_pass_nr();
     ui.ctx()
         .data_mut(|data| data.insert_temp(planes_drawn(), pass));
     let mut chosen = None;
+    let mut lit = None;
     crate::menu::node(ui, CREATE_SKETCH.label, |ui| {
         for (plane, word) in PLANES {
-            if ui.button(word).clicked() {
+            let item = ui.button(word);
+            if item.hovered() || item.has_focus() {
+                lit = Some(plane);
+            }
+            if item.clicked() {
                 chosen = Some(plane);
                 ui.close();
             }
         }
     });
+    crate::planes::menu_drawn(ui.ctx(), lit);
     chosen
 }
 
