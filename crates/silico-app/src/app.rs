@@ -1306,10 +1306,10 @@ impl<P: Clients + 'static> App<P> {
         tab.finish_rename(&self.sessions, renaming.feature, &renaming.text)
     }
 
-    /// What the start page's `act` asks: a new untitled part, Open's panel, the shortcut
-    /// sheet, a recent document opened (or its tab shown, if it's open), a missing one
-    /// removed from Recent (said in a toast, as the prototype's `openRecent` says it), or
-    /// the MCP config copied.
+    /// What the start page's `act` asks: a new untitled part, Open's panel, the command
+    /// search, the shortcut sheet, a recent document opened (or its tab shown, if it's
+    /// open), a missing one removed from Recent (said in a toast, as the prototype's
+    /// `openRecent` says it), or the MCP config copied.
     fn start_act(&mut self, ui: &Ui, act: start::Act, next_frame: &mut bool) {
         match act {
             start::Act::None => {}
@@ -1318,6 +1318,7 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             start::Act::Open => self.ask_open(ui.ctx()),
+            start::Act::Search => self.search = Some(Search::default()),
             start::Act::Shortcuts => self.sheet = Some(Sheet::default()),
             start::Act::Recent(path) => *next_frame |= self.open_recent(&path),
             // Said once the list's thread tells it's done (`poll`).
@@ -2878,9 +2879,10 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The application bar (section 8; docs/design/m5-ui/DESIGN.md, *Layout*): Home, the
-    /// File menu, Save, Undo and Redo, and the open documents' tabs, an asterisk on a changed
-    /// one's (docs/ux/solidworks.md, §6), scrolling across when they overflow. On macOS it's
-    /// the window's title bar (`bar`).
+    /// File menu, Save, Undo and Redo, the open documents' tabs, an asterisk on a changed
+    /// one's (docs/ux/solidworks.md, §6), scrolling across when they overflow, New part after
+    /// them, and Search commands and Keyboard shortcuts at the right. On macOS it's the
+    /// window's title bar (`bar`).
     fn app_bar(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         egui::Panel::top("app_bar")
             .exact_size(theme::TOP_BAR_HEIGHT)
@@ -2903,6 +2905,7 @@ impl<P: Clients + 'static> App<P> {
                         self.app_bar_buttons(ui, next_frame);
                         bar::separator(ui);
                         self.document_tabs(ui, next_frame);
+                        self.app_bar_trailing(ui, next_frame);
                     },
                 );
             });
@@ -3066,6 +3069,35 @@ impl<P: Clients + 'static> App<P> {
             }
             *next_frame = true;
             ui.close();
+        }
+    }
+
+    /// After the tabs (the prototype's `#appbar`): New part, 4 beyond the last tab, and at
+    /// the bar's right Search commands and Keyboard shortcuts, each opening what its key
+    /// opens (`Ctrl+N`, `S`, `?`).
+    fn app_bar_trailing(&mut self, ui: &mut Ui, next_frame: &mut bool) {
+        ui.add_space(theme::APP_BAR_NEW_MARGIN);
+        let new = bar::button(ui, Icon::Plus, None, Command::New.label(), true, None);
+        let shortcut = Command::New.shown(ui.ctx());
+        if bar::tooltip(new, Command::New.label(), shortcut, None).clicked() {
+            self.new_part();
+            *next_frame = true;
+        }
+        // The rest of the row is `.ab-spacer`'s; the two at its right end, 8 short of it.
+        let right = ui.max_rect().right() - theme::APP_BAR_PADDING;
+        ui.add_space((right - bar::RIGHT_GROUP_WIDTH - ui.cursor().left()).max(0.0));
+        for (icon, command) in [
+            (Icon::Search, Command::Search),
+            (Icon::Help, Command::Shortcuts),
+        ] {
+            let button = bar::button(ui, icon, None, command.label(), true, None);
+            let shortcut = command.shown(ui.ctx());
+            if bar::tooltip(button, command.label(), shortcut, None).clicked() {
+                match command {
+                    Command::Search => self.search = Some(Search::default()),
+                    _ => self.sheet = Some(Sheet::default()),
+                }
+            }
         }
     }
 

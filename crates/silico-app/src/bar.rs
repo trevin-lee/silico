@@ -583,12 +583,30 @@ fn paint_tab(
     );
 }
 
-/// The open documents' tabs, laid out by `add` in a row that scrolls across, by the wheel
-/// or a trackpad, when they're wider than the room left in the bar, rather than squeezing
-/// them; the shown tab's fill may run one point below the row, over the bar's border.
+/// An app bar button holding an icon alone: 14 in 5 of padding at each side.
+const ICON_BUTTON_WIDTH: f32 = ICON_SIZE + 2.0 * theme::APP_BAR_BUTTON_PADDING;
+
+/// The bar's two buttons at its right (`.ab-right`): Search commands and Keyboard
+/// shortcuts, 2 apart (its `gap`).
+pub(crate) const RIGHT_GROUP_WIDTH: f32 = 2.0 * ICON_BUTTON_WIDTH + theme::APP_BAR_ITEM_SPACING;
+
+/// What the bar keeps after the tabs, the spacer at its least: the gap after them, New
+/// part's margin and its button, the gap after it, the group at the right, and the bar's
+/// padding.
+const AFTER_TABS: f32 = theme::APP_BAR_ITEM_SPACING
+    + theme::APP_BAR_NEW_MARGIN
+    + ICON_BUTTON_WIDTH
+    + theme::APP_BAR_ITEM_SPACING
+    + RIGHT_GROUP_WIDTH
+    + theme::APP_BAR_PADDING;
+
+/// The open documents' tabs, laid out by `add` in a row as wide as they are, which scrolls
+/// across, by the wheel or a trackpad, when they're wider than the room left in the bar
+/// (what's after them kept, [`AFTER_TABS`]), rather than squeezing them; the shown tab's
+/// fill may run one point below the row, over the bar's border.
 pub(crate) fn tab_strip<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     let room = Vec2::new(
-        (ui.available_width() - theme::APP_BAR_PADDING).max(0.0),
+        (ui.available_width() - AFTER_TABS).max(0.0),
         ui.available_height(),
     );
     let top = egui::Layout::left_to_right(egui::Align::Min);
