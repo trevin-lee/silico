@@ -961,8 +961,16 @@ impl<P: Clients + 'static> App<P> {
     /// A new, untitled part (File > New, Command+N, the start page's New part): opened at
     /// once, asking nothing, with no file until its first save (`open` with no path). Named
     /// "Untitled", then "Untitled 2", "Untitled 3", and so on, one more each time, never a
-    /// name given before in this run.
-    pub fn new_part(&mut self) {
+    /// name given before in this run. Not while a quit closes the tabs, as a dropped file
+    /// isn't opened then (`take_drops`): a part opened then would be a tab the quit never
+    /// closes. That's said in a toast instead.
+    pub fn new_part(&mut self, ctx: &egui::Context) {
+        if self.quitting {
+            let now = ctx.input(|input| input.time);
+            self.toasts.push(Toast::info(start::NEW_PART_QUITTING), now);
+            ctx.request_repaint();
+            return;
+        }
         self.untitled += 1;
         let name = match self.untitled {
             1 => "Untitled".to_owned(),
@@ -1314,7 +1322,7 @@ impl<P: Clients + 'static> App<P> {
         match act {
             start::Act::None => {}
             start::Act::New => {
-                self.new_part();
+                self.new_part(ui.ctx());
                 *next_frame = true;
             }
             start::Act::Open => self.ask_open(ui.ctx()),
@@ -1984,7 +1992,7 @@ impl<P: Clients + 'static> App<P> {
         for command in [Command::New, Command::Open] {
             if take(ui, command) {
                 if command == Command::New {
-                    self.new_part();
+                    self.new_part(ui.ctx());
                     return (true, None);
                 }
                 let ctx = ui.ctx().clone();
@@ -2999,7 +3007,7 @@ impl<P: Clients + 'static> App<P> {
                 .is_some_and(|tab| !tab.closing());
         // New asks nothing: an untitled part at once.
         if ui.button("New").clicked() {
-            self.new_part();
+            self.new_part(ui.ctx());
             *next_frame = true;
             ui.close();
         }

@@ -17049,6 +17049,87 @@ fn a_file_dropped_while_a_quit_closes_the_tabs_isnt_opened_and_the_window_still_
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// How a new part is asked for while a quit closes the tabs.
+#[derive(Clone, Copy, Debug)]
+enum NewBy {
+    Keys,
+    FileMenu,
+    StartPage,
+}
+
+/// `a.silico` edited and the window closed, Save all chosen with its save held: the quit
+/// closing the tabs, no question asked. Then a new part asked for `by`: refused, said in a
+/// toast, as a dropped file is, and the window closes once the save is let go, no tab left.
+fn new_part_while_a_quit_closes_the_tabs(by: NewBy) {
+    let f = fixture();
+    let (mut h, a) = f.opened("a.silico", EXAMPLE);
+    pin_renamed(&mut h, "a.silico");
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Save all")
+        .click_accesskit();
+    step_until(&mut h, "the question answered", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_none()
+    });
+    assert_eq!(tab_names(&h), ["a.silico"]);
+    match by {
+        NewBy::Keys => {
+            h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::N);
+        }
+        NewBy::FileMenu => {
+            h.get_by_label("File").click();
+            step(&mut h);
+            h.get_by_role_and_label(Role::Button, "New").click();
+        }
+        NewBy::StartPage => {
+            home_button(&h).click();
+            step_until(&mut h, "Home", start_shown);
+            start_page(&h)
+                .get_by_role_and_label(Role::Button, "New part")
+                .click();
+        }
+    }
+    step_until(&mut h, "the refusal", |h| h.state().toast().is_some());
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Quitting: no new part opened"),
+        "{by:?}"
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(tab_names(&h), ["a.silico"], "{by:?}");
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
+    assert!(h.state().tabs().is_empty(), "{by:?}");
+    assert_eq!(names_in(&a), ["Block", "PinQ", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn ctrl_n_while_a_quit_closes_the_tabs_opens_no_part_and_the_window_still_closes() {
+    new_part_while_a_quit_closes_the_tabs(NewBy::Keys);
+}
+
+#[test]
+fn file_new_while_a_quit_closes_the_tabs_opens_no_part_and_the_window_still_closes() {
+    new_part_while_a_quit_closes_the_tabs(NewBy::FileMenu);
+}
+
+#[test]
+fn the_start_pages_new_part_while_a_quit_closes_the_tabs_opens_no_part_and_the_window_still_closes()
+{
+    new_part_while_a_quit_closes_the_tabs(NewBy::StartPage);
+}
+
 #[test]
 fn a_file_dropped_under_a_question_isnt_opened_and_the_quit_it_asks_goes_on() {
     let f = fixture();
