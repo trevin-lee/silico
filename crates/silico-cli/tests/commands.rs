@@ -324,7 +324,7 @@ fn drift_is_exit_1_naming_the_feature() {
 const FILLETED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Block", "position": [-10, -10, 0], "length": 20, "width": 20, "height": 10},
     {"id": "ffffffff", "type": "fillet", "v": 1, "name": "Round", "base": "aaaaaaaa", "edges": ["aaaaaaaa.box.Edge7"], "radius": 2}
@@ -415,7 +415,7 @@ fn a_document_of_another_naming_scheme_is_exit_1_naming_the_field_and_left_as_it
     );
     assert_eq!(
         problem["suggestion"],
-        "this Silico reads naming scheme 5: open it in the Silico that wrote it"
+        "this Silico reads naming schemes 5 and 6: open it in the Silico that wrote it"
     );
     for command in ["fmt", "check"] {
         let out = silico(&scratch, &[command], &file);

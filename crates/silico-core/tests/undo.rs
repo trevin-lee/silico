@@ -241,7 +241,7 @@ fn boxes(longer: &[usize]) -> (String, Document) {
         .map(|n| placed(n, if longer.contains(&n) { "105" } else { "10" }))
         .collect();
     let text = format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n{}\n  ]\n}}\n",
         features.join(",\n")
     );
     let document = read(text.as_bytes()).unwrap();
@@ -405,7 +405,7 @@ use proptest::prelude::*;
 
 /// The canonical text before a document's features, written by hand: the same for every
 /// document.
-const HEAD: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": ";
+const HEAD: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": ";
 
 /// A box as the canonical form places it, by its ID's number and its length.
 fn line(id: u32, length: u32) -> String {

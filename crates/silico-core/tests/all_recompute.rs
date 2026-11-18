@@ -50,6 +50,8 @@ mod described;
 mod entries;
 #[path = "measure_refusal.rs"]
 mod measure_refusal;
+#[path = "name_copies.rs"]
+mod name_copies;
 #[path = "name_parse.rs"]
 mod name_parse;
 #[path = "naming.rs"]

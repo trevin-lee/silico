@@ -18,7 +18,7 @@ use silico_core::kernel::{
     ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Primitive,
     Reported, Topology,
 };
-use silico_core::naming::{ElementMap, NAMING_SCHEME, OpCode};
+use silico_core::naming::{Copied, ElementMap, Instance, NAMING_SCHEME, OpCode};
 use silico_core::recompute::{Recompute, RunOutcome};
 
 const DOCUMENTS: &[&str] = &[
@@ -262,6 +262,33 @@ fn built() -> String {
             &mut out,
         );
     }
+    // Copies (N10, scheme 6): a sweep's map copied as a pattern's tool, at a grid's
+    // instances and a polar pattern's, and the cube copied whole by a mirror and a grid.
+    let pad = ElementMap::by_number(
+        id("pppppppp"),
+        OpCode::Pad,
+        ElementCounts {
+            faces: 3,
+            edges: 2,
+            vertices: 1,
+            ..ElementCounts::default()
+        },
+    );
+    for (op, copied, of, offsets) in [
+        (OpCode::LinearPattern, Copied::Tool, &pad, &[2][..]),
+        (OpCode::LinearPattern, Copied::Tool, &pad, &[0, 1]),
+        (OpCode::LinearPattern, Copied::Tool, &pad, &[2, 1]),
+        (OpCode::PolarPattern, Copied::Tool, &pad, &[3]),
+        (OpCode::Mirror, Copied::Tool, &pad, &[1]),
+        (OpCode::Mirror, Copied::Solid, &cube, &[1]),
+        (OpCode::LinearPattern, Copied::Solid, &cube, &[1, 1]),
+    ] {
+        let instance = Instance::new(offsets).unwrap();
+        written(
+            &ElementMap::copy(of, id("tttttttt"), op, copied, &instance).unwrap(),
+            &mut out,
+        );
+    }
     out
 }
 
@@ -283,6 +310,15 @@ fn the_histories_take_every_step_of_the_builder() {
         ("elements below", "(L "),
         ("a duplicate", ")~1"),
         ("an element by its number", "ffffffff.fillet.Face1\n"),
+        // N10: a copy of a tool's element, at a grid's instance, and of a solid's.
+        (
+            "a copy of a tool's element",
+            "tttttttt.linear_pattern.Face(C2,1 pppppppp.pad.Face1)\n",
+        ),
+        (
+            "a copy of a solid's element",
+            "tttttttt.mirror.Edge(S1 aaaaaaaa.box.Edge12)\n",
+        ),
         // N9: what of a cut's tool it keeps is a piece, the cut's own, `I`.
         (
             "a piece of a cut's tool",
@@ -330,8 +366,8 @@ fn the_names_a_scheme_gives_are_pinned_with_its_version() {
     assert_eq!(
         (std::str::from_utf8(NAMING_SCHEME).unwrap(), digest.as_str()),
         (
-            "silico naming 5\n",
-            "3a8e05eda1c6037fbf62de53747ad102f8fdfde25c4defe95e4a2049f9de80a8"
+            "silico naming 6\n",
+            "925f105a5f29034f34c3cebd83dbdab0e48d46c485841f5f1ce5b65b6f86b23a"
         ),
         "the names changed: bump NAMING_SCHEME, then pin the new digest"
     );

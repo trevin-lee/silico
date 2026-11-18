@@ -29,7 +29,9 @@ use silico_core::sketch_judge::{Judged, MERGE, judge};
 use silico_protocol::{LENGTH_TOLERANCE, arc_from_points};
 
 use crate::freecad;
-use crate::sketch::{self, FreecadGeometry, FreecadSketch, FreecadSolved, Ours, SketchCase};
+use crate::sketch::{
+    self, Details, FreecadGeometry, FreecadSketch, FreecadSolved, Ours, SketchCase,
+};
 
 /// The directory of sketch-edit cases in an oracle directory.
 pub const DIR: &str = "sketch-edits";
@@ -1107,6 +1109,19 @@ pub struct Verdict {
     /// not solving, FreeCAD's model of it malformed or conflicting before the edit, or the
     /// harness's own code around FreeCAD's edit failing.
     pub problem: bool,
+    /// How many of [`Verdict::how`]'s last differences compare where the two solves put
+    /// things, which only two solves that both succeeded give (`rerun` compares them against
+    /// the runs of FreeCAD whose solve succeeded).
+    pub solved: usize,
+    /// In an edit whose places the comparison takes only where neither solve moved them
+    /// (points merged from apart, a shared arc end, an unreproducible drag), each point
+    /// Silico's solve didn't move, and whether FreeCAD's places of it are Silico's, within the
+    /// comparison's tolerance, whether or not FreeCAD's solve moved it.
+    pub unmoved: BTreeMap<String, bool>,
+    /// Of [`Verdict::how`], the differences of such a point, a place FreeCAD's solve didn't
+    /// move either but put elsewhere than Silico's, each with the point (a line names its
+    /// point and both places, so it's one point's alone).
+    pub unmoved_lines: BTreeMap<String, String>,
 }
 
 impl std::fmt::Display for Verdict {
@@ -1243,6 +1258,30 @@ pub const KNOWN: &[Known] = &[
         case: "edit_84_352",
         shows: Shows::Varies(Rule::MergeSolveUnbuildable),
         why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, whose solve puts the symmetric k0000023's two points at one place, which Silico refuses (#se-so-does-any-refusal-of-the to #se-a-line-the-solve-shortens-to); FreeCAD's merge is rolled back (#se-any-result-whose-solve-is-worse), in 2 of 3 whole sweeps as a conflict with constraints redundant as well (-3, a rollback not measured elsewhere), in the rest (and alone) in a form the note gives, but an answer that varies is no oracle",
+    },
+    // `sketch-edit-sweep --seed 164 --count 500`'s case 179.
+    Known {
+        case: "edit_164_179",
+        shows: Shows::Varies(Rule::MergeHoldsOwn(String::new())),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: a merge after which the symmetric k0000020 would mirror an end of n0000005 about n0000005 itself, which Silico refuses (#se-a-curve-s-own-point-constrained, #se-the-merged-sketch-is-gated); FreeCAD makes the merge, its solve succeeding (0, 12 degrees of freedom), in 10 of 10 runs alone and 1 of 3 whole sweeps, and rolls it back (#se-any-result-whose-solve-is-worse) in the other two, but an answer that varies is no oracle",
+    },
+    // `sketch-edit-sweep --seed 105 --count 500`'s case 102.
+    Known {
+        case: "edit_105_102",
+        shows: Shows::VariesMade,
+        why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, which Silico places at the kept point's place (#se-the-first-point-the-request-names) and its solve from there is clean, so it makes the merge; FreeCAD's solve, from the points apart, makes it too in 13 of 13 runs alone, and fails (-1) in 3 of 3 whole sweeps (its allocator's order, docs/ports/sketcher.md:51), which its Coincident command rolls back (#se-any-result-whose-solve-is-worse), but an answer that varies is no oracle; where FreeCAD makes the merge, the two are compared",
+    },
+    // `sketch-edit-sweep --seed 121 --count 500`'s case 137.
+    Known {
+        case: "edit_121_137",
+        shows: Shows::Varies(Rule::MergeSolveUnbuildable),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: points merged from apart, whose solve puts the symmetric k0000022's two points at one place, which Silico refuses (#se-so-does-any-refusal-of-the to #se-a-line-the-solve-shortens-to); FreeCAD's merge is rolled back (#se-any-result-whose-solve-is-worse), in a form the note gives in 13 of 13 runs alone, and in 3 of 3 whole sweeps as a conflict with constraints redundant as well (-3, a rollback not measured elsewhere), but an answer that varies is no oracle",
+    },
+    // `sketch-extend-sweep --seed 140 --count 500`'s case 255.
+    Known {
+        case: "extend_140_255",
+        shows: Shows::Varies(Rule::ExtendFrame),
+        why: "FreeCAD 1.1.3 isn't the same run to run here: the line n0000005's end p0000001 moved by -7.813 mm, whose drag's solve fails, which Silico refuses (#se-a-frame-that-isn-t-a); FreeCAD's drag fails as well, and its extend raises \"Not able to extend geometry\" (#se-extend-unchecked), in 13 of 13 runs alone and 2 of 3 whole sweeps, and makes the edit (solve 0, 20 degrees of freedom) in the other, but an answer that varies is no oracle",
     },
 ];
 
@@ -1444,8 +1483,19 @@ struct Sent<'a> {
 /// Runs `cases` through Silico (`silico-sketch-worker` beside the running executable) and
 /// FreeCAD, and gives each case's verdict, in order.
 pub fn run(cases: &[EditCase]) -> Result<Vec<Verdict>, String> {
+    let (prepared, theirs) = both_sides(cases)?;
+    Ok(prepared
+        .iter()
+        .zip(&theirs)
+        .map(|(p, fc)| verdict(p, fc.as_ref()))
+        .collect())
+}
+
+/// `cases` prepared through Silico (`silico-sketch-worker` beside the running executable),
+/// and FreeCAD's outcome of each, in one run of FreeCAD.
+fn both_sides(cases: &[EditCase]) -> Result<(Vec<Prepared>, Vec<Option<Theirs>>), String> {
     if cases.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     // Silico's worker first: a missing one is found before FreeCAD's run, not after.
     let mut worker = silico_core::sketch::SketchWorker::start().map_err(|e| e.to_string())?;
@@ -1454,11 +1504,7 @@ pub fn run(cases: &[EditCase]) -> Result<Vec<Verdict>, String> {
         prepared.push(prepare(case, &mut worker)?);
     }
     let theirs = freecad_outcomes(&prepared)?;
-    Ok(prepared
-        .iter()
-        .zip(&theirs)
-        .map(|(p, fc)| verdict(p, fc.as_ref()))
-        .collect())
+    Ok((prepared, theirs))
 }
 
 /// What FreeCAD made of each prepared case, in order, in one run of FreeCAD: none for a
@@ -1584,6 +1630,11 @@ fn silico_refused(p: &Prepared) -> Option<String> {
 
 /// How `p` came out, FreeCAD's side `theirs` (none when its plan refuses).
 pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
+    judged(p, theirs, Details::Full)
+}
+
+/// As [`verdict`], each difference saying FreeCAD's side as `details` says.
+fn judged(p: &Prepared, theirs: Option<&Theirs>, details: Details) -> Verdict {
     let mut v = Verdict {
         case: p.name.clone(),
         how: p.problems.clone(),
@@ -1603,15 +1654,17 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
         if !fc.before.malformed.is_empty() || !fc.before.conflicting.is_empty() {
             v.problem = true;
             v.how.push(format!(
-                "FreeCAD's model of the sketch, before the edit, has malformed constraints {:?} and conflicting {:?}",
-                fc.before.malformed, fc.before.conflicting
+                "FreeCAD's model of the sketch, before the edit, has malformed constraints {} and conflicting {}",
+                details.say(|| format!("{:?}", fc.before.malformed)),
+                details.say(|| format!("{:?}", fc.before.conflicting))
             ));
         }
     }
     if let Some(Theirs::Harness(why)) = theirs {
         v.problem = true;
         v.how.push(format!(
-            "the harness's FreeCAD side failed, not FreeCAD's edit: {why}"
+            "the harness's FreeCAD side failed, not FreeCAD's edit: {}",
+            details.say(|| why.clone())
         ));
         return finish(v);
     }
@@ -1627,14 +1680,19 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
     // FreeCAD's refusal, if it refused: its edit raised, its plan refuses, or (a merge) its
     // Coincident command would refuse what the edit made. A crash or hang is none of these:
     // it's its own outcome, compared on its own.
+    // A difference in what kind of outcome the two gave, keyed by its kind alone: whatever
+    // FreeCAD's outcome, raised, crashed, made, or refused otherwise, it isn't one the note
+    // gives beside Silico's, which is the case's own, the same in every run.
+    let apart = |full: String| details.key(|| full, || OUTCOME_APART.to_owned());
     let fc_refusal: Option<String> = match (theirs, &p.plan) {
-        (Some(Theirs::Lost(why)), _) => return lost(p, v, why),
+        (Some(Theirs::Lost(why)), _) => return lost(p, v, why, details),
         (_, Plan::Refuses(why)) => Some(why.clone()),
         (Some(Theirs::Failed(why)), _) => Some(format!("its edit raised: {why}")),
         (Some(Theirs::Edited(fc)), _) => merge_refusal(p, fc),
         (Some(Theirs::Harness(_)), _) | (None, Plan::Run { .. }) => {
-            v.how
-                .push("FreeCAD was run on it and gave no outcome".to_owned());
+            v.how.push(apart(
+                "FreeCAD was run on it and gave no outcome".to_owned(),
+            ));
             return finish(v);
         }
     };
@@ -1680,33 +1738,33 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     Some(Pinned::Crashes | Pinned::Edits) => false,
                 };
                 match r.pinned() {
-                    Some(pinned) if !agrees => v.how.push(format!(
+                    Some(pinned) if !agrees => v.how.push(apart(format!(
                         "both refused, but the note has FreeCAD {} ({NOTE}{}): Silico's refusal ({ours}); FreeCAD's: {theirs_why}",
                         pinned.does(),
-                        cited(&r.lines())
-                    )),
+                        cited(&r.lines()),
+                    ))),
                     _ => {
                         v.refused = true;
                         v.modulo.extend(r.lines().into_iter().map(String::from));
                     }
                 }
             }
-            None => v.how.push(format!(
+            None => v.how.push(apart(format!(
                 "both refused, but Silico's refusal isn't one the note gives ({ours}); FreeCAD's: {theirs_why}"
-            )),
+            ))),
         },
         (Some(ours), None) => {
             let Some(Theirs::Edited(fc)) = theirs else {
                 v.how
-                    .push(format!("Silico refused ({ours}); FreeCAD gave nothing"));
+                    .push(apart(format!("Silico refused ({ours}); FreeCAD gave nothing")));
                 return finish(v);
             };
             match rule(p).and_then(|r| excused(p, &r, fc)) {
                 Some(excuse) => v.excused.push(excuse),
-                None => v.how.push(format!(
+                None => v.how.push(apart(format!(
                     "Silico refused ({ours}); FreeCAD made the edit ({})",
                     summary(fc)
-                )),
+                ))),
             }
         }
         (None, Some(theirs_why)) => {
@@ -1717,9 +1775,9 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                 v.excused.push(excuse);
                 v.modulo.extend(["se-the-first-point-the-request-names", "se-so-does-any-refusal-of-the"].map(String::from));
             } else {
-                v.how.push(format!(
+                v.how.push(apart(format!(
                     "FreeCAD refused ({theirs_why}); Silico made the edit"
-                ));
+                )));
             }
         }
         (None, None) => {
@@ -1730,7 +1788,7 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     v.modulo.push("se-where-trim-finds-intersections".to_owned());
                 }
                 let dragged = match freecad_unreproducible(p) {
-                    Some(Unreproducible::Drag(why)) => {
+                    Some(Unreproducible::Drag(why) | Unreproducible::Frame(why)) => {
                         v.excused.push(why);
                         true
                     }
@@ -1764,8 +1822,20 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
                     dragged,
                     settles,
                 };
-                let how = compare_edited(p, s, fc, &unsettled, &mut v.excused, &mut v.modulo);
-                v.how.extend(how);
+                let compared = compare_edited(
+                    p,
+                    s,
+                    fc,
+                    &unsettled,
+                    details,
+                    &mut v.excused,
+                    &mut v.modulo,
+                );
+                v.how.extend(compared.how);
+                v.solved = compared.solved.len();
+                v.unmoved = compared.unmoved;
+                v.unmoved_lines = compared.unmoved_lines;
+                v.how.extend(compared.solved);
             }
         }
     }
@@ -1777,8 +1847,9 @@ pub fn verdict(p: &Prepared, theirs: Option<&Theirs>) -> Verdict {
 /// 1.1.3 crashes on (splitting a point, #se-split-index-refusals), and FreeCAD crashed as the note
 /// says, by a segmentation fault (killed by SIGSEGV, or, on Linux, where its handler catches it,
 /// exiting with status 1 after the handler's line: [`freecad::SEGFAULT`]), not otherwise and
-/// not by hanging; anything else is a difference. Only how it ended is read, never its output.
-fn lost(p: &Prepared, mut v: Verdict, why: &str) -> Verdict {
+/// not by hanging; anything else is a difference. Only how it ended is read, never its output,
+/// which a difference says only as `details` says.
+fn lost(p: &Prepared, mut v: Verdict, why: &str, details: Details) -> Verdict {
     let crashes = match &p.silico {
         SilicoSide::Refused(_) => rule(p).filter(|r| r.pinned() == Some(Pinned::Crashes)),
         _ => None,
@@ -1801,8 +1872,11 @@ fn lost(p: &Prepared, mut v: Verdict, why: &str) -> Verdict {
                 },
                 SilicoSide::Gated(_) => "Silico's result is gated".to_owned(),
             };
-            v.how.push(format!(
-                "FreeCAD crashed or hung ({why}), its own outcome, never a refusal, which the note gives only for a split of a point ({NOTE}#se-split-index-refusals); {silico}"
+            v.how.push(details.key(
+                || format!(
+                    "FreeCAD crashed or hung ({why}), its own outcome, never a refusal, which the note gives only for a split of a point ({NOTE}#se-split-index-refusals); {silico}"
+                ),
+                || OUTCOME_APART.to_owned(),
             ));
         }
     }
@@ -1833,6 +1907,9 @@ pub fn note_line(anchor: &str) -> Option<usize> {
         .position(|l| l.contains(&tag))
         .map(|i| i + 1)
 }
+
+/// A difference in the kind of outcome the two sides gave, as [`Details::Keyed`] reads it.
+const OUTCOME_APART: &str = "FreeCAD's outcome isn't one the note gives beside Silico's";
 
 fn finish(mut v: Verdict) -> Verdict {
     // In the note's order, as a reader follows them.
@@ -1920,7 +1997,8 @@ pub enum Rule {
     ExtendArcToNothing,
     /// An arc swept a whole turn or more (#se-an-arc-swept-a-whole-turn).
     ExtendWholeTurn,
-    /// An arc's extend whose solve fails from the written end (#se-an-arc-swept-a-whole-turn).
+    /// An arc's extend at an end another curve shares whose solve fails from the written end, or
+    /// gives a result that can't be built (#se-an-arc-swept-a-whole-turn).
     ExtendSolveFails,
     /// A result the gate would refuse, refused as the extend's (#se-each-result-is-checked-by-the).
     ExtendGated,
@@ -2101,11 +2179,17 @@ pub fn rule(p: &Prepared) -> Option<Rule> {
             let Err(e) = &s.ours.outcome else {
                 return None;
             };
-            if let Edit::Extend { curve, .. } = &p.edit {
-                // An arc's: its end is written, not dragged (#se-a-line-s-end-goes-through).
-                let arc = shape.members.get(curve).is_some_and(|m| m.kind == "arc");
-                return (arc && e.code() == silico_core::ErrorCode::SolveFailed)
-                    .then_some(Rule::ExtendSolveFails);
+            if matches!(p.edit, Edit::Extend { .. }) {
+                // An arc's end another curve shares: Silico's write moves the shared point, where
+                // FreeCAD's setRange moves only the arc's end (#se-a-line-s-end-goes-through), so
+                // the two solves start apart, and Silico's can fail from there (`extend_43_212`)
+                // or give a result that can't be built (a curve collapsed, `extend_158_266`). At
+                // an end no other curve shares, the two start alike, so either is a difference.
+                let fails = matches!(
+                    e.code(),
+                    silico_core::ErrorCode::SolveFailed | silico_core::ErrorCode::InvalidResult
+                );
+                return (fails && shared_arc_end(p).is_some()).then_some(Rule::ExtendSolveFails);
             }
             if !matches!(p.edit, Edit::Merge { .. }) {
                 return None;
@@ -2647,7 +2731,7 @@ fn excused(p: &Prepared, rule: &Rule, fc: &FreecadEdited) -> Option<String> {
         // names it.
         Rule::ExtendSolveFails => (fc.after.code == 0 && arc_as_requested(p, fc)).then(|| {
             format!(
-                "an extend whose solve fails from the written end: Silico refuses it ({NOTE}#se-an-arc-swept-a-whole-turn), where FreeCAD's solve succeeds"
+                "an extend whose solve fails, or gives a result the file can't hold, from the written end: Silico refuses it ({NOTE}#se-an-arc-swept-a-whole-turn), where FreeCAD's solve succeeds"
             )
         }),
         Rule::ExtendWholeTurn => range_wrapped(p, fc).then(|| format!(
@@ -2825,15 +2909,32 @@ fn implied_on(p: &Prepared, theirs: Option<&Theirs>) -> Option<String> {
 }
 
 /// Whether FreeCAD's merge, refused for a worse solve, is the measured one for Silico's
-/// [`Rule::MergeSolveWorse`]: constraints found redundant (-2), nothing newly conflicting or
-/// malformed, and every constraint Silico's refusal names among those FreeCAD newly finds
-/// redundant (by its name, `s_` and the ID), so a redundancy of other constraints isn't
-/// taken for it.
+/// [`Rule::MergeSolveWorse`]. FreeCAD's solve from the points apart: constraints found
+/// redundant (-2), nothing newly conflicting or malformed, and every constraint Silico's
+/// refusal names among those FreeCAD newly finds redundant (by its name, `s_` and the ID), so
+/// a redundancy of other constraints isn't taken for it; or found conflicting (-3), nothing
+/// newly malformed, and every constraint Silico's refusal names among those FreeCAD newly finds
+/// redundant or conflicting. And, for points merged from apart, FreeCAD's solve of the same
+/// merge from Silico's start, the kept point's place ([`FreecadEdited::placed`]), worse in one
+/// of the same two ways by the same constraints: a solve that's clean from where Silico's
+/// starts says Silico's refusal is wrong, whatever FreeCAD's own start gives (the merge's
+/// solve is a function of where it starts, #se-the-first-point-the-request-names). Even from
+/// that one start, FreeCAD can call conflicting what Silico calls redundant, likely as Silico
+/// merges the points into one where FreeCAD keeps them two and adds a Coincident, a constraint
+/// more for PlaneGCS to rank the dependent ones against: `edit_158_347`'s placed solve gave -3,
+/// Symmetric s_k0000030 conflicting and 14 redundant, in a run whose solve from the points
+/// apart gave -2 (2026-11-16, the CI VM). So the start isn't why the codes differ, and either
+/// code by the named constraints agrees. Both refuse the merge as worse than the sketch before
+/// it (the sweeps' edit_169_486 and edit_175_299, FreeCAD's -3 in 3 of 3 runs alone and their
+/// nights' sweeps, conflicting [3, 6, 10, 14, 15] in 169_486, conflicting [12] and 13 redundant
+/// in 175_299, whose placed solve gave -2 with the 13 redundant; and edit_158_347, -3 in its
+/// sweep and -2 in a run alone). edit_169_486 has no placed solve, so only FreeCAD's own start
+/// is compared there.
 fn redundant_as_named(p: &Prepared, theirs: Option<&Theirs>) -> bool {
     let (SilicoSide::Refused(r), Some(Theirs::Edited(fc))) = (&p.silico, theirs) else {
         return false;
     };
-    let (b, a) = (&fc.before, &fc.after);
+    let b = &fc.before;
     let new = |after: &[usize], before: &[usize]| -> Vec<usize> {
         after
             .iter()
@@ -2841,16 +2942,37 @@ fn redundant_as_named(p: &Prepared, theirs: Option<&Theirs>) -> bool {
             .copied()
             .collect()
     };
-    let named: BTreeSet<String> = new(&a.redundant, &b.redundant)
-        .into_iter()
-        .filter_map(|i| i.checked_sub(1).and_then(|i| fc.constraints.get(i)))
-        .map(|c| c.name.trim_start_matches("s_").to_owned())
-        .collect();
-    a.code == -2
-        && new(&a.conflicting, &b.conflicting).is_empty()
-        && new(&a.malformed, &b.malformed).is_empty()
-        && !r.elements.is_empty()
-        && r.elements.iter().all(|id| named.contains(id))
+    let names = |indices: Vec<usize>| -> BTreeSet<String> {
+        indices
+            .into_iter()
+            .filter_map(|i| i.checked_sub(1).and_then(|i| fc.constraints.get(i)))
+            .map(|c| c.name.trim_start_matches("s_").to_owned())
+            .collect()
+    };
+    // Whether a solve of the merge is worse than the sketch's before it by the constraints
+    // Silico names.
+    let worse_as_named = |a: &Diagnosis| {
+        let (redundant, conflicting) = (
+            new(&a.redundant, &b.redundant),
+            new(&a.conflicting, &b.conflicting),
+        );
+        let named: BTreeSet<String> = match a.code {
+            -2 if conflicting.is_empty() => names(redundant),
+            -3 if !conflicting.is_empty() => names(redundant)
+                .union(&names(conflicting))
+                .cloned()
+                .collect(),
+            _ => return false,
+        };
+        new(&a.malformed, &b.malformed).is_empty()
+            && !r.elements.is_empty()
+            && r.elements.iter().all(|id| named.contains(id))
+    };
+    worse_as_named(&fc.after)
+        && fc
+            .placed
+            .as_ref()
+            .is_none_or(|placed| worse_as_named(&placed.solve))
 }
 
 /// Why Silico's merge, made, is the note's where FreeCAD's Coincident command rolls it back
@@ -3509,6 +3631,65 @@ enum Unreproducible {
     /// reference dimension isn't a constraint, so Silico's drag rightly ignores it (Worker 1,
     /// #259): the difference is FreeCAD's.
     Drag(String),
+    /// A line's drag FreeCAD takes to one of two frames by its process's state
+    /// ([`FRAME_VARIES`]), where Silico's whole frame is the one recorded ([`frame_pinned`]:
+    /// every point at both coordinates): no place or radius before the solve is compared, and after it only points neither solve moved;
+    /// the constraints, the degrees of freedom, the diagnostics, and the outcome in full.
+    Frame(String),
+}
+
+/// A line's extend whose drag FreeCAD 1.1.3 takes to one of two frames by its process's state,
+/// not by the case, and Silico's frame, the other of them: every point its drag moved, by ID,
+/// at both coordinates, as Silico's edited sketch has it before the solve.
+struct FrameVaries {
+    case: &'static str,
+    moved: &'static [(&'static str, [f64; 2])],
+}
+
+/// The extends whose drag FreeCAD 1.1.3 takes to one of two frames run to run. `extend_146_424`
+/// (#328, investigated 2026-11-16): the drag passes through the tail line's flip, and FreeCAD
+/// orders its unknowns by memory address (docs/ports/sketcher.md:51), which picks the solution
+/// it lands in, p0000012 at x 36.259989762 with the tangent arc a0000017's radius 4.877007391, or
+/// at x 35.873736898 with radius 3.947421693, switching with unrelated state (sketches opened
+/// before, constraints renamed, a centre's y one ulp off; its smallest reproduction is n0000005
+/// horizontal, n0000013 parallel, and the tangent arc). FreeCAD gave the first in the night's
+/// sweep and in runs alone, and the second in whole sweeps (2026-11-16, the CI VM). Silico's is
+/// the second, every run, pinned here whole ([`frame_pinned`]): the seven points its drag moved
+/// (the extend's `modified`), each coordinate within [`DRAG_BAND`] of the value recorded from
+/// its edited sketch, so a change of Silico's frame is compared.
+const FRAME_VARIES: &[FrameVaries] = &[FrameVaries {
+    case: "extend_146_424",
+    moved: &[
+        ("p0000001", [-19.89140000000732, -0.6069999999994561]),
+        ("p0000002", [54.388, -0.607]),
+        ("p0000003", [54.38800000003654, 24.471]),
+        ("p0000012", [35.87373689791268, -0.6069999999994561]),
+        ("p0000015", [35.87373689791268, -4.554421692847473]),
+        ("p0000016", [37.09852620417462, -0.801818706061701]),
+        ("p0000030", [17.24830000001461, -0.6069999999994561]),
+    ],
+}];
+
+/// Whether Silico's edited sketch, before the solve, is the frame `f` records: the same points
+/// as the case's drawing, each moved one within [`DRAG_BAND`] of its recorded place in both
+/// coordinates, and every other within it of where the case drew it. An arc's radius is its
+/// centre's distance to its start, both points, so it's pinned with them. A circle's radius is
+/// its own, and no entry's case has a circle (the entries' test holds them to that), so none is
+/// pinned.
+fn frame_pinned(p: &Prepared, s: &SilicoEdited, f: &FrameVaries) -> bool {
+    let (drawn, edited) = (Shape::of(&p.sketch), Shape::of(&s.edited.sketch));
+    let within = |a: [f64; 2], b: [f64; 2]| {
+        (a[0] - b[0]).abs() <= DRAG_BAND && (a[1] - b[1]).abs() <= DRAG_BAND
+    };
+    let same_points = drawn.points.keys().eq(edited.points.keys());
+    let placed =
+        edited.points.iter().all(
+            |(id, at)| match f.moved.iter().find(|(moved, _)| moved == id) {
+                Some((_, recorded)) => within(*at, *recorded),
+                None => drawn.points.get(id).is_some_and(|d| within(*at, *d)),
+            },
+        );
+    same_points && placed
 }
 
 /// How far apart the two sides' points a line's drag moved may be, in mm, before the solve
@@ -3524,9 +3705,16 @@ const DRAG_BAND: f64 = 5e-7;
 /// The extend cases at an arc's shared end whose FreeCAD solve after setRange fails (-1) in
 /// some runs and not in others, each measured in 10 runs (#se-a-line-s-end-goes-through):
 /// `extend_32_115` failed 5, the seed-43 sweep's `extend_43_274` 5, and the seed-42 sweep's
-/// `extend_42_165` 5. The case file's (`extend_arc_start_with_tangent`, `extend_arc_order_probe`)
-/// and the seed-32 sweep's 22 others solved in all 10, so a failure there is a difference.
-const SOLVE_VARIES: &[&str] = &["extend_32_115", "extend_43_274", "extend_42_165"];
+/// `extend_42_165` 5; and the seed-140 sweep's `extend_140_36`, which failed in 1 of 3 whole
+/// sweeps and solved in 13 of 13 runs alone. The case file's (`extend_arc_start_with_tangent`,
+/// `extend_arc_order_probe`) and the seed-32 sweep's 22 others solved in all 10, so a failure
+/// there is a difference.
+const SOLVE_VARIES: &[&str] = &[
+    "extend_32_115",
+    "extend_43_274",
+    "extend_42_165",
+    "extend_140_36",
+];
 
 /// The sweep's line extends whose solve, from the end written at the target in both
 /// (#se-extend-built), FreeCAD 1.1.3 settles otherwise run to run, the sketch's free places landing
@@ -3600,6 +3788,18 @@ fn freecad_unreproducible(p: &Prepared) -> Option<Unreproducible> {
     };
     let shape = Shape::of(&p.sketch);
     let member = shape.members.get(curve)?;
+    if let (Some(f), SilicoSide::Edited(s), "line") = (
+        FRAME_VARIES.iter().find(|f| f.case == p.name),
+        &p.silico,
+        member.kind,
+    ) {
+        return frame_pinned(p, s, f).then(|| {
+            Unreproducible::Frame(format!(
+                "harness limit: FreeCAD 1.1.3's drag of line {curve} lands on one of two frames by its process's state, not by the case, and Silico's is the other, each of the {} points it moved where FRAME_VARIES records it, so the places it settles aren't compared: none before the solve, and after it only points neither solve moved; the constraints, the degrees of freedom, the diagnostics, and the outcome in full",
+                f.moved.len()
+            ))
+        });
+    }
     match member.kind {
         "line" => reference_reaches(p, curve).then(|| {
             Unreproducible::Drag(format!(
@@ -4216,15 +4416,16 @@ impl Touched {
 }
 
 /// How Silico's edited sketch and FreeCAD's differ, both edited and solved, but for what
-/// `unsettled` leaves unsettled.
+/// `unsettled` leaves unsettled, each difference saying FreeCAD's side as `details` says.
 fn compare_edited(
     p: &Prepared,
     s: &SilicoEdited,
     fc: &FreecadEdited,
     unsettled: &Unsettled<'_>,
+    details: Details,
     excused: &mut Vec<String>,
     modulo: &mut Vec<String>,
-) -> Vec<String> {
+) -> Compared {
     let Unsettled {
         merged,
         band,
@@ -4323,7 +4524,7 @@ fn compare_edited(
             "Silico's edit made {} new curves ({}), FreeCAD's {}",
             new_ours.len(),
             new_ours.join(", "),
-            new_fc.len()
+            details.say(|| new_fc.len().to_string())
         ));
     }
     let fc_member = |g: i32| -> Option<String> {
@@ -4362,8 +4563,9 @@ fn compare_edited(
         }
         let Some(m) = by_id.get(&g.id) else {
             how.push(format!(
-                "FreeCAD has a {} ({:?}) that Silico hasn't",
-                g.kind, g.points
+                "FreeCAD has a {} ({}) that Silico hasn't",
+                details.say(|| g.kind.clone()),
+                details.say(|| format!("{:?}", g.points))
             ));
             continue;
         };
@@ -4374,7 +4576,8 @@ fn compare_edited(
                 if member.kind != g.kind {
                     how.push(format!(
                         "Silico's {m} is a {}, FreeCAD's a {}",
-                        member.kind, g.kind
+                        member.kind,
+                        details.say(|| g.kind.clone())
                     ));
                 }
                 let piece = split_circle
@@ -4388,15 +4591,16 @@ fn compare_edited(
                     how.push(format!(
                         "Silico's {m} is {}construction, FreeCAD's {}",
                         if member.construction { "" } else { "not " },
-                        if g.construction { "is" } else { "isn't" }
+                        details.say(|| if g.construction { "is" } else { "isn't" }.to_owned())
                     ));
                 }
             }
             // A lone point of FreeCAD's that Silico's curves now use (a split at it).
             None if g.kind == "point" && after.points.contains_key(m) => {}
             None => how.push(format!(
-                "FreeCAD keeps {} {m} (geometry {i}), which Silico's edit removed",
-                g.kind
+                "FreeCAD keeps {} {m} (geometry {}), which Silico's edit removed",
+                details.say(|| g.kind.clone()),
+                details.say(|| i.to_string())
             )),
         }
     }
@@ -4443,7 +4647,7 @@ fn compare_edited(
             let places: Vec<String> = group.iter().map(|&pl| describe(pl)).collect();
             how.push(format!(
                 "FreeCAD joins {}, which are Silico's points {} apart ({NOTE}#se-share-a-point)",
-                places.join(", "),
+                details.say(|| places.join(", ")),
                 points.into_iter().collect::<Vec<_>>().join(", ")
             ));
         }
@@ -4466,7 +4670,7 @@ fn compare_edited(
                 .collect();
             how.push(format!(
                 "Silico's point {point} is one point, which FreeCAD has apart: {} ({NOTE}#se-share-a-point)",
-                split.join(" ")
+                details.say(|| split.join(" "))
             ));
         }
     }
@@ -4576,9 +4780,9 @@ fn compare_edited(
                         && libm::hypot(at[0] - drawn[0], at[1] - drawn[1]) > sketch::TOLERANCE
                     {
                         how.push(format!(
-                            "after the edit, before the solve, FreeCAD's {} is at {:?}, not where the case drew it, {:?}, as its setRange leaves the neighbour's end (#se-a-line-s-end-goes-through)",
-                            describe((gi, pos)),
-                            shown(*at),
+                            "after the edit, before the solve, FreeCAD's {} is at {}, not where the case drew it, {:?}, as its setRange leaves the neighbour's end (#se-a-line-s-end-goes-through)",
+                            details.say(|| describe((gi, pos))),
+                            details.say(|| format!("{:?}", shown(*at))),
                             shown(*drawn)
                         ));
                     }
@@ -4589,10 +4793,10 @@ fn compare_edited(
                         || (ours[1] - at[1]).abs() > within(&point))
                 {
                     how.push(format!(
-                        "after the edit, before the solve, Silico's point {point} is at {:?}, FreeCAD's {} at {:?}",
+                        "after the edit, before the solve, Silico's point {point} is at {:?}, FreeCAD's {} at {}",
                         shown(*ours),
-                        describe((gi, pos)),
-                        shown(*at)
+                        details.say(|| describe((gi, pos))),
+                        details.say(|| format!("{:?}", shown(*at)))
                     ));
                 }
             }
@@ -4601,7 +4805,8 @@ fn compare_edited(
                 && (ours - r).abs() > round_within(&m)
             {
                 how.push(format!(
-                    "after the edit, before the solve, Silico's {m} has radius {ours}, FreeCAD's {r}"
+                    "after the edit, before the solve, Silico's {m} has radius {ours}, FreeCAD's {}",
+                    details.say(|| r.to_string())
                 ));
             }
         }
@@ -4690,7 +4895,7 @@ fn compare_edited(
                 how.push(format!(
                     "{k} is {v} in Silico's ({}), {} in FreeCAD's",
                     oc.id.as_deref().unwrap_or("?"),
-                    tc.value
+                    details.say(|| tc.value.to_string())
                 ));
             }
         }
@@ -4707,7 +4912,10 @@ fn compare_edited(
             } else {
                 format!(" (from {name})")
             };
-            how.push(format!("FreeCAD has {k}{named}, Silico hasn't"));
+            how.push(format!(
+                "FreeCAD has {}, Silico hasn't",
+                details.say(|| format!("{k}{named}"))
+            ));
         }
     }
     // The solve, by the sketch oracle's rules, FreeCAD's results in the model's terms.
@@ -4736,7 +4944,9 @@ fn compare_edited(
             {
                 let k = key(&c.kind, &c.refs, c.driving, &fc_name_place);
                 how.push(format!(
-                    "FreeCAD finds its {k}, which Silico hasn't, {name}"
+                    "FreeCAD finds its {}, which Silico hasn't, {}",
+                    details.say(|| k.to_string()),
+                    details.say(|| name.to_owned())
                 ));
             }
         }
@@ -4818,12 +5028,9 @@ fn compare_edited(
         code: if flaky.is_some() { 0 } else { theirs.code },
         ..theirs
     };
-    how.extend(sketch::compare_outcomes(
-        model,
-        &ours,
-        &theirs,
-        !unsettled.any(),
-    ));
+    let (outcome, mut solved) =
+        sketch::compare_outcomes_apart(model, &ours, &theirs, !unsettled.any(), details);
+    how.extend(outcome);
     // The points the drag moved, and the radii of the curves they're on, after the solve,
     // within its band; none where FreeCAD's solve settles them otherwise run to run.
     if let (Ok(solution), 0, false) = (&s.ours.outcome, theirs.code, settles) {
@@ -4833,19 +5040,19 @@ fn compare_edited(
             };
             let (Some(ours), Some(at)) = (solution.points.get(&id), theirs.points.get(point))
             else {
-                how.push(format!(
-                    "after the solve, Silico's point {point}, which the drag moved, has no place on one side: Silico's {:?}, FreeCAD's {:?}",
+                solved.push(format!(
+                    "after the solve, Silico's point {point}, which the drag moved, has no place on one side: Silico's {:?}, FreeCAD's {}",
                     solution.points.get(&id).map(|q| [q[0].mm(), q[1].mm()]),
-                    theirs.points.get(point)
+                    details.say(|| format!("{:?}", theirs.points.get(point)))
                 ));
                 continue;
             };
             let ours = [ours[0].mm(), ours[1].mm()];
             if (ours[0] - at[0]).abs() > DRAG_BAND || (ours[1] - at[1]).abs() > DRAG_BAND {
-                how.push(format!(
-                    "after the solve, Silico's point {point}, which the drag moved, is at {:?}, FreeCAD's at {:?}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
+                solved.push(format!(
+                    "after the solve, Silico's point {point}, which the drag moved, is at {:?}, FreeCAD's at {}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
                     shown(ours),
-                    shown(*at)
+                    details.say(|| format!("{:?}", shown(*at)))
                 ));
             }
         }
@@ -4858,17 +5065,18 @@ fn compare_edited(
                 continue;
             };
             let (Some(ours), Some(r)) = (solution.radii.get(&id), theirs.radii.get(round)) else {
-                how.push(format!(
-                    "after the solve, Silico's {round}, whose points the drag moved, has no radius on one side: Silico's {:?}, FreeCAD's {:?}",
+                solved.push(format!(
+                    "after the solve, Silico's {round}, whose points the drag moved, has no radius on one side: Silico's {:?}, FreeCAD's {}",
                     solution.radii.get(&id).map(|r| r.mm()),
-                    theirs.radii.get(round)
+                    details.say(|| format!("{:?}", theirs.radii.get(round)))
                 ));
                 continue;
             };
             if (ours.mm() - r).abs() > DRAG_BAND {
-                how.push(format!(
-                    "after the solve, Silico's {round}, whose points the drag moved, has radius {}, FreeCAD's {r}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
-                    ours.mm()
+                solved.push(format!(
+                    "after the solve, Silico's {round}, whose points the drag moved, has radius {}, FreeCAD's {}, farther apart than the drag's band ({DRAG_BAND:e} mm)",
+                    ours.mm(),
+                    details.say(|| r.to_string())
                 ));
             }
         }
@@ -4877,6 +5085,8 @@ fn compare_edited(
     // one (#se-the-first-point-the-request-names); what the solves move from different starts, or
     // settle otherwise each run, isn't compared by place.
     let none_merged = BTreeSet::new();
+    let mut unmoved = BTreeMap::new();
+    let mut unmoved_lines = BTreeMap::new();
     if let (true, Ok(solution), 0) = (unsettled.any(), &s.ours.outcome, theirs.code) {
         let merged = merged.unwrap_or(&none_merged);
         let near = |a: [f64; 2], b: [f64; 2]| {
@@ -4907,10 +5117,6 @@ fn compare_edited(
             let Some(theirs) = places.get(id.as_str()) else {
                 continue;
             };
-            let moved = !near(ours, *start) || theirs.iter().any(|(was, at)| !near(*was, *at));
-            if merged.contains(id.as_str()) || moved {
-                continue;
-            }
             // Each solve left it within 1e-8 mm of its start, so the two are within twice that
             // of each other where the starts are one (`edit_52_349`: 8e-9 one way and 9e-9 the
             // other); farther, the edit started them apart.
@@ -4918,15 +5124,46 @@ fn compare_edited(
                 (a[0] - b[0]).abs() <= 2.0 * sketch::TOLERANCE
                     && (a[1] - b[1]).abs() <= 2.0 * sketch::TOLERANCE
             };
+            if merged.contains(id.as_str()) || !near(ours, *start) {
+                continue;
+            }
+            // A point Silico's solve didn't move: whether FreeCAD's places of it are Silico's,
+            // whether or not FreeCAD's solve moved it, for the sweeps' reruns.
+            let agrees = theirs.iter().all(|(_, at)| alike(ours, *at));
+            unmoved.insert(id.as_str().to_owned(), agrees);
+            if theirs.iter().any(|(was, at)| !near(*was, *at)) {
+                continue;
+            }
             if let Some((_, at)) = theirs.iter().find(|(_, at)| !alike(ours, *at)) {
-                how.push(format!(
-                    "after the solve, Silico's point {id}, which neither solve moved, is at {ours:?}, FreeCAD's at {at:?}"
-                ));
+                let line = format!(
+                    "after the solve, Silico's point {id}, which neither solve moved, is at {ours:?}, FreeCAD's at {}",
+                    details.say(|| format!("{at:?}"))
+                );
+                unmoved_lines.insert(line.clone(), id.as_str().to_owned());
+                solved.push(line);
             }
         }
     }
-    how
+    Compared {
+        how,
+        solved,
+        unmoved,
+        unmoved_lines,
+    }
 }
+
+/// How Silico's edited sketch and FreeCAD's differ: in all but where the solves put things,
+/// and in that, which only two solves that both succeeded give; and, in an unsettled edit,
+/// each point Silico's solve didn't move ([`Verdict::unmoved`], [`Verdict::unmoved_lines`]).
+struct Compared {
+    how: Vec<String>,
+    solved: Vec<String>,
+    unmoved: BTreeMap<String, bool>,
+    unmoved_lines: BTreeMap<String, String>,
+}
+
+#[path = "sketch_edit_rerun.rs"]
+pub mod rerun;
 
 #[cfg(test)]
 #[path = "sketch_edit_tests.rs"]

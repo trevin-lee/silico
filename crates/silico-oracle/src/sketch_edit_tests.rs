@@ -1852,3 +1852,137 @@ fn an_anchor_is_cited_with_the_line_it_stands_on() {
         format!("#se-merge-built (line {line}), #se-extend-built (line {other}), #{missing}")
     );
 }
+
+#[test]
+fn every_case_measured_to_vary_in_its_solve_is_still_a_generated_arc_extend_silico_makes() {
+    // SOLVE_VARIES excuses FreeCAD's failed solve only at an extended arc's shared end where
+    // Silico's solved: each entry has to name a case a sweep still makes, and of that kind, or
+    // it excuses nothing and is stale (a generator change renumbering them, say).
+    let mut worker = silico_core::sketch::SketchWorker::start().unwrap();
+    for name in SOLVE_VARIES {
+        let mut parts = name.split('_');
+        let (Some("extend"), Some(seed), Some(n), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            panic!("{name}: not a generated extend's name");
+        };
+        let (seed, n): (u64, usize) = (seed.parse().unwrap(), n.parse().unwrap());
+        let mut cases = crate::generate::sketch_extend_cases(seed, n + 1).unwrap();
+        let case = cases.swap_remove(n);
+        assert_eq!(case.name, *name);
+        let p = prepare(&case, &mut worker).unwrap();
+        assert!(p.problems.is_empty(), "{name}: {:?}", p.problems);
+        assert!(shared_arc_end(&p).is_some(), "{name}: {:?}", p.edit);
+        assert!(
+            matches!(&p.silico, SilicoSide::Edited(s) if s.ours.outcome.is_ok()),
+            "{name}: {:?}",
+            p.silico
+        );
+    }
+}
+
+#[test]
+fn an_arc_extends_failed_or_unbuildable_solve_is_the_rule_only_at_an_end_another_curve_shares() {
+    // The arc a0000004's end p0000002 alone, and shared with the line n0000005 to (5, 5): its
+    // extend's solve refused (by hand), by each code.
+    let lone = arc_sketch();
+    let (s, ..) = arc_30_120();
+    let (p1, p2, p3) = (s.points["p1"], s.points["p2"], s.points["p3"]);
+    let shared = sketch_of(
+        &[
+            ("p0000001", p1[0], p1[1]),
+            ("p0000002", p2[0], p2[1]),
+            ("p0000003", p3[0], p3[1]),
+            ("p0000006", 5.0, 5.0),
+        ],
+        &[("n0000005", "p0000002", "p0000006")],
+        &[],
+        &[("a0000004", "p0000003", "p0000001", "p0000002")],
+        &[],
+    );
+    let refused = |sketch: &Sketch, code: silico_core::ErrorCode| {
+        let edit = extend("a0000004", ExtendEnd::End, ExtendBy::Angle(10.0));
+        let mut worker = silico_core::sketch::SketchWorker::start().unwrap();
+        let Ok(Ok(edited)) = silico_edit(sketch, &edit, &mut worker) else {
+            panic!("not extended");
+        };
+        let translation = Translation::new(&edited.sketch).unwrap();
+        let model = sketch::freecad_sketch(&edited.sketch, &translation).unwrap();
+        let ours = Ours {
+            dofs: 0,
+            conflicting: Vec::new(),
+            redundant: Vec::new(),
+            partially_redundant: Vec::new(),
+            outcome: Err(silico_core::Error::new(code, "by hand")),
+        };
+        rule(&prepared_with(
+            sketch.clone(),
+            edit,
+            SilicoSide::Edited(Box::new(SilicoEdited {
+                edited,
+                model,
+                ours,
+            })),
+        ))
+    };
+    for code in [
+        silico_core::ErrorCode::SolveFailed,
+        silico_core::ErrorCode::InvalidResult,
+    ] {
+        assert_eq!(refused(&lone, code), None, "{code:?}");
+        assert_eq!(
+            refused(&shared, code),
+            Some(Rule::ExtendSolveFails),
+            "{code:?}"
+        );
+    }
+    assert_eq!(
+        refused(&shared, silico_core::ErrorCode::OverConstrained),
+        None
+    );
+}
+
+#[test]
+fn every_frame_varies_entry_is_still_a_generated_line_extend_moving_what_it_records_and_no_circle()
+{
+    // FRAME_VARIES pins a frame by the points its drag moves alone: each entry has to name a
+    // case a sweep still makes, a line's extend Silico makes, whose drag moves exactly the points
+    // it records, and with no circle, whose radius frame_pinned doesn't hold (an entry with one
+    // fails here until the pin and a test of it come back).
+    let mut worker = silico_core::sketch::SketchWorker::start().unwrap();
+    for f in FRAME_VARIES {
+        let mut parts = f.case.split('_');
+        let (Some("extend"), Some(seed), Some(n), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            panic!("{}: not a generated extend's name", f.case);
+        };
+        let (seed, n): (u64, usize) = (seed.parse().unwrap(), n.parse().unwrap());
+        let mut cases = crate::generate::sketch_extend_cases(seed, n + 1).unwrap();
+        let case = cases.swap_remove(n);
+        assert_eq!(case.name, f.case);
+        let p = prepare(&case, &mut worker).unwrap();
+        assert!(p.problems.is_empty(), "{}: {:?}", f.case, p.problems);
+        assert!(
+            p.sketch.circles.is_empty(),
+            "{}: {:?}",
+            f.case,
+            p.sketch.circles
+        );
+        let Edit::Extend { curve, .. } = &p.edit else {
+            panic!("{}: {:?}", f.case, p.edit);
+        };
+        assert_eq!(
+            Shape::of(&p.sketch).members.get(curve).map(|m| m.kind),
+            Some("line")
+        );
+        let SilicoSide::Edited(s) = &p.silico else {
+            panic!("{}: {:?}", f.case, p.silico);
+        };
+        assert!(s.ours.outcome.is_ok(), "{}: {:?}", f.case, s.ours);
+        let modified: Vec<&str> = s.edited.modified.iter().map(ElementId::as_str).collect();
+        let recorded: Vec<&str> = f.moved.iter().map(|(id, _)| *id).collect();
+        assert_eq!(modified, recorded, "{}", f.case);
+        assert!(frame_pinned(&p, s, f), "{}", f.case);
+    }
+}

@@ -145,6 +145,151 @@ impl<'a> Links<'a> {
     }
 }
 
+/// Each solid's way down its consumers, indexed so the question [`lost`] asks of a stored
+/// name, whether its maker's way down to a feature's base passes a suppressed boolean that
+/// consumes it as its `tool`, is answered without walking the way (issue #306: a walk step by
+/// step is quadratic on a long chain).
+///
+/// Each solid has at most one consumer ([`Links`]), after it, so the consumer links make a
+/// forest, a consumer the parent of what it consumes, and a solid's way down is its path to
+/// its root. Two things answer the question:
+///
+/// - each place's span in a preorder of the forest (`enter`, `size`): a base lies on a maker's
+///   way iff the maker's place in the order lies in the base's span;
+/// - a union-find along the ways (`skip`): each place whose consumer passes its elements on,
+///   decided so, points further down its way, so the first place from a maker that isn't
+///   known to pass them on (one a suppressed boolean consumes as its tool, one undecided, or
+///   a root) is found in near-constant time.
+///
+/// Whether a place passes its elements on is told as its consumer's suppression is settled
+/// ([`settle`](Self::settle)): in timeline order, as [`dependents`] settles each feature, or
+/// all at once and then each unsuppression, as [`unsuppress`] does.
+pub(crate) struct ConsumerForest {
+    /// Each place's first position in the preorder.
+    enter: Vec<usize>,
+    /// How many places each place's subtree holds, itself among them: its span's length.
+    size: Vec<usize>,
+    /// Each place's step down its way: itself where it may drop its elements there or is
+    /// undecided, or else a place further down, each place between passing them on.
+    skip: Vec<usize>,
+}
+
+impl ConsumerForest {
+    /// The forest `links` gives, no place's passing decided.
+    pub(crate) fn of(links: &Links) -> Self {
+        let n = links.consumers.len();
+        // Each consumer comes after what it consumes, so a subtree's places all come before
+        // its root: sizes summed up in timeline order, and spans handed down in reverse.
+        let mut size = vec![1_usize; n];
+        for at in 0..n {
+            if let Some((parent, _)) = links.consumer(at)
+                && let Some(&own) = size.get(at)
+                && let Some(slot) = size.get_mut(parent)
+            {
+                *slot += own;
+            }
+        }
+        let mut enter = vec![0_usize; n];
+        // The next free position in each place's span, past itself.
+        let mut free = vec![0_usize; n];
+        let mut roots = 0;
+        for (at, &own) in size.iter().enumerate().rev() {
+            // Its parent's next free position, or the roots' for a root.
+            let next = match links.consumer(at) {
+                Some((parent, _)) => free.get_mut(parent),
+                None => Some(&mut roots),
+            };
+            if let Some(next) = next {
+                let start = *next;
+                *next += own;
+                if let Some(slot) = enter.get_mut(at) {
+                    *slot = start;
+                }
+                if let Some(slot) = free.get_mut(at) {
+                    *slot = start + 1;
+                }
+            }
+        }
+        ConsumerForest {
+            enter,
+            size,
+            skip: (0..n).collect(),
+        }
+    }
+
+    /// The forest `links` gives, each place's passing decided by whether its consumer is
+    /// suppressed.
+    pub(crate) fn settled(
+        features: &[Feature],
+        links: &Links,
+        suppressed: &dyn Fn(usize) -> bool,
+    ) -> Self {
+        let mut forest = ConsumerForest::of(links);
+        for at in 0..features.len() {
+            forest.settle(features, links, at, suppressed(at));
+        }
+        forest
+    }
+
+    /// The feature at `at` is settled as `suppressed` says: each solid it consumes (as its
+    /// first consumer) passes its elements on down its way, but the one it consumes as its
+    /// `tool` if it's suppressed, which passes only its base through. A place told it passes
+    /// them on stays so, so an unsuppression is told by settling again.
+    pub(crate) fn settle(
+        &mut self,
+        features: &[Feature],
+        links: &Links,
+        at: usize,
+        suppressed: bool,
+    ) {
+        let Some(feature) = features.get(at) else {
+            return;
+        };
+        for (field, input) in feature.operation.inputs() {
+            if suppressed && field == "tool" {
+                continue;
+            }
+            // Its consumer is `at`, so it comes before `at`.
+            if let Some(p) = links.place(input)
+                && links.consumer(p) == Some((at, field))
+                && let Some(slot) = self.skip.get_mut(p)
+                && *slot == p
+            {
+                *slot = at;
+            }
+        }
+    }
+
+    /// Whether `base` lies on the way down from `maker`, past `maker` itself: a maker that is
+    /// the base itself loses nothing on the way, as [`lost`] would find of it too (its first
+    /// stop is itself, the base, or past it).
+    fn on_way(&self, maker: usize, base: usize) -> bool {
+        match (
+            self.enter.get(maker),
+            self.enter.get(base),
+            self.size.get(base),
+        ) {
+            (Some(&m), Some(&b), Some(&size)) => b < m && m < b + size,
+            _ => false,
+        }
+    }
+
+    /// The first place from `at` down its way not known to pass its elements on, the paths
+    /// it went halved.
+    fn stop(&mut self, mut at: usize) -> usize {
+        while let Some(&next) = self.skip.get(at)
+            && next != at
+        {
+            let further = self.skip.get(next).copied().unwrap_or(next);
+            if let Some(slot) = self.skip.get_mut(at) {
+                *slot = further;
+            }
+            at = further;
+        }
+        at
+    }
+}
+
 /// Whether any of `features` that `suppressed` says is suppressed consumes a `tool`: only
 /// then can a stored name be lost to a suppression ([`Cause::Lost`]), so only then is it
 /// looked for.
@@ -204,17 +349,18 @@ pub(crate) fn needs(operation: &Operation, field: &str) -> bool {
 /// The suppressed feature the feature at `at` is a dependent of, if it's one, by its place
 /// and why, the first in the order the feature's fields come: its sketch, its stored names
 /// (a suppressed maker, then a maker lost to a suppressed boolean, looked for only where
-/// `walk` says one may be: [`any_tool_suppressed`]), its inputs. `suppressed` says which
-/// features are suppressed, by place; `standing` is theirs ([`standing`]); `links` finds a
-/// feature by ID and a solid's consumer. For a chain's cause, the place is the input's, which
-/// names it; for a lost name, the boolean's.
+/// `forest` is given, as it is where one may be: [`any_tool_suppressed`]), its inputs.
+/// `suppressed` says which features are suppressed, by place; `standing` is theirs
+/// ([`standing`]); `links` finds a feature by ID and a solid's consumer; `forest` knows each
+/// feature before `at` as settled. For a chain's cause, the place is the input's, which names
+/// it; for a lost name, the boolean's.
 pub(crate) fn suppressed_parent(
     features: &[Feature],
     links: &Links,
     at: usize,
     suppressed: &dyn Fn(usize) -> bool,
     standing: &[Option<usize>],
-    walk: bool,
+    forest: Option<&mut ConsumerForest>,
 ) -> Option<(usize, Cause)> {
     let feature = features.get(at)?;
     let before = |id: &FeatureId| links.place(id).filter(|&p| p < at);
@@ -229,7 +375,9 @@ pub(crate) fn suppressed_parent(
             return Some((maker, Cause::Names(i)));
         }
     }
-    if walk && let Some(lost) = lost(features, links, at, &made, suppressed) {
+    if let Some(forest) = forest
+        && let Some(lost) = lost(features, links, at, &made, forest)
+    {
         return Some(lost);
     }
     for (field, input) in feature.operation.inputs() {
@@ -253,13 +401,14 @@ pub(crate) fn suppressed_parent(
 /// boolean nearest the maker, and the cause. A maker whose consumers never reach the base
 /// was out of the base's lineage before any suppression (open item 2b): the rebuild's to
 /// report, not suppression's. A sketch's elements are named only in what a feature made of
-/// them, so its maker is a solid's too, which this walk takes.
+/// them, so its maker is a solid's too, which this takes. `forest` answers for each way
+/// ([`ConsumerForest`]), every feature down to the base settled.
 fn lost(
     features: &[Feature],
     links: &Links,
     at: usize,
     made: &[(NameField, usize)],
-    suppressed: &dyn Fn(usize) -> bool,
+    forest: &mut ConsumerForest,
 ) -> Option<(usize, Cause)> {
     let base = features
         .get(at)
@@ -267,17 +416,19 @@ fn lost(
         .and_then(|b| links.place(b))
         .filter(|&b| b < at)?;
     made.iter().find_map(|&(field, maker)| {
-        let mut step = maker;
-        let mut through = None;
-        while step != base {
-            // Each consumer comes after what it consumes, so the walk ends.
-            let (next, field) = links.consumer(step).filter(|&(n, _)| n <= base)?;
-            if through.is_none() && field == "tool" && suppressed(next) {
-                through = Some(next);
-            }
-            step = next;
+        if !forest.on_way(maker, base) {
+            return None;
         }
-        through.map(|boolean| (boolean, Cause::Lost { field, maker }))
+        // The first place from the maker that doesn't pass its elements on: with the base on
+        // the way, one before it has a consumer at the base or before, settled, so it's
+        // consumed as a suppressed boolean's tool, and that boolean is the one.
+        let stop = forest.stop(maker);
+        if stop >= base {
+            return None;
+        }
+        links
+            .consumer(stop)
+            .map(|(boolean, _)| (boolean, Cause::Lost { field, maker }))
     })
 }
 
@@ -330,14 +481,21 @@ pub(crate) fn dependents(
     mut flags: Vec<bool>,
 ) -> (Vec<bool>, Vec<Dependent>) {
     let mut walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
+    let mut forest = ConsumerForest::of(links);
     let mut origins: Vec<usize> = (0..features.len()).collect();
     let mut standing: Vec<Option<usize>> = Vec::with_capacity(features.len());
     let mut found = Vec::new();
     for (i, feature) in features.iter().enumerate() {
         let suppressed = |p: usize| flags.get(p).copied().unwrap_or(false);
         if !suppressed(i)
-            && let Some((parent, cause)) =
-                suppressed_parent(features, links, i, &suppressed, &standing, walk)
+            && let Some((parent, cause)) = suppressed_parent(
+                features,
+                links,
+                i,
+                &suppressed,
+                &standing,
+                walk.then_some(&mut forest),
+            )
         {
             let origin = origins.get(parent).copied().unwrap_or(parent);
             if let Some(flag) = flags.get_mut(i) {
@@ -356,9 +514,11 @@ pub(crate) fn dependents(
         }
         // What stands for it, now that whether it's suppressed is settled: those before it
         // are.
+        let now = flags.get(i).copied().unwrap_or(false);
+        forest.settle(features, links, i, now);
         let stands = if !feature.operation.makes_solid() {
             None
-        } else if !flags.get(i).copied().unwrap_or(false) {
+        } else if !now {
             Some(i)
         } else {
             base_of(&feature.operation)
@@ -501,15 +661,39 @@ pub fn unsuppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Erro
     let document = checked.document();
     let features = &document.features;
     let at = checked.place(id).ok_or_else(|| no_feature(id))?;
-    let mut flags: Vec<bool> = features.iter().map(|f| f.suppressed).collect();
+    let flags: Vec<bool> = features.iter().map(|f| f.suppressed).collect();
     if !flags.get(at).copied().unwrap_or(false) {
         return Ok(unchanged(document));
     }
-    let place = |id: &FeatureId| checked.place(id);
+    let flags = unsuppressing(features, &|id| checked.place(id), at, flags);
+    let unsuppressed: Vec<FeatureId> = features
+        .iter()
+        .zip(&flags)
+        .filter(|(feature, now)| feature.suppressed && !**now)
+        .map(|(feature, _)| feature.id.clone())
+        .collect();
+    Ok(Suppression {
+        document: flagged(document, &flags),
+        suppressed: Vec::new(),
+        unsuppressed,
+    })
+}
+
+/// The suppression `flags` after unsuppressing the feature at `at` ([`unsuppress`]), which
+/// `flags` holds suppressed; `place` finds a feature's place by ID.
+fn unsuppressing(
+    features: &[Feature],
+    place: &dyn Fn(&FeatureId) -> Option<usize>,
+    at: usize,
+    mut flags: Vec<bool>,
+) -> Vec<bool> {
     let links = Links::of(features);
     // Unsuppressing only takes suppressions away, so a name can be lost only if one could
     // be before.
     let walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
+    let mut forest = ConsumerForest::settled(features, &links, &|p| {
+        flags.get(p).copied().unwrap_or(false)
+    });
     // Its sketch and its names' makers first, all the way up; then each name lost to a
     // suppressed boolean gives that boolean, and each chain left with no unsuppressed
     // feature its root, whose own needs are taken the same way, the feature looked at again
@@ -522,6 +706,7 @@ pub fn unsuppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Erro
                 Some(flag) if *flag => *flag = false,
                 _ => continue,
             }
+            forest.settle(features, &links, w, false);
             chains.insert(w);
             let Some(feature) = features.get(w) else {
                 continue;
@@ -543,8 +728,7 @@ pub fn unsuppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Erro
         if walk {
             let before = |id: &FeatureId| place(id).filter(|&p| p < w);
             let made = makers(features, feature, &before);
-            let suppressed = |p: usize| flags.get(p).copied().unwrap_or(false);
-            if let Some((boolean, _)) = lost(features, &links, w, &made, &suppressed) {
+            if let Some((boolean, _)) = lost(features, &links, w, &made, &mut forest) {
                 direct.push(boolean);
                 chains.insert(w);
                 continue;
@@ -557,22 +741,12 @@ pub fn unsuppress(checked: &Checked, id: &FeatureId) -> Result<Suppression, Erro
             let Some(start) = place(input).filter(|&p| p < w) else {
                 continue;
             };
-            if let Some(root) = suppressed_root(features, &flags, &place, start) {
+            if let Some(root) = suppressed_root(features, &flags, place, start) {
                 direct.push(root);
             }
         }
     }
-    let unsuppressed: Vec<FeatureId> = features
-        .iter()
-        .zip(&flags)
-        .filter(|(feature, now)| feature.suppressed && !**now)
-        .map(|(feature, _)| feature.id.clone())
-        .collect();
-    Ok(Suppression {
-        document: flagged(document, &flags),
-        suppressed: Vec::new(),
-        unsuppressed,
-    })
+    flags
 }
 
 /// The root of the chain up from `start` by `base` links, if every feature of it is
@@ -775,7 +949,7 @@ mod tests {
                 2,
                 &suppressed,
                 &st,
-                true
+                Some(&mut settled(&d.features, &suppressed)),
             ),
             Some((0, Cause::Names(NameField::Edge(0))))
         );
@@ -795,7 +969,7 @@ mod tests {
                 3,
                 &suppressed,
                 &st,
-                true
+                Some(&mut settled(&d.features, &suppressed)),
             ),
             Some((2, Cause::Chain("base")))
         );
@@ -811,9 +985,410 @@ mod tests {
                 3,
                 &suppressed,
                 &st,
-                true
+                Some(&mut settled(&back.features, &suppressed)),
             ),
             None
+        );
+    }
+
+    /// The consumer forest of `features` with each settled as `suppressed` says.
+    fn settled(features: &[Feature], suppressed: &dyn Fn(usize) -> bool) -> ConsumerForest {
+        ConsumerForest::settled(features, &Links::of(features), suppressed)
+    }
+
+    // -------------------------------------------------------------------------------------
+    // The walk #304 made, step by step down each maker's consumers, kept as the reference the
+    // consumer forest is held to (issue #306): `lost`, `suppressed_parent`, `dependents`, and
+    // unsuppress's loop as they were before the consumer forest, word for word but for their names.
+
+    fn reference_lost(
+        features: &[Feature],
+        links: &Links,
+        at: usize,
+        made: &[(NameField, usize)],
+        suppressed: &dyn Fn(usize) -> bool,
+    ) -> Option<(usize, Cause)> {
+        let base = features
+            .get(at)
+            .and_then(|f| base_of(&f.operation))
+            .and_then(|b| links.place(b))
+            .filter(|&b| b < at)?;
+        made.iter().find_map(|&(field, maker)| {
+            let mut step = maker;
+            let mut through = None;
+            while step != base {
+                let (next, field) = links.consumer(step).filter(|&(n, _)| n <= base)?;
+                if through.is_none() && field == "tool" && suppressed(next) {
+                    through = Some(next);
+                }
+                step = next;
+            }
+            through.map(|boolean| (boolean, Cause::Lost { field, maker }))
+        })
+    }
+
+    fn reference_parent(
+        features: &[Feature],
+        links: &Links,
+        at: usize,
+        suppressed: &dyn Fn(usize) -> bool,
+        standing: &[Option<usize>],
+        walk: bool,
+    ) -> Option<(usize, Cause)> {
+        let feature = features.get(at)?;
+        let before = |id: &FeatureId| links.place(id).filter(|&p| p < at);
+        if let Some(sketch) = feature.operation.sketch().and_then(before)
+            && suppressed(sketch)
+        {
+            return Some((sketch, Cause::Sketch));
+        }
+        let made = makers(features, feature, &before);
+        for &(i, maker) in &made {
+            if suppressed(maker) {
+                return Some((maker, Cause::Names(i)));
+            }
+        }
+        if walk && let Some(lost) = reference_lost(features, links, at, &made, suppressed) {
+            return Some(lost);
+        }
+        for (field, input) in feature.operation.inputs() {
+            if !needs(&feature.operation, field) {
+                continue;
+            }
+            if let Some(p) = before(input)
+                && suppressed(p)
+                && standing.get(p).copied().flatten().is_none()
+            {
+                return Some((p, Cause::Chain(field)));
+            }
+        }
+        None
+    }
+
+    fn reference_dependents(
+        features: &[Feature],
+        links: &Links,
+        mut flags: Vec<bool>,
+    ) -> (Vec<bool>, Vec<Dependent>) {
+        let mut walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
+        let mut origins: Vec<usize> = (0..features.len()).collect();
+        let mut standing: Vec<Option<usize>> = Vec::with_capacity(features.len());
+        let mut found = Vec::new();
+        for (i, feature) in features.iter().enumerate() {
+            let suppressed = |p: usize| flags.get(p).copied().unwrap_or(false);
+            if !suppressed(i)
+                && let Some((parent, cause)) =
+                    reference_parent(features, links, i, &suppressed, &standing, walk)
+            {
+                let origin = origins.get(parent).copied().unwrap_or(parent);
+                if let Some(flag) = flags.get_mut(i) {
+                    *flag = true;
+                }
+                if let Some(slot) = origins.get_mut(i) {
+                    *slot = origin;
+                }
+                walk |= has_tool(&feature.operation);
+                found.push(Dependent {
+                    at: i,
+                    parent,
+                    cause,
+                    origin,
+                });
+            }
+            let stands = if !feature.operation.makes_solid() {
+                None
+            } else if !flags.get(i).copied().unwrap_or(false) {
+                Some(i)
+            } else {
+                base_of(&feature.operation)
+                    .and_then(|b| links.place(b))
+                    .filter(|&b| b < i)
+                    .and_then(|b| standing.get(b).copied().flatten())
+            };
+            standing.push(stands);
+        }
+        (flags, found)
+    }
+
+    fn reference_unsuppressing(
+        features: &[Feature],
+        place: &dyn Fn(&FeatureId) -> Option<usize>,
+        at: usize,
+        mut flags: Vec<bool>,
+    ) -> (Vec<bool>, usize) {
+        let mut found = 0;
+        let links = Links::of(features);
+        let walk = any_tool_suppressed(features, &|p| flags.get(p).copied().unwrap_or(false));
+        let mut direct: Vec<usize> = vec![at];
+        let mut chains: BTreeSet<usize> = BTreeSet::new();
+        loop {
+            while let Some(w) = direct.pop() {
+                match flags.get_mut(w) {
+                    Some(flag) if *flag => *flag = false,
+                    _ => continue,
+                }
+                chains.insert(w);
+                let Some(feature) = features.get(w) else {
+                    continue;
+                };
+                let before = |id: &FeatureId| place(id).filter(|&p| p < w);
+                direct.extend(feature.operation.sketch().and_then(before));
+                direct.extend(
+                    makers(features, feature, &before)
+                        .into_iter()
+                        .map(|(_, p)| p),
+                );
+            }
+            let Some(w) = chains.pop_first() else {
+                break;
+            };
+            let Some(feature) = features.get(w) else {
+                continue;
+            };
+            if walk {
+                let before = |id: &FeatureId| place(id).filter(|&p| p < w);
+                let made = makers(features, feature, &before);
+                let suppressed = |p: usize| flags.get(p).copied().unwrap_or(false);
+                if let Some((boolean, _)) = reference_lost(features, &links, w, &made, &suppressed)
+                {
+                    found += 1;
+                    direct.push(boolean);
+                    chains.insert(w);
+                    continue;
+                }
+            }
+            for (field, input) in feature.operation.inputs() {
+                if !needs(&feature.operation, field) {
+                    continue;
+                }
+                let Some(start) = place(input).filter(|&p| p < w) else {
+                    continue;
+                };
+                if let Some(root) = suppressed_root(features, &flags, place, start) {
+                    direct.push(root);
+                }
+            }
+        }
+        (flags, found)
+    }
+
+    /// SplitMix64: the same documents every run.
+    struct Draws(u64);
+
+    impl Draws {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        }
+
+        /// A draw below `n` (which isn't 0).
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+    }
+
+    /// A random document of `n` features, each `f` and its place: boxes, chamfers, fuses,
+    /// cuts, and commons, each input any feature, before it or not (a reference forward, to
+    /// itself, a solid consumed twice, a boolean's base its tool, and a chamfer of a sketch
+    /// are the gate's to refuse, and the walks must agree on them all the same), each chamfer
+    /// naming one to three elements of features before it or not, by their own type words; a
+    /// sketch now and then; each suppressed at random.
+    fn random_document(draws: &mut Draws, n: usize) -> Document {
+        let word = |kind: usize| ["box", "chamfer", "fuse", "cut", "common", "sketch"][kind];
+        let kinds: Vec<usize> = (0..n)
+            .map(|i| match draws.below(10) {
+                _ if i == 0 => 0,
+                0..=2 => 0,
+                3..=5 => 1,
+                6 => 2 + draws.below(3),
+                7 | 8 => 2,
+                _ => 5,
+            })
+            .collect();
+        let id = |at: usize| format!("f{at:07}");
+        // Mostly a solid none consumes yet, so the consumers make long ways down; now and
+        // then any feature before, or any at all.
+        let mut open: Vec<usize> = Vec::new();
+        let input = |draws: &mut Draws, open: &mut Vec<usize>, at: usize| {
+            let p = if !open.is_empty() && draws.below(4) != 0 {
+                open.swap_remove(draws.below(open.len()))
+            } else if at == 0 || draws.below(6) == 0 {
+                draws.below(n)
+            } else {
+                draws.below(at)
+            };
+            open.retain(|&o| o != p);
+            p
+        };
+        let mut features = Vec::new();
+        for (at, &kind) in kinds.iter().enumerate() {
+            // Booleans suppressed as often as not, so ways pass suppressed tools.
+            let flag = if draws.below(if (2..=4).contains(&kind) { 2 } else { 4 }) == 0 {
+                r#""suppressed": true, "#
+            } else {
+                ""
+            };
+            let fid = id(at);
+            let text = match kind {
+                0 => format!(
+                    r#"{{"id": "{fid}", "type": "box", "v": 1, "name": "B", {flag}"position": [0, 0, 0], "length": 1, "width": 1, "height": 1}}"#
+                ),
+                1 => {
+                    let base = id(input(draws, &mut open, at));
+                    let names: Vec<String> = (0..1 + draws.below(3))
+                        .map(|_| {
+                            let of = if draws.below(8) == 0 {
+                                draws.below(n)
+                            } else {
+                                draws.below(at.max(1))
+                            };
+                            let element = if kinds[of] == 0 { "Edge1" } else { "Face1" };
+                            format!(r#""{}.{}.{element}""#, id(of), word(kinds[of]))
+                        })
+                        .collect();
+                    format!(
+                        r#"{{"id": "{fid}", "type": "chamfer", "v": 1, "name": "C", {flag}"base": "{base}", "edges": [{}], "size": {{"distance": 1}}}}"#,
+                        names.join(", ")
+                    )
+                }
+                2..=4 => {
+                    let base = id(input(draws, &mut open, at));
+                    let tool = id(input(draws, &mut open, at));
+                    format!(
+                        r#"{{"id": "{fid}", "type": "{}", "v": 1, "name": "O", {flag}"base": "{base}", "tool": "{tool}"}}"#,
+                        word(kind)
+                    )
+                }
+                _ => format!(
+                    r#"{{"id": "{fid}", "type": "sketch", "v": 1, "name": "S", {flag}"plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}}"#
+                ),
+            };
+            features.push(text);
+            if kind != 5 {
+                open.push(at);
+            }
+        }
+        let refs: Vec<&str> = features.iter().map(String::as_str).collect();
+        document(&refs)
+    }
+
+    #[test]
+    fn the_consumer_forest_judges_every_random_document_as_the_step_by_step_walk_does() {
+        // 20,000 random documents of 1 to 16 features: the gate's every dependent, with each
+        // feature as the text has it and with each feature suppressed in turn, and every
+        // unsuppression of each suppressed feature, as the reference walk gives them.
+        let mut draws = Draws(306);
+        let (mut lost, mut lost_unsuppressing, mut cases) = (0, 0, 0);
+        for _ in 0..20_000 {
+            let n = 1 + draws.below(16);
+            let d = random_document(&mut draws, n);
+            let features = &d.features;
+            let links = Links::of(features);
+            let text: Vec<bool> = features.iter().map(|f| f.suppressed).collect();
+            for also in std::iter::once(None).chain((0..n).map(Some)) {
+                let mut flags = text.clone();
+                if let Some(at) = also {
+                    flags[at] = true;
+                }
+                let ours = dependents(features, &links, flags.clone());
+                let theirs = reference_dependents(features, &links, flags);
+                assert_eq!(ours, theirs, "{:?}", crate::document::write(&d));
+                lost += ours
+                    .1
+                    .iter()
+                    .filter(|d| matches!(d.cause, Cause::Lost { .. }))
+                    .count();
+                cases += 1;
+            }
+            let place = by_id(&d);
+            for at in (0..n).filter(|&at| text[at]) {
+                let ours = unsuppressing(features, &place, at, text.clone());
+                let (theirs, found) = reference_unsuppressing(features, &place, at, text.clone());
+                assert_eq!(
+                    ours,
+                    theirs,
+                    "unsuppressing {at}: {:?}",
+                    crate::document::write(&d)
+                );
+                lost_unsuppressing += found;
+                cases += 1;
+            }
+        }
+        // The documents reach the walk: names lost to a suppressed boolean, found by both, and
+        // booleans an unsuppression brings back for a name the reference found lost.
+        // Fixed draws, so fixed counts: 7,978 and 561.
+        assert!(lost > 4_000, "{lost} lost names in {cases} cases");
+        assert!(
+            lost_unsuppressing > 250,
+            "{lost_unsuppressing} booleans brought back for a lost name, in {cases} cases"
+        );
+    }
+
+    /// Whether the consumer forest says, for the feature at `at` of `d` and every place as its one
+    /// name's maker, what the reference walk says with `suppressed`; how many names it found
+    /// lost.
+    fn every_way_agrees(
+        d: &Document,
+        links: &Links,
+        forest: &mut ConsumerForest,
+        suppressed: &dyn Fn(usize) -> bool,
+        at: usize,
+    ) -> usize {
+        let features = &d.features;
+        let mut lost_names = 0;
+        for maker in 0..features.len() {
+            let made = [(NameField::Edge(0), maker)];
+            let ours = lost(features, links, at, &made, forest);
+            let theirs = reference_lost(features, links, at, &made, suppressed);
+            assert_eq!(
+                ours,
+                theirs,
+                "at {at}, maker {maker}: {:?}",
+                crate::document::write(d)
+            );
+            lost_names += usize::from(ours.is_some());
+        }
+        lost_names
+    }
+
+    #[test]
+    fn the_consumer_forest_answers_every_way_as_the_step_by_step_walk_does() {
+        // 20,000 random documents of 1 to 16 features, each feature asked of every place as
+        // its name's maker (whether before it, after it, itself, or its base): settled in
+        // timeline order, each asked once those before it are, as the gate asks; and settled
+        // at once, then each suppressed feature unsuppressed in a random order, every feature
+        // asked after each, as an unsuppression asks.
+        let mut draws = Draws(1306);
+        let (mut in_order, mut unsuppressing) = (0, 0);
+        for _ in 0..20_000 {
+            let n = 1 + draws.below(16);
+            let d = random_document(&mut draws, n);
+            let features = &d.features;
+            let links = Links::of(features);
+            let mut flags: Vec<bool> = features.iter().map(|f| f.suppressed).collect();
+            let mut forest = ConsumerForest::of(&links);
+            for at in 0..n {
+                in_order += every_way_agrees(&d, &links, &mut forest, &|p| flags[p], at);
+                forest.settle(features, &links, at, flags[at]);
+            }
+            let mut forest = settled(features, &|p| flags[p]);
+            let mut order: Vec<usize> = (0..n).filter(|&p| flags[p]).collect();
+            while !order.is_empty() {
+                let at = order.swap_remove(draws.below(order.len()));
+                flags[at] = false;
+                forest.settle(features, &links, at, false);
+                for w in 0..n {
+                    unsuppressing += every_way_agrees(&d, &links, &mut forest, &|p| flags[p], w);
+                }
+            }
+        }
+        assert!(in_order > 10_000, "{in_order} lost in timeline order");
+        assert!(
+            unsuppressing > 10_000,
+            "{unsuppressing} lost while unsuppressing"
         );
     }
 }

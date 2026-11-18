@@ -17,7 +17,7 @@ use silico_core::command::{
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::{At, Node, Plain, Value};
-use silico_core::document::{ElementId, FeatureId, Reference};
+use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
 use silico_core::extend::End;
 use silico_core::kernel::Clients;
 use silico_core::sketch_tools::{AddToken, OfferChoice, OfferRequest, RelateEdit, RelationTool};
@@ -30,6 +30,7 @@ use crate::sketch::drag::{Drag, News};
 use crate::sketch::screen::Screen;
 use crate::sketch::tools::{Choice, ExtendFrom, Request};
 use crate::sketch::{self, Deletion, FrameInput, SketchMode, SketchReads};
+use crate::toast::Toast;
 
 /// What's said when an over-defining dimension's choice is refused as a `conflict`: the
 /// session moved on before it was sent, so it was overtaken, and isn't sent again (SD7: its
@@ -208,13 +209,16 @@ enum Queued {
     /// the file, then its Rebuild everything ([`Tab::reload`]). In the queue, so an edit
     /// asked after it is sent after the read, and a later revert drops it.
     Reload,
-    /// An undo or a redo; one asked in sketch mode carries the state it goes no further back
-    /// than (`floor`), and takes one step, never a dialog's group (a click's chain of edits
-    /// is one: a constraint tool's add and the remove after it, or Construction's fields).
+    /// An undo or a redo, and the tab's revision as it was asked (`asked_at`); one asked in
+    /// sketch mode carries the state it goes no further back than (`floor`; Create Sketch's,
+    /// the state its add came to, written in when that add answers, if it answers after),
+    /// and takes one step, never a dialog's group (a click's chain of edits is one: a
+    /// constraint tool's add and the remove after it, or Construction's fields).
     Step {
         undo: bool,
         floor: Option<Revision>,
         sketch: Option<u64>,
+        asked_at: Revision,
     },
     /// A feature dragged along the timeline (`move_feature`): `feature`, before `before`, or
     /// to the end for none.
@@ -343,11 +347,17 @@ enum Queued {
     /// at the state it ended at, so what sketch mode undid isn't redone past its edits. A
     /// dialog's carries its serial (`dialog`), so its Cancel lands what it unmade. An OK or a
     /// Finish carries what the one step it makes says (`words`: "Edit Pad", "Add Sketch1").
+    /// Create Sketch's Finish carries its sketch mode's serial (`created`) until it's judged
+    /// ([`Tab::judge_created`]): once everything asked before it has answered, the sketch its
+    /// add made is read at the revision they came to, and, holding no points, lines, circles,
+    /// or arcs, closed as a Cancel instead (the prototype's `finish`,
+    /// docs/design/m5-ui/js/sketch.js). None for every other close, and once judged.
     Closed {
         ok: bool,
         sketch: bool,
         dialog: Option<u64>,
         words: Option<Words>,
+        created: Option<u64>,
     },
     /// Restore (Fable's decision of 2026-11-04, section 2): the text of `revision`, the one
     /// a reload replaced, read (`text` with `revision`), then put back as an edit.
@@ -456,6 +466,44 @@ const CURVES_GONE: &str = "the curves selected are no longer in the sketch";
 /// Why a click (a constraint tool's, or Construction's) waiting to be planned is let go at its
 /// sketch mode's Cancel, which takes back its edits anyway.
 const SKETCH_CANCELLED: &str = "the sketch was cancelled first";
+
+/// What Create Sketch's Finish of a sketch holding nothing toasts, as the prototype's
+/// `finish` does (docs/design/m5-ui/js/sketch.js).
+const EMPTY_SKETCH_DISCARDED: &str = "Empty sketch discarded. Nothing was added.";
+
+/// Whether `text`, a sketch's feature as `text` gives it, holds no geometry: each list of
+/// a kind that counts ([`is_geometry`]) there and empty, construction geometry counting as
+/// any other. Anything else (a text that doesn't read, a list missing) holds something, so a
+/// Finish judged on it keeps the sketch.
+fn holds_nothing(text: &str) -> bool {
+    use silico_core::document::json::{Value, read};
+    let Ok(node) = read(text.as_bytes()) else {
+        return false;
+    };
+    let Value::Object(members) = node.value else {
+        return false;
+    };
+    ElementKind::ALL
+        .into_iter()
+        .filter(|kind| is_geometry(*kind))
+        .all(|kind| {
+            members.iter().any(|member| {
+                member.key == kind.list()
+                    && matches!(&member.value.value, Value::Array(items) if items.is_empty())
+            })
+        })
+}
+
+/// Whether a sketch's members of `kind` are what a new sketch's Finish keeps it for. Every
+/// curve and point is. Constraints aren't: each relates the sketch's own geometry, so a
+/// sketch with none has nothing for them to hold, but for the origin and its axes, which
+/// every sketch has. A new kind of member is decided here before it compiles.
+fn is_geometry(kind: ElementKind) -> bool {
+    match kind {
+        ElementKind::Point | ElementKind::Line | ElementKind::Circle | ElementKind::Arc => true,
+        ElementKind::Constraint => false,
+    }
+}
 
 /// A new sweep's body: not yet read, or read from the document at a revision (its base,
 /// [`base_of`]: its sketch's face's body, or the tip; none if it has none), which the add is
@@ -568,9 +616,57 @@ pub const LOOK_AT_UNMEASURED: &str = "Look At: the face selected isn't measured 
 /// selection view says why.
 pub const LOOK_AT_UNMEASURABLE: &str = "Look At: the face selected couldn't be measured.";
 
+/// What Look At turns the view square to ([`Tab::look_at_target`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LookAtTarget {
+    /// The sketch's plane, from `toward`, its normal toward the eye, `up` up the image.
+    Sketch { toward: [f64; 3], up: [f64; 3] },
+    /// A planar face, from its outward unit normal.
+    Face([f64; 3]),
+}
+
 /// What Look At says in sketch mode before the sketch's first read has come. Once it has, a
 /// sketch the rebuild couldn't place (on a face not found) says the read's own error.
 pub const LOOK_AT_UNREAD: &str = "Look At: the sketch isn't read yet.";
+
+/// What Undo says with nothing to undo (the prototype's `undo`).
+pub const NOTHING_TO_UNDO: &str = "Nothing to undo";
+
+/// What Redo says with nothing to redo (the prototype's `redo`).
+pub const NOTHING_TO_REDO: &str = "Nothing to redo";
+
+/// What an Undo (`undo`) or a Redo says once done (the prototype's `'Undid: ' + u.label`):
+/// the step, `label`, as Undo's or Redo's tooltip names it, or, where the tab can't name it
+/// ([`Tab::undo_step`]), that it took one step.
+pub fn stepped_words(undo: bool, label: Option<&str>) -> String {
+    let verb = if undo { "Undid" } else { "Redid" };
+    match label {
+        Some(label) => format!("{verb}: {label}"),
+        None => format!("{verb} one step"),
+    }
+}
+
+/// What Save says of a document that matches its file, `name` (the prototype's `save`).
+pub fn nothing_to_save_words(name: &str) -> String {
+    format!("Nothing to save: {name} matches the file.")
+}
+
+/// What a save says once it has written `name`, the session at `revision` after it, if its
+/// answer says (the prototype's `save`, with its check icon).
+pub fn saved_words(name: &str, revision: Option<u64>) -> String {
+    match revision {
+        Some(revision) => format!("Saved {name} (revision {revision})"),
+        None => format!("Saved {name}"),
+    }
+}
+
+/// How far a rebuild the person stopped got, once `status` says it stopped: as `status`
+/// counts its plan's steps, or not counted (`status` gives no count).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoppedAt {
+    Step { done: usize, steps: usize },
+    Uncounted,
+}
 
 /// A command a tab sent that changes its transaction, as it sent it: what a test reads
 /// as the call record.
@@ -644,6 +740,22 @@ pub struct Edits {
 }
 
 impl Edits {
+    /// Whether a Revert is queued with no save queued before it: what it drops of the queue
+    /// when it's asked ([`Tab::revert`]'s truncation, everything after the last save) reaches
+    /// back to what was asked before it, so a close still to come back from its judgement
+    /// ([`Under::Judge`]) is dropped too when its answer comes.
+    fn revert_before_save(&self) -> bool {
+        self.queue
+            .iter()
+            .find(|queued| {
+                matches!(
+                    queued,
+                    Queued::Save { .. } | Queued::SaveAs { .. } | Queued::Revert { .. }
+                )
+            })
+            .is_some_and(|queued| matches!(queued, Queued::Revert { .. }))
+    }
+
     /// Whether an edit of `feature`'s `field` is in flight or queued.
     fn pending_field(&self, feature: &FeatureId, field: &str) -> bool {
         self.in_flight
@@ -754,9 +866,11 @@ enum Under {
         sent_at: Revision,
         running: Running<Begun>,
     },
+    /// A commit, and whether `status` had last found the file unchanged as it was sent.
     Commit {
         running: Running<Committed>,
         then_close: bool,
+        matched: bool,
     },
     /// A rollback, and what Cancel or revert it lands ([`Tab::land`]) where it answers.
     Rollback {
@@ -768,14 +882,16 @@ enum Under {
         keep_fields: bool,
     },
     /// An undo or a redo, the sketch mode it was asked in, if it was, and whether it's an
-    /// over-defining dimension's Cancel (SD7), whose `conflict` is said as overtaken; and
-    /// what dialog's Cancel it lands where it answers, if it's one's undo.
+    /// over-defining dimension's Cancel (SD7), whose `conflict` is said as overtaken; what
+    /// dialog's Cancel it lands where it answers, if it's one's undo; and, if it's the
+    /// person's Undo or Redo, what its toast says once it's done (`Undid: Edit Pad`).
     Step {
         running: Running<Stepped>,
         undo: bool,
         sketch: Option<u64>,
         offered: bool,
         lands: Lands,
+        said: Option<String>,
     },
     /// A move along the timeline, as it was sent.
     Move {
@@ -895,6 +1011,16 @@ enum Under {
         sent_at: Revision,
         running: Running<TextAnswer>,
     },
+    /// Create Sketch's Finish judged ([`Tab::judge_created`]): the text of the sketch its add
+    /// made, read at the tab's revision `sent_at`, the one everything asked before the Finish
+    /// came to; then the Finish, saying `words`, closed as a Finish, or as a Cancel if the
+    /// sketch holds nothing, or dropped, if a revert with no save before it came first
+    /// ([`Edits::revert_before_save`]).
+    Judge {
+        words: Option<Words>,
+        sent_at: Revision,
+        running: Running<TextAnswer>,
+    },
     /// Restore's edit, `replace_text` of `revision`'s text, as it was sent, and whether its
     /// `begin` was sent for it.
     Replace {
@@ -933,6 +1059,7 @@ impl Under {
             | Under::Load { .. }
             | Under::ReloadRead { .. }
             | Under::Restore { .. }
+            | Under::Judge { .. }
             // What a Restore puts back names what it names: nothing of the state it's sent
             // from.
             | Under::Replace { .. } => None,
@@ -1132,6 +1259,13 @@ enum OwnRead {
     Check,
 }
 
+/// A step along the timeline's order ([`Tab::select_beside`]): → or ←.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineStep {
+    Next,
+    Previous,
+}
+
 /// One open document.
 pub struct Tab {
     pub id: SessionId,
@@ -1219,6 +1353,10 @@ pub struct Tab {
     checked: Option<(Revision, Option<Revision>)>,
     pub edits: Edits,
     under: Vec<Under>,
+    /// Whether its picture for the start page is drawn as it closes (`crate::thumbs`): set
+    /// each frame by the app's thumbnails, and the picture asked, if it is, taken by them.
+    pub draws_on_close: bool,
+    closing_picture: Option<crate::thumbs::Closing>,
     /// How many saves it has sent: what a test counts.
     pub saves: u64,
     /// How many Rebuilds it has sent: what a test counts.
@@ -1270,9 +1408,15 @@ pub struct Tab {
     /// What the core says of the face the canvas's context menu is over: its entry, read as
     /// the selection view's is, for its type (Sketch on this face, `crate::canvas_menu`).
     menu_face: crate::measures::Measures,
-    /// What a toast is to say for the tab (a box's count, or why it took nothing), until
-    /// the app takes it.
-    toast: Option<String>,
+    /// What toasts are to say for the tab (a box's count, or why it took nothing; an undo's,
+    /// a save's), in the order said, until the app takes them.
+    toasts: Vec<Toast>,
+    /// The rebuild the person's stop stopped, by its revision, until `status` says it
+    /// stopped there (or that it didn't: it ended, or another revision's runs).
+    stop_asked: Option<Revision>,
+    /// How far that rebuild got once `status` says it stopped, until the app takes it for
+    /// the stop's toast.
+    stopped: Option<StoppedAt>,
     /// The `diff` of the reload [`reloaded`](Self::reloaded) shows, asked as the reload was
     /// seen, from the revision the tab had to the session's now, until it answers.
     reload_diff: Option<Running<DiffAnswer>>,
@@ -1362,6 +1506,10 @@ pub struct Tab {
     /// number, and the state the chain's first edit was made from and the state its last
     /// left (or, for a chain refused part way, the state its last taken edit made).
     sketch_pairs: Vec<(u64, Revision, Revision)>,
+    /// The sketch Create Sketch's add made, and the serial of the sketch mode it was made for:
+    /// what that sketch mode's Finish reads to judge it ([`judge_created`](Self::judge_created)),
+    /// its add having answered by then, though the sketch mode may have left first.
+    created_sketch: Option<(u64, FeatureId)>,
     /// Each sketch mode closed (Finish, Cancel) while a click of it (a constraint tool's, or
     /// Construction's) was unsettled: its reads polled still, so the click is planned, and
     /// let go once none is.
@@ -1592,6 +1740,8 @@ impl Tab {
             checked: None,
             edits: Edits::default(),
             under: Vec::new(),
+            draws_on_close: false,
+            closing_picture: None,
             saves: 0,
             rebuilds: 0,
             rebuilds_all: 0,
@@ -1607,7 +1757,9 @@ impl Tab {
             select_other: crate::select_other::SelectOther::default(),
             measures: crate::measures::Measures::default(),
             menu_face: crate::measures::Measures::default(),
-            toast: None,
+            toasts: Vec::new(),
+            stop_asked: None,
+            stopped: None,
             reload_diff: None,
             outside: BTreeMap::new(),
             held_changes: None,
@@ -1637,6 +1789,7 @@ impl Tab {
             oked: None,
             groups: Vec::new(),
             sketch_pairs: Vec::new(),
+            created_sketch: None,
             leaving: Vec::new(),
             pressed: None,
             steps: BTreeMap::new(),
@@ -1830,7 +1983,7 @@ impl Tab {
             current,
             &hidden,
         ) {
-            self.toast = Some(toast);
+            self.toasts.push(Toast::info(toast));
         }
         let candidate = self
             .candidate_hot
@@ -2014,6 +2167,15 @@ impl Tab {
         }
     }
 
+    /// A modal over the window (#487), each frame it is, before the canvas reads the frame's
+    /// events ([`crate::arrow::Grip::modal_over`]): an arrow's stream held takes them as
+    /// ever, so a release before the modal's key finishes its click and a move its drag, and
+    /// the cancel the canvas then gives what's still held keeps the drag's value, sent as
+    /// the stream ends ([`arrows_frame`](Self::arrows_frame)).
+    pub(crate) fn arrow_under_modal(&mut self) {
+        self.grip.modal_over();
+    }
+
     /// Esc given to an arrow's stream held, if one is and still acts in the open dialog: a
     /// drag ends where it began, its input given back the text it held at its press and that
     /// sent; a press on the flip arrow does nothing more. Whether it took the Esc.
@@ -2075,34 +2237,46 @@ impl Tab {
     /// Look At (Ctrl+8; Fusion's Look At, SolidWorks' Normal To; the prototype's `lookAt`):
     /// in sketch mode, the view square to the sketch's plane, its x across and its y up;
     /// otherwise square to the one face selected, if the core measured it planar, from its
-    /// outward normal, up as the named views have it ([`crate::navigate::up_across`]). Each
+    /// outward normal, up as the named views have it ([`silico_core::views::up_across`]). Each
     /// fits what a named view fits. Else what's missing is said, and the view stays.
     pub fn look_at(&mut self) {
         use crate::viewport::ViewAsk;
-        let asked = match self.sketch.as_ref() {
+        match self.look_at_target() {
+            Ok(LookAtTarget::Sketch { toward, up }) => {
+                self.view.ask(ViewAsk::LookAt { toward, up })
+            }
+            Ok(LookAtTarget::Face(toward)) => self.look_at_face(toward),
+            Err(said) => self.toasts.push(Toast::info(said)),
+        }
+    }
+
+    /// What Look At turns the view square to now ([`look_at`](Self::look_at)): the sketch's
+    /// plane in sketch mode, else the one planar face selected; or what it says instead, as
+    /// its toast, which the command search's row says too.
+    pub fn look_at_target(&self) -> Result<LookAtTarget, String> {
+        match self.sketch.as_ref() {
             Some(mode) => match mode.drawable().map(|read| &read.plane) {
-                Some(Ok(plane)) => Ok((plane.normal(), plane.y_axis())),
+                Some(Ok(plane)) => Ok(LookAtTarget::Sketch {
+                    toward: plane.normal(),
+                    up: plane.y_axis(),
+                }),
                 Some(Err(error)) => Err(format!("Look At: {}", error.message())),
                 None => Err(LOOK_AT_UNREAD.to_owned()),
             },
-            None => match self.selected_plane_normal() {
-                Ok(toward) => return self.look_at_face(toward),
-                Err(said) => Err(said.to_owned()),
-            },
-        };
-        match asked {
-            Ok((toward, up)) => self.view.ask(ViewAsk::LookAt { toward, up }),
-            Err(said) => self.toast = Some(said),
+            None => self
+                .selected_plane_normal()
+                .map(LookAtTarget::Face)
+                .map_err(str::to_owned),
         }
     }
 
     /// The view square to a planar face from `toward`, its outward unit normal, up as the
-    /// named views have it ([`crate::navigate::up_across`]): Look At's turn to a face, from
+    /// named views have it ([`silico_core::views::up_across`]): Look At's turn to a face, from
     /// the face selected (Ctrl+8) or the one under the canvas menu.
     pub fn look_at_face(&mut self, toward: [f64; 3]) {
         self.view.ask(crate::viewport::ViewAsk::LookAt {
             toward,
-            up: crate::navigate::up_across(toward),
+            up: silico_core::views::up_across(toward),
         });
     }
 
@@ -2197,9 +2371,16 @@ impl Tab {
         !toggled.is_empty()
     }
 
-    /// What a toast is to say for the tab, taken once (the app shows it).
-    pub fn take_toast(&mut self) -> Option<String> {
-        self.toast.take()
+    /// What toasts are to say for the tab, in the order said, taken once (the app shows
+    /// them).
+    pub fn take_toasts(&mut self) -> Vec<Toast> {
+        std::mem::take(&mut self.toasts)
+    }
+
+    /// How far the rebuild got that the person's stop stopped, once `status` says it
+    /// stopped, taken once: the app says it in a toast with Rebuild's key.
+    pub fn take_stopped(&mut self) -> Option<StoppedAt> {
+        self.stopped.take()
     }
 
     /// The canvas's Select Other (M5.7): the menu open, if one is, and its rows.
@@ -2243,10 +2424,7 @@ impl Tab {
     /// the selection is the bodies its boxes hold, so the menu opens over it as it is, as a
     /// right-click never fills a box). Both panes' menus take this one rule.
     pub(crate) fn menu_selects(&self, id: &FeatureId, how: crate::selection::SelectedAs) -> bool {
-        let boxes_hold = self
-            .dialog
-            .as_ref()
-            .is_some_and(crate::dialog::Dialog::boxes_hold_bodies);
+        let boxes_hold = self.dialog.as_ref().is_some_and(Dialog::boxes_hold_bodies);
         !boxes_hold && !self.selection.selected_as(id, how)
     }
 
@@ -2365,10 +2543,7 @@ impl Tab {
     /// The tab's name: its file's, or, while it's untitled, the name it was given.
     pub fn name(&self) -> &str {
         match &self.path {
-            Some(path) => std::path::Path::new(path)
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or(path),
+            Some(path) => crate::recent::name_of(path),
             None => &self.untitled,
         }
     }
@@ -2415,21 +2590,26 @@ impl Tab {
                 .any(|under| matches!(under, Under::Step { .. }))
     }
 
-    /// Whether Undo can step: an edit still to answer (the undo waits behind it), or an
-    /// edit to undo as the status of the tab's newest revision counts them; never while
-    /// another step is under way, whose answer moves the counts, nor while a dialog is open,
-    /// whose Cancel undoes its edits, nor while sketch mode's drag is under way (from its
-    /// press to its end's answer, [`Drag::under_way`]), whose end lands an edit of its own;
-    /// once that has answered, its edit is undone as any other's, whether or not the read of
-    /// it ever comes (its rebuild stopped, or failing). In sketch mode,
-    /// as SolidWorks allows, but never past the state it opened at.
+    /// Whether Undo can step: a change still to answer (the undo waits behind it, as
+    /// SolidWorks' Undo takes back what was just done: the first edit's too, whose `begin`
+    /// is still to answer, #544), or an edit to undo as the status of the tab's newest
+    /// revision counts them; never while another step is under way, whose answer moves the
+    /// counts, nor while a dialog is open, whose Cancel undoes its edits, nor while sketch
+    /// mode's drag is under way (from its press to its end's answer, [`Drag::under_way`]),
+    /// whose end lands an edit of its own; once that has answered, its edit is undone as any
+    /// other's, whether or not the read of it ever comes (its rebuild stopped, or failing).
+    /// In sketch mode, as SolidWorks allows, but never past the state it opened at.
+    /// Never while a dialog's or sketch mode's close is still to be taken (Create Sketch's
+    /// Finish being judged among them), whose undo or rollback, if it's a Cancel's, a step
+    /// queued now would go past.
     pub fn undoable(&self) -> bool {
-        self.transaction
+        (self.transaction || self.beginning)
             && !self.in_dialog()
+            && !self.close_queued()
             && !self.drag.as_ref().is_some_and(Drag::under_way)
             && self.sketch_lets_undo()
             && !self.stepping()
-            && (!self.edits.idle()
+            && (self.change_under_way()
                 || (self.synced()
                     && self
                         .transaction()
@@ -2440,10 +2620,12 @@ impl Tab {
     /// tab's newest revision counts them; never while a step is under way, nor while a
     /// dialog is open or a drag is under way. In sketch mode, only what it undid itself;
     /// never at a state Redo is fenced off at (a sketch mode's Finish or Cancel, or an
-    /// over-defining dimension's Cancel, which leave nothing to redo).
+    /// over-defining dimension's Cancel, which leave nothing to redo), nor while a close is
+    /// still to be taken, as for Undo.
     pub fn redoable(&self) -> bool {
         self.transaction
             && !self.in_dialog()
+            && !self.close_queued()
             && !self.drag.as_ref().is_some_and(Drag::under_way)
             && self.sketch.as_ref().is_none_or(|mode| mode.undone > 0)
             && self
@@ -2466,19 +2648,7 @@ impl Tab {
         if !self.undoable() || !self.quiet() {
             return None;
         }
-        let at = self.state_of(self.revision);
-        // Sketch mode's undo is a step of its own edits, never a dialog's group.
-        let group = self
-            .groups
-            .iter()
-            .find(|group| self.sketch.is_none() && group.end == at);
-        match group {
-            Some(group) => self.step_text(&group.words, group.start, group.end),
-            None => {
-                let step = self.steps.get(&at)?;
-                self.step_text(&step.words, step.from, at)
-            }
-        }
+        self.step_label(true)
     }
 
     /// The step Redo would give back, as its tooltip names it after "Redo: ": a dialog's
@@ -2489,18 +2659,87 @@ impl Tab {
         if !self.redoable() || !self.quiet() {
             return None;
         }
+        self.step_label(false)
+    }
+
+    /// The step an undo (`undo`) or a redo from the session's state now takes back or gives
+    /// back, by what made it ([`step_text`](Self::step_text)): for Undo, a dialog's OK'd
+    /// edits ending there by the dialog's words, else the step that made the state (sketch
+    /// mode's undo is a step of its own edits, never a dialog's group); for Redo, a dialog's
+    /// OK'd edits starting there, else the state after it, by the step that made that.
+    fn step_label(&self, undo: bool) -> Option<String> {
         let at = self.state_of(self.revision);
-        let group = self
-            .groups
-            .iter()
-            .find(|group| self.sketch.is_none() && group.start == at);
-        match group {
-            Some(group) => self.step_text(&group.words, group.start, group.end),
-            None => {
+        let group = self.groups.iter().find(|group| {
+            self.sketch.is_none()
+                && if undo {
+                    group.end == at
+                } else {
+                    group.start == at
+                }
+        });
+        match (group, undo) {
+            (Some(group), _) => self.step_text(&group.words, group.start, group.end),
+            (None, true) => {
+                let step = self.steps.get(&at)?;
+                self.step_text(&step.words, step.from, at)
+            }
+            (None, false) => {
                 let (made, step) = self.steps.range(at..).find(|(state, _)| **state != at)?;
                 self.step_text(&step.words, step.from, *made)
             }
         }
+    }
+
+    /// Undo or Redo pressed with nothing to step (`undo`: Undo's): said in a toast, as the
+    /// prototype's `undo` says it, only where it's so: nothing of the tab's under way (whose
+    /// answer would move the counts), no dialog open nor drag under way (which hold Undo
+    /// off with steps to take), and the session's counts read at its revision; so Undo off
+    /// then is for want of a step (no transaction, none in it to undo, or sketch mode at
+    /// where it opened), and so is Redo (none undone, sketch mode's own none, or a fence).
+    pub fn nothing_to_step(&mut self, undo: bool) {
+        let can = if undo {
+            self.undoable()
+        } else {
+            self.redoable()
+        };
+        if can
+            || !self.quiet()
+            || self.in_dialog()
+            || self.drag.as_ref().is_some_and(Drag::under_way)
+            || !self.synced()
+            || self.status.is_none()
+        {
+            return;
+        }
+        self.toasts.push(Toast::info(if undo {
+            NOTHING_TO_UNDO
+        } else {
+            NOTHING_TO_REDO
+        }));
+    }
+
+    /// Whether `status` last found the file as the session last read or wrote it
+    /// (`unchanged`; not before a comparison has ended, nor after a save failed, which it
+    /// gives as none).
+    fn disk_unchanged(&self) -> bool {
+        self.status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(Disk::Unchanged))
+    }
+
+    /// Save pressed with nothing to save: said in a toast, as the prototype's `save` says
+    /// it, only where it's so: nothing unsaved (no edit held nor under way), a titled part
+    /// (an untitled one's Save writes it all the same), and the file on disk, as `status`
+    /// last compared it, the bytes the session last read or wrote (`unchanged`; not before a
+    /// comparison has ended, nor after a save failed, which `status` gives as none). Whether
+    /// it said so.
+    pub fn nothing_to_save(&mut self) -> bool {
+        if self.unsaved() || self.is_untitled() || !self.disk_unchanged() {
+            return false;
+        }
+        self.toasts
+            .push(Toast::info(nothing_to_save_words(self.name())));
+        true
     }
 
     /// What a step says, made from the state `from` and making `made` (a group: its start
@@ -2592,14 +2831,24 @@ impl Tab {
 
     /// Whether sketch mode, if it's open, lets an undo step: it has opened (everything asked
     /// before it has answered), and the session isn't at the state it opened at (for Create
-    /// Sketch, the state its add came to).
+    /// Sketch, the state its add came to), or a change is still to answer, which the undo
+    /// waits for (one that leaves the session there drops it, never past it: [`advance`]).
+    ///
+    /// [`advance`]: Self::advance
     fn sketch_lets_undo(&self) -> bool {
         let Some(mode) = &self.sketch else {
             return true;
         };
-        mode.undo_floor
-            .or(mode.opened_at)
-            .is_some_and(|floor| self.state_of(self.revision) != self.state_of(floor))
+        mode.undo_floor.or(mode.opened_at).is_some_and(|floor| {
+            self.state_of(self.revision) != self.state_of(floor) || self.change_under_way()
+        })
+    }
+
+    /// Whether a change of the tab's is still to answer: an edit in flight or queued, or a
+    /// move, a suppression, a deletion, an add, a sketch edit, or a drag, queued or running
+    /// ([`changing`](Self::changing)). An undo asked meanwhile waits behind it.
+    fn change_under_way(&self) -> bool {
+        !self.edits.idle() || self.changing()
     }
 
     /// The name of the sketch open, as its browser row gives it ("Sketch" until it's added
@@ -2692,7 +2941,8 @@ impl Tab {
             | Under::Close(_)
             | Under::Load { .. }
             | Under::ReloadRead { .. }
-            | Under::Restore { .. } => false,
+            | Under::Restore { .. }
+            | Under::Judge { .. } => false,
         });
         // A drag's begin, moves, or end under way: its edit lands as it ends.
         queued || under || self.dragging()
@@ -2797,6 +3047,7 @@ impl Tab {
                     self.rebuilt = Some((status.rebuild.revision, progress.elapsed_ms()));
                 }
                 self.status = Some(status);
+                self.stop_seen();
             }
             // Its session isn't open any more: the tab goes.
             Err(_) => {
@@ -3019,7 +3270,7 @@ impl Tab {
             }
         }
         if close {
-            self.under.push(Under::Close(sessions.close(&self.id)));
+            self.send_close(sessions);
         }
         if std::mem::take(&mut self.roll_back) {
             self.under.push(Under::Rollback {
@@ -3248,16 +3499,49 @@ impl Tab {
             Under::Commit {
                 running,
                 then_close,
+                matched,
             } => match running.try_take() {
                 Ok(response) => {
                     self.reload_after_end(sessions, response.session.as_ref());
                     self.took_session(&response);
+                    // Said once the core has answered (the prototype's `save`): what it
+                    // wrote, and the session's revision after it; or, finding the document
+                    // the one `begin` saw, that it wrote nothing, and the file matches, if
+                    // that's known: `status` found it unchanged as the commit was sent and
+                    // finds it so now, at the commit's revision (no reload since). The core
+                    // writes nothing too of a file changed or gone since (an unchanged
+                    // transaction loses nothing), which the reload's banner tells. Not of a
+                    // save to close, whose tab goes.
+                    if let Ok(committed) = &response.result
+                        && !then_close
+                    {
+                        let name = self.name().to_owned();
+                        let matches = matched
+                            && self.disk_unchanged()
+                            && response
+                                .session
+                                .as_ref()
+                                .is_some_and(|session| session.revision == self.status_revision);
+                        let toast = if committed.written {
+                            let revision = response
+                                .session
+                                .as_ref()
+                                .map(|session| session.revision.number());
+                            Some(Toast::check(saved_words(&name, revision)))
+                        } else if matches {
+                            Some(Toast::info(nothing_to_save_words(&name)))
+                        } else {
+                            None
+                        };
+                        self.toasts.extend(toast);
+                    }
                     self.ended(response.result.map(|_| ()), then_close, close);
                     None
                 }
                 Err(running) => Some(Under::Commit {
                     running,
                     then_close,
+                    matched,
                 }),
             },
             Under::SaveAs {
@@ -3334,6 +3618,7 @@ impl Tab {
                 sketch,
                 offered,
                 lands,
+                said: step_said,
             } => match running.try_take() {
                 Ok(response) => {
                     self.landed(lands, response.session.as_ref());
@@ -3361,6 +3646,11 @@ impl Tab {
                             self.redo_fence = Some(state);
                         }
                     }
+                    // The person's Undo or Redo, done: said in a toast as the prototype's
+                    // `undo` says it, once the core has answered, never before.
+                    if let (Ok(_), Some(step_said)) = (&response.result, step_said) {
+                        self.toasts.push(Toast::info(step_said));
+                    }
                     match response.result {
                         // Typing queued after it is applied next: the field keeps it.
                         Ok(_) if self.edits.idle() => self.resets += 1,
@@ -3376,6 +3666,7 @@ impl Tab {
                     sketch,
                     offered,
                     lands,
+                    said: step_said,
                 }),
             },
             Under::Add {
@@ -3492,6 +3783,21 @@ impl Tab {
                     match response.result {
                         Ok(added) => {
                             let at = self.revision;
+                            self.created_sketch = Some((serial, added.feature.id.clone()));
+                            // Its undos asked meanwhile go no further back than the sketch,
+                            // whether or not sketch mode is still open as they come up (a
+                            // Finish or a Cancel asked behind them closes it first).
+                            for queued in &mut self.edits.queue {
+                                if let Queued::Step {
+                                    floor,
+                                    sketch: Some(of),
+                                    ..
+                                } = queued
+                                    && *of == serial
+                                {
+                                    *floor = Some(at);
+                                }
+                            }
                             if let Some(mode) = self.sketch.as_mut().filter(|_| ours) {
                                 mode.sketch = Some(added.feature.id.clone());
                                 mode.undo_floor = Some(at);
@@ -3510,6 +3816,7 @@ impl Tab {
                                     sketch: true,
                                     dialog: None,
                                     words: None,
+                                    created: None,
                                 });
                             }
                         }
@@ -3840,6 +4147,48 @@ impl Tab {
                 }
                 Err(running) => Some(Under::Restore {
                     revision,
+                    sent_at,
+                    running,
+                }),
+            },
+            Under::Judge {
+                words,
+                sent_at,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.reload_in(sessions, sent_at, response.session.as_ref());
+                    self.took_session(&response);
+                    // A Revert asked meanwhile, no save before it, drops the close as it
+                    // drops what's queued: the part goes back to its file, and nothing is
+                    // discarded to say.
+                    if self.edits.revert_before_save() {
+                        return None;
+                    }
+                    // A read refused (the sketch gone, the session moved on by another
+                    // client) judges nothing: the Finish is a Finish.
+                    let empty = response
+                        .result
+                        .is_ok_and(|answer| holds_nothing(&answer.text));
+                    if empty {
+                        self.toasts.push(Toast::info(EMPTY_SKETCH_DISCARDED));
+                        // The count its Finish held is a Cancel's.
+                        if let Some(base) = self.dialog_base {
+                            self.count_closed(false, base);
+                        }
+                    }
+                    // Taken next, before anything queued after it.
+                    self.edits.queue.push_front(Queued::Closed {
+                        ok: !empty,
+                        sketch: true,
+                        dialog: None,
+                        words: words.filter(|_| !empty),
+                        created: None,
+                    });
+                    None
+                }
+                Err(running) => Some(Under::Judge {
+                    words,
                     sent_at,
                     running,
                 }),
@@ -4253,7 +4602,7 @@ impl Tab {
                     Planned::Said => {}
                     Planned::Gone(said) => {
                         if self.pressed.as_ref() == Some(&click) {
-                            self.toast = Some(said.clone());
+                            self.toasts.push(Toast::info(said.clone()));
                         }
                         self.message = Some(said);
                     }
@@ -4409,6 +4758,7 @@ impl Tab {
                                 sketch: Some(serial),
                                 offered: true,
                                 lands: Lands::Nothing,
+                                said: None,
                             });
                         }
                     }
@@ -4451,10 +4801,16 @@ impl Tab {
                     });
                 }
                 Queued::Closed {
+                    words,
+                    created: Some(serial),
+                    ..
+                } => self.judge_created(sessions, serial, words),
+                Queued::Closed {
                     ok,
                     sketch,
                     dialog,
                     words,
+                    created: None,
                 } => {
                     // Every edit sent before it has answered: what a Cancel put back of the
                     // selection is read from the revision its undo or rollback comes to,
@@ -4520,19 +4876,24 @@ impl Tab {
                             undo: true,
                             offered: false,
                             lands,
+                            said: None,
                         });
                     }
                 }
                 Queued::Save { then_close } if !self.transaction => {
                     if then_close {
-                        self.under.push(Under::Close(sessions.close(&self.id)));
+                        self.send_close(sessions);
                         self.edits.queue.clear();
+                    } else {
+                        // No transaction open once the edits before it answered: the
+                        // document is the file's, said so where it's so.
+                        self.nothing_to_save();
                     }
                 }
                 Queued::Revert { then_close } if !self.transaction => {
                     self.land(Lands::Everything, self.revision);
                     if then_close {
-                        self.under.push(Under::Close(sessions.close(&self.id)));
+                        self.send_close(sessions);
                         self.edits.queue.clear();
                     }
                 }
@@ -4568,19 +4929,55 @@ impl Tab {
                     self.under.push(Under::Commit {
                         running: sessions.commit(&self.id),
                         then_close,
+                        matched: self.disk_unchanged(),
                     });
                 }
                 Queued::Step {
                     undo,
                     floor,
                     sketch,
+                    asked_at,
                 } => {
                     let state = self.state_of(self.revision);
-                    // Sketch mode's undo, come up with the session at its floor already (one
-                    // queued behind another that got there): dropped, never past it.
-                    if undo && floor.is_some_and(|floor| self.state_of(floor) == state) {
+                    // Come up with nothing to step, nothing before it under way: sketch
+                    // mode's undo with the session at its floor already (`floor`, as asked, or
+                    // Create Sketch's, the state its add came to, which that add, answered
+                    // after the undo was asked, wrote into it: [`Under::AddSketch`]'s answer,
+                    // whether or not sketch mode is still open; one queued behind
+                    // another that got there, or behind a change that left it there, Create
+                    // Sketch's add among them: never past it); no transaction open (it
+                    // waited behind a first edit whose refusal rolled back the transaction
+                    // begun for it, or behind a save: `undo` and `redo` are refused outside
+                    // one); a redo behind a change that applied (below); or none to step as
+                    // the status of the tab's revision counts them
+                    // (it waited behind a first move, suppression, or deletion the core
+                    // refused, which leaves its transaction open and empty). Said, as the
+                    // prototype's `undo` says it, and nothing sent, so the core's refusal
+                    // never takes the place of what the change's refusal said.
+                    let at_floor = undo && floor.is_some_and(|floor| self.state_of(floor) == state);
+                    let none_counted = self.synced()
+                        && self.transaction().is_none_or(|transaction| {
+                            if undo {
+                                transaction.undo == 0
+                            } else {
+                                transaction.redo == 0
+                            }
+                        });
+                    // A redo asked while a change was still to answer, come up after it
+                    // applied (the session moved on since the press, and no step was before it:
+                    // Redo is off while one is): that change dropped the redo branch.
+                    let changed_since = !undo && state != self.state_of(asked_at);
+                    if at_floor || !self.transaction || none_counted || changed_since {
+                        self.toasts.push(Toast::info(if undo {
+                            NOTHING_TO_UNDO
+                        } else {
+                            NOTHING_TO_REDO
+                        }));
                         continue;
                     }
+                    // What it takes back or gives back, named as Undo's or Redo's tooltip
+                    // names it now, before it's sent, for its toast once it's done.
+                    let step_said = Some(stepped_words(undo, self.step_label(undo).as_deref()));
                     // At a dialog's OK'd edits' end (undo) or start (redo): all of them at
                     // once, to its other side (section 9). Never in sketch mode, whose steps
                     // are its own edits', one at a time, but for a click's chain of edits (a
@@ -4614,6 +5011,7 @@ impl Tab {
                         sketch,
                         offered: false,
                         lands: Lands::Nothing,
+                        said: step_said,
                     });
                 }
             }
@@ -4633,6 +5031,40 @@ impl Tab {
         if !ok && !another {
             self.selection.read_from(from);
         }
+    }
+
+    /// Create Sketch's Finish, of sketch mode numbered `serial`, come up in the queue, every
+    /// edit asked before it answered: the sketch its add made read at the revision they came
+    /// to (`text`, never sketch mode's last read, which may be older), and the Finish queued
+    /// again, judged, once it answers ([`Under::Judge`]): a Finish if the sketch holds
+    /// anything, and otherwise Cancel's close, undone back to where sketch mode opened or
+    /// rolled back, leaving no step, and toasted; or dropped, if a revert with no save before
+    /// it came first ([`Edits::revert_before_save`]). A Finish whose add made no sketch
+    /// (refused after sketch mode left) has nothing to judge.
+    fn judge_created<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        serial: u64,
+        words: Option<Words>,
+    ) {
+        let made = self.created_sketch.take().filter(|(of, _)| *of == serial);
+        let Some((_, sketch)) = made else {
+            self.edits.queue.push_front(Queued::Closed {
+                ok: true,
+                sketch: true,
+                dialog: None,
+                words,
+                created: None,
+            });
+            return;
+        };
+        let running =
+            sessions.text_at(&self.id, Some(sketch), Some(Named::Revision(self.revision)));
+        self.under.push(Under::Judge {
+            words,
+            sent_at: self.revision,
+            running,
+        });
     }
 
     /// Whether what's queued waits: an edit, a save, a revert, a step, or a dialog's add (or
@@ -4667,6 +5099,7 @@ impl Tab {
                         | Under::OfferField { .. }
                         | Under::ReloadRead { .. }
                         | Under::Restore { .. }
+                        | Under::Judge { .. }
                         | Under::Replace { .. }
                 )
             })
@@ -4993,7 +5426,9 @@ impl Tab {
     /// revert it drops was to close the tab, close.
     /// The edits and steps queued since the last save queued are dropped, and the revert
     /// waits behind that save, which saves what was asked before it (#298's review): one in
-    /// flight answers first, and the rollback undoes it. Also how a file changed on disk is
+    /// flight answers first, and the rollback undoes it. A close still being judged
+    /// ([`Under::Judge`]) with no save queued is dropped too, when its answer comes
+    /// ([`Edits::revert_before_save`]). Also how a file changed on disk is
     /// reloaded with edits held: the session reloads it once the transaction has ended
     /// (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
@@ -5046,6 +5481,36 @@ impl Tab {
         self.advance(sessions);
     }
 
+    /// `close` sent: or, if it [`draws_on_close`](Self::draws_on_close) and has a file, no
+    /// transaction, and its model built at its revision, its picture asked
+    /// (`crate::thumbs::Closing`), which closes the session once it's drawn, and the tab
+    /// closed at once.
+    fn send_close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+        let built = sessions.published(&self.id).result.ok().map(|p| p.revision);
+        if let Some(path) = self
+            .path
+            .clone()
+            .filter(|_| self.draws_on_close && !self.transaction && built == Some(self.revision))
+        {
+            // Gone at once: the app's thumbnails draw it and close its session, which can't
+            // refuse (there's no transaction), so the tab never waits on its picture.
+            self.closing_picture = Some(crate::thumbs::Closing::sent(
+                sessions,
+                self.id,
+                self.revision,
+                path,
+            ));
+            self.closed = true;
+            return;
+        }
+        self.under.push(Under::Close(sessions.close(&self.id)));
+    }
+
+    /// The picture asked as it closed, if one was, for the app's thumbnails to take.
+    pub(crate) fn take_closing_picture(&mut self) -> Option<crate::thumbs::Closing> {
+        self.closing_picture.take()
+    }
+
     /// Close, its edits saved or dropped first (`close` is refused inside a transaction,
     /// decision 22); any waiting dropped.
     pub fn close<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
@@ -5056,7 +5521,7 @@ impl Tab {
             return;
         }
         self.edits.queue.clear();
-        self.under.push(Under::Close(sessions.close(&self.id)));
+        self.send_close(sessions);
     }
 
     /// Undo or redo one edit of the transaction, once the edits made before it have
@@ -5072,6 +5537,7 @@ impl Tab {
             undo,
             floor,
             sketch,
+            asked_at: self.revision,
         });
         self.advance(sessions);
     }
@@ -5183,8 +5649,46 @@ impl Tab {
     /// and the refusal is said.
     pub fn stop<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         match self.halt(sessions) {
-            Ok(()) => self.message = None,
+            Ok(()) => {
+                self.message = None;
+                self.stop_said();
+            }
             Err(problems) => self.message = Some(said(&problems)),
+        }
+    }
+
+    /// A stop the person asked for, taken: once `status` says the rebuild it stopped (the
+    /// one `status` said runs) stopped at the tab's revision, a toast says how far it got
+    /// ([`stop_seen`](Self::stop_seen)).
+    fn stop_said(&mut self) {
+        self.stopped = None;
+        self.stop_asked = self.status.as_ref().map(|status| status.rebuild.revision);
+    }
+
+    /// The stop asked for ([`stop_said`](Self::stop_said)) as `status` now says it: stopped
+    /// at the rebuild's revision, which is the tab's, so Rebuild starts it again, kept with
+    /// how far it got for the app's toast; still running, waited on; else (it ended before
+    /// the stop reached it, or an edit made another revision since) let go, saying nothing.
+    fn stop_seen(&mut self) {
+        let (Some(asked), Some(status)) = (self.stop_asked, self.status.as_ref()) else {
+            return;
+        };
+        let rebuild = &status.rebuild;
+        if rebuild.revision == asked && rebuild.state == RebuildState::Running {
+            return;
+        }
+        self.stop_asked = None;
+        if rebuild.revision == asked
+            && rebuild.revision == self.revision
+            && rebuild.state == RebuildState::Stopped
+        {
+            self.stopped = Some(rebuild.progress.as_ref().map_or(
+                StoppedAt::Uncounted,
+                |progress| StoppedAt::Step {
+                    done: progress.done,
+                    steps: progress.steps,
+                },
+            ));
         }
     }
 
@@ -5356,10 +5860,10 @@ impl Tab {
     /// does nothing in one (it says why); its rebuild is sent once the document is read.
     pub fn reload<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if self.file_gone() {
-            self.toast = Some(format!(
+            self.toasts.push(Toast::info(format!(
                 "{} is gone from disk: nothing to reload. Save As keeps your work",
                 self.name()
-            ));
+            )));
             return;
         }
         // An untitled part has no file to read and its edits are all it is: nothing reverted,
@@ -5462,6 +5966,7 @@ impl Tab {
         let stopped = self.halt(sessions).is_ok();
         if stopped {
             self.hush();
+            self.stop_said();
         }
         stopped
     }
@@ -5923,6 +6428,18 @@ impl Tab {
         }
     }
 
+    /// Every origin plane shown (`shown`) or hidden: the Origin folder's eye (the
+    /// prototype's, which shows all three while none shows, else hides them all), each
+    /// plane's eye then as one click on it leaves it ([`toggle_shown`](Self::toggle_shown)).
+    pub fn show_origin_planes(&mut self, shown: bool) {
+        for (_, name) in crate::planes::ORIGIN_PLANES {
+            let what = Hideable::Origin(name);
+            if self.shown(&what) != shown {
+                self.toggle_shown(what);
+            }
+        }
+    }
+
     /// Why the sketch of `row` is drawn nowhere, whatever its eye, for the eye's tooltip:
     /// suppressed, or its read placing it on no plane (a face gone,
     /// found by an unstable name, not planar, or its feature unbuilt: `plane_problem`'s
@@ -6048,18 +6565,57 @@ impl Tab {
     /// H (DESIGN.md, *Keyboard*: Fusion's V, moved to H): the selected feature hidden or
     /// shown, if the browser lists it (a body or a sketch); nothing otherwise.
     pub fn toggle_selected_shown(&mut self) {
-        let Some(id) = self.selection.feature().cloned() else {
-            return;
-        };
-        let listed = self
-            .browser
+        if let Some(id) = self.hideable() {
+            self.toggle_shown(Hideable::Feature(id));
+        }
+    }
+
+    /// The feature H hides or shows ([`toggle_selected_shown`](Self::toggle_selected_shown)),
+    /// if one is: the feature selected, if the browser lists it, a body or a sketch, with
+    /// its eye.
+    pub fn hideable(&self) -> Option<FeatureId> {
+        let id = self.selection.feature()?;
+        self.browser
             .bodies
             .iter()
             .chain(self.browser.sketches())
-            .any(|row| row.id == id);
-        if listed {
-            self.toggle_shown(Hideable::Feature(id));
+            .any(|row| row.id == *id)
+            .then(|| id.clone())
+    }
+
+    /// Whether Reload can run now (its keys, File's Reload, and the command search), or why
+    /// not: never while the tab closes (its close drops the edits already), and not in a
+    /// dialog, as Rebuild everything isn't, its words [`crate::app::RELOAD_IN_DIALOG`].
+    pub fn reloadable(&self) -> Result<(), Option<&'static str>> {
+        if self.closing() {
+            Err(None)
+        } else if self.in_dialog() {
+            Err(Some(crate::app::RELOAD_IN_DIALOG))
+        } else {
+            Ok(())
         }
+    }
+
+    /// Whether SELECT's Clear selection is on: something selected, and no dialog's box taking
+    /// the picks.
+    pub fn selection_clearable(&self) -> bool {
+        !self.selection.is_empty() && !self.in_dialog()
+    }
+
+    /// Whether SELECT's panel and its keys (X, E, V, and Clear selection) apply: outside
+    /// sketches, where the toolbar shows SOLID and X is no Construction.
+    pub fn select_shown(&self) -> bool {
+        !self.in_sketch()
+    }
+
+    /// Whether Del, in sketch mode, deletes something ([`sketch_delete`](Self::sketch_delete)):
+    /// the tab not closing, the sketch known, and a selection that makes a deletion.
+    pub fn sketch_deletable(&self) -> bool {
+        !self.closing()
+            && self
+                .sketch
+                .as_ref()
+                .is_some_and(|mode| mode.sketch.is_some() && mode.deletion().is_some())
     }
 
     /// Whether a dialog of `kind` can open: none open or loading, no sketch open, the tab not
@@ -6222,12 +6778,17 @@ impl Tab {
         }
     }
 
-    /// Whether a dialog's or sketch mode's close is queued, not yet taken.
+    /// Whether a dialog's or sketch mode's close is queued, not yet taken: Create Sketch's
+    /// Finish being judged too, which is queued again once it is.
     fn close_queued(&self) -> bool {
         self.edits
             .queue
             .iter()
             .any(|queued| matches!(queued, Queued::Closed { .. }))
+            || self
+                .under
+                .iter()
+                .any(|under| matches!(under, Under::Judge { .. }))
     }
 
     /// A dialog numbered, the next, and what the last one left (a refusal said, its refused
@@ -6387,6 +6948,42 @@ impl Tab {
     pub fn show_in_timeline(&mut self, id: FeatureId) {
         self.selection.select_feature(id.clone());
         self.timeline_scroll = Some(id);
+    }
+
+    /// → or ← (interact.js's `keydown`), `step`: the feature after or before the one
+    /// selected as itself, in the timeline's order, selected alone as a click on its item
+    /// selects it, and the timeline scrolled to it. The first and the last stay as they are
+    /// (the prototype's clamp). Nothing without a feature selected as itself (a body's row,
+    /// elements, or nothing selected), with the timeline unread, or while the gate refuses
+    /// the document (its timeline may list an ID used twice, twice).
+    pub fn select_beside(&mut self, step: TimelineStep) {
+        let Some(id) = self.selection.feature().filter(|id| {
+            self.selection
+                .selected_as(id, crate::selection::SelectedAs::Itself)
+        }) else {
+            return;
+        };
+        let Some(entries) = self
+            .timeline
+            .as_ref()
+            .filter(|timeline| timeline.problems == 0)
+            .and_then(|timeline| timeline.features.as_ref())
+        else {
+            return;
+        };
+        let Some(at) = entries.iter().position(|entry| &entry.id == id) else {
+            return;
+        };
+        let to = match step {
+            TimelineStep::Next => at.saturating_add(1),
+            TimelineStep::Previous => at.saturating_sub(1),
+        };
+        let Some(next) = entries.get(to).filter(|_| to != at) else {
+            return;
+        };
+        let next = next.id.clone();
+        self.selected_in = crate::feature_menu::Place::Timeline;
+        self.show_in_timeline(next);
     }
 
     /// The feature the timeline is to scroll to, if one is.
@@ -6911,6 +7508,7 @@ impl Tab {
             sketch: false,
             dialog: serial,
             words,
+            created: None,
         });
         self.advance(sessions);
     }
@@ -7086,7 +7684,9 @@ impl Tab {
     /// Finish Sketch (`ok`), its edits kept, one step for undo; or Cancel, undone back to
     /// the revision sketch mode opened at, or rolled back if its own edits began the
     /// transaction: as a dialog's OK and Cancel are ([`close_dialog`](Self::close_dialog)).
-    /// Neither while the tab closes.
+    /// Create Sketch's Finish of a sketch that holds nothing once everything asked before it
+    /// has answered is that Cancel, toasted ([`judge_created`](Self::judge_created)). Neither
+    /// while the tab closes.
     pub fn finish_sketch<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
         if self.closing() || self.sketch.is_none() {
             return;
@@ -7101,6 +7701,13 @@ impl Tab {
                 "Edit"
             })
         });
+        // Create Sketch's Finish: judged once it comes up, its sketch kept only if it holds
+        // anything then ([`judge_created`](Self::judge_created)).
+        let created = self
+            .sketch
+            .as_ref()
+            .filter(|mode| ok && mode.created.is_some())
+            .map(|mode| mode.serial);
         if let Some(base) = self.sketch.as_ref().and_then(|mode| mode.opened_at) {
             self.count_closed(ok, base);
         }
@@ -7134,6 +7741,7 @@ impl Tab {
             sketch: true,
             dialog: None,
             words,
+            created,
         });
         self.advance(sessions);
     }
@@ -7432,7 +8040,7 @@ impl Tab {
     /// joined (`sketch_join`), once what's asked before has answered; the selection let
     /// go. A refusal is said. Nothing with nothing selected, or before the sketch is known.
     pub fn sketch_delete<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
-        if self.closing() {
+        if !self.sketch_deletable() {
             return;
         }
         let Some(mode) = self.sketch.as_mut() else {
@@ -7594,12 +8202,12 @@ impl Tab {
         let related = match planned {
             Ok(related) => related,
             Err(error) => {
-                self.toast = Some(said(&Problems::from(error)));
+                self.toasts.push(Toast::info(said(&Problems::from(error))));
                 return Planned::Said;
             }
         };
         if let Some(message) = related.message() {
-            self.toast = Some(message.text());
+            self.toasts.push(Toast::info(message.text()));
         }
         let elements = |ids: &[ElementId]| -> Vec<Reference> {
             ids.iter().cloned().map(Reference::Element).collect()
@@ -7627,7 +8235,7 @@ impl Tab {
                 Planned::Send(related.revision(), Box::new(relating))
             }
             Err(error) => {
-                self.toast = Some(said(&Problems::from(error)));
+                self.toasts.push(Toast::info(said(&Problems::from(error))));
                 Planned::Said
             }
         }
@@ -8407,12 +9015,13 @@ fn sketch_row<'a>(browser: &'a Browser, what: &Hideable) -> Option<&'a Row> {
 }
 
 /// Whether `what`'s row shows before any click (decision 29: "everything but the sketches
-/// a feature is built from"): a body and an origin row, yes; a sketch, while nothing is
-/// built from it.
+/// a feature is built from"): a body and an origin row, yes, but an origin plane, hidden
+/// as the prototype's, Fusion's, and SolidWorks' are (`crate::planes`); a sketch, while
+/// nothing is built from it.
 fn shown_by_default(browser: &Browser, what: &Hideable) -> bool {
     match what {
         Hideable::Feature(id) => browser.consumed.get(id).is_none_or(|built| !built),
-        Hideable::Origin(_) => true,
+        Hideable::Origin(name) => crate::planes::of_row(name).is_none(),
     }
 }
 
@@ -10377,6 +10986,7 @@ mod tests {
                     undo: true,
                     floor: None,
                     sketch: None,
+                    asked_at: rev(1),
                 },
                 None,
             ),
@@ -10386,6 +10996,7 @@ mod tests {
                     sketch: false,
                     dialog: Some(1),
                     words: Some(Words::Text("Edit Pad".to_owned())),
+                    created: None,
                 },
                 None,
             ),
@@ -10701,6 +11312,7 @@ mod tests {
             sketch: true,
             dialog: None,
             words: Some(Words::Text("Edit Triangle".to_owned())),
+            created: None,
         });
         assert_eq!(tab.edits_now(), 4);
         assert_eq!(tab.unsaved_edits(), 2);
@@ -10861,6 +11473,7 @@ mod tests {
             sketch: false,
             dialog: None,
             words: None,
+            created: None,
         });
         tab.read_restored_from(false, three);
         tab.selection.published(unnamed(), 2);
@@ -12012,6 +12625,16 @@ mod tests {
     }
 
     #[test]
+    fn select_is_shown_outside_sketches_and_not_in_one() {
+        // SELECT's panel and its keys (the search lists them by it): outside sketches, where
+        // the toolbar shows SOLID; not in sketch mode, where X is Construction.
+        let (_dir, _sessions, mut tab) = opened_on(BROKEN_ROUND, |_| {});
+        assert!(tab.select_shown());
+        tab.sketch = Some(crate::sketch::SketchMode::new(1, None));
+        assert!(!tab.select_shown());
+    }
+
+    #[test]
     fn a_repair_with_a_sketch_open_is_refused_saying_why_and_made_once_it_closes() {
         let (_dir, sessions, mut tab) = opened_on(BROKEN_ROUND, |_| {});
         published_quietly(&mut tab, &sessions);
@@ -12437,6 +13060,401 @@ mod tests {
         }
     }
 
+    /// The words of `toasts`, each with its icon.
+    fn toasts_said(toasts: Vec<Toast>) -> Vec<(String, crate::toast::Kind)> {
+        toasts
+            .into_iter()
+            .map(|toast| (toast.text, toast.kind))
+            .collect()
+    }
+
+    /// `tab`'s last `status` as giving `disk` for its file.
+    fn set_disk(tab: &mut Tab, disk: Option<Disk>) {
+        if let Some(status) = tab.status.as_mut() {
+            status.disk = disk;
+        }
+    }
+
+    #[test]
+    fn nothing_to_save_is_said_only_of_a_file_status_found_unchanged() {
+        use crate::toast::Kind::Info;
+        // `status.disk`: none before a comparison has ended or after a save failed; changed,
+        // gone, or unreadable: none of them a file known to match.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        for disk in [
+            None,
+            Some(Disk::Changed),
+            Some(Disk::Gone),
+            Some(Disk::Unreadable),
+        ] {
+            set_disk(&mut tab, disk);
+            assert!(!tab.nothing_to_save(), "{disk:?}");
+            assert_eq!(toasts_said(tab.take_toasts()), [], "{disk:?}");
+        }
+        set_disk(&mut tab, Some(Disk::Unchanged));
+        assert!(tab.nothing_to_save());
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(
+                "Nothing to save: part.silico matches the file.".to_owned(),
+                Info
+            )]
+        );
+    }
+
+    #[test]
+    fn a_save_that_comes_up_with_no_transaction_says_nothing_to_save_of_a_file_unchanged() {
+        use crate::toast::Kind::Info;
+        // Queued with no transaction open (none begun): it has nothing to commit, and says
+        // so, the file found unchanged; not of a file changed on disk.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        set_disk(&mut tab, Some(Disk::Changed));
+        tab.save(&sessions, false);
+        assert!(tab.quiet());
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        set_disk(&mut tab, Some(Disk::Unchanged));
+        tab.save(&sessions, false);
+        assert!(tab.quiet());
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(
+                "Nothing to save: part.silico matches the file.".to_owned(),
+                Info
+            )]
+        );
+    }
+
+    /// `text` written to a file, opened in a tab by sessions comparing it on disk as often
+    /// as they may, reading it as it is: its directory (kept for the file), the sessions, the
+    /// file's path, and the tab, its timeline read and the file found unchanged.
+    fn opened_watching(text: &str) -> (tempfile::TempDir, FakeSessions, std::path::PathBuf, Tab) {
+        let read: silico_core::disk::Reader = Arc::new(|path: &std::path::Path| {
+            std::fs::read(path).map_or(silico_core::disk::Found::Gone, |bytes| {
+                silico_core::disk::Found::Bytes(bytes)
+            })
+        });
+        let now: silico_core::disk::Clock = Arc::new(std::time::Instant::now);
+        let fake = silico_core::fake::FakeKernel::new(1).unwrap();
+        let sessions = Sessions::with_cache_opener(Arc::new(fake), |dir| {
+            silico_core::cache::Cache::unsealed(dir)
+        })
+        .watching_disk(std::time::Duration::ZERO, read, now)
+        .unwrap();
+        let (dir, sessions, mut tab) = opened_in(sessions, text);
+        let path = dir.path().join("part.silico");
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && disk_is(tab, Disk::Unchanged)
+        });
+        (dir, sessions, path, tab)
+    }
+
+    /// Whether `tab`'s last `status` found its file so.
+    fn disk_is(tab: &Tab, disk: Disk) -> bool {
+        tab.status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(disk))
+    }
+
+    /// The pin renamed in `tab`, then undone back to the file's document, its toasts taken:
+    /// a transaction open with nothing changed.
+    fn renamed_and_undone(tab: &mut Tab, sessions: &FakeSessions) {
+        tab.rename(sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        polled_until(tab, sessions, |tab| tab.quiet() && tab.undoable());
+        tab.step(sessions, true);
+        polled_until(tab, sessions, |tab| tab.quiet() && tab.redoable());
+        assert!(tab.transaction && !tab.unsaved());
+        tab.take_toasts();
+    }
+
+    #[test]
+    fn a_save_whose_commit_finds_the_document_begin_saw_says_nothing_to_save() {
+        use crate::toast::Kind::Info;
+        // The pin renamed, then undone, Save pressed while the undo is in flight: the commit
+        // finds the document `begin` saw and writes nothing, and, the file found unchanged on
+        // disk, the toast says so.
+        let (_dir, sessions, _path, mut tab) = opened_watching(BLOCK);
+        tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
+        tab.take_toasts();
+        tab.step(&sessions, true);
+        assert!(tab.unsaved());
+        tab.save(&sessions, false);
+        assert_eq!(tab.saves, 0, "the save waits behind the undo");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
+        assert_eq!(tab.saves, 1);
+        assert!(disk_is(&tab, Disk::Unchanged));
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [
+                ("Undid: Rename Pin".to_owned(), Info),
+                (
+                    "Nothing to save: part.silico matches the file.".to_owned(),
+                    Info
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_commit_that_writes_nothing_says_the_file_matches_only_if_status_still_finds_it_so() {
+        // The file found unchanged as the commit is sent, but `status` giving no comparison
+        // as its answer is taken (each answer taken here by hand, `status` held so): "matches
+        // the file" isn't said. Once it's found so at both, at the commit's revision, it is.
+        use crate::toast::Kind::Info;
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        renamed_and_undone(&mut tab, &sessions);
+        set_disk(&mut tab, Some(Disk::Unchanged));
+        tab.save(&sessions, false);
+        assert_eq!(tab.saves, 1, "the commit sent, the file found unchanged");
+        let at = tab.revision;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !tab.under.is_empty() {
+            set_disk(&mut tab, None);
+            tab.take_answers(&sessions);
+            assert!(std::time::Instant::now() < deadline, "never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        // Answered, writing nothing, at the same revision as `status` was read at.
+        assert!(!tab.transaction);
+        assert_eq!((tab.revision, tab.status_revision), (at, at));
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        // The matching case, with the watch: said.
+        let (_dir, sessions, _path, mut tab) = opened_watching(BLOCK);
+        renamed_and_undone(&mut tab, &sessions);
+        tab.save(&sessions, false);
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(
+                "Nothing to save: part.silico matches the file.".to_owned(),
+                Info
+            )]
+        );
+    }
+
+    #[test]
+    fn a_commit_that_writes_nothing_over_a_file_changed_on_disk_says_nothing_matches() {
+        // #514's second round: an unchanged transaction's commit writes nothing over a file
+        // another program wrote since, and the file doesn't match: nothing is toasted (the
+        // reload's banner tells of it).
+        let (_dir, sessions, path, mut tab) = opened_watching(BLOCK);
+        renamed_and_undone(&mut tab, &sessions);
+        written_by_another_program(&path, &BLOCK.replace("\"Pin\"", "\"Bolt\""));
+        polled_until(&mut tab, &sessions, |tab| disk_is(tab, Disk::Changed));
+        tab.save(&sessions, false);
+        assert_eq!(tab.saves, 1, "the commit sent");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+    }
+
+    #[test]
+    fn a_commit_that_writes_nothing_over_a_file_gone_from_disk_says_nothing_matches() {
+        let (_dir, sessions, path, mut tab) = opened_watching(BLOCK);
+        renamed_and_undone(&mut tab, &sessions);
+        std::fs::remove_file(&path).unwrap();
+        polled_until(&mut tab, &sessions, |tab| disk_is(tab, Disk::Gone));
+        tab.save(&sessions, false);
+        assert_eq!(tab.saves, 1, "the commit sent");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && !tab.transaction);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+    }
+
+    #[test]
+    fn a_save_says_its_revision_if_its_answer_gives_one() {
+        assert_eq!(
+            saved_words("part.silico", Some(3)),
+            "Saved part.silico (revision 3)"
+        );
+        assert_eq!(saved_words("part.silico", None), "Saved part.silico");
+        assert_eq!(stepped_words(true, None), "Undid one step");
+        assert_eq!(stepped_words(false, Some("Edit Pad")), "Redid: Edit Pad");
+    }
+
+    #[test]
+    fn a_stop_is_said_only_once_status_says_its_rebuild_stopped_at_the_tabs_revision() {
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        let at = tab.revision;
+        // `status` as saying the rebuild of `revision` is in `state`, with no count.
+        let said = |tab: &mut Tab, revision: Revision, state: RebuildState| {
+            if let Some(status) = tab.status.as_mut() {
+                status.rebuild.revision = revision;
+                status.rebuild.state = state;
+                status.rebuild.progress = None;
+            }
+            tab.stop_asked = Some(at);
+            tab.stop_seen();
+            (tab.stop_asked, tab.take_stopped())
+        };
+        // Still running: waited on.
+        assert_eq!(said(&mut tab, at, RebuildState::Running), (Some(at), None));
+        // Resumed (Ctrl+B) and built before the poll that would have seen it stopped: let
+        // go, nothing said.
+        assert_eq!(said(&mut tab, at, RebuildState::Done), (None, None));
+        // An edit landed first: the tab at a newer revision than the rebuild stopped.
+        tab.revision = rev(at.number() + 1);
+        assert_eq!(said(&mut tab, at, RebuildState::Stopped), (None, None));
+        // Another revision's rebuild running: let go.
+        assert_eq!(
+            said(&mut tab, rev(at.number() + 1), RebuildState::Running),
+            (None, None)
+        );
+        // Stopped at the tab's revision: said, uncounted.
+        tab.revision = at;
+        assert_eq!(
+            said(&mut tab, at, RebuildState::Stopped),
+            (None, Some(StoppedAt::Uncounted))
+        );
+    }
+
+    #[test]
+    fn nothing_to_undo_or_redo_is_said_only_with_the_sessions_counts_read_at_its_revision() {
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        // The newest status of an older revision than the tab's: nothing said.
+        let read = tab.status_revision;
+        tab.status_revision = rev(read.number() + 1);
+        tab.nothing_to_step(true);
+        tab.nothing_to_step(false);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        tab.status_revision = read;
+        // No status yet: nothing said.
+        let status = tab.status.take();
+        tab.nothing_to_step(true);
+        tab.nothing_to_step(false);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        // Both read: said.
+        tab.status = status;
+        tab.nothing_to_step(true);
+        assert_eq!(toasts_said(tab.take_toasts()).len(), 1);
+    }
+
+    #[test]
+    fn nothing_to_undo_redo_or_save_is_said_only_where_its_so() {
+        use crate::toast::Kind::Info;
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        // Just opened, its file found unchanged on disk: nothing to step, nothing to save
+        // (the prototype's words).
+        set_disk(&mut tab, Some(Disk::Unchanged));
+        tab.nothing_to_step(true);
+        tab.nothing_to_step(false);
+        tab.nothing_to_save();
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [
+                ("Nothing to undo".to_owned(), Info),
+                ("Nothing to redo".to_owned(), Info),
+                (
+                    "Nothing to save: part.silico matches the file.".to_owned(),
+                    Info
+                ),
+            ]
+        );
+        // A rename in flight: Redo is off for want of its answer, not of a step, and the
+        // document is unsaved: nothing said.
+        tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        tab.nothing_to_step(false);
+        tab.nothing_to_save();
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        // Answered: Undo has the rename to take back, Redo nothing, and Save the rename.
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
+        tab.nothing_to_step(true);
+        tab.nothing_to_save();
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        tab.nothing_to_step(false);
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [("Nothing to redo".to_owned(), Info)]
+        );
+    }
+
+    #[test]
+    fn undo_asked_as_the_first_edit_begins_waits_for_it_and_takes_it_back() {
+        // #544: no transaction open; a rename, its `begin` and its edit sent, neither
+        // answered. Undo is on (it waits behind them, as SolidWorks' Undo takes back what was
+        // just done), "Nothing to undo" isn't said, and the undo, sent once they've answered,
+        // takes the rename back: Pin is Pin again, with the rename to redo.
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        assert!(!tab.transaction && !tab.undoable());
+        let sent = tab.sent.len();
+        tab.rename(&sessions, pin.clone(), "PinA");
+        assert!(tab.beginning && !tab.transaction);
+        assert!(tab.undoable());
+        tab.nothing_to_step(true);
+        tab.step(&sessions, true);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.quiet()
+                && tab.synced()
+                && tab
+                    .timeline
+                    .as_ref()
+                    .is_some_and(|timeline| timeline.revision == tab.revision)
+        });
+        assert_eq!(
+            tab.sent[sent..],
+            [Sent::Begin, Sent::Edit("name".to_owned()), Sent::Undo(None)]
+        );
+        assert_eq!(
+            tab.entry(pin.as_str()).map(|entry| entry.name.as_str()),
+            Some("Pin")
+        );
+        let counts = tab.transaction().map(|counts| (counts.undo, counts.redo));
+        assert_eq!(counts, Some((0, 1)));
+        assert!(
+            !toasts_said(tab.take_toasts())
+                .iter()
+                .any(|(text, _)| text == NOTHING_TO_UNDO)
+        );
+    }
+
+    #[test]
+    fn an_undo_or_a_redo_is_said_once_its_answer_is_taken_never_as_it_is_sent() {
+        use crate::toast::Kind::Info;
+        // The pin renamed: one step, "Rename Pin" (by hand). Its undo and its redo, each
+        // said in the poll that takes the core's answer, nothing said as it's sent.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
+        tab.take_toasts();
+        tab.step(&sessions, true);
+        assert!(tab.stepping());
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        polled_until(&mut tab, &sessions, |tab| !tab.stepping());
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [("Undid: Rename Pin".to_owned(), Info)]
+        );
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.redoable());
+        tab.step(&sessions, false);
+        assert!(tab.stepping());
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        polled_until(&mut tab, &sessions, |tab| !tab.stepping());
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [("Redid: Rename Pin".to_owned(), Info)]
+        );
+    }
+
     #[test]
     fn a_refused_undo_leaves_what_undo_and_redo_name_and_the_count_as_they_were() {
         // The pin renamed through the session: one step, "Rename Pin" (by hand). Then an
@@ -12455,9 +13473,12 @@ mod tests {
             sketch: None,
             offered: false,
             lands: Lands::Nothing,
+            said: Some(stepped_words(true, Some("Rename Pin"))),
         });
         polled_until(&mut tab, &sessions, |tab| !tab.stepping());
         assert!(tab.message.is_some(), "the undo wasn't refused");
+        // Refused: not said as done.
+        assert_eq!(toasts_said(tab.take_toasts()), []);
         polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
         assert_eq!(tab.undo_step().as_deref(), Some("Rename Pin"));
         assert_eq!(tab.redo_step().as_deref(), None);
@@ -12673,6 +13694,29 @@ mod tests {
             .as_ref()
             .map(|reloaded| reloaded.unlisted.clone())
             .unwrap_or_default()
+    }
+
+    /// What the reload banner shown lists as changed, once its diff answers: each row's
+    /// feature, field, and text. A banner whose diff was refused fails the test.
+    fn banner_listed(tab: &mut Tab, sessions: &FakeSessions) -> Vec<(String, String, String)> {
+        taken_until(tab, sessions, |tab| {
+            tab.reloaded
+                .as_ref()
+                .is_some_and(|reloaded| !matches!(reloaded.changes, Changes::Asking))
+        });
+        match &tab.reloaded.as_ref().unwrap().changes {
+            Changes::Listed(listed) => listed
+                .rows
+                .iter()
+                .map(|row| (row.feature.clone(), row.field.clone(), row.text.clone()))
+                .collect(),
+            other => panic!("the reload's changes not listed: {other:?}"),
+        }
+    }
+
+    /// `(feature, field, text)`, as [`banner_listed`] gives a row.
+    fn listed_row(feature: &str, field: &str, text: &str) -> (String, String, String) {
+        (feature.to_owned(), field.to_owned(), text.to_owned())
     }
 
     /// No reload unlisted.
@@ -13175,6 +14219,40 @@ mod tests {
     }
 
     #[test]
+    fn undo_asked_behind_a_refused_first_edit_says_nothing_to_undo_and_sends_nothing() {
+        // #544: no transaction open; a radius of -1 typed for the pin (refused by the gate),
+        // then Undo before any answer is taken: it waits behind the edit. The refusal rolls
+        // back the transaction begun for it, so the undo comes up with nothing to undo and no
+        // transaction: said so, once, and never sent (the core refuses `undo` outside one).
+        let (_dir, sessions, mut tab, pin) = pin_renamed();
+        tab.save(&sessions, false);
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert!(!tab.transaction);
+        // The save's own toast let go.
+        tab.take_toasts();
+        let from = tab.sent.len();
+        tab.edit(&sessions, field_set(&pin, "radius", "-1"));
+        assert!(tab.undoable());
+        tab.step(&sessions, true);
+        assert_eq!(toasts_said(tab.take_toasts()), []);
+        polled_until(&mut tab, &sessions, Tab::quiet);
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(
+            said.contains("radius"),
+            "the radius wasn't refused: {said:?}"
+        );
+        assert_eq!(
+            tab.sent[from..],
+            [Sent::Begin, Sent::Edit("radius".to_owned()), Sent::Rollback]
+        );
+        assert!(!tab.transaction);
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)]
+        );
+    }
+
+    #[test]
     fn a_plain_edit_queued_after_a_refused_one_is_applied_in_its_own_transaction() {
         // The same, but another rename queued behind the refused one: sent after the empty
         // transaction is rolled back, it begins its own, and is applied, nothing lost.
@@ -13483,6 +14561,14 @@ mod tests {
             resets + 1,
             "the reload announced more than once"
         );
+        // The banner names what the other program changed: the pin's radius, 0.5 → 0.6, as
+        // BLOCK and the file it wrote differ, and nothing else.
+        assert_eq!(
+            banner_listed(&mut tab, &sessions),
+            vec![listed_row("Pin", "radius", "0.5 → 0.6")]
+        );
+        assert_eq!(banner(&tab), Some((rev(1), rev(2))));
+        assert_eq!(banner_unlisted(&tab), NONE_UNLISTED);
     }
 
     #[test]
@@ -13601,6 +14687,14 @@ mod tests {
             assert_eq!(tab.resets, resets, "save as: {save_as}");
             assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
             assert_eq!(revision_now(&tab, &sessions), rev(5), "save as: {save_as}");
+            // The banner names what the second write changed: the pin, Bolt then Nut, and
+            // nothing else (both writes are BLOCK but for that name).
+            assert_eq!(
+                banner_listed(&mut tab, &sessions),
+                vec![listed_row("Nut", "name", r#""Bolt" → "Nut""#)],
+                "save as: {save_as}"
+            );
+            assert_eq!(banner(&tab), Some((rev(4), rev(5))), "save as: {save_as}");
         }
     }
 
@@ -14191,16 +15285,266 @@ mod tests {
 
     #[test]
     fn a_refused_undo_in_sketch_mode_gives_its_redo_nothing_to_give_back() {
-        // An undo in sketch mode with nothing to undo (no transaction is open): refused, and
-        // said; none of the mode's own edits undone, so none for its Redo.
+        // An undo in sketch mode the core refuses (#351): sent against a revision the session
+        // isn't at, a transaction open with an edit in it to undo, so the stale revision alone
+        // refuses it. Said; none of the mode's own edits undone, so none for its Redo.
         let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
-        assert!(!tab.transaction);
+        polled_until(&mut tab, &sessions, |tab| tab.timeline.is_some());
+        tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
         tab.sketch = Some(SketchMode::new(3, None));
-        tab.step(&sessions, true);
-        assert!(tab.stepping(), "nothing asked");
+        tab.message = None;
+        tab.under.push(Under::Step {
+            running: sessions.undo(&tab.id, rev(99), None),
+            undo: true,
+            sketch: Some(3),
+            offered: false,
+            lands: Lands::Nothing,
+            said: None,
+        });
         taken_until(&mut tab, &sessions, |tab| !tab.stepping());
         assert!(tab.message.is_some(), "the undo wasn't refused");
         assert_eq!(tab.sketch.as_ref().map(|mode| mode.undone), Some(0));
+        assert!(!tab.redoable());
+    }
+
+    #[test]
+    fn an_undo_asked_in_sketch_mode_with_no_transaction_open_says_so_and_sends_nothing() {
+        // An undo in sketch mode with nothing to undo (no transaction is open): said, and
+        // never sent, as the core refuses `undo` outside a transaction (#544: an undo that
+        // waited behind a first edit the core refused comes up so); none of the mode's own
+        // edits undone, so none for its Redo.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        assert!(!tab.transaction);
+        tab.sketch = Some(SketchMode::new(3, None));
+        let sent = tab.sent.clone();
+        tab.step(&sessions, true);
+        assert!(!tab.stepping(), "an undo still asked");
+        assert_eq!(tab.sent, sent, "the undo was sent");
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)]
+        );
+        assert_eq!(tab.sketch.as_ref().map(|mode| mode.undone), Some(0));
+    }
+
+    #[test]
+    fn undo_asked_as_create_sketchs_add_is_sent_never_undoes_the_sketch() {
+        // #549's review: Create Sketch, then Undo before its add answers, with no transaction
+        // open and with one open (a rename before it). The undo waits for the add, and comes
+        // up at sketch mode's floor, the state the add came to, known only once it answered:
+        // nothing undone, said so; the sketch and sketch mode stay.
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        for open in [false, true] {
+            let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+            });
+            if open {
+                tab.rename(&sessions, pin.clone(), "PinA");
+                polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
+            }
+            assert_eq!(tab.transaction, open);
+            tab.take_toasts();
+            let from = tab.sent.len();
+            tab.create_sketch(&sessions, silico_core::document::OriginPlane::Xy);
+            assert!(tab.undoable(), "{open}");
+            tab.step(&sessions, true);
+            polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
+            let sent = &tab.sent[from..];
+            assert!(sent.contains(&Sent::Add), "{open}: {sent:?}");
+            assert!(
+                !sent.iter().any(|sent| matches!(sent, Sent::Undo(_))),
+                "{open}: {sent:?}"
+            );
+            let mode = tab.sketch.as_ref().expect("sketch mode left");
+            let sketch = mode.sketch.clone().expect("no sketch added");
+            let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
+            assert!(
+                text.contains(sketch.as_str()),
+                "{open}: the sketch is gone: {text}"
+            );
+            assert_eq!(
+                toasts_said(tab.take_toasts()),
+                [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)],
+                "{open}"
+            );
+        }
+    }
+
+    #[test]
+    fn undo_then_finish_before_create_sketchs_add_answers_stops_at_the_floor_and_discards_it() {
+        // #549's review, round 2: Create Sketch, then Undo, then Finish, all before the add
+        // answers, with no transaction open and with one open. Finish closes sketch mode
+        // before the undo comes up; the add's answer writes its floor into the undo all the
+        // same, so it's dropped there, said, and never sent. The sketch holds nothing, so
+        // its Finish discards it (#526): Cancel's rollback, or its undo back to where sketch
+        // mode opened, the only one sent.
+        for open in [false, true] {
+            let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+            });
+            if open {
+                tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+                polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
+            }
+            tab.take_toasts();
+            let from = tab.sent.len();
+            let base = tab.revision;
+            tab.create_sketch(&sessions, silico_core::document::OriginPlane::Xy);
+            assert!(tab.undoable(), "{open}");
+            tab.step(&sessions, true);
+            tab.finish_sketch(&sessions, true);
+            polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
+            let sent = &tab.sent[from..];
+            let undone: Vec<&Sent> = sent
+                .iter()
+                .filter(|sent| matches!(sent, Sent::Undo(_) | Sent::Rollback))
+                .collect();
+            let discard = if open {
+                Sent::Undo(Some(base))
+            } else {
+                Sent::Rollback
+            };
+            assert_eq!(undone, [&discard], "{open}: {sent:?}");
+            let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
+            assert!(
+                !text.contains("\"Sketch1\""),
+                "{open}: sent {sent:?}; the sketch is kept: {text}"
+            );
+            assert!(
+                text.contains(if open { "PinA" } else { "\"Pin\"" }),
+                "{open}: {text}"
+            );
+            let toasts = toasts_said(tab.take_toasts());
+            assert!(
+                toasts.contains(&(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)),
+                "{open}: {toasts:?}"
+            );
+            assert!(
+                toasts.contains(&(EMPTY_SKETCH_DISCARDED.to_owned(), crate::toast::Kind::Info)),
+                "{open}: {toasts:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn undo_then_cancel_before_create_sketchs_add_answers_says_nothing_to_undo() {
+        // The same with Cancel: the undo comes up at the sketch's floor, said as nothing to
+        // undo, never as an undo done; Cancel then takes the sketch back, as it always does.
+        for open in [false, true] {
+            let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+            });
+            if open {
+                tab.rename(&sessions, FeatureId::new("a91cw0de").unwrap(), "PinA");
+                polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
+            }
+            tab.take_toasts();
+            tab.create_sketch(&sessions, silico_core::document::OriginPlane::Xy);
+            assert!(tab.undoable(), "{open}");
+            tab.step(&sessions, true);
+            tab.finish_sketch(&sessions, false);
+            polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
+            let toasts = toasts_said(tab.take_toasts());
+            assert!(
+                toasts.contains(&(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)),
+                "{open}: {toasts:?}"
+            );
+            assert!(
+                !toasts.iter().any(|(text, _)| text.starts_with("Undid")),
+                "{open}: {toasts:?}"
+            );
+            let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
+            assert!(!text.contains("\"Sketch1\""), "{open}: {text}");
+            assert!(
+                text.contains(if open { "PinA" } else { "\"Pin\"" }),
+                "{open}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn redo_asked_while_a_change_runs_says_nothing_to_redo_once_it_applies() {
+        // #549's review, round 2: the pin renamed and undone, so Redo has it; then the pin
+        // suppressed, and Redo before its answer: Redo is on (it waits behind it), but the
+        // suppression, applied, drops the redo branch, so the redo comes up with nothing to
+        // give back: said so, never sent, nothing refused.
+        let pin = FeatureId::new("a91cw0de").unwrap();
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        tab.rename(&sessions, pin.clone(), "PinA");
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.undoable());
+        tab.step(&sessions, true);
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.redoable());
+        tab.take_toasts();
+        tab.message = None;
+        let from = tab.sent.len();
+        tab.suppress_feature(&sessions, pin, true);
+        assert!(tab.redoable());
+        tab.step(&sessions, false);
+        // Answers taken with no status read meanwhile, so the redo comes up before a status of
+        // the suppression's revision counts what's left to redo (as when the suppression
+        // answers between a frame's status read and its answers).
+        taken_until(&mut tab, &sessions, Tab::quiet);
+        assert!(!tab.synced());
+        let sent = &tab.sent[from..];
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        assert!(matches!(sent[0], Sent::Suppress(_, true)), "{sent:?}");
+        let said = tab.message.clone().unwrap_or_default();
+        assert!(!said.contains("redo"), "the redo was refused: {said:?}");
+        assert_eq!(
+            toasts_said(tab.take_toasts()),
+            [(NOTHING_TO_REDO.to_owned(), crate::toast::Kind::Info)]
+        );
+        polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
+        let counts = tab.transaction().map(|counts| (counts.undo, counts.redo));
+        assert_eq!(counts, Some((1, 0)));
+    }
+
+    #[test]
+    fn undo_asked_behind_a_refused_first_move_suppression_or_deletion_says_nothing_to_undo() {
+        // #549's review: no transaction open; a move, a suppression, or a deletion of a
+        // feature the document doesn't hold, then Undo before any answer: it waits behind the
+        // change. The core refuses the change, which leaves the transaction begun for it open
+        // and empty: the undo comes up with nothing to undo as the status counts it, said so
+        // and never sent, so the change's refusal stays said.
+        let ghost = FeatureId::new("q9999999").unwrap();
+        for which in ["move", "suppress", "remove"] {
+            let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+            polled_until(&mut tab, &sessions, |tab| {
+                tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+            });
+            assert!(!tab.transaction);
+            let from = tab.sent.len();
+            match which {
+                "move" => tab.move_feature(&sessions, ghost.clone(), None),
+                "suppress" => tab.suppress_feature(&sessions, ghost.clone(), true),
+                _ => tab.remove_feature(&sessions, ghost.clone()),
+            }
+            assert!(tab.undoable(), "{which}");
+            tab.step(&sessions, true);
+            polled_until(&mut tab, &sessions, Tab::quiet);
+            let said = tab.message.clone().unwrap_or_default();
+            assert!(said.contains("q9999999"), "{which}: {said:?}");
+            let sent = &tab.sent[from..];
+            assert_eq!(sent.first(), Some(&Sent::Begin), "{which}: {sent:?}");
+            assert_eq!(sent.len(), 2, "{which}: {sent:?}");
+            assert!(
+                !sent.iter().any(|sent| matches!(sent, Sent::Undo(_))),
+                "{which}: {sent:?}"
+            );
+            assert!(tab.transaction, "{which}");
+            assert_eq!(
+                toasts_said(tab.take_toasts()),
+                [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)],
+                "{which}"
+            );
+        }
     }
 
     #[test]
@@ -14366,5 +15710,62 @@ mod tests {
         assert_eq!(extends_sent(&tab), 2);
         assert_eq!(place_in_text(&sessions, &tab, "pa000001"), [-20.0, 0.0]);
         assert_eq!(place_in_text(&sessions, &tab, "pa000002"), [30.0, 0.0]);
+    }
+
+    #[test]
+    fn a_sketch_holds_nothing_only_with_every_kind_of_member_there_and_empty() {
+        let sketch = |members: &str| {
+            format!(
+                r#"{{"id": "s0000001", "type": "sketch", "name": "Sketch1", "plane": "xy", {members}, "constraints": []}}"#
+            )
+        };
+        let empty = r#""points": [], "lines": [], "circles": [], "arcs": []"#;
+        assert!(holds_nothing(&sketch(empty)));
+        // A lone point, line, circle, or arc each holds something.
+        let point = r#"{"id": "pa000000", "x": 0, "y": 0}"#;
+        for kind in ["points", "lines", "circles", "arcs"] {
+            let held = empty.replace(
+                &format!(r#""{kind}": []"#),
+                &format!(r#""{kind}": [{point}]"#),
+            );
+            assert_ne!(held, empty, "{kind}");
+            assert!(!holds_nothing(&sketch(&held)), "{kind}");
+        }
+        // A member missing, not an array, or the text not JSON, or not an object: kept.
+        assert!(!holds_nothing(&sketch(
+            r#""points": [], "lines": [], "circles": []"#
+        )));
+        assert!(!holds_nothing(&sketch(
+            r#""points": [], "lines": {}, "circles": [], "arcs": []"#
+        )));
+        assert!(!holds_nothing("{"));
+        assert!(!holds_nothing("[]"));
+        assert!(!holds_nothing(""));
+        // A construction line holds something, as any line does.
+        let construction = empty.replace(
+            r#""lines": []"#,
+            r#""lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": true}]"#,
+        );
+        assert!(!holds_nothing(&sketch(&construction)));
+        // Constraints alone (on the origin and its axes) aren't what a Finish keeps it for.
+        let constrained = sketch(empty).replace(
+            r#""constraints": []"#,
+            r#""constraints": [{"id": "ca000000", "type": "perpendicular", "a": "x_axis", "b": "y_axis"}]"#,
+        );
+        assert!(holds_nothing(&constrained));
+        // The kinds that count, by hand: every curve and point, never a constraint.
+        let counted: Vec<ElementKind> = ElementKind::ALL
+            .into_iter()
+            .filter(|kind| is_geometry(*kind))
+            .collect();
+        assert_eq!(
+            counted,
+            [
+                ElementKind::Point,
+                ElementKind::Line,
+                ElementKind::Circle,
+                ElementKind::Arc
+            ]
+        );
     }
 }

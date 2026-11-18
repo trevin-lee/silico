@@ -412,7 +412,7 @@ pub(super) fn watch_file<P: Clients + 'static>(
         return false;
     }
     if let Some(disk) = session.disk.get() {
-        disk.when_changed(super::reloader(
+        disk.when_changed(super::reload::reloader(
             Arc::downgrade(registry),
             Arc::downgrade(session),
         ));
