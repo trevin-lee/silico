@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{self, Key, Modifiers, Ui};
-use silico_core::command::{Opened, Response, Running, SessionId, Sessions};
+use silico_core::command::{Closed, Opened, Response, Running, SessionId, Sessions};
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 
@@ -577,6 +577,9 @@ pub struct App<P: Clients + 'static> {
     /// Opens asked of documents whose sessions the thumbnails are still closing (their tabs
     /// gone), each path with `create`: sent once that close has answered.
     held_opens: Vec<(String, bool)>,
+    /// The closes of sessions whose opens answered while a quit closed the tabs (`take_open`),
+    /// never tabs: the window closes once they've answered too.
+    late_closes: Vec<Running<Closed>>,
     /// The side panes' widths, as dragged, and where they're kept, if anywhere.
     columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
@@ -699,6 +702,7 @@ impl<P: Clients + 'static> App<P> {
             wall: Arc::new(system_time),
             thumbs: None,
             held_opens: Vec::new(),
+            late_closes: Vec::new(),
             columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
@@ -1516,7 +1520,7 @@ impl<P: Clients + 'static> App<P> {
         }
         self.ask(ui, &mut next_frame);
         next_frame |= self.next_quit_save(ui.ctx());
-        if self.quitting && self.tabs.is_empty() {
+        if self.quitting && self.tabs.is_empty() && self.late_closes.is_empty() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         // The window never closes while a tab holds edits: the person is asked, unless a
@@ -1587,6 +1591,11 @@ impl<P: Clients + 'static> App<P> {
         let (answered, pending) =
             split_answered(std::mem::take(&mut self.opening), Running::try_take);
         self.opening = pending;
+        // A late open's close, answered or refused, waited for no more.
+        self.late_closes = std::mem::take(&mut self.late_closes)
+            .into_iter()
+            .filter_map(|close| close.try_take().err())
+            .collect();
         self.take_opens(answered);
         let mut refused = Vec::new();
         for tab in &mut self.tabs {
@@ -1736,6 +1745,21 @@ impl<P: Clients + 'static> App<P> {
                 return;
             }
         };
+        // Asked before a quit began and answering during it: its session closed at once,
+        // never a tab nor listed in Recent, as no open asked during the quit is (`open`); the
+        // window closes once that close has answered too.
+        if self.quitting {
+            let name = match &part {
+                Part::File(path) => crate::recent::name_of(path).to_owned(),
+                Part::Untitled(name) => name.clone(),
+            };
+            self.late_closes.push(self.sessions.close(&opened.session));
+            self.toasts.push(
+                Toast::info(start::not_opened_quitting(&[name])),
+                self.frame_time,
+            );
+            return;
+        }
         // An untitled part isn't listed until its first save gives it a file.
         if let Some(recents) = &self.recents
             && let Some(path) = part.path()
@@ -1767,19 +1791,6 @@ impl<P: Clients + 'static> App<P> {
         };
         if let Some(build) = &self.boxing {
             tab.boxing(Arc::clone(build));
-        }
-        // Asked before a quit began and answering during it: closed at once, never shown, as
-        // the quit closes every tab, so the window still closes once it has gone.
-        if self.quitting {
-            let name = tab.name().to_owned();
-            tab.close(&self.sessions);
-            self.tabs.insert(at, tab);
-            self.open_numbers.insert(id, number);
-            self.toasts.push(
-                Toast::info(start::not_opened_quitting(&[name])),
-                self.frame_time,
-            );
-            return;
         }
         self.tabs.insert(at, tab);
         self.open_numbers.insert(id, number);

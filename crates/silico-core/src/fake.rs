@@ -131,7 +131,16 @@ pub struct Hold {
     id: usize,
 }
 
+/// Holds each new client asked for on a thread a predicate picks, until it's released or
+/// dropped, or the kernel stops ([`hold_clients`](FakeKernel::hold_clients)).
+#[must_use = "dropping a hold releases it"]
+pub struct ClientHold {
+    shared: Arc<Shared>,
+    id: usize,
+}
+
 type Picks = dyn Fn(&Op) -> bool + Send + Sync;
+type PicksThread = dyn Fn(&std::thread::Thread) -> bool + Send + Sync;
 type Refuses = dyn Fn(&Op) -> Option<Error> + Send + Sync;
 type Answers = dyn Fn(&Op) -> Option<Reply> + Send + Sync;
 
@@ -153,8 +162,14 @@ struct State {
     running: usize,
     most_running: usize,
     holds: Vec<HoldRule>,
+    client_holds: Vec<ClientHoldRule>,
     refusals: Vec<Arc<Refuses>>,
     answers: Vec<Arc<Answers>>,
+}
+
+struct ClientHoldRule {
+    picks: Arc<PicksThread>,
+    released: bool,
 }
 
 struct HoldRule {
@@ -178,6 +193,7 @@ impl FakeKernel {
                 running: 0,
                 most_running: 0,
                 holds: Vec::new(),
+                client_holds: Vec::new(),
                 refusals: Vec::new(),
                 answers: Vec::new(),
             }),
@@ -304,6 +320,27 @@ impl FakeKernel {
         }
     }
 
+    /// Holds each new client asked for ([`Clients::client`]) on a thread `picks` takes
+    /// (called on that thread, with the kernel's state not locked), until the hold is
+    /// released or dropped, or the kernel stops. A session's open gives its engine a client
+    /// on the session's thread (named `session-N`) before it answers, so a hold on those
+    /// threads holds an open's answer, as a slow disk would; a read's client, made on its
+    /// caller's thread, isn't held by it.
+    pub fn hold_clients(
+        &self,
+        picks: impl Fn(&std::thread::Thread) -> bool + Send + Sync + 'static,
+    ) -> ClientHold {
+        let mut state = lock(&self.shared.state);
+        state.client_holds.push(ClientHoldRule {
+            picks: Arc::new(picks),
+            released: false,
+        });
+        ClientHold {
+            shared: Arc::clone(&self.shared),
+            id: state.client_holds.len() - 1,
+        }
+    }
+
     /// Refuses every request `refuses` returns an error for (called with the kernel's state
     /// locked, so it mustn't call the kernel), with that error, after it starts.
     pub fn refuse(&self, refuses: impl Fn(&Op) -> Option<Error> + Send + Sync + 'static) {
@@ -397,7 +434,38 @@ impl Clients for FakeKernel {
     type Client = FakeClient;
 
     fn client(&self) -> FakeClient {
-        let id = lock(&self.shared.state).clients.add_client();
+        // The holds whose rules pick this thread, asked with the state let go, then waited
+        // on until each is released or the kernel stops.
+        let rules: Vec<(usize, Arc<PicksThread>)> = lock(&self.shared.state)
+            .client_holds
+            .iter()
+            .enumerate()
+            .filter(|(_, rule)| !rule.released)
+            .map(|(at, rule)| (at, Arc::clone(&rule.picks)))
+            .collect();
+        let thread = std::thread::current();
+        let held: Vec<usize> = rules
+            .into_iter()
+            .filter(|(_, picks)| picks(&thread))
+            .map(|(at, _)| at)
+            .collect();
+        let mut state = lock(&self.shared.state);
+        while !state.stopping
+            && held.iter().any(|&at| {
+                state
+                    .client_holds
+                    .get(at)
+                    .is_some_and(|rule| !rule.released)
+            })
+        {
+            state = self
+                .shared
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+        let id = state.clients.add_client();
+        drop(state);
         tracing::debug!(client = id.number(), "fake kernel client started");
         FakeClient {
             shared: Arc::clone(&self.shared),
@@ -537,6 +605,24 @@ impl Hold {
 }
 
 impl Drop for Hold {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+impl ClientHold {
+    /// Lets the clients it holds, and any it would have held, be given.
+    pub fn release(&self) {
+        let mut state = lock(&self.shared.state);
+        if let Some(rule) = state.client_holds.get_mut(self.id) {
+            rule.released = true;
+        }
+        drop(state);
+        self.shared.changed.notify_all();
+    }
+}
+
+impl Drop for ClientHold {
     fn drop(&mut self) {
         self.release();
     }
@@ -3142,6 +3228,40 @@ fn parse_faces(words: &[&str]) -> Option<FaceRegions> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_client_asked_for_on_a_held_thread_is_given_once_the_hold_is_released_and_others_at_once() {
+        let kernel = Arc::new(FakeKernel::new(1).unwrap());
+        let hold = kernel.hold_clients(|thread| thread.name() == Some("held"));
+        // Asked on a thread the hold doesn't pick: given at once.
+        let _given = kernel.client();
+        let (given, told) = std::sync::mpsc::channel();
+        let asking = Arc::clone(&kernel);
+        let held = std::thread::Builder::new()
+            .name("held".to_owned())
+            .spawn(move || {
+                let _client = asking.client();
+                given.send(()).unwrap();
+            })
+            .unwrap();
+        assert!(
+            told.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "given while held"
+        );
+        hold.release();
+        told.recv_timeout(std::time::Duration::from_secs(30))
+            .unwrap();
+        held.join().unwrap();
+        // Released, it holds no more.
+        let again = Arc::clone(&kernel);
+        std::thread::Builder::new()
+            .name("held".to_owned())
+            .spawn(move || drop(again.client()))
+            .unwrap()
+            .join()
+            .unwrap();
+    }
 
     #[test]
     fn copies_the_protocol_refuses_are_refused_as_the_kernel_refuses_them() {

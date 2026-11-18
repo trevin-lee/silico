@@ -17290,6 +17290,57 @@ fn opens_panel_open_as_a_quit_begins_and_answered_during_it_opens_nothing_and_th
 }
 
 #[test]
+fn an_open_answering_after_a_quit_begins_is_closed_at_once_unlisted_and_the_window_still_closes() {
+    let f = fixture();
+    let b = f.file("b.silico", EXAMPLE);
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{}\n", b.to_str().unwrap()),
+    )
+    .unwrap();
+    let mut h = f.remembering();
+    let a = f.file("a.silico", EXAMPLE);
+    open_and_wait(&mut h, &a);
+    pin_renamed(&mut h, "a.silico");
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    step_until(&mut h, "a listed first", |h| {
+        recent_names(h) == ["a.silico", "b.silico"]
+    });
+    // b's open asked before the quit, its answer held: its session's engine is given no
+    // client until the hold is let go.
+    let opening = f.kernel.hold_clients(|thread| {
+        thread
+            .name()
+            .is_some_and(|name| name.starts_with("session-"))
+    });
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "b.silico")
+        .click();
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(tab_names(&h), ["a.silico"]);
+    let (hold, check) = quit_with_save_all_held(&f, &mut h);
+    let before = h.ctx.input(|input| input.time);
+    opening.release();
+    assert_eq!(
+        refusal_said(&mut h, before),
+        "Quitting: b.silico not opened"
+    );
+    for _ in 0..5 {
+        assert_eq!(tab_names(&h), ["a.silico"], "b shown as a tab");
+        step(&mut h);
+    }
+    assert_eq!(recent_names(&h), ["a.silico", "b.silico"], "b listed first");
+    the_quit_ends(&mut h, &a, hold, check);
+    // b's session closed before the window: its file free to open again.
+    let again = f.sessions.open(&b, false).wait();
+    assert!(again.result.is_ok(), "{:?}", again.result.err());
+}
+
+#[test]
 fn an_open_held_for_a_closing_session_is_refused_once_a_quit_closes_the_tabs() {
     // `block.silico`'s tab closed with its picture's meshing held, so its session is still
     // closing, and Recent's click on it held for that close; then a quit closes the tabs.
