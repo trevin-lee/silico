@@ -26838,41 +26838,48 @@ const BOXED_ROUNDED: &str = r#"{
 }
 "#;
 
-/// What the status bar says of the features a sketch edit reached, if it says anything:
-/// its words that begin "Check".
+/// What the first tab says of the features its last sketch edit listed, if it says
+/// anything and the status bar shows it.
 fn said_to_check(h: &AppHarness) -> Option<String> {
-    status_said(h, "Check")
+    h.state().tabs()[0]
+        .check
+        .clone()
+        .filter(|words| in_status_bar(h, words))
 }
+
+/// [`BOXED_ROUNDED`] in sketch mode, Split on, and its na000002 split at (50, 20), whose
+/// words are said: the split point's ID.
+fn rounded_split(f: &Fixture, h: &mut AppHarness) -> String {
+    step_until(h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(h, "Browser", "Box");
+    sketch_read(h);
+    sketch_button(h, "Split").click_accesskit();
+    step(h);
+    step(h);
+    assert_eq!(tool_on(h), Some(silico_app::sketch::tools::Choice::Split));
+    sketch_events(f, h, &clicked(50.3, 20.0));
+    settled(h);
+    step_until(h, "the split's words", |h| {
+        said_to_check(h).as_deref() == Some(NEAR_ROUND_SPLIT)
+    });
+    point_at(&sketch_of_text(f, h, "s0000001"), 50.0, 20.0)
+}
+
+/// What a split of na000002 says of the one feature naming its points.
+const NEAR_ROUND_SPLIT: &str = "Near round uses the line you split: check it";
 
 #[test]
 fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_changed() {
-    use silico_app::sketch::tools::Choice;
     let f = fixture();
     let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
-    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
-    double_click(&mut h, "Browser", "Box");
-    sketch_read(&mut h);
-    sketch_button(&h, "Split").click_accesskit();
-    step(&mut h);
-    step(&mut h);
-    assert_eq!(tool_on(&h), Some(Choice::Split));
     // na000002, pa000002 to pa000003, split at (50, 20): Near round names its start, so
     // it's the one to check; Far round names neither of its points.
-    sketch_events(&f, &mut h, &clicked(50.3, 20.0));
-    settled(&mut h);
-    let sketch = sketch_of_text(&f, &h, "s0000001");
-    let split = point_at(&sketch, 50.0, 20.0);
+    let split = rounded_split(&f, &mut h);
     assert_eq!(
-        line_between(&sketch, "pa000002", &split).as_deref(),
+        line_between(&sketch_of_text(&f, &h, "s0000001"), "pa000002", &split).as_deref(),
         Some("na000002")
     );
-    step_until(&mut h, "the split's words", |h| {
-        said_to_check(h).as_deref() == Some("Check Near round: it names the curve split")
-    });
-    assert!(in_status_bar(
-        &h,
-        "Check Near round: it names the curve split"
-    ));
+    assert!(in_status_bar(&h, NEAR_ROUND_SPLIT));
     // Its split point deleted: the pieces joined, which Near round names too.
     select_member(&mut h, &split, silico_core::document::ElementKind::Point);
     h.key_press(eframe::egui::Key::Delete);
@@ -26883,7 +26890,7 @@ fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_chang
         Some("na000002")
     );
     step_until(&mut h, "the join's words", |h| {
-        said_to_check(h).as_deref() == Some("Check Near round: it names a piece joined")
+        said_to_check(h).as_deref() == Some("Near round uses the lines you joined: check it")
     });
     // na000001, pa000001 to pa000002, split at (30, 10): both rounds name one of its
     // points, listed in timeline order.
@@ -26892,7 +26899,7 @@ fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_chang
     assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
     step_until(&mut h, "the second split's words", |h| {
         said_to_check(h).as_deref()
-            == Some("Check Near round and Far round: they name the curve split")
+            == Some("Near round and Far round use the line you split: check them")
     });
     // na000003, pa000003 to pa000004, split at (30, 30): no feature names either point, so
     // nothing is said, and the last split's words are gone with the new edit.
@@ -26900,7 +26907,11 @@ fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_chang
     settled(&mut h);
     assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
     step(&mut h);
-    assert_eq!(said_to_check(&h), None);
+    assert_eq!(h.state().tabs()[0].check, None);
+    assert!(!anywhere(
+        &h,
+        "Near round and Far round use the line you split: check them"
+    ));
     // Trim to closest on na000004, pa000004 to pa000001, which nothing crosses: the whole
     // line goes, and Far round names its end.
     h.key_press(eframe::egui::Key::T);
@@ -26919,7 +26930,7 @@ fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_chang
             .all(|line| line.id.as_str() != "na000004")
     );
     step_until(&mut h, "the trim's words", |h| {
-        said_to_check(h).as_deref() == Some("Check Far round: it names the curve trimmed")
+        said_to_check(h).as_deref() == Some("Far round uses the line you trimmed: check it")
     });
     assert!(
         h.state().tabs()[0]
@@ -26933,7 +26944,11 @@ fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_chang
     sketch_events(&f, &mut h, &clicked(40.0, 20.0));
     settled(&mut h);
     assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
-    assert_eq!(said_to_check(&h), None);
+    assert_eq!(h.state().tabs()[0].check, None);
+    assert!(!anywhere(
+        &h,
+        "Far round uses the line you trimmed: check it"
+    ));
     // The rounds' names are as they were: never re-pointed.
     let text = text_of(&f.sessions, &h);
     for name in [
@@ -26942,6 +26957,117 @@ fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_chang
     ] {
         assert!(text.contains(name), "{name}");
     }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_of_the_sketch_lets_go_of_what_its_split_said() {
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    rounded_split(&f, &mut h);
+    // Cancel takes the split back, and what it said with it.
+    leave_sketch(&mut h, false);
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    assert_eq!(h.state().tabs()[0].check, None);
+    assert!(!anywhere(&h, NEAR_ROUND_SPLIT));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_of_the_sketch_keeps_what_its_split_said() {
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    rounded_split(&f, &mut h);
+    // Finish keeps the split, so the features to check stay said.
+    leave_sketch(&mut h, true);
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    assert_eq!(said_to_check(&h).as_deref(), Some(NEAR_ROUND_SPLIT));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_drag_after_a_split_lets_go_of_what_the_split_said() {
+    use silico_app::sketch::PointerAction::{Move, Press, Release};
+    let f = fixture();
+    // Solves that count the sketch's freedoms, so its points can be dragged.
+    counting(&f);
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    rounded_split(&f, &mut h);
+    // No tool on: pa000004, at (10, 30), dragged to (12, 33), pressed on a read of the
+    // split, as a drag begins only from one.
+    h.state_mut().tabs_mut()[0].sketch_choose(None);
+    step_until(&mut h, "the read of the split", |h| {
+        let tab = &h.state().tabs()[0];
+        sketch_mode(h)
+            .and_then(|mode| mode.read.as_ref())
+            .and_then(|read| read.model)
+            == Some(tab.revision)
+    });
+    sketch_events(
+        &f,
+        &mut h,
+        &[pointer(Press, 10.0, 30.0), pointer(Move, 12.0, 33.0)],
+    );
+    drag_frames(&mut h, 1);
+    sketch_events(&f, &mut h, &[pointer(Release, 12.0, 33.0)]);
+    settled(&mut h);
+    step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
+    assert!(drag_sends(&h, "drag_end") >= 1);
+    assert_eq!(h.state().tabs()[0].check, None);
+    assert!(!anywhere(&h, NEAR_ROUND_SPLIT));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_split_answered_after_the_next_edit_was_asked_says_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    sketch_read(&mut h);
+    settled(&mut h);
+    sketch_button(&h, "Split").click_accesskit();
+    step(&mut h);
+    step(&mut h);
+    // Every solve held: the split of na000001, which both rounds name, waits on its solve.
+    f.sketches.hold();
+    sketch_events(&f, &mut h, &clicked(30.0, 10.3));
+    step(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::SketchEdit("sketch_split"))
+    );
+    // Meanwhile a line is drawn, (20, 20) to (40, 20): the person's next edit, asked
+    // before the split answers.
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(20.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 20.0));
+    f.sketches.release();
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 6);
+    assert!(
+        line_between(
+            &sketch,
+            &point_at(&sketch, 20.0, 20.0),
+            &point_at(&sketch, 40.0, 20.0)
+        )
+        .is_some()
+    );
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].check, None);
+    assert!(!anywhere(
+        &h,
+        "Near round and Far round use the line you split: check them"
+    ));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -30805,10 +30931,10 @@ fn a_line_dragged_by_its_edge_moves_whole_and_a_circles_edge_passes_the_cores_pr
 fn a_dimensions_value_typed_lets_go_of_what_the_last_edit_said_as_every_next_edit_does() {
     let f = fixture();
     let mut h = boxed_length(&f);
-    // What a split said of the features it reached, then the bottom's length typed in its
+    // What a split said of the features it listed, then the bottom's length typed in its
     // Modify box: the person's next action, so the words go, as a click's or a Delete's do.
-    let told = "Check Near round: it names the curve split";
-    h.state_mut().tabs_mut()[0].told = Some(told.to_owned());
+    let told = "Near round uses the line you split: check it";
+    h.state_mut().tabs_mut()[0].check = Some(told.to_owned());
     step(&mut h);
     assert!(in_status_bar(&h, told));
     edit_length(&f, &mut h, "98");
@@ -30818,7 +30944,7 @@ fn a_dimensions_value_typed_lets_go_of_what_the_last_edit_said_as_every_next_edi
             .as_deref(),
         Some("98")
     );
-    assert_eq!(h.state().tabs()[0].told, None);
+    assert_eq!(h.state().tabs()[0].check, None);
     assert!(!in_status_bar(&h, told));
     assert_eq!(never_waits::waits(), 0);
 }
