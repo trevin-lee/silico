@@ -23822,19 +23822,31 @@ fn cancel_of_a_sketch_after_earlier_edits_undoes_to_where_it_opened_byte_for_byt
 const DISCARDED: &str = "Empty sketch discarded. Nothing was added.";
 
 /// Stepped until everything of the first tab's has answered, as [`settled`]; each toast
-/// shown on the way, in order.
+/// shown on the way, in order, never one already shown when it began (an earlier step's,
+/// still up).
 fn toasts_till_settled(h: &mut AppHarness) -> Vec<String> {
-    let seen = std::cell::RefCell::new(Vec::<String>::new());
+    let shown = |h: &AppHarness| -> Vec<(String, f64)> {
+        h.state()
+            .toasts()
+            .iter()
+            .map(|shown| (shown.toast.text.clone(), shown.at))
+            .collect()
+    };
+    let before = shown(h);
+    let seen = std::cell::RefCell::new(Vec::<(String, f64)>::new());
     step_until(h, "everything answered", |h| {
-        if let Some((said, _)) = h.state().toast() {
-            let mut seen = seen.borrow_mut();
-            if seen.last().map(String::as_str) != Some(said) {
-                seen.push(said.to_owned());
+        let mut seen = seen.borrow_mut();
+        for toast in shown(h) {
+            if !before.contains(&toast) && !seen.contains(&toast) {
+                seen.push(toast);
             }
         }
         is_settled(h)
     });
     seen.into_inner()
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect()
 }
 
 /// A line drawn in the open sketch by the Line tool (L), clicked at `from` then at `to`, and
