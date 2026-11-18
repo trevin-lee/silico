@@ -313,6 +313,10 @@ pub fn not_documents(names: &[String]) -> String {
 /// ([`not_opened_quitting`]).
 pub const NEW_PART_QUITTING: &str = "Quitting: no new part opened";
 
+/// What a toast says of Open asked for (Open… on the start page, File > Open…, Ctrl+O)
+/// while a quit closes the tabs: no panel or question is opened.
+pub const OPEN_QUITTING: &str = "Quitting: no document opened";
+
 /// What a toast says of the documents asked for while a quit closes the tabs (dropped on
 /// the window, picked in Open, typed in its path, or a recent one), `names`, none of which
 /// was opened.

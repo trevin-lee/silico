@@ -136,10 +136,6 @@ fn key_place(tab: &Tab, collapsed: bool) -> crate::feature_menu::Place {
 /// What the search says of a document's command with no document shown (the start page).
 pub const NO_DOCUMENT: &str = "No document open";
 
-/// Why the command search lists New and Open off while a quit closes the tabs: neither
-/// opens anything then.
-pub const QUITTING: &str = "Quitting: the tabs are closing";
-
 /// The timeline's arrows pressed this frame (interact.js's `keydown`: → and ←), each taken,
 /// in the order pressed: a press and each repeat of one held down, as a browser's list
 /// walks; with Shift too, as the prototype takes them, but never with Alt, Ctrl or Command
@@ -954,7 +950,9 @@ impl<P: Clients + 'static> App<P> {
     /// drawn first, `crate::thumbs`), once that close has answered, since the core refuses
     /// an open of a file another session holds. Every open goes through here (Open's panel
     /// and typed path, a recent document, a drop, an open held for a close): none while a
-    /// quit closes the tabs ([`refused_quitting`](Self::refused_quitting)).
+    /// quit closes the tabs ([`refused_quitting`](Self::refused_quitting)), which catches
+    /// a panel or question open before the quit began, as Open itself is refused once it
+    /// has (`ask_open`).
     pub fn open(&mut self, path: &str, create: bool) {
         if self.refused_quitting(|| {
             start::not_opened_quitting(&[crate::recent::name_of(path).to_owned()])
@@ -992,7 +990,8 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// Whether a quit is closing the tabs, so nothing opens (New, Open, a recent document, a
-    /// drop, an open held for a close): if so, `said` is shown in a toast. A part or document
+    /// drop, an open held for a close): if so, `said` is shown in a toast, from the start of
+    /// this frame ([`frame_time`](Self::frame_time)). A part or document
     /// opened then would be a tab the quit never closes, so the window would never close,
     /// and the quit, never ended, would refuse every later open. Every route that opens
     /// asks for the frame after, which shows the toast.
@@ -1769,6 +1768,19 @@ impl<P: Clients + 'static> App<P> {
         if let Some(build) = &self.boxing {
             tab.boxing(Arc::clone(build));
         }
+        // Asked before a quit began and answering during it: closed at once, never shown, as
+        // the quit closes every tab, so the window still closes once it has gone.
+        if self.quitting {
+            let name = tab.name().to_owned();
+            tab.close(&self.sessions);
+            self.tabs.insert(at, tab);
+            self.open_numbers.insert(id, number);
+            self.toasts.push(
+                Toast::info(start::not_opened_quitting(&[name])),
+                self.frame_time,
+            );
+            return;
+        }
         self.tabs.insert(at, tab);
         self.open_numbers.insert(id, number);
         if shown {
@@ -2344,9 +2356,14 @@ impl<P: Clients + 'static> App<P> {
             label: command.label(),
             can,
         };
-        // As New and Open refuse while a quit closes the tabs (`refused_quitting`).
-        if self.quitting && matches!(command, Command::New | Command::Open) {
-            return row(Can::Off(Some(QUITTING.to_owned())));
+        // As New and Open refuse while a quit closes the tabs (`refused_quitting`), in their
+        // toasts' words.
+        if self.quitting {
+            match command {
+                Command::New => return row(Can::Off(Some(start::NEW_PART_QUITTING.to_owned()))),
+                Command::Open => return row(Can::Off(Some(start::OPEN_QUITTING.to_owned()))),
+                _ => {}
+            }
         }
         let tab = self
             .active_place()
@@ -2761,6 +2778,12 @@ impl<P: Clients + 'static> App<P> {
     /// another native dialog is open (a Browse…'s), the typed-path Open asked instead; while
     /// Open's own panel is open, nothing.
     fn ask_open(&mut self, ctx: &egui::Context) {
+        // Nothing asked while a quit closes the tabs, whose pick would only be refused: a
+        // panel or question open holds up the quit's Save panels (`next_quit_save`).
+        if self.refused_quitting(|| start::OPEN_QUITTING.to_owned()) {
+            ctx.request_repaint();
+            return;
+        }
         let typed = Asking::Open;
         match &self.browsing {
             Some(browsing) if browsing.what == Browsed::Open => return,
