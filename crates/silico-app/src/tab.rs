@@ -17,7 +17,7 @@ use silico_core::command::{
 };
 use silico_core::disk::Disk;
 use silico_core::document::json::{At, Node, Plain, Value};
-use silico_core::document::{ElementId, FeatureId, Reference};
+use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
 use silico_core::extend::End;
 use silico_core::kernel::Clients;
 use silico_core::sketch_tools::{AddToken, OfferChoice, OfferRequest, RelateEdit, RelationTool};
@@ -345,11 +345,17 @@ enum Queued {
     /// at the state it ended at, so what sketch mode undid isn't redone past its edits. A
     /// dialog's carries its serial (`dialog`), so its Cancel lands what it unmade. An OK or a
     /// Finish carries what the one step it makes says (`words`: "Edit Pad", "Add Sketch1").
+    /// Create Sketch's Finish carries its sketch mode's serial (`created`) until it's judged
+    /// ([`Tab::judge_created`]): once everything asked before it has answered, the sketch its
+    /// add made is read at the revision they came to, and, holding no points, lines, circles,
+    /// or arcs, closed as a Cancel instead (the prototype's `finish`,
+    /// docs/design/m5-ui/js/sketch.js). None for every other close, and once judged.
     Closed {
         ok: bool,
         sketch: bool,
         dialog: Option<u64>,
         words: Option<Words>,
+        created: Option<u64>,
     },
     /// Restore (Fable's decision of 2026-11-04, section 2): the text of `revision`, the one
     /// a reload replaced, read (`text` with `revision`), then put back as an edit.
@@ -458,6 +464,44 @@ const CURVES_GONE: &str = "the curves selected are no longer in the sketch";
 /// Why a click (a constraint tool's, or Construction's) waiting to be planned is let go at its
 /// sketch mode's Cancel, which takes back its edits anyway.
 const SKETCH_CANCELLED: &str = "the sketch was cancelled first";
+
+/// What Create Sketch's Finish of a sketch holding nothing toasts, as the prototype's
+/// `finish` does (docs/design/m5-ui/js/sketch.js).
+const EMPTY_SKETCH_DISCARDED: &str = "Empty sketch discarded. Nothing was added.";
+
+/// Whether `text`, a sketch's feature as `text` gives it, holds no geometry: each list of
+/// a kind that counts ([`is_geometry`]) there and empty, construction geometry counting as
+/// any other. Anything else (a text that doesn't read, a list missing) holds something, so a
+/// Finish judged on it keeps the sketch.
+fn holds_nothing(text: &str) -> bool {
+    use silico_core::document::json::{Value, read};
+    let Ok(node) = read(text.as_bytes()) else {
+        return false;
+    };
+    let Value::Object(members) = node.value else {
+        return false;
+    };
+    ElementKind::ALL
+        .into_iter()
+        .filter(|kind| is_geometry(*kind))
+        .all(|kind| {
+            members.iter().any(|member| {
+                member.key == kind.list()
+                    && matches!(&member.value.value, Value::Array(items) if items.is_empty())
+            })
+        })
+}
+
+/// Whether a sketch's members of `kind` are what a new sketch's Finish keeps it for. Every
+/// curve and point is. Constraints aren't: each relates the sketch's own geometry, so a
+/// sketch with none has nothing for them to hold, but for the origin and its axes, which
+/// every sketch has. A new kind of member is decided here before it compiles.
+fn is_geometry(kind: ElementKind) -> bool {
+    match kind {
+        ElementKind::Point | ElementKind::Line | ElementKind::Circle | ElementKind::Arc => true,
+        ElementKind::Constraint => false,
+    }
+}
 
 /// A new sweep's body: not yet read, or read from the document at a revision (its base,
 /// [`base_of`]: its sketch's face's body, or the tip; none if it has none), which the add is
@@ -694,6 +738,22 @@ pub struct Edits {
 }
 
 impl Edits {
+    /// Whether a Revert is queued with no save queued before it: what it drops of the queue
+    /// when it's asked ([`Tab::revert`]'s truncation, everything after the last save) reaches
+    /// back to what was asked before it, so a close still to come back from its judgement
+    /// ([`Under::Judge`]) is dropped too when its answer comes.
+    fn revert_before_save(&self) -> bool {
+        self.queue
+            .iter()
+            .find(|queued| {
+                matches!(
+                    queued,
+                    Queued::Save { .. } | Queued::SaveAs { .. } | Queued::Revert { .. }
+                )
+            })
+            .is_some_and(|queued| matches!(queued, Queued::Revert { .. }))
+    }
+
     /// Whether an edit of `feature`'s `field` is in flight or queued.
     fn pending_field(&self, feature: &FeatureId, field: &str) -> bool {
         self.in_flight
@@ -947,6 +1007,16 @@ enum Under {
         sent_at: Revision,
         running: Running<TextAnswer>,
     },
+    /// Create Sketch's Finish judged ([`Tab::judge_created`]): the text of the sketch its add
+    /// made, read at the tab's revision `sent_at`, the one everything asked before the Finish
+    /// came to; then the Finish, saying `words`, closed as a Finish, or as a Cancel if the
+    /// sketch holds nothing, or dropped, if a revert with no save before it came first
+    /// ([`Edits::revert_before_save`]).
+    Judge {
+        words: Option<Words>,
+        sent_at: Revision,
+        running: Running<TextAnswer>,
+    },
     /// Restore's edit, `replace_text` of `revision`'s text, as it was sent, and whether its
     /// `begin` was sent for it.
     Replace {
@@ -985,6 +1055,7 @@ impl Under {
             | Under::Load { .. }
             | Under::ReloadRead { .. }
             | Under::Restore { .. }
+            | Under::Judge { .. }
             // What a Restore puts back names what it names: nothing of the state it's sent
             // from.
             | Under::Replace { .. } => None,
@@ -1431,6 +1502,10 @@ pub struct Tab {
     /// number, and the state the chain's first edit was made from and the state its last
     /// left (or, for a chain refused part way, the state its last taken edit made).
     sketch_pairs: Vec<(u64, Revision, Revision)>,
+    /// The sketch Create Sketch's add made, and the serial of the sketch mode it was made for:
+    /// what that sketch mode's Finish reads to judge it ([`judge_created`](Self::judge_created)),
+    /// its add having answered by then, though the sketch mode may have left first.
+    created_sketch: Option<(u64, FeatureId)>,
     /// Each sketch mode closed (Finish, Cancel) while a click of it (a constraint tool's, or
     /// Construction's) was unsettled: its reads polled still, so the click is planned, and
     /// let go once none is.
@@ -1710,6 +1785,7 @@ impl Tab {
             oked: None,
             groups: Vec::new(),
             sketch_pairs: Vec::new(),
+            created_sketch: None,
             leaving: Vec::new(),
             pressed: None,
             steps: BTreeMap::new(),
@@ -2519,9 +2595,13 @@ impl Tab {
     /// whose end lands an edit of its own; once that has answered, its edit is undone as any
     /// other's, whether or not the read of it ever comes (its rebuild stopped, or failing).
     /// In sketch mode, as SolidWorks allows, but never past the state it opened at.
+    /// Never while a dialog's or sketch mode's close is still to be taken (Create Sketch's
+    /// Finish being judged among them), whose undo or rollback, if it's a Cancel's, a step
+    /// queued now would go past.
     pub fn undoable(&self) -> bool {
         (self.transaction || self.beginning)
             && !self.in_dialog()
+            && !self.close_queued()
             && !self.drag.as_ref().is_some_and(Drag::under_way)
             && self.sketch_lets_undo()
             && !self.stepping()
@@ -2536,10 +2616,12 @@ impl Tab {
     /// tab's newest revision counts them; never while a step is under way, nor while a
     /// dialog is open or a drag is under way. In sketch mode, only what it undid itself;
     /// never at a state Redo is fenced off at (a sketch mode's Finish or Cancel, or an
-    /// over-defining dimension's Cancel, which leave nothing to redo).
+    /// over-defining dimension's Cancel, which leave nothing to redo), nor while a close is
+    /// still to be taken, as for Undo.
     pub fn redoable(&self) -> bool {
         self.transaction
             && !self.in_dialog()
+            && !self.close_queued()
             && !self.drag.as_ref().is_some_and(Drag::under_way)
             && self.sketch.as_ref().is_none_or(|mode| mode.undone > 0)
             && self
@@ -2855,7 +2937,8 @@ impl Tab {
             | Under::Close(_)
             | Under::Load { .. }
             | Under::ReloadRead { .. }
-            | Under::Restore { .. } => false,
+            | Under::Restore { .. }
+            | Under::Judge { .. } => false,
         });
         // A drag's begin, moves, or end under way: its edit lands as it ends.
         queued || under || self.dragging()
@@ -3696,6 +3779,7 @@ impl Tab {
                     match response.result {
                         Ok(added) => {
                             let at = self.revision;
+                            self.created_sketch = Some((serial, added.feature.id.clone()));
                             // Its undos asked meanwhile go no further back than the sketch,
                             // whether or not sketch mode is still open as they come up (a
                             // Finish or a Cancel asked behind them closes it first).
@@ -3728,6 +3812,7 @@ impl Tab {
                                     sketch: true,
                                     dialog: None,
                                     words: None,
+                                    created: None,
                                 });
                             }
                         }
@@ -4042,6 +4127,48 @@ impl Tab {
                 }
                 Err(running) => Some(Under::Restore {
                     revision,
+                    sent_at,
+                    running,
+                }),
+            },
+            Under::Judge {
+                words,
+                sent_at,
+                running,
+            } => match running.try_take() {
+                Ok(response) => {
+                    self.reload_in(sessions, sent_at, response.session.as_ref());
+                    self.took_session(&response);
+                    // A Revert asked meanwhile, no save before it, drops the close as it
+                    // drops what's queued: the part goes back to its file, and nothing is
+                    // discarded to say.
+                    if self.edits.revert_before_save() {
+                        return None;
+                    }
+                    // A read refused (the sketch gone, the session moved on by another
+                    // client) judges nothing: the Finish is a Finish.
+                    let empty = response
+                        .result
+                        .is_ok_and(|answer| holds_nothing(&answer.text));
+                    if empty {
+                        self.toasts.push(Toast::info(EMPTY_SKETCH_DISCARDED));
+                        // The count its Finish held is a Cancel's.
+                        if let Some(base) = self.dialog_base {
+                            self.count_closed(false, base);
+                        }
+                    }
+                    // Taken next, before anything queued after it.
+                    self.edits.queue.push_front(Queued::Closed {
+                        ok: !empty,
+                        sketch: true,
+                        dialog: None,
+                        words: words.filter(|_| !empty),
+                        created: None,
+                    });
+                    None
+                }
+                Err(running) => Some(Under::Judge {
+                    words,
                     sent_at,
                     running,
                 }),
@@ -4645,10 +4772,16 @@ impl Tab {
                     });
                 }
                 Queued::Closed {
+                    words,
+                    created: Some(serial),
+                    ..
+                } => self.judge_created(sessions, serial, words),
+                Queued::Closed {
                     ok,
                     sketch,
                     dialog,
                     words,
+                    created: None,
                 } => {
                     // Every edit sent before it has answered: what a Cancel put back of the
                     // selection is read from the revision its undo or rollback comes to,
@@ -4871,6 +5004,40 @@ impl Tab {
         }
     }
 
+    /// Create Sketch's Finish, of sketch mode numbered `serial`, come up in the queue, every
+    /// edit asked before it answered: the sketch its add made read at the revision they came
+    /// to (`text`, never sketch mode's last read, which may be older), and the Finish queued
+    /// again, judged, once it answers ([`Under::Judge`]): a Finish if the sketch holds
+    /// anything, and otherwise Cancel's close, undone back to where sketch mode opened or
+    /// rolled back, leaving no step, and toasted; or dropped, if a revert with no save before
+    /// it came first ([`Edits::revert_before_save`]). A Finish whose add made no sketch
+    /// (refused after sketch mode left) has nothing to judge.
+    fn judge_created<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        serial: u64,
+        words: Option<Words>,
+    ) {
+        let made = self.created_sketch.take().filter(|(of, _)| *of == serial);
+        let Some((_, sketch)) = made else {
+            self.edits.queue.push_front(Queued::Closed {
+                ok: true,
+                sketch: true,
+                dialog: None,
+                words,
+                created: None,
+            });
+            return;
+        };
+        let running =
+            sessions.text_at(&self.id, Some(sketch), Some(Named::Revision(self.revision)));
+        self.under.push(Under::Judge {
+            words,
+            sent_at: self.revision,
+            running,
+        });
+    }
+
     /// Whether what's queued waits: an edit, a save, a revert, a step, or a dialog's add (or
     /// its body's read) running; or a `begin` whose answer isn't taken yet, which may say the
     /// session reloaded its file first, and so where what comes next (a dialog's close)
@@ -4903,6 +5070,7 @@ impl Tab {
                         | Under::OfferField { .. }
                         | Under::ReloadRead { .. }
                         | Under::Restore { .. }
+                        | Under::Judge { .. }
                         | Under::Replace { .. }
                 )
             })
@@ -5229,7 +5397,9 @@ impl Tab {
     /// revert it drops was to close the tab, close.
     /// The edits and steps queued since the last save queued are dropped, and the revert
     /// waits behind that save, which saves what was asked before it (#298's review): one in
-    /// flight answers first, and the rollback undoes it. Also how a file changed on disk is
+    /// flight answers first, and the rollback undoes it. A close still being judged
+    /// ([`Under::Judge`]) with no save queued is dropped too, when its answer comes
+    /// ([`Edits::revert_before_save`]). Also how a file changed on disk is
     /// reloaded with edits held: the session reloads it once the transaction has ended
     /// (section 4).
     pub fn revert<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, then_close: bool) {
@@ -6568,12 +6738,17 @@ impl Tab {
         }
     }
 
-    /// Whether a dialog's or sketch mode's close is queued, not yet taken.
+    /// Whether a dialog's or sketch mode's close is queued, not yet taken: Create Sketch's
+    /// Finish being judged too, which is queued again once it is.
     fn close_queued(&self) -> bool {
         self.edits
             .queue
             .iter()
             .any(|queued| matches!(queued, Queued::Closed { .. }))
+            || self
+                .under
+                .iter()
+                .any(|under| matches!(under, Under::Judge { .. }))
     }
 
     /// A dialog numbered, the next, and what the last one left (a refusal said, its refused
@@ -7293,6 +7468,7 @@ impl Tab {
             sketch: false,
             dialog: serial,
             words,
+            created: None,
         });
         self.advance(sessions);
     }
@@ -7468,7 +7644,9 @@ impl Tab {
     /// Finish Sketch (`ok`), its edits kept, one step for undo; or Cancel, undone back to
     /// the revision sketch mode opened at, or rolled back if its own edits began the
     /// transaction: as a dialog's OK and Cancel are ([`close_dialog`](Self::close_dialog)).
-    /// Neither while the tab closes.
+    /// Create Sketch's Finish of a sketch that holds nothing once everything asked before it
+    /// has answered is that Cancel, toasted ([`judge_created`](Self::judge_created)). Neither
+    /// while the tab closes.
     pub fn finish_sketch<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, ok: bool) {
         if self.closing() || self.sketch.is_none() {
             return;
@@ -7483,6 +7661,13 @@ impl Tab {
                 "Edit"
             })
         });
+        // Create Sketch's Finish: judged once it comes up, its sketch kept only if it holds
+        // anything then ([`judge_created`](Self::judge_created)).
+        let created = self
+            .sketch
+            .as_ref()
+            .filter(|mode| ok && mode.created.is_some())
+            .map(|mode| mode.serial);
         if let Some(base) = self.sketch.as_ref().and_then(|mode| mode.opened_at) {
             self.count_closed(ok, base);
         }
@@ -7516,6 +7701,7 @@ impl Tab {
             sketch: true,
             dialog: None,
             words,
+            created,
         });
         self.advance(sessions);
     }
@@ -10764,6 +10950,7 @@ mod tests {
                     sketch: false,
                     dialog: Some(1),
                     words: Some(Words::Text("Edit Pad".to_owned())),
+                    created: None,
                 },
                 None,
             ),
@@ -11079,6 +11266,7 @@ mod tests {
             sketch: true,
             dialog: None,
             words: Some(Words::Text("Edit Triangle".to_owned())),
+            created: None,
         });
         assert_eq!(tab.edits_now(), 4);
         assert_eq!(tab.unsaved_edits(), 2);
@@ -11239,6 +11427,7 @@ mod tests {
             sketch: false,
             dialog: None,
             words: None,
+            created: None,
         });
         tab.read_restored_from(false, three);
         tab.selection.published(unnamed(), 2);
@@ -15138,11 +15327,13 @@ mod tests {
     }
 
     #[test]
-    fn undo_then_finish_before_create_sketchs_add_answers_keeps_the_sketch() {
+    fn undo_then_finish_before_create_sketchs_add_answers_stops_at_the_floor_and_discards_it() {
         // #549's review, round 2: Create Sketch, then Undo, then Finish, all before the add
         // answers, with no transaction open and with one open. Finish closes sketch mode
         // before the undo comes up; the add's answer writes its floor into the undo all the
-        // same, so it's dropped there, said, and the finished sketch stays.
+        // same, so it's dropped there, said, and never sent. The sketch holds nothing, so
+        // its Finish discards it (#526): Cancel's rollback, or its undo back to where sketch
+        // mode opened, the only one sent.
         for open in [false, true] {
             let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
             polled_until(&mut tab, &sessions, |tab| {
@@ -15154,26 +15345,39 @@ mod tests {
             }
             tab.take_toasts();
             let from = tab.sent.len();
+            let base = tab.revision;
             tab.create_sketch(&sessions, silico_core::document::OriginPlane::Xy);
             assert!(tab.undoable(), "{open}");
             tab.step(&sessions, true);
             tab.finish_sketch(&sessions, true);
             polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
             let sent = &tab.sent[from..];
-            assert!(
-                !sent
-                    .iter()
-                    .any(|sent| matches!(sent, Sent::Undo(_) | Sent::Rollback)),
-                "{open}: {sent:?}"
-            );
+            let undone: Vec<&Sent> = sent
+                .iter()
+                .filter(|sent| matches!(sent, Sent::Undo(_) | Sent::Rollback))
+                .collect();
+            let discard = if open {
+                Sent::Undo(Some(base))
+            } else {
+                Sent::Rollback
+            };
+            assert_eq!(undone, [&discard], "{open}: {sent:?}");
             let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
             assert!(
-                text.contains("\"Sketch1\""),
-                "{open}: sent {sent:?}; the sketch is gone: {text}"
+                !text.contains("\"Sketch1\""),
+                "{open}: sent {sent:?}; the sketch is kept: {text}"
+            );
+            assert!(
+                text.contains(if open { "PinA" } else { "\"Pin\"" }),
+                "{open}: {text}"
             );
             let toasts = toasts_said(tab.take_toasts());
             assert!(
                 toasts.contains(&(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)),
+                "{open}: {toasts:?}"
+            );
+            assert!(
+                toasts.contains(&(EMPTY_SKETCH_DISCARDED.to_owned(), crate::toast::Kind::Info)),
                 "{open}: {toasts:?}"
             );
         }
@@ -15349,5 +15553,62 @@ mod tests {
             Some(FeatureId::new("s0000009").unwrap()),
         ));
         assert_eq!(tab.sketch_name(), "Sketch");
+    }
+
+    #[test]
+    fn a_sketch_holds_nothing_only_with_every_kind_of_member_there_and_empty() {
+        let sketch = |members: &str| {
+            format!(
+                r#"{{"id": "s0000001", "type": "sketch", "name": "Sketch1", "plane": "xy", {members}, "constraints": []}}"#
+            )
+        };
+        let empty = r#""points": [], "lines": [], "circles": [], "arcs": []"#;
+        assert!(holds_nothing(&sketch(empty)));
+        // A lone point, line, circle, or arc each holds something.
+        let point = r#"{"id": "pa000000", "x": 0, "y": 0}"#;
+        for kind in ["points", "lines", "circles", "arcs"] {
+            let held = empty.replace(
+                &format!(r#""{kind}": []"#),
+                &format!(r#""{kind}": [{point}]"#),
+            );
+            assert_ne!(held, empty, "{kind}");
+            assert!(!holds_nothing(&sketch(&held)), "{kind}");
+        }
+        // A member missing, not an array, or the text not JSON, or not an object: kept.
+        assert!(!holds_nothing(&sketch(
+            r#""points": [], "lines": [], "circles": []"#
+        )));
+        assert!(!holds_nothing(&sketch(
+            r#""points": [], "lines": {}, "circles": [], "arcs": []"#
+        )));
+        assert!(!holds_nothing("{"));
+        assert!(!holds_nothing("[]"));
+        assert!(!holds_nothing(""));
+        // A construction line holds something, as any line does.
+        let construction = empty.replace(
+            r#""lines": []"#,
+            r#""lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": true}]"#,
+        );
+        assert!(!holds_nothing(&sketch(&construction)));
+        // Constraints alone (on the origin and its axes) aren't what a Finish keeps it for.
+        let constrained = sketch(empty).replace(
+            r#""constraints": []"#,
+            r#""constraints": [{"id": "ca000000", "type": "perpendicular", "a": "x_axis", "b": "y_axis"}]"#,
+        );
+        assert!(holds_nothing(&constrained));
+        // The kinds that count, by hand: every curve and point, never a constraint.
+        let counted: Vec<ElementKind> = ElementKind::ALL
+            .into_iter()
+            .filter(|kind| is_geometry(*kind))
+            .collect();
+        assert_eq!(
+            counted,
+            [
+                ElementKind::Point,
+                ElementKind::Line,
+                ElementKind::Circle,
+                ElementKind::Arc
+            ]
+        );
     }
 }
