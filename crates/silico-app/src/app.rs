@@ -1307,9 +1307,9 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// What the start page's `act` asks: a new untitled part, Open's panel, the command
-    /// search, the shortcut sheet, a recent document opened (or its tab shown, if it's open), a missing one
-    /// removed from Recent (said in a toast, as the prototype's `openRecent` says it), or
-    /// the MCP config copied.
+    /// search, the shortcut sheet, a recent document opened (or its tab shown, if it's
+    /// open), a missing one removed from Recent (said in a toast, as the prototype's
+    /// `openRecent` says it), or the MCP config copied.
     fn start_act(&mut self, ui: &Ui, act: start::Act, next_frame: &mut bool) {
         match act {
             start::Act::None => {}

@@ -1,11 +1,11 @@
 //! The start page: what the window shows with no document open, and the Home tab while
 //! documents are (docs/design/m5-ui/DESIGN.md, *Start page or blank canvas?*, approved
-//! 2026-11-01). New, Open, Search commands, and Keyboard shortcuts, the documents opened lately
-//! (`crate::recent`), each with when it was modified ([`when`]), and the note for agents
-//! with Copy MCP config, laid out as the prototype's `.st-wrap` lays them out: a column of
-//! its own at the left, Recent at the right, centred in the window, and under Recent the
-//! note that a document dropped on the window opens. The warm start's state ([`Warm`]) is
-//! the status bar's while no document is open.
+//! 2026-11-01). New, Open, Search commands, and Keyboard shortcuts, the documents opened
+//! lately (`crate::recent`), each with when it was modified ([`when`]), and the note for
+//! agents with Copy MCP config, laid out as the prototype's `.st-wrap` lays them out: a
+//! column of its own at the left, Recent at the right, centred in the window, and under
+//! Recent the note that a document dropped on the window opens. The warm start's state
+//! ([`Warm`]) is the status bar's while no document is open.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1708,8 +1708,8 @@ mod tests {
             page(ui, &shown);
         });
         // egui_kittest's platform is neither macOS nor Windows: Command is Ctrl. Search
-        // commands' one cap is `S`, Keyboard shortcuts' `?` (app.js: `<span class="kbd">S</span>`,
-        // `<span class="kbd">?</span>`).
+        // commands' one cap is `S`, Keyboard shortcuts' `?` (app.js:
+        // `<span class="kbd">S</span>`, `<span class="kbd">?</span>`).
         for (label, caps, primary) in [
             ("New part", &["N", "Ctrl"][..], true),
             ("Open…", &["O", "Ctrl"][..], false),
