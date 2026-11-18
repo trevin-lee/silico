@@ -26822,6 +26822,129 @@ fn trim_to_closest_and_split_send_their_commands_and_their_results_read_back() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// [`BOXED_PADDED`] with two rounds of the pad's upright edges, each by the sketch's point
+/// it's made from: Near round's from pa000002, at (50, 10), and Far round's from
+/// pa000001, at (10, 10). No feature names pa000003 or pa000004.
+const BOXED_ROUNDED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 6,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]},
+    {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}},
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Near round", "base": "p0000001", "edges": ["p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000002)"], "radius": 1},
+    {"id": "f0000002", "type": "fillet", "v": 1, "name": "Far round", "base": "f0000001", "edges": ["p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000001)"], "radius": 1}
+  ]
+}
+"#;
+
+/// What the status bar says of the features a sketch edit reached, if it says anything:
+/// its words that begin "Check".
+fn said_to_check(h: &AppHarness) -> Option<String> {
+    status_said(h, "Check")
+}
+
+#[test]
+fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_changed() {
+    use silico_app::sketch::tools::Choice;
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    sketch_read(&mut h);
+    sketch_button(&h, "Split").click_accesskit();
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tool_on(&h), Some(Choice::Split));
+    // na000002, pa000002 to pa000003, split at (50, 20): Near round names its start, so
+    // it's the one to check; Far round names neither of its points.
+    sketch_events(&f, &mut h, &clicked(50.3, 20.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let split = point_at(&sketch, 50.0, 20.0);
+    assert_eq!(
+        line_between(&sketch, "pa000002", &split).as_deref(),
+        Some("na000002")
+    );
+    step_until(&mut h, "the split's words", |h| {
+        said_to_check(h).as_deref() == Some("Check Near round: it names the curve split")
+    });
+    assert!(in_status_bar(
+        &h,
+        "Check Near round: it names the curve split"
+    ));
+    // Its split point deleted: the pieces joined, which Near round names too.
+    select_member(&mut h, &split, silico_core::document::ElementKind::Point);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        line_between(&sketch_of_text(&f, &h, "s0000001"), "pa000002", "pa000003").as_deref(),
+        Some("na000002")
+    );
+    step_until(&mut h, "the join's words", |h| {
+        said_to_check(h).as_deref() == Some("Check Near round: it names a piece joined")
+    });
+    // na000001, pa000001 to pa000002, split at (30, 10): both rounds name one of its
+    // points, listed in timeline order.
+    sketch_events(&f, &mut h, &clicked(30.0, 10.3));
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    step_until(&mut h, "the second split's words", |h| {
+        said_to_check(h).as_deref()
+            == Some("Check Near round and Far round: they name the curve split")
+    });
+    // na000003, pa000003 to pa000004, split at (30, 30): no feature names either point, so
+    // nothing is said, and the last split's words are gone with the new edit.
+    sketch_events(&f, &mut h, &clicked(30.0, 29.7));
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
+    step(&mut h);
+    assert_eq!(said_to_check(&h), None);
+    // Trim to closest on na000004, pa000004 to pa000001, which nothing crosses: the whole
+    // line goes, and Far round names its end.
+    h.key_press(eframe::egui::Key::T);
+    step(&mut h);
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_label("Trim to closest")
+        .click();
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(10.3, 20.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert!(
+        sketch
+            .lines
+            .iter()
+            .all(|line| line.id.as_str() != "na000004")
+    );
+    step_until(&mut h, "the trim's words", |h| {
+        said_to_check(h).as_deref() == Some("Check Far round: it names the curve trimmed")
+    });
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::SketchEdit("sketch_trim"))
+    );
+    // The next edit, a line drawn, lets the words go.
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(20.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 20.0));
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
+    assert_eq!(said_to_check(&h), None);
+    // The rounds' names are as they were: never re-pointed.
+    let text = text_of(&f.sessions, &h);
+    for name in [
+        "p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000002)",
+        "p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000001)",
+    ] {
+        assert!(text.contains(name), "{name}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn power_trim_extends_a_line_dragged_along_to_the_pointer() {
     let f = fixture();
@@ -30675,6 +30798,28 @@ fn a_line_dragged_by_its_edge_moves_whole_and_a_circles_edge_passes_the_cores_pr
     assert_eq!(h.state().tabs()[0].message, None);
     assert_eq!(drag_sends(&h, "drag_end"), 1);
     assert_eq!(status_drag(&f, &h), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dimensions_value_typed_lets_go_of_what_the_last_edit_said_as_every_next_edit_does() {
+    let f = fixture();
+    let mut h = boxed_length(&f);
+    // What a split said of the features it reached, then the bottom's length typed in its
+    // Modify box: the person's next action, so the words go, as a click's or a Delete's do.
+    let told = "Check Near round: it names the curve split";
+    h.state_mut().tabs_mut()[0].told = Some(told.to_owned());
+    step(&mut h);
+    assert!(in_status_bar(&h, told));
+    edit_length(&f, &mut h, "98");
+    assert_eq!(
+        length_parts(&constraint_of(&sketch_of_text(&f, &h, "s0000001"), "ka000005").form)
+            .map(|(_, value, _)| value)
+            .as_deref(),
+        Some("98")
+    );
+    assert_eq!(h.state().tabs()[0].told, None);
+    assert!(!in_status_bar(&h, told));
     assert_eq!(never_waits::waits(), 0);
 }
 

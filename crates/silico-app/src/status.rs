@@ -132,7 +132,8 @@ pub struct Bar {
     /// Refusals said to the person (the window's, then the tab's).
     pub messages: Vec<String>,
     /// What the tab's last suppression or deletion did (the prototype's toast): what went
-    /// with the feature, or what was rewired in its place.
+    /// with the feature, or what was rewired in its place; or the features its last split,
+    /// trim, or join reached.
     pub told: Option<String>,
     /// What the selection says (M5.7): what the pointer is over in the canvas, or how many
     /// elements are selected; and what the last change to it dropped, and why.
@@ -363,7 +364,7 @@ fn left_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
 }
 
 /// The middle: in sketch mode, the sketch's line; then the refusals said, and what the last
-/// suppression, deletion, or repair did.
+/// suppression, deletion, or repair did, or the features the last sketch edit reached.
 ///
 /// Outside sketch mode, the selection's words ([`selection_words`]) after them: a sketch's
 /// line says what's being edited in their place.

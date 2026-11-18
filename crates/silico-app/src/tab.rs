@@ -972,10 +972,12 @@ enum Under {
         sending: Sending,
         running: RelateRunning,
     },
-    /// Trim's or split's edit, as it was sent.
+    /// Trim's or split's edit, as it was sent, and what it changed, in the words said to the
+    /// features that name it (`references`): "the curve trimmed" or "the curve split".
     SketchCut {
         sending: Sending,
         running: Running<SketchCut>,
+        changed: &'static str,
     },
     /// A placed dimension's value, of sketch mode numbered `serial`, as it was sent.
     DimensionValue {
@@ -1452,7 +1454,8 @@ pub struct Tab {
     pub message: Option<String>,
     /// What the last suppression or deletion did, as said to the person (the prototype's
     /// toast, in the status bar): what it suppressed with the feature, or rewired in its
-    /// place. Until their next action, as [`message`](Self::message) is.
+    /// place; or the features a split, a trim, or a join reached, to be checked. Until their
+    /// next action, as [`message`](Self::message) is.
     pub told: Option<String>,
     /// A feature's name being typed in its timeline item's or browser row's own field (F2,
     /// or a menu's Rename), until Enter or a click away sends it or Esc drops it.
@@ -1678,6 +1681,29 @@ fn step_name(name: &str) -> String {
 /// A feature's name as the document reads a string (`set_field`'s value).
 pub(crate) fn name_value(name: &str) -> Result<Node, silico_core::document::json::SyntaxError> {
     silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
+}
+
+/// What the status bar says of the features a split, a trim, or a join reached, by `name`
+/// (its `references`: docs/design/m5.0-app.md, section 7, *What a result lists*): each
+/// stores a name made from `changed` ("the curve split", "a piece joined") or its points,
+/// which may now find only part of what it found, or nothing (open item 11), so the person
+/// is told which features to check, in timeline order, as a deletion's words list what it
+/// rewired. Nothing for none.
+fn references_words(
+    references: &[FeatureId],
+    changed: &str,
+    name: impl Fn(&FeatureId) -> String,
+) -> Option<String> {
+    let names: Vec<String> = references.iter().map(name).collect();
+    let names_it = match names.len() {
+        0 => return None,
+        1 => "it names",
+        _ => "they name",
+    };
+    Some(format!(
+        "Check {}: {names_it} {changed}",
+        crate::words::listed(&names, "and")
+    ))
 }
 
 /// What a refusal says to the person: its first error's message and suggestion.
@@ -3860,8 +3886,14 @@ impl Tab {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(&sending, &response);
-                    if let Err(problems) = response.result {
-                        self.message = Some(said(&problems));
+                    match response.result {
+                        Ok(joined) => {
+                            self.told =
+                                references_words(&joined.references, "a piece joined", |id| {
+                                    self.name_of(id)
+                                });
+                        }
+                        Err(problems) => self.message = Some(said(&problems)),
                     }
                     None
                 }
@@ -3975,16 +4007,28 @@ impl Tab {
                     running,
                 }),
             },
-            Under::SketchCut { sending, running } => match running.try_take() {
+            Under::SketchCut {
+                sending,
+                running,
+                changed,
+            } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(&sending, &response);
-                    if let Err(problems) = response.result {
-                        self.message = Some(said(&problems));
+                    match response.result {
+                        Ok(cut) => {
+                            self.told =
+                                references_words(&cut.references, changed, |id| self.name_of(id));
+                        }
+                        Err(problems) => self.message = Some(said(&problems)),
                     }
                     None
                 }
-                Err(running) => Some(Under::SketchCut { sending, running }),
+                Err(running) => Some(Under::SketchCut {
+                    sending,
+                    running,
+                    changed,
+                }),
             },
             Under::DimensionValue {
                 serial,
@@ -4683,7 +4727,11 @@ impl Tab {
                     let sending = self.sending(step);
                     let running =
                         sessions.sketch_trim(&self.id, self.revision, sketch, curve, pick, None);
-                    self.under.push(Under::SketchCut { sending, running });
+                    self.under.push(Under::SketchCut {
+                        sending,
+                        running,
+                        changed: "the curve trimmed",
+                    });
                 }
                 Queued::SketchSplit { sketch, curve, at } => {
                     self.begin_if_none(sessions);
@@ -4692,7 +4740,11 @@ impl Tab {
                     let sending = self.sending(step);
                     let running =
                         sessions.sketch_split(&self.id, self.revision, sketch, curve, at, None);
-                    self.under.push(Under::SketchCut { sending, running });
+                    self.under.push(Under::SketchCut {
+                        sending,
+                        running,
+                        changed: "the curve split",
+                    });
                 }
                 Queued::SketchExtend {
                     sketch,
@@ -7959,6 +8011,7 @@ impl Tab {
                 }
             };
             self.message = None;
+            self.told = None;
             self.edits.queue.push_back(next);
             asked = true;
         }
@@ -8027,6 +8080,7 @@ impl Tab {
             if !queued {
                 mode.undone = 0;
                 self.message = None;
+                self.told = None;
                 queued = true;
             }
             self.edits.queue.push_back(next);
