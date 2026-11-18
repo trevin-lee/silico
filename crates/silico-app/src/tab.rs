@@ -15327,11 +15327,13 @@ mod tests {
     }
 
     #[test]
-    fn undo_then_finish_before_create_sketchs_add_answers_keeps_the_sketch() {
+    fn undo_then_finish_before_create_sketchs_add_answers_stops_at_the_floor_and_discards_it() {
         // #549's review, round 2: Create Sketch, then Undo, then Finish, all before the add
         // answers, with no transaction open and with one open. Finish closes sketch mode
         // before the undo comes up; the add's answer writes its floor into the undo all the
-        // same, so it's dropped there, said, and the finished sketch stays.
+        // same, so it's dropped there, said, and never sent. The sketch holds nothing, so
+        // its Finish discards it (#526): Cancel's rollback, or its undo back to where sketch
+        // mode opened, the only one sent.
         for open in [false, true] {
             let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
             polled_until(&mut tab, &sessions, |tab| {
@@ -15343,26 +15345,39 @@ mod tests {
             }
             tab.take_toasts();
             let from = tab.sent.len();
+            let base = tab.revision;
             tab.create_sketch(&sessions, silico_core::document::OriginPlane::Xy);
             assert!(tab.undoable(), "{open}");
             tab.step(&sessions, true);
             tab.finish_sketch(&sessions, true);
             polled_until(&mut tab, &sessions, |tab| tab.quiet() && tab.synced());
             let sent = &tab.sent[from..];
-            assert!(
-                !sent
-                    .iter()
-                    .any(|sent| matches!(sent, Sent::Undo(_) | Sent::Rollback)),
-                "{open}: {sent:?}"
-            );
+            let undone: Vec<&Sent> = sent
+                .iter()
+                .filter(|sent| matches!(sent, Sent::Undo(_) | Sent::Rollback))
+                .collect();
+            let discard = if open {
+                Sent::Undo(Some(base))
+            } else {
+                Sent::Rollback
+            };
+            assert_eq!(undone, [&discard], "{open}: {sent:?}");
             let text = sessions.text(&tab.id, None).wait().result.unwrap().text;
             assert!(
-                text.contains("\"Sketch1\""),
-                "{open}: sent {sent:?}; the sketch is gone: {text}"
+                !text.contains("\"Sketch1\""),
+                "{open}: sent {sent:?}; the sketch is kept: {text}"
+            );
+            assert!(
+                text.contains(if open { "PinA" } else { "\"Pin\"" }),
+                "{open}: {text}"
             );
             let toasts = toasts_said(tab.take_toasts());
             assert!(
                 toasts.contains(&(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)),
+                "{open}: {toasts:?}"
+            );
+            assert!(
+                toasts.contains(&(EMPTY_SKETCH_DISCARDED.to_owned(), crate::toast::Kind::Info)),
                 "{open}: {toasts:?}"
             );
         }
