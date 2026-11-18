@@ -223,14 +223,15 @@ fn a_name_reads_its_features_type_as_written_whatever_the_feature_is_now() {
         ),
         "{name:?}"
     );
-    // Every one of the fifteen words, on an element by its number: a sketch's only number
-    // is its only region's, Face1 (M3.6, S4).
+    // Every one of the eighteen words, on an element by its number: a sketch's only number
+    // is its only region's, Face1 (M3.6, S4); a pattern's or mirror's, like any operation's,
+    // the last resort (scheme 6, N10).
     for made in TypeWord::all() {
         let face = if made.word() == "sketch" { 1 } else { 2 };
         let text = format!("cccccccc.{made}.Face{face}");
         assert_eq!(parse(&text).unwrap().to_string(), text);
     }
-    assert_eq!(TypeWord::all().count(), 15);
+    assert_eq!(TypeWord::all().count(), 18);
 }
 
 #[test]
@@ -454,7 +455,7 @@ proptest! {
 }
 
 /// The grammar's own pieces, type words among them (N8: a name without one never reads).
-const PIECES: [&str; 29] = [
+const PIECES: [&str; 36] = [
     "aaaaaaaa",
     "cccccccc",
     "ffffffff",
@@ -484,10 +485,18 @@ const PIECES: [&str; 29] = [
     ",",
     "/",
     "~",
+    // Scheme 6's copies (N10).
+    "C",
+    "S",
+    "mirror.",
+    "linear_pattern.",
+    "cccccccc.mirror.",
+    "cccccccc.linear_pattern.",
+    "2,1",
 ];
 
 /// A name's text, as pieces: a primitive's element by number, or an operation's derived
-/// from one or two, from above, or from below.
+/// from one or two, from above, or from below; or a copy of one, whole (scheme 6, N10).
 fn name_pieces() -> impl Strategy<Value = Vec<&'static str>> {
     let kind = prop_oneof![Just("Face"), Just("Edge"), Just("Vertex")];
     let number = prop_oneof![Just("1"), Just("2"), Just("12")];
@@ -511,12 +520,20 @@ fn name_pieces() -> impl Strategy<Value = Vec<&'static str>> {
             vec![")"]
         ]
         .concat()),
-        (op, kind, prop_oneof![Just("U"), Just("L")], leaf).prop_map(|(o, k, w, l)| [
-            vec![o, k, "(", w, " "],
-            l,
-            vec![")"]
-        ]
-        .concat()),
+        (
+            op,
+            kind.clone(),
+            prop_oneof![Just("U"), Just("L")],
+            leaf.clone()
+        )
+            .prop_map(|(o, k, w, l)| [vec![o, k, "(", w, " "], l, vec![")"]].concat()),
+        (
+            prop_oneof![Just("cccccccc.mirror."), Just("cccccccc.linear_pattern.")],
+            kind,
+            prop_oneof![Just("S1"), Just("S2"), Just("S2,1"), Just("S0,1")],
+            leaf
+        )
+            .prop_map(|(o, k, i, l)| [vec![o, k, "(", i, " "], l, vec![")"]].concat()),
     ]
 }
 
@@ -636,12 +653,15 @@ fn a_name_nested_too_deep_through_any_slot_is_refused_without_a_deep_stack() {
     // reader that didn't count a name above's, a name below's, or a later source's level
     // passed, and read 100,000 levels on its stack. Each slot, on a 2 MB thread.
     let leaf = "aaaaaaaa.box.Face1";
-    let forms: [(&str, &str); 5] = [
+    let forms: [(&str, &str); 7] = [
         ("ffffffff.fillet.Edge(U ", ")"),
         ("ffffffff.fillet.Edge(U bbbbbbbb.box.Face1, ", ")"),
         ("ffffffff.fillet.Edge(L ", ")"),
         ("ffffffff.fillet.Edge(L bbbbbbbb.box.Face1, ", ")"),
         ("cccccccc.cut.Face(M bbbbbbbb.box.Face1, G ", ")"),
+        // Scheme 6's copy (N10): a level for each copy.
+        ("cccccccc.mirror.Face(S1 ", ")"),
+        ("cccccccc.linear_pattern.Face(S2,1 ", ")"),
     ];
     for (open, close) in forms {
         let deep = format!("{}{leaf}{}", open.repeat(100_000), close.repeat(100_000));
@@ -700,12 +720,15 @@ fn a_name_256_deep_through_any_slot_is_read_and_one_deeper_is_not() {
     // reader counting another slot's depth too fast refused names a map holds. Each slot
     // that holds a name, 256 deep and 257.
     let leaf = "aaaaaaaa.box.Face1";
-    let forms: [(&str, &str); 5] = [
+    let forms: [(&str, &str); 7] = [
         ("ffffffff.fillet.Edge(U ", ")"),
         ("ffffffff.fillet.Edge(U bbbbbbbb.box.Face1, ", ")"),
         ("ffffffff.fillet.Edge(L ", ")"),
         ("ffffffff.fillet.Edge(L bbbbbbbb.box.Face1, ", ")"),
         ("cccccccc.cut.Face(M bbbbbbbb.box.Face1, G ", ")"),
+        // Scheme 6's copy (N10): a level for each copy.
+        ("cccccccc.mirror.Face(S1 ", ")"),
+        ("cccccccc.linear_pattern.Face(S2,1 ", ")"),
     ];
     for (open, close) in forms {
         let at = format!("{}{leaf}{}", open.repeat(255), close.repeat(255));

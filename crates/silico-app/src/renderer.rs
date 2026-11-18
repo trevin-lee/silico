@@ -47,6 +47,9 @@ pub struct FrameData {
     /// [`theme::VIEWPORT_SKETCH_WIDTH`](crate::theme::VIEWPORT_SKETCH_WIDTH) wide: none while
     /// a sketch is open.
     pub lines: Vec<crate::sketch::lines::FrameLines>,
+    /// The origin planes drawn (`crate::planes`): among the bodies, translucent, and in no
+    /// picking.
+    pub planes: Vec<silico_render::render::Plane>,
 }
 
 impl FrameData {
@@ -69,6 +72,7 @@ impl FrameData {
             // None: the canvas's gradient, painted under the frame, shows where no body is.
             background: crate::theme::VIEWPORT_FRAME_BG,
             lines: &[],
+            planes: &self.planes,
         }
     }
 }
@@ -574,6 +578,7 @@ mod tests {
             edges: true,
             vertices: None,
             lines: Vec::new(),
+            planes: Vec::new(),
         }
     }
 

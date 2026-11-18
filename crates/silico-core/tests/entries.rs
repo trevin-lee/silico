@@ -210,7 +210,7 @@ fn sketch_and_box() -> String {
     r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {
       "id": "k7f2qx3m",

@@ -91,11 +91,14 @@ impl JsonSchema for FormatVersion {
     }
 }
 
-/// The naming scheme a document's element names were written under (`naming`, M4.0): the
-/// one Silico names by ([`crate::naming::NAMING_SCHEME_NUMBER`]), the only one it reads, so
-/// a name is never read under a scheme other than its own. A document of another scheme is
-/// refused, naming it; one that records none was saved before the header recorded it, and
-/// is read as scheme [`crate::naming::UNRECORDED_NAMING_SCHEME`] (and written with it).
+/// The naming scheme a document's element names were written under (`naming`, M4.0): one
+/// whose names Silico reads as they are ([`crate::naming::NAMING_SCHEMES_READ`]: the one it
+/// names by, [`crate::naming::NAMING_SCHEME_NUMBER`], and 5, of which that's a strict
+/// superset, N10), so a name is never read under a scheme that names otherwise than its
+/// own. A document of another scheme is refused, naming it; one that records none was saved
+/// before the header recorded it, and is read as scheme
+/// [`crate::naming::UNRECORDED_NAMING_SCHEME`]. Every save writes the scheme Silico names
+/// by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NamingScheme;
 
@@ -109,14 +112,17 @@ impl JsonSchema for NamingScheme {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let read = crate::naming::NAMING_SCHEMES_READ;
+        let listed: Vec<String> = read.iter().map(u32::to_string).collect();
         let description = format!(
-            "The naming scheme the document's element names were written under: {}. A document without it was saved before Silico recorded it, and is read as scheme {}.",
+            "The naming scheme the document's element names were written under: {}, and every save writes {}. A document without it was saved before Silico recorded it, and is read as scheme {}.",
+            listed.join(" or "),
             NamingScheme::NUMBER,
             crate::naming::UNRECORDED_NAMING_SCHEME
         );
         json_schema!({
             "description": description,
-            "const": NamingScheme::NUMBER
+            "enum": read
         })
     }
 }
@@ -341,7 +347,7 @@ impl JsonSchema for ElementName {
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>).",
+            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>). A copy a pattern or mirror placed is pattern.type.Kind(C<instance> <name>), of an element of a feature's tool, or pattern.type.Kind(S<instance> <name>), of an element of the base solid; its instance its steps from the original along each direction, direction 1 first, trailing zeros left off (C2, C2,1, S1).",
             "type": "string",
             "minLength": 1
         })

@@ -36,7 +36,7 @@ use silico_core::command::{
 use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
 use silico_core::recompute::Key;
-use silico_core::views::{NamedView, half_pixel_at, meshing_depth};
+use silico_core::views::{NAMED_VIEWS, NamedView, half_pixel_at, meshing_depth};
 use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 
 use crate::bar;
@@ -47,6 +47,7 @@ use crate::renderer::{Change, Element, FrameData, Picking, PixelRect, Present, T
 use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::theme;
+use crate::transition::{Motion, Step, Transition};
 
 /// The first delay before a read refused for the moment is asked again; each refusal after
 /// it doubles it, up to [`RETRY_MOST`].
@@ -246,11 +247,11 @@ pub enum LeftKind {
     /// Let go, after a press on the canvas.
     Release,
     /// Held no longer, with no release: the window lost the focus, a navigation tool took
-    /// the drag, another press came with no release before it (the window lost one), or
-    /// the tab stopped being shown. What the stream did is undone, not done; it's at where
-    /// the stream was last (its press, or its last move). The pointer leaving the window
-    /// cancels nothing: the drag goes on past its edge, and its release, wherever it
-    /// comes, ends it.
+    /// the drag, a modal came over the window, another press came with no release before it
+    /// (the window lost one), or the tab stopped being shown. What the stream did is undone,
+    /// not done; it's at where the stream was last (its press, or its last move). The pointer
+    /// leaving the window cancels nothing: the drag goes on past its edge, and its release,
+    /// wherever it comes, ends it.
     Cancel,
     /// A double-click on the canvas, straight after the Release that made it: the second of
     /// two left clicks within egui's delay and distance, counted as egui counts them
@@ -472,8 +473,9 @@ pub struct View {
     /// The bodies the browser hides, by feature, as the last frame had them: drawn by no
     /// frame, and so not in the reach a view is clamped by.
     hidden: BTreeSet<FeatureId>,
-    /// The boxes of the shown sketches' lines the last frame drew (`crate::sketch::lines`):
-    /// in the reach a view is clamped by, as the renderer takes them into its own.
+    /// The boxes of the shown sketches' lines (`crate::sketch::lines`) and of the origin
+    /// planes (`crate::planes`) the last frame drew: in the reach a view is clamped by, as
+    /// the renderer takes them into its own.
     sketch_boxes: Vec<[[f64; 3]; 2]>,
     notice: Option<Notice>,
     /// A held mesh an answer gave none of wasn't found: the next read holds none.
@@ -530,6 +532,9 @@ pub struct View {
     /// timeline, drawn before the canvas, each frame. Once the canvas's hover names another
     /// feature, the viewport asks for the next frame at once, so the timeline catches up.
     pub ringed_feature: Option<FeatureId>,
+    /// The origin plane whose browser row the pointer is on, set by the browser each frame
+    /// it's drawn: drawn hovered, its eye open or not (`crate::planes`).
+    pub plane_hovered: Option<silico_core::document::OriginPlane>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
     /// The serial of the newest frame that carried a pick of this view's: an answer to a
@@ -555,6 +560,9 @@ pub struct View {
     pub(crate) wheel_held: bool,
     /// What sketch mode adds to a fit, as the tab last set it.
     framing: navigate::Framing,
+    /// A view transition under way (`crate::transition`): Home, Fit, a named view, a
+    /// ViewCube click, or Look At easing to its view, `camera` the camera drawn this frame.
+    transition: Option<Transition>,
 }
 
 /// The views the registry's view commands give, by their keys (F6, Home, Ctrl+1 to Ctrl+7)
@@ -578,11 +586,11 @@ pub const VIEW_COMMANDS: [(Command, ViewAsk); 9] = [
 pub enum ViewAsk {
     /// The bodies fitted, looking as it looks (F6, the navigation bar's Fit).
     Fit,
-    /// A named view of the bodies, as the ViewCube gives it (Home, a face, a corner).
+    /// A named view of the bodies, as the ViewCube gives it (Home, a face, an edge, a
+    /// corner).
     Named(NamedView),
     /// Look At (Ctrl+8): the view square to a plane, looking from `toward`, its unit
-    /// normal toward the eye, with `up` up the image ([`navigate::look_at`]); and a ViewCube
-    /// edge's view, from between its two faces, which no named view gives.
+    /// normal toward the eye, with `up` up the image ([`navigate::look_at`]).
     LookAt { toward: [f64; 3], up: [f64; 3] },
 }
 
@@ -618,6 +626,7 @@ impl Default for View {
             candidate: None,
             linked: None,
             ringed_feature: None,
+            plane_hovered: None,
             picking: None,
             picked: None,
             last_asked: None,
@@ -628,6 +637,7 @@ impl Default for View {
             read_published: 0,
             wheel_held: false,
             framing: navigate::Framing::default(),
+            transition: None,
         }
     }
 }
@@ -719,10 +729,52 @@ impl View {
         self.framing = framing;
     }
 
-    /// Looks through `camera`, as a control of the person's does.
+    /// Looks through `camera`, as a control of the person's does: at once, ending any
+    /// transition under way.
     pub fn set_camera(&mut self, camera: Camera) {
+        self.transition = None;
         self.camera = camera;
         self.placed = true;
+    }
+
+    /// The view transition under way, if one is: [`camera`](Self::camera) is the camera it
+    /// has reached, the one drawn.
+    pub fn transition(&self) -> Option<&Transition> {
+        self.transition.as_ref()
+    }
+
+    /// The camera the view label names: the one drawn, but while a transition is under way
+    /// the one it named before it began, as the prototype's label is written again only once
+    /// its transition ends (interact.js's `onView`, called from `stepAnim` at its end).
+    pub fn labelled_camera(&self) -> &Camera {
+        self.transition
+            .as_ref()
+            .map_or(&self.camera, Transition::labelled)
+    }
+
+    /// The transition under way moved on to `now`, egui's clock: the camera where it has
+    /// reached, or, once its time is up, the view it was asked for, exactly, and it ends. A
+    /// press on the canvas this frame (`pressed`) ends it while it's still moving, the camera
+    /// left where it was drawn last frame, what the person pressed on; once its time is up,
+    /// the press is on the view asked for. Each camera raised to the least the bodies allow,
+    /// as every camera a control makes is (`navigate::clamped`), which leaves the view asked
+    /// for, already raised, as it was unless the bodies changed meanwhile.
+    fn advance(&mut self, now: f64, pressed: bool) {
+        let Some(transition) = &self.transition else {
+            return;
+        };
+        let camera = match transition.at(now) {
+            Step::Moving(_) if pressed => {
+                self.transition = None;
+                return;
+            }
+            Step::Moving(camera) => camera,
+            Step::Ended(camera) => {
+                self.transition = None;
+                camera
+            }
+        };
+        self.camera = navigate::clamped(camera, self.rows, self.drawn_boxes());
     }
 
     /// The bodies whose meshes the tab holds, by number.
@@ -1021,7 +1073,8 @@ impl View {
         self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
     }
 
-    /// The shown sketches' lines' boxes, as the frame draws them: if they changed, the view
+    /// The shown sketches' lines' boxes and the planes', as the frame draws them: if they
+    /// changed, the view
     /// raised to the least they allow with the bodies, if it's under it, as the renderer
     /// takes their reach too (an orthographic view under it would have every frame
     /// refused).
@@ -1156,14 +1209,38 @@ impl View {
     }
 
     /// The camera moved to `camera`, if a control made one, its view raised to the least the
-    /// bodies allow if it's under it (`navigate::clamped`). Whether it was taken.
+    /// bodies allow if it's under it (`navigate::clamped`), at once, ending any transition
+    /// under way where it had reached. Whether it was taken.
     fn moved(&mut self, camera: Option<Camera>) -> bool {
         let Some(camera) = camera else {
             return false;
         };
+        self.transition = None;
         self.camera = navigate::clamped(camera, self.rows, self.drawn_boxes());
         self.placed = true;
         true
+    }
+
+    /// The view worked out whole as `camera` (Home's, a fit's, a named view's, Look At's), if
+    /// one was, raised to the least the bodies allow as [`moved`](Self::moved) raises it, and
+    /// moved to as `motion` says: eased to from the camera as it is, from where any transition
+    /// under way has reached (its label kept), or, for a jump or a camera already there,
+    /// taken at once.
+    fn go_to(&mut self, camera: Option<Camera>, motion: Motion) {
+        let Some(camera) = camera else {
+            return;
+        };
+        let to = navigate::clamped(camera, self.rows, self.drawn_boxes());
+        self.placed = true;
+        let labelled = self.transition.take().map_or_else(
+            || self.camera.clone(),
+            |under_way| under_way.labelled().clone(),
+        );
+        if motion.seconds > 0.0 && to != self.camera {
+            self.transition = Some(Transition::new(self.camera.clone(), to, labelled, motion));
+        } else {
+            self.camera = to;
+        }
     }
 
     /// Zooms by `scroll` points toward `cursor`, in a view `height` points high: an
@@ -1202,16 +1279,16 @@ impl View {
 
     /// The named view `view` of the bodies' boxes and the open sketch's (a cube's, with
     /// none), clear of sketch mode's bands, in the view's projection.
-    fn look_from(&mut self, view: NamedView, size_px: [u32; 2]) {
+    fn look_from(&mut self, view: NamedView, size_px: [u32; 2], motion: Motion) {
         let bounds = self.fit_bounds().unwrap_or(NO_BOX);
         let camera = navigate::named_in(view, bounds, size_px[0], size_px[1], self.framing.inset)
             .and_then(|camera| navigate::projected(&camera, self.perspective));
-        self.moved(camera);
+        self.go_to(camera, motion);
     }
 
     /// Look At: the view square to a plane from `toward`, `up` up the image, fitted to the
     /// boxes a named view fits, in the view's projection.
-    fn look_at(&mut self, toward: [f64; 3], up: [f64; 3], size_px: [u32; 2]) {
+    fn look_at(&mut self, toward: [f64; 3], up: [f64; 3], size_px: [u32; 2], motion: Motion) {
         let bounds = self.fit_bounds().unwrap_or(NO_BOX);
         let camera = navigate::look_at(
             toward,
@@ -1222,12 +1299,12 @@ impl View {
             self.framing.inset,
         )
         .and_then(|camera| navigate::projected(&camera, self.perspective));
-        self.moved(camera);
+        self.go_to(camera, motion);
     }
 
     /// Fits the view to the bodies' boxes and the open sketch's (F6), looking as it looks,
     /// clear of sketch mode's bands.
-    fn fit(&mut self, size_px: [u32; 2]) {
+    fn fit(&mut self, size_px: [u32; 2], motion: Motion) {
         if let Some(bounds) = self.fit_bounds() {
             let camera = navigate::fit_in(
                 &self.camera,
@@ -1236,22 +1313,28 @@ impl View {
                 size_px[1],
                 self.framing.inset,
             );
-            self.moved(camera);
+            self.go_to(camera, motion);
         }
     }
 
-    /// The view `ask` asks for, given now, in a pane `size_px` pixels in size.
-    fn give(&mut self, ask: ViewAsk, size_px: [u32; 2]) {
+    /// The view `ask` asks for, given now, in a pane `size_px` pixels in size, moved to as
+    /// `motion` says.
+    fn give(&mut self, ask: ViewAsk, size_px: [u32; 2], motion: Motion) {
         match ask {
-            ViewAsk::Named(named) => self.look_from(named, size_px),
-            ViewAsk::Fit => self.fit(size_px),
-            ViewAsk::LookAt { toward, up } => self.look_at(toward, up, size_px),
+            ViewAsk::Named(named) => self.look_from(named, size_px, motion),
+            ViewAsk::Fit => self.fit(size_px, motion),
+            ViewAsk::LookAt { toward, up } => self.look_at(toward, up, size_px, motion),
         }
     }
 
-    /// The view made perspective, or orthographic.
+    /// The view made perspective, or orthographic: at once, and if a transition is under way,
+    /// its view, which it ends, so the view is the one asked for, in the projection asked.
     fn project(&mut self, perspective: bool) {
-        let camera = navigate::projected(&self.camera, perspective);
+        let from = self
+            .transition
+            .as_ref()
+            .map_or(&self.camera, Transition::to);
+        let camera = navigate::projected(from, perspective);
         if self.moved(camera) {
             self.perspective = perspective;
         }
@@ -1278,9 +1361,11 @@ impl View {
     /// press on the canvas (where the ViewCube and the bar, on top, aren't, and not while
     /// the pane drags: the middle button's pan or orbit, or the cube's), the moves while it's
     /// held, its release or its cancel, and a double-click straight after the release that
-    /// made it; none while a navigation tool makes a left drag navigate. `held` is the
-    /// pane's, which [`end_unshown`] has already ended if another tab's. Each is placed by
-    /// the egui event that made it ([`Placed`]), its `seq` given by [`sequenced`].
+    /// made it; none while a navigation tool makes a left drag navigate, and no press while
+    /// a modal is over the window, which cancels what's still held after the frame's events.
+    /// `held` is the pane's, which [`end_unshown`] has already ended if another tab's. Each
+    /// is placed by the egui event that made it ([`Placed`]), its `seq` given by
+    /// [`sequenced`].
     fn left_events(
         &self,
         button: &mut LeftButton,
@@ -1297,7 +1382,13 @@ impl View {
         // begin while the button is held from the canvas: egui gives a drag to the widget
         // pressed, and takes no other press until its release.)
         let taken = self.tool.is_some();
-        let pressable = response.hovered() && self.drag.is_none() && !taken;
+        // A modal over the window takes no press (#487: nothing behind a modal takes input),
+        // and cancels what's still held after the frame's events, as the focus going does.
+        // In the frame a key opens it, the press already held takes that frame's moves and
+        // its release, before the key or after it (the keys are read first): a release among
+        // them ends its gesture as ever.
+        let behind = crate::modal::behind(ui);
+        let pressable = response.hovered() && self.drag.is_none() && !taken && !behind;
         let mut left = Vec::new();
         let LeftButton { held, clicks } = button;
         // Read where the events are, not cloned out each frame.
@@ -1375,6 +1466,10 @@ impl View {
                     _ => {}
                 }
             }
+            if behind && let Some(was) = held.take() {
+                let place = input.events.len() + 1;
+                left.push(event(place, LeftKind::Cancel, was.at_px, input.modifiers));
+            }
         });
         left
     }
@@ -1398,6 +1493,13 @@ impl View {
         let px = |at: Pos2| [(at.x - rect.left()) * ppp, (at.y - rect.top()) * ppp];
         let options = ui.ctx().options(|options| options.input_options);
         let pressable = response.hovered() && self.drag.is_none();
+        // A right press held as a modal comes over the window is no click, though let go
+        // among the frame's events before the key that opened it (unlike the left button's
+        // release): what a right click opens, a menu, closes under a modal, and one first
+        // shown then would be raised over it.
+        if crate::modal::behind(ui) {
+            *held = None;
+        }
         ui.input(|input| {
             let time = input.time;
             let mut clicks = Vec::new();
@@ -1458,6 +1560,11 @@ impl View {
     /// or a named view's) is given. A drag ends when its button is let go, the pointer leaves the
     /// window, or the window loses the focus (whose release may never come).
     fn navigate(&mut self, ui: &mut Ui, response: &egui::Response, size_px: [u32; 2]) {
+        // A modal over the window ends a pan or an orbit held (the canvas inert under it
+        // takes no new one), as SolidWorks ends a drag when a dialog takes the focus.
+        if crate::modal::behind(ui) {
+            self.drag = None;
+        }
         let rect = response.rect;
         let height = f64::from(rect.height());
         let (pressed, origin, latest, shift, down, lost) = ui.input(|input| {
@@ -1547,16 +1654,18 @@ impl View {
         // The canvas's own middle double-click (`crate::clicks`), whatever was clicked just
         // before; its clicks counted every frame, a view asked for or not.
         let middle_double = crate::clicks::double_clicked_by(response, PointerButton::Middle);
+        let motion = Motion::of(ui.ctx());
         match self.asked.take() {
-            Some(ask) => self.give(ask, size_px),
-            None if middle_double => self.fit(size_px),
+            Some(ask) => self.give(ask, size_px, motion),
+            None if middle_double => self.fit(size_px, motion),
             None => {}
         }
     }
 }
 
 /// A frame's button events, each with its place: 0 for a Cancel a navigation tool forces
-/// before the frame's events, `i + 1` for one the frame's `i`th egui event made.
+/// before the frame's events, `i + 1` for one the frame's `i`th egui event made, and `n + 1`
+/// for a Cancel a modal forces after the frame's `n` events.
 type Placed<T> = Vec<(usize, T)>;
 
 /// The frame's left events and right clicks, each given its `seq`: their order together,
@@ -1779,6 +1888,11 @@ fn pixels(length: f32) -> u32 {
     length.round().max(0.0) as u32
 }
 
+/// The box of `plane`'s corners.
+fn plane_box(plane: &silico_render::render::Plane) -> Option<[[f64; 3]; 2]> {
+    silico_protocol::box_of(plane.corners().iter()).map(|(low, high)| [low, high])
+}
+
 /// The canvas behind the bodies over `rect`: a vertical gradient from
 /// [`theme::VIEWPORT_BG_TOP`] along its top to [`theme::VIEWPORT_BG_BOTTOM`] along its
 /// bottom, its colours blended as egui blends a mesh's (in sRGB, as CSS's `linear-gradient`
@@ -1828,6 +1942,12 @@ pub fn show<P: Clients + 'static>(
         return;
     };
     let now = drawing.now();
+    // A transition under way moved on before anything of this frame reads the camera; but a
+    // press on the canvas (to select, to drag, for a menu) ends one still moving where it was
+    // drawn last frame, what the person pressed on, so the press and what it's of are of one
+    // view.
+    let pressed = response.hovered() && ui.input(|input| input.pointer.any_pressed());
+    tab.view.advance(ui.input(|input| input.time), pressed);
     let now_hidden: BTreeSet<FeatureId> = tab
         .browser
         .bodies()
@@ -1864,10 +1984,24 @@ pub fn show<P: Clients + 'static>(
         }
         lines
     };
+    // The origin planes, by their eyes, the browser row hovered, and Create Sketch's planes
+    // if they're open (`crate::planes`), whatever mode the tab is in.
+    let planes_menu = crate::planes::menu(ui.ctx());
+    let planes = crate::planes::drawn(
+        |plane| tab.shown(&crate::tab::Hideable::Origin(crate::planes::row_of(plane))),
+        tab.view.plane_hovered,
+        planes_menu,
+    );
     let sketch_boxes: Vec<[[f64; 3]; 2]> = lines
         .iter()
         .filter_map(|line| line.strips.bounds())
         .map(|(low, high)| [low, high])
+        .chain(
+            planes
+                .iter()
+                .filter(|drawn| drawn.shown)
+                .filter_map(|drawn| plane_box(&drawn.plane)),
+        )
         .collect();
     let view = &mut tab.view;
     view.take_sketch_boxes(sketch_boxes);
@@ -2009,6 +2143,24 @@ pub fn show<P: Clients + 'static>(
         }
         None => drawing.frames,
     };
+    // A plane its eye shows is in the view's reach; one shown for a moment (its row hovered,
+    // Create Sketch's planes open) is drawn only if the view as it is holds it, never
+    // zooming it out.
+    let planes: Vec<silico_render::render::Plane> = planes
+        .into_iter()
+        .filter(|drawn| {
+            drawn.shown
+                || plane_box(&drawn.plane).is_some_and(|its| {
+                    navigate::drawable(
+                        &view.camera,
+                        view.rows,
+                        view.drawn_boxes().chain(std::iter::once(its)),
+                    )
+                })
+        })
+        .map(|drawn| drawn.plane)
+        .collect();
+    crate::planes::frame_took(ui.ctx(), planes_menu);
     let frame = FrameData {
         serial,
         camera: view.camera.clone(),
@@ -2024,6 +2176,7 @@ pub fn show<P: Clients + 'static>(
         edges: view.edges,
         vertices: view.vertices,
         lines,
+        planes,
     };
     if view.grid && !sketching {
         let shapes = crate::grid::shapes(&view.camera, size_px, ppp, rect);
@@ -2049,7 +2202,7 @@ pub fn show<P: Clients + 'static>(
     if let Some(triad) = crate::triad::triad(&view.camera, rect) {
         painter.extend(triad.shapes(&painter));
     }
-    let label = crate::triad::view_label(&view.camera, rect);
+    let label = crate::triad::view_label(view.labelled_camera(), rect);
     // Over the bodies, under the ViewCube and the bar, in the pane's own layer: what the
     // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
     // the bar's, registered after, come first. A camera they change is drawn next frame.
@@ -2076,6 +2229,13 @@ pub fn show<P: Clients + 'static>(
     if navigation_bar(ui, rect, &mut tab.view, size_px) {
         tab.look_at();
     }
+    // A transition under way, or begun this frame (by an ask, the ViewCube, or the bar's
+    // Fit): the next frame moves it on.
+    if tab.view.transition.is_some() {
+        ui.ctx().request_repaint();
+    }
+    // An empty part's hint, above the bar: Create Sketch, as the toolbar's.
+    crate::canvas_hint::empty_part(ui, rect, tab, sessions);
 }
 
 /// The faces `feature` made in `bodies`, as each face's name says ([`Name::feature`]), in
@@ -2376,13 +2536,6 @@ struct CubeEdge {
     faces: [[f64; 3]; 2],
 }
 
-impl CubeEdge {
-    /// Its middle: the sum of the two faces' normals, its one 0 along the edge.
-    fn middle(self) -> [f64; 3] {
-        std::array::from_fn(|k| self.faces[0][k] + self.faces[1][k])
-    }
-}
-
 /// The cube's twelve edges: for each axis, the four along it, from −1 to 1 on it.
 fn cube_edges() -> impl Iterator<Item = CubeEdge> {
     (0..3).flat_map(|k| {
@@ -2405,6 +2558,14 @@ fn cube_edges() -> impl Iterator<Item = CubeEdge> {
                 }
             })
     })
+}
+
+/// The named views the ViewCube's edges and corners give, the edges' first: each between
+/// two of its faces or three ([`NamedView::faces`]), in [`NAMED_VIEWS`]' order within each.
+fn cube_points() -> impl Iterator<Item = NamedView> {
+    let edges = NAMED_VIEWS.into_iter().filter(|view| view.faces() == 2);
+    let corners = NAMED_VIEWS.into_iter().filter(|view| view.faces() == 3);
+    edges.chain(corners)
 }
 
 /// Where a point of the cube's face lands: the face's centre on screen, and how far one of
@@ -2554,42 +2715,6 @@ fn label_cube_face(painter: &egui::Painter, on: OnFace, per_unit: f32, words: &s
     {
         ctx.add_plugin(CubeLabels::default());
         ctx.request_repaint();
-    }
-}
-
-/// An edge's words, as the ViewCube labels it: the two faces it joins, named in the order a
-/// corner's are (`top_front_right`: top or bottom, then front or back, then left or right),
-/// so "Top front", "Front right", "Top right".
-fn edge_words(edge: CubeEdge) -> String {
-    let side = |c: f64, less: &'static str, more: &'static str| {
-        if c > 0.0 {
-            Some(more)
-        } else if c < 0.0 {
-            Some(less)
-        } else {
-            None
-        }
-    };
-    let [x, y, z] = edge.middle();
-    let named: Vec<&str> = [
-        side(z, "bottom", "top"),
-        side(y, "front", "back"),
-        side(x, "left", "right"),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    crate::words::capitalised(&named.join(" "))
-}
-
-/// An edge's view (the prototype's cube clicked near an edge, viewport.js's `mouseup`: the
-/// view from the direction its region names, Z up): from its middle made a unit, up as the
-/// named views have it ([`navigate::up_across`]), and fitted as they are.
-fn edge_view(edge: CubeEdge) -> ViewAsk {
-    let toward = edge.middle().map(|c| c * std::f64::consts::FRAC_1_SQRT_2);
-    ViewAsk::LookAt {
-        toward,
-        up: navigate::up_across(toward),
     }
 }
 
@@ -2851,32 +2976,15 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
                 }
             }
         }
-        // Each edge whose view faces it more than a tenth, as a corner's, clickable at its
-        // middle (before the corners, so a corner keeps its own square where they meet).
-        for edge in cube_edges() {
-            let middle = edge.middle();
-            if facing(middle) * std::f64::consts::FRAC_1_SQRT_2 <= CUBE_CORNER_SHOWN {
+        // Each edge's view and each corner's whose direction faces the view more than a
+        // tenth, clickable at its point on the cube (an edge's middle, a corner), by its
+        // words: the edges first, so a corner keeps its own square where they meet.
+        for named in cube_points() {
+            if facing(named.direction()) <= CUBE_CORNER_SHOWN {
                 continue;
             }
-            let part = Rect::from_center_size(at(middle), Vec2::splat(CUBE_CORNER_SIDE));
-            let response = cube_part(ui, part, &edge_words(edge));
-            if response.clicked() {
-                chosen = Some(edge_view(edge));
-            }
-            parts.push(response);
-        }
-        for named in silico_core::views::NAMED_VIEWS {
-            let direction = named.direction();
-            if FACES.iter().any(|face| face.view == named) || facing(direction) <= CUBE_CORNER_SHOWN
-            {
-                continue;
-            }
-            let corner = at(direction.map(|c| c * 3f64.sqrt()));
-            let response = cube_part(
-                ui,
-                Rect::from_center_size(corner, Vec2::splat(CUBE_CORNER_SIDE)),
-                &crate::words::view_words(named),
-            );
+            let point = Rect::from_center_size(at(named.axes()), Vec2::splat(CUBE_CORNER_SIDE));
+            let response = cube_part(ui, point, &crate::words::view_words(named));
             if response.clicked() {
                 chosen = Some(ViewAsk::Named(named));
             }
@@ -2940,7 +3048,7 @@ fn view_cube(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2]) {
             }
         }
         if let Some(ask) = chosen {
-            view.give(ask, size_px);
+            view.give(ask, size_px, Motion::of(&ctx));
         }
     });
 }
@@ -3029,7 +3137,7 @@ fn navigation_bar(ui: &mut Ui, viewport: Rect, view: &mut View, size_px: [u32; 2
                 let word = Command::Fit.label();
                 let fit = bar::styled_button(ui, &[Icon::Fit], None, word, true, None, style);
                 if bar::tooltip(fit, word, Command::Fit.shown(&ctx), None).clicked() {
-                    view.fit(size_px);
+                    view.fit(size_px, Motion::of(&ctx));
                 }
                 let word = Command::LookAt.label();
                 let look = bar::styled_button(ui, &[Icon::LookAt], None, word, true, None, style);
@@ -3461,52 +3569,101 @@ mod tests {
     }
 
     #[test]
-    fn each_cube_edge_is_named_by_its_faces_as_a_corner_is_and_looks_from_between_them() {
-        // The twelve edges, each by its two faces, top or bottom first, then front or back,
-        // then left or right (as `top_front_right`); its view from its middle made a unit,
-        // by hand: (0, −1, 1)/√2 for the top front, up (0, 1, 1)/√2 (+z made square to it);
-        // (1, −1, 0)/√2 for the front right, up +z.
-        let r = std::f64::consts::FRAC_1_SQRT_2;
-        let mut named: Vec<String> = cube_edges().map(edge_words).collect();
-        named.sort_unstable();
+    fn every_view_the_cube_offers_is_a_named_view_and_its_click_gives_that_views_camera() {
+        use silico_protocol::vec3::{dot, sub};
+        // The cube's faces, its edges' middles and its corners, Home, and its menu's views:
+        // each a `NamedView` asked for by itself, which parses back from its name, and
+        // together all 26, each face, edge, and corner once.
+        let mut offered: Vec<NamedView> = FACES.iter().map(|face| face.view).collect();
+        offered.extend(cube_points());
+        let mut every = offered.clone();
+        for (_, ask) in VIEW_COMMANDS {
+            if let ViewAsk::Named(view) = ask {
+                every.push(view);
+            }
+        }
+        for view in &every {
+            assert_eq!(NamedView::named(view.name()), Some(*view), "{view:?}");
+        }
+        assert_eq!(offered.len(), 26);
+        let distinct: BTreeSet<NamedView> = offered.iter().copied().collect();
+        assert_eq!(distinct, NAMED_VIEWS.into_iter().collect::<BTreeSet<_>>());
+        // The menu: Home and Isometric the home corner, the rest the faces.
+        let menu: Vec<NamedView> = every[26..].to_vec();
         assert_eq!(
-            named,
+            menu,
             [
-                "Back left",
-                "Back right",
-                "Bottom back",
+                NamedView::TopFrontRight,
+                NamedView::Front,
+                NamedView::Back,
+                NamedView::Left,
+                NamedView::Right,
+                NamedView::Top,
+                NamedView::Bottom,
+                NamedView::TopFrontRight,
+            ]
+        );
+        // Each drawn edge's middle (its ends' mean, by hand) is one edge view's point, and
+        // that view's camera is the one the cube gave for the edge before it asked the core
+        // (#471's: its middle times 1/√2 toward the eye, up z made perpendicular to it), to
+        // the bit; each corner of the cube one corner view's.
+        let bounds = [[10.0, -20.0, 5.0], [70.0, 15.0, 45.0]];
+        let points: Vec<NamedView> = cube_points().collect();
+        for edge in cube_edges() {
+            let [start, end] = edge.ends;
+            let middle: [f64; 3] = std::array::from_fn(|k| (start[k] + end[k]) / 2.0);
+            let mut found = points.iter().filter(|view| view.axes() == middle);
+            let (Some(view), None) = (found.next(), found.next()) else {
+                panic!("{middle:?}: no one view there");
+            };
+            // #471's, written out: `t` the middle times 1/√2, its up z − (z·t) t made a unit.
+            let toward = middle.map(|c| c * std::f64::consts::FRAC_1_SQRT_2);
+            let z = [0.0, 0.0, 1.0];
+            let across = sub(z, toward.map(|c| c * dot(z, toward)));
+            let length = dot(across, across).sqrt();
+            let was = navigate::look_at(
+                toward,
+                across.map(|c| c / length),
+                bounds,
+                1000,
+                800,
+                navigate::Inset::default(),
+            );
+            assert_eq!(navigate::named(*view, bounds, 1000, 800), was, "{view:?}");
+            assert!(was.is_some());
+            for corner in edge.ends {
+                assert_eq!(
+                    points.iter().filter(|view| view.axes() == corner).count(),
+                    1
+                );
+            }
+        }
+        // The edges' points come first, so a corner's square, taken later, wins where they
+        // meet: twelve two-face views, then eight three-face ones.
+        let between: Vec<usize> = points.iter().map(|view| view.faces()).collect();
+        assert_eq!(between, [[2; 12].as_slice(), &[3; 8]].concat());
+        // Its words, as the cube labels its parts: an edge's two faces, as a corner's three.
+        let words: Vec<String> = points[..12]
+            .iter()
+            .map(|v| crate::words::view_words(*v))
+            .collect();
+        assert_eq!(
+            words,
+            [
+                "Top front",
+                "Top back",
+                "Top left",
+                "Top right",
                 "Bottom front",
+                "Bottom back",
                 "Bottom left",
                 "Bottom right",
                 "Front left",
                 "Front right",
-                "Top back",
-                "Top front",
-                "Top left",
-                "Top right",
+                "Back left",
+                "Back right",
             ]
         );
-        let near = |a: [f64; 3], b: [f64; 3]| (0..3).all(|k| (a[k] - b[k]).abs() < 1e-15);
-        for (middle, toward, up) in [
-            ([0.0, -1.0, 1.0], [0.0, -r, r], [0.0, r, r]),
-            ([1.0, -1.0, 0.0], [r, -r, 0.0], [0.0, 0.0, 1.0]),
-            ([-1.0, 0.0, -1.0], [-r, 0.0, -r], [-r, 0.0, r]),
-        ] {
-            // The edge of that middle: the one there is.
-            let mut found = cube_edges().filter(|edge| edge.middle() == middle);
-            let (Some(edge), None) = (found.next(), found.next()) else {
-                panic!("{middle:?}: no one edge there");
-            };
-            let ViewAsk::LookAt {
-                toward: got,
-                up: got_up,
-            } = edge_view(edge)
-            else {
-                panic!("{middle:?}: not a look");
-            };
-            assert!(near(got, toward), "{middle:?}: {got:?}");
-            assert!(near(got_up, up), "{middle:?}: up {got_up:?}");
-        }
     }
 
     #[test]
@@ -4816,14 +4973,11 @@ mod tests {
                 assert_eq!(normal[a], start[a], "{normal:?} at {start:?}");
             }
             assert!(seen.insert((start.map(f64::to_bits), end.map(f64::to_bits))));
-            // Its middle the midpoint of its ends: their mean, by hand, on the axis it runs
-            // along 0 and on the others its faces' ±1.
-            let edge = CubeEdge {
-                ends: [start, end],
-                faces: [one, other],
-            };
+            // The midpoint of its ends, their mean: on the axis it runs along 0, and on the
+            // others its faces' ±1, their normals' sum.
             let midpoint: [f64; 3] = std::array::from_fn(|a| (start[a] + end[a]) / 2.0);
-            assert_eq!(edge.middle(), midpoint, "{start:?} {end:?}");
+            let sum: [f64; 3] = std::array::from_fn(|a| one[a] + other[a]);
+            assert_eq!(sum, midpoint, "{start:?} {end:?}");
         }
         assert_eq!(seen.len(), 12);
         assert_eq!(along, [4, 4, 4]);

@@ -24,6 +24,9 @@ struct Dim {
     made: Vec<Members>,
     messages: Vec<Message>,
     left: bool,
+    /// Which axes the pointer may take: both, as in a view square to the plane, unless a
+    /// test says otherwise.
+    axes: Axes,
 }
 
 impl Dim {
@@ -42,6 +45,7 @@ impl Dim {
             made: Vec::new(),
             messages: Vec::new(),
             left: false,
+            axes: Axes::BOTH,
         }
     }
 
@@ -55,6 +59,7 @@ impl Dim {
             automatic_relations: true,
             construction: false,
             states: &self.states,
+            axes: self.axes,
         };
         let outcome = self.tool.handle(&context, &mut self.ids, event);
         if let Some(members) = &outcome.add {
@@ -457,6 +462,64 @@ fn an_axis_a_pick_doesnt_allow_drops_out_and_the_nearest_of_the_rest_is_taken() 
         pick(&empty(), [0.1, 0.1], 0.5, neither),
         Some(Reference::Origin)
     );
+}
+
+#[test]
+fn smart_dimension_takes_no_axis_its_context_disallows_and_its_hover_agrees() {
+    // #484. A line 0.3 off the y axis, (0.3, 10) to (0.3, 50), and the pointer at (0.1, 20):
+    // the axis 0.1 off, the line 0.2, both within the pick's 0.5. With both axes allowed
+    // (the control), the hover and the pick are the axis, the nearer; with the y axis not,
+    // the line. And mirrored onto the x axis: (10, 0.3) to (50, 0.3), the pointer at
+    // (20, 0.1), the x axis 0.1 off and the line 0.2.
+    for y_axis in [true, false] {
+        let flip = |xy: Xy| if y_axis { xy } else { [xy[1], xy[0]] };
+        let (from, to, at) = (flip([0.3, 10.0]), flip([0.3, 50.0]), flip([0.1, 20.0]));
+        let (axis, without) = if y_axis {
+            (Reference::YAxis, Axes { x: true, y: false })
+        } else {
+            (Reference::XAxis, Axes { x: false, y: true })
+        };
+        for (axes, want) in [(Axes::BOTH, axis.clone()), (without, el("zz000001"))] {
+            let mut d = Dim::new(with_line(empty(), "zz000001", from, to));
+            d.axes = axes;
+            d.to(at[0], at[1]);
+            assert_eq!(
+                d.tool.preview().hover,
+                Some(want.clone()),
+                "hover, {axes:?}"
+            );
+            d.click(at[0], at[1]);
+            assert_eq!(d.tool.preview().picks, vec![want], "pick, {axes:?}");
+        }
+    }
+}
+
+#[test]
+fn smart_dimensions_hover_on_a_read_takes_the_axes_its_context_allows() {
+    // A read with no pointer event (`settle`) works the hover out again at the last place,
+    // (0.1, 20), beside (0.3, 10) to (0.3, 50): with the y axis not allowed, the line; with
+    // both, the axis, the nearer. What the context says decides it, not the last event's.
+    let sketch = with_line(empty(), "zz000001", [0.3, 10.0], [0.3, 50.0]);
+    let mut d = Dim::new(sketch.clone());
+    d.axes = Axes { x: true, y: false };
+    d.to(0.1, 20.0);
+    assert_eq!(d.tool.preview().hover, Some(el("zz000001")));
+    let sketch_id = sketch_id();
+    let states = under();
+    let context = |axes| Context {
+        sketch_id: &sketch_id,
+        revision: Revision::OPENED,
+        sketch: &sketch,
+        tolerance: TOLERANCE,
+        automatic_relations: true,
+        construction: false,
+        states: &states,
+        axes,
+    };
+    d.tool.settle(&context(Axes { x: true, y: false }));
+    assert_eq!(d.tool.preview().hover, Some(el("zz000001")));
+    d.tool.settle(&context(Axes::BOTH));
+    assert_eq!(d.tool.preview().hover, Some(Reference::YAxis));
 }
 
 #[test]
@@ -1838,6 +1901,7 @@ fn a_dimension_placed_before_a_read_shows_it_keeps_its_id_taken() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Lowest;
@@ -1868,6 +1932,7 @@ fn another_sketch_starts_the_tool_afresh() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     d.tool
         .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
@@ -1926,6 +1991,7 @@ fn a_problem_the_gate_finds_elsewhere_is_the_cores_to_answer() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter::after(0);
@@ -2919,6 +2985,7 @@ fn another_sketch_forgets_the_placement() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     d.tool
         .handle(&context, &mut d.ids, DimensionEvent::Move([50.0, 50.0]));
@@ -3012,6 +3079,7 @@ fn settle_takes_a_read_with_no_event() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let out = d.tool.settle(&context);
     assert_eq!(out, Outcome::default());
@@ -3027,6 +3095,7 @@ fn settle_takes_a_read_with_no_event() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let out = d.tool.settle(&context);
     assert_eq!(out.message, Some(Message::DimensionChanged));
@@ -3257,6 +3326,7 @@ fn a_cancelled_press_leaves_the_offer_as_the_read_makes_it() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter::after(0);
@@ -3362,6 +3432,7 @@ fn a_placement_not_yet_answered_holds_the_next() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     let mut ids = Counter::after(0);
@@ -3460,6 +3531,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             automatic_relations: true,
             construction: false,
             states: &under(),
+            axes: Axes::BOTH,
         };
         let mut tool = SmartDimension::new();
         let mut ids = Counter::after(0);
@@ -3482,6 +3554,7 @@ fn an_add_with_an_edit_before_it_is_judged_through_the_tool_by_its_own_state() {
             automatic_relations: true,
             construction: false,
             states: &states,
+            axes: Axes::BOTH,
         };
         tool.settle(&context);
         let placement = tool.placement().unwrap();
@@ -3691,6 +3764,7 @@ fn a_placement_is_known_once_its_add_is_answered_and_forgotten_if_refused() {
         automatic_relations: true,
         construction: false,
         states: &under(),
+        axes: Axes::BOTH,
     };
     let mut tool = SmartDimension::new();
     for at in [[20.0, 10.0], [20.0, 30.0]] {

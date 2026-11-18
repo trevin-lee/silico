@@ -23,12 +23,14 @@
 //! - F5, SolidWorks' key for its filter toolbar, which the app hasn't: the app takes it
 //!   itself and says where the filters are (`App::keys`), as the prototype's F5 is no
 //!   command of its `CMD` and isn't on its sheet.
-//! - SEAM: S Search, once it's built; Search reaches What's wrong, Suppress, and Find in
-//!   browser and Find in timeline, which have no keys, by their names, as the prototype's
-//!   does.
+//!
+//! S opens the command search (`crate::search`), which lists the registry too, each
+//! command with its icon, its group, and its keys, and reaches by name those with no keys
+//! (What's wrong, Suppress, Find in browser, and Find in timeline), as the prototype's does.
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
 
+use crate::icons::Icon;
 use crate::start;
 
 /// A command the registry holds.
@@ -41,6 +43,7 @@ pub enum Command {
     Close,
     Undo,
     Redo,
+    Search,
     Rename,
     Delete,
     Suppress,
@@ -162,6 +165,19 @@ pub struct Entry {
     pub elsewhere: Option<Chord>,
     /// What it does, in a line, if more than its name says.
     pub description: Option<&'static str>,
+    /// Its icon, where the prototype's `CMD` gives it one (the command search's row shows a
+    /// chevron for one without).
+    pub icon: Option<Icon>,
+}
+
+impl Entry {
+    /// The entry with `icon`.
+    const fn with_icon(self, icon: Icon) -> Entry {
+        Entry {
+            icon: Some(icon),
+            ..self
+        }
+    }
 }
 
 const fn key(modifiers: Modifiers, key: Key) -> Chord {
@@ -195,6 +211,7 @@ const fn entry(
         keys,
         elsewhere: None,
         description,
+        icon: None,
     }
 }
 
@@ -204,21 +221,24 @@ const NEW: Entry = entry(
     Group::File,
     &[command(Key::N)],
     Some("Opens an untitled part"),
-);
+)
+.with_icon(Icon::NewDoc);
 const OPEN: Entry = entry(
     Command::Open,
     "Open…",
     Group::File,
     &[command(Key::O)],
     None,
-);
+)
+.with_icon(Icon::Open);
 const SAVE: Entry = entry(
     Command::Save,
     "Save",
     Group::File,
     &[command(Key::S)],
     Some("Writes your edits to the file"),
-);
+)
+.with_icon(Icon::Save);
 const SAVE_AS: Entry = entry(
     Command::SaveAs,
     "Save As…",
@@ -233,7 +253,8 @@ const CLOSE: Entry = entry(
     &[command(Key::W)],
     None,
 );
-const UNDO: Entry = entry(Command::Undo, "Undo", Group::Edit, &[command(Key::Z)], None);
+const UNDO: Entry =
+    entry(Command::Undo, "Undo", Group::Edit, &[command(Key::Z)], None).with_icon(Icon::Undo);
 /// Shift+Command+Z first: egui would match Command+Z with its Shift aside, so it's taken
 /// before Undo's, as Redo, never an Undo.
 const REDO: Entry = Entry {
@@ -245,7 +266,19 @@ const REDO: Entry = Entry {
         &[key(SHIFT_COMMAND, Key::Z), command(Key::Y)],
         None,
     )
-};
+}
+.with_icon(Icon::Redo);
+/// The command search (the prototype's `CMD.search`, its words and its S): S alone, freshly
+/// pressed, outside a text field, a menu, and a modal, anywhere, the start page and sketch
+/// mode too, as the prototype's `keydown` takes it (`crate::search`).
+const SEARCH: Entry = entry(
+    Command::Search,
+    "Search commands",
+    Group::Edit,
+    &[letter(Key::S)],
+    Some("Every command by name, with its shortcut"),
+)
+.with_icon(Icon::Search);
 /// The selected feature's name typed over in its own field, in the timeline or the browser,
 /// where it was selected (the prototype's `CMD.rename`, `renameSelected`).
 const RENAME: Entry = entry(
@@ -308,7 +341,8 @@ const REBUILD: Entry = entry(
     Group::Rebuild,
     &[command(Key::B)],
     Some("Resumes a stopped rebuild"),
-);
+)
+.with_icon(Icon::Rebuild);
 const REBUILD_ALL: Entry = entry(
     Command::RebuildAll,
     "Rebuild everything",
@@ -333,7 +367,8 @@ const STOP: Entry = entry(
     Group::Rebuild,
     &[ESCAPE],
     None,
-);
+)
+.with_icon(Icon::Stop);
 /// No keys: the status bar's errors, the timeline's, and the browser's document row open it
 /// (the prototype's `whatsWrong`, which its search reaches by name).
 const WHATS_WRONG: Entry = entry(
@@ -342,21 +377,24 @@ const WHATS_WRONG: Entry = entry(
     Group::Rebuild,
     &[],
     Some("Every problem in the document"),
-);
+)
+.with_icon(Icon::Error);
 const FIT: Entry = entry(
     Command::Fit,
     "Fit",
     Group::View,
     &[bare(Key::F6)],
     Some("The whole model in view"),
-);
+)
+.with_icon(Icon::Fit);
 const HOME: Entry = entry(
     Command::Home,
     "Home view",
     Group::View,
     &[bare(Key::Home)],
     None,
-);
+)
+.with_icon(Icon::Home);
 const FRONT: Entry = entry(
     Command::Front,
     "Front",
@@ -414,28 +452,32 @@ const LOOK_AT: Entry = entry(
     Group::View,
     &[command(Key::Num8)],
     Some("Turns the view square to the selected face or the sketch"),
-);
+)
+.with_icon(Icon::LookAt);
 const ORBIT: Entry = entry(
     Command::Orbit,
     "Orbit",
     Group::View,
     &[Chord::Pointer(Modifiers::SHIFT, "Middle-drag")],
     None,
-);
+)
+.with_icon(Icon::Orbit);
 const PAN: Entry = entry(
     Command::Pan,
     "Pan",
     Group::View,
     &[Chord::Pointer(Modifiers::NONE, "Middle-drag")],
     None,
-);
+)
+.with_icon(Icon::Pan);
 const ZOOM: Entry = entry(
     Command::Zoom,
     "Zoom to the pointer",
     Group::View,
     &[Chord::Pointer(Modifiers::NONE, "Wheel")],
     None,
-);
+)
+.with_icon(Icon::Zoom);
 const CLEAR_SELECTION: Entry = entry(
     Command::ClearSelection,
     "Clear selection",
@@ -454,21 +496,24 @@ const FILTER_FACE: Entry = entry(
     Group::Selection,
     &[Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::X))],
     Some("Toggles whether faces can be selected"),
-);
+)
+.with_icon(Icon::SelFace);
 const FILTER_EDGE: Entry = entry(
     Command::FilterEdge,
     "Edges",
     Group::Selection,
     &[Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::E))],
     Some("Toggles whether edges can be selected"),
-);
+)
+.with_icon(Icon::SelEdge);
 const FILTER_VERTEX: Entry = entry(
     Command::FilterVertex,
     "Vertices",
     Group::Selection,
     &[Chord::Exact(KeyboardShortcut::new(Modifiers::NONE, Key::V))],
     Some("Toggles whether vertices can be selected"),
-);
+)
+.with_icon(Icon::SelVertex);
 const HIDE: Entry = entry(
     Command::Hide,
     "Hide or show",
@@ -490,69 +535,84 @@ const LINE: Entry = entry(
     Group::Sketch,
     &[letter(Key::L)],
     Some("Click, click: a chain of lines. Double-click ends it"),
-);
+)
+.with_icon(Icon::Line);
 const RECTANGLE: Entry = entry(
     Command::Rectangle,
     "Rectangle",
     Group::Sketch,
     &[letter(Key::R)],
     None,
-);
+)
+.with_icon(Icon::Rect);
 const CIRCLE: Entry = entry(
     Command::Circle,
     "Circle",
     Group::Sketch,
     &[letter(Key::C)],
     None,
-);
-const ARC: Entry = entry(Command::Arc, "Arc", Group::Sketch, &[letter(Key::A)], None);
+)
+.with_icon(Icon::Circle);
+const ARC: Entry =
+    entry(Command::Arc, "Arc", Group::Sketch, &[letter(Key::A)], None).with_icon(Icon::Arc);
 const POINT: Entry = entry(
     Command::Point,
     "Point",
     Group::Sketch,
     &[letter(Key::P)],
     None,
-);
+)
+.with_icon(Icon::Point);
 const TRIM: Entry = entry(
     Command::Trim,
     "Trim",
     Group::Sketch,
     &[letter(Key::T)],
     None,
-);
+)
+.with_icon(Icon::Trim);
 const DIMENSION: Entry = entry(
     Command::Dimension,
     "Smart Dimension",
     Group::Sketch,
     &[letter(Key::D)],
     Some("Pick a line, a circle, or two entities, then type the value"),
-);
-/// The palette's Construction. SEAM: the prototype's X toggles the selected curves between
-/// profile and construction, once a selection's curves can be set so.
+)
+.with_icon(Icon::Dimension);
+/// Construction's help line, the button's and the shortcut sheet's: the approved
+/// prototype's (app.js), and a clause for no curve selected, which it doesn't cover.
+pub const CONSTRUCTION_HELP: &str = "Toggles the selected curves between profile and \
+    construction; with none selected, whether the next curves are drawn as construction";
+
+/// Construction: X switches the selected curves between profile and construction, or, with
+/// none selected, the palette's setting for the curves drawn next.
 const CONSTRUCTION: Entry = entry(
     Command::Construction,
     "Construction",
     Group::Sketch,
     &[letter(Key::X)],
-    Some("Draws the tools' curves as construction, or as profile again"),
-);
+    Some(CONSTRUCTION_HELP),
+)
+.with_icon(Icon::Construction);
 const FINISH_SKETCH: Entry = entry(
     Command::FinishSketch,
     "Finish Sketch",
     Group::Sketch,
     &[command(Key::Enter)],
     Some("Keeps your changes and rebuilds"),
-);
+)
+.with_icon(Icon::Check);
 const SHORTCUTS: Entry = entry(
     Command::Shortcuts,
     "Keyboard shortcuts",
     Group::Help,
     &[bare(Key::Questionmark)],
     None,
-);
+)
+.with_icon(Icon::Help);
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 47] = [
+pub const REGISTRY: [Entry; 48] = [
     NEW,
     OPEN,
     SAVE,
@@ -560,6 +620,7 @@ pub const REGISTRY: [Entry; 47] = [
     CLOSE,
     UNDO,
     REDO,
+    SEARCH,
     RENAME,
     DELETE,
     SUPPRESS,
@@ -613,6 +674,7 @@ impl Command {
             Command::Close => &CLOSE,
             Command::Undo => &UNDO,
             Command::Redo => &REDO,
+            Command::Search => &SEARCH,
             Command::Rename => &RENAME,
             Command::Delete => &DELETE,
             Command::Suppress => &SUPPRESS,
@@ -695,15 +757,23 @@ pub fn joined(ctx: &egui::Context, caps: &[String]) -> String {
 }
 
 /// What a key's cap says where the prototype names it otherwise than egui (its `KEYNAME`):
-/// Esc, ↵ for Enter, and Del, which is ⌫ on macOS (its Backspace).
+/// Esc, ↵ for Enter, and Del, which is ⌫ on macOS (its Backspace); and the start page's ↑
+/// and ↓ (app.js's `renderStart`), where egui has triangles.
 fn key_name(key: Key) -> &'static str {
     match key {
         Key::Escape => "Esc",
         Key::Enter => "↵",
         Key::Delete => "Del",
         Key::Backspace => "⌫",
+        Key::ArrowUp => "↑",
+        Key::ArrowDown => "↓",
         key => key.symbol_or_name(),
     }
+}
+
+/// The cap of `key` alone, as the prototype names it (`key_name`).
+pub fn key_cap(key: Key) -> String {
+    key_name(key).to_owned()
 }
 
 /// A cap for each of `chord`'s modifiers, Command (Ctrl off macOS) first, then Shift, then
@@ -733,9 +803,41 @@ pub fn take(ui: &mut Ui, command: Command) -> bool {
 /// Whether `command` was pressed this frame by any of its chords, as [`take`] would find
 /// it, taking nothing.
 pub fn pressed(ctx: &egui::Context, command: Command) -> bool {
+    ctx.input(|input| first_press(&input.events, command).is_some())
+}
+
+/// Whether `command`, pressed this frame, came after the frame's first release of the left
+/// button among its events, as the window gave them: what that release ends (a line's
+/// gesture, a button's click) is done by then, so the command is to act once the canvas and
+/// the window have had it; one pressed before it, or in a frame with none, acts as it's
+/// taken. Read before [`take`] takes it: taking a key moves no other event.
+pub fn after_release(ctx: &egui::Context, command: Command) -> bool {
     ctx.input(|input| {
-        command.entry().keys.iter().any(|chord| {
-            input.events.iter().any(|event| match (chord, event) {
+        let release = input.events.iter().position(|event| {
+            matches!(
+                event,
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    ..
+                }
+            )
+        });
+        release.is_some_and(|release| {
+            first_press(&input.events, command).is_some_and(|press| press > release)
+        })
+    })
+}
+
+/// Where among `events` the first of `command`'s presses is, by any of its chords, as
+/// [`take`] would find it.
+fn first_press(events: &[egui::Event], command: Command) -> Option<usize> {
+    events.iter().position(|event| {
+        command
+            .entry()
+            .keys
+            .iter()
+            .any(|chord| match (chord, event) {
                 (
                     Chord::Key(shortcut),
                     egui::Event::Key {
@@ -759,7 +861,6 @@ pub fn pressed(ctx: &egui::Context, command: Command) -> bool {
                 ) => *key == shortcut.logical_key && *modifiers == shortcut.modifiers,
                 _ => false,
             })
-        })
     })
 }
 
@@ -825,6 +926,72 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_os(os);
         ctx
+    }
+
+    #[test]
+    fn each_command_has_the_prototypes_icon() {
+        // app.js's `CMD`, each command's `icon`, or none where it gives none (Suppress and
+        // the two Find commands aren't in `CMD`: none). The command search's row shows it, and
+        // a chevron for none. Every command in the registry is in the table, once.
+        let table = [
+            (Command::New, Some(Icon::NewDoc)),
+            (Command::Open, Some(Icon::Open)),
+            (Command::Save, Some(Icon::Save)),
+            (Command::SaveAs, None),
+            (Command::Close, None),
+            (Command::Undo, Some(Icon::Undo)),
+            (Command::Redo, Some(Icon::Redo)),
+            (Command::Search, Some(Icon::Search)),
+            (Command::Rename, None),
+            (Command::Delete, None),
+            (Command::Suppress, None),
+            (Command::FindInBrowser, None),
+            (Command::FindInTimeline, None),
+            (Command::Rebuild, Some(Icon::Rebuild)),
+            (Command::RebuildAll, None),
+            (Command::Reload, None),
+            (Command::Stop, Some(Icon::Stop)),
+            (Command::WhatsWrong, Some(Icon::Error)),
+            (Command::Fit, Some(Icon::Fit)),
+            (Command::Home, Some(Icon::Home)),
+            (Command::Front, None),
+            (Command::Back, None),
+            (Command::Left, None),
+            (Command::Right, None),
+            (Command::Top, None),
+            (Command::Bottom, None),
+            (Command::Isometric, None),
+            (Command::LookAt, Some(Icon::LookAt)),
+            (Command::Orbit, Some(Icon::Orbit)),
+            (Command::Pan, Some(Icon::Pan)),
+            (Command::Zoom, Some(Icon::Zoom)),
+            (Command::ClearSelection, None),
+            (Command::FilterFace, Some(Icon::SelFace)),
+            (Command::FilterEdge, Some(Icon::SelEdge)),
+            (Command::FilterVertex, Some(Icon::SelVertex)),
+            (Command::Hide, None),
+            (Command::Ok, None),
+            (Command::Cancel, None),
+            (Command::Line, Some(Icon::Line)),
+            (Command::Rectangle, Some(Icon::Rect)),
+            (Command::Circle, Some(Icon::Circle)),
+            (Command::Arc, Some(Icon::Arc)),
+            (Command::Point, Some(Icon::Point)),
+            (Command::Trim, Some(Icon::Trim)),
+            (Command::Dimension, Some(Icon::Dimension)),
+            (Command::Construction, Some(Icon::Construction)),
+            (Command::FinishSketch, Some(Icon::Check)),
+            (Command::Shortcuts, Some(Icon::Help)),
+        ];
+        assert_eq!(table.len(), REGISTRY.len());
+        for entry in &REGISTRY {
+            let mine: Vec<_> = table
+                .iter()
+                .filter(|(command, _)| *command == entry.command)
+                .collect();
+            assert_eq!(mine.len(), 1, "{:?} in the table", entry.command);
+            assert_eq!(entry.icon, mine[0].1, "{:?}", entry.command);
+        }
     }
 
     #[test]

@@ -114,6 +114,18 @@ A torus (R 12.531, r 9.057) less a torus (R 23.399, r 12.985) moved (−3.965, 0
 - **The right answer:** the axes are 3.968 apart, and the tool's tube comes no nearer its axis than 10.414. So everything of the base within 6.446 of its axis is left: at least 908 mm³ by the integral, and about 5854 by Monte Carlo.
 - **Pinned by** `a_torus_cut_by_a_larger_torus_occt_turns_inside_out_is_right_or_refused` (right or refused, never inside out or empty); the case is in the oracle's known list for generated cases (`generate::KNOWN`).
 
+The nightly sweeps keep finding more of these. Each was rebuilt as the oracle builds it, and its right volume integrated by hand, slice by slice (the exact area of the annuli's intersection at each height, adaptive Gauss–Kronrod):
+
+| Case | FreeCAD 1.1.3's result | Right volume |
+|---|---|---|
+| `generated_111_374`, a torus less a torus | −6480.64 | 5902.990 |
+| `generated_161_99`, a torus fused with a torus | −50386.75, and invalid by its own `isValid` | 53261.001 |
+| `generated_19_400`, a torus less a torus | −146172.65 | 6576.118 |
+| `generated_24_431`, a torus less a torus | −77962.89 | 2737.074 |
+| `generated_41_99`, a torus less a torus | −78796.32 | 7379.488 |
+
+Silico refuses each as an invalid result. So the oracle takes the kind as a rule rather than case by case (`without_freecads_no_solid`): FreeCAD's result with a volume below zero, or invalid by its own `isValid`, where Silico refuses it as invalid, is known, never a difference. Silico refusing for another reason, or FreeCAD's solid sound, still differs.
+
 Silico ran OCCT 8.0.1 until M1.5. It gets all of these wrong too, and one more that 7.9.3 and 7.8.1 get right: a box cut across the slit of a revolve within about 1.5e-6 degrees of a full turn (the rectangle x 100..200, y 0..1 about y by 360 − 1e-7, and a 0.5 × 0.5 × 1 box at (120, 0.2, −0.5)) removes nothing, in a stock 8.0.1 build and in FreeCAD 26.3 on it alike. That regression is why Silico runs 7.9.3, the same release as its FreeCAD oracle (`a_cut_across_a_large_nearly_full_ring_removes_what_it_covers` checks 7.9.3 cuts it right).
 
 **Volumes are integrated adaptively.** OCCT's default integration, a fixed number of Gauss points a face, which FreeCAD's `Shape.Volume` uses, measures some results up to 1% off: Silico's common of two tori (R 2, r 1) 2.2 apart measured 12.238 where its volume is 12.3586 (FreeCAD, whose OCCT builds that common with one more face, measures 12.3598), and a cylinder and torus at (0, 1.999999, 0) measured 43.769 for a fuse of 43.089. The summary now integrates to a relative 1e-9: 12.3586093, and 43.0891. Volumes and areas agree with FreeCAD's to about 2e-8 on the oracle tests; a horn torus's center came out 7.5e-6 off its axis (of a torus 40 across), where the fixed order is exact, until patch 0003 (2026-10-25: docs/ports/measure.md) gave its surface of revolution three spans: now it's at the axis to 1e-11 (1e-12 of its radius). The stress test measures on its own, so its reference doesn't change.

@@ -25,7 +25,7 @@ grep -q 'skip()' "$tmp/checkout/.github/fill.sh" || { echo "couldn't cut the Fil
 sed "s#/proc/stat#$tmp/stat#" "$repo/.github/proptest-room.sh" >"$tmp/checkout/.github/proptest-room.sh"
 
 # The stub gh. Runs come from runs.jsonl (id, path, status, conclusion, display_title,
-# created_at; each on main), jobs from jobs.jsonl (run, name, status, runner_name, labels, conclusion,
+# created_at, event; each on main), jobs from jobs.jsonl (run, name, status, runner_name, labels, conclusion,
 # completed_at, steps); what it would change on GitHub goes to calls. A call whose arguments
 # hold the text in the file fail fails, as GitHub not answering would.
 cat >"$tmp/bin/gh" <<'EOF'
@@ -47,14 +47,16 @@ runs() { jq -s . "$STATE/runs.jsonl" 2>/dev/null || echo '[]'; }
 case "$1 $2" in
 "workflow run" | "run cancel") echo "$*" >>"$STATE/calls"; exit 0 ;;
 "run list")
-  workflow=
+  workflow= event=
   while [ $# -gt 0 ]; do
     if [ "$1" = --workflow ]; then workflow=$2; fi
+    if [ "$1" = --event ]; then event=$2; fi
     shift
   done
-  json=$(runs | jq --arg path ".github/workflows/$workflow" '[.[] | select(.path == $path)] | sort_by(.created_at) | reverse
+  json=$(runs | jq --arg path ".github/workflows/$workflow" --arg event "$event" '[.[] | select(.path == $path
+      and ($event == "" or .event == $event))] | sort_by(.created_at) | reverse
     | map({databaseId: .id, status, conclusion: (.conclusion // ""), displayTitle: .display_title, createdAt: .created_at,
-      headBranch: "main"})') ;;
+      headBranch: "main", event})') ;;
 api*)
   case $2 in
   */actions/runs\?status=*)
@@ -95,12 +97,12 @@ state() {
   run 9000 filler-clock.yml in_progress filler-clock 0
 }
 # A run: its id, workflow file, status, title, how many hours ago it was made, and, ended, its
-# conclusion.
+# conclusion, and the event that started it (workflow_dispatch unless given).
 run() {
   jq -nc --argjson id "$1" --arg path ".github/workflows/$2" --arg status "$3" --arg title "$4" --arg at "$(ago "$5")" \
-    --arg conclusion "${6-}" \
+    --arg conclusion "${6-}" --arg event "${7-workflow_dispatch}" \
     '{id: $id, path: $path, status: $status, conclusion: (if $conclusion == "" then null else $conclusion end),
-      display_title: $title, created_at: $at}' >>"$STATE/runs.jsonl"
+      display_title: $title, created_at: $at, event: $event}' >>"$STATE/runs.jsonl"
 }
 # A job: its run, name, status, runner, labels, and, ended, its conclusion and how many hours
 # ago, and its step "Rounds ran"'s conclusion (none, empty).
@@ -121,7 +123,7 @@ swept() { run $((100 + $1)) oracle-sweep.yml completed "filler oracle sweep, see
 # cancelled, skipped), its step "Rounds ran" ending $3 (success unless given; skipped when the
 # job ran no round; empty, no such step, when the job never ran).
 explored() {
-  run $((200 + $2)) proptest-explore.yml completed "filler proptest exploration" $(($2 + 1)) "$1"
+  run $((200 + $2)) proptest-explore.yml completed "filler proptest exploration" $(($2 + 1)) "$1" schedule
   job $((200 + $2)) explore completed pve-silico-22-1 self-hosted,linux,x64,filler "$1" "$2" "${3-success}"
 }
 # Busy runners: real shards of a run of the merge lane on each of silico-$@.
@@ -765,6 +767,42 @@ exploring 8
 sweeping 9
 cancel_filler mutants.yml
 check only_called "run cancel 8000"
+
+# A fork's pull request runs its own copy of a workflow under that workflow's name, on a
+# branch it may call main, titled as it likes: none of its runs counts as the filler's.
+
+begin "a fork's pull request run titled as a newer filler a: main's last one counts, and the sweep due starts" 20
+swept 5
+run 8100 mutants.yml completed "filler a mutants 1111111111111111111111111111111111111111 since 0000" 3
+run 8200 mutants.yml completed "filler a mutants 2222222222222222222222222222222222222222 since 0000" 1 success pull_request
+check fill
+check only_called "workflow run oracle-sweep.yml --ref main -f filler=true"
+
+begin "a fork's pull request run titled as a filler sweep: the sweep due starts all the same" 20
+swept 5
+run 8100 mutants.yml completed "filler a mutants 1111111111111111111111111111111111111111 since 0000" 3
+run 8300 oracle-sweep.yml completed "filler oracle sweep, seed 1" 1 success pull_request
+check fill
+check only_called "workflow run oracle-sweep.yml --ref main -f filler=true"
+
+begin "a fork's pull request run of the clock, going: the clock is started all the same" 20
+: >"$STATE/runs.jsonl"
+run 9000 filler-clock.yml completed filler-clock 1 success schedule
+run 9001 filler-clock.yml in_progress filler-clock 0 "" pull_request
+swept 5
+run 8100 mutants.yml completed "filler a mutants 1111111111111111111111111111111111111111 since 0000" 3
+check fill
+check only_called "workflow run filler-clock.yml --ref main" "workflow run oracle-sweep.yml --ref main -f filler=true"
+
+begin "a fork's pull request run of the exploration that ran a round today: still overdue" 0
+swept 1
+explored success 30
+run 260 proptest-explore.yml completed "filler proptest exploration" 2 success pull_request
+job 260 explore completed pve-silico-22-1 self-hosted,linux,x64,filler success 1 success
+shards_on 5 6 7 8
+check room
+check said "Overdue: no exploration has passed or failed in a day."
+check answered true true
 
 if [ "$failed" -ne 0 ]; then
   echo "filler-decisions: some cases failed" >&2

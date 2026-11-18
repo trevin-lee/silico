@@ -139,7 +139,7 @@ Whole-shape mode copies the support itself, with the same skipped first transfor
 | Input | FreeCAD 1.1.3 *(observed)* | Silico (§7, as decided or recommended there) |
 |---|---|---|
 | 0 or −1 occurrences | Clamped to 1 by the property; nothing happens | Refused by the gate (`invalid_input`, naming `count`): a count is at least 1 |
-| 1 occurrence, or every copy skipped | The identity; nothing else checked | The identity: no kernel step runs, the base's solid and names pass through, its references still checked (decision 6) |
+| 1 occurrence, or every copy skipped | The identity; nothing else checked | The identity: no copies request, the base's solid and names pass through, its references still resolved and checked (decision 6) |
 | A huge count | Up to INT_MAX (main caps at a preference, `MaximumPatternOccurrences`, default 1000, `293726c5d8`) | Refused above a fixed cap (decision 8) |
 | Length 0 (extent) | "Pattern length too small" | Refused by the gate, naming `length` |
 | Spacing 0 | "Pattern length too small" (through the synced length) | Refused by the gate, naming `spacing` |
@@ -201,24 +201,30 @@ Silico's N2 (a kept element keeps its name exactly) is safe only because an elem
 The marker is decided: Fable, 2026-10-29, the maintainer may veto (~/.cache/silico-review/m-patterns-fable.md, §1(b)). Scheme 5's grammar (in `naming/parse.rs`) gains one form and three type words:
 
 ```text
-base   = …                                              scheme 5's five forms, unchanged
-       | feature "." type "." kind "(C" index " " name ")"   a copy of `name` placed at instance `index`
-index  = offset ( "," offset )*       one offset per direction of the feature, in the
+base     = …                                                scheme 5's five forms, unchanged
+         | feature "." type "." kind "(" ( "C" | "S" ) instance " " name ")"
+                                      a copy of `name` placed at `instance`: `C` of an element
+                                      of a feature's tool, `S` of an element of the base's solid
+instance = offset ( "," offset )*     one offset per direction of the feature, in the
                                       document's order (direction 1 first), trailing zeros
                                       left off: the last offset written is 1 or more
-offset = a number from 0, no leading zero, at most 2^32 − 1
-type   = … | "linear_pattern" | "polar_pattern" | "mirror"
+offset   = "0" | digit19 digit*       at most 2^32 − 1, no leading zero
+digit19  = "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+digit    = "0" | digit19
+type     = … | "linear_pattern" | "polar_pattern" | "mirror"
 ```
 
+The grammar as built is N10 in docs/design/m2.7-naming.md, with its refusals (Fable, 2026-11-10: the `S` marker and the nonterminal `instance`, named apart from `parse.rs`'s `index`, an element's number).
+
 The rules:
-1. **An offset is steps from the seed along a direction, from 0.** Instance k of a linear or polar pattern is k steps along the direction as the document gives it. `reversed` is part of the direction, not of the index. The seed is offset 0 in every direction. The index is the multiplier in the position arithmetic (§7), and main's `SuppressedIndices` counts the same way (0 the original).
+1. **An offset is steps from the seed along a direction, from 0.** Instance k of a linear or polar pattern is k steps along the direction as the document gives it. `reversed` is part of the direction, not of the index. The seed is offset 0 in every direction. The index is the multiplier in the position arithmetic (§7), and main's `SuppressedIndices` counts the same way (0 the original). An index counts steps along `directions` by place, as written. A direction's fields, `along` included, and the directions' order are the pattern's values: an edit to them moves instances and renames none (Fable, 2026-11-10).
 2. **The seed is unmarked.** Its elements are the base's and keep their names exactly (N2, N7): it is in the base, and the pattern's booleans bite the base. A fillet on the original's edge is untouched by adding a pattern after it. No `C0`, `C0,0`, or `C1,0` is ever written, and the parser refuses them (and `C`, `C02`, `C2,`): one spelling per instance.
-3. **A copy's element is the tool's element, wrapped once:** `t0000001.linear_pattern.Face(C2 p0000001.pad.Face(G s0000001.sketch.Edge.6t7v8w9x))`. Copy k's elements are numbered as the tool's, so the core names them from the tool's map without asking the kernel. It never depends on OCCT's lists. In the structured type it is one new variant, `Name::Copy { feature, operation, kind, index: Vec<u32>, of: Arc<Name> }`, whose `parts()` is its inner name: a copy of an unstable name is unstable, and the depth bound counts a level per copy.
-4. **A mirror's copy is `C1`.** A mirror is a pattern of two instances, with no separate mark. If a mirror ever takes a second plane (SolidWorks has one), its copies are `C1`, `C0,1`, and `C1,1` by the same rule.
+3. **A copy's element is the tool's element, wrapped once:** `t0000001.linear_pattern.Face(C2 p0000001.pad.Face(G s0000001.sketch.Edge.6t7v8w9x))`. Copy k's elements are numbered as the tool's, so the core names them from the tool's map without asking the kernel. It never depends on OCCT's lists. In the structured type it is one new variant, `Name::Copy { feature, operation, kind, copied, index: Vec<u32>, of: Arc<Name> }`, `copied` saying which was copied (`Copied::Tool` for `C`, `Copied::Solid` for `S`), whose `parts()` is its inner name: a copy of an unstable name is unstable, and the depth bound counts a level per copy.
+4. **A mirror's copy is index 1: `C1` of a tool, `S1` of the solid.** A mirror is a pattern of two instances, with no separate mark. If a mirror ever takes a second plane (SolidWorks has one), its copies are `C1`, `C0,1`, and `C1,1` by the same rule.
 5. **A grid writes direction 1's offset first:** `C2`, `C0,1`, `C2,1`. Never a flat index: FreeCAD's `i·n₂ + j` renames every copy past the first row when `Occurrences2` changes, and main's `testSuppressionKeepsGridPosition` has to remap it.
-6. **Nested patterns nest the form, outermost last.** A whole-solid mirror of a solid holding a pattern names the pattern's copy 2 `t0000002.mirror.Face(C1 t0000001.linear_pattern.Face(C2 p0000001.pad.Face(G …)))`, and the seed `t0000002.mirror.Face(C1 p0000001.pad.Face(G …))`. A pattern of a pattern as a feature (later, decision 2) nests the same way. No composite index is ever invented.
-7. **Whole-solid copies wrap the base's names:** `t0000003.mirror.Face(C1 k7f2qx3m.box.Face6)`. The base's own elements keep their names.
-8. **A copy's elements pass through the pattern's boolean as a sweep's pass through its own.** The pattern's steps bite every input, base and copies (`OpCode::side` is `Outside` for every input at every stage). So a copy's element kept whole, or modified one from one, keeps its `C` name. One the base or another copy splits is `t.linear_pattern.Face(M1/2 t.linear_pattern.Face(C2 …))`. A section with the base is `t.linear_pattern.Edge(G k7f2qx3m.box.Face6, G t.linear_pattern.Face(C2 …))`. No `I` ever appears: the type word inside the `C` fixes the side (a pad's or `solid`'s copy is always fused, a pocket's or groove's always cut), which is M3.6's reason a sweep's cut writes no `I`.
+6. **Nested patterns nest the form, the copy applied last outermost.** A whole-solid mirror of a solid holding a pattern names the pattern's copy 2 `t0000002.mirror.Face(S1 t0000001.linear_pattern.Face(C2 p0000001.pad.Face(G …)))`, and the seed `t0000002.mirror.Face(S1 p0000001.pad.Face(G …))`. A pattern of a pattern as a feature (later, decision 2) nests the same way. No composite index is ever invented.
+7. **Whole-solid copies wrap the base's names, marked `S`:** `t0000003.mirror.Face(S1 k7f2qx3m.box.Face6)`. `C<instance> <name>` is a copy of an element of a feature's tool, and `S<instance> <name>` a copy of an element of the base solid, under the same instance grammar and refusals (Fable, 2026-11-10). The base's own elements keep their names.
+8. **A copy's elements pass through the pattern's boolean as a sweep's pass through its own.** The pattern's steps bite every input, base and copies (`OpCode::side` is `Outside` for every input at every stage). So a copy's element kept whole, or modified one from one, keeps its `C` or `S` name. One the base or another copy splits is `t.linear_pattern.Face(M1/2 t.linear_pattern.Face(C2 …))`. A section with the base is `t.linear_pattern.Edge(G k7f2qx3m.box.Face6, G t.linear_pattern.Face(C2 …))`. No `I` ever appears: the letter fixes the side. An `S` copy is always fused; a `C` copy's side is its inner type word's (a pad's or a revolve's fused, a pocket's or a groove's cut), which is M3.6's reason a sweep's cut writes no `I`.
 9. **`skip` holds the same indices as the names,** by the same rule, one array per instance, so an error's `elements` paste into it: "add 3 and 2,1 to skip" is `"skip": [[3], [2, 1]]`. Sorted numerically, never the seed, each in range, no repeats.
 10. **Mirror changes no name otherwise.** A reflection reverses orientation, and the history is still one element to one.
 
@@ -231,10 +237,10 @@ The rules:
 | `skip` an instance, or un-skip it | nothing else renamed; the skipped name is absent, and comes back as it was |
 | `length`, `spacing`, `angle`, `reversed`, the plane, the axis | unchanged: the instance moves, as FreeCAD's and SolidWorks's do |
 | a second direction added, or removed while direction 1 stays | unchanged: instance (2) and instance (2, 0) are one instance (rule 1 with trailing zeros off), so a fillet on copy 2 survives the user adding direction 2 in the same dialog |
-| the two directions swapped, or direction 1 removed with direction 2 kept | renamed (`C2,1` becomes `C1,2`; `C0,1` becomes `C1`): `reference_broken`, the renamed element its candidate |
+| the two directions swapped, or direction 1 removed with direction 2 kept | kept by index: `C2,1` is two steps along the new direction 1 and one along the new direction 2; with direction 2 the one direction left, `C1` is one step along it, and `C0,1`, two offsets in a pattern of one direction, finds nothing: `reference_broken`, with candidates |
 | `copies.features` reordered | nothing: the originals are applied in timeline order, whatever the list says |
 | an original removed from `copies.features` | its copies' names gone, loudly; the others unchanged |
-| `copies` switched between `features` and `solid` | everything renamed, loudly: a different thing was copied |
+| `copies` switched between `features` and `solid` | every copy's name breaks, loudly (`C` to `S` or back), with candidates |
 | a seed feature's ID or type changed | as for every name today |
 
 **Why 0-based with the seed unmarked.** The index is the multiplier in the position arithmetic, as main's `SuppressedIndices` counts, and it makes "trailing zeros off" natural: the default is no steps, not one. SolidWorks shows instance coordinates in its Instances to Skip box, but its pages don't say the convention, and nothing in Silico's names needs to match SolidWorks's display.
@@ -380,11 +386,11 @@ Three feature types, each consuming its `base` (D2) and making one solid. Every 
 {"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "holes", "base": "q0000001",
  "copies": {"type": "features", "features": ["q0000001"]},
  "directions": [
-   {"along": "x_axis", "reversed": false, "spacing": {"type": "extent", "length": 40}, "count": 3, "skip": []}
+   {"along": "x", "reversed": false, "spacing": {"type": "extent", "length": 40}, "count": 3, "skip": []}
  ]}
 {"id": "t0000002", "type": "polar_pattern", "v": 1, "name": "bolt circle", "base": "t0000001",
  "copies": {"type": "features", "features": ["q0000002"]},
- "axis": "z_axis", "reversed": false, "spacing": {"type": "extent", "angle": 360}, "count": 6, "skip": []}
+ "axis": "z", "reversed": false, "spacing": {"type": "extent", "angle": 360}, "count": 6, "skip": []}
 {"id": "t0000003", "type": "mirror", "v": 1, "name": "other half", "base": "t0000002",
  "copies": {"type": "solid"}, "plane": "yz"}
 ```
@@ -392,7 +398,7 @@ Three feature types, each consuming its `base` (D2) and making one solid. Every 
 - **`base`**: the solid patterned on, the last feature's as for any feature.
 - **`copies`**: either `features`, a set of earlier features whose tools are copied, or `solid`, the whole of `base`'s solid. A feature in `features` must be in `base`'s chain: `base` itself or a feature its base chain reaches. Otherwise the original isn't in the solid, and the first instance wouldn't be it. Copying a feature reads its tool and consumes nothing, so D2 holds.
 - **`directions`**: one or two. Each has:
-  - `along`: `x_axis`, `y_axis`, `z_axis`, or an element name (a straight edge or a planar face) of `base`'s solid, resolved in its element map as a fillet's edges are (M2.8), or a broken reference with candidates. A face points along its outward normal (decision 3);
+  - `along`: `x`, `y`, `z`, or an element name (a straight edge or a planar face) of `base`'s solid, resolved in its element map as a fillet's edges are (M2.8), or a broken reference with candidates. A face points along its outward normal (decision 3);
   - `reversed`;
   - `spacing`: `{"type": "extent", "length"}`, first to last, or `{"type": "spacing", "spacing"}`, between neighbours;
   - `count`, the original included;
@@ -413,7 +419,7 @@ Three feature types, each consuming its `base` (D2) and making one solid. Every 
 - **Several originals are one step each, in timeline order** (FreeCAD's per-original loop, main's ordering). A pad's copies are fused, then a later pocket's cut. Each step is keyed and cached like any other (M2.5).
 - **The tool** is the original's sweep step result (the `Prism`, `PrismThroughAll`, or `Revolution` key the original's plan already has), so it's never rebuilt. For `solid`, it's `base`'s result.
 - **The result check** is every operation's (fillet.md): valid where it changed, and whole if its inputs were.
-- **Count 1, or every copy skipped, is the identity.** No kernel step runs, the base's solid and map pass through, and S7 isn't asked (it is a check of a boolean's result). FreeCAD allows it so an expression can turn a pattern off (`c001732663`), and Silico's expressions will want the same (decision 6).
+- **Count 1, or every copy skipped, is the identity.** No copies request is sent (the references are still resolved, and so described), the base's solid and map pass through, and S7 isn't asked (it is a check of a boolean's result). FreeCAD allows it so an expression can turn a pattern off (`c001732663`), and Silico's expressions will want the same (decision 6).
 
 **Built (the kernel layer).** `Op::Copies { base, tool, op, placements }` (`silico_protocol::copies`): `op` a `CopiesOp`, `Fuse` or `Cut`; each `Placement` a `Translation { offset }`, a `Rotation { axis, angle }` (radians, right-handed), a `Mirror { origin, normal }`, or a `TurnedAndMoved { axis, angle, offset }` (turned, then moved). `check_copies` refuses, naming `placements.N.field` (from 0): no placements or more than `MAX_COPIES` (999, decision 8's 1,000 instances less the original); a value that isn't finite, a point past a kilometre, a direction that isn't a unit vector; and a placement that leaves the copy on the tool (a move of no more than 1e-7 mm, a turn within 1e-12 rad of none or of a whole turn, either way). The worker (`make_copies`, `copies_boolean` in the bridge) places each copy by OCCT's `gp_Trsf` (a location for a move or a turn, as `translate`; `BRepBuilderAPI_Transform` with copy for a mirror), checks each copy's elements are the tool's in `TopExp::MapShapes` order, and runs one boolean, the base the argument and each copy a tool of its own (a compound copy's every shape), non-destructive and single-threaded, with the history of the base as input 0 and copy k as input k. It refuses as `boolean` does (an empty base or tool, an empty result, one inside out), words its refusals as the fuse's or the cut's, and checks the result as every operation's is, the copies taking the tool's validity. Every result's `Topology` now holds `solid_faces`, each solid's faces, sorted. The core's `KernelRequest::copies` checks the placements before sending and the reply after (a history for the base and each copy, each copy with as many elements as the first), and `FakeKernel` builds copies symbolically (`copies_fuse(base, tool, [t:…, r:…, m:…, tm:…])`), each copy's elements numbered after the one before, its measures placed. The tests (`crates/silico-kernel/tests/copies.rs`) hold §5's volumes and the note's probes by hand, each copy's place, a grid's (i, j), a turned copy turned before it's moved, a mirrored copy's faces reflected and numbered as the tool's, solids off the base with their faces, and the same bytes from two workers and the pool. `/break-it` (`adversarial_copies.rs`) found no crash, hang, or wrong result: 999 copies in one boolean take about 9 s on a loaded Mac (the worker's timeout is a minute); a turn of 360° less a nanodegree, two copies in one place, and a copy 1.1e-7 mm off the seed (past the check, but within the two copies' tolerances together) each fuse into the seed, valid, changing nothing, which S7's volume rule refuses at the feature.
 
@@ -441,10 +447,10 @@ It warns, and builds:
 
 ### The naming
 
-§3: the copy form `feature.type.Kind(C<index> <name>)`, under naming scheme 6 (decision 10). The original's names are unchanged. The step builds:
-- `OpCode::LinearPattern`, `PolarPattern`, and `Mirror`, words `linear_pattern`, `polar_pattern`, `mirror`, `side` `Outside` for every input at every stage. FreeCAD's form writes the step's `FUS` or `CUT` and FreeCAD's `_k` postfix (nothing for instance 1, `_k` from 2, the flat index for a grid), for comparison only.
-- `Name::Copy`, with `Display`, `parse` (the index grammar, with `C0`, `C2,0`, `C0,0`, `C`, `C02`, `C2,` refused), `Ord`, `Hash`, `kind`, `features`, and `parts`.
-- `ElementMap::copy(feature, op, index, &tool_map)`: every name of every element wrapped, the unstable set carried through `parts()`. The pattern's steps use `ElementMap::operation` with the base's map at input 0 and copy k's at input k, one step per original, in timeline order, chained.
+§3: the copy form `feature.type.Kind(C<instance> <name>)` for a copy of a feature's tool, and `feature.type.Kind(S<instance> <name>)` for a copy of the base's solid, under naming scheme 6 (decision 10). The original's names are unchanged. The step builds:
+- `OpCode::LinearPattern`, `PolarPattern`, and `Mirror`, words `linear_pattern`, `polar_pattern`, `mirror`, `side` `Outside` for every input at every stage. FreeCAD's form writes FreeCAD's `_k` postfix (nothing for instance 1, `_k` from 2) for one direction; a grid's copy writes Silico's offsets, never the flat index, which would rename names when a count changed (Main, 2026-11-16; N10 in docs/design/m2.7-naming.md has why, and the step's `FUS` or `CUT`, open for M6.3).
+- `Name::Copy`, carrying `copied` (`Copied::Tool` or `Copied::Solid`), with `Display`, `parse` (the instance grammar, with `C0`, `C2,0`, `C0,0`, `C`, `C02`, `C2,` refused, and the same after `S`; a copy form under a word that doesn't copy, the wrong number of offsets for the type, and a `C` whose inner word isn't a sweep's refused too, N10), `Ord`, `Hash`, `kind`, `features`, and `parts`.
+- `ElementMap::copy(feature, op, copied, index, &map)`, the tool's map or the base's: every name of every element wrapped, the unstable set carried through `parts()`. The pattern's steps use `ElementMap::operation` with the base's map at input 0 and copy k's at input k, one step per original, in timeline order, chained.
 
 ### The tests
 
@@ -484,7 +490,7 @@ Expected values from hand or analytic results, or FreeCAD as the oracle.
 - A fillet on copy 2's edge follows a change of length and breaks, loudly, when the count drops below 3, on the real kernel.
 - Every row of §3's stability table, on the fake kernel.
 - `naming-scheme-5.silico` untouched, read under scheme 6, every reference found on the real kernel (silico-cli's `tests/golden.rs`), and `fmt` of it differing in the `naming` line alone; `tests/naming_scheme.rs`'s pinned names byte-identical for every scheme-5 document.
-- A new protected `naming-scheme-6.silico`, saved by `fmt`, with a linear pattern, a grid, a polar pattern, a mirror, a skip, a whole-solid mirror of a solid holding a pattern (the nested form), and fillets on `C2`, `C2,1`, and a mirror's `C1` edge, each volume by hand.
+- A new protected `naming-scheme-6.silico`, saved by `fmt`, with a linear pattern, a grid, a polar pattern, a mirror, a skip, a whole-solid mirror of a solid holding a pattern (the nested form), and fillets on `C2`, `C2,1`, a mirror's `C1` edge, and a whole-solid mirror's `S1` edge, each volume by hand.
 - A fillet on a mirrored copy's edge (Silico's own: `testMultiTransformDressup` fillets faces of a refined result, not a copy's).
 
 **Determinism:** a pattern rebuilt twice, and on both checked platforms, byte for byte (the mirror's rebuilt copy included).
@@ -515,7 +521,7 @@ Decisions 3, 5, 6, 7, 9, 10, and 11 are decided: Fable, 2026-10-29, the maintain
    - **A base cut into pieces is refused**, `kernel_failed`: "linear_pattern t0000001 cuts its base in 3 pieces: the result is 3 solids". No instance is named: every piece holds base faces, and no exact rule picks a culprit. The suggestion: "shorten or move the copies so the base stays one piece".
    - **A pattern that changes nothing is refused by volume**, as S7 refuses a pad: S7's rule, unchanged, applied to each pattern step as to a sweep. V(result) − V(base) at most `MEASURE_PRECISION` × V(base) for a fuse step, V(base) − V(result) for a cut step. `kernel_failed`: "polar_pattern t0000002 changes nothing: the result's volume is the base's, 8000 mm³ (14 faces against the base's 14)". The suggestion: "if every copy lies inside the base or misses it, change the direction, length, count, or plane; a mirror about the original's own plane of symmetry changes nothing". No history witness is needed for it.
    - **A single idle instance is a warning, not a refusal:** a new code, `instances_changed_nothing`, one per pattern. `elements` are the instances none of whose copy's elements is in the result (no face kept, modified, or generating, by the fates), with `elements_total`. The message: "linear_pattern t0000001: the copies of instances 17, 18, and 19 add nothing (no face of theirs is in the result)" ("remove nothing" for a cut step). The suggestion: "lower count or add them to skip if they aren't meant; a copy inside the base, or a pocket's copy that misses it, is built exactly as asked".
-   - **Count 1, or every copy skipped, is the identity** (§7): no kernel step runs, and S7 isn't asked.
+   - **Count 1, or every copy skipped, is the identity** (§7): no copies request is sent, and S7 isn't asked.
    - **Not "let the user choose which bodies to keep"**, as SolidWorks does: Silico has one solid per feature (D2) and no bodies. Refusing now and loosening when bodies exist is the reversible order. Accepting a compound now, or FreeCAD's `AllowCompound = False` first solid (3,717 of 18,917 mm³ kept without a word), is not.
    - **Why a warning for one instance.** The geometry is exact: a pocket's copy past the plate's edge removes nothing, which is exactly what "20 holes at 10 mm on a 175 mm plate" says, and a perforated plate or a grille is drawn that way on purpose. FreeCAD's history tried refusing (2012, `32628462c2`), erroring (2017, `ff188383a1`), and warning (2021), and settled on building it ("it can also be considered a feature", `03da9d3501`); SolidWorks's pages don't say. Refusing would make `skip` a stale encoding of the base's size: lengthen the plate and the holes that now fit stay skipped, silently, a wrong result from a right input. With a warning, lengthening the plate makes the holes appear, and the warning goes. `check` and CI list it. Turning a warning into a refusal later would break documents, while the other way wouldn't, so this is also the reversible order.
    - **What the warning can miss.** M3.6's S7 found a history witness fails for a whole feature: a pad reversed into its base from the base's top leaves 7 faces at the base's volume, the split top attributed to both inputs. So a copy flush with a face of the base may escape the warning. That loses a warning, not a build, and the geometry is exact. The step probes the flush case on the real kernel and records the verdict.

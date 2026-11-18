@@ -4510,7 +4510,7 @@
             "type": "string"
           },
           "ElementName": {
-            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>).",
+            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>). A copy a pattern or mirror placed is pattern.type.Kind(C<instance> <name>), of an element of a feature's tool, or pattern.type.Kind(S<instance> <name>), of an element of the base solid; its instance its steps from the original along each direction, direction 1 first, trailing zeros left off (C2, C2,1, S1).",
             "minLength": 1,
             "type": "string"
           },
@@ -6085,7 +6085,7 @@
             "type": "string"
           },
           "ElementName": {
-            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>).",
+            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>). A copy a pattern or mirror placed is pattern.type.Kind(C<instance> <name>), of an element of a feature's tool, or pattern.type.Kind(S<instance> <name>), of an element of the base solid; its instance its steps from the original along each direction, direction 1 first, trailing zeros left off (C2, C2,1, S1).",
             "minLength": 1,
             "type": "string"
           },
@@ -8651,7 +8651,7 @@
             "type": "string"
           },
           "ElementName": {
-            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>).",
+            "description": "An element of an earlier feature's solid, by its name in Silico's form (feature.type.Kind(...)), never by its number. A sketch's elements appear only as sources in what a feature made of them, by ID (sketch.sketch.Edge.<id>, sketch.sketch.Vertex.<id>), its only region sketch.sketch.Face1: a pad's side face is pad.pad.Face(G sketch.sketch.Edge.<id>). A copy a pattern or mirror placed is pattern.type.Kind(C<instance> <name>), of an element of a feature's tool, or pattern.type.Kind(S<instance> <name>), of an element of the base solid; its instance its steps from the original along each direction, direction 1 first, trailing zeros left off (C2, C2,1, S1).",
             "minLength": 1,
             "type": "string"
           },
@@ -16666,7 +16666,7 @@
             ]
           },
           "NamedView": {
-            "description": "A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from\n−Y, `right` from +X, `top` from +Z, and the corners combine them.",
+            "description": "A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from\n−Y, `right` from +X, `top` from +Z, and the corners and edges combine them.",
             "enum": [
               "front",
               "back",
@@ -16681,7 +16681,19 @@
               "bottom_front_left",
               "bottom_front_right",
               "bottom_back_left",
-              "bottom_back_right"
+              "bottom_back_right",
+              "top_front",
+              "top_back",
+              "top_left",
+              "top_right",
+              "bottom_front",
+              "bottom_back",
+              "bottom_left",
+              "bottom_right",
+              "front_left",
+              "front_right",
+              "back_left",
+              "back_right"
             ],
             "type": "string"
           },
@@ -21567,7 +21579,7 @@
             ]
           },
           "NamedView": {
-            "description": "A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from\n−Y, `right` from +X, `top` from +Z, and the corners combine them.",
+            "description": "A named view, as Fusion's ViewCube names them, the document Z-up: `front` looks from\n−Y, `right` from +X, `top` from +Z, and the corners and edges combine them.",
             "enum": [
               "front",
               "back",
@@ -21582,7 +21594,19 @@
               "bottom_front_left",
               "bottom_front_right",
               "bottom_back_left",
-              "bottom_back_right"
+              "bottom_back_right",
+              "top_front",
+              "top_back",
+              "top_left",
+              "top_right",
+              "bottom_front",
+              "bottom_back",
+              "bottom_left",
+              "bottom_right",
+              "front_left",
+              "front_right",
+              "back_left",
+              "back_right"
             ],
             "type": "string"
           },

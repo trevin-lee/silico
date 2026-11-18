@@ -331,17 +331,14 @@ const POINT: Command = keyed(
     ),
     shortcuts::Command::Point,
 );
-/// The drawing tools' curves drawn as construction, the palette's Construction.
-///
-/// SEAM: the prototype's Construction toggles the selected curves between profile and
-/// construction (its line: "Toggles the selected curves between profile and
-/// construction"), once a selection's curves can be set so; till then it's the palette's
-/// setting, and its line says that.
+/// Construction, as the prototype has it: the selected curves switched between profile and
+/// construction (`Tab::sketch_construction`); with no curve selected, the palette's setting
+/// for the curves drawn next. Shown pressed while that setting is on.
 const CONSTRUCTION: Command = keyed(
     command(
         "Construction",
         Icon::Construction,
-        Some("Draws the tools' curves as construction, or as profile again"),
+        Some(shortcuts::CONSTRUCTION_HELP),
         Does::Construction,
     ),
     shortcuts::Command::Construction,
@@ -848,6 +845,7 @@ fn tool_button(
     // Painted at the toolbar's opacity, not faded further when off: `.tb-btn:disabled` is
     // Gray.400 itself.
     let opacity = ui.opacity();
+    let own = enabled;
     ui.add_enabled(enabled, |ui: &mut Ui| {
         ui.set_opacity(opacity);
         let size = Vec2::splat(theme::TOOLBAR_BUTTON_SIZE);
@@ -862,8 +860,10 @@ fn tool_button(
         }
         let corners = theme::TOOLBAR_BUTTON_CORNER_RADIUS;
         // `.tb-btn:hover:not(:disabled)` outweighs `.on`'s and `.toggle-on`'s background and
-        // colour, and leaves `.toggle-on`'s box-shadow as it is.
-        let (fill, color) = match (enabled, response.hovered(), pressed) {
+        // colour, and leaves `.toggle-on`'s box-shadow as it is. Behind a modal, drawn as
+        // its own flag has it (#487).
+        let on = crate::modal::looks_on(ui, own);
+        let (fill, color) = match (on, response.hovered(), pressed) {
             (false, _, _) => (None, theme::TOOLBAR_BUTTON_DISABLED_ICON),
             (true, true, _) => (
                 Some(theme::TOOLBAR_BUTTON_HOVER_BG),
@@ -1050,19 +1050,53 @@ fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
 
 /// Create Sketch's planes, a menu of their own for a screen reader, labelled Create Sketch:
 /// a click on one closes the menu, and is the plane a sketch is started on. The one menu of
-/// them, which Create Sketch's button opens, and its item in CREATE's drop-down, and the
-/// canvas's context menu over nothing (`crate::canvas_menu`).
+/// them, which Create Sketch's button opens, and its item in CREATE's drop-down, the
+/// canvas's context menu over nothing (`crate::canvas_menu`), and the empty part's hint
+/// (`crate::canvas_hint`), marking the pass it's drawn in ([`planes_drawn_this_pass`]).
+///
+/// While they're drawn, the viewport draws all three origin planes, the one whose item the
+/// pointer is on (or has the keys' focus) lit (`crate::planes`, the prototype's
+/// `startPickPlane`).
 pub(crate) fn planes(ui: &mut Ui) -> Option<OriginPlane> {
+    let pass = ui.ctx().cumulative_pass_nr();
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(planes_drawn(), pass));
     let mut chosen = None;
+    let mut lit = None;
     crate::menu::node(ui, CREATE_SKETCH.label, |ui| {
         for (plane, word) in PLANES {
-            if ui.button(word).clicked() {
+            let item = ui.button(word);
+            if item.hovered() || item.has_focus() {
+                lit = Some(plane);
+            }
+            if item.clicked() {
                 chosen = Some(plane);
                 ui.close();
             }
         }
     });
+    crate::planes::menu_drawn(ui.ctx(), lit);
     chosen
+}
+
+/// Where egui's memory keeps the pass in which Create Sketch's planes ([`planes`]) were last
+/// drawn.
+fn planes_drawn() -> egui::Id {
+    egui::Id::new("create-sketch-planes-drawn")
+}
+
+/// Whether Create Sketch's planes were drawn in this pass so far (the prototype's plane
+/// pick, `S.pickPlane`): the toolbar's and the canvas's menu's, each drawn before the
+/// canvas's hint reads it.
+pub(crate) fn planes_drawn_this_pass(ctx: &egui::Context) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|data| data.get_temp::<u64>(planes_drawn()))
+        .is_some_and(|drawn| drawn == pass)
+}
+
+/// The planes' drawing forgotten: the hint's own menu of them, which it doesn't hide from.
+pub(crate) fn forget_planes_drawn(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.remove::<u64>(planes_drawn()));
 }
 
 // ---- Finish Sketch (`.tb-finish`) ----
@@ -1141,6 +1175,19 @@ mod tests {
     use egui_kittest::kittest::{NodeT, Queryable};
 
     use super::*;
+
+    #[test]
+    fn a_tool_button_behind_a_modal_keeps_its_own_look_on_or_off_and_pressed() {
+        for pressed in [
+            None,
+            Some((Pressed::Tool, true)),
+            Some((Pressed::Toggle, true)),
+        ] {
+            crate::modal::tests::drawn_alike_behind(|ui, on| {
+                tool_button(ui, Icon::Pad, "Pad", on, pressed);
+            });
+        }
+    }
 
     /// A dialog's command is labelled with its kind's title, which the dialog's heading
     /// and the tests find it by; each sweep is in CREATE's drop-down once and in its row

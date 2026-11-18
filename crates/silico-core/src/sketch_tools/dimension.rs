@@ -671,7 +671,7 @@ impl SmartDimension {
             self.pointer = Some(at);
         }
         let Some(event) = event else {
-            self.preview = self.drawn(&view, tolerance);
+            self.preview = self.drawn(&view, tolerance, context.axes);
             return Outcome {
                 message: closed,
                 ..Outcome::default()
@@ -720,7 +720,7 @@ impl SmartDimension {
             DimensionEvent::Move(_) => Outcome::default(),
             DimensionEvent::Release(at) if self.pressed => {
                 self.pressed = false;
-                self.click(&view, tolerance, at)
+                self.click(&view, tolerance, context.axes, at)
             }
             DimensionEvent::Release(_) => Outcome::default(),
             DimensionEvent::RightClick(at) => {
@@ -733,7 +733,7 @@ impl SmartDimension {
         if outcome.message.is_none() {
             outcome.message = closed;
         }
-        self.preview = self.drawn(&view, tolerance);
+        self.preview = self.drawn(&view, tolerance, context.axes);
         outcome
     }
 
@@ -782,12 +782,13 @@ impl SmartDimension {
         }
     }
 
-    /// A click at `at`: a pick within `tolerance` ([`pick_in`]), while fewer than two are
-    /// picked and it's on something not picked; else the dimension placed, its Modify box
-    /// opened, unless the last placement's offer isn't settled (the offer is modal).
-    fn click(&mut self, view: &View<'_>, tolerance: f64, at: Xy) -> Outcome {
+    /// A click at `at`: a pick within `tolerance` of what `axes` allows ([`pick_in`]), while
+    /// fewer than two are picked and it's on something not picked; else the dimension
+    /// placed, its Modify box opened, unless the last placement's offer isn't settled (the
+    /// offer is modal).
+    fn click(&mut self, view: &View<'_>, tolerance: f64, axes: Axes, at: Xy) -> Outcome {
         if self.picks.len() < 2
-            && let Some(hit) = pick_in(view, tolerance, at, Axes::BOTH)
+            && let Some(hit) = pick_in(view, tolerance, at, axes)
             && !self.picks.contains(&hit)
         {
             self.picks.push(hit);
@@ -886,8 +887,9 @@ impl SmartDimension {
         })
     }
 
-    /// The preview, at the pointer, what it would pick within `tolerance` ([`pick_in`]).
-    fn drawn(&self, view: &View<'_>, tolerance: f64) -> DimensionPreview {
+    /// The preview, at the pointer, what it would pick within `tolerance` of what `axes`
+    /// allows ([`pick_in`]).
+    fn drawn(&self, view: &View<'_>, tolerance: f64, axes: Axes) -> DimensionPreview {
         let mut preview = DimensionPreview {
             pointer: self.pointer,
             picks: self.picks.clone(),
@@ -903,8 +905,7 @@ impl SmartDimension {
             return preview;
         };
         if self.picks.len() < 2 {
-            preview.hover =
-                pick_in(view, tolerance, at, Axes::BOTH).filter(|r| !self.picks.contains(r));
+            preview.hover = pick_in(view, tolerance, at, axes).filter(|r| !self.picks.contains(r));
         }
         let locked = self.lock == Some(Measure::PointLine);
         match offered(view, &self.picks, at, self.lock, locked) {

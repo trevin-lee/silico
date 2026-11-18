@@ -351,7 +351,8 @@ fn the_view_label_is_the_projection_and_the_named_view_the_prototype_names() {
             ),
             "Orthographic",
         ),
-        // A ViewCube edge's view, between the top and the front: no named view.
+        // A ViewCube edge's view, top_front, between the top and the front: a named view,
+        // but not one the label names (the prototype's `VIEWS`).
         (looking([0.0, -r, r], [0.0, r, r]), "Orthographic"),
     ] {
         assert_eq!(view_label(&camera, canvas()).words, words, "{camera:?}");

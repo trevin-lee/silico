@@ -9,11 +9,13 @@
 //! the invariant the port note states: "A feature that can't build is suppressed, not left
 //! failing", and "a hand edit or a merge can't leave a feature failing for a suppression".
 
+use std::io::Write;
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
 
 use super::bracket::*;
+use super::cpu_work;
 use super::model::{id, published};
 
 use silico_core::ErrorCode;
@@ -527,6 +529,101 @@ fn a_chain_of_two_thousand_chamfers_suppresses_and_unsuppresses_promptly() {
         "{:?}",
         start.elapsed()
     );
+}
+
+/// The bound on the long chain's CPU over the probe's, for each of its suppression, its gate
+/// pass, and its unsuppressions, from readings on the Linux VM. The step-by-step walk read
+/// 35.7, 35.7, and 19.95 (a slow probe before it) for the suppression and the gate together
+/// (with each chamfer naming a's edge alone), and 56.2 and 65.2 for the unsuppression of the
+/// chain. The consumer forest reads 1.4 to 2.6 for the suppression and the gate, 3.0 to 3.1
+/// for the chain's unsuppression, and 0.3 to 0.4 for the fuse's. About 2.5 times from the
+/// worst of these and from the walk's least.
+const BOUND: f64 = 8.0;
+
+/// The CPU `work` takes over the probe's (`cpu_work`, #292: what a fixed piece of work costs
+/// this machine now, the slower of before and after, so a loaded runner doesn't fail it),
+/// held under [`BOUND`], and what it gave.
+fn within_bound<T>(what: &str, work: impl FnOnce() -> T) -> T {
+    let before = cpu_work::cost();
+    let cpu = cpu_time::ThreadTime::now();
+    let given = work();
+    let took = cpu.elapsed();
+    let after = cpu_work::cost();
+    let probe = before.max(after);
+    let ratio = took.as_secs_f64() / probe.as_secs_f64();
+    let _ = writeln!(
+        std::io::stderr(),
+        "{what} took {took:?} of CPU, {ratio:.2} times the probe's {probe:?} (before \
+         {before:?}, after {after:?})"
+    );
+    assert!(
+        ratio < BOUND,
+        "{what} took {took:?} of CPU, {ratio:.2} times the probe's {probe:?}, past {BOUND}"
+    );
+    given
+}
+
+#[test]
+fn a_long_chain_after_a_suppressed_fuse_is_judged_in_linear_work() {
+    // Boxes a and t, their fuse m, and 20,000 chamfers c, each on the one before (the first
+    // on m), each of a's edge 1 + i % 12 and, but the first, of the edge the chamfer before
+    // it made of a's edge 1, and a last, z, naming t's edge 1. Each chamfer's name of a's edge is walked down
+    // the chain to its base, wherever a boolean that consumes a tool is suppressed: a walk
+    // step by step costs n^2 / 2 steps, about 2 * 10^8, at each of the suppression's and the
+    // gate's passes, and at the unsuppression's (issue #306).
+    let n = 20_000;
+    let mut features = vec![
+        a_box("b0000001", 0, 10),
+        a_box("t0000001", 5, 10),
+        boolean("m0000001", "fuse", "b0000001", "t0000001"),
+    ];
+    let mut base = "m0000001".to_owned();
+    for i in 0..n {
+        let c = format!("c{i:07}");
+        let mut edges = format!(r#""b0000001.box.Edge{}""#, 1 + i % 12);
+        if i > 0 {
+            edges.push_str(&format!(r#", "{base}.chamfer.Edge(G b0000001.box.Edge1)""#));
+        }
+        features.push(format!(
+            r#"{{"id": "{c}", "type": "chamfer", "v": 1, "name": "C", "base": "{base}", "edges": [{edges}], "size": {{"distance": 0.5}}}}"#
+        ));
+        base = c;
+    }
+    let last = base.clone();
+    features.push(chamfer("z0000001", &base, "t0000001.box.Edge1"));
+    let refs: Vec<&str> = features.iter().map(String::as_str).collect();
+    let c = checked(&document(&refs));
+    let chamfers: Vec<FeatureId> = (0..n).map(|i| id(&format!("c{i:07}"))).collect();
+
+    // Suppressing m, by hand: every chamfer's name of a's edge reaches its base through m as
+    // m's base, which m passes through, and its name of the chamfer before's edge is of its
+    // base itself, so it stays; z's t reaches its base only as m's tool, so z goes with m.
+    let done = within_bound("the suppression of the fuse", || {
+        suppression::suppress(&c, &id("m0000001")).unwrap()
+    });
+    within_bound("the gate", || validate(&done.document).unwrap());
+    assert_eq!(done.suppressed, ids(&["m0000001", "z0000001"]));
+
+    // The first chamfer suppressed too, and so every chamfer after it, each naming an edge of
+    // the one before.
+    let all = suppression::suppress(&checked(&done.document), &chamfers[0]).unwrap();
+    assert_eq!(all.suppressed, chamfers);
+
+    // Unsuppressing the last chamfer brings back each chamfer before it, the maker of a name
+    // it stores, and each is looked at for a name lost to m (a's way to its base passes m as
+    // its base, so none is); m, which none of them needs, and z, which depends on m, stay
+    // suppressed. Then unsuppressing m brings back m alone.
+    let all = checked(&all.document);
+    let back = within_bound("the unsuppression of the chain", || {
+        suppression::unsuppress(&all, &id(&last)).unwrap()
+    });
+    assert_eq!(back.unsuppressed, chamfers);
+    let back = checked(&back.document);
+    let fuse = within_bound("the unsuppression of the fuse", || {
+        suppression::unsuppress(&back, &id("m0000001")).unwrap()
+    });
+    validate(&fuse.document).unwrap();
+    assert_eq!(fuse.unsuppressed, ids(&["m0000001"]));
 }
 
 // ---------------------------------------------------------------------------------------

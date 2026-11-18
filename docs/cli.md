@@ -17,6 +17,8 @@ Each command is a thin client of the core's commands (`silico_core::command`), w
 
 **Workers.** `silico` runs OCCT, PlaneGCS, and the renderer in worker processes (`silico-kernel-worker`, `silico-sketch-worker`, `silico-render-worker`, `silico-step-worker`), each found in the directory of `silico`'s own executable, its links resolved: a link to the build's `silico` (on `PATH`, say) finds the workers beside the build. `SILICO_KERNEL_WORKER`, `SILICO_SKETCH_WORKER`, `SILICO_RENDER_WORKER`, and `SILICO_STEP_WORKER` name one elsewhere. A worker that isn't there is `worker_unavailable`, naming the directory looked in and the worker looked for (exit 2).
 
+**Naming schemes.** After an upgrade to naming scheme 6, a document saved under scheme 5 reads and rebuilds as it did, but `silico fmt --check` fails on it until one `silico fmt` writes its `naming` line as 6, the only line that changes (docs/design/m2.7-naming.md, N10).
+
 **Exit codes:**
 - 0: nothing wrong.
 - 1: a document has problems, or (with `fmt --check`) isn't in canonical form, or a file is longer than a document may be.

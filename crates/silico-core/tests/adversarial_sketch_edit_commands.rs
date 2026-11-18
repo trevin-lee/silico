@@ -677,7 +677,10 @@ fn a_batch_added_then_removed_inside_a_transaction_is_the_document_it_was() {
         json!(["pz000001", "nz000001", "cz000001", "kz000001", "kz000002"])
     );
     let after = f.text();
-    assert_eq!(serde_json::from_str::<Value>(&after).unwrap(), document);
+    // Written as every save is, under scheme 6 (N10); the rest is the document as opened.
+    let mut written = document.clone();
+    written["naming"] = json!(6);
+    assert_eq!(serde_json::from_str::<Value>(&after).unwrap(), written);
     assert_eq!(f.revision(), 3);
     // And byte for byte: an empty add (no change) leaves the same canonical text.
     f.ran("sketch_add", &add(3, "s0000001", ["", "", "", "", ""]));

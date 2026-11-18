@@ -23,16 +23,19 @@ use crate::changes::{self, Changes};
 use crate::export::{self, ExportForm, Shown};
 use crate::icons::Icon;
 use crate::modal::{self, Button, Kind};
-use crate::pane_widths::{KeptWidths, Widths};
+use crate::pane_widths::{KeptLayout, Widths};
 use crate::panes::{self, Pane, Panes};
 use crate::properties;
 use crate::recent::Recents;
+use crate::search::{self, Search};
 use crate::sheet::{self, Sheet};
 use crate::shortcuts::{self, Command};
 use crate::sketch::{self, bar::BarAction};
 use crate::start::{self, Warm};
-use crate::tab::{DiskChoice, Tab, said};
+use crate::tab::{DiskChoice, StoppedAt, Tab, TimelineStep, said};
 use crate::theme::{self, FieldKind};
+use crate::thumbs::Thumbs;
+use crate::toast::{Toast, Toasts};
 use crate::toolbar;
 
 /// How long past [`DISK_CHECK_INTERVAL`] the idle frame comes: a comparison is due once the
@@ -50,14 +53,49 @@ pub const IDLE_FRAME: Duration = DISK_CHECK_INTERVAL.saturating_add(IDLE_MARGIN)
 pub const FILTERS_SAID: &str =
     "F5 shows the selection filters. They live in the toolbar, under SELECT.";
 
+/// The wall clock the start page says each recent document's time against: a test's, to set
+/// by hand, or [`system_time`]. None when it gives no time, and then no time is said.
+pub type WallClock = Arc<dyn Fn() -> Option<jiff::Timestamp> + Send + Sync>;
+
+/// The system's clock as a time, if it can be one (jiff's `Timestamp::now` would panic on a
+/// clock outside its range).
+pub fn system_time() -> Option<jiff::Timestamp> {
+    jiff::Timestamp::try_from(std::time::SystemTime::now()).ok()
+}
+
+/// What's said of a path that can't be used because it isn't UTF-8 (an Open's pick, a drop).
+fn not_utf8(path: &std::ffi::OsStr) -> String {
+    format!(
+        "{} can't be used: its path isn't UTF-8",
+        std::path::Path::new(path).display()
+    )
+}
+
 /// What Reload says with a feature dialog open (⌘R, Ctrl+R elsewhere): as Rebuild everything
 /// does nothing in a dialog, the dialog's OK or Cancel comes first.
 pub const RELOAD_IN_DIALOG: &str = "Finish or cancel the dialog first: Reload drops what it holds.";
 
+/// What the toast says once a stop the person asked for has stopped the rebuild (the
+/// prototype's `stopRebuild`): how far it got, as `status` counts the plan's steps, if it
+/// says, and the key that starts it again, `keys` (Rebuild's, `Ctrl+B`, `⌘B` on macOS).
+pub fn stopped_words(at: StoppedAt, keys: &str) -> String {
+    match at {
+        StoppedAt::Step { done, steps } => {
+            format!("Rebuild stopped at step {done} of {steps}. Rebuild ({keys}) resumes it.")
+        }
+        StoppedAt::Uncounted => format!("Rebuild stopped. Rebuild ({keys}) resumes it."),
+    }
+}
+
 /// The selection filters' keys pressed this frame, X, E, and V (`crate::shortcuts`), each
 /// taken and its kind given, in that order; none taken while a sketch is open (`in_sketch`),
-/// whose X is Construction and whose picking is its own.
-pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
+/// whose X is Construction and whose picking is its own. `queued`, a command the search ran,
+/// counts as its keys pressed.
+pub fn filter_keys(
+    ui: &mut Ui,
+    in_sketch: bool,
+    queued: Option<Command>,
+) -> Vec<toolbar::FilterKind> {
     if in_sketch {
         return Vec::new();
     }
@@ -67,34 +105,62 @@ pub fn filter_keys(ui: &mut Ui, in_sketch: bool) -> Vec<toolbar::FilterKind> {
         (Command::FilterVertex, toolbar::FilterKind::Vertices),
     ]
     .into_iter()
-    .filter(|(command, _)| shortcuts::take(ui, *command))
+    .filter(|(command, _)| shortcuts::take(ui, *command) | (queued == Some(*command)))
     .map(|(_, kind)| kind)
     .collect()
 }
 
-/// A toast saying `text` over `canvas`'s bottom right (the prototype's `.toast`): drawn in
-/// its own area, above the panes, taking no input. SEAM: the prototype's info icon and its
-/// fade, which the UI port adds.
-fn toast(ctx: &egui::Context, canvas: egui::Rect, text: &str) {
-    let corner =
-        canvas.right_bottom() - egui::vec2(theme::TOAST_MARGIN_RIGHT, theme::TOAST_MARGIN_BOTTOM);
-    egui::Area::new(egui::Id::new("toast"))
-        .order(egui::Order::Foreground)
-        .pivot(egui::Align2::RIGHT_BOTTOM)
-        .fixed_pos(corner)
-        .interactable(false)
-        .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(theme::TOAST_BG)
-                .stroke(egui::Stroke::new(theme::BORDER_WIDTH, theme::TOAST_BORDER))
-                .corner_radius(theme::TOAST_CORNER_RADIUS)
-                .shadow(theme::TOAST_SHADOW)
-                .inner_margin(theme::TOAST_PADDING)
-                .show(ui, |ui| {
-                    ui.set_max_width(theme::TOAST_MAX_WIDTH);
-                    ui.label(egui::RichText::new(text).color(theme::TOAST_TEXT));
+/// Whether Save is on for `tab` (the app bar's Save, its keys, and the search's): off while a
+/// dialog or a sketch is open, its OK or Finish, or its Cancel, ending its edits first; on
+/// for an untitled part with no edits too, its first save writing it, but not while it
+/// closes or a Save As of its runs.
+fn save_offered(tab: &Tab) -> bool {
+    !tab.editing()
+        && if tab.is_untitled() {
+            !tab.closing() && !tab.saving_as()
+        } else {
+            tab.unsaved()
+        }
+}
+
+/// Where F2 renames, and Del deletes, the feature selected in `tab`: where it was selected,
+/// but in the timeline for a row of a browser collapsed (`collapsed`) since, where its
+/// field can be seen.
+fn key_place(tab: &Tab, collapsed: bool) -> crate::feature_menu::Place {
+    match tab.selected_in {
+        crate::feature_menu::Place::Browser if collapsed => crate::feature_menu::Place::Timeline,
+        place => place,
+    }
+}
+
+/// What the search says of a document's command with no document shown (the start page).
+pub const NO_DOCUMENT: &str = "No document open";
+
+/// The timeline's arrows pressed this frame (interact.js's `keydown`: → and ←), each taken,
+/// in the order pressed: a press and each repeat of one held down, as a browser's list
+/// walks; with Shift too, as the prototype takes them, but never with Alt, Ctrl or Command
+/// (the prototype's `altKey` and `isMod` go elsewhere).
+fn timeline_steps(ui: &mut Ui) -> Vec<TimelineStep> {
+    ui.input_mut(|input| {
+        let mut steps = Vec::new();
+        input.events.retain(|event| match event {
+            egui::Event::Key {
+                key: key @ (Key::ArrowRight | Key::ArrowLeft),
+                pressed: true,
+                modifiers,
+                ..
+            } if !modifiers.alt && !modifiers.ctrl && !modifiers.command && !modifiers.mac_cmd => {
+                steps.push(if *key == Key::ArrowRight {
+                    TimelineStep::Next
+                } else {
+                    TimelineStep::Previous
                 });
+                false
+            }
+            _ => true,
         });
+        steps
+    })
 }
 
 /// Whether Enter, pressed this frame, is an open dialog's OK, taking it if so: while typing
@@ -154,9 +220,54 @@ const SKETCH_TOOLS: [(Command, sketch::tools::Choice); 7] = {
 /// its top, centred; the palette at its right, below the ViewCube, as far from the canvas's
 /// right (and, at most, its bottom) as `PALETTE_MARGIN`.
 const SKETCH_BAR_FROM_TOP: f32 = 10.0;
+/// The least the sketch bar stands in from the canvas's left, as far as it stands below its
+/// top, and from its right, clear of the ViewCube as a banner is (#466).
+const SKETCH_BAR_FROM_SIDE: f32 = SKETCH_BAR_FROM_TOP;
+const SKETCH_BAR_FROM_RIGHT: f32 = theme::BANNER_MARGIN_RIGHT;
 const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
     egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
+
+/// Where the sketch bar showing `bar` stands over `canvas`, its top left, and the most it may
+/// be wide ([`sketch_bar_room`], [`sketch_bar_left`]), from its widths laid out in the
+/// app's style.
+fn sketch_bar_place(
+    ctx: &egui::Context,
+    canvas: egui::Rect,
+    bar: &sketch::bar::BarView,
+) -> (egui::Pos2, f32) {
+    let style = ctx.global_style();
+    let rest = sketch::bar::rest_width(ctx, &style, bar);
+    let most = sketch_bar_room(canvas.width(), rest);
+    let width = sketch::bar::bar_width(ctx, &style, bar, most);
+    let left = sketch_bar_left(canvas, width);
+    // On a whole pixel, down, so the area's own rounding to pixels never moves it right.
+    let ppp = ctx.pixels_per_point();
+    let left = (left * ppp).floor() / ppp;
+    (egui::pos2(left, canvas.top() + SKETCH_BAR_FROM_TOP), most)
+}
+
+/// The most the sketch bar may be wide over a canvas `canvas_width` wide, all of it but its
+/// name `rest` wide: the room between [`SKETCH_BAR_FROM_SIDE`] from the canvas's left and
+/// [`SKETCH_BAR_FROM_RIGHT`] from its right, clear of the ViewCube as a banner is
+/// (`crate::banner`); or, where that room is narrower, the rest and the name's least
+/// ([`sketch::bar::NAME_LEAST`]), so a usual name is whole.
+fn sketch_bar_room(canvas_width: f32, rest: f32) -> f32 {
+    let clear = canvas_width - SKETCH_BAR_FROM_SIDE - SKETCH_BAR_FROM_RIGHT;
+    clear.max(rest + sketch::bar::NAME_LEAST)
+}
+
+/// The sketch bar's left over `canvas`, the bar `width` wide: centred, moved left as far as
+/// keeps its right [`SKETCH_BAR_FROM_RIGHT`] from the canvas's right, but never nearer the
+/// canvas's left than [`SKETCH_BAR_FROM_SIDE`]. A bar wider than that room runs right from
+/// there, over the ViewCube only as far as it must.
+fn sketch_bar_left(canvas: egui::Rect, width: f32) -> f32 {
+    let centred = canvas.center().x - width / 2.0;
+    let clear_of_cube = canvas.right() - SKETCH_BAR_FROM_RIGHT - width;
+    centred
+        .min(clear_of_cube)
+        .max(canvas.left() + SKETCH_BAR_FROM_SIDE)
+}
 
 /// The bands sketch mode's panels cover, in pixels at `pixels_per_point`: from the canvas's
 /// top to as far below the sketch bar as it stands below the top, and from the canvas's
@@ -222,6 +333,75 @@ enum Asking {
     /// Whether to drop `session`'s unsaved edits to reload its file (Reload, Trevin's ask of
     /// 2026-11-09), naming them: the tab's `held_changes`' own.
     Reload(SessionId),
+}
+
+/// What's on top of the window (#487): nothing, or the modal open there. In the order they
+/// stack, the lowest first, each drawn under any after it: what's drawn at a level takes
+/// input only while nothing after it is open, and everything under the one on top is inert
+/// (`modal::inert`), as SolidWorks' and Fusion's modals leave the window behind them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum OnTop {
+    /// No modal: the window takes input.
+    Window,
+    /// The over-define prompt (SD7), drawn with sketch mode's canvas.
+    Offer,
+    /// The shortcut sheet.
+    Sheet,
+    /// What's Wrong.
+    WhatsWrong,
+    /// The command search (`S`), which a question asked or an over-define offer come
+    /// meanwhile closes (`after_drawing`).
+    Search,
+    /// What the app is asking ([`Asking`]), drawn last, over everything.
+    Asking,
+}
+
+/// The name of the modal of what the app is asking.
+const ASKING: &str = "asking";
+
+impl OnTop {
+    /// The layer egui draws the modal on: none for the window.
+    fn layer(self) -> Option<egui::LayerId> {
+        let id = match self {
+            OnTop::Window => return None,
+            OnTop::Offer => sketch::dimension::offer_id(),
+            OnTop::Sheet => sheet::id(),
+            OnTop::WhatsWrong => crate::whats_wrong::id(),
+            OnTop::Search => search::id(),
+            OnTop::Asking => egui::Id::new(ASKING),
+        };
+        Some(egui::LayerId::new(egui::Order::Foreground, id))
+    }
+}
+
+/// The document's keys taken this frame ([`App::command_keys`]), and the tab shown as they
+/// came, acted on where each came among the frame's events ([`App::act_document_keys`]):
+/// one after the frame's first left release once the canvas has had it, so an edit that
+/// release made (a line let go, a Finish clicked) is saved, undone, finished, or asked
+/// about, as an edit made before the frame is (#523); one before it as it's taken, before
+/// the canvas has the release (#535's review).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DocumentKeys {
+    tab: SessionId,
+    /// ⌘S (Ctrl+S): Save, or an untitled part's Save panel.
+    save: bool,
+    /// ⌘↵ (Ctrl+Enter): Finish Sketch.
+    finish: bool,
+    /// ⌘Z: Undo.
+    undo: bool,
+    /// ⌘⇧Z or Ctrl+Y: Redo.
+    redo: bool,
+    /// ⌘R: Reload.
+    reload: bool,
+    /// ⌘W: Close.
+    close: bool,
+}
+
+impl DocumentKeys {
+    /// Whether any key is here.
+    fn any(&self) -> bool {
+        self.save || self.finish || self.undo || self.redo || self.reload || self.close
+    }
 }
 
 /// What a native dialog's answer goes to.
@@ -328,6 +508,11 @@ pub struct App<P: Clients + 'static> {
     export: Option<ExportForm>,
     /// The shortcut sheet, while it's open (DESIGN.md, state 7).
     sheet: Option<Sheet>,
+    /// The command search, while it's open (`S`).
+    search: Option<Search>,
+    /// A command the search ran that its keys do: done next frame by the keys' own code, as
+    /// a press of them is ([`command_keys`](Self::command_keys)).
+    queued: Option<Command>,
     tree: egui_tiles::Tree<Pane>,
     /// The property panel's name field, while it's typed in.
     name: Option<panes::NameField>,
@@ -350,6 +535,15 @@ pub struct App<P: Clients + 'static> {
     /// Enter or Esc pressed this frame with a modal already open at its start: the modal's
     /// OK or Cancel, taken before anything else could read it.
     modal_key: Option<Key>,
+    /// Each widget a modal took the keyboard's focus from (`App::frame`), and the modal on
+    /// top as it did, the earliest first: given it back once that modal has gone, as
+    /// SolidWorks' and Windows' dialogs give the focus back to the control that held it.
+    focus_behind: Vec<(egui::Id, OnTop)>,
+    /// The document's keys pressed this frame after its first left release, Save, Finish,
+    /// Undo, Redo, Reload, and Close: acted on once the canvas has had the frame's events
+    /// (`after_drawing`), so an edit that release made (a line's) is in what they act on, as
+    /// an edit made before the frame is.
+    document_keys: Option<DocumentKeys>,
     /// The canvas's place in the window, as the panes last laid it out: where sketch mode's
     /// palette floats.
     canvas: Option<egui::Rect>,
@@ -372,6 +566,17 @@ pub struct App<P: Clients + 'static> {
     tab_in_view: Option<SessionId>,
     /// The documents opened lately, if the app keeps a list.
     recents: Option<Recents>,
+    /// Whether the start page was shown last frame: shown again, its documents are looked
+    /// for again (their times, and which are missing). True at first, as the list's thread
+    /// looks for them as it starts.
+    start_was_shown: bool,
+    /// The wall clock the start page's times are said against.
+    wall: WallClock,
+    /// The start page's thumbnails, if the app keeps them.
+    thumbs: Option<Thumbs>,
+    /// Opens asked of documents whose sessions the thumbnails are still closing (their tabs
+    /// gone), each path with `create`: sent once that close has answered.
+    held_opens: Vec<(String, bool)>,
     /// The side panes' widths, as dragged, and where they're kept, if anywhere.
     columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
@@ -386,9 +591,10 @@ pub struct App<P: Clients + 'static> {
     ///
     /// [`Pickable::new`]: silico_render::render::Pickable::new
     boxing: Option<crate::boxes::Build>,
-    /// The toast shown over the canvas's bottom right (DESIGN.md's *Toasts*), and when it
-    /// was shown, by egui's clock: F5's word on where the filters are, or a box's.
-    toast: Option<(String, f64)>,
+    /// The toasts shown over the canvas's bottom right (DESIGN.md's *Toasts*), each with
+    /// when it was shown, by egui's clock: F5's word on where the filters are, a box's, an
+    /// undo's, a save's, a stop's.
+    toasts: Toasts,
 }
 
 /// A row of Show changes' "Their change (on disk)": the changed feature's name in the key
@@ -464,6 +670,8 @@ impl<P: Clients + 'static> App<P> {
             save_as_path: String::new(),
             export: None,
             sheet: None,
+            search: None,
+            queued: None,
             tree: panes::layout(),
             name: None,
             message: None,
@@ -474,6 +682,8 @@ impl<P: Clients + 'static> App<P> {
             wakes: Arc::new(AtomicU64::new(0)),
             waker_set: false,
             modal_key: None,
+            focus_behind: Vec::new(),
+            document_keys: None,
             canvas: None,
             drawing: crate::viewport::Drawing::default(),
             browser: None,
@@ -482,12 +692,16 @@ impl<P: Clients + 'static> App<P> {
             home: false,
             tab_in_view: None,
             recents: None,
+            start_was_shown: true,
+            wall: Arc::new(system_time),
+            thumbs: None,
+            held_opens: Vec::new(),
             columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
             documents: directories::UserDirs::new()
                 .and_then(|dirs| dirs.document_dir().map(std::path::Path::to_path_buf)),
-            toast: None,
+            toasts: Toasts::default(),
             boxing: None,
         }
     }
@@ -508,6 +722,14 @@ impl<P: Clients + 'static> App<P> {
         self
     }
 
+    /// The app, its start page saying each recent document's time against `wall` (a test's
+    /// clock), not the system's.
+    #[must_use]
+    pub fn dated(mut self, wall: WallClock) -> Self {
+        self.wall = wall;
+        self
+    }
+
     /// The app, keeping the documents it opens in `recents`, which its start page lists.
     #[must_use]
     pub fn remembering(mut self, recents: Recents) -> Self {
@@ -515,23 +737,43 @@ impl<P: Clients + 'static> App<P> {
         self
     }
 
-    /// The app, laying its side panes out at the widths `widths` keeps once it has read them,
-    /// and keeping there those each drag of a border leaves.
+    /// The app, drawing a thumbnail of each document for its start page's Recent as its tab
+    /// closes and as the start page is shown over it (`crate::thumbs`), kept by `thumbs`.
     #[must_use]
-    pub fn keeping_widths(mut self, widths: KeptWidths) -> Self {
-        self.columns.keeping(widths);
+    pub fn thumbnailing(mut self, thumbs: Thumbs) -> Self {
+        self.thumbs = Some(thumbs);
+        self
+    }
+
+    /// The start page's thumbnails, if the app keeps them.
+    pub fn thumbs(&self) -> Option<&Thumbs> {
+        self.thumbs.as_ref()
+    }
+
+    /// The app, laying its side panes out as `layout` keeps them (their widths, and whether
+    /// the browser is collapsed) once it has read them, and keeping there what each drag of
+    /// a border, and each collapse or show of the browser, leaves.
+    #[must_use]
+    pub fn keeping_layout(mut self, layout: KeptLayout) -> Self {
+        self.columns.keeping(layout);
         self
     }
 
     /// The side panes' widths, as dragged (or read, or the prototype's), each its border
-    /// included: what [`keeping_widths`](Self::keeping_widths)' file keeps.
+    /// included: what [`keeping_layout`](Self::keeping_layout)' file keeps.
     pub fn pane_widths(&self) -> Widths {
         self.columns.chosen()
     }
 
+    /// Whether the browser is collapsed to its strip (its chevrons, Collapse browser and Show
+    /// browser): kept with the widths, in [`keeping_layout`](Self::keeping_layout)' file.
+    pub fn browser_collapsed(&self) -> bool {
+        self.columns.collapsed()
+    }
+
     /// Where the side panes' widths are kept: nowhere (read at once, the prototype's) unless
-    /// [`keeping_widths`](Self::keeping_widths) gave a file.
-    pub fn kept_widths(&self) -> &KeptWidths {
+    /// [`keeping_layout`](Self::keeping_layout) gave a file.
+    pub fn kept_layout(&self) -> &KeptLayout {
         self.columns.kept()
     }
 
@@ -563,6 +805,47 @@ impl<P: Clients + 'static> App<P> {
         }
         let at = self.active_place()?;
         self.tabs.get_mut(at).filter(|tab| tab.whats_wrong)
+    }
+
+    /// The tab shown, if its sketch mode's over-define prompt is open over it (not under
+    /// the start page, where sketch mode's canvas isn't drawn).
+    fn offer_shown(&mut self) -> Option<&mut Tab> {
+        if self.start_shown() {
+            return None;
+        }
+        let at = self.active_place()?;
+        self.tabs.get_mut(at).filter(|tab| {
+            tab.sketch
+                .as_ref()
+                .is_some_and(|mode| mode.offer().is_some())
+        })
+    }
+
+    /// The modal on top of the window, if one is open: what's drawn under it is inert.
+    fn on_top(&self) -> OnTop {
+        if self.asking.is_some() {
+            return OnTop::Asking;
+        }
+        if self.search.is_some() {
+            return OnTop::Search;
+        }
+        let shown = if self.start_shown() {
+            None
+        } else {
+            self.active_place().and_then(|at| self.tabs.get(at))
+        };
+        if shown.is_some_and(|tab| tab.whats_wrong) {
+            OnTop::WhatsWrong
+        } else if self.sheet.is_some() {
+            OnTop::Sheet
+        } else if shown
+            .and_then(|tab| tab.sketch.as_ref())
+            .is_some_and(|mode| mode.offer().is_some())
+        {
+            OnTop::Offer
+        } else {
+            OnTop::Window
+        }
     }
 
     /// The documents opened lately, if the app keeps a list.
@@ -658,8 +941,19 @@ impl<P: Clients + 'static> App<P> {
         &mut self.tabs
     }
 
-    /// Opens the document at `path`, as the Open dialog does: a tab once it has opened.
+    /// Opens the document at `path`, as the Open dialog does: a tab once it has opened. Of a
+    /// document whose tab just closed while its session is still closing (its picture
+    /// drawn first, `crate::thumbs`), once that close has answered, since the core refuses
+    /// an open of a file another session holds.
     pub fn open(&mut self, path: &str, create: bool) {
+        if self
+            .thumbs
+            .as_ref()
+            .is_some_and(|thumbs| thumbs.still_closing(path))
+        {
+            self.held_opens.push((path.to_owned(), create));
+            return;
+        }
         let running = self.sessions.open(path, create);
         self.opening(Part::File(path.to_owned()), running);
     }
@@ -705,13 +999,34 @@ impl<P: Clients + 'static> App<P> {
             if let Some(recents) = &self.recents {
                 recents.waking(ui.ctx());
             }
+            if let Some(thumbs) = &self.thumbs {
+                thumbs.waking(ui.ctx());
+            }
             self.columns.waking(ui.ctx());
             if let Some(warm) = &self.warm {
                 warm.waking(ui.ctx());
             }
             self.waker_set = true;
         }
-        self.poll();
+        self.poll(ui.input(|input| input.time));
+        let start_shown = self.start_shown();
+        if let Some(thumbs) = &mut self.thumbs {
+            thumbs.frame(
+                ui.ctx(),
+                &self.sessions,
+                &mut self.tabs,
+                self.recents.as_ref(),
+                start_shown,
+                // A quit draws nothing: the window closes with its last tab, before a picture
+                // could be written. Its question counts, since its answer closes tabs at once.
+                self.quitting || matches!(self.asking, Some(Asking::Quit)),
+            );
+        }
+        // An open held for a session closing: sent once it has closed.
+        let held = std::mem::take(&mut self.held_opens);
+        for (path, create) in held {
+            self.open(&path, create);
+        }
         // The candidate a card's row was hovered on last frame, lit in the canvas from now.
         for tab in &mut self.tabs {
             if tab.take_candidate_hover() {
@@ -722,12 +1037,52 @@ impl<P: Clients + 'static> App<P> {
         // acts, so it comes first in the tab's queue.
         let renamed = self.rename_clicked_away(ui.ctx());
         let (mut next_frame, dialog_key) = self.keys(ui);
-        // The canvas's Select Other closed under a modal, the shortcut sheet, or What's
-        // Wrong (one its keys just opened, `?`, too): the focus and the keys are theirs.
-        let over =
-            self.asking.is_some() || self.sheet.is_some() || self.whats_wrong_shown().is_some();
-        if over && let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
-            tab.close_select_other(ui.ctx());
+        // Files dropped on the window, opened as Open's pick is.
+        next_frame |= self.take_drops(ui);
+        // Under a modal (the shortcut sheet, What's Wrong, and the over-define prompt too; one
+        // its keys just opened, `?`, as well), the window takes no input (#487): drawn inert,
+        // so no button behind it is clicked, by the pointer or through the accessibility tree,
+        // where each is off; the keys are the modal's (`keys`). What it holds goes on: its
+        // tabs polled, rebuilt, and watched on disk as ever. The canvas's Select Other and
+        // sketch mode's canvas menu close, and so does any egui menu open (the File menu, a
+        // feature's), whose items would stand over the window on a layer of their own; sketch
+        // mode's floating panels are drawn inert (`sketch_canvas`), and what the pointer held
+        // in the canvas ends (`crate::viewport`). A modal that opens or closes later in the
+        // frame (a click's) has the window drawn so from the next, asked for at once
+        // (`after_drawing`).
+        let top = self.on_top();
+        if let Some(modal) = top.layer() {
+            // The keyboard's focus taken from what holds it behind the modal (a field the
+            // modal came over), before anything is drawn: egui gives a focused field the
+            // frame's typing before it finds the field off. The modal's own fields keep it.
+            // It's given back once the modal has gone (`give_focus_back`, in `after_drawing`).
+            let ctx = ui.ctx().clone();
+            if let Some(id) = ctx.memory(|memory| memory.focused())
+                && ctx
+                    .read_response(id)
+                    .is_some_and(|focused| focused.layer_id != modal)
+            {
+                ctx.memory_mut(|memory| memory.surrender_focus(id));
+                self.focus_behind.retain(|(taken, _)| *taken != id);
+                self.focus_behind.push((id, top));
+            }
+            if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
+                // A dialog's arrow held takes the frame's events as ever (a release before the
+                // modal's key finishes its click, a move its drag), and keeps the value it was
+                // dragged to when the canvas cancels what the pointer still holds after them
+                // (`crate::viewport`), its stream ending there; while what else the canvas
+                // held ends undone: a sketch drag from its begin state, a box selecting
+                // nothing, a tool's gesture adding nothing.
+                tab.arrow_under_modal();
+                tab.close_select_other(ui.ctx());
+                // And sketch mode's canvas menu, so the next Esc is the modal's, never the
+                // menu's behind it (`Tab::escape_first` closes a menu first).
+                if let Some(mode) = tab.sketch.as_mut() {
+                    mode.menu_at = None;
+                }
+            }
+            egui::Popup::close_all(ui.ctx());
+            modal::inert(ui);
         }
         next_frame |= renamed;
         next_frame |= self.take_browsed();
@@ -740,10 +1095,26 @@ impl<P: Clients + 'static> App<P> {
                 tab.canvas_unshown();
             }
         }
-        if self.start_shown() {
+        let start_shown = self.start_shown();
+        if start_shown && !self.start_was_shown {
+            // Shown again: each recent document looked for again, off this thread, so a
+            // document saved meanwhile shows its new time.
+            if let Some(recents) = &self.recents {
+                recents.look();
+            }
+        }
+        self.start_was_shown = start_shown;
+        if start_shown {
             // The start page alone between the bars: no toolbar, panes, or dialog.
             self.status_bar(ui, &mut next_frame);
-            let act = egui::CentralPanel::default()
+            // Recent's arrow keys: never a field's, nor under a modal (the sheet's too) or a
+            // menu.
+            let keys = self.asking.is_none()
+                && self.sheet.is_none()
+                && !ui.ctx().text_edit_focused()
+                && !egui::Popup::is_any_open(ui.ctx());
+            let now = (self.wall)();
+            let (act, page) = egui::CentralPanel::default()
                 .frame(egui::Frame::NONE.fill(theme::PANEL_BG))
                 .show(ui, |ui| {
                     if self.tabs.is_empty() {
@@ -752,13 +1123,26 @@ impl<P: Clients + 'static> App<P> {
                     }
                     let shown = start::Shown {
                         recents: self.recents.as_ref(),
+                        thumbs: self.thumbs.as_ref(),
                         workspace_known: self.workspace().is_some(),
+                        now,
+                        keys,
                     };
-                    start::page(ui, &shown)
+                    (start::page(ui, &shown), ui.max_rect())
                 })
                 .inner;
             self.start_act(ui, act, &mut next_frame);
-            self.after_drawing(ui, next_frame);
+            // What the tabs asked to say meanwhile is dropped, as a tab not shown's is (see
+            // below): never shown later out of its context.
+            for tab in &mut self.tabs {
+                tab.take_toasts();
+                tab.take_stopped();
+            }
+            // The app's own (a drop's refusal, a removal from Recent), over the page's
+            // bottom right.
+            self.toasts.show(ui.ctx(), page);
+            self.raise_toast(ui.ctx(), None);
+            self.after_drawing(ui, next_frame, top);
             return;
         }
         self.toolbar(ui, &mut next_frame);
@@ -802,21 +1186,34 @@ impl<P: Clients + 'static> App<P> {
                 columns,
                 ..
             } = self;
-            let mut panes = Panes {
-                tab: active.and_then(|at| tabs.get_mut(at)),
-                sessions,
-                name,
-                next_frame: &mut next_frame,
-                drawing,
-                dialog_key,
-                remembered,
-            };
+            let mut browser_toggled = false;
             let area = ui.available_rect_before_wrap();
             let laid = columns.laid(area.width());
             panes::fit(tree, &laid);
-            tree.ui(&mut panes, ui);
+            // egui_tiles draws each pane in a `Ui` of its own, off as the window is under a
+            // modal: with none of egui's fade, as `modal::inert` has none.
+            let ctx = ui.ctx().clone();
+            modal::unfaded(&ctx, top > OnTop::Window, |fade| {
+                let mut panes = Panes {
+                    tab: active.and_then(|at| tabs.get_mut(at)),
+                    sessions,
+                    name,
+                    next_frame: &mut next_frame,
+                    drawing,
+                    dialog_key,
+                    remembered,
+                    fade,
+                    browser_collapsed: columns.collapsed(),
+                    browser_toggled: &mut browser_toggled,
+                };
+                tree.ui(&mut panes, ui);
+            });
             // Over the panes' borders, after them, so a press there drags the border.
             columns.handles(ui, area, laid);
+            // The browser's chevron: collapsed or shown, laid out so from the next frame.
+            if browser_toggled {
+                columns.toggle_browser(ui.ctx());
+            }
             // Over the canvas, drawn after it, so it takes the pointer over its place.
             let canvas = tree
                 .tiles
@@ -826,25 +1223,64 @@ impl<P: Clients + 'static> App<P> {
             // Where sketch mode's panels float.
             self.canvas = Some(canvas);
             self.disk_banner(ui, canvas, &mut next_frame);
-            self.show_toast(ui, canvas);
+            self.toasts.show(ui.ctx(), canvas);
         });
-        self.sketch_canvas(ui, &mut next_frame);
-        // A toast the tab shown asked for this frame (a box's), drawn from the next; one a tab
-        // not shown asked for (its drag ended as it was left) dropped, never shown later out
-        // of its context.
+        let modify_layer = self.sketch_canvas(ui, &mut next_frame);
+        self.raise_toast(ui.ctx(), modify_layer);
+        // The toasts the tab shown asked for this frame (a box's, an undo's, a save's, a
+        // stop's), drawn from the next, in the order asked; those a tab not shown asked for
+        // (its drag ended as it was left) dropped, never shown later out of its context.
         let active = self.active_place();
-        let mut asked = None;
+        let mut asked = Vec::new();
+        let rebuild_keys = Command::Rebuild.keys_text(ui.ctx());
         for (at, tab) in self.tabs.iter_mut().enumerate() {
-            let toast = tab.take_toast();
+            let mut toasts = tab.take_toasts();
+            if let Some(at) = tab.take_stopped() {
+                toasts.push(Toast::info(stopped_words(at, &rebuild_keys)));
+            }
             if Some(at) == active {
-                asked = toast;
+                asked = toasts;
             }
         }
-        if let Some(text) = asked {
-            self.toast = Some((text, ui.input(|input| input.time)));
+        if !asked.is_empty() {
+            let now = ui.input(|input| input.time);
+            for toast in asked {
+                self.toasts.push(toast, now);
+            }
             ui.ctx().request_repaint();
         }
-        self.after_drawing(ui, next_frame);
+        // Every menu drawn: Create Sketch's planes as the viewport's frame took them, or the
+        // next frame asked for.
+        crate::planes::settle(ui.ctx());
+        self.after_drawing(ui, next_frame, top);
+    }
+
+    /// The keyboard's focus given back to each widget a modal took it from, the frame drawn
+    /// with the modal it was taken under gone (`top`, the modal the frame was drawn under, is
+    /// below it): as SolidWorks' and Windows' dialogs give it back to the control that held
+    /// it, so what's typed after the modal reaches the field it went to before. Only to one
+    /// drawn this frame, and on. One drawn inert under a lower modal still open (an
+    /// over-define offer that waited under a question shows once it has gone) waits for it
+    /// to go too, kept with what's under it. One not drawn now (its tab closed, or not shown)
+    /// is let go: drawn inert under the modal, it's off in what egui read of it last frame,
+    /// and egui would otherwise hold the focus on a widget that isn't there. At the frame's
+    /// end, after the widgets are drawn: egui keeps the focus off what's under the modal it
+    /// drew the frame before, so a focus asked for at the frame's top would be given up as
+    /// its widget is drawn; asked for now, the widget has it from the next frame.
+    fn give_focus_back(&mut self, ctx: &egui::Context, top: OnTop) {
+        while let Some(&(id, under)) = self.focus_behind.last()
+            && top < under
+        {
+            let drawn = ctx.read_response(id);
+            let on = drawn.as_ref().is_some_and(egui::Response::enabled);
+            if !on && drawn.is_some() && top > OnTop::Window {
+                break;
+            }
+            self.focus_behind.pop();
+            if on {
+                ctx.memory_mut(|memory| memory.request_focus(id));
+            }
+        }
     }
 
     /// The active tab's rename field, if a press of the pointer this frame lands away from
@@ -870,8 +1306,10 @@ impl<P: Clients + 'static> App<P> {
         tab.finish_rename(&self.sessions, renaming.feature, &renaming.text)
     }
 
-    /// What the start page's `act` asks: a new untitled part, Open's panel, a recent
-    /// document opened (or its tab shown, if it's open), or the MCP config copied.
+    /// What the start page's `act` asks: a new untitled part, Open's panel, the shortcut
+    /// sheet, a recent document opened (or its tab shown, if it's open), a missing one
+    /// removed from Recent (said in a toast, as the prototype's `openRecent` says it), or
+    /// the MCP config copied.
     fn start_act(&mut self, ui: &Ui, act: start::Act, next_frame: &mut bool) {
         match act {
             start::Act::None => {}
@@ -880,14 +1318,89 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             start::Act::Open => self.ask_open(ui.ctx()),
+            start::Act::Shortcuts => self.sheet = Some(Sheet::default()),
             start::Act::Recent(path) => *next_frame |= self.open_recent(&path),
+            // Said once the list's thread tells it's done (`poll`).
+            start::Act::Remove(path) => {
+                if let Some(recents) = &self.recents {
+                    recents.remove(&path);
+                }
+            }
             start::Act::CopyMcpConfig => ui.ctx().copy_text(self.mcp_config()),
         }
     }
 
-    /// The recent document at `path` opened: its tab shown if it's open, nothing done if its
-    /// open is under way (a double-click, or a second click before the first answers), else
-    /// opened. Both compared by their absolute paths. Whether an open was started.
+    /// The files dropped on the window this frame, in the order dropped (DESIGN.md's start
+    /// page: "Drop a .silico file anywhere in this window to open it"), with a document
+    /// shown or none: each `.silico` one ([`start::names_a_document`]) opened as Open's pick
+    /// is, its refusals the same, or its tab shown if it's open already, as a recent
+    /// document's click does; the rest named in a toast, none of them opened. None is opened
+    /// while a quit closes the tabs, or while a question is asked over the window (New,
+    /// Open, and Recent can't be reached then either, and an open answering mid-quit would
+    /// leave a tab the quit never closes): each is named in a toast, unopened. Whether an
+    /// open was started.
+    fn take_drops(&mut self, ui: &Ui) -> bool {
+        let dropped: Vec<PathBuf> = ui.input(|input| {
+            input
+                .raw
+                .dropped_files
+                .iter()
+                .map(|file| file.path().to_path_buf())
+                .collect()
+        });
+        if dropped.is_empty() {
+            return false;
+        }
+        let name = |path: &PathBuf| {
+            path.file_name()
+                .unwrap_or(path.as_os_str())
+                .to_string_lossy()
+                .into_owned()
+        };
+        let now = ui.input(|input| input.time);
+        // Under a modal, as no other input acts behind one (#487): said, and opened by none.
+        let top = self.on_top();
+        if self.quitting || top != OnTop::Window {
+            let names: Vec<String> = dropped.iter().map(name).collect();
+            let said = match top {
+                _ if self.quitting => start::not_opened_quitting(&names),
+                OnTop::Sheet => start::not_opened_until_closed("the shortcut sheet", &names),
+                OnTop::WhatsWrong => start::not_opened_until_closed("What's Wrong", &names),
+                OnTop::Search => start::not_opened_until_closed("the command search", &names),
+                OnTop::Asking | OnTop::Offer | OnTop::Window => start::not_opened_asking(&names),
+            };
+            self.toasts.push(Toast::info(said), now);
+            ui.ctx().request_repaint();
+            return false;
+        }
+        let mut started = false;
+        let mut refused = Vec::new();
+        for path in dropped {
+            if !start::names_a_document(&path) {
+                refused.push(name(&path));
+                continue;
+            }
+            match path.into_os_string().into_string() {
+                Ok(path) => started |= self.open_recent(&path),
+                Err(path) => {
+                    // As Open's pick of such a path is said.
+                    self.message = Some(not_utf8(&path));
+                    self.message_from = None;
+                }
+            }
+        }
+        if !refused.is_empty() {
+            self.toasts
+                .push(Toast::info(start::not_documents(&refused)), now);
+            ui.ctx().request_repaint();
+        }
+        started
+    }
+
+    /// The recent document at `path` (or a document dropped on the window) opened: its tab
+    /// shown if it's open, nothing done if its open is under way (a double-click, a second
+    /// click before the first answers, or the same file dropped twice), else opened. Both
+    /// compared by their absolute paths. Whether an open was started.
     fn open_recent(&mut self, path: &str) -> bool {
         let same = |other: &str| {
             std::path::absolute(other).is_ok_and(|at| at == std::path::Path::new(path))
@@ -905,6 +1418,7 @@ impl<P: Clients + 'static> App<P> {
             .opening
             .iter()
             .any(|opening| opening.part.path().is_some_and(same))
+            || self.held_opens.iter().any(|(held, _)| same(held))
         {
             return false;
         }
@@ -914,8 +1428,9 @@ impl<P: Clients + 'static> App<P> {
 
     /// The frame's end, the window drawn: what's asked, as a modal; the window closed once
     /// a quit has closed every tab, or kept open while one holds edits; and the next frame
-    /// asked for, if `next_frame` (or what's done here) says it's to be.
-    fn after_drawing(&mut self, ui: &mut Ui, mut next_frame: bool) {
+    /// asked for, if `next_frame` (or what's done here) says it's to be, or if the modal on
+    /// top is no longer `top`, the one the window was drawn under.
+    fn after_drawing(&mut self, ui: &mut Ui, mut next_frame: bool, top: OnTop) {
         // A border's drag whose release the panes didn't see (they're gone) ended.
         self.columns.settle(ui.ctx());
         // The dialog OK'd this frame, if one was (one tab's panes draw a frame), remembered.
@@ -924,16 +1439,30 @@ impl<P: Clients + 'static> App<P> {
                 self.remembered.keep(&oked);
             }
         }
-        // The sheet under a question asked over it meanwhile (a quit, a replace).
+        // The search, closed by a question asked meanwhile (a quit, a replace), or sketch
+        // mode's over-define prompt, which are over everything.
+        if self.asking.is_some() || self.offered() {
+            self.search = None;
+        }
+        if let Some(mut open) = self.search.take() {
+            match search::show(ui.ctx(), &mut open, &|command| self.search_row(command)) {
+                search::Asked::None => self.search = Some(open),
+                search::Asked::Close => search::let_go(ui.ctx()),
+                search::Asked::Run(command) => next_frame |= self.run_searched(ui.ctx(), command),
+            }
+        }
+        // The sheet under a question asked over it meanwhile (a quit, a replace), inert.
+        let behind = self.on_top() > OnTop::Sheet;
         if let Some(open) = self.sheet.as_mut()
-            && sheet::show(ui.ctx(), open)
+            && sheet::show(ui.ctx(), open, behind)
         {
             self.sheet = None;
         }
         // What's Wrong, the shown tab's, the same.
+        let behind = self.on_top() > OnTop::WhatsWrong;
         let sessions = Arc::clone(&self.sessions);
         if let Some(tab) = self.whats_wrong_shown() {
-            let (asked, hovered) = crate::whats_wrong::show(ui.ctx(), tab);
+            let (asked, hovered) = crate::whats_wrong::show(ui.ctx(), tab, behind);
             tab.hover_candidate(hovered);
             match asked {
                 crate::whats_wrong::Asked::None => {}
@@ -950,6 +1479,9 @@ impl<P: Clients + 'static> App<P> {
                     next_frame |= tab.card_asked(&sessions, asked);
                 }
             }
+        }
+        if let Some(keys) = self.document_keys.take() {
+            self.act_document_keys(ui, keys);
         }
         self.ask(ui, &mut next_frame);
         next_frame |= self.next_quit_save(ui.ctx());
@@ -974,6 +1506,10 @@ impl<P: Clients + 'static> App<P> {
                 self.asking = Some(Asking::Quit);
             }
         }
+        // A modal opened or closed after the window was drawn (a click's, a quit's): the
+        // window drawn again at once, inert under it or taking input again.
+        next_frame |= self.on_top() != top;
+        self.give_focus_back(ui.ctx(), top);
         if next_frame {
             // A command started is polled next frame, even if it answered at once; a key
             // taken has its change drawn there.
@@ -986,10 +1522,30 @@ impl<P: Clients + 'static> App<P> {
 
     /// The opens under way and every tab polled; tabs whose sessions closed dropped; and
     /// what the recent documents' thread has told, a document it dropped said.
-    fn poll(&mut self) {
+    fn poll(&mut self, now: f64) {
         self.columns.poll();
-        let gone = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
-        for recent in gone {
+        let polled = self.recents.as_mut().map(Recents::poll).unwrap_or_default();
+        // Said once the list's thread has dropped it, its list without it taken just now.
+        if let Some(path) = polled.removed.last() {
+            self.toasts.push(
+                Toast::check(format!(
+                    "Removed {} from Recent",
+                    crate::recent::name_of(path)
+                )),
+                now,
+            );
+        }
+        // Its list's file couldn't be written: still listed, as the file has it.
+        if let Some(path) = polled.not_removed.last() {
+            self.toasts.push(
+                Toast::info(format!(
+                    "{} couldn't be removed from Recent: its list couldn't be written",
+                    crate::recent::name_of(path)
+                )),
+                now,
+            );
+        }
+        for recent in polled.gone {
             self.message = Some(format!(
                 "{} isn't in {} any more, so it's no longer listed in Recent",
                 recent.name(),
@@ -1041,6 +1597,14 @@ impl<P: Clients + 'static> App<P> {
         // A tab's save or revert was refused: it stays, holding its edits, and a quit stops.
         for name in refused {
             self.close_refused(&name);
+        }
+        // The pictures asked as tabs closed, taken before the tabs go: they answer after.
+        if let Some(thumbs) = &mut self.thumbs {
+            for tab in &mut self.tabs {
+                if let Some(closing) = tab.take_closing_picture() {
+                    thumbs.closing(closing);
+                }
+            }
         }
         let open_numbers = &mut self.open_numbers;
         self.tabs.retain(|tab| {
@@ -1201,53 +1765,99 @@ impl<P: Clients + 'static> App<P> {
     /// Ctrl+Z undoes and Ctrl+Y or Ctrl+Shift+Z redoes (docs/ux/solidworks.md, §6;
     /// DESIGN.md, *Keyboard*), Esc stops what's running and Ctrl+B rebuilds what was
     /// stopped (§5, *Rebuild*), and H hides or shows the selected body or sketch, outside a
-    /// text field. Outside a text field too, `?` opens the shortcut sheet; F6 fits the shown
+    /// text field. Outside a text field too, `?` opens the shortcut sheet, and S the command
+    /// search (outside a menu too); F6 fits the shown
     /// tab's view, Home gives its home view, and Ctrl+1 to Ctrl+7 its standard views
     /// (SolidWorks' numbering); Ctrl+Shift+B rebuilds everything, ignoring the cache; and,
-    /// with a feature selected, F2 types its name over in its own field and Del (or ⌫)
-    /// deletes it (the prototype's `keydown`), Esc dropping a name being typed and the
-    /// document's commands (Save, Close, Undo, and the rest) sending it before they act.
+    /// with a feature selected, F2 types its name over in its own field, Del (or ⌫)
+    /// deletes it, and → and ← select the timeline's next or previous feature, clamped at
+    /// its ends, with no menu open nor a widget focused (the prototype's `keydown`), Esc
+    /// dropping a name being typed and the document's commands (Save, Close, Undo, and the
+    /// rest) sending it before they act.
     /// In sketch mode, Del (or ⌫) deletes the sketch's selection instead, never a feature,
+    /// the arrows walk nothing,
     /// F2 says why it renames nothing (as its menu item is off), and Ctrl+Enter finishes
     /// the sketch.
-    /// With a modal open (the sheet too), none acts: Esc is the modal's Cancel (the sheet's
-    /// close), and Enter its OK. With a dialog open, Enter and Esc are the dialog's, taken
+    /// With a modal open (the sheet, What's Wrong, and the over-define prompt too), none
+    /// acts: Esc is the modal's Cancel (the sheet's close; the prompt's after a drag held),
+    /// and Enter its OK. With the search open, its keys are its own (`search::keys`). With a
+    /// dialog open, Enter and Esc are the dialog's, taken
     /// here and given to it once its inputs have taken this frame's typing (`Panes::dialog`,
     /// in `crate::panes`). Whether the frame after is to be asked for (a command started, a
-    /// modal's key taken, or an Esc [`command_keys`](Self::command_keys) takes; not the
-    /// sheet's or What's Wrong's Esc, which closes it and asks nothing), and the dialog's key.
+    /// modal's key taken, the prompt's Esc, or an Esc [`command_keys`](Self::command_keys)
+    /// takes; not the sheet's or What's Wrong's Esc, which closes it and asks nothing), and
+    /// the dialog's key.
     fn keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
         self.modal_key = None;
-        if self.asking.is_some() {
-            // A modal open since the last frame: Esc is its Cancel, and Enter its OK unless
-            // a button or a checkbox of its has focus, whose own click Enter then is. Taken
-            // only now, so an Enter that opened the modal (on a focused menu item) isn't
-            // also its OK.
-            let escape = shortcuts::take(ui, Command::Cancel);
-            let enter = !escape && enter_is_ok(ui);
-            self.modal_key = match (escape, enter) {
-                (true, _) => Some(Key::Escape),
-                (false, true) => Some(Key::Enter),
-                (false, false) => None,
-            };
-            return (escape || enter, None);
-        }
-        if self.sheet.is_some() {
-            // The sheet is a modal too: Esc closes it, and no other command acts under it.
-            if shortcuts::take(ui, Command::Cancel) {
-                self.sheet = None;
+        // A command the search ran last frame: let go if a modal or the like has come since,
+        // as a press would be.
+        let queued = self.queued.take();
+        // The modal on top takes the keys, in the order the modals stack ([`OnTop`]).
+        match self.on_top() {
+            OnTop::Asking => {
+                // A modal open since the last frame: Esc is its Cancel, and Enter its OK
+                // unless a button or a checkbox of its has focus, whose own click Enter then
+                // is. Taken only now, so an Enter that opened the modal (on a focused menu
+                // item) isn't also its OK.
+                let escape = shortcuts::take(ui, Command::Cancel);
+                let enter = !escape && enter_is_ok(ui);
+                self.modal_key = match (escape, enter) {
+                    (true, _) => Some(Key::Escape),
+                    (false, true) => Some(Key::Enter),
+                    (false, false) => None,
+                };
+                return (escape || enter, None);
             }
-            return (false, None);
-        }
-        if let Some(tab) = self.whats_wrong_shown() {
-            // What's Wrong too: Esc closes it, and no other command acts under it.
-            if shortcuts::take(ui, Command::Cancel) {
-                tab.whats_wrong = false;
+            OnTop::Search => {
+                // The search's keys: Esc closes it, the arrows move its highlight, and Enter
+                // runs it; no other command acts under it.
+                let Some(mut open) = self.search.take() else {
+                    return (false, None);
+                };
+                return match search::keys(ui, &mut open, &|command| self.search_row(command)) {
+                    search::Asked::None => {
+                        self.search = Some(open);
+                        (false, None)
+                    }
+                    search::Asked::Close => {
+                        search::let_go(ui.ctx());
+                        (false, None)
+                    }
+                    search::Asked::Run(command) => (self.run_searched(ui.ctx(), command), None),
+                };
             }
-            return (false, None);
+            OnTop::WhatsWrong => {
+                // What's Wrong too: Esc closes it, and no other command acts under it.
+                if shortcuts::take(ui, Command::Cancel)
+                    && let Some(tab) = self.whats_wrong_shown()
+                {
+                    tab.whats_wrong = false;
+                }
+                return (false, None);
+            }
+            OnTop::Sheet => {
+                // The sheet is a modal too: Esc closes it, and no other command acts under it.
+                if shortcuts::take(ui, Command::Cancel) {
+                    self.sheet = None;
+                }
+                return (false, None);
+            }
+            OnTop::Offer => {
+                // The over-define prompt too (SD7): Esc goes first to what takes it before
+                // the prompt (a sketch drag held, ended from its begin state), then is its
+                // Cancel (`Tab::escape_first`), the frame after asked for; 1 and 2 are its
+                // choices, which it takes as it's drawn; no other command acts under it.
+                let esc = shortcuts::take(ui, Command::Stop);
+                let sessions = Arc::clone(&self.sessions);
+                if esc && let Some(tab) = self.offer_shown() {
+                    tab.escape_first(&sessions);
+                }
+                return (esc, None);
+            }
+            OnTop::Window => {}
         }
         let renamed = self.rename_before_command(ui.ctx());
-        let (next_frame, dialog_key) = self.command_keys(ui);
+        let (next_frame, dialog_key) = self.command_keys(ui, queued);
         (next_frame || renamed, dialog_key)
     }
 
@@ -1279,22 +1889,99 @@ impl<P: Clients + 'static> App<P> {
         asked && self.send_rename_if(crate::feature_menu::Renaming::focused)
     }
 
+    /// The document's keys `keys` acted on: those pressed before the frame's first left
+    /// release (or in a frame with none) as they're taken, before the canvas has the frame's
+    /// events; those after it once the canvas has had them, so the release (a line's, a
+    /// dimension's, a Finish's click) has made its edit, which each then acts on, as on one
+    /// made in an earlier frame. On the tab shown as they came, in the order they always
+    /// were: Save, Finish, Undo, Redo, an untitled part's Save panel, Reload, and Close. None
+    /// over a question asked meanwhile (a click's, or one a key before it asked), as no key
+    /// acts under one; an over-define offer come meanwhile (a click on another tab's button
+    /// shows a tab whose offer came while it was hidden) waits under a question asked.
+    fn act_document_keys(&mut self, ui: &Ui, keys: DocumentKeys) {
+        let sessions = Arc::clone(&self.sessions);
+        let id = keys.tab;
+        let free = |app: &Self| app.on_top() <= OnTop::Offer;
+        // An untitled part's Save asks where, through the Save panel, once the tab is let go:
+        // with no edits too, as its first save writes the document all the same.
+        let mut save_panel = false;
+        if keys.save
+            && free(self)
+            && let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
+        {
+            if tab.is_untitled() {
+                // Not while a Save As of its runs: its answer gives it its file.
+                save_panel = !tab.editing() && !tab.closing() && !tab.saving_as();
+            } else if tab.unsaved() && !tab.editing() {
+                tab.save(&sessions, false);
+            } else if !tab.editing() && !tab.nothing_to_save() {
+                // Nothing unsaved, but the file not known to match (no comparison ended yet,
+                // or it changed, went, or can't be read): the save queued. With a transaction
+                // open (its edits undone back to `begin`'s document), it's the commit, the
+                // core's answer deciding; with none, it only asks `nothing_to_save` again,
+                // sending nothing.
+                tab.save(&sessions, false);
+            }
+        }
+        if free(self)
+            && let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id)
+        {
+            if keys.finish {
+                tab.finish_sketch(&sessions, true);
+            }
+            if keys.undo && tab.undoable() {
+                tab.step(&sessions, true);
+            } else if keys.undo {
+                // The prototype's `undo` with nothing to take back: said so, where it's so.
+                tab.nothing_to_step(true);
+            }
+            if keys.redo && tab.redoable() {
+                tab.step(&sessions, false);
+            } else if keys.redo {
+                tab.nothing_to_step(false);
+            }
+        }
+        if save_panel && free(self) {
+            let ctx = ui.ctx().clone();
+            self.ask_save_as(id, false, &ctx);
+        }
+        if keys.reload && free(self) {
+            let now = ui.input(|input| input.time);
+            self.reload(id, now);
+        }
+        if keys.close && free(self) {
+            self.close(id);
+        }
+    }
+
     /// The keyboard's commands with no modal open: [`keys`](Self::keys)'s, a name being
     /// typed already sent where one asks it. Whether the frame after is to be asked for: a
     /// command started, or an Esc taken past Home and Select Other's menu (whose Esc leaves
     /// Home, or closes the menu, and asks nothing), whatever that Esc does, with a document
     /// shown or none; and the dialog's key.
-    fn command_keys(&mut self, ui: &mut Ui) -> (bool, Option<Key>) {
+    fn command_keys(&mut self, ui: &mut Ui, queued: Option<Command>) -> (bool, Option<Key>) {
+        // Each command's keys pressed this frame, taken, or the command the search ran
+        // (`queued`), which is done here as its keys are, never by a copy.
+        let take = |ui: &mut Ui, command: Command| {
+            shortcuts::take(ui, command) | (queued == Some(command))
+        };
         // Never a letter typed, nor a key a text field moves its cursor with (Home).
         let typing = ui.ctx().text_edit_focused();
-        if !typing && shortcuts::take(ui, Command::Shortcuts) {
+        if !typing && take(ui, Command::Shortcuts) {
             self.sheet = Some(Sheet::default());
+            return (false, None);
+        }
+        // S: the command search, anywhere (the start page, sketch mode, a dialog open), but
+        // in a field, or over a menu, a modal, or what holds the keys
+        // ([`search_held`](Self::search_held)).
+        if !typing && !self.search_held(ui.ctx()) && take(ui, Command::Search) {
+            self.search = Some(Search::default());
             return (false, None);
         }
         // Ctrl+N and Ctrl+O: a new untitled part and Open's panel, as the File menu's and
         // the start page's.
         for command in [Command::New, Command::Open] {
-            if shortcuts::take(ui, command) {
+            if take(ui, command) {
                 if command == Command::New {
                     self.new_part();
                     return (true, None);
@@ -1328,7 +2015,7 @@ impl<P: Clients + 'static> App<P> {
             return (false, None);
         }
         // Before Ctrl+S, which a Ctrl+Shift+S also is, its Shift aside.
-        let save_as = shortcuts::take(ui, Command::SaveAs);
+        let save_as = take(ui, Command::SaveAs);
         if save_as
             && self.save_as_offered()
             && let Some(id) = self.active
@@ -1347,18 +2034,24 @@ impl<P: Clients + 'static> App<P> {
         // the Shift aside): a Redo, as Ctrl+Y is, never an Undo. Rebuild everything before
         // Rebuild for the same reason, taken while typing too, so it's never a Rebuild; but
         // done only outside a text field.
-        let redo = shortcuts::take(ui, Command::Redo);
-        let (save, close, undo) = (
-            shortcuts::take(ui, Command::Save),
-            shortcuts::take(ui, Command::Close),
-            shortcuts::take(ui, Command::Undo),
-        );
-        let rebuild_all = shortcuts::take(ui, Command::RebuildAll) && !typing;
-        let rebuild = shortcuts::take(ui, Command::Rebuild);
+        //
+        // The document's keys, each taken with where it came among the frame's events: after
+        // its first left release or not (`DocumentKeys`), each read before it's taken, and
+        // Undo's after Redo's ⌘⇧Z is taken.
+        let placed = |ui: &mut Ui, command| {
+            let late = shortcuts::after_release(ui.ctx(), command);
+            (take(ui, command), late)
+        };
+        let (redo, redo_late) = placed(ui, Command::Redo);
+        let (save, save_late) = placed(ui, Command::Save);
+        let (close, close_late) = placed(ui, Command::Close);
+        let (undo, undo_late) = placed(ui, Command::Undo);
+        let rebuild_all = take(ui, Command::RebuildAll) && !typing;
+        let rebuild = take(ui, Command::Rebuild);
         // ⌘R (Ctrl+R elsewhere) before sketch mode's letters, though R alone is Rectangle's
         // and an exact chord's. Done while typing too, as Save is: it's no key of a field's,
         // and what it would drop is asked about first.
-        let reload = shortcuts::take(ui, Command::Reload);
+        let (reload, reload_late) = placed(ui, Command::Reload);
         // Esc, pressed: with a menu open (a feature's right-click menu, a drop-down) it closes
         // the menu alone, as the prototype's `keydown` has it, left for the menu to take;
         // else it's taken here, and whatever it does below, the frame after is asked for
@@ -1366,11 +2059,11 @@ impl<P: Clients + 'static> App<P> {
         // drag's end) is polled at once.
         let esc = !egui::Popup::is_any_open(ui.ctx()) && shortcuts::take(ui, Command::Stop);
         // H hides or shows the selection (DESIGN.md, *Keyboard*), never a letter typed.
-        let hide = !typing && shortcuts::take(ui, Command::Hide);
+        let hide = !typing && take(ui, Command::Hide);
         // F2 renames the selected feature, and Del (or ⌫) deletes it: never a field's keys.
         // In sketch mode Del (or ⌫) is the sketch's, below.
-        let rename = !typing && shortcuts::take(ui, Command::Rename);
-        let delete = !typing && shortcuts::take(ui, Command::Delete);
+        let rename = !typing && take(ui, Command::Rename);
+        let delete = !typing && take(ui, Command::Delete);
         // The view's keys, never a field's (Home moves its cursor).
         let view = if typing {
             None
@@ -1378,22 +2071,25 @@ impl<P: Clients + 'static> App<P> {
             crate::viewport::VIEW_COMMANDS
                 .into_iter()
                 // Each taken, the last pressed given.
-                .fold(None, |asked, (command, ask)| {
-                    if shortcuts::take(ui, command) {
-                        Some(ask)
-                    } else {
-                        asked
-                    }
-                })
+                .fold(
+                    None,
+                    |asked, (command, ask)| {
+                        if take(ui, command) { Some(ask) } else { asked }
+                    },
+                )
         };
         // Look At (⌘8), never a field's: its view depends on the selection or the sketch.
-        let look_at = !typing && shortcuts::take(ui, Command::LookAt);
+        let look_at = !typing && take(ui, Command::LookAt);
         let in_sketch = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
             .is_some_and(Tab::in_sketch);
         // Ctrl+Enter (⌘↵) finishes the sketch, as the toolbar's Finish Sketch does.
-        let finish = in_sketch && shortcuts::take(ui, Command::FinishSketch);
+        let (finish, finish_late) = if in_sketch {
+            placed(ui, Command::FinishSketch)
+        } else {
+            (false, false)
+        };
         // Del (or ⌫) in sketch mode deletes the sketch's selection, never a feature (the
         // prototype's `keydown` gives a sketch its own keys and goes no further).
         let (sketch_delete, delete) = (delete && in_sketch, delete && !in_sketch);
@@ -1405,11 +2101,11 @@ impl<P: Clients + 'static> App<P> {
             .then(|| {
                 SKETCH_TOOLS
                     .iter()
-                    .find(|(command, _)| shortcuts::take(ui, *command))
+                    .find(|(command, _)| take(ui, *command))
                     .map(|(_, choice)| *choice)
             })
             .flatten();
-        let construction = sketch_keys && shortcuts::take(ui, Command::Construction);
+        let construction = sketch_keys && take(ui, Command::Construction);
         // Only a plain Enter: Shift or Alt with it is another key's.
         let sketch_enter = sketch_keys
             && ui.input(|input| !input.modifiers.shift && !input.modifiers.alt)
@@ -1419,11 +2115,21 @@ impl<P: Clients + 'static> App<P> {
         let filters = if typing {
             Vec::new()
         } else {
-            filter_keys(ui, in_sketch)
+            filter_keys(ui, in_sketch, queued)
         };
         // F5: where the filters are (the prototype's, no command of the registry's).
         let filters_said =
             !typing && ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::F5));
+        // → and ←: the timeline's next or previous feature (the prototype's, no command of
+        // the registry's), never a field's keys, nor a menu's (which step its items), nor
+        // with a widget focused (egui moves the focus by them), nor in sketch mode (whose
+        // keys go no further, as the prototype's sketch takes them).
+        let focused = ui.ctx().memory(|memory| memory.focused()).is_some();
+        let steps = if typing || focused || in_sketch || egui::Popup::is_any_open(ui.ctx()) {
+            Vec::new()
+        } else {
+            timeline_steps(ui)
+        };
         // No document shown (the start page): nothing below acts, but an Esc taken asks for
         // its frame, as one with a document shown does.
         let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
@@ -1440,12 +2146,14 @@ impl<P: Clients + 'static> App<P> {
             // The toolbar shows SOLID, whose SELECT panel holds the filters, whenever no
             // sketch is open: there's no other tab to switch from (a sketch's SKETCH is its
             // mode's, left by Finish or Cancel).
-            self.toast = Some((FILTERS_SAID.to_owned(), ui.input(|input| input.time)));
+            let now = ui.input(|input| input.time);
+            self.toasts.push(Toast::info(FILTERS_SAID), now);
         }
         let selected = tab.selection().feature().cloned();
         // Each only where its menu item would be on: else its reason is said, as the item's
-        // hover says it.
-        let place = tab.selected_in;
+        // hover says it. A row selected in a browser collapsed since is renamed in the
+        // timeline, where its field can be seen.
+        let place = key_place(tab, self.columns.collapsed());
         let can = |tab: &Tab, id: &silico_core::document::FeatureId, item| {
             let entry = tab.entry(id.as_str())?;
             Some(crate::feature_menu::off(tab, entry, item, place))
@@ -1467,6 +2175,9 @@ impl<P: Clients + 'static> App<P> {
                 Some(Some(why)) => tab.message = Some(why),
                 None => {}
             }
+        }
+        for step in steps {
+            tab.select_beside(step);
         }
         // Whether Esc goes on down its chain (section 3's order, the prototype's `escChain`):
         // a dialog's Esc, or `Tab::escape`. Not with a feature's name being typed: the name
@@ -1500,33 +2211,13 @@ impl<P: Clients + 'static> App<P> {
             tab.sketch_toggle(choice);
         }
         if construction {
-            tab.sketch_toggle_construction();
+            tab.sketch_construction(sessions);
         }
         if sketch_enter {
             tab.sketch_enter(sessions);
         }
-        // An untitled part's Save asks where, through the Save panel, once the tab is let go:
-        // with no edits too, as its first save writes the document all the same.
-        let mut save_panel = None;
-        if save && tab.is_untitled() {
-            // Not while a Save As of its runs: its answer gives it its file.
-            if !tab.editing() && !tab.closing() && !tab.saving_as() {
-                save_panel = Some(tab.id);
-            }
-        } else if save && tab.unsaved() && !tab.editing() {
-            tab.save(sessions, false);
-        }
         if sketch_delete {
             tab.sketch_delete(sessions);
-        }
-        if finish {
-            tab.finish_sketch(sessions, true);
-        }
-        if undo && tab.undoable() {
-            tab.step(sessions, true);
-        }
-        if redo && tab.redoable() {
-            tab.step(sessions, false);
         }
         if rebuild_all {
             tab.rebuild_all(sessions);
@@ -1544,16 +2235,24 @@ impl<P: Clients + 'static> App<P> {
         if chain && !in_dialog {
             tab.escape(sessions);
         }
-        if let Some(id) = save_panel {
-            let ctx = ui.ctx().clone();
-            self.ask_save_as(id, false, &ctx);
-        }
-        if reload && let Some(id) = self.active {
-            let now = ui.input(|input| input.time);
-            self.reload(id, now);
-        }
-        if close && let Some(id) = self.active {
-            self.close(id);
+        // Save, Finish, Undo, Redo, Reload, and Close: each pressed before the frame's first
+        // left release acted on now, before the canvas has it; each after it once the canvas
+        // has had the frame's events (`after_drawing`).
+        if let Some(tab) = self.active {
+            let pressed = |late: bool| DocumentKeys {
+                tab,
+                save: save && save_late == late,
+                finish: finish && finish_late == late,
+                undo: undo && undo_late == late,
+                redo: redo && redo_late == late,
+                reload: reload && reload_late == late,
+                close: close && close_late == late,
+            };
+            let (now, later) = (pressed(false), pressed(true));
+            self.document_keys = later.any().then_some(later);
+            if now.any() {
+                self.act_document_keys(ui, now);
+            }
         }
         (
             save || undo
@@ -1566,33 +2265,286 @@ impl<P: Clients + 'static> App<P> {
                 || rebuild_all
                 || deleted
                 || sketch_delete
+                || construction
                 || finish
                 || sketch_enter,
             dialog_key,
         )
     }
 
-    /// The toast, if one is shown, over `canvas`'s bottom right, until
-    /// [`theme::TOAST_SECONDS`] have passed since it was shown; a frame asked for then, to
-    /// take it down.
-    fn show_toast(&mut self, ui: &Ui, canvas: egui::Rect) {
-        let Some((text, at)) = &self.toast else {
-            return;
-        };
-        let now = ui.input(|input| input.time);
-        let left = theme::TOAST_SECONDS - (now - at);
-        if left.is_nan() || left <= 0.0 {
-            self.toast = None;
-            return;
-        }
-        toast(ui.ctx(), canvas, text);
-        ui.ctx()
-            .request_repaint_after(Duration::from_secs_f64(left));
+    /// Whether something open holds the keys S would open the search over: a menu or popup
+    /// (egui's, a feature's right-click menu among them), Select Other's menu, or sketch
+    /// mode's canvas menu, in the tab shown. A modal (sketch mode's over-define prompt among
+    /// them) holds every key itself ([`keys`](Self::keys)), so S never reaches here under one.
+    fn search_held(&self, ctx: &egui::Context) -> bool {
+        let tab = self
+            .active_place()
+            .filter(|_| !self.home)
+            .and_then(|at| self.tabs.get(at));
+        egui::Popup::is_any_open(ctx)
+            || tab.is_some_and(|tab| {
+                tab.select_other().holds_keys()
+                    || tab
+                        .sketch
+                        .as_ref()
+                        .is_some_and(|mode| mode.menu_at.is_some())
+            })
     }
 
-    /// The toast shown now, if one is, and when it was shown, by egui's clock.
+    /// Whether the tab shown holds sketch mode's over-define prompt (its offer).
+    fn offered(&self) -> bool {
+        self.active_place()
+            .filter(|_| !self.start_shown())
+            .and_then(|at| self.tabs.get(at))
+            .and_then(|tab| tab.sketch.as_ref())
+            .is_some_and(|mode| mode.offer().is_some())
+    }
+
+    /// `command`'s row in the search now: its name, and whether it can run and if not why,
+    /// exactly where its button, its menu item, or its keys would do it, by the same rule
+    /// they follow, the reason theirs where they give one. With no document shown (the start
+    /// page) only New, Open, the search, and the sheet run.
+    fn search_row(&self, command: Command) -> search::Row {
+        use crate::feature_menu::{Item, Place};
+        use search::{Can, Row};
+        let on = |on: bool| if on { Can::Run } else { Can::Off(None) };
+        let row = |can| Row {
+            label: command.label(),
+            can,
+        };
+        let tab = self
+            .active_place()
+            .filter(|_| !self.start_shown())
+            .and_then(|at| self.tabs.get(at));
+        let Some(tab) = tab else {
+            return row(match command {
+                Command::New | Command::Open | Command::Search | Command::Shortcuts => Can::Run,
+                _ => Can::Off(Some(NO_DOCUMENT.to_owned())),
+            });
+        };
+        // A feature menu's item, for the feature selected: named and off with its reason as
+        // the menu has it, or off with none selected (no menu is open for none).
+        let feature = |item: Item, place: Place| {
+            let Some(entry) = tab
+                .selection()
+                .feature()
+                .and_then(|id| tab.entry(id.as_str()))
+            else {
+                return row(Can::Off(None));
+            };
+            Row {
+                label: crate::feature_menu::label(item, entry, place),
+                can: match crate::feature_menu::off(tab, entry, item, place) {
+                    None => Can::Run,
+                    Some(why) => Can::Off(Some(why)),
+                },
+            }
+        };
+        let place = key_place(tab, self.columns.collapsed());
+        match command {
+            Command::New | Command::Open | Command::Search | Command::Shortcuts => row(Can::Run),
+            Command::Save => row(on(save_offered(tab))),
+            Command::SaveAs => row(on(self.save_as_offered())),
+            // Ctrl+W and File's Close close the tab shown, whatever it holds, asking first
+            // if it holds edits.
+            Command::Close => row(Can::Run),
+            Command::Undo => row(on(tab.undoable())),
+            Command::Redo => row(on(tab.redoable())),
+            Command::Rename => feature(Item::Rename, place),
+            // In sketch mode Del deletes the sketch's selection.
+            Command::Delete if tab.in_sketch() => row(on(tab.sketch_deletable())),
+            Command::Delete => feature(Item::Delete, place),
+            Command::Suppress => feature(Item::Suppress, place),
+            Command::FindInBrowser => feature(Item::Find, Place::Timeline),
+            Command::FindInTimeline => feature(Item::Find, Place::Browser),
+            Command::Rebuild => row(on(tab.can_rebuild())),
+            Command::RebuildAll => row(on(tab.can_rebuild_all())),
+            Command::Reload => row(match tab.reloadable() {
+                Ok(()) => Can::Run,
+                Err(why) => Can::Off(why.map(str::to_owned)),
+            }),
+            Command::Stop => row(on(tab.stoppable())),
+            Command::WhatsWrong if tab.anything_wrong() => row(Can::Run),
+            Command::WhatsWrong => {
+                row(Can::Off(Some(crate::whats_wrong::NOTHING_WRONG.to_owned())))
+            }
+            Command::Fit
+            | Command::Home
+            | Command::Front
+            | Command::Back
+            | Command::Left
+            | Command::Right
+            | Command::Top
+            | Command::Bottom
+            | Command::Isometric => row(Can::Run),
+            // Off where its keys only say why, in their words.
+            Command::LookAt => row(match tab.look_at_target() {
+                Ok(_) => Can::Run,
+                Err(said) => Can::Off(Some(said)),
+            }),
+            Command::FilterFace | Command::FilterEdge | Command::FilterVertex => {
+                row(on(tab.select_shown()))
+            }
+            Command::ClearSelection => row(on(tab.select_shown() && tab.selection_clearable())),
+            Command::Hide => row(on(tab.hideable().is_some())),
+            // The SKETCH tab's, while a sketch is open.
+            Command::Line
+            | Command::Rectangle
+            | Command::Circle
+            | Command::Arc
+            | Command::Point
+            | Command::Trim
+            | Command::Dimension
+            | Command::Construction
+            | Command::FinishSketch => row(on(tab.in_sketch())),
+            // Never listed (`search::LEFT_OUT`).
+            Command::Orbit | Command::Pan | Command::Zoom | Command::Ok | Command::Cancel => {
+                row(Can::Off(None))
+            }
+        }
+    }
+
+    /// `command`, run from the search, the search closed and its field let go: as its keys
+    /// do it, by their own code next frame ([`queued`](Self::queued)); or, for those whose
+    /// key is Esc's chain (Stop rebuild, Clear selection) or that have none, as its button
+    /// or menu item does it, through the same function. Whether the frame after is to be
+    /// asked for.
+    fn run_searched(&mut self, ctx: &egui::Context, command: Command) -> bool {
+        use crate::feature_menu::{Item, Place};
+        search::let_go(ctx);
+        let place = self
+            .active_place()
+            .and_then(|at| self.tabs.get(at))
+            .map(|tab| key_place(tab, self.columns.collapsed()));
+        let shown = self
+            .active_place()
+            .filter(|_| !self.start_shown())
+            .and_then(|at| self.tabs.get_mut(at));
+        let sessions = &self.sessions;
+        // A feature menu's item for the feature selected, as its menu does it.
+        let menu_item = |tab: &mut Tab, item: Item, place: Place| {
+            let act = tab
+                .selection()
+                .feature()
+                .and_then(|id| tab.entry(id.as_str()))
+                .map(|entry| crate::feature_menu::act_of(item, entry, place));
+            if let Some(act) = act {
+                crate::feature_menu::act(tab, sessions, act);
+            }
+        };
+        match command {
+            // The status bar's Stop.
+            Command::Stop => {
+                if let Some(tab) = shown {
+                    tab.stop(sessions);
+                }
+            }
+            // SELECT's Clear selection.
+            Command::ClearSelection => {
+                if let Some(tab) = shown {
+                    tab.selection_mut().clear();
+                }
+            }
+            // The status bar's errors.
+            Command::WhatsWrong => {
+                if let Some(tab) = shown {
+                    tab.whats_wrong = true;
+                }
+            }
+            // The feature menus' items: Suppress where the feature was selected, the
+            // timeline's Find in browser, and the browser's Find in timeline.
+            Command::Suppress => {
+                if let (Some(tab), Some(place)) = (shown, place) {
+                    menu_item(tab, Item::Suppress, place);
+                }
+            }
+            Command::FindInBrowser => {
+                if let Some(tab) = shown {
+                    menu_item(tab, Item::Find, Place::Timeline);
+                }
+            }
+            Command::FindInTimeline => {
+                if let Some(tab) = shown {
+                    menu_item(tab, Item::Find, Place::Browser);
+                }
+            }
+            // Each by its keys' own code.
+            Command::New
+            | Command::Open
+            | Command::Save
+            | Command::SaveAs
+            | Command::Close
+            | Command::Undo
+            | Command::Redo
+            | Command::Search
+            | Command::Rename
+            | Command::Delete
+            | Command::Rebuild
+            | Command::RebuildAll
+            | Command::Reload
+            | Command::Fit
+            | Command::Home
+            | Command::Front
+            | Command::Back
+            | Command::Left
+            | Command::Right
+            | Command::Top
+            | Command::Bottom
+            | Command::Isometric
+            | Command::LookAt
+            | Command::FilterFace
+            | Command::FilterEdge
+            | Command::FilterVertex
+            | Command::Hide
+            | Command::Line
+            | Command::Rectangle
+            | Command::Circle
+            | Command::Arc
+            | Command::Point
+            | Command::Trim
+            | Command::Dimension
+            | Command::Construction
+            | Command::FinishSketch
+            | Command::Shortcuts => self.queued = Some(command),
+            // Never listed (`search::LEFT_OUT`).
+            Command::Orbit | Command::Pan | Command::Zoom | Command::Ok | Command::Cancel => {
+                return false;
+            }
+        }
+        ctx.request_repaint();
+        true
+    }
+
+    /// The newest toast shown now, if one is, and when it was shown, by egui's clock.
     pub fn toast(&self) -> Option<(&str, f64)> {
-        self.toast.as_ref().map(|(text, at)| (text.as_str(), *at))
+        self.toasts
+            .shown()
+            .last()
+            .map(|shown| (shown.toast.text.as_str(), shown.at))
+    }
+
+    /// The toasts shown this frame, if any are, raised over everything else of its order
+    /// (egui's `Middle`, under every modal): over sketch mode's bar and palette and the
+    /// timeline's rename field, as the prototype's `#toasts` (z 650) are over `.sketch-bar`
+    /// (26) and `.palette` (22), so a press that raises one of them (egui raises an area
+    /// clicked) never stands it over the toast; and right over the Modify box (`.modify-box`,
+    /// 40), if it's drawn (`modify`), which raises itself each frame too: egui's end-of-pass
+    /// sort keeps the order of the layers that each ask to be on top, so a box first shown
+    /// after the toast would stay over it, but a layer's sublayer is placed straight after it.
+    fn raise_toast(&self, ctx: &egui::Context, modify: Option<egui::LayerId>) {
+        if self.toasts.shown().is_empty() {
+            return;
+        }
+        let layer = crate::toast::layer();
+        ctx.move_to_top(layer);
+        if let Some(modify) = modify {
+            ctx.set_sublayer(modify, layer);
+        }
+    }
+
+    /// Every toast shown now, oldest first, each with when it was shown.
+    pub fn toasts(&self) -> &[crate::toast::Shown] {
+        self.toasts.shown()
     }
 
     /// Reload the tab of session `id` (Trevin's ask of 2026-11-09): asking first, naming
@@ -1602,14 +2554,15 @@ impl<P: Clients + 'static> App<P> {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
             return;
         };
-        if tab.closing() {
-            return;
-        }
-        if tab.in_dialog() {
+        match tab.reloadable() {
+            Ok(()) => {}
+            Err(None) => return,
             // As Rebuild everything does nothing in a dialog: the dialog's OK or Cancel
             // first.
-            self.toast = Some((RELOAD_IN_DIALOG.to_owned(), now));
-            return;
+            Err(Some(why)) => {
+                self.toasts.push(Toast::info(why), now);
+                return;
+            }
         }
         // An untitled part's edits are all it is: it's only rebuilt, never asked about.
         if tab.unsaved() && !tab.file_gone() && !tab.is_untitled() {
@@ -1665,10 +2618,7 @@ impl<P: Clients + 'static> App<P> {
         let path = match path.into_os_string().into_string() {
             Ok(path) => path,
             Err(path) => {
-                self.message = Some(format!(
-                    "{} can't be used: its path isn't UTF-8",
-                    std::path::Path::new(&path).display()
-                ));
+                self.message = Some(not_utf8(&path));
                 self.message_from = None;
                 if let Browsed::SaveAs {
                     session,
@@ -1983,14 +2933,7 @@ impl<P: Clients + 'static> App<P> {
         // Off while a dialog or a sketch is open: its OK or Finish, or its Cancel, ends its
         // edits first. On for an untitled part with no edits too, its first save writing it,
         // but not while it closes or a Save As of its runs.
-        let unsaved = tab.as_ref().is_some_and(|tab| {
-            !tab.editing()
-                && if tab.is_untitled() {
-                    !tab.closing() && !tab.saving_as()
-                } else {
-                    tab.unsaved()
-                }
-        });
+        let unsaved = tab.as_ref().is_some_and(|tab| save_offered(tab));
         let said = tab.as_ref().filter(|_| unsaved).map(|tab| match tab.path {
             Some(_) => format!("Writes your edits to {}", tab.name()),
             None => format!("Asks where to save {}, then writes it", tab.name()),
@@ -2104,7 +3047,7 @@ impl<P: Clients + 'static> App<P> {
         let reloadable = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| !tab.closing() && !tab.in_dialog());
+            .is_some_and(|tab| tab.reloadable().is_ok());
         let label = Command::Reload.label();
         if ui
             .add_enabled(reloadable, egui::Button::new(label))
@@ -2192,8 +3135,7 @@ impl<P: Clients + 'static> App<P> {
                     create_sketch: Some(shown.is_some_and(Tab::can_sketch)),
                     can_open: &can_open,
                     why_closed: &why_closed,
-                    selected: shown
-                        .is_some_and(|tab| !tab.selection().is_empty() && !tab.in_dialog()),
+                    selected: shown.is_some_and(Tab::selection_clearable),
                     filter: shown.map_or_else(crate::selection::Filter::default, |tab| {
                         tab.selection().filter
                     }),
@@ -2231,7 +3173,10 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
-            Some(toolbar::Act::Construction) => tab.sketch_toggle_construction(),
+            Some(toolbar::Act::Construction) => {
+                tab.sketch_construction(&self.sessions);
+                *next_frame = true;
+            }
             Some(toolbar::Act::Relate(relation)) => {
                 tab.sketch_relate(&self.sessions, relation);
                 *next_frame = true;
@@ -2287,8 +3232,9 @@ impl<P: Clients + 'static> App<P> {
 
     /// Sketch mode's panels in the canvas while a sketch is open in the tab shown (the
     /// prototype's): the sketch bar at the canvas's top centre, its Finish Sketch and Cancel
-    /// taken, and the Sketch Palette at its right.
-    fn sketch_canvas(&mut self, ui: &mut Ui, next_frame: &mut bool) {
+    /// taken, and the Sketch Palette at its right, each of the order under the modals
+    /// ([`modal::UNDER_MODALS`]). The Modify box's layer, if it's drawn.
+    fn sketch_canvas(&mut self, ui: &mut Ui, next_frame: &mut bool) -> Option<egui::LayerId> {
         // A tab not shown has no menu open: it closes as the tab is hidden.
         let shown_at = self.active_place();
         for (at, tab) in self.tabs.iter_mut().enumerate() {
@@ -2298,15 +3244,21 @@ impl<P: Clients + 'static> App<P> {
                 mode.menu_at = None;
             }
         }
+        // Under a modal, the bar, the palette, and the Modify box are inert, and the canvas's
+        // menu closed. The over-define prompt waits under one asked over it: egui raises an
+        // area first shown over every other of its order (its end-of-pass sort keeps that
+        // order, whichever asks to be on top), so drawn then it would stand over the modal
+        // on top, which [`OnTop`] has over it; it shows once that one has gone, as a replace's
+        // question waits for no other to be asked. Under the command search, it waits for
+        // the search to close, which it does as the offer comes (`after_drawing`), so the
+        // prompt's 1 and 2 are never typed in the search's field.
+        let top = self.on_top();
+        let (behind, offer_waits) = (top > OnTop::Window, top > OnTop::Offer);
         let sessions = &self.sessions;
-        let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) else {
-            return;
-        };
+        let tab = self.active_place().and_then(|at| self.tabs.get_mut(at))?;
         let name = tab.sketch_name();
         let (revision, enabled, id) = (tab.revision, !tab.closing(), tab.id);
-        let Some(mode) = tab.sketch.as_mut() else {
-            return;
-        };
+        let mode = tab.sketch.as_mut()?;
         let canvas = self.canvas.unwrap_or_else(|| ui.ctx().content_rect());
         let bar = mode.bar_view(&name, enabled);
         let view = mode.palette_view(revision, tab.drag.as_ref());
@@ -2316,25 +3268,37 @@ impl<P: Clients + 'static> App<P> {
         // Known by the tab's session and the sketch mode's opening, so each sketch mode's
         // boxes are its own.
         let owner = sketch::dimension::modify_owner(&id, mode.serial);
-        let offer = mode.offer_view(&name);
+        let modify_layer = modify.as_ref().map(|view| {
+            let area = sketch::dimension::modify_area(owner, view.opened);
+            egui::LayerId::new(modal::UNDER_MODALS, area)
+        });
+        let offer = mode.offer_view(&name).filter(|_| !offer_waits);
+        if behind {
+            mode.menu_at = None;
+        }
         let menu = mode.menu_at.map(|at| (at, mode.tools.busy()));
         let mut action = BarAction::None;
-        let bar_drawn = egui::Area::new(sketch::dimension::bar_area(&id))
-            .fixed_pos(canvas.center_top() + egui::vec2(0.0, SKETCH_BAR_FROM_TOP))
-            .pivot(egui::Align2::CENTER_TOP)
-            .show(ui.ctx(), |ui| action = sketch::bar::sketch_bar(ui, &bar))
-            .response
-            .rect;
+        let (bar_at, bar_width) = sketch_bar_place(ui.ctx(), canvas, &bar);
+        let area = egui::Area::new(sketch::dimension::bar_area(&id))
+            .order(modal::UNDER_MODALS)
+            .fixed_pos(bar_at)
+            .pivot(egui::Align2::LEFT_TOP);
+        let bar_drawn = modal::area(ui.ctx(), area, behind, |ui| {
+            action = sketch::bar::sketch_bar(ui, &bar, bar_width);
+        })
+        .response
+        .rect;
         // Pinned at the canvas's top right, under the ViewCube, as the prototype's is, and
         // kept above the canvas's bottom by the prototype's margin: its body scrolls if it
         // doesn't fit.
         let palette_at = canvas.right_top() + PALETTE_FROM_CORNER;
         let palette_height = canvas.bottom() - PALETTE_MARGIN - palette_at.y;
-        let shown = egui::Area::new(sketch::dimension::palette_area(&id))
-            .fixed_pos(palette_at)
-            .show(ui.ctx(), |ui| {
-                sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
-            });
+        let area = egui::Area::new(sketch::dimension::palette_area(&id))
+            .order(modal::UNDER_MODALS)
+            .fixed_pos(palette_at);
+        let shown = modal::area(ui.ctx(), area, behind, |ui| {
+            sketch::bar::palette(ui, &view, &mut mode.settings, palette_height)
+        });
         let (look_at, palette) = (shown.inner, shown.response.rect);
         mode.panels = Some(sketch::Panels {
             bar: bar_drawn,
@@ -2351,9 +3315,9 @@ impl<P: Clients + 'static> App<P> {
         }
         *next_frame |= action != BarAction::None;
         // Whole in the canvas, and clear of the palette.
-        if let Some(asked) = modify
-            .and_then(|view| sketch::dimension::modify_box(ui.ctx(), owner, &view, canvas, palette))
-        {
+        if let Some(asked) = modify.and_then(|view| {
+            sketch::dimension::modify_box(ui.ctx(), owner, &view, canvas, palette, behind)
+        }) {
             tab.sketch_modify(sessions, asked);
             *next_frame = true;
         }
@@ -2405,6 +3369,7 @@ impl<P: Clients + 'static> App<P> {
             tab.sketch_offer(sessions, choice);
             *next_frame = true;
         }
+        modify_layer
     }
 
     /// The banner over the canvas (section 4; DESIGN.md's 6c and 6d): a file changed on
@@ -2581,7 +3546,7 @@ impl<P: Clients + 'static> App<P> {
         // question has gone; and a close refused (a typed Save As cancelled that was to close).
         let mut save_panel = None;
         let mut refused = None;
-        modal::show(ui.ctx(), egui::Id::new("asking"), |ui| match asking {
+        modal::show(ui.ctx(), egui::Id::new(ASKING), |ui| match asking {
             Asking::Open => {
                 modal::head(ui, Some(Icon::Open), "Open document");
                 let beside = self.browse_button();
@@ -3013,11 +3978,141 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        Answered, App, Opening, Part, held_list, mine_row, sketch_inset, split_answered, theirs_row,
+        Answered, App, Opening, Part, held_list, mine_row, sketch_bar_left, sketch_bar_place,
+        sketch_bar_room, sketch_inset, split_answered, theirs_row,
     };
     use crate::changes::{Changes, Listed, Row};
     use crate::tab::said;
     use crate::theme;
+
+    #[test]
+    fn the_system_time_is_the_clock_std_reads() {
+        // std's clock read on either side of it: the time it gives lies between them.
+        let seconds = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+        };
+        let before = i64::try_from(seconds()).unwrap();
+        let given = super::system_time().unwrap().as_second();
+        let after = i64::try_from(seconds()).unwrap();
+        assert!(
+            before <= given && given <= after,
+            "{before} <= {given} <= {after}"
+        );
+        assert!(before > 1_700_000_000, "{before}");
+    }
+
+    #[test]
+    fn a_stop_says_how_far_it_got_as_status_counted_it_or_only_that_it_stopped() {
+        use crate::tab::StoppedAt;
+        // The prototype's `stopRebuild` words, with the app's key.
+        assert_eq!(
+            super::stopped_words(StoppedAt::Step { done: 3, steps: 4 }, "Ctrl+B"),
+            "Rebuild stopped at step 3 of 4. Rebuild (Ctrl+B) resumes it."
+        );
+        assert_eq!(
+            super::stopped_words(StoppedAt::Uncounted, "⌘B"),
+            "Rebuild stopped. Rebuild (⌘B) resumes it."
+        );
+    }
+
+    #[test]
+    fn the_sketch_bars_room_is_clear_of_the_viewcube_unless_that_leaves_a_name_too_little() {
+        // All of the bar but its name 400 wide: the room between 10 from the canvas's left
+        // and 148 from its right (its width less 158), but never less than the rest and the
+        // name's 96, 496: the two meet at a canvas 400 + 96 + 158 = 654 wide.
+        for (canvas, most) in [
+            (340.0, 496.0),
+            (456.0, 496.0),
+            (653.0, 496.0),
+            (654.0, 496.0),
+            (655.0, 497.0),
+            (736.0, 578.0),
+        ] {
+            assert_eq!(sketch_bar_room(canvas, 400.0), most, "{canvas}");
+        }
+    }
+
+    #[test]
+    fn the_sketch_bar_is_centred_moved_left_of_the_viewcube_and_kept_off_the_canvass_left() {
+        use eframe::egui::{Rect, pos2};
+        // A canvas from x = 200, `width` wide; the bar `bar` wide; its left and right, by
+        // hand. Centred is the canvas's middle less half the bar; clear of the ViewCube, the
+        // canvas's right less 148 less the bar; never left of the canvas's left and 10.
+        let canvas =
+            |width: f32| Rect::from_min_max(pos2(200.0, 100.0), pos2(200.0 + width, 700.0));
+        for (width, bar, left) in [
+            // A long name in the room the canvas gives it (`sketch_bar_room`, the rest 400):
+            // at 655 and 654 its right at the 148 (855 − 148 = 707, 854 − 148 = 706) and its
+            // left at the 10 (210); at 653, 456, and 340 the rest and 96, 496, from the 10,
+            // its right 706 past the 148 (705, 508, 392) as far as it must be.
+            (655.0, 497.0, 210.0),
+            (654.0, 496.0, 210.0),
+            (653.0, 496.0, 210.0),
+            (456.0, 496.0, 210.0),
+            (340.0, 496.0, 210.0),
+            // At 736 (1280's), centred until it would reach the 148, at a bar 736 − 296 =
+            // 440 wide: 439 centred, 568 − 219.5 = 348.5; 440 both, 348; 441 at the 148,
+            // 936 − 148 − 441 = 347.
+            (736.0, 300.0, 418.0),
+            (736.0, 439.0, 348.5),
+            (736.0, 440.0, 348.0),
+            (736.0, 441.0, 347.0),
+            // Then at the 148 until it meets the 10, at 736 − 158 = 578 wide: 577 from 211;
+            // 578 from 210; 579 from 210 too, its right 789 one past the 148's 788.
+            (736.0, 577.0, 211.0),
+            (736.0, 578.0, 210.0),
+            (736.0, 579.0, 210.0),
+        ] {
+            let got = sketch_bar_left(canvas(width), bar);
+            assert_eq!(got, left, "{width}, {bar}");
+            let right = got + bar;
+            let limit = 200.0 + width - 148.0;
+            assert_eq!(
+                right <= limit,
+                bar <= width - 158.0,
+                "{width}, {bar}: {right}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_sketch_bars_left_is_rounded_down_to_a_whole_pixel() {
+        use crate::sketch::bar::{BarView, StateShown};
+        use eframe::egui::{Rect, pos2};
+        use std::sync::Mutex;
+        // A canvas from x = 200.8, 340 wide, and a sketch named 400 W's: too long for the
+        // room clear of the ViewCube, so the bar stands 10 from the canvas's left, 210.8.
+        // Rounded down to a whole pixel: at 1 pixel a point, 210; at 1.5, pixel 316.2 down to
+        // 316, 316 / 1.5; at 2, pixel 421.6 down to 421, 210.5. Its top 10 below the canvas's.
+        for (ppp, left) in [(1.0, 210.0), (1.5, 316.0 / 1.5), (2.0, 210.5)] {
+            let placed = Arc::new(Mutex::new(None));
+            let into = Arc::clone(&placed);
+            let mut h = egui_kittest::Harness::builder()
+                .with_size(eframe::egui::vec2(1000.0, 400.0))
+                .with_pixels_per_point(ppp)
+                .build_ui(move |ui| {
+                    let canvas = Rect::from_min_max(pos2(200.8, 100.0), pos2(540.8, 380.0));
+                    let bar = BarView {
+                        name: "W".repeat(400),
+                        plane: "XY".to_owned(),
+                        state: Some(StateShown {
+                            words: "Fully defined".to_owned(),
+                            colour: theme::TEXT_DEFAULT,
+                        }),
+                        enabled: true,
+                    };
+                    *into.lock().unwrap() = Some(sketch_bar_place(ui.ctx(), canvas, &bar).0);
+                });
+            theme::apply(&h.ctx);
+            h.run_steps(2);
+            let at = placed.lock().unwrap().unwrap();
+            assert_eq!(at, pos2(left, 110.0), "{ppp}");
+            assert_eq!((at.x * ppp).fract(), 0.0, "{ppp}: {at:?}");
+        }
+    }
 
     #[test]
     fn sketch_modes_bands_are_the_drawn_panels_and_as_far_again_in_pixels_rounded_up() {
@@ -3070,7 +4165,7 @@ mod tests {
     const BLOCK: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
   ]
@@ -3247,7 +4342,7 @@ mod tests {
         assert_eq!(app.active, Some(third));
         // The third's tab closed: the first is shown in its place.
         assert!(app.sessions().close(&third).wait().result.is_ok());
-        app.poll();
+        app.poll(0.0);
         assert_eq!(app.active, Some(first));
         // The second, answering now, was asked after every open still open: it's shown.
         app.take_opens(vec![two]);
@@ -3303,7 +4398,7 @@ mod tests {
         let (first, second) = (session(&one), session(&two));
         app.take_opens(vec![one, two]);
         assert!(app.sessions().close(&first).wait().result.is_ok());
-        app.poll();
+        app.poll(0.0);
         assert_eq!(names(&app), ["two.silico"]);
         assert_eq!(app.open_numbers.keys().collect::<Vec<_>>(), [&second]);
     }
@@ -3321,7 +4416,7 @@ mod tests {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while app.tabs().is_empty() {
             assert!(std::time::Instant::now() < deadline, "never opened");
-            app.poll();
+            app.poll(0.0);
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         // Opened: a click shows its tab, from Home, and opens nothing.
@@ -3409,6 +4504,77 @@ mod tests {
     }
 
     #[test]
+    fn a_command_the_search_ran_runs_once_its_keys_pressed_in_the_same_pass_too() {
+        use eframe::egui::{Context, Event, Key, Modifiers, RawInput};
+
+        // The search's command (`queued`) counts as its keys pressed; pressed as well in
+        // the pass it's done in, it's the same press, so it's done (the sheet opens).
+        let (mut app, _dir) = app();
+        let question = Event::Key {
+            key: Key::Questionmark,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let ctx = Context::default();
+        ctx.run_ui(
+            RawInput {
+                events: vec![question],
+                ..Default::default()
+            },
+            |ui| {
+                app.command_keys(ui, Some(crate::shortcuts::Command::Shortcuts));
+            },
+        )
+        .textures_delta
+        .clear();
+        assert!(app.sheet.is_some());
+    }
+
+    #[test]
+    fn a_filter_the_search_ran_is_toggled_once_its_key_pressed_with_it_or_not() {
+        use eframe::egui::{Event, Key, Modifiers};
+        use egui_kittest::Harness;
+
+        use crate::toolbar::FilterKind;
+
+        // The search's queued filter counts as its key pressed: alone, once; with its key
+        // pressed in the same frame too, still once (either is the press).
+        struct Seen {
+            queued: Option<crate::shortcuts::Command>,
+            taken: Vec<FilterKind>,
+        }
+        let mut h = Harness::builder().build_ui_state(
+            |ui, seen: &mut Seen| {
+                let taken = super::filter_keys(ui, false, seen.queued);
+                seen.taken.extend(taken);
+            },
+            Seen {
+                queued: None,
+                taken: Vec::new(),
+            },
+        );
+        h.run();
+        for pressed in [false, true] {
+            h.state_mut().taken.clear();
+            h.state_mut().queued = Some(crate::shortcuts::Command::FilterEdge);
+            if pressed {
+                h.event(Event::Key {
+                    key: Key::E,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: Modifiers::NONE,
+                });
+            }
+            h.step();
+            h.state_mut().queued = None;
+            assert_eq!(h.state().taken, [FilterKind::Edges], "pressed: {pressed}");
+        }
+    }
+
+    #[test]
     fn x_e_and_v_are_the_filters_outside_a_sketch_and_left_for_it_inside_one() {
         use eframe::egui::{Event, Key, Modifiers};
         use egui_kittest::Harness;
@@ -3425,7 +4591,7 @@ mod tests {
         }
         let mut h = Harness::builder().build_ui_state(
             |ui, seen: &mut Seen| {
-                let taken = super::filter_keys(ui, seen.in_sketch);
+                let taken = super::filter_keys(ui, seen.in_sketch, None);
                 let x = ui.input_mut(|input| input.consume_key(Modifiers::NONE, Key::X));
                 seen.taken.extend(taken);
                 seen.x_left |= x;

@@ -421,7 +421,7 @@ SolidWorks' relation group, one numbered relation for all, survives either. Free
 *Recommended:*
 
 - The selection becomes an ordered set in pick order (`IndexSet`, which CLAUDE.md admits). It is deterministic, being the person's own input. Open item 24's rules stay: a plain click replaces, a Ctrl-click toggles, and empty space or Esc clears.
-- Its members become `Reference`s, and the origin and the axes are hit as Smart Dimension picks them (`sketch_tools::pick`, crates/silico-core/src/sketch_tools/mod.rs, which Smart Dimension's picks go through too): a point or the origin, whichever is nearer (the point on a tie), else the nearest curve, an axis anywhere along it.
+- Its members become `Reference`s, and the origin and the axes are hit as Smart Dimension picks them (`sketch_tools::pick`, crates/silico-core/src/sketch_tools/mod.rs, which Smart Dimension's picks go through too): a point or the origin, whichever is nearer (the point on a tie), else the nearest curve, an axis anywhere along it where the viewport draws it within the pick's points of the pointer on the screen (#481 and #484: one allowance, `sketch_tools::Axes`, for the selection, Smart Dimension, and the drawing tools' snaps).
 - This amends M5.7's selection in sketch mode, so it is named here as a decision, not an implementation detail.
 
 ## 6. The interaction
@@ -714,7 +714,7 @@ This is the tool's rule only. `sketch_add` still adds whatever it's sent (SD7).
 
 - An ordered set in place of the `BTreeSet`. Open item 24's rules are unchanged: a plain click replaces, a Ctrl-click toggles (a member toggled back in joins at the end), and empty space or Esc clears.
 - Members that join together, as a box's would, join in ID order.
-- The origin and the axes are hit as `sketch_tools::pick` ranks them (Smart Dimension's rule, one function for both): a point or the origin, whichever is nearer, then the nearest curve, an axis anywhere along it. The sketch's own member wins a tie.
+- The origin and the axes are hit as `sketch_tools::pick` ranks them (Smart Dimension's rule, one function for both): a point or the origin, whichever is nearer, then the nearest curve, an axis anywhere along it that's drawn within the pick's points of the pointer on the screen. The sketch's own member wins a tie.
 - Delete ignores the origin and the axes.
 
 **Why.** C1's survivor, C4's mirror, and C8's first each need pick order, and pick order is the person's own input, so it's deterministic. Symmetric about an axis and Coincident with the origin need the two to be selectable, and the forms and the gate already take them.

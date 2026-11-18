@@ -1534,7 +1534,7 @@ fn a_distance_from_a_centre_is_written_whole() {
 const BLOCK: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
   ]
@@ -2066,7 +2066,49 @@ fn every_reason_a_render_request_is_refused_is_found() {
     let refused = RenderRequest::read(&parsed(text)).unwrap_err();
     let fields: Vec<Option<&str>> = refused.errors().iter().map(|e| e.parameter()).collect();
     assert_eq!(fields, [Some("view"), Some("width"), Some("highlight.1")]);
-    assert_eq!(refused.errors()[0].candidates().len(), 14);
+    assert_eq!(refused.errors()[0].candidates().len(), 26);
+}
+
+/// The twelve ViewCube edges, by name and by the view each is, written out by hand.
+const EDGE_VIEWS: [(&str, NamedView); 12] = [
+    ("top_front", NamedView::TopFront),
+    ("top_back", NamedView::TopBack),
+    ("top_left", NamedView::TopLeft),
+    ("top_right", NamedView::TopRight),
+    ("bottom_front", NamedView::BottomFront),
+    ("bottom_back", NamedView::BottomBack),
+    ("bottom_left", NamedView::BottomLeft),
+    ("bottom_right", NamedView::BottomRight),
+    ("front_left", NamedView::FrontLeft),
+    ("front_right", NamedView::FrontRight),
+    ("back_left", NamedView::BackLeft),
+    ("back_right", NamedView::BackRight),
+];
+
+#[test]
+fn a_render_request_from_each_cube_edge_is_read_written_back_and_holds_to_its_schema() {
+    use silico_core::command::wire::render::RenderRequest;
+    let schema = schema_of("render", "request", None);
+    for (name, view) in EDGE_VIEWS {
+        let text = format!(
+            "{{\"session\": \"s1\", \"model\": \"current\", \"view\": \"{name}\", \"camera\": null, \"width\": 40, \"height\": 30, \"highlight\": [], \"to\": null, \"replace\": false}}\n"
+        );
+        let call = RenderRequest::read(&parsed(&text)).unwrap();
+        assert_eq!(call.render.view, Some(view), "{name}");
+        assert_eq!(written(&call), text, "{name}");
+        holds(&schema, &text, name);
+    }
+    // An edge's faces in another order, or named as no edge is, are refused as the reader
+    // refuses any other word, naming `view`, the 26 names its candidates.
+    for word in ["front_top", "left_back", "top_bottom", "front_back"] {
+        let text = format!(
+            r#"{{"session": "s1", "model": "current", "view": "{word}", "camera": null, "width": 40, "height": 30, "highlight": [], "to": null, "replace": false}}"#
+        );
+        let refused = RenderRequest::read(&parsed(&text)).unwrap_err();
+        let fields: Vec<Option<&str>> = refused.errors().iter().map(|e| e.parameter()).collect();
+        assert_eq!(fields, [Some("view")], "{word}");
+        assert_eq!(refused.errors()[0].candidates().len(), 26, "{word}");
+    }
 }
 
 #[test]

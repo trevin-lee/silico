@@ -141,8 +141,6 @@ crates/silico-render/src/render.rs | read_back | delete ! | #147
 crates/silico-render/src/render.rs | read_back | replace || with && | #147
 crates/silico-core/src/render.rs | <impl Drop for Job>::drop | replace <impl Drop for Job>::drop with () | #149
 crates/silico-core/src/render.rs | serve | delete ! | #149
-# A side view's direction is a unit axis perpendicular to z, so the corners' arm gives it +z to the bit.
-crates/silico-core/src/views.rs | NamedView::up | delete match arm NamedView::Front | NamedView::Back | NamedView::Left | NamedView::Right | #181
 # `i & b != 0` swaps a box's low and high on one axis: the same eight corners in another
 # order, which every min, max, and per-side && over them ignores.
 crates/silico-core/src/views.rs | NamedView::fit | replace == with != | #181
@@ -344,6 +342,10 @@ crates/silico-app/src/main.rs | main | replace main -> ExitCode with Default::de
 crates/silico-app/src/main.rs | options | replace options -> eframe::NativeOptions with Default::default() | #298
 crates/silico-app/src/main.rs | options | delete field renderer from struct eframe::NativeOptions expression | #298
 crates/silico-app/src/main.rs | options | delete field viewport from struct eframe::NativeOptions expression | #298
+crates/silico-app/src/thumbs.rs | cover | replace || with && | #531
+crates/silico-app/src/thumbs.rs | cover | replace || with && | #531
+crates/silico-app/src/thumbs.rs | cover | replace || with && | #531
+crates/silico-app/src/thumbs.rs | spans | replace > with >= | #531
 crates/silico-app/src/app.rs | <impl eframe::App for App<P>>::ui | replace <impl eframe::App for App<P>>::ui with () | #298
 crates/silico-app/src/missing.rs | <impl eframe::App for Missing>::ui | replace <impl eframe::App for Missing>::ui with () | #298
 # The app bar as macOS's title bar (#361): `TITLE_BAR_IS_APP_BAR` is false off macOS, where
@@ -731,3 +733,35 @@ crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | arrows | replace > with >= | #480
 crates/silico-app/src/arrow.rs | Grip::centroid | replace match guard Arc::ptr_eq(kept, read) with false | #480
+# Equivalent (#497). `App::frame`'s `modal::unfaded(&ctx, top > OnTop::Window, ..)` as
+# `>=`: with no modal open, the global style's `disabled_alpha` is 1 while the panes are
+# drawn, and put back after. egui reads it only when a `Ui` is made disabled, and nothing is
+# disabled at its making with no modal: each pane's `Ui` sets its own alpha from the style's
+# (`Panes::pane_ui`, `fade`), and the menus the panes open draw their off items through
+# `menu::item`, which sets its own opacity. `View::left_events`' place of the Cancel a modal
+# forces, `input.events.len() + 1`, as `* 1`: the place orders a left event only against
+# the right clicks (`sequenced`; the left events keep their own order), and behind a modal
+# the canvas's response is disabled, so it's never hovered and takes no right press.
+crates/silico-app/src/app.rs | App<P>::frame | replace > with >= | #497
+crates/silico-app/src/viewport.rs | View::left_events | replace + with * | #497
+# A maker that is the base itself loses nothing on the way, which `stop >= base` also finds
+# (the first stop from it is itself or past it, never before the base): so `<=` in on_way
+# changes no answer.
+crates/silico-core/src/document/suppression.rs | ConsumerForest::on_way | replace < with <= | #503
+crates/silico-core/src/sweep.rs | prism_direction | replace * with / | #511
+crates/silico-app/src/canvas_hint.rs | empty_part | replace * with / | #518
+crates/silico-app/src/canvas_hint.rs | empty_part | replace * with / | #518
+crates/silico-app/src/toolbar.rs | forget_planes_drawn | replace forget_planes_drawn with () | #518
+crates/silico-app/src/search.rs | place | replace * with / | #528
+crates/silico-app/src/search.rs | boxed | replace - with + | #528
+crates/silico-app/src/search.rs | boxed | replace - with / | #528
+# Equivalent (#535). `DocumentKeys::any` as `true`: it only decides whether an empty set of
+# document keys is kept for after the canvas (`later`) or acted on at once (`now`), and
+# acting on a set with every key false does nothing (each key's action is behind its own
+# flag). `after_release`'s `press > release` as `>=`: both are indexes into the same frame's
+# events, and a key press and a pointer release are never the same event, so they're never
+# equal.
+crates/silico-app/src/app.rs | DocumentKeys::any | replace DocumentKeys::any -> bool with true | #535
+crates/silico-app/src/shortcuts.rs | after_release | replace > with >= | #535
+crates/silico-app/src/app.rs | App<P>::take_drops | replace |= with &= | #522
+crates/silico-app/src/start.rs | when | replace > with >= | #522
