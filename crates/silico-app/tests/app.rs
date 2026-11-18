@@ -24044,7 +24044,14 @@ fn a_save_and_create_sketch_asked_while_an_empty_new_sketchs_finish_is_judged_wa
         // A save waits for the discard, so it writes nothing of the sketch.
         tab.save(&sessions, false);
     }
-    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    // The save comes after the discard, which left nothing to write (#514's toast).
+    assert_eq!(
+        toasts_till_settled(&mut h),
+        [
+            DISCARDED,
+            "Nothing to save: example.silico matches the file."
+        ]
+    );
     assert!(sketch_mode(&h).is_none());
     assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
@@ -24149,7 +24156,14 @@ fn a_save_then_a_revert_asked_while_an_empty_new_sketchs_finish_is_judged_keep_t
         tab.save(&sessions, false);
         tab.revert(&sessions, false);
     }
-    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    // The save comes after the discard, which left nothing to write (#514's toast).
+    assert_eq!(
+        toasts_till_settled(&mut h),
+        [
+            DISCARDED,
+            "Nothing to save: example.silico matches the file."
+        ]
+    );
     assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
     assert!(!h.state().tabs()[0].transaction);
@@ -53260,6 +53274,9 @@ fn the_empty_parts_hint_goes_while_create_sketchs_planes_are_open_with_a_dialog_
     step_until(&mut h, "its sketch added", |h| {
         sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
     });
+    // A line drawn, so Finish keeps it (one holding nothing it would discard).
+    sketch_read(&mut h);
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
     leave_sketch(&mut h, true);
     step_until(&mut h, "Sketch1 in the timeline", |h| {
         shows(h, "Timeline", "Sketch1")
