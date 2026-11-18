@@ -21718,6 +21718,286 @@ fn shortcuts_opens_the_shortcut_sheet() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- A selected feature's PARAMETERS, Edit feature, and Suppress (app.js's `featureProps`) ----
+
+/// A plate sketched on XZ (40 by 20, its bottom and right sides dimensioned 40 and 20 and
+/// its right side at 90° to the x axis, its top's 40 a reference dimension), padded 12 mm
+/// along the sketch's normal, −Y; two holes sketched on XZ, two circles of radius 3, cut
+/// through all of the pad; and a block whose two edges are filleted to 1.5 mm.
+const PARAMETERS_PART: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 6,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Plate", "plane": "xz", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}, {"id": "pa000004", "x": 0, "y": 20, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "length", "line": "na000001", "value": 40, "driving": true}, {"id": "ka000002", "type": "length", "line": "na000002", "value": 20, "driving": true}, {"id": "ka000003", "type": "length", "line": "na000003", "value": 40, "driving": false}, {"id": "ka000004", "type": "angle", "a": "na000002", "b": "x_axis", "value": 90, "driving": true}]},
+    {"id": "p0000001", "type": "pad", "v": 1, "name": "Plate pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 12, "reversed": false}},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Holes", "plane": "xz", "points": [{"id": "pc000001", "x": 10, "y": 10, "construction": false}, {"id": "pc000002", "x": 30, "y": 10, "construction": false}], "lines": [], "circles": [{"id": "ca000001", "center": "pc000001", "radius": 3, "construction": false}, {"id": "ca000002", "center": "pc000002", "radius": 3, "construction": false}], "arcs": [], "constraints": []},
+    {"id": "q0000001", "type": "pocket", "v": 1, "name": "Bores", "base": "p0000001", "sketch": "s0000002", "extent": {"type": "through_all", "reversed": false}},
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [100, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"], "radius": 1.5}
+  ]
+}
+"#;
+
+/// The property panel's PARAMETERS rows, in order, each its key and its value's words (a
+/// link's words, then the words after it): from its section's head to HEALTH's.
+fn parameter_rows(h: &AppHarness) -> Vec<(String, String)> {
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    let said = |node: &egui_kittest::Node<'_>| {
+        let node = node.accesskit_node();
+        node.value().or_else(|| node.label()).unwrap_or_default()
+    };
+    let nodes: Vec<_> = pane
+        .query_all_by(|node| matches!(node.role(), Role::Label | Role::Link))
+        .collect();
+    let Some(start) = nodes.iter().position(|node| said(node) == "PARAMETERS") else {
+        return Vec::new();
+    };
+    let end = nodes
+        .iter()
+        .position(|node| said(node) == "HEALTH")
+        .unwrap_or(nodes.len());
+    let rows = &nodes[start + 1..end];
+    let mut out: Vec<(String, String, f32)> = Vec::new();
+    for node in rows {
+        let y = node.rect().center().y;
+        match out.last_mut() {
+            Some((_, value, at)) if (*at - y).abs() < 1.0 => {
+                if !value.is_empty() {
+                    value.push(' ');
+                }
+                value.push_str(&said(node));
+            }
+            _ => out.push((said(node), String::new(), y)),
+        }
+    }
+    out.into_iter()
+        .map(|(key, value, _)| (key, value))
+        .collect()
+}
+
+fn rows_of(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    expected
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect()
+}
+
+/// The button labelled `label` in the property panel, if it's there.
+fn property_button<'a>(h: &'a AppHarness, label: &'a str) -> Option<egui_kittest::Node<'a>> {
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .query_by_role_and_label(Role::Button, label)
+}
+
+/// The property panel's node of `role` labelled `label` scrolled into view, as a person
+/// scrolls the panel to it (the feature's cards can push it below the panel's foot), then
+/// clicked.
+fn click_in_properties(h: &mut AppHarness, role: Role, label: &str) {
+    let find = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .get_by_role_and_label(role, label)
+            .rect()
+    };
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(role, label)
+        .scroll_to_me();
+    // Scrolled smoothly: waited for until it's in the panel and still.
+    let last = std::cell::Cell::new(None);
+    step_until(h, "it scrolled into the panel, and stopped", |h| {
+        let pane = h.get_by_role_and_label(Role::Pane, "Properties").rect();
+        let now = find(h);
+        let still = last.replace(Some(now)) == Some(now);
+        still && pane.contains_rect(now)
+    });
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(role, label)
+        .click();
+    step(h);
+}
+
+#[test]
+fn a_pads_parameters_are_its_profile_its_extent_and_its_direction_from_the_document() {
+    // app.js's `featureProps` for a pad: Profile, its sketch's name (a link) and its
+    // profile's regions; Extent, `Distance · D mm`; Direction, `Normal (−Y)` for a sketch on
+    // XZ, whose normal is −Y (silico-protocol's `SketchPlane::Xz`), `Reversed (+Y)` reversed.
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, path) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    select(&mut h, "Plate pad");
+    let want = rows_of(&[
+        ("Profile", "Plate · 1 region"),
+        ("Extent", "Distance · 12 mm"),
+        ("Direction", "Normal (\u{2212}Y)"),
+    ]);
+    step_until(&mut h, "its parameters", |h| parameter_rows(h) == want);
+    // Another program writes the pad 7.5 long and reversed: reloaded, its rows are the new
+    // document's.
+    let written = PARAMETERS_PART.replace(
+        r#""length": 12, "reversed": false"#,
+        r#""length": 7.5, "reversed": true"#,
+    );
+    std::fs::write(&path, written).unwrap();
+    let want = rows_of(&[
+        ("Profile", "Plate · 1 region"),
+        ("Extent", "Distance · 7.5 mm"),
+        ("Direction", "Reversed (+Y)"),
+    ]);
+    step_until(&mut h, "the written pad's parameters", |h| {
+        parameter_rows(h) == want
+    });
+    // The profile's link selects its sketch, whose properties then show.
+    click_in_properties(&mut h, Role::Link, "Plate");
+    let plate = silico_core::document::FeatureId::new("s0000001").unwrap();
+    step_until(&mut h, "the sketch selected", |h| {
+        h.state().tabs()[0].selection().feature() == Some(&plate)
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketchs_a_pockets_and_a_fillets_parameters_are_the_prototypes_rows_and_a_box_has_none() {
+    let f = fixture();
+    let (mut h, _) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Round"));
+    // A sketch's: its plane as the browser names it, its definition (the fake's solve
+    // leaves no degree of freedom: fully defined), its curves by kind, and its driving
+    // dimensions, lengths then angles (the top's reference 40 left out).
+    select(&mut h, "Plate");
+    let want = rows_of(&[
+        ("Plane", "XZ"),
+        ("Definition", "Fully defined"),
+        ("Curves", "4 lines"),
+        ("Dimensions", "40, 20 mm · 90°"),
+    ]);
+    step_until(&mut h, "the plate's parameters", |h| {
+        parameter_rows(h) == want
+    });
+    select(&mut h, "Holes");
+    let want = rows_of(&[
+        ("Plane", "XZ"),
+        ("Definition", "Fully defined"),
+        ("Curves", "2 circles"),
+        ("Dimensions", "None"),
+    ]);
+    step_until(&mut h, "the holes' parameters", |h| {
+        parameter_rows(h) == want
+    });
+    // A pocket's: its profile (two circles, two regions), its extent, and its base by name.
+    select(&mut h, "Bores");
+    let want = rows_of(&[
+        ("Profile", "Holes · 2 regions"),
+        ("Extent", "Through all"),
+        ("Base", "Plate pad"),
+    ]);
+    step_until(&mut h, "the pocket's parameters", |h| {
+        parameter_rows(h) == want
+    });
+    // A fillet's: its edges counted, its radius, and its base.
+    select(&mut h, "Round");
+    let want = rows_of(&[("Edges", "2"), ("Radius", "1.5 mm"), ("Base", "Block")]);
+    step_until(&mut h, "the fillet's parameters", |h| {
+        parameter_rows(h) == want
+    });
+    // A box, a primitive the app makes none of: no PARAMETERS.
+    select(&mut h, "Block");
+    step(&mut h);
+    assert!(!shows(&h, "Properties", "PARAMETERS"));
+    assert!(shows(&h, "Properties", "HEALTH"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_panels_edit_feature_and_suppress_do_what_the_feature_menus_items_do() {
+    let f = fixture();
+    let (mut h, _) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    // Edit feature: the pad's dialog, as the menu's Edit feature and a double-click open it.
+    select(&mut h, "Plate pad");
+    let edit = property_button(&h, "Edit feature").unwrap();
+    assert!(!edit.accesskit_node().is_disabled());
+    click_in_properties(&mut h, Role::Button, "Edit feature");
+    step_until(&mut h, "the pad's dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
+            && field(h, In::Dialog, "Length").value().as_deref() == Some("12")
+    });
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    // A sketch's is Edit Sketch, which opens it in sketch mode.
+    select(&mut h, "Holes");
+    assert!(property_button(&h, "Edit feature").is_none());
+    property_button(&h, "Edit Sketch")
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    leave_sketch(&mut h, false);
+    // Suppress: the pocket suppressed by `suppress_feature`, its health Suppressed, and
+    // the button Unsuppress, which unsuppresses it.
+    select(&mut h, "Bores");
+    click_in_properties(&mut h, Role::Button, "Suppress");
+    step_until(&mut h, "suppressed", |h| {
+        property(h, "State").as_deref() == Some("Suppressed")
+            && property_button(h, "Unsuppress").is_some()
+    });
+    let suppressed = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_ref())
+            .and_then(|features| features.iter().find(|entry| entry.name == "Bores"))
+            .map(|entry| entry.suppressed)
+    };
+    assert_eq!(suppressed(&h), Some(true));
+    click_in_properties(&mut h, Role::Button, "Unsuppress");
+    step_until(&mut h, "unsuppressed", |h| {
+        suppressed(h) == Some(false) && property_button(h, "Suppress").is_some()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_a_document_the_gate_refused_the_panels_buttons_are_off_saying_why_as_the_menus_items() {
+    let f = fixture();
+    // The block's height below 0: the gate refuses the document, which still lists its
+    // features.
+    let refused = PARAMETERS_PART.replace(r#""height": 10"#, r#""height": -10"#);
+    let (mut h, _) = f.opened("refused.silico", &refused);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Bores"));
+    step_until(&mut h, "refused", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0)
+    });
+    let why = "The document has problems of its own: no feature changes until they're mended";
+    for (feature, edit) in [("Bores", "Edit feature"), ("Holes", "Edit Sketch")] {
+        select(&mut h, feature);
+        for label in [edit, "Suppress"] {
+            let button = property_button(&h, label).unwrap();
+            let node = button.accesskit_node();
+            assert!(node.is_disabled(), "{feature}'s {label}");
+            assert_eq!(
+                node.description().as_deref(),
+                Some(why),
+                "{feature}'s {label}"
+            );
+        }
+        // A click does nothing: no dialog, no sketch mode, nothing suppressed.
+        click_in_properties(&mut h, Role::Button, edit);
+        click_in_properties(&mut h, Role::Button, "Suppress");
+        step(&mut h);
+        assert!(!dialog_open(&h));
+        assert!(sketch_mode(&h).is_none());
+        assert!(property_button(&h, "Unsuppress").is_none());
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- The keyboard: one registry for the keys, the sheet, and the tooltips ----
 
 use eframe::egui::{Key, Modifiers};

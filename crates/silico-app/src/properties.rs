@@ -387,6 +387,13 @@ pub(crate) fn copy_row(ui: &mut Ui, key: &str, value: &str) {
 /// A row whose value is a link (`.link`): `text` in `--info`, white and underlined hovered,
 /// cut short where it doesn't fit, labelled `text` as a link. Whether it was clicked.
 pub(crate) fn link_row(ui: &mut Ui, key: &str, text: &str) -> bool {
+    link_row_then(ui, key, text, None)
+}
+
+/// [`link_row`], with `after`, if given, in the value's own words after the link, the flex
+/// gap from it (the prototype's `<span class="link">Bracket profile</span> · 1 region`),
+/// cut short where it doesn't fit.
+pub(crate) fn link_row_then(ui: &mut Ui, key: &str, text: &str, after: Option<&str>) -> bool {
     row(ui, key, |ui, _| {
         let room = ui.available_width();
         let laid = |ink: Color32, underline: Stroke| {
@@ -420,9 +427,16 @@ pub(crate) fn link_row(ui: &mut Ui, key: &str, text: &str) -> bool {
             galley,
             theme::INFO,
         );
-        response
+        let clicked = response
             .on_hover_cursor(egui::CursorIcon::PointingHand)
-            .clicked()
+            .clicked();
+        if let Some(after) = after {
+            // `.prop .v`'s flex gap after the link; the words' own leading space a flex
+            // item's, which it drops.
+            ui.add_space(theme::PROPERTY_VALUE_GAP);
+            truncated(ui, body(after, theme::PROPERTY_VALUE));
+        }
+        clicked
     })
 }
 
@@ -431,6 +445,17 @@ pub(crate) fn link_row(ui: &mut Ui, key: &str, text: &str) -> bool {
 /// the next doesn't fit, [`theme::PROPERTY_BUTTONS_GAP`] apart each way. Which was clicked,
 /// if one was (an off one never is).
 pub(crate) fn buttons(ui: &mut Ui, buttons: &[modal::Button<'_>]) -> Option<usize> {
+    buttons_off(ui, buttons, &[])
+}
+
+/// [`buttons`], each off one with its reason in `off` at its place, if it has one, as a
+/// menu's off item gives it ([`crate::menu`]): its description in the accessibility tree,
+/// and its tooltip.
+pub(crate) fn buttons_off(
+    ui: &mut Ui,
+    buttons: &[modal::Button<'_>],
+    off: &[Option<&str>],
+) -> Option<usize> {
     if buttons.is_empty() {
         return None;
     }
@@ -454,7 +479,14 @@ pub(crate) fn buttons(ui: &mut Ui, buttons: &[modal::Button<'_>]) -> Option<usiz
     let mut row = ui.new_child(UiBuilder::new().id_salt(salt).max_rect(whole));
     let mut clicked = None;
     for (at, (button, place)) in buttons.iter().zip(places).enumerate() {
-        if modal::paint(&mut row, place.translate(origin), button).clicked() {
+        let mut response = modal::paint(&mut row, place.translate(origin), button);
+        if let Some(reason) = off.get(at).copied().flatten().filter(|_| !button.enabled) {
+            row.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_description(reason.to_owned());
+            });
+            response = response.on_disabled_hover_text(reason);
+        }
+        if response.clicked() {
             clicked = Some(at);
         }
     }

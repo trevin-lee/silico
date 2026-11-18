@@ -606,13 +606,12 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
 /// its type and ID), the document's problems and its own (its error card, with Edit, as
 /// `featureProps` offers it, `noShow`), its name, editable, which is an edit of the
-/// document, and its health and ID, with the ID's copy button (`prop('ID', …, { copy })`);
-/// and, if another program changed it, what changed (the info Changed on disk card, with
-/// Mark as seen). What an error card's button asked, if one was.
-///
-/// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
-/// direction), which need its fields read, as its dialog reads them; and its Edit feature
-/// and Suppress buttons (the timeline's double-click and menu edit it already).
+/// document; its PARAMETERS ([`parameters`]); its health and ID, with the ID's copy button
+/// (`prop('ID', …, { copy })`); its Edit feature (Edit Sketch for a sketch) and Suppress
+/// (Unsuppress for one suppressed), each its feature menu's item, done as the menu does it,
+/// off with the menu's reason; and, if another program changed it, what changed (the info
+/// Changed on disk card, with Mark as seen). What an error card's button asked, if one
+/// was.
 fn feature<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -696,6 +695,10 @@ fn feature<P: Clients + 'static>(
     }
     field.text = text;
     *name = Some(field);
+    if let Some(id) = parameters(ui, tab, entry, sessions) {
+        tab.selection_mut().select_feature(id);
+        *next_frame = true;
+    }
     properties::section(ui, "Health");
     let (state, colour) = match entry.health {
         Health::Healthy => ("Healthy", theme::SUCCESS),
@@ -706,6 +709,33 @@ fn feature<P: Clients + 'static>(
     };
     properties::text_row(ui, "State", properties::body(state, colour));
     properties::copy_row(ui, "ID", entry.id.as_str());
+    // `featureProps`' buttons: Edit (`btn-secondary`, the pencil) and Suppress
+    // (`btn-ghost`), the feature menu's own items, words, and reasons, done through its
+    // `act`, so each does what its menu item does.
+    use crate::feature_menu::{self, Item};
+    let place = tab.selected_in;
+    let items = [Item::Edit, Item::Suppress];
+    let offs = items.map(|item| feature_menu::off(tab, entry, item, place));
+    let buttons = [
+        crate::modal::Button::new(
+            feature_menu::label(Item::Edit, entry, place),
+            crate::modal::Kind::Secondary,
+        )
+        .icon(Icon::Edit)
+        .enabled(offs[0].is_none()),
+        crate::modal::Button::new(
+            feature_menu::label(Item::Suppress, entry, place),
+            crate::modal::Kind::Ghost,
+        )
+        .enabled(offs[1].is_none()),
+    ];
+    let reasons = offs.each_ref().map(Option::as_deref);
+    if let Some(item) =
+        properties::buttons_off(ui, &buttons, &reasons).and_then(|at| items.get(at).copied())
+    {
+        let act = feature_menu::act_of(item, entry, place);
+        *next_frame |= feature_menu::act(tab, sessions, act);
+    }
     properties::hint(
         ui,
         &[(
@@ -713,6 +743,59 @@ fn feature<P: Clients + 'static>(
             false,
         )],
     );
+    asked
+}
+
+/// The selected feature's PARAMETERS (`featureProps`' `section('Parameters')` and its
+/// rows, [`crate::parameters`]): a sketch's from its read, any other's from its text at the
+/// tab's revision, read here off the UI thread, the rows as last read shown meanwhile. None
+/// for a kind with none. The feature a Profile link asked selected, if one was clicked.
+fn parameters<P: Clients + 'static>(
+    ui: &mut Ui,
+    tab: &mut Tab,
+    entry: &Entry,
+    sessions: &Arc<Sessions<P>>,
+) -> Option<FeatureId> {
+    use crate::parameters::{Context, Shown, feature_rows, has_parameters, sketch_rows};
+    if !has_parameters(entry.kind) {
+        return None;
+    }
+    let rows = if entry.kind == "sketch" {
+        let read = tab.sketch_reads.held(&entry.id).map(|held| &*held.read);
+        sketch_rows(read, tab.sketch_reads.state(&entry.id))
+    } else {
+        let (session, revision) = (tab.id, tab.revision);
+        tab.parameters.poll(sessions, &session, &entry.id, revision);
+        let tab = &*tab;
+        let name = |id: &FeatureId| tab.name_of(id);
+        let sketch = |id: &FeatureId| tab.sketch_reads.held(id).map(|held| &*held.read);
+        let context = Context {
+            name: &name,
+            sketch: &sketch,
+        };
+        tab.parameters
+            .node(&entry.id)
+            .map(|node| feature_rows(entry.kind, node, &context))
+            .unwrap_or_default()
+    };
+    properties::section(ui, "Parameters");
+    let mut asked = None;
+    for row in rows {
+        match row.value {
+            Shown::Text(words, colour) => {
+                properties::text_row(ui, row.key, properties::body(&words, colour));
+            }
+            Shown::Link {
+                feature,
+                name,
+                after,
+            } => {
+                if properties::link_row_then(ui, row.key, &name, after.as_deref()) {
+                    asked = Some(feature);
+                }
+            }
+        }
+    }
     asked
 }
 
