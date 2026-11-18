@@ -12,8 +12,8 @@
 # Arguments go to cargo mutants; paths to files (--in-diff, --output) must be absolute,
 # since it runs in the worktree, while --file names source files from the tree's root. Without --output, the results (mutants.out) land in the worktree, which the next
 # gate or mutants run cleans: pass --output. CI shards it over the runners
-# (.github/workflows/mutants.yml). The test timeout is set below: --timeout-multiplier
-# conflicts with it, and --minimum-test-timeout does nothing.
+# (.github/workflows/mutants.yml). The test timeouts are set below: --timeout would bound
+# the baseline too, and cargo-mutants refuses it beside --timeout-multiplier.
 #
 # Run through pixi:  pixi run mutants -- --in-diff /tmp/change.diff -p silico-core --output /tmp
 set -euo pipefail
@@ -127,25 +127,55 @@ echo "mutants: testing $commit"
 # the shards run niced, and while gates build and test at full priority a niced test that
 # takes 20 s alone can take minutes. Ended at 2, under retries no longer than a burst of
 # gates, its failure would count the mutant as caught: a false kill, which hides a miss. A
-# mutant that hangs a test is still caught: three tries of 5 minutes end inside the 30
-# below. The tree's own config with a profile added (tests that allow longer keep it), by
-# --config-file, so trees older than this script take it too.
+# mutant that hangs a test is still caught: three tries of 5 minutes end inside the
+# 30-minute minimum below. The tree's own config with a profile added (tests that allow
+# longer keep it), by --config-file, so trees older than this script take it too.
 nextest_config=$(mktemp "${TMPDIR:-/tmp}/silico-mutants-nextest.XXXXXX")
 trap 'rm -f "$nextest_config"' EXIT
 {
   cat .config/nextest.toml
   printf '\n[profile.silico-mutants]\nslow-timeout = { period = "60s", terminate-after = 5 }\n'
 } >"$nextest_config"
-# Each mutant's tests, and the baseline's, given 30 minutes: no multiple of the baseline,
-# which runs only the mutated packages' tests. The workspace's take about 15.5 minutes in a
-# gate at about 7 threads at full priority (#430's, run 42658028231, 2026-11-09), longer at a
-# shard's 2 to 4 at the idle weight, and Cargo can wait before them on the package cache's
-# lock, which every runner on the VM shares: a mutant only the last packages' tests catch
-# took 26 to 30 minutes (#445), so CI's plan narrows each run's tests to the packages that
-# can see its mutants where it can (.github/mutants-tests.py). (At 300 s, every test had
-# passed so far in 10 of run 39630661896's 11 timeouts.) A hung test, retried twice on CI,
-# takes 15 minutes from when it starts, at most about 5 into the run: nextest ends it first,
-# and its failure catches the mutant. A run past 30 minutes times out, and a timeout is triaged as missed.
-cargo mutants --in-place --timeout 1800 --cargo-test-arg=-E --cargo-test-arg="$filter" \
+# The baseline's tests have no time limit of the run's own, so load can't cut them off: run
+# 43829665927's baseline was cut off at 30 minutes with 1754 of its 1998 tests passed, at a
+# load of about 80 on 30 CPUs (2026-11-16), and a run whose baseline times out tests no
+# mutant. A hung test still fails it: nextest ends each try at 5 minutes (above), and its
+# failure stops the run. Whatever else could hang (a build, a lock) the shard's job limit
+# ends, and the summary reads that shard as incomplete.
+#
+# Each mutant's tests are given 4 times the baseline's, and never less than 30 minutes. The
+# baseline runs only the mutated packages' tests, and each mutant runs their dependents' too
+# (.github/mutants-tests.py), so a mutant's tests can take longer than the baseline's: run
+# 43796510701's took up to 965 s against its 280 s baseline (3.4 times, 2026-11-16). Load
+# lengthens both alike, so at 3 times the widest of them would time out once load took the
+# baseline past about 520 s; at 4 it never does. A package with many dependents and few tests of
+# its own (silico-protocol, whose mutants run every workspace test) can still pass the
+# limit: its small baseline leaves it at the 30-minute floor. cargo-mutants has no upper
+# bound on the limit, and the worst case is a mutant that slows tests without failing them
+# (one that fails a test ends the run there: the profile keeps nextest's fail-fast), which
+# runs to the limit. Against the plan's bound (mutants.yml: 80 mutants a shard at 540 s
+# each, 12 hours, half the job's 24), the other 12 hours hold the baseline (its build, up to
+# 780 s on 2026-11-16, and its tests) and what each timeout takes past 540 s: its limit and
+# its build, which has no limit (up to 303 s in the runs above), less 540. So a shard holds
+# up to (43200 - 780 - B) / (max(1800, 4B) + 300 - 540) timeouts for a baseline of B
+# seconds, an upper bound, since a slower build fits fewer. While the baseline stays under
+# 450 s the limit is the 30 minutes it was, and 26 fit; at 600 s, 19; at 800 s, 14; at
+# 1305 s, 8 (run 44253716210's, 2026-11-18, whose other mutants took about 250 s each, build
+# and tests, against that baseline); at 1800 s, 5, where --timeout 1800 tested none. A shard
+# past them ends at its job's 24 hours, and the summary reads it incomplete. A fixed 30
+# minutes would instead time out every mutant once the baseline passed it, each a timeout
+# triaged as missed.
+#
+# The workspace's tests take about 15.5 minutes in a gate at about 7 threads at full priority
+# (#430's, run 42658028231, 2026-11-09), longer at a shard's 2 to 4 at the idle weight, and
+# Cargo can wait before them on the package cache's lock, which every runner on the VM
+# shares: a mutant only the last packages' tests catch took 26 to 30 minutes (#445), so CI's
+# plan narrows each run's tests to the packages that can see its mutants where it can
+# (.github/mutants-tests.py). (At 300 s, every test had passed so far in 10 of
+# run 39630661896's 11 timeouts.) A hung test, retried twice on CI, takes 15 minutes from
+# when it starts, at most about 5 into the run: nextest ends it first, and its failure
+# catches the mutant. A run past its limit times out, and a timeout is triaged as missed.
+cargo mutants --in-place --minimum-test-timeout 1800 --timeout-multiplier 4 \
+  --cargo-test-arg=-E --cargo-test-arg="$filter" \
   --cargo-test-arg=--config-file --cargo-test-arg="$nextest_config" \
   --cargo-test-arg=--profile --cargo-test-arg=silico-mutants "$@"

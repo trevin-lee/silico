@@ -193,7 +193,7 @@ jobs:
             echo "$mutants mutants: $shards shards ($SHARDS asked for)" | tee -a "$GITHUB_STEP_SUMMARY"
             # Empty: the mutated packages and those that depend on them, unless a mutant is
             # linked into the worker binaries (#445: a silico-mcp mutant only silico-mcp's
-            # tests catch took 26 to 30 minutes of the 30 a mutant gets, waiting for the whole
+            # tests catch took 26 to 30 minutes of the 30 a mutant then got, waiting for the whole
             # workspace's tests to reach them).
             if [ -z "$TESTS" ] && [ -z "${tests_why:-}" ]; then
               # A fault here leaves every workspace test, slower but sound.
