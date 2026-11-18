@@ -8,7 +8,9 @@
 //! [`Outcome::add`] as a `sketch_add` (`NewMembers::of`). Smart Dimension
 //! ([`SmartDimension`]) sits beside them, from picks, a right-click, and the Modify box to the
 //! `sketch_add` of one dimension, and the offer SD7 makes when it over-defines ([`offer`]);
-//! and the ten constraint tools ([`relate`]), from a selection in pick order to one edit.
+//! the ten constraint tools ([`relate`]), from a selection in pick order to one edit; and
+//! Extend Entities' hover, the end the pointer picks and the extension a click would make
+//! ([`extend_end`], [`extend_preview`]).
 //! Behaviour is SolidWorks', as the design takes it (docs/ux/solidworks.md, §4):
 //!
 //! - **Modes.** The first press decides: a press, a drag, and a release draws one entity;
@@ -78,6 +80,7 @@ mod arc;
 mod build;
 mod circle;
 mod dimension;
+mod extend_entities;
 mod geometry;
 mod implied;
 mod infer;
@@ -99,6 +102,7 @@ pub use dimension::{
     DimensionEvent, DimensionPreview, LEVEL, Offer, OfferChoice, OfferRequest, PARALLEL, Placement,
     PlacementKind, SmartDimension, TypedValue, freedoms, offer, read_typed,
 };
+pub use extend_entities::{extend_end, extend_preview};
 pub use implied::implied_by;
 pub use infer::{ANGLE_TOLERANCE_DEGREES, CROSSING_CURVES, WAKE};
 pub use relate::{NOTHING_SELECTED, RelateEdit, Related, RelationTool, relate};

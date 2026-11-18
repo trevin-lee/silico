@@ -958,12 +958,12 @@ impl<P: Clients + 'static> App<P> {
         self.opening(Part::File(path.to_owned()), running);
     }
 
-    /// A new, untitled part (File > New, Command+N, the start page's New part): opened at
-    /// once, asking nothing, with no file until its first save (`open` with no path). Named
-    /// "Untitled", then "Untitled 2", "Untitled 3", and so on, one more each time, never a
-    /// name given before in this run. Not while a quit closes the tabs, as a dropped file
-    /// isn't opened then (`take_drops`): a part opened then would be a tab the quit never
-    /// closes. That's said in a toast instead.
+    /// A new, untitled part (File > New, Command+N, the start page's New part, the app bar's
+    /// New part): opened at once, asking nothing, with no file until its first save (`open`
+    /// with no path). Named "Untitled", then "Untitled 2", "Untitled 3", and so on, one more
+    /// each time, never a name given before in this run. Not while a quit closes the tabs,
+    /// as a dropped file isn't opened then (`take_drops`): a part opened then would be a tab
+    /// the quit never closes. That's said in a toast instead.
     pub fn new_part(&mut self, ctx: &egui::Context) {
         if self.quitting {
             let now = ctx.input(|input| input.time);
@@ -2887,9 +2887,10 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// The application bar (section 8; docs/design/m5-ui/DESIGN.md, *Layout*): Home, the
-    /// File menu, Save, Undo and Redo, and the open documents' tabs, an asterisk on a changed
-    /// one's (docs/ux/solidworks.md, §6), scrolling across when they overflow. On macOS it's
-    /// the window's title bar (`bar`).
+    /// File menu, Save, Undo and Redo, the open documents' tabs, an asterisk on a changed
+    /// one's (docs/ux/solidworks.md, §6), scrolling across when they overflow, New part after
+    /// them, and Search commands and Keyboard shortcuts at the right. On macOS it's the
+    /// window's title bar (`bar`).
     fn app_bar(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         egui::Panel::top("app_bar")
             .exact_size(theme::TOP_BAR_HEIGHT)
@@ -2912,6 +2913,7 @@ impl<P: Clients + 'static> App<P> {
                         self.app_bar_buttons(ui, next_frame);
                         bar::separator(ui);
                         self.document_tabs(ui, next_frame);
+                        self.app_bar_trailing(ui, next_frame);
                     },
                 );
             });
@@ -3075,6 +3077,35 @@ impl<P: Clients + 'static> App<P> {
             }
             *next_frame = true;
             ui.close();
+        }
+    }
+
+    /// After the tabs (the prototype's `#appbar`): New part, 4 beyond the last tab, and at
+    /// the bar's right Search commands and Keyboard shortcuts, each opening what its key
+    /// opens (`Ctrl+N`, `S`, `?`).
+    fn app_bar_trailing(&mut self, ui: &mut Ui, next_frame: &mut bool) {
+        ui.add_space(theme::APP_BAR_NEW_MARGIN);
+        let new = bar::button(ui, Icon::Plus, None, Command::New.label(), true, None);
+        let shortcut = Command::New.shown(ui.ctx());
+        if bar::tooltip(new, Command::New.label(), shortcut, None).clicked() {
+            self.new_part(ui.ctx());
+            *next_frame = true;
+        }
+        // The rest of the row is `.ab-spacer`'s; the two at its right end, 8 short of it.
+        let right = ui.max_rect().right() - theme::APP_BAR_PADDING;
+        ui.add_space((right - bar::RIGHT_GROUP_WIDTH - ui.cursor().left()).max(0.0));
+        for (icon, command) in [
+            (Icon::Search, Command::Search),
+            (Icon::Help, Command::Shortcuts),
+        ] {
+            let button = bar::button(ui, icon, None, command.label(), true, None);
+            let shortcut = command.shown(ui.ctx());
+            if bar::tooltip(button, command.label(), shortcut, None).clicked() {
+                match command {
+                    Command::Search => self.search = Some(Search::default()),
+                    _ => self.sheet = Some(Sheet::default()),
+                }
+            }
         }
     }
 
