@@ -15551,7 +15551,7 @@ fn with_no_document_the_start_page_shows_new_open_recent_and_copy_mcp_config() {
     let f = fixture();
     let mut h = f.remembering();
     let start = start_page(&h);
-    for button in ["New part", "Open…", "Copy MCP config"] {
+    for button in ["New part", "Open…", "Search commands", "Copy MCP config"] {
         assert!(
             start
                 .query_by_role_and_label(Role::Button, button)
@@ -16489,12 +16489,27 @@ fn the_start_pages_keyboard_shortcuts_opens_the_sheet_as_question_mark_does() {
     h.key_press(Key::Escape);
     step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
     assert!(start_shown(&h));
-    // No Search commands yet: the command search isn't built.
-    assert!(
-        start_page(&h)
-            .query_by_role_and_label(Role::Button, "Search commands")
-            .is_none()
-    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_pages_search_commands_opens_the_command_search_as_s_does() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    assert!(!search_open(&h));
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "Search commands")
+        .click();
+    step_until(&mut h, "the search", search_open);
+    step_until(&mut h, "its field focused", search_focused);
+    // Every command listed, as S opens it: New part's row runs as Ctrl+N does.
+    search_for(&mut h, "new part", "New part File");
+    h.key_press(Key::Enter);
+    step_until(&mut h, "the search closed", |h| !search_open(h));
+    step_until(&mut h, "an untitled part", |h| h.state().tabs().len() == 1);
+    assert_eq!(h.state().tabs()[0].name(), "Untitled");
+    step_until(&mut h, "the start page left", |h| !start_shown(h));
     assert_eq!(never_waits::waits(), 0);
 }
 
