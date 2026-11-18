@@ -22,13 +22,13 @@ pub(crate) fn canonical(length: u32) -> String {
     let (volume, area) = (200 * length, 2 * (30 * length + 200));
     let x = f64::from(length) / 2.0;
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n    {{\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": {length},\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {{\"volume\": {volume}, \"area\": {area}, \"center\": [{x}, 10, 5], \"bbox\": [0, 0, 0, {length}, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}\n    }}\n  ]\n}}\n"
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n    {{\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": {length},\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {{\"volume\": {volume}, \"area\": {area}, \"center\": [{x}, 10, 5], \"bbox\": [0, 0, 0, {length}, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}}\n    }}\n  ]\n}}\n"
     )
 }
 
 /// The box as given, in canonical form: on one line, as canonical form writes an object
 /// that fits (M2.1), with no fingerprint (none stored, and no edit reached it).
-const BOX_CANONICAL: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\"id\": \"k7f2qx3m\", \"type\": \"box\", \"v\": 1, \"name\": \"Block\", \"position\": [0, 0, 0], \"length\": 40, \"width\": 20, \"height\": 10}\n  ]\n}\n";
+const BOX_CANONICAL: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": [\n    {\"id\": \"k7f2qx3m\", \"type\": \"box\", \"v\": 1, \"name\": \"Block\", \"position\": [0, 0, 0], \"length\": 40, \"width\": 20, \"height\": 10}\n  ]\n}\n";
 
 const S1: &str = "s1";
 

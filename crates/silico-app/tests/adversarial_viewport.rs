@@ -1783,7 +1783,7 @@ fn huge_sketch(circles: usize) -> String {
         r#"{{
   "silico": 1,
   "units": {{"length": "mm", "resolution": "1nm"}},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {{"id": "s0000001", "type": "sketch", "v": 1, "name": "Huge", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": 0, "construction": false}}], "lines": [], "circles": [{}], "arcs": [], "constraints": []}}
   ]
@@ -1811,7 +1811,7 @@ fn huge_sketches(sketches: usize, circles: usize) -> String {
     };
     let features: Vec<String> = (1..=sketches).map(sketch).collect();
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n{}\n  ]\n}}\n",
         features.join(",\n")
     )
 }
@@ -2381,7 +2381,7 @@ fn a_camera_that_makes_no_frame_draws_no_triad_and_the_label_says_the_projection
 const SMALL_ALONE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Small", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50}
   ]
@@ -2392,7 +2392,7 @@ const SMALL_ALONE: &str = r#"{
 const LARGE_ALONE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "a91cw0de", "type": "box", "v": 1, "name": "Large", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
   ]
@@ -3160,7 +3160,7 @@ fn seen_end_on_no_arrow_is_drawn_and_a_drag_where_it_would_be_changes_nothing() 
 const OPEN_PROFILE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Plate", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}], "circles": [], "arcs": [], "constraints": []},
     {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}

@@ -141,7 +141,7 @@ fn block_line(length: &str) -> String {
 /// layout: its one feature on one line (it holds no object).
 fn block(length: &str) -> String {
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n{}\n  ]\n}}\n",
         block_line(length)
     )
 }
@@ -632,7 +632,7 @@ fn status_counts_a_transactions_undo_and_redo_by_hand_and_changed_follows_its_do
     // 2(840 + 420 + 200) = 2920.
     assert_eq!(
         f.file(),
-        "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 42,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8400, \"area\": 2920, \"center\": [21, 10, 5], \"bbox\": [0, 0, 0, 42, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n"
+        "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 42,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8400, \"area\": 2920, \"center\": [21, 10, 5], \"bbox\": [0, 0, 0, 42, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n"
     );
 }
 

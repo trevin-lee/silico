@@ -8067,7 +8067,7 @@ mod tests {
 
     /// A naming key holds the naming scheme, so a change to how elements are named makes a
     /// fillet's step another step: pinned, computed by hand with Python's hashlib from the
-    /// scheme's line (`silico naming 5`, M3.6's), the step's key, the ID, how it names (0 a
+    /// scheme's line (`silico naming 6`, M6.1's), the step's key, the ID, how it names (0 a
     /// primitive, 1 + the op code), and the inputs' naming keys.
     #[test]
     fn naming_keys_are_the_sha256_of_the_scheme_the_step_the_id_and_the_inputs() {
@@ -8090,7 +8090,7 @@ mod tests {
         );
         assert_eq!(
             crate::hex(&block.0),
-            "a032aa1bd93fd19700c2b7615d4bd5aa87281e4ef8a292ac607a610c888f95f3"
+            "7989332e0f447b3c011256790f1b6dfad221db2c9bc0e1510836639cd6614002"
         );
         let cut = naming_key(
             made,
@@ -8100,7 +8100,7 @@ mod tests {
         );
         assert_eq!(
             crate::hex(&cut.0),
-            "3aa8bf27792db5e33382f34bc8e60d6ef30415c50f5ec28070857bf1a54019ae"
+            "e1846c56c574c3e45b71c739be881a60850e8b3949273993a188c9ca114799ab"
         );
     }
 
@@ -8123,7 +8123,7 @@ mod tests {
         let key = naming_key(Key([1; 32]), &id("cccccccc"), &pad, &[NamingKey([3; 32])]);
         assert_eq!(
             crate::hex(&key.0),
-            "d50b3f99aaaedeaf675e75fce819ff74fe1a54adae4324b0dee633af355362f6"
+            "69a5b2ab9b8eb0828cff4b38c8eff23dfd51309a33c6f9b06c767df822285b3c"
         );
     }
 

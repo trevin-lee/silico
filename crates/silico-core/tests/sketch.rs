@@ -24,7 +24,7 @@ use silico_core::{Error, ErrorCode};
 const EXAMPLE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {
       "id": "k7f2qx3m",
@@ -196,7 +196,7 @@ fn every_constraint_form_reads_and_writes_back_in_schema_order() {
         r#"{{
   "silico": 1,
   "units": {{"length": "mm", "resolution": "1nm"}},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {{
       "id": "k7f2qx3m",
@@ -290,7 +290,7 @@ fn canonical_with_two_lines(constraints: &[&str]) -> String {
         r#"{{
   "silico": 1,
   "units": {{"length": "mm", "resolution": "1nm"}},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {{
       "id": "k7f2qx3m",

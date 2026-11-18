@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use crate::document::{ElementName, FeatureId, PROBLEMS_LISTED};
 use crate::kernel::{ElementKind, ElementRef};
-use crate::naming::{ElementMap, Maker, Name, OpCode, TypeWord};
+use crate::naming::{ElementMap, Maker, Name};
 use crate::{Error, ErrorCode, Nearest, Rank};
 
 /// A feature's broken references: the first [`PROBLEMS_LISTED`], each its
@@ -412,23 +412,12 @@ pub(crate) fn retyped<'a>(
 ) -> Option<(&'a FeatureId, &'static str, &'static str)> {
     let mut stack = vec![name];
     while let Some(name) = stack.pop() {
-        let (feature, said) = match name {
-            Name::Element { feature, made, .. } => (feature, *made),
-            Name::Sketch { feature, .. } => (feature, TypeWord::Operation(OpCode::Sketch)),
-            Name::Derived {
-                feature, operation, ..
-            }
-            | Name::Upper {
-                feature, operation, ..
-            }
-            | Name::Lower {
-                feature, operation, ..
-            } => (feature, TypeWord::Operation(*operation)),
-            Name::Duplicate { name, .. } | Name::Modified { name, .. } => {
-                stack.push(name);
-                continue;
-            }
-        };
+        // A duplicate or a modified element is its name's: it says no type of its own.
+        if let Name::Duplicate { name, .. } | Name::Modified { name, .. } = name {
+            stack.push(name);
+            continue;
+        }
+        let (feature, said) = (name.feature(), name.type_word());
         match makers(feature).map(Maker::type_word) {
             Some(now) if now != said => return Some((feature, said.word(), now.word())),
             _ => {}

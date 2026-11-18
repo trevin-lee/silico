@@ -312,7 +312,7 @@ fn three_bodies_and_a_camera_on_the_third_send_the_third_alone_numbered_three() 
     let three = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
     {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "B", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10},
@@ -507,7 +507,7 @@ fn a_named_view_of_a_model_with_no_bodies_is_refused_and_a_camera_renders_the_ba
     let empty = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": []
 }
 "#;
