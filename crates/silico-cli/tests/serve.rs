@@ -61,9 +61,9 @@ fn serve_initializes_lists_its_tools_makes_a_document_and_ends_with_its_input() 
     // What the binary serves is silico-mcp's committed contract, every tool's title and
     // description with the rest. silico-mcp's own tests hold its `tools::list` to it too,
     // but nextest runs packages in name order, so they come after most of the workspace's,
-    // near the end of the 30 minutes a whole workspace's mutants run gives each mutant: one
-    // caught only there can time out. The CLI's run early. Tool by tool, so a difference
-    // names its tool rather than printing both lists whole.
+    // near the end of the at least 30 minutes a whole workspace's mutants run gives each
+    // mutant (tests/mutants.sh): one caught only there can time out. The CLI's run early.
+    // Tool by tool, so a difference names its tool rather than printing both lists whole.
     let contract: Value = serde_json::from_str(
         &std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
