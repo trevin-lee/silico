@@ -18617,7 +18617,7 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
             "CREATE"
         ]
     );
-    assert_eq!(on(&h, "MODIFY"), ["Trim", "Split", "MODIFY"]);
+    assert_eq!(on(&h, "MODIFY"), ["Trim", "Extend", "Split", "MODIFY"]);
     assert_eq!(
         on(&h, "CONSTRAINTS"),
         [
@@ -26842,6 +26842,228 @@ fn power_trim_extends_a_line_dragged_along_to_the_pointer() {
             .sent
             .contains(&Sent::SketchEdit("sketch_extend"))
     );
+    // Trim's extend is a sketch edit as any other, named by the sketch, not Extend's.
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Edit Cross");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A line na000001 from pa000001 (0, 0) to pa000002 (10, 0), and a wall, nb000001, along
+/// x = 30 from pb000001 (30, −10) to pb000002 (30, 10).
+const WALLED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Wall", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}, {"id": "pb000001", "x": 30, "y": -10, "construction": false}, {"id": "pb000002", "x": 30, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+/// [`WALLED`] with a wall behind the line's start too, nc000001, along x = −20 from
+/// pc000001 (−20, −10) to pc000002 (−20, 10).
+const WALLED_BOTH: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Wall", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 10, "y": 0, "construction": false}, {"id": "pb000001", "x": 30, "y": -10, "construction": false}, {"id": "pb000002", "x": 30, "y": 10, "construction": false}, {"id": "pc000001", "x": -20, "y": -10, "construction": false}, {"id": "pc000002", "x": -20, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "nb000001", "from": "pb000001", "to": "pb000002", "construction": false}, {"id": "nc000001", "from": "pc000001", "to": "pc000002", "construction": false}], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+/// Sketch mode on [`WALLED`]'s sketch, read.
+fn walled_sketch(f: &Fixture) -> AppHarness {
+    walled_sketch_of(f, WALLED)
+}
+
+/// Sketch mode on the sketch Wall of `text`, read.
+fn walled_sketch_of(f: &Fixture, text: &str) -> AppHarness {
+    let (mut h, _) = f.opened("walled.silico", text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Wall"));
+    double_click(&mut h, "Browser", "Wall");
+    sketch_read(&mut h);
+    h
+}
+
+/// The tool sketch mode has on.
+fn tool_on(h: &AppHarness) -> Option<silico_app::sketch::tools::Choice> {
+    sketch_mode(h).and_then(|mode| mode.tools.choice())
+}
+
+/// The sketch bar's Extend pressed through the accessibility tree, in SKETCH's MODIFY panel.
+fn extend_button(h: &mut AppHarness) {
+    sketch_button(h, "Extend").click_accesskit();
+    step(h);
+    step(h);
+}
+
+#[test]
+fn extends_button_chooses_it_and_a_second_press_leaves_it() {
+    use silico_app::sketch::tools::Choice;
+    let f = fixture();
+    let mut h = walled_sketch(&f);
+    assert_eq!(tool_on(&h), None);
+    extend_button(&mut h);
+    assert_eq!(tool_on(&h), Some(Choice::Extend));
+    // The palette names it and says how it's used.
+    assert!(anywhere(
+        &h,
+        "Click a line or an arc near the end to extend it to the next curve."
+    ));
+    extend_button(&mut h);
+    assert_eq!(tool_on(&h), None);
+    extend_button(&mut h);
+    assert_eq!(tool_on(&h), Some(Choice::Extend));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn extend_hovered_then_clicked_takes_a_lines_end_to_the_wall_as_one_undo_step() {
+    use silico_app::sketch::tools::Choice;
+    let f = fixture();
+    let mut h = walled_sketch(&f);
+    let before = text_of(&f.sessions, &h);
+    extend_button(&mut h);
+    // Hovered at (8, 0.2), past na000001's midpoint: its end, (10, 0), drawn on to the
+    // wall at (30, 0).
+    sketch_events(&f, &mut h, &moved(8.0, 0.2));
+    let preview = sketch_mode(&h).unwrap().tools.preview().clone();
+    assert_eq!(preview.lines.len(), 1, "{preview:?}");
+    assert_eq!(preview.lines[0], [[10.0, 0.0], [30.0, 0.0]]);
+    // Clicked there: the file's line ends at (30, 0), its end point moved, the line kept.
+    sketch_events(&f, &mut h, &clicked(8.0, 0.2));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(point_at(&sketch, 30.0, 0.0), "pa000002");
+    assert_eq!(
+        line_between(&sketch, "pa000001", "pa000002").as_deref(),
+        Some("na000001")
+    );
+    assert_eq!(sketch.lines.len(), 2);
+    assert_eq!(sketch_sends(&h), ["sketch_extend"]);
+    // The tool stays on, and the step is Extend's.
+    assert_eq!(tool_on(&h), Some(Choice::Extend));
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Extend");
+    // One Undo puts the file back, byte for byte.
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), before);
+    assert_eq!(tool_on(&h), Some(Choice::Extend));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn extend_clicked_near_a_lines_start_takes_it_back_to_the_wall_behind() {
+    let f = fixture();
+    let mut h = walled_sketch_of(&f, WALLED_BOTH);
+    extend_button(&mut h);
+    // At (2, 0), na000001's start's half: its start, pa000001 at (0, 0), goes on to the
+    // wall at x = −20; its end stays at (10, 0).
+    sketch_events(&f, &mut h, &clicked(2.0, 0.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(point_at(&sketch, -20.0, 0.0), "pa000001");
+    assert_eq!(point_at(&sketch, 10.0, 0.0), "pa000002");
+    assert_eq!(sketch_sends(&h), ["sketch_extend"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Stepped until sketch mode's newest read holds `point` at (x, y).
+fn read_with_point_at(h: &mut AppHarness, point: &str, x: f64, y: f64) {
+    step_until(h, "the read of the extend", |h| {
+        sketch_mode(h)
+            .and_then(|mode| mode.drawable())
+            .is_some_and(|read| {
+                read.members
+                    .points
+                    .iter()
+                    .any(|p| p.id.as_str() == point && p.x.mm() == x && p.y.mm() == y)
+            })
+    });
+}
+
+#[test]
+fn extend_clicks_again_once_the_read_of_its_first_extend_has_come() {
+    // On [`WALLED_BOTH`]: a click at (8, 0.2) takes na000001's end to the wall at x = 30.
+    // Once the read holds it, the line runs from (0, 0) to (30, 0), its midpoint (15, 0), so
+    // a click at (12, 0) is its start's: on to the wall at x = −20. (On the read before, the
+    // line ended at (10, 0), and (12, 0), 2 mm past it, had nothing under it.)
+    let f = fixture();
+    let mut h = walled_sketch_of(&f, WALLED_BOTH);
+    extend_button(&mut h);
+    sketch_events(&f, &mut h, &clicked(8.0, 0.2));
+    settled(&mut h);
+    read_with_point_at(&mut h, "pa000002", 30.0, 0.0);
+    sketch_events(&f, &mut h, &clicked(12.0, 0.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(point_at(&sketch, 30.0, 0.0), "pa000002");
+    assert_eq!(point_at(&sketch, -20.0, 0.0), "pa000001");
+    assert_eq!(sketch_sends(&h), ["sketch_extend", "sketch_extend"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn extend_clicks_again_after_the_core_refuses_its_extend() {
+    // The solver holds na000001's end, pa000002, where it is, as a lock would: the fake's
+    // move toward the wall at x = 30 leaves every value as it began (a move elsewhere goes
+    // as the fake's moves go). The preview finds the wall, so a click at (8, 0.2) asks the
+    // extend, and the core refuses it, the end unmoved, in its words.
+    let f = fixture();
+    f.sketches.answer_moves(|begin, to| {
+        Ok(if to[0] > 20.0 {
+            silico_protocol::Moved {
+                status: silico_protocol::SolveStatus::Success,
+                values: Some(begin.system.values.clone()),
+            }
+        } else {
+            silico_core::fake::FakeSketches::dragged(begin, to)
+        })
+    });
+    let mut h = walled_sketch_of(&f, WALLED_BOTH);
+    let before = text_of(&f.sessions, &h);
+    extend_button(&mut h);
+    sketch_events(&f, &mut h, &clicked(8.0, 0.2));
+    settled(&mut h);
+    let said = h.state().tabs()[0].message.clone().unwrap_or_default();
+    assert!(
+        said.contains("changes nothing: its constraints hold its end pa000002 where it is"),
+        "{said}"
+    );
+    assert!(anywhere(&h, &said));
+    assert_eq!(text_of(&f.sessions, &h), before);
+    // The refusal lets the tool click again, on the read it has: the free start, at (2, 0),
+    // goes on to the wall at x = −20.
+    sketch_events(&f, &mut h, &clicked(2.0, 0.0));
+    settled(&mut h);
+    assert_eq!(sketch_sends(&h), ["sketch_extend", "sketch_extend"]);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(point_at(&sketch, -20.0, 0.0), "pa000001");
+    assert_eq!(point_at(&sketch, 10.0, 0.0), "pa000002");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn extend_clicked_on_the_half_that_meets_nothing_sends_nothing_and_says_the_cores_words() {
+    let f = fixture();
+    let mut h = walled_sketch(&f);
+    let before = text_of(&f.sessions, &h);
+    extend_button(&mut h);
+    // At (2, −0.2), before na000001's midpoint: its start, (0, 0), meets nothing to the left.
+    // Hovered: no extension drawn, and why said in the palette.
+    sketch_events(&f, &mut h, &moved(2.0, -0.2));
+    let said = "line na000001 meets no other curve past its start";
+    let mode = sketch_mode(&h).unwrap();
+    assert!(mode.tools.preview().lines.is_empty());
+    assert_eq!(mode.tools.said(), Some(said));
+    step(&mut h);
+    assert!(anywhere(&h, said));
+    // Clicked: nothing sent, the document as it was, the tool on.
+    sketch_events(&f, &mut h, &clicked(2.0, -0.2));
+    settled(&mut h);
+    assert!(sketch_sends(&h).is_empty());
+    assert_eq!(text_of(&f.sessions, &h), before);
+    assert!(anywhere(&h, said));
+    assert_eq!(tool_on(&h), Some(silico_app::sketch::tools::Choice::Extend));
     assert_eq!(never_waits::waits(), 0);
 }
 

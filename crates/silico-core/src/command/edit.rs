@@ -1359,7 +1359,7 @@ pub(super) fn sketch_extend(
         ExtendBy::Point(point) => extend::By::To(point),
         ExtendBy::NextCurve => match extend::next_crossing(&from, curve, end) {
             Ok(Some(crossing)) => extend::By::To(crossing.at),
-            Ok(None) => return Err(one(id, no_next_curve(&from, curve, end))),
+            Ok(None) => return Err(one(id, extend::no_next_curve(&from, curve, end))),
             Err(error) => return Err(one(id, error)),
         },
     };
@@ -1369,31 +1369,6 @@ pub(super) fn sketch_extend(
     // each change is listed against the sketch the document held, not the solved copy.
     edited.modified = extend::changed(sketch, &edited.sketch);
     sketch_edited(document.document(), index, sketch, edited)
-}
-
-/// The refusal of a next curve for `curve`'s `end` of `sketch` to meet, where there's none.
-fn no_next_curve(sketch: &Sketch, curve: &ElementId, end: extend::End) -> Error {
-    let (noun, carrier, increment) = if sketch.arcs.iter().any(|a| &a.id == curve) {
-        ("arc", "circle", "an angle")
-    } else {
-        ("line", "line", "a length")
-    };
-    let which = match end {
-        extend::End::Start => "start",
-        extend::End::End => "end",
-    };
-    Error::new(
-        ErrorCode::InvalidInput,
-        format!("{noun} {curve} meets no other curve past its {which}"),
-    )
-    .with_elements([curve.to_string()])
-    .with_parameter("by")
-    .with_cause(format!(
-        "the next curve is the nearest that the {noun}, extended, crosses or touches past its {which}, as trim finds its cuts"
-    ))
-    .with_suggestion(format!(
-        "extend it by {increment}, or to a point on its {carrier}"
-    ))
 }
 
 /// What a join did (docs/design/m5.0-app.md, section 7, `sketch_join`): what it changed
