@@ -313,8 +313,9 @@ pub fn not_documents(names: &[String]) -> String {
 /// ([`not_opened_quitting`]).
 pub const NEW_PART_QUITTING: &str = "Quitting: no new part opened";
 
-/// What a toast says of the files dropped on the window while a quit closes the tabs,
-/// `names`, none of which was opened.
+/// What a toast says of the documents asked for while a quit closes the tabs (dropped on
+/// the window, picked in Open, typed in its path, or a recent one), `names`, none of which
+/// was opened.
 pub fn not_opened_quitting(names: &[String]) -> String {
     format!("Quitting: {} not opened", listed(names))
 }

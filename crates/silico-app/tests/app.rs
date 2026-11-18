@@ -17138,6 +17138,121 @@ fn the_app_bars_new_part_while_a_quit_closes_the_tabs_opens_no_part_and_the_wind
     new_part_while_a_quit_closes_the_tabs(NewBy::AppBar);
 }
 
+/// How a document is asked for while a quit closes the tabs.
+#[derive(Clone, Copy, Debug)]
+enum OpenBy {
+    /// Ctrl+O's Open, its path typed and Enter pressed.
+    TypedPath,
+    /// The start page's Recent, its row clicked.
+    Recent,
+}
+
+/// The app keeping a list of recent documents that holds `b.silico`, with `a.silico`
+/// opened, edited, and the window closed, Save all chosen with its save held: the quit
+/// closing the tabs, no question asked. Returned with `a`'s and `b`'s paths, the save's hold
+/// and its check.
+fn quit_closing_the_tabs_with_b_recent(
+    f: &Fixture,
+) -> (AppHarness, PathBuf, PathBuf, Hold, Running<CheckAnswer>) {
+    let b = f.file("b.silico", EXAMPLE);
+    std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
+    std::fs::write(
+        f.recents_file(),
+        format!("silico recent-documents 1\n{}\n", b.to_str().unwrap()),
+    )
+    .unwrap();
+    let mut h = f.remembering();
+    let a = f.file("a.silico", EXAMPLE);
+    open_and_wait(&mut h, &a);
+    pin_renamed(&mut h, "a.silico");
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    let (hold, check) = hold_queue(f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Save all")
+        .click_accesskit();
+    step_until(&mut h, "the question answered", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_none()
+    });
+    assert_eq!(tab_names(&h), ["a.silico"]);
+    (h, a, b, hold, check)
+}
+
+/// A quit closing the tabs ([`quit_closing_the_tabs_with_b_recent`]), then `b.silico`
+/// asked for `by`: refused, said in a toast, as a dropped file is; and the window closes once
+/// the save is let go, no tab left. Opened, `b` would be a tab the quit never closes, and
+/// the window would never close.
+fn open_while_a_quit_closes_the_tabs(by: OpenBy) {
+    let f = fixture();
+    let (mut h, a, b, hold, check) = quit_closing_the_tabs_with_b_recent(&f);
+    match by {
+        OpenBy::TypedPath => {
+            h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::O);
+            step_until(&mut h, "the Open dialog", |h| anywhere(h, "Open document"));
+            h.get_by_role_and_label(Role::TextInput, "Path").focus();
+            step(&mut h);
+            h.get_by_role_and_label(Role::TextInput, "Path")
+                .type_text(b.to_str().unwrap());
+            step(&mut h);
+            h.key_press(eframe::egui::Key::Enter);
+        }
+        OpenBy::Recent => {
+            home_button(&h).click();
+            step_until(&mut h, "Home", start_shown);
+            start_page(&h)
+                .get_by_role_and_label(Role::Button, "b.silico")
+                .click();
+        }
+    }
+    step_until(&mut h, "the refusal", |h| h.state().toast().is_some());
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Quitting: b.silico not opened"),
+        "{by:?}"
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(tab_names(&h), ["a.silico"], "{by:?}");
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
+    assert!(h.state().tabs().is_empty(), "{by:?}");
+    assert_eq!(names_in(&a), ["Block", "PinQ", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn open_while_a_quit_closes_the_tabs_opens_nothing_and_the_window_still_closes() {
+    open_while_a_quit_closes_the_tabs(OpenBy::TypedPath);
+}
+
+#[test]
+fn a_recent_document_clicked_while_a_quit_closes_the_tabs_isnt_opened_and_the_window_still_closes()
+{
+    open_while_a_quit_closes_the_tabs(OpenBy::Recent);
+}
+
+#[test]
+fn the_search_lists_new_and_open_off_while_a_quit_closes_the_tabs_saying_why() {
+    let f = fixture();
+    let (mut h, _a, _b, hold, check) = quit_closing_the_tabs_with_b_recent(&f);
+    open_search(&mut h);
+    let quitting = Some(silico_app::app::QUITTING.to_owned());
+    search_retyped(&mut h, "new part", "New part File");
+    assert_eq!(search_off(&h, "New part File"), (true, quitting.clone()));
+    search_retyped(&mut h, "open", "Open… File");
+    assert_eq!(search_off(&h, "Open… File"), (true, quitting));
+    hold.release();
+    let _ = check.wait();
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn a_file_dropped_under_a_question_isnt_opened_and_the_quit_it_asks_goes_on() {
     let f = fixture();
