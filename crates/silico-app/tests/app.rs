@@ -17415,6 +17415,120 @@ fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// Where the app bar's items end, 8 short of its right (`#appbar`'s padding). The harness
+/// draws the app inset in the window by as much at each side as Home is inset from the
+/// window's left beyond the bar's padding and gap (8 and 2, off macOS).
+fn bar_right(h: &AppHarness, window: eframe::egui::Rect) -> f32 {
+    let inset = home_button(h).rect().left() - (8.0 + 2.0) - window.left();
+    window.right() - inset - 8.0
+}
+
+#[test]
+fn after_the_tabs_the_app_bar_holds_new_part_then_search_and_shortcuts_at_its_right() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico", "other.silico"]);
+    let rect = |h: &AppHarness, label: &str| bar_button(h, label).rect();
+    let window = h.ctx.content_rect();
+    // `.ab-btn`, an icon alone: 24 by 22, centred on the tabs' row.
+    for label in ["New part", "Search commands", "Keyboard shortcuts"] {
+        assert_eq!(
+            rect(&h, label).size(),
+            eframe::egui::vec2(24.0, 22.0),
+            "{label}"
+        );
+        assert_eq!(
+            rect(&h, label).center().y,
+            rect(&h, "Redo").center().y,
+            "{label}"
+        );
+    }
+    // New part, 2 (`#appbar`'s `gap`) and 4 (its `margin-left`) beyond the last tab; the
+    // tab ends 6 of padding and its 1 point border after its ×.
+    let near = |a: f32, b: f32| (a - b).abs() <= 1.0 / 16.0;
+    let last = rect(&h, "Close other.silico").right() + 6.0 + 1.0;
+    let gap = rect(&h, "New part").left() - last;
+    assert!(near(gap, 2.0 + 4.0), "{gap}");
+    // Keyboard shortcuts 8 short of the bar's right (`#appbar`'s padding), Search commands
+    // 2 before it (`.ab-right`'s `gap`).
+    assert!(near(
+        rect(&h, "Keyboard shortcuts").right(),
+        bar_right(&h, window)
+    ));
+    assert!(near(
+        rect(&h, "Keyboard shortcuts").left() - rect(&h, "Search commands").right(),
+        2.0
+    ));
+    // Each runs as its key does: Search commands opens the command search, Keyboard
+    // shortcuts the sheet, and New part an untitled part, shown.
+    bar_button(&h, "Search commands").click();
+    step_until(&mut h, "the search", search_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the search closed", |h| !search_open(h));
+    bar_button(&h, "Keyboard shortcuts").click();
+    step_until(&mut h, "the sheet", sheet_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    bar_button(&h, "New part").click();
+    step_until(&mut h, "its tab", |h| h.state().tabs().len() == 3);
+    assert_eq!(h.state().tabs()[2].name(), "Untitled");
+    step_until(&mut h, "it shown", |h| {
+        toggled(&bar_button(h, "Untitled")) == Some(true)
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn tabs_wider_than_the_bar_scroll_under_new_part_and_the_right_group_never_cover_them() {
+    let f = fixture();
+    let mut h = f.themed_with(&["first.silico", "second.silico", "third.silico"]);
+    // Too narrow for the three tabs: the strip scrolls, and what's after it keeps its place.
+    h.set_size(eframe::egui::vec2(560.0, 400.0));
+    step(&mut h);
+    step(&mut h);
+    let rect = |label: &str| bar_button(&h, label).rect();
+    let near = |a: f32, b: f32| (a - b).abs() <= 1.0 / 16.0;
+    let window = h.ctx.content_rect();
+    assert_eq!(window.width(), 560.0);
+    assert!(near(
+        rect("Keyboard shortcuts").right(),
+        bar_right(&h, window)
+    ));
+    // The spacer at its least: New part 2 before Search commands, and the strip's room
+    // ending 2 + 4 before New part.
+    let gap = rect("Search commands").left() - rect("New part").right();
+    assert!(near(gap, 2.0), "{gap}");
+    // The tabs drawn past the strip's room are clipped there: no tab's ink reaches New
+    // part.
+    let strip_end = rect("New part").left() - 6.0;
+    assert!(
+        rect("third.silico").right() > strip_end,
+        "the tabs fit: {:?}",
+        rect("third.silico")
+    );
+    // Every shape drawn after Redo, in the bar's row, reaching past the strip's end and
+    // starting short of New part (a tab's fill, text, or border, not the bar's own
+    // background or border, which start at its left) is clipped at the strip's end: the
+    // tabs scroll under nothing.
+    let tabs_left = rect("Redo").right();
+    let reaching: Vec<_> = h
+        .output()
+        .shapes
+        .iter()
+        .filter(|clipped| {
+            let bounds = clipped.shape.visual_bounding_rect();
+            bounds.is_positive()
+                && bounds.min.y < 29.0
+                && bounds.min.x > tabs_left
+                && bounds.max.x > strip_end + 1.0 / 16.0
+                && bounds.min.x < rect("New part").left()
+                && clipped.clip_rect.max.x > strip_end + 1.0 / 16.0
+        })
+        .map(|clipped| clipped.shape.visual_bounding_rect())
+        .collect();
+    assert!(reaching.is_empty(), "{reaching:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// The key caps the tooltip titled `title` draws after its title, left to right: the texts
 /// painted after the title's own (the tooltip is painted over everything else) on its row,
 /// so no other text on that row of the window (a path in the properties) is taken for one.

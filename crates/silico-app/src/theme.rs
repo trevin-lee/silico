@@ -970,6 +970,9 @@ pub const APP_BAR_PADDING: f32 = 8.0;
 /// The space between the bar's items (`#appbar`'s `gap`).
 pub const APP_BAR_ITEM_SPACING: f32 = 2.0;
 
+/// New part's margin before it, after the documents' tabs (its `margin-left:4px`).
+pub const APP_BAR_NEW_MARGIN: f32 = 4.0;
+
 /// The bar's border below it (`#appbar`'s `border-bottom`, Gray.250).
 pub const APP_BAR_BORDER: Color32 = PANEL_BORDER;
 
