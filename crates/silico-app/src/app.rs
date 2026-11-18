@@ -3073,8 +3073,8 @@ impl<P: Clients + 'static> App<P> {
     }
 
     /// After the tabs (the prototype's `#appbar`): New part, 4 beyond the last tab, and at
-    /// the bar's right Search commands and Keyboard shortcuts, each run as its key runs it
-    /// (`Ctrl+N`, `S`, `?`).
+    /// the bar's right Search commands and Keyboard shortcuts, each opening what its key
+    /// opens (`Ctrl+N`, `S`, `?`).
     fn app_bar_trailing(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         ui.add_space(theme::APP_BAR_NEW_MARGIN);
         let new = bar::button(ui, Icon::Plus, None, Command::New.label(), true, None);

@@ -17520,12 +17520,13 @@ fn tabs_wider_than_the_bar_scroll_under_new_part_and_the_right_group_never_cover
         "the tabs fit: {:?}",
         rect("third.silico")
     );
-    // Every shape drawn after Redo, in the bar's row, reaching past the strip's end and
-    // starting short of New part (a tab's fill, text, or border, not the bar's own
-    // background or border, which start at its left) is clipped at the strip's end: the
-    // tabs scroll under nothing.
+    // The shapes drawn after Redo in the bar's row, reaching past the strip's end and
+    // starting short of New part: a tab's fill, text, or border, not the bar's own
+    // background or border, which start at its left. Some are there (the shown tab, cut
+    // by the strip), each clipped at the strip's end, never beyond it: the tabs scroll
+    // under nothing.
     let tabs_left = rect("Redo").right();
-    let reaching: Vec<_> = h
+    let past: Vec<_> = h
         .output()
         .shapes
         .iter()
@@ -17536,9 +17537,14 @@ fn tabs_wider_than_the_bar_scroll_under_new_part_and_the_right_group_never_cover
                 && bounds.min.x > tabs_left
                 && bounds.max.x > strip_end + 1.0 / 16.0
                 && bounds.min.x < rect("New part").left()
-                && clipped.clip_rect.max.x > strip_end + 1.0 / 16.0
         })
-        .map(|clipped| clipped.shape.visual_bounding_rect())
+        .map(|clipped| clipped.clip_rect.max.x)
+        .collect();
+    assert!(!past.is_empty(), "no tab reaches past the strip's end");
+    let reaching: Vec<f32> = past
+        .iter()
+        .copied()
+        .filter(|clip| (clip - strip_end).abs() > 1.0 / 16.0)
         .collect();
     assert!(reaching.is_empty(), "{reaching:?}");
     assert_eq!(never_waits::waits(), 0);
@@ -17853,9 +17859,15 @@ fn tabs_wider_than_the_bar_scroll_across_rather_than_squeeze() {
     // Wider than the window, so scrolled: the newest, shown, in view at the right; the
     // first out of view, left of the separator.
     assert!(width(&h, last) * 12.0 > window.width());
+    // The strip ends 2 + 4 before New part (#appbar's gap, its margin): the newest tab, its
+    // × with 6 of padding and the 1 point border after it, in view short of that, within
+    // the half point the scroll's offset can leave (it ends 0.1 past, scrolled to).
+    let strip_end = bar_button(&h, "New part").rect().left() - 6.0;
     assert!(
-        bar_button(&h, &close(last)).rect().right() <= window.right(),
-        "{window:?}"
+        bar_button(&h, &close(last)).rect().right() + 6.0 + 1.0 <= strip_end + 0.5,
+        "{:?} {strip_end} {:?}",
+        bar_button(&h, &close(last)).rect(),
+        bar_button(&h, last).rect()
     );
     assert!(bar_button(&h, &names[0]).rect().left() < redo.right());
     // The wheel over the tabs scrolls them back: the first where it was, after the
@@ -17883,7 +17895,7 @@ fn tabs_wider_than_the_bar_scroll_across_rather_than_squeeze() {
         step(&mut h);
     }
     let shown = bar_button(&h, "Close document-12.silico").rect();
-    assert!(shown.right() <= window.right(), "{shown:?}");
+    assert!(shown.right() + 6.0 + 1.0 <= strip_end + 0.5, "{shown:?}");
     assert!(shown.left() > redo.right(), "{shown:?}");
     assert_eq!(never_waits::waits(), 0);
 }
