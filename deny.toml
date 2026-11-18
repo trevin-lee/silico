@@ -76,4 +76,5 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant is unmaintained (as a crate of its own), reached only through eframe's Linux screen-reader bridge (accesskit_unix); not a vulnerability" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names is unmaintained (as a crate of its own), reached only through eframe's Linux screen-reader bridge (accesskit_unix); not a vulnerability" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is unmaintained (as a crate of its own), reached only through eframe's Linux screen-reader bridge (accesskit_unix); not a vulnerability" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono is unmaintained, not vulnerable, with no safe upgrade; it comes in through Rerun (arrow's date types, under re_renderer and rerun), which Silico never hands a date or user text; revisit when Rerun drops it" },
 ]

@@ -7,6 +7,10 @@
 #   pixi run test-ci-decisions   (or bash tests/lane-caches-test.sh)
 set -euo pipefail
 
+# The run's lane and the stale bound are the cases' to give, never the caller's: a lane
+# exported for a mutants run (SILICO_TARGET) failed the default lane's case.
+unset SILICO_TARGET SILICO_STALE_LANE_DAYS
+
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 # shellcheck source=tests/lane-caches.sh
 source "$repo/tests/lane-caches.sh"

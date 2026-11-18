@@ -209,6 +209,51 @@ fn a_named_view_fits_the_bodies_and_the_renderer_is_sent_their_scene() {
 }
 
 #[test]
+fn an_edge_view_fits_the_bodies_as_worked_by_hand() {
+    // On the box (0, 0, −1) to (40, 20, 11), at 800 x 600, by hand. top_front: up (0, 1,
+    // 1)/√2, along which the corners span (20 + 11)/√2 + 1/√2 = 32/√2 = 22.63; its right
+    // (1, 0, 0), along which they span 40, × 600/800 = 30: the width binds, 1.1 × 30 = 33.
+    // front_right: up z, spanning 12; its right (1, 1, 0)/√2, spanning 60/√2 = 42.43, ×
+    // 0.75 = 31.82: the width, 1.1 × 0.75 × 60/√2 = 35.0018.
+    let bench = Bench::of(EXAMPLE);
+    let r = std::f64::consts::FRAC_1_SQRT_2;
+    let r2 = 2f64.sqrt();
+    for (name, up, height) in [
+        ("top_front", [0.0, r, r], 33.0),
+        ("front_right", [0.0, 0.0, 1.0], 1.1 * 0.75 * 60.0 / r2),
+    ] {
+        let done = bench.render(&view(name, 800, 600)).unwrap();
+        let c = &done.result.camera.camera();
+        assert_eq!(c.target, [20.0, 10.0, 5.0], "{name}");
+        for (got, want) in c.up.iter().zip(up) {
+            assert!((got - want).abs() < 1e-10, "{name}: {:?}", c.up);
+        }
+        let Projection::Orthographic { view_height } = c.projection else {
+            panic!("{name}: {:?}", c.projection)
+        };
+        // To the nanometre, as a result writes it.
+        assert!(
+            (view_height - height).abs() <= 5e-7,
+            "{name}: {view_height}"
+        );
+        // The eye along the view's direction from the centre: its two faces' axes.
+        let d = [c.eye[0] - 20.0, c.eye[1] - 10.0, c.eye[2] - 5.0];
+        let along: [f64; 3] = match name {
+            "top_front" => [0.0, -r, r],
+            _ => [r, -r, 0.0],
+        };
+        let length = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+        for (got, want) in d.iter().zip(along) {
+            assert!((got / length - want).abs() < 1e-9, "{name}: {:?}", c.eye);
+        }
+    }
+    assert_eq!(bench.renderer.sent().len(), 2);
+    // top_front's half pixel, 33 / 600 / 2 = 0.0275, meshed at 2⁻⁶; front_right's,
+    // 35.0018 / 1200 = 0.0292, at 2⁻⁶ too, held.
+    assert_eq!(bench.meshed(), [0.015625]);
+}
+
+#[test]
 fn a_second_render_at_one_level_meshes_nothing_and_two_zooms_past_the_floor_mesh_once() {
     let bench = Bench::of(EXAMPLE);
     bench.render(&view("top_front_right", 800, 600)).unwrap();
@@ -267,7 +312,7 @@ fn three_bodies_and_a_camera_on_the_third_send_the_third_alone_numbered_three() 
     let three = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "aaaaaaaa", "type": "box", "v": 1, "name": "A", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
     {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "B", "position": [100, 0, 0], "length": 10, "width": 10, "height": 10},
@@ -462,7 +507,7 @@ fn a_named_view_of_a_model_with_no_bodies_is_refused_and_a_camera_renders_the_ba
     let empty = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": []
 }
 "#;

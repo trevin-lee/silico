@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
-use run::{DEADLINE, output};
+use run::{BUDGET, began, left, output};
 use serve::{BOX, INITIALIZE, ask, exited, json_rpc, lines, listed, serve, sigterm};
 
 #[test]
@@ -356,7 +356,15 @@ fn serve_ends_on_sigterm_while_its_client_never_reads() {
     });
     // 150 pongs of a kilobyte are more than stdout's pipe (64 KiB) holds, so the server's
     // writer is about to block, if it hasn't.
-    written.recv_timeout(DEADLINE).unwrap();
+    let asked = std::time::Instant::now();
+    written.recv_timeout(left()).unwrap_or_else(|e| {
+        panic!(
+            "151 pings weren't written in {:?}, when the test's {BUDGET:?} ran out ({:?} since \
+             it began): the writer's hung ({e})",
+            asked.elapsed(),
+            began().elapsed()
+        )
+    });
     sigterm(&child);
     let status = exited(child);
     assert_eq!(status.code(), Some(0), "{status:?}");
@@ -457,8 +465,9 @@ fn install(root: &std::path::Path, workers: &[&str]) -> std::path::PathBuf {
     bin
 }
 
-/// All of `pipe`, read on a thread of its own, given once it ends: received under
-/// [`DEADLINE`], so a server that doesn't end fails the test, saying so, rather than hanging.
+/// All of `pipe`, read on a thread of its own, given once it ends: received within what's
+/// left of the test's [`BUDGET`], so a server that doesn't end fails the test, saying so,
+/// rather than hanging.
 fn read_all(pipe: impl Read + Send + 'static) -> mpsc::Receiver<String> {
     let (to, read) = mpsc::channel();
     std::thread::spawn(move || {
@@ -474,6 +483,7 @@ fn read_all(pipe: impl Read + Send + 'static) -> mpsc::Receiver<String> {
 /// and stderr, sent an `initialize` and then its input's end, as a client starts one (a
 /// server that did start would answer, then end).
 fn refused_start(mut command: Command) -> (Option<i32>, String, String) {
+    began();
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -485,12 +495,19 @@ fn refused_start(mut command: Command) -> (Option<i32>, String, String) {
     drop(stdin);
     let stdout = read_all(child.stdout.take().unwrap());
     let stderr = read_all(child.stderr.take().unwrap());
-    let stdout = stdout
-        .recv_timeout(DEADLINE)
-        .expect("serve's stdout didn't end: it's still running");
-    let stderr = stderr
-        .recv_timeout(DEADLINE)
-        .expect("serve's stderr didn't end: it's still running");
+    let asked = std::time::Instant::now();
+    let ended = |pipe: mpsc::Receiver<String>, name: &str| {
+        pipe.recv_timeout(left()).unwrap_or_else(|_| {
+            panic!(
+                "serve's {name} didn't end in {:?}, when the test's {BUDGET:?} ran out ({:?} \
+                 since it began): it's still running",
+                asked.elapsed(),
+                began().elapsed()
+            )
+        })
+    };
+    let stdout = ended(stdout, "stdout");
+    let stderr = ended(stderr, "stderr");
     (exited(child).code(), stdout, stderr)
 }
 

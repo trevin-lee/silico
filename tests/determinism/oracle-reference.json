@@ -7,7 +7,7 @@
   },
   "barrel_across_angle_0": {
     "brep": "582faadd72cb6d00",
-    "cameras": "65a8a75abd63ce91",
+    "cameras": "40ef43acca297791",
     "history": "08c686e96c9577b7",
     "measures": "c2fe74c9747e4c7b",
     "mesh": "c1678f42bf96f226",
@@ -16,7 +16,7 @@
   },
   "barrel_across_angle_0_slotted": {
     "brep": "4bd8c92d1ffe22aa",
-    "cameras": "740d0bc3d3b0d475",
+    "cameras": "0d4796d60947d815",
     "history": "dc6c2f7743cf901f",
     "measures": "11c11a9114583dd0",
     "mesh": "c05c324c2cbdb42d",
@@ -25,7 +25,7 @@
   },
   "box_10_20_30": {
     "brep": "67208fb74b93f8bc",
-    "cameras": "f950ca5951c4b15c",
+    "cameras": "52c5e2cbc23ef0c0",
     "measures": "c430bba68a5bec93",
     "mesh": "187d0191f4112b15",
     "summary": "832436bc21fca858"
@@ -47,7 +47,7 @@
   },
   "box_thin": {
     "brep": "f01a8f5cbfe5099d",
-    "cameras": "371fd035278be4cb",
+    "cameras": "052b9689cb1448b3",
     "measures": "de64e531021c23eb",
     "mesh": "2d2f2cb415a2ccc5",
     "summary": "fbbca0cb55ea50c3"
@@ -57,14 +57,14 @@
   },
   "box_unround": {
     "brep": "6dc876c7047684fa",
-    "cameras": "b2270f590572948d",
+    "cameras": "feae8dcb618d1c6d",
     "measures": "2375e326a717a574",
     "mesh": "5b8de2e4ee624bb5",
     "summary": "669e166a6f34a4cc"
   },
   "chamfer_distance_angle": {
     "brep": "ffc01ca4d702192d",
-    "cameras": "f950ca5951c4b15c",
+    "cameras": "52c5e2cbc23ef0c0",
     "history": "51e5dc18d32a99fb",
     "measures": "d6c7fd4bb1302f63",
     "mesh": "6a44d5640e90d839",
@@ -79,7 +79,7 @@
   },
   "chamfer_equal": {
     "brep": "a11f0bf98d3e255a",
-    "cameras": "f950ca5951c4b15c",
+    "cameras": "52c5e2cbc23ef0c0",
     "history": "788735a9182cfdb5",
     "measures": "b0c105ce50795a17",
     "mesh": "9e9c24c74c58d7ad",
@@ -88,7 +88,7 @@
   },
   "chamfer_tiny": {
     "brep": "fa5d46526c567ba9",
-    "cameras": "f950ca5951c4b15c",
+    "cameras": "52c5e2cbc23ef0c0",
     "history": "788735a9182cfdb5",
     "measures": "d803448469ff4b8c",
     "mesh": "127ebfc1189c1a51",
@@ -103,7 +103,7 @@
   },
   "chamfer_two_distances_flipped": {
     "brep": "2b3ee674b2c5d323",
-    "cameras": "f950ca5951c4b15c",
+    "cameras": "52c5e2cbc23ef0c0",
     "history": "b58118bea6a1f672",
     "measures": "9093f81aacd13bf1",
     "mesh": "9c2c22b67bb433fe",
@@ -127,7 +127,7 @@
   },
   "common_above_fuzzy": {
     "brep": "cfd9c002f3dec358",
-    "cameras": "ca71949430faffe7",
+    "cameras": "57f170952f0892c3",
     "history": "41c88ecc5a09df76",
     "measures": "ec2995456089502a",
     "mesh": "db07553adff88b2d",
@@ -136,7 +136,7 @@
   },
   "common_box_sphere": {
     "brep": "54acee7fe64b11b3",
-    "cameras": "5447e88b59d7d770",
+    "cameras": "068c6b0690e603a4",
     "history": "95499cb170781b95",
     "measures": "e73de44b13869b37",
     "mesh": "04365d246a70aec0",
@@ -145,7 +145,7 @@
   },
   "common_cylinder_bar": {
     "brep": "928cff3904077714",
-    "cameras": "fd562999b08d38f1",
+    "cameras": "c514e1eb24c8c7e1",
     "history": "57f98d67e96699ed",
     "measures": "5256fe102b7b9bc6",
     "mesh": "9a33768cb32dd06d",
@@ -160,21 +160,21 @@
   },
   "cone_almost_pointed": {
     "brep": "f07532975ed31c97",
-    "cameras": "6b5c5ddb38d605b0",
+    "cameras": "c51ab486e062ac98",
     "measures": "f25bceb6cdaa072e",
     "mesh": "76e2c787fdce5896",
     "summary": "5af30982957eff96"
   },
   "cone_frustum_widening": {
     "brep": "58ec7cc8e051721a",
-    "cameras": "547d151df9c7a124",
+    "cameras": "bf089b0dcc1943e4",
     "measures": "a809923218889c2a",
     "mesh": "4a2553fafa9a3ab0",
     "summary": "1e04a5e94cb5da61"
   },
   "cone_pointed": {
     "brep": "5e276e9e2fb910e3",
-    "cameras": "6b5c5ddb38d605b0",
+    "cameras": "c51ab486e062ac98",
     "measures": "9d9ffcfffa743215",
     "mesh": "9a21bfb1c48121e9",
     "summary": "b958904241f2adeb"
@@ -190,7 +190,7 @@
   },
   "cut_box_cylinder": {
     "brep": "660968b1a25ff262",
-    "cameras": "e8ea8ed61635c1a9",
+    "cameras": "696640cf38fec7b1",
     "history": "27eafd80022b090d",
     "measures": "a22efc93bcc2843b",
     "mesh": "cada9da8645faef9",
@@ -199,7 +199,7 @@
   },
   "cut_flush_pocket": {
     "brep": "55cb0c7840561d05",
-    "cameras": "e8ea8ed61635c1a9",
+    "cameras": "696640cf38fec7b1",
     "history": "afd0af5f83d9d511",
     "measures": "504b837059912d06",
     "mesh": "ade2539c7d279400",
@@ -208,7 +208,7 @@
   },
   "cut_sphere_box": {
     "brep": "0484f0c43ec47af2",
-    "cameras": "524c915517d9ffb1",
+    "cameras": "f8c06a87314d2f81",
     "history": "a6784f79c0170249",
     "measures": "95b6eaf9a570f770",
     "mesh": "16a32b6054bc28b1",
@@ -217,21 +217,21 @@
   },
   "cylinder_5_10": {
     "brep": "52be3139e71a230b",
-    "cameras": "6b5c5ddb38d605b0",
+    "cameras": "c51ab486e062ac98",
     "measures": "49c1633b488113f8",
     "mesh": "c4b61711499dd833",
     "summary": "1e3268339684be79"
   },
   "cylinder_hair": {
     "brep": "69e04794875ff8f4",
-    "cameras": "a9bc6fbc970c715f",
+    "cameras": "a3abcae77125dff7",
     "measures": "bfee767631242519",
     "mesh": "a6baaabbd1b36e15",
     "summary": "c85b53d6fd81e17b"
   },
   "cylinder_revolved_onto_a_box": {
     "brep": "42bd0b4886173fac",
-    "cameras": "0a3f5a73a8985d8e",
+    "cameras": "0c253615fdb64dbe",
     "history": "6da3d2a375787908",
     "measures": "b107faeef173cc42",
     "mesh": "4df176da26a58bd1",
@@ -240,7 +240,7 @@
   },
   "cylinder_slender": {
     "brep": "adadbc03e1e0ecf8",
-    "cameras": "5cee36ca81d316c9",
+    "cameras": "9da2779a91883c61",
     "measures": "106b47902579aecf",
     "mesh": "2008f9add6908633",
     "summary": "f191ec6c226363d5"
@@ -253,7 +253,7 @@
   },
   "extrude_film": {
     "brep": "b074820d55d62d01",
-    "cameras": "371fd035278be4cb",
+    "cameras": "052b9689cb1448b3",
     "history": "f36bfa942afb614a",
     "measures": "bbb80534c1b9179e",
     "mesh": "de9365830fde23d5",
@@ -262,7 +262,7 @@
   },
   "extrude_l_slanted": {
     "brep": "5c9b535bb10ebeec",
-    "cameras": "6d2aef8372267cec",
+    "cameras": "2f39f214f0b29360",
     "history": "007c370f32b1d601",
     "measures": "3c6e1e4039d80d3c",
     "mesh": "3ce44fca12f91341",
@@ -271,7 +271,7 @@
   },
   "extrude_rectangle": {
     "brep": "63fb7331ba5530d4",
-    "cameras": "dafe73a87b0972e5",
+    "cameras": "328e86abf504b7e9",
     "history": "f36bfa942afb614a",
     "measures": "c2bfc56fd2f34516",
     "mesh": "9902b0f782cf1ec5",
@@ -283,7 +283,7 @@
   },
   "fillet_box_edge1": {
     "brep": "7740454fdbc4e0e2",
-    "cameras": "f950ca5951c4b15c",
+    "cameras": "52c5e2cbc23ef0c0",
     "history": "788735a9182cfdb5",
     "measures": "54397e92321b3556",
     "mesh": "b79e0c4470f56892",
@@ -292,7 +292,7 @@
   },
   "fillet_box_every_edge": {
     "brep": "e77b144895666771",
-    "cameras": "f950ca5951c4b15c",
+    "cameras": "52c5e2cbc23ef0c0",
     "history": "619bdb647162d1c5",
     "measures": "6c8f6c8f33c93a87",
     "mesh": "aec88fd4faa2cf9a",
@@ -301,7 +301,7 @@
   },
   "fillet_tiny": {
     "brep": "c8f473e1b0074cfa",
-    "cameras": "f950ca5951c4b15c",
+    "cameras": "52c5e2cbc23ef0c0",
     "history": "788735a9182cfdb5",
     "measures": "1b34c5436c9af139",
     "mesh": "2768925ef8eeb88e",
@@ -310,7 +310,7 @@
   },
   "flush_pad": {
     "brep": "4c5eb4c75918322f",
-    "cameras": "7dba5d5c7a60e0d8",
+    "cameras": "8f066a00de933108",
     "history": "f65ab5f342db8d6b",
     "measures": "68cff23a02c93307",
     "mesh": "f19693e37013924c",
@@ -319,7 +319,7 @@
   },
   "fuse_box_cylinder": {
     "brep": "05bd4a237f15442f",
-    "cameras": "03b0c4fe506227bc",
+    "cameras": "cbd6c0e97831ed54",
     "history": "c687401699597cb1",
     "measures": "5af53b2212a74709",
     "mesh": "22e297714d4b3651",
@@ -328,7 +328,7 @@
   },
   "fuse_boxes_touching": {
     "brep": "773a71c7d5cfa5e2",
-    "cameras": "7dba5d5c7a60e0d8",
+    "cameras": "8f066a00de933108",
     "history": "3e3f3a16ff38fb57",
     "measures": "9d0cfd3be6927067",
     "mesh": "2f703016188483d5",
@@ -337,7 +337,7 @@
   },
   "fuse_spheres": {
     "brep": "330920a2f33be584",
-    "cameras": "f0ac183c987039c0",
+    "cameras": "4cde89585361d7c0",
     "history": "9943e78e517d5bd9",
     "measures": "082dc2aff2ecb14c",
     "mesh": "9e448913f82d892d",
@@ -346,7 +346,7 @@
   },
   "generated_20261010_0": {
     "brep": "81e76b98672bc937",
-    "cameras": "2949698b333eae2d",
+    "cameras": "d28dddfe87d76a11",
     "history": "076635cb95dd44e8",
     "measures": "4f000dfc7f3343b4",
     "mesh": "19453eaa8e6d03d0",
@@ -355,7 +355,7 @@
   },
   "generated_20261010_1": {
     "brep": "9d5201134243ddc2",
-    "cameras": "04207bca9e51eb90",
+    "cameras": "7c8d1e4b4845798c",
     "history": "f36bfa942afb614a",
     "measures": "dc0c5c611b0b8016",
     "mesh": "e11c2f0d7a86e5e9",
@@ -364,21 +364,21 @@
   },
   "generated_20261010_10": {
     "brep": "d45245469116cb74",
-    "cameras": "3cf9141ef6997615",
+    "cameras": "38e10677c2f28ddd",
     "measures": "3562aef5e23a2bd8",
     "mesh": "bb39892735aa9920",
     "summary": "03ae9aceebf3c5ec"
   },
   "generated_20261010_11": {
     "brep": "0c7f69960e57d547",
-    "cameras": "97ac80fc58216f8d",
+    "cameras": "a9c5adf5a75c8e2d",
     "measures": "a0b8eb3bc6764dfc",
     "mesh": "1a80861c23a856ba",
     "summary": "3240331fc16b10a8"
   },
   "generated_20261010_12": {
     "brep": "78dbb9724342033b",
-    "cameras": "cdca2480a00e2ec1",
+    "cameras": "8f09e9e60449d59d",
     "history": "ca0c205ac95b9379",
     "measures": "08c8fff0e8632796",
     "mesh": "111494c5a70e8e2d",
@@ -387,14 +387,14 @@
   },
   "generated_20261010_13": {
     "brep": "07775d6f649a15b3",
-    "cameras": "4e8cae625bcc2a42",
+    "cameras": "7297323bf5b0e55a",
     "measures": "6e806c3af9afa203",
     "mesh": "fe0523d354c4f289",
     "summary": "2ff5e71ce6b25c0f"
   },
   "generated_20261010_14": {
     "brep": "7fe8ca069ce737ec",
-    "cameras": "3151a230734a0d06",
+    "cameras": "3f0603b253fc3ed2",
     "history": "98991c6437c25268",
     "measures": "a80d4ded8cffcddf",
     "mesh": "cc0126bbf21ba093",
@@ -403,7 +403,7 @@
   },
   "generated_20261010_15": {
     "brep": "f59fc9f07f03a082",
-    "cameras": "15031e02209fa225",
+    "cameras": "c969d2c433fe6451",
     "history": "7522f2c2dc2ce0a4",
     "measures": "39a80b15f37b4f5c",
     "mesh": "87c2f35a4b25b5a5",
@@ -412,7 +412,7 @@
   },
   "generated_20261010_16": {
     "brep": "b6f90f9783d78824",
-    "cameras": "03a3b56b8f4163df",
+    "cameras": "cc3adeae66047f9f",
     "history": "7c99a4b299582c3b",
     "measures": "093f9c454aab8408",
     "mesh": "0d7aff4bd95135c2",
@@ -421,7 +421,7 @@
   },
   "generated_20261010_17": {
     "brep": "58082b1bd876b90f",
-    "cameras": "3aee63b3ff52cbac",
+    "cameras": "ec2d1067ed1e2b68",
     "history": "f36bfa942afb614a",
     "measures": "bbbe29efd9ff5e61",
     "mesh": "12669b4a53bf4b6d",
@@ -430,7 +430,7 @@
   },
   "generated_20261010_18": {
     "brep": "e78155cbcf0e1862",
-    "cameras": "a9eaca08a9680464",
+    "cameras": "08ff8bad8f5b4484",
     "history": "395cd2a0644106e3",
     "measures": "7e53958b9ba6cf75",
     "mesh": "2bb1eefeff4a42b1",
@@ -439,7 +439,7 @@
   },
   "generated_20261010_19": {
     "brep": "b4d5ab8313d90c8f",
-    "cameras": "82586b665349215c",
+    "cameras": "8630f298690ae93c",
     "history": "f36bfa942afb614a",
     "measures": "d914f1dfa3d91dff",
     "mesh": "5d8341d26f0546c4",
@@ -448,7 +448,7 @@
   },
   "generated_20261010_2": {
     "brep": "0ff18bfb6f244cf4",
-    "cameras": "d597400cee5c66dd",
+    "cameras": "ecbdddb4c3866fd1",
     "history": "2c88545a639a6805",
     "measures": "75d823cca83cf52f",
     "mesh": "9affb0b5ecb6a925",
@@ -457,7 +457,7 @@
   },
   "generated_20261010_20": {
     "brep": "9ca9a27f9f0c3d0f",
-    "cameras": "7022fe11a2e0d75b",
+    "cameras": "db02f76a2472f793",
     "history": "464ed4df4af85938",
     "measures": "ea1c4c78fc744f9a",
     "mesh": "80ee090ef3171405",
@@ -466,7 +466,7 @@
   },
   "generated_20261010_21": {
     "brep": "ffc274bbd3a6b93f",
-    "cameras": "342ac0455b7e9a9a",
+    "cameras": "f94bfc66843a4aa6",
     "history": "c64ea773103f2f14",
     "measures": "b0036f0ff0851c9e",
     "mesh": "edecb6c0f13196c1",
@@ -475,7 +475,7 @@
   },
   "generated_20261010_22": {
     "brep": "11df25a2a67738cc",
-    "cameras": "bc8d3e8073afb2e0",
+    "cameras": "a3d1e37f71728278",
     "history": "7c99a4b299582c3b",
     "measures": "0a11a76a930284bf",
     "mesh": "7b8e568c0ca10756",
@@ -484,7 +484,7 @@
   },
   "generated_20261010_23": {
     "brep": "4ad4956cc2b76f47",
-    "cameras": "de943108d429a223",
+    "cameras": "b361023dd1f07313",
     "history": "7c99a4b299582c3b",
     "measures": "cafcb0d994050f9f",
     "mesh": "5d3f3845a11b0a13",
@@ -493,7 +493,7 @@
   },
   "generated_20261010_24": {
     "brep": "efc1008335c3d296",
-    "cameras": "6d4fe99e48db2a27",
+    "cameras": "fac9d83f033a9fdb",
     "history": "076635cb95dd44e8",
     "measures": "fa17ff4216d23361",
     "mesh": "0bac978df47ae9bc",
@@ -502,7 +502,7 @@
   },
   "generated_20261010_25": {
     "brep": "9f5814597adb7aba",
-    "cameras": "e49f88f874461058",
+    "cameras": "d799ece7fd0f82f0",
     "history": "7c99a4b299582c3b",
     "measures": "f4741092636d1af3",
     "mesh": "4df5aa0b05b6b02c",
@@ -511,7 +511,7 @@
   },
   "generated_20261010_26": {
     "brep": "8d44792def5272ac",
-    "cameras": "09f2a492b8c7d46b",
+    "cameras": "e1965359867859b7",
     "history": "9207d1b9578e5bfc",
     "measures": "7c379e82ed2e887e",
     "mesh": "117e5e50f4f3222a",
@@ -520,7 +520,7 @@
   },
   "generated_20261010_27": {
     "brep": "f722f9ffe5d4c39e",
-    "cameras": "faa11b2664412b4b",
+    "cameras": "0761cc7d4f02f1c7",
     "history": "51e5dc18d32a99fb",
     "measures": "a837423f7f75f993",
     "mesh": "f19057210afa8c5d",
@@ -529,7 +529,7 @@
   },
   "generated_20261010_28": {
     "brep": "40cf94f1547aaeea",
-    "cameras": "6925a9c521c1e4cd",
+    "cameras": "334b095b1849ec29",
     "history": "cefaa9bd359fba84",
     "measures": "ee927c47e8259e4b",
     "mesh": "0ccda5dc32afd87d",
@@ -538,7 +538,7 @@
   },
   "generated_20261010_29": {
     "brep": "f68493693d61e88b",
-    "cameras": "0f50f481da9b7231",
+    "cameras": "aed5f7d6415d7625",
     "history": "3948bca17ad6348b",
     "measures": "5ba7c5d3cdc63bf2",
     "mesh": "48994bfdda552da2",
@@ -547,7 +547,7 @@
   },
   "generated_20261010_3": {
     "brep": "2c008068ed3fddda",
-    "cameras": "5005b7177500f831",
+    "cameras": "2e188403b239bd7d",
     "history": "7c99a4b299582c3b",
     "measures": "3517e89b886ce327",
     "mesh": "6f963806805ca8b7",
@@ -556,7 +556,7 @@
   },
   "generated_20261010_30": {
     "brep": "ba0fd87db251a467",
-    "cameras": "7def22a0b2fc79f2",
+    "cameras": "21e2821e8c1fc716",
     "history": "07034c8254abbbfd",
     "measures": "ff5d3de11d2ee0ab",
     "mesh": "d9ee4efdb101de7d",
@@ -565,7 +565,7 @@
   },
   "generated_20261010_31": {
     "brep": "592fba9f9e8398c8",
-    "cameras": "0829f328a3740c27",
+    "cameras": "407f933b00f8bf1f",
     "history": "076635cb95dd44e8",
     "measures": "50f6545ad59aebc2",
     "mesh": "b08adb06aea9d5ad",
@@ -574,7 +574,7 @@
   },
   "generated_20261010_32": {
     "brep": "6adfe74ffa0c722e",
-    "cameras": "1a14bc05d9ef942f",
+    "cameras": "e7d31502e11377df",
     "history": "f36bfa942afb614a",
     "measures": "99a049b333191dac",
     "mesh": "f06ba3659df20e36",
@@ -583,14 +583,14 @@
   },
   "generated_20261010_33": {
     "brep": "be9b842122a2472f",
-    "cameras": "833d2f4294660c4d",
+    "cameras": "46ca92547487ff1d",
     "measures": "d86dbc47e2295535",
     "mesh": "a6ab90f5c0e500fc",
     "summary": "5bf26a49e4520616"
   },
   "generated_20261010_34": {
     "brep": "a29ac09f7bdbcaf0",
-    "cameras": "c3f7b552d78062e5",
+    "cameras": "074a4d5ecdca0781",
     "history": "51e5dc18d32a99fb",
     "measures": "fab95f1a91e7b19f",
     "mesh": "1b65cb56df1d3c54",
@@ -599,7 +599,7 @@
   },
   "generated_20261010_35": {
     "brep": "d6bf9dd6d512e134",
-    "cameras": "603b25bd602b31c4",
+    "cameras": "9c36c8742ce45688",
     "history": "7c99a4b299582c3b",
     "measures": "70b07c8825a16bf1",
     "mesh": "833dd31438314ac0",
@@ -608,7 +608,7 @@
   },
   "generated_20261010_36": {
     "brep": "826f6012a2167567",
-    "cameras": "0f7468acc26692ab",
+    "cameras": "b191f3da1eb47d7b",
     "history": "3ada289cf0a4fc6d",
     "measures": "0a56aee874c48d35",
     "mesh": "287b9f8ff34427a3",
@@ -617,7 +617,7 @@
   },
   "generated_20261010_37": {
     "brep": "219eb36999e33383",
-    "cameras": "d59fa1975324c0be",
+    "cameras": "a69bd16178530e3e",
     "history": "007c370f32b1d601",
     "measures": "d74f8028889fb7e3",
     "mesh": "20a5fa4a73b0b0e9",
@@ -626,7 +626,7 @@
   },
   "generated_20261010_38": {
     "brep": "765ecb25f8dd8596",
-    "cameras": "6bd7b89b81f95c5a",
+    "cameras": "2b1093edf925a892",
     "history": "5f5cfb322855dd7c",
     "measures": "d060ea2c25e7ef8d",
     "mesh": "b2a6bd72f338f09b",
@@ -635,7 +635,7 @@
   },
   "generated_20261010_39": {
     "brep": "201ec3ef1d23240e",
-    "cameras": "3cbab35aab03340c",
+    "cameras": "9a2029dc95adbc78",
     "history": "5f79fefdbff616dd",
     "measures": "9a748e6cf7c51ff0",
     "mesh": "4a921a12fccbed2d",
@@ -644,7 +644,7 @@
   },
   "generated_20261010_4": {
     "brep": "7de17309708040b8",
-    "cameras": "cb68528d3b03af5c",
+    "cameras": "8d985073424260d8",
     "history": "f36bfa942afb614a",
     "measures": "97ec0dc46f0c068e",
     "mesh": "d9826103b7d0a58c",
@@ -653,7 +653,7 @@
   },
   "generated_20261010_5": {
     "brep": "78e94793abc910ea",
-    "cameras": "9541c348148f555c",
+    "cameras": "5579a2048962f104",
     "history": "f36bfa942afb614a",
     "measures": "364eab4fcfecb572",
     "mesh": "56d105437be68c99",
@@ -662,7 +662,7 @@
   },
   "generated_20261010_6": {
     "brep": "3d3889fc51868e19",
-    "cameras": "b93cdd7a004d5789",
+    "cameras": "f2dc9d4fe7459391",
     "history": "2f40c1168a2cadbd",
     "measures": "204efabb21554943",
     "mesh": "26b027c9c54d27da",
@@ -671,7 +671,7 @@
   },
   "generated_20261010_7": {
     "brep": "0f3802eea475b169",
-    "cameras": "36ec76158ed5dfea",
+    "cameras": "8f80eed490c03f6a",
     "history": "f36bfa942afb614a",
     "measures": "4dc8729664c03e48",
     "mesh": "12363cf6f0624336",
@@ -680,7 +680,7 @@
   },
   "generated_20261010_8": {
     "brep": "e522ddcdc6a52626",
-    "cameras": "0735f6752f0e315f",
+    "cameras": "77c425d1433560e3",
     "history": "e70423ecb0b94407",
     "measures": "2856b4e4d01a865f",
     "mesh": "9b423ec2e2efdf3e",
@@ -689,7 +689,7 @@
   },
   "generated_20261010_9": {
     "brep": "d36004208c7dd564",
-    "cameras": "de5ef8f23ba098d3",
+    "cameras": "5e6363cd20a4cd2f",
     "history": "09a575b05fcdba4c",
     "measures": "ab31720aa2deb529",
     "mesh": "03a8bb35c1d3a201",
@@ -698,7 +698,7 @@
   },
   "groove_360_one_side_xy": {
     "brep": "ae1fa2ed5b86fa3d",
-    "cameras": "0cacd187856d7a84",
+    "cameras": "6d7ce5be989be848",
     "history": "32956bc90a9f87cd",
     "measures": "cadf13157f75b8ce",
     "mesh": "1f4afbda10861091",
@@ -707,7 +707,7 @@
   },
   "groove_360_one_side_xy_cylinder": {
     "brep": "eea1a565f24cda48",
-    "cameras": "0cacd187856d7a84",
+    "cameras": "6d7ce5be989be848",
     "history": "b548aa10b1629529",
     "measures": "2058edecfbc4c08e",
     "mesh": "8de71643a4055311",
@@ -716,7 +716,7 @@
   },
   "groove_360_one_side_xz": {
     "brep": "dd1782e2247a39ae",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "32956bc90a9f87cd",
     "measures": "f2f47c3a51148bbe",
     "mesh": "6521e11dc39143c1",
@@ -725,7 +725,7 @@
   },
   "groove_360_one_side_xz_cylinder": {
     "brep": "334c9fe4ace17c14",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "b548aa10b1629529",
     "measures": "d627ca842c67a1f6",
     "mesh": "c4a2a61cdfb8c7b9",
@@ -734,7 +734,7 @@
   },
   "groove_360_one_side_yz": {
     "brep": "ba958f3dce54ef30",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "32956bc90a9f87cd",
     "measures": "e0a9e96b22e95f26",
     "mesh": "1d6866185e0e5fb9",
@@ -743,7 +743,7 @@
   },
   "groove_360_one_side_yz_cylinder": {
     "brep": "ccf05d1d4eeee545",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "b548aa10b1629529",
     "measures": "1bab0ec24b4c50f6",
     "mesh": "91dfdd53c213ac01",
@@ -752,7 +752,7 @@
   },
   "groove_90_one_side_reversed_xy": {
     "brep": "c8548080726d3af0",
-    "cameras": "0cacd187856d7a84",
+    "cameras": "6d7ce5be989be848",
     "history": "6106fafededcdfb4",
     "measures": "e5f63873f210dcfd",
     "mesh": "68fd4b49a97d754b",
@@ -761,7 +761,7 @@
   },
   "groove_90_one_side_reversed_xy_cylinder": {
     "brep": "eea1a565f24cda48",
-    "cameras": "0cacd187856d7a84",
+    "cameras": "6d7ce5be989be848",
     "history": "b548aa10b1629529",
     "measures": "2058edecfbc4c08e",
     "mesh": "8de71643a4055311",
@@ -770,7 +770,7 @@
   },
   "groove_90_one_side_reversed_xz": {
     "brep": "8f66275714e1f3cd",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "6106fafededcdfb4",
     "measures": "64bc886bf5a5410d",
     "mesh": "91f7510877c74a6b",
@@ -779,7 +779,7 @@
   },
   "groove_90_one_side_reversed_xz_cylinder": {
     "brep": "334c9fe4ace17c14",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "b548aa10b1629529",
     "measures": "d627ca842c67a1f6",
     "mesh": "c4a2a61cdfb8c7b9",
@@ -788,7 +788,7 @@
   },
   "groove_90_one_side_reversed_yz": {
     "brep": "ac61c43bab76f6c9",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "6106fafededcdfb4",
     "measures": "6e404fc320376489",
     "mesh": "9e1da121e021b3a3",
@@ -797,7 +797,7 @@
   },
   "groove_90_one_side_reversed_yz_cylinder": {
     "brep": "ccf05d1d4eeee545",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "b548aa10b1629529",
     "measures": "1bab0ec24b4c50f6",
     "mesh": "91dfdd53c213ac01",
@@ -806,7 +806,7 @@
   },
   "groove_90_one_side_xy": {
     "brep": "aeb6efd117f41555",
-    "cameras": "0cacd187856d7a84",
+    "cameras": "6d7ce5be989be848",
     "history": "535e9e92ac0b56f8",
     "measures": "b3a55ab1b6c2d093",
     "mesh": "9d6bf48c8c7cad11",
@@ -815,7 +815,7 @@
   },
   "groove_90_one_side_xy_cylinder": {
     "brep": "eea1a565f24cda48",
-    "cameras": "0cacd187856d7a84",
+    "cameras": "6d7ce5be989be848",
     "history": "b548aa10b1629529",
     "measures": "2058edecfbc4c08e",
     "mesh": "8de71643a4055311",
@@ -824,7 +824,7 @@
   },
   "groove_90_one_side_xz": {
     "brep": "aed8a5419122b5e9",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "535e9e92ac0b56f8",
     "measures": "55e56c740cdb33ff",
     "mesh": "4f7585c32707c1c9",
@@ -833,7 +833,7 @@
   },
   "groove_90_one_side_xz_cylinder": {
     "brep": "334c9fe4ace17c14",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "b548aa10b1629529",
     "measures": "d627ca842c67a1f6",
     "mesh": "c4a2a61cdfb8c7b9",
@@ -842,7 +842,7 @@
   },
   "groove_90_one_side_yz": {
     "brep": "977f60acfd0b5549",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "535e9e92ac0b56f8",
     "measures": "63e6d89d7c3b467f",
     "mesh": "5ec189f93a697fb1",
@@ -851,7 +851,7 @@
   },
   "groove_90_one_side_yz_cylinder": {
     "brep": "ccf05d1d4eeee545",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "b548aa10b1629529",
     "measures": "1bab0ec24b4c50f6",
     "mesh": "91dfdd53c213ac01",
@@ -860,7 +860,7 @@
   },
   "groove_90_symmetric_xy": {
     "brep": "d3ce9457e585b476",
-    "cameras": "0cacd187856d7a84",
+    "cameras": "6d7ce5be989be848",
     "history": "535e9e92ac0b56f8",
     "measures": "a892adbbc3d61103",
     "mesh": "5ab63626744ce384",
@@ -869,7 +869,7 @@
   },
   "groove_90_symmetric_xy_cylinder": {
     "brep": "eea1a565f24cda48",
-    "cameras": "0cacd187856d7a84",
+    "cameras": "6d7ce5be989be848",
     "history": "b548aa10b1629529",
     "measures": "2058edecfbc4c08e",
     "mesh": "8de71643a4055311",
@@ -878,7 +878,7 @@
   },
   "groove_90_symmetric_xz": {
     "brep": "cfa8f0c1f21e6354",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "535e9e92ac0b56f8",
     "measures": "616018cbd7472327",
     "mesh": "3b0474bc81b77d3c",
@@ -887,7 +887,7 @@
   },
   "groove_90_symmetric_xz_cylinder": {
     "brep": "334c9fe4ace17c14",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "b548aa10b1629529",
     "measures": "d627ca842c67a1f6",
     "mesh": "c4a2a61cdfb8c7b9",
@@ -896,7 +896,7 @@
   },
   "groove_90_symmetric_yz": {
     "brep": "f4766d7e2a035260",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "535e9e92ac0b56f8",
     "measures": "0f2d7cde25fce76b",
     "mesh": "c00b94bd13136194",
@@ -905,7 +905,7 @@
   },
   "groove_90_symmetric_yz_cylinder": {
     "brep": "ccf05d1d4eeee545",
-    "cameras": "7111b045b573cde4",
+    "cameras": "41007e906c351b54",
     "history": "b548aa10b1629529",
     "measures": "1bab0ec24b4c50f6",
     "mesh": "91dfdd53c213ac01",
@@ -914,7 +914,7 @@
   },
   "groove_both_sides_180": {
     "brep": "30a5cab3723efbeb",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "790a732e49045533",
     "measures": "391faa24afa7f8c9",
     "mesh": "b80a1d23adc19efe",
@@ -923,7 +923,7 @@
   },
   "groove_both_sides_180_cylinder": {
     "brep": "d3102ee2a60ba3ff",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "616cc19e20092a6b",
     "measures": "67c17890ff5f6eb0",
     "mesh": "668d79d2ed636ef2",
@@ -932,7 +932,7 @@
   },
   "groove_both_sides_181": {
     "brep": "2e4abac45982c30d",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "f91d0fc830059222",
     "measures": "dd5b3b0505d04e81",
     "mesh": "88c7f4bcc4f3f284",
@@ -941,7 +941,7 @@
   },
   "groove_both_sides_181_cylinder": {
     "brep": "d3102ee2a60ba3ff",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "616cc19e20092a6b",
     "measures": "67c17890ff5f6eb0",
     "mesh": "668d79d2ed636ef2",
@@ -950,7 +950,7 @@
   },
   "groove_both_sides_360": {
     "brep": "8726ab25bd08afb9",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "fc4500238ee24f63",
     "measures": "57c60d5ca3b9f93b",
     "mesh": "4c2961b15c004660",
@@ -959,7 +959,7 @@
   },
   "groove_both_sides_360_cylinder": {
     "brep": "d3102ee2a60ba3ff",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "616cc19e20092a6b",
     "measures": "67c17890ff5f6eb0",
     "mesh": "668d79d2ed636ef2",
@@ -968,7 +968,7 @@
   },
   "groove_both_sides_mirrored_360": {
     "brep": "51fb03ecf37a4609",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "1e149540a264c908",
     "measures": "bf7b12d14154fcc9",
     "mesh": "61142dfa04ed30c1",
@@ -977,7 +977,7 @@
   },
   "groove_both_sides_mirrored_360_cylinder": {
     "brep": "d3102ee2a60ba3ff",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "616cc19e20092a6b",
     "measures": "67c17890ff5f6eb0",
     "mesh": "668d79d2ed636ef2",
@@ -986,7 +986,7 @@
   },
   "groove_both_sides_near_270": {
     "brep": "c845b940c5a36ad2",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "cfe1449e589fcf8c",
     "measures": "97c7d1e52a5c2b66",
     "mesh": "76c0a39d32ab7ad5",
@@ -995,7 +995,7 @@
   },
   "groove_both_sides_near_270_cylinder": {
     "brep": "d3102ee2a60ba3ff",
-    "cameras": "41c8a37612f9a8c9",
+    "cameras": "ce96b31e397e1ce9",
     "history": "616cc19e20092a6b",
     "measures": "67c17890ff5f6eb0",
     "mesh": "668d79d2ed636ef2",
@@ -1004,7 +1004,7 @@
   },
   "groove_control": {
     "brep": "f8e9511dfecd0969",
-    "cameras": "a3a81dade9cb9ed1",
+    "cameras": "58739022ba109459",
     "history": "12805f56a645be41",
     "measures": "e8c08b910adc2c77",
     "mesh": "1d29d9fcc70e13f6",
@@ -1013,7 +1013,7 @@
   },
   "groove_control_cylinder": {
     "brep": "2196d95b06d32a5a",
-    "cameras": "a3a81dade9cb9ed1",
+    "cameras": "58739022ba109459",
     "history": "616cc19e20092a6b",
     "measures": "b6cc79907b60e23b",
     "mesh": "6498a7503bf20f33",
@@ -1052,7 +1052,7 @@
   },
   "pad_one_side_reversed_xy": {
     "brep": "26c7f001cfc2bad2",
-    "cameras": "703b0ee7313b1510",
+    "cameras": "6a43ad4622655f24",
     "history": "f8233f40d30f41a9",
     "measures": "a7bfa52ddba5c886",
     "mesh": "74c69c551e3d5b85",
@@ -1061,7 +1061,7 @@
   },
   "pad_one_side_reversed_xz": {
     "brep": "1ace0c5b9954d4ab",
-    "cameras": "16e11a138d76d0e0",
+    "cameras": "abc359e0b41dc870",
     "history": "f8233f40d30f41a9",
     "measures": "ef720b7e4e7b938e",
     "mesh": "33c1f45995520d85",
@@ -1070,7 +1070,7 @@
   },
   "pad_one_side_reversed_yz": {
     "brep": "f25cdbd2f5cf843e",
-    "cameras": "53aeeca790554aac",
+    "cameras": "a2f60bcf21460bb4",
     "history": "f8233f40d30f41a9",
     "measures": "244e8f055ab4eec6",
     "mesh": "7d0bd47be5e81f05",
@@ -1079,7 +1079,7 @@
   },
   "pad_one_side_xy": {
     "brep": "336aec5bb65eb5c8",
-    "cameras": "1335c154602e006c",
+    "cameras": "e18c5690016935d0",
     "history": "f8233f40d30f41a9",
     "measures": "910810dce0925486",
     "mesh": "5358af06c0bed145",
@@ -1088,7 +1088,7 @@
   },
   "pad_one_side_xz": {
     "brep": "18dfd50c27063880",
-    "cameras": "0811baae5cd8ab6c",
+    "cameras": "f1a616bd987f09dc",
     "history": "f8233f40d30f41a9",
     "measures": "abe91bad0f001c0e",
     "mesh": "fda97a062ee21445",
@@ -1097,7 +1097,7 @@
   },
   "pad_one_side_yz": {
     "brep": "76304c63fbbbda34",
-    "cameras": "48f01d35b3fbb698",
+    "cameras": "f052c6409c76e038",
     "history": "f8233f40d30f41a9",
     "measures": "dcdae2dd3d50aac6",
     "mesh": "ac7d5a9395f4c0c5",
@@ -1106,7 +1106,7 @@
   },
   "pad_symmetric_xy": {
     "brep": "de97319062cd344e",
-    "cameras": "dedeb1b904296145",
+    "cameras": "6719f6a1c94aafa9",
     "history": "f8233f40d30f41a9",
     "measures": "63a33bcfa05c1e16",
     "mesh": "8beeef308f52c745",
@@ -1115,7 +1115,7 @@
   },
   "pad_symmetric_xz": {
     "brep": "680615b6b4d1773a",
-    "cameras": "f39447202f0cafb9",
+    "cameras": "edaf902796be0ea9",
     "history": "f8233f40d30f41a9",
     "measures": "2fb0faa7c269a836",
     "mesh": "bd95589b640afa45",
@@ -1124,7 +1124,7 @@
   },
   "pad_symmetric_yz": {
     "brep": "f2be1148d3d1e2da",
-    "cameras": "00f7f9b903669409",
+    "cameras": "3c81356da984f675",
     "history": "f8233f40d30f41a9",
     "measures": "67ebeb5a7aeff396",
     "mesh": "e7e51fa7ce6f6a45",
@@ -1133,7 +1133,7 @@
   },
   "pad_two_dimensions": {
     "brep": "428596391194fa44",
-    "cameras": "eb92c65a4ad29f2d",
+    "cameras": "55510f5b3c18137d",
     "history": "e1ca7180aae9fecb",
     "measures": "ce81d103866f05c8",
     "mesh": "292c9033d9c1e3f5",
@@ -1142,7 +1142,7 @@
   },
   "pad_two_dimensions_cube": {
     "brep": "13b60a6ca104a414",
-    "cameras": "5731280e06c6854e",
+    "cameras": "9ca187962481881e",
     "history": "f8233f40d30f41a9",
     "measures": "d97e5eb7ecffa15d",
     "mesh": "af934d924f7aee45",
@@ -1151,7 +1151,7 @@
   },
   "pad_two_lengths_circle": {
     "brep": "fc3db57439f2203c",
-    "cameras": "3f60885d5c1d26a0",
+    "cameras": "4656c7b65dbd0890",
     "history": "616cc19e20092a6b",
     "measures": "232909a8dc4521f6",
     "mesh": "a3f0cb1a3158c4e7",
@@ -1160,7 +1160,7 @@
   },
   "pad_two_sides_xy": {
     "brep": "310b31bf1009b424",
-    "cameras": "97542a660b866f3b",
+    "cameras": "5c470641dbcda23f",
     "history": "f8233f40d30f41a9",
     "measures": "4c712a3097b9d0eb",
     "mesh": "5ac64cc7ae4967e5",
@@ -1169,7 +1169,7 @@
   },
   "pad_two_sides_xz": {
     "brep": "2137c71bb29d4c35",
-    "cameras": "7afc83f44f95ab3f",
+    "cameras": "41109e52d70f0f73",
     "history": "f8233f40d30f41a9",
     "measures": "bb50b6353237252b",
     "mesh": "71a3dfa237c8e5e5",
@@ -1178,7 +1178,7 @@
   },
   "pad_two_sides_yz": {
     "brep": "ca5d53a4054c5a90",
-    "cameras": "9c61a5183560faeb",
+    "cameras": "39a236572d2bd473",
     "history": "f8233f40d30f41a9",
     "measures": "8b686b475ce92f4b",
     "mesh": "c138237f34d9eae5",
@@ -1199,7 +1199,7 @@
   },
   "pocket_dimension": {
     "brep": "555fe891b33c947d",
-    "cameras": "fd23ea1c65c76377",
+    "cameras": "d9da6d425541e08b",
     "history": "023c14ba7648ce0d",
     "measures": "2ae2fbd75f4c077f",
     "mesh": "2b63024b040313d1",
@@ -1208,7 +1208,7 @@
   },
   "pocket_dimension_plate": {
     "brep": "a1b3eabbbfc05ee2",
-    "cameras": "fd23ea1c65c76377",
+    "cameras": "d9da6d425541e08b",
     "history": "f8233f40d30f41a9",
     "measures": "cffbcec80352fb65",
     "mesh": "c2511c7bfb8f9e85",
@@ -1217,7 +1217,7 @@
   },
   "pocket_in_box": {
     "brep": "fa3d889daa617e9e",
-    "cameras": "36d49cedd6a30690",
+    "cameras": "b6ce67f608dab574",
     "history": "87b55f2faf4ba549",
     "measures": "2c9f8ceaaf612272",
     "mesh": "448b29798f929d6c",
@@ -1226,7 +1226,7 @@
   },
   "pocket_one_side_reversed_xy": {
     "brep": "374c81541ae2ebbd",
-    "cameras": "b219ad2abf1ab0c5",
+    "cameras": "c8772e05f5940c6d",
     "history": "026d719541fb45ce",
     "measures": "6f16605ff5ba767f",
     "mesh": "d9bc34c5a80ed07d",
@@ -1235,7 +1235,7 @@
   },
   "pocket_one_side_reversed_xz": {
     "brep": "648cd912b5632e82",
-    "cameras": "1e7d3eed4455ae81",
+    "cameras": "cacec02fc38dbfe1",
     "history": "026d719541fb45ce",
     "measures": "3139f8d1f410a593",
     "mesh": "13a5e3db5f47915d",
@@ -1244,7 +1244,7 @@
   },
   "pocket_one_side_reversed_yz": {
     "brep": "c7c2602fc37dbcb0",
-    "cameras": "29d982cb2124a6ad",
+    "cameras": "37be87c492708a41",
     "history": "e6992bcaa36174d0",
     "measures": "2ae37ead574a249a",
     "mesh": "d7c4af4db358208d",
@@ -1253,7 +1253,7 @@
   },
   "pocket_one_side_xy": {
     "brep": "5709e359a9bb2af8",
-    "cameras": "b219ad2abf1ab0c5",
+    "cameras": "c8772e05f5940c6d",
     "history": "dca9d8c0c2d86eba",
     "measures": "e60830f757609595",
     "mesh": "b17887a0aa1df0fc",
@@ -1262,7 +1262,7 @@
   },
   "pocket_one_side_xz": {
     "brep": "42b0b3436307d2ee",
-    "cameras": "1e7d3eed4455ae81",
+    "cameras": "cacec02fc38dbfe1",
     "history": "dca9d8c0c2d86eba",
     "measures": "6937b97da4ecbe78",
     "mesh": "15484f9efe7bd3cc",
@@ -1271,7 +1271,7 @@
   },
   "pocket_one_side_yz": {
     "brep": "0a5248f3f9e7e6c6",
-    "cameras": "29d982cb2124a6ad",
+    "cameras": "37be87c492708a41",
     "history": "2eef7b985394ccec",
     "measures": "1204b774bca21609",
     "mesh": "b90a243aeea4357c",
@@ -1280,7 +1280,7 @@
   },
   "pocket_symmetric_xy": {
     "brep": "ea488487dceafffc",
-    "cameras": "b219ad2abf1ab0c5",
+    "cameras": "c8772e05f5940c6d",
     "history": "dca9d8c0c2d86eba",
     "measures": "7b900de698f338ff",
     "mesh": "cfb5e98ff5216e6c",
@@ -1289,7 +1289,7 @@
   },
   "pocket_symmetric_xz": {
     "brep": "32b7321d1c9f7324",
-    "cameras": "1e7d3eed4455ae81",
+    "cameras": "cacec02fc38dbfe1",
     "history": "dca9d8c0c2d86eba",
     "measures": "883f2ea363533b35",
     "mesh": "639d886f122b5c4f",
@@ -1298,7 +1298,7 @@
   },
   "pocket_symmetric_yz": {
     "brep": "46ef4ca3a42c991c",
-    "cameras": "29d982cb2124a6ad",
+    "cameras": "37be87c492708a41",
     "history": "2eef7b985394ccec",
     "measures": "e12f33cc08393a34",
     "mesh": "8c0e6c7c1d23791c",
@@ -1307,7 +1307,7 @@
   },
   "pocket_through_all": {
     "brep": "ae518f8200f6a313",
-    "cameras": "fd23ea1c65c76377",
+    "cameras": "d9da6d425541e08b",
     "history": "c5b253a539aac177",
     "measures": "712f837b149d9632",
     "mesh": "1ce210580329fffc",
@@ -1316,7 +1316,7 @@
   },
   "pocket_through_all_reversed_xy": {
     "brep": "e516d73f4f1c0b20",
-    "cameras": "b219ad2abf1ab0c5",
+    "cameras": "c8772e05f5940c6d",
     "history": "8ec2540204ade7f7",
     "measures": "6200084f59442971",
     "mesh": "b2fb706867705290",
@@ -1325,7 +1325,7 @@
   },
   "pocket_through_all_reversed_xz": {
     "brep": "3ced6b293f5f255a",
-    "cameras": "1e7d3eed4455ae81",
+    "cameras": "cacec02fc38dbfe1",
     "history": "0c37cd8b72ab74ec",
     "measures": "4ca8e6b319c8dc55",
     "mesh": "874417492d5e6cf4",
@@ -1334,7 +1334,7 @@
   },
   "pocket_through_all_reversed_yz": {
     "brep": "2d75b6ac7a6c92c0",
-    "cameras": "29d982cb2124a6ad",
+    "cameras": "37be87c492708a41",
     "history": "acdcafd43e747277",
     "measures": "8fab97e4cb3ce75f",
     "mesh": "8d61d479134d21a0",
@@ -1343,7 +1343,7 @@
   },
   "pocket_through_all_xy": {
     "brep": "b24f7fe4c22863b0",
-    "cameras": "b219ad2abf1ab0c5",
+    "cameras": "c8772e05f5940c6d",
     "history": "fda8bfe0cbba2a5b",
     "measures": "39904446b0a229bd",
     "mesh": "72c000590c9ccdb0",
@@ -1352,7 +1352,7 @@
   },
   "pocket_through_all_xz": {
     "brep": "fcae822299456c7f",
-    "cameras": "1e7d3eed4455ae81",
+    "cameras": "cacec02fc38dbfe1",
     "history": "511af52cd8ce8205",
     "measures": "db02b0a6c1bfda16",
     "mesh": "50dc3e0922e80ae0",
@@ -1361,7 +1361,7 @@
   },
   "pocket_through_all_yz": {
     "brep": "a040278b8c57185b",
-    "cameras": "29d982cb2124a6ad",
+    "cameras": "37be87c492708a41",
     "history": "9da62e89e842c3af",
     "measures": "b2e5704209b10463",
     "mesh": "a8b03fdb1f71bde0",
@@ -1370,7 +1370,7 @@
   },
   "pocket_two_sides_xy": {
     "brep": "d942250b36722f16",
-    "cameras": "b219ad2abf1ab0c5",
+    "cameras": "c8772e05f5940c6d",
     "history": "dca9d8c0c2d86eba",
     "measures": "11f2f3b01b914ba4",
     "mesh": "b6911482dc53eebc",
@@ -1379,7 +1379,7 @@
   },
   "pocket_two_sides_xz": {
     "brep": "bb65e0d9b7bb5c85",
-    "cameras": "1e7d3eed4455ae81",
+    "cameras": "cacec02fc38dbfe1",
     "history": "dca9d8c0c2d86eba",
     "measures": "6c938c56a8b1a6fd",
     "mesh": "0a49cf76ca7e9dfc",
@@ -1388,7 +1388,7 @@
   },
   "pocket_two_sides_yz": {
     "brep": "eff0b3fa02ade0da",
-    "cameras": "29d982cb2124a6ad",
+    "cameras": "37be87c492708a41",
     "history": "2eef7b985394ccec",
     "measures": "d57dac924fc12b4f",
     "mesh": "ad630a546210307c",
@@ -1400,7 +1400,7 @@
   },
   "rectangle_about_its_side_360_xy": {
     "brep": "9f9053d6e7f48419",
-    "cameras": "10a28e7bdf3685c4",
+    "cameras": "2e9f7add0b3e8c4c",
     "history": "b548aa10b1629529",
     "measures": "0d64daf8d8fdc9ff",
     "mesh": "fd91e43cceae1fde",
@@ -1409,7 +1409,7 @@
   },
   "rectangle_about_its_side_90_yz": {
     "brep": "c268144f2a821189",
-    "cameras": "73a46ed9d23fb653",
+    "cameras": "e7fcc9e4b1332ccf",
     "history": "7b7a10dfa86174a1",
     "measures": "c4c3980c2b7e0cb3",
     "mesh": "156de5767d73323a",
@@ -1418,7 +1418,7 @@
   },
   "revolve_ring": {
     "brep": "f0cc5f9c47ea15fc",
-    "cameras": "086066070a841c2b",
+    "cameras": "107cd0de7463ad73",
     "history": "1d2f99f9631de0e9",
     "measures": "a193148ed374a1e0",
     "mesh": "db782ac8de17b726",
@@ -1427,7 +1427,7 @@
   },
   "revolve_sliver": {
     "brep": "9e5f5fa293e8e7db",
-    "cameras": "a5d7ebfe58ec2b18",
+    "cameras": "69502cc88208a550",
     "history": "f36bfa942afb614a",
     "measures": "ed727ae211cda685",
     "mesh": "395152fc334bed37",
@@ -1436,7 +1436,7 @@
   },
   "revolve_triangle_quarter": {
     "brep": "5201948decd06a64",
-    "cameras": "6bf97d442f1bc6e3",
+    "cameras": "74bd7b42bb5d7983",
     "history": "fe2b800758524906",
     "measures": "0235c0b7291ec3c1",
     "mesh": "0ec65923b6766ed8",
@@ -1454,7 +1454,7 @@
   },
   "slot_plate": {
     "brep": "003df2bbf29bff54",
-    "cameras": "e917e7e137e9323e",
+    "cameras": "218f58d6fa0184f6",
     "history": "f8233f40d30f41a9",
     "measures": "3b28054d7f9e06e2",
     "mesh": "d2c536039ef7a690",
@@ -1463,7 +1463,7 @@
   },
   "sphere": {
     "brep": "ecb7ca63de7ebd3e",
-    "cameras": "524c915517d9ffb1",
+    "cameras": "f8c06a87314d2f81",
     "history": "f556752b9125bf9c",
     "measures": "67c694bf4dc16e26",
     "mesh": "bc572c24f4c2ac77",
@@ -1472,14 +1472,14 @@
   },
   "sphere_5": {
     "brep": "15a28f45a59dc184",
-    "cameras": "fd562999b08d38f1",
+    "cameras": "c514e1eb24c8c7e1",
     "measures": "e895dcc53f0fbe3f",
     "mesh": "ef9c030f928aeada",
     "summary": "e7ad374094de2c65"
   },
   "sphere_kilometre": {
     "brep": "71affb40ada091a1",
-    "cameras": "704c64f171bbdde5",
+    "cameras": "4b26b18a09226185",
     "measures": "18ad4fe6c6d5bcb1",
     "mesh": "refused: invalid_input",
     "summary": "60fd03eef9271f11"
@@ -1489,7 +1489,7 @@
   },
   "sphere_unround": {
     "brep": "20847dd2ea1d5946",
-    "cameras": "90c31d17a5416eb9",
+    "cameras": "034de8c377bffca9",
     "measures": "6431e2e39205cd59",
     "mesh": "2b44da78cbc2efe2",
     "summary": "d4656028bb29f436"
@@ -1514,7 +1514,7 @@
   },
   "through_rim": {
     "brep": "324bb03c25e9cb47",
-    "cameras": "8f088cc8440a4e19",
+    "cameras": "aaaa31a113ca4e39",
     "history": "7fb6531c00ac5458",
     "measures": "6714d85e3567ad1a",
     "mesh": "c4b0d4acc4ba8e95",
@@ -1523,14 +1523,14 @@
   },
   "torus_10_2": {
     "brep": "9f5f7e54b74fc10b",
-    "cameras": "ef26572b6abd1b29",
+    "cameras": "7a19d3d8329ff211",
     "measures": "1d5a42a45df3d938",
     "mesh": "40e70423bfc2576b",
     "summary": "2bbdaafa79e40aea"
   },
   "torus_180_one_side_reversed_xy": {
     "brep": "6a8f8fa0c41a43a2",
-    "cameras": "43935ecbe83db427",
+    "cameras": "31e98b271d32cbff",
     "history": "616cc19e20092a6b",
     "measures": "b0ccffece33fe5a6",
     "mesh": "675eec87985c70fd",
@@ -1539,7 +1539,7 @@
   },
   "torus_180_one_side_reversed_xy_about_a_line": {
     "brep": "c2f6c935bf6b8c81",
-    "cameras": "55db5614ec1a1f2f",
+    "cameras": "c60cde5285bd8247",
     "history": "616cc19e20092a6b",
     "measures": "c58c7096d3d29ddd",
     "mesh": "22550d0af908574a",
@@ -1548,7 +1548,7 @@
   },
   "torus_180_one_side_reversed_xz": {
     "brep": "8faedfb4483a20ec",
-    "cameras": "eb66cbb72793f553",
+    "cameras": "cfeb56d561d8ce6f",
     "history": "616cc19e20092a6b",
     "measures": "e929ae4f9ee60309",
     "mesh": "aa29214c1bfae245",
@@ -1557,7 +1557,7 @@
   },
   "torus_180_one_side_reversed_xz_about_a_line": {
     "brep": "9a2aeef4f87830d1",
-    "cameras": "33559d81b4c7818f",
+    "cameras": "e65be906178ad1cf",
     "history": "616cc19e20092a6b",
     "measures": "97f5b436ce432227",
     "mesh": "61be983248c94652",
@@ -1566,7 +1566,7 @@
   },
   "torus_180_one_side_reversed_yz": {
     "brep": "a27ca2869298ed37",
-    "cameras": "a31b47d42e9cc74b",
+    "cameras": "26417420960038bb",
     "history": "616cc19e20092a6b",
     "measures": "3cc4313dc534989f",
     "mesh": "2dfb7537fbe73235",
@@ -1575,7 +1575,7 @@
   },
   "torus_180_one_side_reversed_yz_about_a_line": {
     "brep": "267be4120547a2c3",
-    "cameras": "24aca3dca82be3eb",
+    "cameras": "4693fe9184247c7b",
     "history": "616cc19e20092a6b",
     "measures": "71676d8aa066d517",
     "mesh": "016bdc6abaa5a786",
@@ -1584,7 +1584,7 @@
   },
   "torus_180_one_side_xy": {
     "brep": "659f3e4aee091268",
-    "cameras": "cb007c6dd7623e5b",
+    "cameras": "95db0094954f05d3",
     "history": "616cc19e20092a6b",
     "measures": "1ff7c50c26373ade",
     "mesh": "d0e5bb99fb1548c9",
@@ -1593,7 +1593,7 @@
   },
   "torus_180_one_side_xy_about_a_line": {
     "brep": "dc6d9f7b624fe7b0",
-    "cameras": "1fd93bec77cd4257",
+    "cameras": "0322fbbf26f1082f",
     "history": "616cc19e20092a6b",
     "measures": "df6a030f2f9f583d",
     "mesh": "7338b65f28208076",
@@ -1602,7 +1602,7 @@
   },
   "torus_180_one_side_xz": {
     "brep": "f5ddf70beeef3fd5",
-    "cameras": "155859bbbe6ea537",
+    "cameras": "1bbe0a07776895b3",
     "history": "616cc19e20092a6b",
     "measures": "4f839e817b96b493",
     "mesh": "77f77e4ab5e9fc41",
@@ -1611,7 +1611,7 @@
   },
   "torus_180_one_side_xz_about_a_line": {
     "brep": "d519691bf236cd86",
-    "cameras": "d08d71007d71e777",
+    "cameras": "c799a3ff0af6d557",
     "history": "616cc19e20092a6b",
     "measures": "04b96732b844a07d",
     "mesh": "52b060b43d60001e",
@@ -1620,7 +1620,7 @@
   },
   "torus_180_one_side_yz": {
     "brep": "1d18c264ffe18b97",
-    "cameras": "bdfd84a41eb4bae7",
+    "cameras": "100bb099590c6747",
     "history": "616cc19e20092a6b",
     "measures": "6b21e61b9f7dc2f7",
     "mesh": "e249cc14c4cd7211",
@@ -1629,7 +1629,7 @@
   },
   "torus_180_one_side_yz_about_a_line": {
     "brep": "f82b7411be64202b",
-    "cameras": "a0031872f60e85e3",
+    "cameras": "90984a5bdb735353",
     "history": "616cc19e20092a6b",
     "measures": "c92c5e567f714d07",
     "mesh": "522574155c667ce2",
@@ -1638,7 +1638,7 @@
   },
   "torus_180_symmetric_xy": {
     "brep": "86e888a89eed40a4",
-    "cameras": "364068a92e3e640f",
+    "cameras": "14368bfbf446ae0f",
     "history": "616cc19e20092a6b",
     "measures": "35444da94586e34b",
     "mesh": "3a5c2935914e7ec0",
@@ -1647,7 +1647,7 @@
   },
   "torus_180_symmetric_xy_about_a_line": {
     "brep": "dbb0278435574ff3",
-    "cameras": "c522c19af2078523",
+    "cameras": "2b4389abe8ad3a0f",
     "history": "616cc19e20092a6b",
     "measures": "3f954cf01f637369",
     "mesh": "8b6bb8038a408901",
@@ -1656,7 +1656,7 @@
   },
   "torus_180_symmetric_xz": {
     "brep": "d991eecbaa693b5a",
-    "cameras": "a31b47d42e9cc74b",
+    "cameras": "26417420960038bb",
     "history": "616cc19e20092a6b",
     "measures": "3272794ccd12eeb8",
     "mesh": "e84446847c8e2aac",
@@ -1665,7 +1665,7 @@
   },
   "torus_180_symmetric_xz_about_a_line": {
     "brep": "e93df35c46be25f0",
-    "cameras": "74b0c51d584a9377",
+    "cameras": "9d005b59ba544873",
     "history": "616cc19e20092a6b",
     "measures": "375b4f78dcfc51ca",
     "mesh": "586f498394ee25c4",
@@ -1674,7 +1674,7 @@
   },
   "torus_180_symmetric_yz": {
     "brep": "60504e3498ba93c8",
-    "cameras": "155859bbbe6ea537",
+    "cameras": "1bbe0a07776895b3",
     "history": "616cc19e20092a6b",
     "measures": "4c19d670d69f1438",
     "mesh": "9a3c91a2cdd4f9b8",
@@ -1683,7 +1683,7 @@
   },
   "torus_180_symmetric_yz_about_a_line": {
     "brep": "8ce993c0d919d79b",
-    "cameras": "80faf20ac3a16bdb",
+    "cameras": "0a755767128f2973",
     "history": "616cc19e20092a6b",
     "measures": "a2fa79b890d76ccf",
     "mesh": "10ef36fa8807cadc",
@@ -1692,7 +1692,7 @@
   },
   "torus_360_one_side_xy": {
     "brep": "28db514149ede28c",
-    "cameras": "2684b42e46dc6955",
+    "cameras": "6bf444e350fd0365",
     "history": "673499aefde5371c",
     "measures": "e517a1913d054bd5",
     "mesh": "b5cb40f2e5248dbd",
@@ -1701,7 +1701,7 @@
   },
   "torus_360_one_side_xy_about_a_line": {
     "brep": "a2582267dc4b6605",
-    "cameras": "0953eb2281eb77bd",
+    "cameras": "553b2bf02547cf55",
     "history": "673499aefde5371c",
     "measures": "3a2998aefad49a30",
     "mesh": "48005caccbd79c87",
@@ -1710,7 +1710,7 @@
   },
   "torus_360_one_side_xz": {
     "brep": "be2d08c1a431e812",
-    "cameras": "4b6fcf0c6e8f1b81",
+    "cameras": "ca12ccd91eb2c3c9",
     "history": "673499aefde5371c",
     "measures": "f5d9589778cbc801",
     "mesh": "2229debc21b830ed",
@@ -1719,7 +1719,7 @@
   },
   "torus_360_one_side_xz_about_a_line": {
     "brep": "348007626081feca",
-    "cameras": "c70b0c36164cc9e4",
+    "cameras": "8a408289c030de44",
     "history": "673499aefde5371c",
     "measures": "5e0ec8c1b415d208",
     "mesh": "c2fd76ed0c5bdbb3",
@@ -1728,7 +1728,7 @@
   },
   "torus_360_one_side_yz": {
     "brep": "db0c68b24827e985",
-    "cameras": "4b6fcf0c6e8f1b81",
+    "cameras": "ca12ccd91eb2c3c9",
     "history": "673499aefde5371c",
     "measures": "6c92b016a1b02241",
     "mesh": "497e2468df7c13c1",
@@ -1737,7 +1737,7 @@
   },
   "torus_360_one_side_yz_about_a_line": {
     "brep": "f0bcc76bde0130e9",
-    "cameras": "2c1d1a7aa05908b1",
+    "cameras": "598b3302cecbe5c1",
     "history": "673499aefde5371c",
     "measures": "f0987a055485be72",
     "mesh": "4636b55abdf8bc87",
@@ -1746,7 +1746,7 @@
   },
   "torus_90_one_side_reversed_xy": {
     "brep": "1e99f3749ed03827",
-    "cameras": "b2dc655cbe915c21",
+    "cameras": "b6be9c1e11fd3c09",
     "history": "616cc19e20092a6b",
     "measures": "66a8eba99681783d",
     "mesh": "1781d972be3710dd",
@@ -1755,7 +1755,7 @@
   },
   "torus_90_one_side_reversed_xy_about_a_line": {
     "brep": "39770202a5abbc19",
-    "cameras": "f0a75b6abe8979d5",
+    "cameras": "56e413722502337d",
     "history": "616cc19e20092a6b",
     "measures": "d09cc2bed597c5e4",
     "mesh": "c901e3a89719470b",
@@ -1764,7 +1764,7 @@
   },
   "torus_90_one_side_reversed_xz": {
     "brep": "531e7d21bf911c4a",
-    "cameras": "8c11bdcbf779ab3d",
+    "cameras": "d0f9d8748dbb17b5",
     "history": "616cc19e20092a6b",
     "measures": "250ad4203b919ad2",
     "mesh": "b0275cb6cae7b959",
@@ -1773,7 +1773,7 @@
   },
   "torus_90_one_side_reversed_xz_about_a_line": {
     "brep": "7b2e359586805fd5",
-    "cameras": "ffcd34af6d04242d",
+    "cameras": "8151b6260f61e7d1",
     "history": "616cc19e20092a6b",
     "measures": "f2f50e3e1ace9118",
     "mesh": "709cd9d70092c163",
@@ -1782,7 +1782,7 @@
   },
   "torus_90_one_side_reversed_yz": {
     "brep": "e192ba47510d002d",
-    "cameras": "be77af0e8ced45ed",
+    "cameras": "641da6a0525c6fad",
     "history": "616cc19e20092a6b",
     "measures": "4dbe8e98b1f5c09a",
     "mesh": "eeb4a0782655e461",
@@ -1791,7 +1791,7 @@
   },
   "torus_90_one_side_reversed_yz_about_a_line": {
     "brep": "59392eb05d8bf2c8",
-    "cameras": "b9cfbf2f772d2a55",
+    "cameras": "473de60b58013929",
     "history": "616cc19e20092a6b",
     "measures": "c5ff9be55adba15f",
     "mesh": "bd99e3afb27d1263",
@@ -1800,7 +1800,7 @@
   },
   "torus_90_one_side_xy": {
     "brep": "5840e951c9f69ddb",
-    "cameras": "a7455df4d4438321",
+    "cameras": "8f9cbd9b62175269",
     "history": "616cc19e20092a6b",
     "measures": "b98298d4a9e7d4f5",
     "mesh": "c887442bec39a001",
@@ -1809,7 +1809,7 @@
   },
   "torus_90_one_side_xy_about_a_line": {
     "brep": "0b41dc01befaabf4",
-    "cameras": "21382c31247288ad",
+    "cameras": "83da87933b097515",
     "history": "616cc19e20092a6b",
     "measures": "34b27ba8bc862823",
     "mesh": "900004be1d51640f",
@@ -1818,7 +1818,7 @@
   },
   "torus_90_one_side_xy_about_x": {
     "brep": "2bb0fe34636edf71",
-    "cameras": "1fc79e6faa091505",
+    "cameras": "5dae9afc4c72d709",
     "history": "616cc19e20092a6b",
     "measures": "5764977e1fb177e6",
     "mesh": "30b3bf5830ff3e7f",
@@ -1827,7 +1827,7 @@
   },
   "torus_90_one_side_xz": {
     "brep": "a85f0d2245fbc6ce",
-    "cameras": "be77af0e8ced45ed",
+    "cameras": "641da6a0525c6fad",
     "history": "616cc19e20092a6b",
     "measures": "8cdd4c7630343cfc",
     "mesh": "759c632e9eb00eed",
@@ -1836,7 +1836,7 @@
   },
   "torus_90_one_side_xz_about_a_line": {
     "brep": "86681ab185bba136",
-    "cameras": "e99a341ab9f56a65",
+    "cameras": "0efc9929cbafad71",
     "history": "616cc19e20092a6b",
     "measures": "35db4a75bfe87693",
     "mesh": "39fad6f12eb0d407",
@@ -1845,7 +1845,7 @@
   },
   "torus_90_one_side_yz": {
     "brep": "760e98ff54dbf97c",
-    "cameras": "4cc1863c7561b12d",
+    "cameras": "9594b965fd2c9c05",
     "history": "616cc19e20092a6b",
     "measures": "34e042ddaae14a64",
     "mesh": "be82add0790f0675",
@@ -1854,7 +1854,7 @@
   },
   "torus_90_one_side_yz_about_a_line": {
     "brep": "bc90f96e26e92bb8",
-    "cameras": "17a36e7dadf0b045",
+    "cameras": "d8c6522d8ee72a11",
     "history": "616cc19e20092a6b",
     "measures": "300f8dc6927fdcc0",
     "mesh": "a312a457a7ed4007",
@@ -1863,7 +1863,7 @@
   },
   "torus_90_reversed_xz_about_x": {
     "brep": "50f714bd7a584fbf",
-    "cameras": "1fc79e6faa091505",
+    "cameras": "5dae9afc4c72d709",
     "history": "616cc19e20092a6b",
     "measures": "8ba49bd17b615c46",
     "mesh": "a5b27b758592ddeb",
@@ -1872,7 +1872,7 @@
   },
   "torus_90_symmetric_xy": {
     "brep": "8e4c7bef91af4657",
-    "cameras": "031343a1931c4bd9",
+    "cameras": "139e34c790d12925",
     "history": "616cc19e20092a6b",
     "measures": "1702676e582e4ff3",
     "mesh": "a2023af14959a3ea",
@@ -1881,7 +1881,7 @@
   },
   "torus_90_symmetric_xy_about_a_line": {
     "brep": "d0528da9c482daf2",
-    "cameras": "65f5eddabdd57d1c",
+    "cameras": "cbc4657779933f7c",
     "history": "616cc19e20092a6b",
     "measures": "f7b73b934e60fb89",
     "mesh": "a27e46f9d69db3d6",
@@ -1890,7 +1890,7 @@
   },
   "torus_90_symmetric_xz": {
     "brep": "f25b2251cfcc2846",
-    "cameras": "00c0730545b9e275",
+    "cameras": "80c4c3d63ce94109",
     "history": "616cc19e20092a6b",
     "measures": "883f7d918ad92007",
     "mesh": "e43a6c6869ed2756",
@@ -1899,7 +1899,7 @@
   },
   "torus_90_symmetric_xz_about_a_line": {
     "brep": "89c1a0e5092c8fef",
-    "cameras": "b05348d8f278f604",
+    "cameras": "1b6535dc4ad09bc7",
     "history": "616cc19e20092a6b",
     "measures": "feb1f79b9d3232ee",
     "mesh": "b7c699bf4f7d317d",
@@ -1908,7 +1908,7 @@
   },
   "torus_90_symmetric_yz": {
     "brep": "bc71cb4adcc24599",
-    "cameras": "881e1f7e46db5235",
+    "cameras": "a344defa33aa35a5",
     "history": "616cc19e20092a6b",
     "measures": "d6faf8f3973c98d3",
     "mesh": "277ed7789c8daf12",
@@ -1917,7 +1917,7 @@
   },
   "torus_90_symmetric_yz_about_a_line": {
     "brep": "3343256d72776d92",
-    "cameras": "07bbbd4fbfcc35dc",
+    "cameras": "c2f6273b85c5f144",
     "history": "616cc19e20092a6b",
     "measures": "dcd649dffe53bd9d",
     "mesh": "d31711e41068eed1",
@@ -1926,7 +1926,7 @@
   },
   "torus_90_symmetric_yz_about_x": {
     "brep": "f818b77bfb110634",
-    "cameras": "d1250ac5b53779ed",
+    "cameras": "e7325ec884e15f6d",
     "history": "616cc19e20092a6b",
     "measures": "d393542a8b1783fb",
     "mesh": "ebb949a8a3449599",
@@ -1935,21 +1935,21 @@
   },
   "torus_fat": {
     "brep": "369fc4453afed8fc",
-    "cameras": "0f8bc2729f128bd5",
+    "cameras": "3491faa292f76d65",
     "measures": "09ff55b3080a1a16",
     "mesh": "cb2def56547f6133",
     "summary": "32e59080f58c099b"
   },
   "torus_horn": {
     "brep": "9ac078e771eb6a35",
-    "cameras": "183745a7b610817d",
+    "cameras": "b4576b788a9c751d",
     "measures": "c875ec2169cd63e7",
     "mesh": "124b2ed536337a68",
     "summary": "f3c516303caa58e7"
   },
   "translate_box": {
     "brep": "46a485f8ca987bb9",
-    "cameras": "46e810da8c49d131",
+    "cameras": "b5e88794f7290731",
     "history": "464ed4df4af85938",
     "measures": "94700720cc5ac3e5",
     "mesh": "cb41f0c765007455",
@@ -1958,7 +1958,7 @@
   },
   "translate_far": {
     "brep": "89b240430eab950d",
-    "cameras": "e3ec8e2965b19f9f",
+    "cameras": "7e7439e07938599f",
     "history": "464ed4df4af85938",
     "measures": "c04a7a9335c09f08",
     "mesh": "d96526a01c2e80ad",
@@ -1967,7 +1967,7 @@
   },
   "translate_torus_unround": {
     "brep": "64dcedc01fa4b2dc",
-    "cameras": "3f543bff7cf7c610",
+    "cameras": "b417e0ed7161cd10",
     "history": "3948bca17ad6348b",
     "measures": "40deb1b50b384aee",
     "mesh": "704a0ff1f872afc4",
@@ -1982,7 +1982,7 @@
   },
   "two_holes": {
     "brep": "9ee1b7953cc8dba4",
-    "cameras": "1335c154602e006c",
+    "cameras": "e18c5690016935d0",
     "history": "ce8b5fc21a5eec8f",
     "measures": "7dba4efe982f2220",
     "mesh": "96e8254caf7093e0",
@@ -1991,7 +1991,7 @@
   },
   "two_holes_block": {
     "brep": "336aec5bb65eb5c8",
-    "cameras": "1335c154602e006c",
+    "cameras": "e18c5690016935d0",
     "history": "f8233f40d30f41a9",
     "measures": "910810dce0925486",
     "mesh": "5358af06c0bed145",
@@ -2000,7 +2000,7 @@
   },
   "unit_square_pad": {
     "brep": "bd888096f4921b23",
-    "cameras": "ade9ee8ecc4695a1",
+    "cameras": "4dcf6f5a47a0da59",
     "history": "f8233f40d30f41a9",
     "measures": "5bb311e270a0e8c4",
     "mesh": "ddd32d7ccaef8dc5",

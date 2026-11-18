@@ -25,7 +25,7 @@ use crate::sessions::HANG;
 
 /// The empty document in canonical form: what `open` with `create` writes, and what an
 /// untitled session holds (tests/session.rs's `EMPTY`).
-const EMPTY: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": []\n}\n";
+const EMPTY: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": []\n}\n";
 
 /// `open`'s request for an untitled document.
 const UNTITLED: &str = r#"{"path": null, "create": true}"#;

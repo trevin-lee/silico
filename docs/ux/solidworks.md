@@ -229,6 +229,24 @@ Read from the 2027 help on 2026-11-08.
 
 Silico's booleans are binary: `fuse`, `cut`, and `common` each take one `base` and one `tool`, and consume both. So Silico's dialog has two boxes of one body each, its target and its tool, for all three operations, as Subtract's *Main Body* and one body to subtract. A pick in a box replaces its body, as a box of one entity does. The same body in both boxes is refused. Bodies selected in the browser fill the boxes when the dialog opens, the first the target, the second the tool; a selected face, edge, or vertex doesn't, since the help doesn't say it does. A click on a body's face, edge, or vertex takes that body. Once the target is taken, the tool's box becomes the active one if it's empty, as Fusion's Combine moves from its Target Body to its Tool Bodies (docs/ux/fusion.md, *Combine*). The help names none of these rules, so they're Silico's own.
 
+### Patterns and mirror
+
+Read from the 2026 help for docs/ports/patterns.md §6 (the 2027 PropertyManagers say the same), and taken into this note on 2026-11-09 for M6.0 (docs/roadmap/m6-features.md, *Notes for docs/ux*).
+
+- **A linear pattern** has one or two directions. Each direction takes:
+  - "a linear edge, line, axis, dimension, planar faces and surfaces, conical faces and surfaces, circular edges, and reference planes";
+  - Reverse Direction;
+  - a spacing, "the spacing between pattern instances";
+  - a number of instances, which "includes the original features or selections".
+
+  Direction 2 adds *Pattern seed only* and *Symmetric* ([Linear Patterns](https://help.solidworks.com/2026/english/SolidWorks/sldworks/t_Linear_Patterns_Overview.htm), [Linear Pattern PropertyManager](https://help.solidworks.com/2017/English/SolidWorks/sldworks/hidd_lpattern.htm)). The help doesn't say which way a planar face or a circular edge sets the direction. Silico takes a face's outward normal (patterns.md, decision 3).
+- **Instances to Skip:** "Skips the pattern instances that you select in the graphics area … The coordinates of the pattern instance appear" ([Selecting Instances to Skip](https://help.solidworks.com/2026/english/SolidWorks/sldworks/t_selecting_instances_to_skip_patterns.htm)). The help doesn't say what becomes of a skipped instance's coordinates when a count changes. In Silico, its index never moves (patterns.md, decision 7).
+- **Geometry pattern** "copies, but does not solve, the patterned feature. End conditions and calculations are ignored"; without it, each instance is solved ([Geometry Pattern](https://help.solidworks.com/2026/english/SolidWorks/sldworks/c_Geometry_Pattern_Concept.htm)). Silico's patterns are always geometry patterns.
+- **A limit:** "The upper limit on the number of instances for patterns is 65500", and a large number is confirmed in a dialog box ([Limits on Number of Instances](https://help.solidworks.com/2026/english/SolidWorks/sldworks/c_limit_number_instances.htm)). Silico refuses more than 1,000 (patterns.md, decision 8).
+- **A circular pattern's axis** is an "Axis, Circular edge, Linear edge or linear sketch line, Cylindrical face or surface, Revolved face or surface, Angular dimension". *Equal spacing* "Sets Angle to 360°", and otherwise the angle is the one "between each instance" ([Circular Pattern PropertyManager](https://help.solidworks.com/2026/english/SolidWorks/sldworks/HIDD_CPATTERN.htm)). Its number includes the original ([`FeatureCircularPattern5`](https://help.solidworks.com/2026/english/api/sldworksapi/SolidWorks.Interop.sldworks~SolidWorks.Interop.sldworks.IFeatureManager~FeatureCircularPattern5.html)). A second direction may be symmetric ([Bidirectional Circular Patterns](https://help.solidworks.com/2026/english/SolidWorks/sldworks/t_bidirectional_circular_pat.htm)).
+- **Mirror** takes "a plane or planar face", and features, faces, or bodies. A second plane may be given, and it offers Geometry Pattern, and *Merge solids* for bodies ([Mirror Feature PropertyManager](https://help.solidworks.com/2026/english/SolidWorks/sldworks/hidd_dve_feat_mirror.htm)).
+- **Splits:** "When pattern or mirror features split single bodies into multiple bodies, you can select which bodies to keep" ([Patterns and Mirroring](https://help.solidworks.com/2026/english/SolidWorks/sldworks/c_Patterns_and_Mirroring_top.htm)). The help doesn't say what a boss instance off the body does. Silico refuses it (patterns.md, decision 6).
+
 ## 6. Undo, saving, and changes on disk
 
 - Ctrl+Z undoes the last action "when possible"; the Undo List undoes a chosen action and every one after it; Ctrl+Y redoes, when the undo can be reversed ([Basic Commands](https://help.solidworks.com/2027/english/SolidWorks/sldworks/c_basic_commands.htm)).
@@ -273,6 +291,7 @@ What this note looked for and couldn't source from the help:
 - What trim does to relations and dimensions, and what deleting an entity does to its relations and to a shared endpoint.
 - What a PropertyManager shows when its preview fails.
 - Combine: whether a selection made before it fills its boxes, whether its boxes hand the focus on, and what a click on a body's face puts in one (§5, *Combine*).
+- Patterns: which way a planar face or a circular edge sets a direction, what a skipped instance's coordinates become when a count changes, and what a boss instance off the body does (§5, *Patterns and mirror*).
 - What a feature downstream of a failed one is built on.
 - What is undoable, and whether undo crosses a save, a rebuild, leaving a sketch, or a feature's OK.
 - What happens when a document open for writing changes on disk, beyond SolidWorks' own one-writer locking.

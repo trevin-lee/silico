@@ -117,10 +117,18 @@ impl Fixture {
 /// serde_json and compared as values (layout and whitespace aside); byte for byte where
 /// either doesn't parse.
 fn differs(begun: &str, now: &str) -> bool {
-    match (
-        serde_json::from_str::<serde_json::Value>(begun),
-        serde_json::from_str::<serde_json::Value>(now),
-    ) {
+    // The header's `naming` says which scheme wrote the names, not what the document is: 5
+    // and 6 read as one document (6 reads 5's names as they are, N10), and every save
+    // writes 6, so a file begun at 5 and written back is unchanged.
+    let read = |text: &str| {
+        serde_json::from_str::<serde_json::Value>(text).map(|mut value| {
+            if let Some(header) = value.as_object_mut() {
+                header.remove("naming");
+            }
+            value
+        })
+    };
+    match (read(begun), read(now)) {
         (Ok(a), Ok(b)) => a != b,
         _ => begun != now,
     }

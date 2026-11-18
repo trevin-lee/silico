@@ -1,0 +1,944 @@
+//! The command search (docs/design/m5-ui/DESIGN.md, *Agents as equal clients* and *egui
+//! mapping*; its `styles.css`'s `.palette-modal` rules, `js/app.js`'s `paletteItems` and
+//! `renderPalette`, and `js/interact.js`'s keys): `S` opens a box over a dimmed window, its
+//! field taking the keyboard, listing the commands of the one registry (`crate::shortcuts`),
+//! each with its icon, its name, its group, and its keys, narrowed by what's typed. ↑ and ↓
+//! move a highlight, Enter or a click runs a command, Esc or a click on the backdrop closes
+//! it. A command that can't run now is listed off, saying why where its button or menu item
+//! says it, and runs from here as its keys or its button run it (`App::run_searched`).
+//!
+//! It's an `Area` anchored at the window's top centre, as DESIGN.md maps it, over a backdrop
+//! of its own: no modal, so nothing of the window under it is drawn otherwise.
+
+use eframe::egui::{
+    self, Align, FontId, Key, Modifiers, Rect, Sense, Shape, Stroke, StrokeKind, Ui, UiBuilder,
+    Vec2, WidgetInfo, WidgetType, accesskit::Role, pos2, vec2,
+};
+
+use crate::icons::{ICON_SIZE, Icon, IconSize};
+use crate::menu;
+use crate::shortcuts::{self, Command, Entry, REGISTRY};
+use crate::theme;
+
+/// The box's name, and its field's (the prototype's `aria-label`s) and placeholder.
+pub(crate) const TITLE: &str = "Search commands";
+
+/// What the list says when nothing matches (the prototype's `.mh`, in its capitals).
+pub(crate) const NOTHING_FOUND: &str = "No command matches";
+
+/// The foot's words at its right.
+pub(crate) const MCP: &str = "Agents reach the same commands over MCP";
+
+/// The most rows listed (`paletteItems`'s `slice(0, 40)`).
+pub(crate) const MOST: usize = 40;
+
+/// The registry's commands the search leaves out (`paletteItems`'s `ok`, `cancel`, `orbit`,
+/// `pan`, and `zoom`: a dialog's keys and the pointer's gestures; its `selectOther` and
+/// `sNoRel` aren't in the app's registry).
+pub const LEFT_OUT: [Command; 5] = [
+    Command::Ok,
+    Command::Cancel,
+    Command::Orbit,
+    Command::Pan,
+    Command::Zoom,
+];
+
+/// The foot's parts: each one's caps, then its words (`.pm-foot`'s spans).
+const FOOT: [(&[&str], &str); 3] = [
+    (&["↑", "↓"], " move"),
+    (&["↵"], " run"),
+    (&["Esc"], " close"),
+];
+
+/// Whether the search finds `entry`, named `label` as its row is, for `query`, its case
+/// aside: the query in its name, its group's, or its description (`paletteItems`'s filter);
+/// an empty query finds every one.
+pub(crate) fn finds(entry: &Entry, label: &str, query: &str) -> bool {
+    let query = query.to_lowercase();
+    query.is_empty()
+        || [
+            label,
+            entry.group.name(),
+            entry.description.unwrap_or_default(),
+        ]
+        .iter()
+        .any(|text| text.to_lowercase().contains(&query))
+}
+
+/// The commands listed for `query`, in the registry's order, each with its row as `row`
+/// gives it: those it finds by their rows' names, but [`LEFT_OUT`], the first [`MOST`] of
+/// them.
+pub(crate) fn listed(query: &str, row: &dyn Fn(Command) -> Row) -> Vec<(&'static Entry, Row)> {
+    REGISTRY
+        .iter()
+        .filter(|entry| !LEFT_OUT.contains(&entry.command))
+        .map(|entry| (entry, row(entry.command)))
+        .filter(|(entry, row)| finds(entry, row.label, query))
+        .take(MOST)
+        .collect()
+}
+
+/// Whether a command can run now, and if not, why, where its button or menu item says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Can {
+    Run,
+    Off(Option<String>),
+}
+
+/// A command's row as the app has it now: its name (the registry's, but Unsuppress for a
+/// suppressed feature, as its menu names it) and whether it can run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Row {
+    pub label: &'static str,
+    pub can: Can,
+}
+
+/// The search while it's open.
+#[derive(Debug, Default)]
+pub(crate) struct Search {
+    /// What's typed in its field.
+    pub query: String,
+    /// The row the keys light, in the list for the query.
+    highlight: usize,
+    /// Whether the highlight was moved by a key, so its row is scrolled into view.
+    moved: bool,
+}
+
+impl Search {
+    /// The row the keys light, in a list of `rows`.
+    pub(crate) fn highlight(&self, rows: usize) -> usize {
+        self.highlight.min(rows.saturating_sub(1))
+    }
+}
+
+/// What the person asked of the search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Asked {
+    None,
+    Close,
+    Run(Command),
+}
+
+/// The keyboard let go as the search closes: its field had it, and a key after is a
+/// command's again.
+pub(crate) fn let_go(ctx: &egui::Context) {
+    ctx.memory_mut(|memory| {
+        if let Some(focused) = memory.focused() {
+            memory.surrender_focus(focused);
+        }
+    });
+}
+
+/// The search's keys this frame, taken before its field reads them: Esc closes it, ↑ and ↓
+/// move the highlight (clamped to the list), and Enter runs the highlighted command, if it
+/// can run (`interact.js`'s `S.palette` keys); Tab, which would take the keyboard from its
+/// field, does nothing. `row` gives each command's row.
+pub(crate) fn keys(ui: &mut Ui, search: &mut Search, row: &dyn Fn(Command) -> Row) -> Asked {
+    if shortcuts::take(ui, Command::Cancel) {
+        return Asked::Close;
+    }
+    let (down, up, enter) = ui.input_mut(|input| {
+        input.count_and_consume_key(Modifiers::NONE, Key::Tab);
+        (
+            input.count_and_consume_key(Modifiers::NONE, Key::ArrowDown),
+            input.count_and_consume_key(Modifiers::NONE, Key::ArrowUp),
+            input.consume_key(Modifiers::NONE, Key::Enter),
+        )
+    });
+    let listed = listed(&search.query, row);
+    let last = listed.len().saturating_sub(1);
+    let mut highlight = search.highlight;
+    for _ in 0..down {
+        highlight = (highlight + 1).min(last);
+    }
+    for _ in 0..up {
+        highlight = highlight.saturating_sub(1);
+    }
+    if down + up > 0 {
+        search.moved = true;
+    }
+    search.highlight = highlight;
+    if enter
+        && let Some((entry, row)) = listed.get(highlight)
+        && row.can == Can::Run
+    {
+        return Asked::Run(entry.command);
+    }
+    Asked::None
+}
+
+/// The box's place in `screen`: [`theme::SEARCH_WIDTH`] wide (the window's width at most),
+/// centred across it, [`theme::SEARCH_TOP`] from its top, as high as its parts with `rows`
+/// rows listed.
+pub(crate) fn place(screen: Rect, rows: usize) -> Rect {
+    let width = theme::SEARCH_WIDTH.min(screen.width());
+    let height =
+        2.0 * theme::BORDER_WIDTH + theme::SEARCH_INPUT_HEIGHT + list_height(rows) + foot_height();
+    Rect::from_min_size(
+        pos2(
+            screen.center().x - width / 2.0,
+            screen.top() + theme::SEARCH_TOP,
+        ),
+        vec2(width, height),
+    )
+}
+
+/// The list's height with `rows` rows (`.pm-list`): its padding and its rows, or its line
+/// saying nothing matches, at most [`theme::SEARCH_LIST_MAX_HEIGHT`].
+fn list_height(rows: usize) -> f32 {
+    let inside = if rows == 0 {
+        theme::MENU_HEAD_TOP + theme::MENU_LINE_HEIGHT + theme::MENU_HEAD_BOTTOM
+    } else {
+        rows as f32 * theme::SEARCH_ROW_HEIGHT
+    };
+    (2.0 * theme::SEARCH_LIST_PADDING + inside).min(theme::SEARCH_LIST_MAX_HEIGHT)
+}
+
+/// The foot's height (`.pm-foot`): its rule, its padding, and a line of the body's.
+fn foot_height() -> f32 {
+    let padding = theme::SEARCH_FOOT_PADDING;
+    theme::BORDER_WIDTH
+        + f32::from(padding.top)
+        + theme::BODY_LINE_HEIGHT
+        + f32::from(padding.bottom)
+}
+
+/// The search's box's area, the modal's layer (the app's `OnTop::Search`): what's behind it
+/// is inert while it's open, and its field keeps the keyboard.
+pub(crate) fn id() -> egui::Id {
+    egui::Id::new("command-search")
+}
+
+/// The search over the window: its backdrop, then its box. What was asked: a click on the
+/// backdrop closes it, a click on a row that can run runs it. `can` says whether each can.
+pub(crate) fn show(
+    ctx: &egui::Context,
+    search: &mut Search,
+    row: &dyn Fn(Command) -> Row,
+) -> Asked {
+    let screen = ctx.content_rect();
+    let backdrop = egui::Area::new(egui::Id::new("command-search-backdrop"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .constrain(false)
+        .show(ctx, |ui| {
+            let response = ui.allocate_rect(screen, Sense::click());
+            ui.painter()
+                .rect_filled(screen, 0.0, theme::SEARCH_BACKDROP);
+            response.clicked()
+        })
+        .inner;
+    let area = egui::Area::new(id())
+        .order(egui::Order::Foreground)
+        .fixed_pos(screen.min)
+        .constrain(false)
+        .show(ctx, |ui| boxed(ui, screen, search, row));
+    // Over its backdrop, whichever was last touched.
+    ctx.move_to_top(area.response.layer_id);
+    match area.inner {
+        Asked::None if backdrop => Asked::Close,
+        asked => asked,
+    }
+}
+
+/// The box (`.palette-modal`) in `screen`: its field's row, its list, and its foot.
+fn boxed(ui: &mut Ui, screen: Rect, search: &mut Search, row: &dyn Fn(Command) -> Row) -> Asked {
+    ui.scope_builder(UiBuilder::new().id_salt("command-search"), |ui| {
+        ui.spacing_mut().item_spacing = Vec2::ZERO;
+        // Its frame, painted once its height is known.
+        let frame = ui.painter().add(Shape::Noop);
+        let width = theme::SEARCH_WIDTH.min(screen.width());
+        let top = screen.top() + theme::SEARCH_TOP;
+        let left = screen.center().x - width / 2.0;
+        let inner_left = left + theme::BORDER_WIDTH;
+        let inner_right = left + width - theme::BORDER_WIDTH;
+        let field_row = Rect::from_min_max(
+            pos2(inner_left, top + theme::BORDER_WIDTH),
+            pos2(
+                inner_right,
+                top + theme::BORDER_WIDTH + theme::SEARCH_INPUT_HEIGHT,
+            ),
+        );
+        let changed = field(ui, field_row, search);
+        if changed {
+            search.highlight = 0;
+        }
+        let listed = listed(&search.query, row);
+        let rect = place(screen, listed.len());
+        ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
+            node.set_role(Role::Dialog);
+            node.set_label(TITLE);
+            node.set_bounds(crate::panes::bounds(rect));
+        });
+        // The whole box is the search's, so a click on it reaches nothing under it.
+        ui.allocate_rect(rect, Sense::hover());
+        let shapes = vec![
+            Shape::from(theme::SEARCH_SHADOW.as_shape(rect, theme::SEARCH_CORNER_RADIUS)),
+            Shape::rect_filled(rect, theme::SEARCH_CORNER_RADIUS, theme::SEARCH_BG),
+            Shape::rect_stroke(
+                rect,
+                theme::SEARCH_CORNER_RADIUS,
+                Stroke::new(theme::BORDER_WIDTH, theme::SEARCH_BORDER),
+                StrokeKind::Inside,
+            ),
+        ];
+        ui.painter().set(frame, Shape::Vec(shapes));
+        let list_top = top + theme::BORDER_WIDTH + theme::SEARCH_INPUT_HEIGHT;
+        let list = Rect::from_min_max(
+            pos2(inner_left, list_top),
+            pos2(inner_right, list_top + list_height(listed.len())),
+        );
+        let asked = rows(ui, list, &listed, search, changed);
+        foot(
+            ui,
+            Rect::from_min_max(
+                list.left_bottom(),
+                pos2(inner_right, rect.bottom() - theme::BORDER_WIDTH),
+            ),
+        );
+        asked
+    })
+    .inner
+}
+
+/// The field's row (`.pm-input`) in `row`, its rule in its last point: the search icon, then
+/// the field, which keeps the keyboard while the search is open. Whether what's typed
+/// changed.
+fn field(ui: &mut Ui, row: Rect, search: &mut Search) -> bool {
+    let line = row.bottom() - theme::BORDER_WIDTH / 2.0;
+    ui.painter().hline(
+        row.x_range(),
+        line,
+        Stroke::new(theme::BORDER_WIDTH, theme::SEARCH_RULE),
+    );
+    let content = row.with_max_y(row.bottom() - theme::BORDER_WIDTH);
+    let middle = content.center().y;
+    let icon = Rect::from_min_size(
+        pos2(
+            content.left() + theme::SEARCH_INPUT_PADDING,
+            middle - ICON_SIZE / 2.0,
+        ),
+        Vec2::splat(ICON_SIZE),
+    );
+    Icon::Search
+        .image(IconSize::Small)
+        .tint(theme::SEARCH_ICON)
+        .paint_at(ui, icon);
+    let place = Rect::from_min_max(
+        pos2(icon.right() + theme::SEARCH_INPUT_GAP, content.top()),
+        pos2(
+            content.right() - theme::SEARCH_INPUT_PADDING,
+            content.bottom(),
+        ),
+    );
+    let font = FontId::proportional(theme::SEARCH_INPUT_SIZE);
+    let edit = egui::TextEdit::singleline(&mut search.query)
+        .id_salt("command-search-field")
+        .font(font.clone())
+        .text_color(theme::SEARCH_INPUT_TEXT)
+        .hint_text(
+            egui::RichText::new(TITLE)
+                .font(font)
+                .color(theme::TEXT_SUBDUED),
+        )
+        .frame(egui::Frame::NONE)
+        .vertical_align(Align::Center)
+        .desired_width(place.width());
+    let typed = ui.put(place, edit);
+    ui.ctx()
+        .accesskit_node_builder(typed.id, |node| node.set_label(TITLE));
+    // The keyboard stays in the field (the prototype focuses it as it opens): a click on a
+    // row or on the box takes it nowhere else.
+    if !typed.has_focus() {
+        typed.request_focus();
+    }
+    typed.changed()
+}
+
+/// The list (`.pm-list`) in `list`: a row for each of `listed`, the highlighted one lit, each
+/// that can't run off, scrolling past its height; or that nothing matches. What a click
+/// asked.
+fn rows(
+    ui: &mut Ui,
+    list: Rect,
+    listed: &[(&'static Entry, Row)],
+    search: &mut Search,
+    changed: bool,
+) -> Asked {
+    let inside = list.shrink(theme::SEARCH_LIST_PADDING);
+    let mut child = ui.new_child(
+        UiBuilder::new()
+            .id_salt("command-search-list")
+            .max_rect(inside)
+            .layout(egui::Layout::top_down(Align::Min)),
+    );
+    child.spacing_mut().item_spacing = Vec2::ZERO;
+    child
+        .ctx()
+        .accesskit_node_builder(child.unique_id(), |node| {
+            node.set_role(Role::ListBox);
+            node.set_label(TITLE);
+            node.set_bounds(crate::panes::bounds(list));
+        });
+    if listed.is_empty() {
+        menu::head(&mut child, NOTHING_FOUND, inside.width());
+        return Asked::None;
+    }
+    let highlight = search.highlight(listed.len());
+    let moved = std::mem::take(&mut search.moved);
+    let mut scroll = egui::ScrollArea::vertical()
+        .id_salt("command-search-scroll")
+        .max_height(inside.height())
+        .auto_shrink([false, false]);
+    if changed {
+        // A new list starts at its top, as the prototype's is drawn anew.
+        scroll = scroll.vertical_scroll_offset(0.0);
+    }
+    scroll
+        .show(&mut child, |ui| {
+            let mut asked = Asked::None;
+            let ctx = ui.ctx().clone();
+            for (at, (entry, row)) in listed.iter().enumerate() {
+                let caps = entry.command.caps(&ctx);
+                let can = &row.can;
+                let reason = match can {
+                    Can::Run => None,
+                    Can::Off(reason) => reason.clone(),
+                };
+                let item = menu::Item {
+                    icon: Some(entry.icon.unwrap_or(Icon::Chevron)),
+                    label: row.label,
+                    sub: Some(entry.group.name()),
+                    caps: &caps,
+                    off: reason.as_deref(),
+                    danger: false,
+                    lit: at == highlight,
+                    checked: None,
+                };
+                let runs = *can == Can::Run;
+                let response = ui
+                    .add_enabled_ui(runs, |ui| {
+                        menu::item_sized(ui, &item, inside.width(), theme::SEARCH_ROW_HEIGHT)
+                    })
+                    .inner;
+                ctx.accesskit_node_builder(response.id, |node| {
+                    node.set_role(Role::ListBoxOption);
+                    node.set_selected(at == highlight);
+                });
+                if moved && at == highlight {
+                    response.scroll_to_me(None);
+                }
+                if runs && response.clicked() {
+                    asked = Asked::Run(entry.command);
+                }
+            }
+            asked
+        })
+        .inner
+}
+
+/// The foot (`.pm-foot`) in `rect`, under its rule: each key's caps and what it does, then
+/// at its right that agents reach the same commands.
+fn foot(ui: &mut Ui, rect: Rect) {
+    let padding = theme::SEARCH_FOOT_PADDING;
+    ui.painter().hline(
+        rect.x_range(),
+        rect.top() + theme::BORDER_WIDTH / 2.0,
+        Stroke::new(theme::BORDER_WIDTH, theme::SEARCH_RULE),
+    );
+    let middle =
+        rect.top() + theme::BORDER_WIDTH + f32::from(padding.top) + theme::BODY_LINE_HEIGHT / 2.0;
+    let mut x = rect.left() + f32::from(padding.left);
+    for (caps, words) in FOOT {
+        let caps: Vec<String> = caps.iter().map(|cap| (*cap).to_owned()).collect();
+        // Each key's caps in a `.keys` of its own, side by side.
+        let mut wide = 0.0;
+        for cap in &caps {
+            let one = std::slice::from_ref(cap);
+            let width = crate::start::key_caps_width(ui, one);
+            crate::start::key_caps(ui, pos2(x + wide + width, middle), one, false);
+            wide += width;
+        }
+        let galley = foot_text(ui, words);
+        let at = pos2(x + wide, middle - galley.size().y / 2.0);
+        let part = Rect::from_min_max(
+            pos2(x, middle - theme::KEY_CAP_HEIGHT / 2.0),
+            pos2(at.x + galley.size().x, middle + theme::KEY_CAP_HEIGHT / 2.0),
+        );
+        x = part.right() + theme::SEARCH_FOOT_GAP;
+        ui.painter().galley(at, galley, theme::SEARCH_FOOT_TEXT);
+        label(ui, part, &format!("{}{words}", caps.concat()));
+    }
+    let galley = foot_text(ui, MCP);
+    let at = pos2(
+        rect.right() - f32::from(padding.right) - galley.size().x,
+        middle - galley.size().y / 2.0,
+    );
+    let part = Rect::from_min_size(at, galley.size());
+    ui.painter().galley(at, galley, theme::SEARCH_FOOT_TEXT);
+    label(ui, part, MCP);
+}
+
+/// `text` in the foot's type.
+fn foot_text(ui: &Ui, text: &str) -> std::sync::Arc<egui::Galley> {
+    ui.painter().layout_no_wrap(
+        text.to_owned(),
+        FontId::proportional(theme::SEARCH_FOOT_SIZE),
+        theme::SEARCH_FOOT_TEXT,
+    )
+}
+
+/// A label for a screen reader over `rect`, saying `said`.
+fn label(ui: &mut Ui, rect: Rect, said: &str) {
+    ui.interact(
+        rect,
+        ui.id().with(("command-search-foot", said)),
+        Sense::hover(),
+    )
+    .widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, said));
+}
+
+#[cfg(test)]
+mod tests {
+    use eframe::egui::Pos2;
+    use egui::epaint::{RectShape, TextShape};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+
+    /// The list for `query`, each row the registry's name, every command on.
+    fn registry_listed(query: &str) -> Vec<(&'static Entry, Row)> {
+        listed(query, &|command| Row {
+            label: command.label(),
+            can: Can::Run,
+        })
+    }
+
+    fn commands(query: &str) -> Vec<Command> {
+        registry_listed(query)
+            .iter()
+            .map(|(entry, _)| entry.command)
+            .collect()
+    }
+
+    #[test]
+    fn the_filter_finds_a_name_a_group_or_a_description_its_case_aside() {
+        // By name, any case: "Fit" alone has "fit" in its name, its group (View), or its
+        // description ("The whole model in view").
+        assert_eq!(commands("fit"), [Command::Fit]);
+        assert_eq!(commands("FIT"), [Command::Fit]);
+        assert_eq!(commands("fIt"), [Command::Fit]);
+        // By group, and by description: "rebuild" is the Rebuild group's name, so its five,
+        // and in Suppress's description ("left out of the rebuild") and Finish Sketch's
+        // ("Keeps your changes and rebuilds"), each in the registry's order.
+        assert_eq!(
+            commands("rebuild"),
+            [
+                Command::Suppress,
+                Command::Rebuild,
+                Command::RebuildAll,
+                Command::Reload,
+                Command::Stop,
+                Command::WhatsWrong,
+                Command::FinishSketch
+            ]
+        );
+        // By group alone: "dialogs" is only the Dialogs group's, whose OK and Cancel are left
+        // out, so nothing.
+        assert_eq!(commands("dialogs"), []);
+        // "help": the Help group's Keyboard shortcuts alone.
+        assert_eq!(commands("help"), [Command::Shortcuts]);
+        // By description alone: "cache" is in Rebuild everything's ("Every feature,
+        // ignoring the cache"), in no name or group.
+        assert_eq!(commands("cache"), [Command::RebuildAll]);
+        assert_eq!(commands("CACHE"), [Command::RebuildAll]);
+        // Not by keys: "f6" is Fit's key, in no name, group, or description.
+        assert_eq!(commands("f6"), []);
+        assert_eq!(commands("no such thing"), []);
+    }
+
+    #[test]
+    fn it_leaves_out_ok_cancel_and_the_pointers_gestures() {
+        // `paletteItems`: ok, cancel, orbit, pan, zoom (and select-other and the no-relation
+        // hold, which the registry hasn't).
+        // "ok": OK left out; Look At's name holds it ("lOOK").
+        assert_eq!(commands("ok"), [Command::LookAt]);
+        assert_eq!(commands("cancel"), []);
+        assert_eq!(commands("orbit"), []);
+        assert_eq!(commands("pan"), []);
+        // "zoom": Zoom to the pointer, left out.
+        assert_eq!(commands("zoom"), []);
+        for left_out in LEFT_OUT {
+            assert!(
+                !registry_listed("")
+                    .iter()
+                    .any(|(entry, _)| entry.command == left_out),
+                "{left_out:?}"
+            );
+        }
+        // "view": the View group's thirteen less Orbit, Pan, and Zoom, ten, among them Home
+        // view (whose name has it too) and Fit (whose description, "The whole model in view",
+        // does).
+        assert_eq!(
+            commands("view"),
+            [
+                Command::Fit,
+                Command::Home,
+                Command::Front,
+                Command::Back,
+                Command::Left,
+                Command::Right,
+                Command::Top,
+                Command::Bottom,
+                Command::Isometric,
+                Command::LookAt
+            ]
+        );
+    }
+
+    #[test]
+    fn a_row_is_found_by_the_name_it_shows() {
+        // Suppress shown as Unsuppress, for a feature suppressed (its menu's word): found by
+        // that, and no longer by the registry's "Suppress" alone where the query is the
+        // longer word.
+        let row = |command: Command| Row {
+            label: if command == Command::Suppress {
+                "Unsuppress"
+            } else {
+                command.label()
+            },
+            can: Can::Run,
+        };
+        let found = |query: &str| -> Vec<(Command, &'static str)> {
+            listed(query, &row)
+                .into_iter()
+                .map(|(entry, row)| (entry.command, row.label))
+                .collect()
+        };
+        assert_eq!(found("unsupp"), [(Command::Suppress, "Unsuppress")]);
+        assert_eq!(commands("unsupp"), []);
+    }
+
+    #[test]
+    fn at_most_forty_are_listed_the_first_in_the_registrys_order() {
+        // The registry's 48 less the five left out are 43: the first 40 listed, so the last
+        // three (Construction, Finish Sketch, Keyboard shortcuts) aren't until a query finds
+        // them.
+        assert_eq!(REGISTRY.len(), 48);
+        let all = registry_listed("");
+        assert_eq!(all.len(), 40);
+        assert_eq!(all[0].0.command, Command::New);
+        assert_eq!(all[39].0.command, Command::Dimension);
+        for missing in [
+            Command::Construction,
+            Command::FinishSketch,
+            Command::Shortcuts,
+        ] {
+            assert!(!all.iter().any(|(entry, _)| entry.command == missing));
+        }
+        assert_eq!(commands("finish"), [Command::FinishSketch]);
+        // "e" is in 43's names, groups, or descriptions or more: still 40.
+        assert_eq!(registry_listed("e").len(), 40);
+    }
+
+    #[test]
+    fn the_box_is_520_wide_96_from_the_top_centred_and_as_high_as_its_parts() {
+        // styles.css's `.palette-modal`: 520 wide, its border in it, 96 down, `left: 50%;
+        // transform: translateX(-50%)`. A 1280 window: (1280 − 520) / 2 = 380.
+        let screen = Rect::from_min_size(Pos2::ZERO, vec2(1280.0, 800.0));
+        // One row: its 1 border, the field's 38 (its rule in it), the list's 4 + 28 + 4,
+        // the foot's 1 rule, 6, a 16 line, and 6, and the 1 border: 105.
+        assert_eq!(
+            place(screen, 1),
+            Rect::from_min_size(pos2(380.0, 96.0), vec2(520.0, 105.0))
+        );
+        // Eleven rows: 4 + 308 + 4 = 316, under 340: 1 + 38 + 316 + 29 + 1 = 385.
+        assert_eq!(place(screen, 11).height(), 385.0);
+        // Twelve and more: 4 + 336 + 4 = 344, held to 340: 1 + 38 + 340 + 29 + 1 = 409.
+        assert_eq!(place(screen, 12).height(), 409.0);
+        assert_eq!(place(screen, 40).height(), 409.0);
+        // None: the line saying so (`.mh`, 6 + 16 + 2) in its padding: 4 + 24 + 4 = 32.
+        assert_eq!(place(screen, 0).height(), 1.0 + 38.0 + 32.0 + 29.0 + 1.0);
+        // A window narrower than the box: the box its width, from its left.
+        let narrow = Rect::from_min_size(pos2(0.0, 0.0), vec2(400.0, 600.0));
+        assert_eq!(place(narrow, 1).x_range(), egui::Rangef::new(0.0, 400.0));
+    }
+
+    // ---- The box as drawn: styles.css's `.palette-modal`, `.pm-input`, `.pm-list`, `.mi`,
+    // and `.pm-foot`, in a 1200 × 900 window. Its left (1200 − 520) / 2 = 340, its border's
+    // inside 341 to 859, its top 96.
+
+    /// The search over a 1200 × 900 window for `query`, every command on, as the app runs
+    /// it each frame: its keys, then the box.
+    fn shown(query: &str) -> Harness<'static, Search> {
+        let mut h = Harness::builder()
+            .with_size(vec2(1200.0, 900.0))
+            .build_ui_state(
+                |ui, search: &mut Search| {
+                    let row = |command: Command| Row {
+                        label: command.label(),
+                        can: Can::Run,
+                    };
+                    keys(ui, search, &row);
+                    show(ui.ctx(), search, &row);
+                },
+                Search {
+                    query: query.to_owned(),
+                    ..Search::default()
+                },
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(4);
+        h
+    }
+
+    /// Every shape the last frame painted, nested ones flattened.
+    fn painted(h: &Harness<'_, Search>) -> Vec<Shape> {
+        fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+            match shape {
+                Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+                shape => out.push(shape.clone()),
+            }
+        }
+        let mut out = Vec::new();
+        for clipped in &h.output().shapes {
+            flatten(&clipped.shape, &mut out);
+        }
+        out
+    }
+
+    fn rects(h: &Harness<'_, Search>) -> Vec<RectShape> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Rect(rect) => Some(rect),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The one text painted whose text is `text`.
+    #[track_caller]
+    fn text(h: &Harness<'_, Search>, text: &str) -> TextShape {
+        let mut found: Vec<TextShape> = painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::Text(shown) if shown.galley.text() == text => Some(shown),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(found.len(), 1, "{text:?} painted {} times", found.len());
+        found.remove(0)
+    }
+
+    /// The rules painted in the search's rule colour: each one's ends.
+    fn rules(h: &Harness<'_, Search>) -> Vec<[Pos2; 2]> {
+        painted(h)
+            .into_iter()
+            .filter_map(|shape| match shape {
+                Shape::LineSegment { points, stroke } if stroke.color == theme::SEARCH_RULE => {
+                    Some(points)
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[track_caller]
+    fn near(a: f32, b: f32) {
+        assert!((a - b).abs() < 0.01, "{a} isn't {b}");
+    }
+
+    #[track_caller]
+    fn near_rect(a: Rect, b: Rect) {
+        assert!(
+            (a.min - b.min).abs().max_elem() < 0.01 && (a.max - b.max).abs().max_elem() < 0.01,
+            "{a:?} isn't {b:?}"
+        );
+    }
+
+    /// `rows` ↓ pressed, a frame each, and frames for the list to scroll.
+    fn down(h: &mut Harness<'_, Search>, rows: usize) {
+        for _ in 0..rows {
+            h.key_press(Key::ArrowDown);
+            h.run_steps(1);
+        }
+        h.run_steps(8);
+    }
+
+    /// The list's row `at` (from the top of the list for the query), where it's drawn.
+    fn row_rect(h: &Harness<'_, Search>, at: usize) -> Rect {
+        h.query_all_by_role(egui::accesskit::Role::ListBoxOption)
+            .nth(at)
+            .map(|row| row.rect())
+            .unwrap_or_else(|| panic!("no row {at}"))
+    }
+
+    #[test]
+    fn the_field_row_is_38_high_its_icon_12_in_its_field_8_after_and_its_rule_its_last_point() {
+        let h = shown("");
+        // `.pm-input`: 38 high from the border's inside (97 to 135), its `border-bottom`
+        // the last point of it (its middle at 134.5), across the border's inside.
+        let rules = rules(&h);
+        assert!(
+            rules.contains(&[pos2(341.0, 134.5), pos2(859.0, 134.5)]),
+            "{rules:?}"
+        );
+        // The icon (14 square) `padding: 0 12px` in, centred on what's above the rule
+        // (97 to 134, its middle 115.5): from (353, 108.5), drawn on whole points (109);
+        // tinted Gray.550.
+        let icon: Vec<Rect> = rects(&h)
+            .into_iter()
+            .filter(|shape| shape.brush.is_some() && shape.fill == theme::SEARCH_ICON)
+            .map(|shape| shape.rect)
+            .collect();
+        assert_eq!(icon.len(), 1, "{icon:?}");
+        near_rect(
+            icon[0],
+            Rect::from_min_size(pos2(353.0, 109.0), Vec2::splat(14.0)),
+        );
+        // The field `gap: 8px` after the icon, to the padding's 12 before the border: 375
+        // to 847.
+        let field = h
+            .get_by_role_and_label(egui::accesskit::Role::TextInput, TITLE)
+            .rect();
+        near_rect(
+            field,
+            Rect::from_min_max(pos2(375.0, 97.0), pos2(847.0, 134.0)),
+        );
+    }
+
+    #[test]
+    fn the_list_is_under_the_field_its_rows_28_high_in_its_4_and_the_lit_row_lit() {
+        let mut h = shown("");
+        // `.pm-list` from the field's row (135), 340 high at most (40 rows want more), across
+        // the border's inside; its rows (`.mi`, 28 high) in its `padding: 4px`.
+        let list = h
+            .get_by_role_and_label(egui::accesskit::Role::ListBox, TITLE)
+            .rect();
+        near_rect(
+            list,
+            Rect::from_min_max(pos2(341.0, 135.0), pos2(859.0, 475.0)),
+        );
+        near_rect(
+            row_rect(&h, 0),
+            Rect::from_min_max(pos2(345.0, 139.0), pos2(855.0, 167.0)),
+        );
+        // The first row lit (`.mi.hl`), and only it: its fill over its rect.
+        let lit = |h: &Harness<'_, Search>| -> Vec<Rect> {
+            rects(h)
+                .into_iter()
+                .filter(|shape| shape.fill == theme::MENU_ITEM_HOVER_BG)
+                .map(|shape| shape.rect)
+                .collect()
+        };
+        assert_eq!(lit(&h).len(), 1, "{:?}", lit(&h));
+        near_rect(lit(&h)[0], row_rect(&h, 0));
+        // Two down: the third lit, 2 × 28 lower.
+        down(&mut h, 2);
+        assert_eq!(lit(&h).len(), 1, "{:?}", lit(&h));
+        near_rect(
+            lit(&h)[0],
+            Rect::from_min_max(pos2(345.0, 195.0), pos2(855.0, 223.0)),
+        );
+    }
+
+    #[test]
+    fn a_row_moved_to_by_the_keys_is_scrolled_into_view_and_the_wheel_alone_scrolls_freely() {
+        // 40 rows in 332 of list: the 16th starts 15 × 28 = 420 down, past the list's
+        // bottom, until ↓ brings it into view.
+        let mut h = shown("");
+        let inside = Rect::from_min_max(pos2(345.0, 139.0), pos2(855.0, 471.0));
+        assert!(row_rect(&h, 15).top() > inside.bottom());
+        down(&mut h, 15);
+        let row = row_rect(&h, 15);
+        assert!(
+            row.top() >= inside.top() - 0.01 && row.bottom() <= inside.bottom() + 0.01,
+            "{row:?} out of {inside:?}"
+        );
+        // The wheel over the list, no key: it scrolls, the lit first row left out of view
+        // (never brought back each frame).
+        let mut h = shown("");
+        h.event(egui::Event::PointerMoved(pos2(600.0, 300.0)));
+        for _ in 0..10 {
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: Vec2::new(0.0, -5.0),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(1);
+        }
+        h.run_steps(8);
+        assert!(
+            row_rect(&h, 0).bottom() < inside.top(),
+            "{:?}",
+            row_rect(&h, 0)
+        );
+    }
+
+    #[test]
+    fn the_foot_is_under_its_rule_each_keys_caps_then_its_words_14_apart_and_mcp_at_its_right() {
+        let h = shown("");
+        // `.pm-foot` from the list's bottom (475): its `border-top` (its middle at 475.5)
+        // across the border's inside, then `padding: 6px 12px` and a 16 line, its middle at
+        // 475 + 1 + 6 + 8 = 490.
+        let rules = rules(&h);
+        assert!(
+            rules.contains(&[pos2(341.0, 475.5), pos2(859.0, 475.5)]),
+            "{rules:?}"
+        );
+        let middle = 490.0;
+        let caps: Vec<Rect> = rects(&h)
+            .into_iter()
+            .filter(|shape| shape.fill == theme::KEY_CAP_BG && shape.rect.top() > 475.0)
+            .map(|shape| shape.rect)
+            .collect();
+        // Each part from the padding's 12 in (353), its caps side by side, its words at
+        // their right, the next part `gap: 14px` after; each cap 16 high on the middle.
+        let mut x = 353.0;
+        let mut at = 0;
+        for (keys, words, said) in [
+            (2, " move", "↑↓ move"),
+            (1, " run", "↵ run"),
+            (1, " close", "Esc close"),
+        ] {
+            for cap in &caps[at..at + keys] {
+                near(cap.left(), x);
+                near(cap.top(), middle - 8.0);
+                near(cap.bottom(), middle + 8.0);
+                x = cap.right();
+            }
+            at += keys;
+            let shown = text(&h, words);
+            near(shown.pos.x, x);
+            near(shown.pos.y + shown.galley.size().y / 2.0, middle);
+            let part = h.get_by_label(said).rect();
+            near(part.top(), middle - 8.0);
+            near(part.bottom(), middle + 8.0);
+            near(part.right(), x + shown.galley.size().x);
+            x = part.right() + 14.0;
+        }
+        assert_eq!(at, caps.len(), "{caps:?}");
+        // MCP's line at the right, the padding's 12 before the border (847), on the middle.
+        let mcp = text(&h, MCP);
+        near(mcp.pos.x + mcp.galley.size().x, 847.0);
+        near(mcp.pos.y + mcp.galley.size().y / 2.0, middle);
+        near_rect(
+            h.get_by_label(MCP).rect(),
+            Rect::from_min_size(mcp.pos, mcp.galley.size()),
+        );
+    }
+
+    #[test]
+    fn the_highlight_is_held_to_the_list() {
+        let search = Search {
+            highlight: 7,
+            ..Search::default()
+        };
+        assert_eq!(search.highlight(10), 7);
+        assert_eq!(search.highlight(3), 2);
+        assert_eq!(search.highlight(0), 0);
+    }
+}
