@@ -17290,9 +17290,13 @@ fn opens_panel_open_as_a_quit_begins_and_answered_during_it_opens_nothing_and_th
 }
 
 #[test]
-fn an_open_answering_after_a_quit_begins_is_closed_at_once_unlisted_and_the_window_still_closes() {
+fn an_open_answering_after_a_quit_begins_is_closed_at_once_unlisted_and_the_window_waits_for_it() {
     let f = fixture();
-    let b = f.file("b.silico", EXAMPLE);
+    // b's block 11 high, a's 10: b's rebuild told from a's by its box.
+    let b = f.file(
+        "b.silico",
+        &EXAMPLE.replace("\"height\": 10}", "\"height\": 11}"),
+    );
     std::fs::create_dir_all(f.recents_file().parent().unwrap()).unwrap();
     std::fs::write(
         f.recents_file(),
@@ -17322,6 +17326,14 @@ fn an_open_answering_after_a_quit_begins_is_closed_at_once_unlisted_and_the_wind
         step(&mut h);
     }
     assert_eq!(tab_names(&h), ["a.silico"]);
+    // b's session is the next after a's. A fresh check sent it now waits behind its open,
+    // and its rebuild's box is held, so the close the app sends it later waits behind that.
+    let a_id = h.state().tabs()[0].id;
+    let b_id = silico_core::command::SessionId::parse(&format!("s{}", a_id.number() + 1)).unwrap();
+    let b_box = f
+        .kernel
+        .hold(|op| matches!(op, Op::MakePrimitive(Primitive::Box { dz, .. }) if *dz == 11.0));
+    let b_check = f.sessions.check(&b_id, CheckModel::Current { fresh: true });
     let (hold, check) = quit_with_save_all_held(&f, &mut h);
     let before = h.ctx.input(|input| input.time);
     opening.release();
@@ -17334,7 +17346,26 @@ fn an_open_answering_after_a_quit_begins_is_closed_at_once_unlisted_and_the_wind
         step(&mut h);
     }
     assert_eq!(recent_names(&h), ["a.silico", "b.silico"], "b listed first");
-    the_quit_ends(&mut h, &a, hold, check);
+    // a saved and closed: the window still waits, for b's close, held behind its check.
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "a closed", |h| h.state().tabs().is_empty());
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(
+            !window_told(&h, ViewportCommand::Close),
+            "the window closed before b's session"
+        );
+    }
+    b_box.release();
+    let checked = b_check.wait();
+    assert!(checked.result.is_ok(), "{:?}", checked.result.err());
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(names_in(&a), ["Block", "PinQ", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
     // b's session closed before the window: its file free to open again.
     let again = f.sessions.open(&b, false).wait();
     assert!(again.result.is_ok(), "{:?}", again.result.err());

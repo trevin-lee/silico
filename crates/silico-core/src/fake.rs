@@ -132,7 +132,7 @@ pub struct Hold {
 }
 
 /// Holds each new client asked for on a thread a predicate picks, until it's released or
-/// dropped, or the kernel stops ([`hold_clients`](FakeKernel::hold_clients)).
+/// dropped ([`hold_clients`](FakeKernel::hold_clients)).
 #[must_use = "dropping a hold releases it"]
 pub struct ClientHold {
     shared: Arc<Shared>,
@@ -322,10 +322,11 @@ impl FakeKernel {
 
     /// Holds each new client asked for ([`Clients::client`]) on a thread `picks` takes
     /// (called on that thread, with the kernel's state not locked), until the hold is
-    /// released or dropped, or the kernel stops. A session's open gives its engine a client
-    /// on the session's thread (named `session-N`) before it answers, so a hold on those
-    /// threads holds an open's answer, as a slow disk would; a read's client, made on its
-    /// caller's thread, isn't held by it.
+    /// released or dropped. A session's open gives its engine a client on the session's
+    /// thread (named `session-N`) before it answers, so a hold on those threads holds an
+    /// open's answer, as a slow disk would; a read's client, made on its caller's thread,
+    /// isn't held by it. Release or drop it before the sessions whose opens it holds are
+    /// dropped: their drop joins the opening thread, which waits for it.
     pub fn hold_clients(
         &self,
         picks: impl Fn(&std::thread::Thread) -> bool + Send + Sync + 'static,
@@ -435,7 +436,7 @@ impl Clients for FakeKernel {
 
     fn client(&self) -> FakeClient {
         // The holds whose rules pick this thread, asked with the state let go, then waited
-        // on until each is released or the kernel stops.
+        // on until each is released.
         let rules: Vec<(usize, Arc<PicksThread>)> = lock(&self.shared.state)
             .client_holds
             .iter()
@@ -450,14 +451,12 @@ impl Clients for FakeKernel {
             .map(|(at, _)| at)
             .collect();
         let mut state = lock(&self.shared.state);
-        while !state.stopping
-            && held.iter().any(|&at| {
-                state
-                    .client_holds
-                    .get(at)
-                    .is_some_and(|rule| !rule.released)
-            })
-        {
+        while held.iter().any(|&at| {
+            state
+                .client_holds
+                .get(at)
+                .is_some_and(|rule| !rule.released)
+        }) {
             state = self
                 .shared
                 .changed
