@@ -81,6 +81,12 @@ pub const FAKE_WAIT: Duration = Duration::from_secs(60);
 /// worker's, or STEP worker's, and every frame is drawn on lavapipe.
 pub const SLICE_WAIT: Duration = Duration::from_secs(120);
 
+/// The longest one frame's drawing on lavapipe may take, the GPU's work submitted and read
+/// back ([`LavapipeRenderer`]): a wait that long is a hang. egui_kittest's own renderer gives
+/// it 10 s, which a loaded runner's lavapipe passes: on CI's gate the slice failed so, and a
+/// test confined to two CPUs with 12 busy loops on them fails there in its first frames.
+pub const RENDER_WAIT: Duration = Duration::from_secs(100);
+
 /// A kernel the app is driven on here, and how long [`step_until`] waits on it.
 pub trait AppKernel: Clients + 'static {
     /// The longest a wait for the app's answers may take.
@@ -1443,6 +1449,182 @@ pub fn lavapipe_render_state() -> eframe::egui_wgpu::RenderState {
         "not lavapipe: {info:?}"
     );
     state
+}
+
+/// egui_kittest's wgpu renderer (`egui_kittest::wgpu::WgpuTestRenderer`, 0.36.2, MIT or
+/// Apache-2.0), drawing as it does, but waiting for the GPU [`RENDER_WAIT`] where it waits
+/// 10 s, and saying what it waited for and how long when that runs out. Each test that
+/// draws on lavapipe draws through it.
+pub struct LavapipeRenderer {
+    state: eframe::egui_wgpu::RenderState,
+}
+
+impl LavapipeRenderer {
+    /// One drawing with `state` ([`lavapipe_render_state`]), unused till now.
+    pub fn from_render_state(state: eframe::egui_wgpu::RenderState) -> Self {
+        assert!(
+            state
+                .renderer
+                .read()
+                .texture(&eframe::egui::epaint::TextureId::Managed(0))
+                .is_none(),
+            "the render state was used before: give each renderer a fresh one"
+        );
+        LavapipeRenderer { state }
+    }
+
+    /// The GPU waited for, up to [`RENDER_WAIT`], until `submission` (or all it was given)
+    /// is done; `what` is said if it isn't by then.
+    fn wait(
+        &self,
+        submission: Option<eframe::wgpu::SubmissionIndex>,
+        what: &str,
+    ) -> Result<(), String> {
+        let start = Instant::now();
+        let waited = self.state.device.poll(eframe::wgpu::PollType::Wait {
+            submission_index: submission,
+            timeout: Some(RENDER_WAIT),
+        });
+        let took = start.elapsed();
+        if took > Duration::from_secs(1) {
+            eprintln!("render wait: {what} took {took:?}");
+        }
+        waited.map(|_| ()).map_err(|e| {
+            format!(
+                "lavapipe didn't finish {what} in {:?} ({RENDER_WAIT:?} allowed): {e}",
+                start.elapsed()
+            )
+        })
+    }
+}
+
+impl egui_kittest::TestRenderer for LavapipeRenderer {
+    fn handle_delta(&mut self, delta: &mut eframe::egui::TexturesDelta) {
+        let mut renderer = self.state.renderer.write();
+        // Each texture is its own: the order they're set or freed in changes nothing.
+        for (id, images) in std::mem::take(&mut delta.set) {
+            for image in images {
+                renderer.update_texture(&self.state.device, &self.state.queue, id, &image);
+            }
+        }
+        for id in std::mem::take(&mut delta.free) {
+            renderer.free_texture(&id);
+        }
+    }
+
+    fn render(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        output: &eframe::egui::FullOutput,
+    ) -> Result<image::RgbaImage, String> {
+        use eframe::wgpu;
+        let (device, queue) = (&self.state.device, &self.state.queue);
+        let texture = {
+            let mut renderer = self.state.renderer.write();
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
+            let size = ctx.content_rect().size() * ctx.pixels_per_point();
+            let screen = eframe::egui_wgpu::ScreenDescriptor {
+                pixels_per_point: ctx.pixels_per_point(),
+                size_in_pixels: [size.x.round() as u32, size.y.round() as u32],
+            };
+            let tessellated = ctx.tessellate(output.shapes.clone(), ctx.pixels_per_point());
+            let callbacks =
+                renderer.update_buffers(device, queue, &mut encoder, &tessellated, &screen);
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("frame"),
+                size: wgpu::Extent3d {
+                    width: screen.size_in_pixels[0],
+                    height: screen.size_in_pixels[1],
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: self.state.target_format,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            {
+                let mut pass = encoder
+                    .begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("frame"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                            depth_slice: None,
+                        })],
+                        ..Default::default()
+                    })
+                    .forget_lifetime();
+                renderer.render(&mut pass, &tessellated, &screen);
+            }
+            queue.submit(
+                callbacks
+                    .into_iter()
+                    .chain(std::iter::once(encoder.finish())),
+            );
+            texture
+        };
+        self.wait(None, "drawing the frame")?;
+        // Read back: each row padded to wgpu's alignment in the buffer, unpadded here.
+        let (width, height) = (texture.width(), texture.height());
+        let row = width as usize * 4;
+        let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as usize;
+        let padded = row.div_ceil(align) * align;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("frame read back"),
+            size: (padded * height as usize) as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("frame read back"),
+        });
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded as u32),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let submission = queue.submit(std::iter::once(encoder.finish()));
+        let (sender, receiver) = std::sync::mpsc::channel();
+        buffer
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |mapped| drop(sender.send(mapped)));
+        self.wait(Some(submission), "reading the frame back")?;
+        receiver
+            .recv()
+            .map_err(|e| format!("the frame's read back never answered: {e}"))?
+            .map_err(|e| format!("the frame's read back failed: {e}"))?;
+        let mapped = buffer
+            .slice(..)
+            .get_mapped_range()
+            .map_err(|e| format!("the frame's read back can't be read: {e}"))?;
+        let pixels: Vec<u8> = mapped
+            .chunks_exact(padded)
+            .flat_map(|line| &line[..row])
+            .copied()
+            .collect();
+        image::RgbaImage::from_raw(width, height, pixels)
+            .ok_or_else(|| "the frame read back isn't its size".to_owned())
+    }
 }
 
 // --- Fixtures ------------------------------------------------------------------------------
