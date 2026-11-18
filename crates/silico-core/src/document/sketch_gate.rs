@@ -474,14 +474,20 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
     // whichever of the two comes later in the constraint list: a file's order (sorted by ID,
     // as written), or an edit's, which appends what it adds, so the refusal names the member
     // the edit gave. Every hold, by its curve and point, its places in the list in order, each
-    // with its kind; and each `tangent_on`, by the curve and point it holds and its a, the
-    // first in the list. Where the ending curve's own tangent_on holds its end on the other,
-    // wherever it is in the list, the edge tangent says nothing it doesn't, and every refusal
-    // of the pair says to remove the tangent, so none asks for a tangent_on the sketch has
-    // (#498).
+    // with its kind; and each `tangent_on`, by the curve and point it holds and its a, and by
+    // its a and b, the first in the list. Where a tangent_on of the pair makes them tangent,
+    // either way round, at any point, wherever it is in the list, the edge tangent says
+    // nothing it doesn't, and every refusal of the pair says to remove the tangent, so none
+    // asks for a tangent_on the sketch has (#498), or for a second tangency of the pair: the
+    // point it names is the ending curve's own tangent_on's, holding the refused end, else the
+    // first tangent_on's of the pair (`tangency`). A tangent_on the gate refuses on its own,
+    // for its `at` or its two lines (`tangent_on_at`, `both_lines`), holds nothing for the
+    // rule, which pairs it with no edge tangent: its own refusal says what's wrong, and once
+    // it's fixed the rule judges the pair as usual.
     let mut holds: BTreeMap<(&Reference, &ElementId), Vec<Hold>> = BTreeMap::new();
     let mut tangent_ons: BTreeMap<(&Reference, &ElementId, &Reference), (usize, &ElementId)> =
         BTreeMap::new();
+    let mut pairs: BTreeMap<(&Reference, &Reference), (usize, &ElementId)> = BTreeMap::new();
     for (i, c) in sketch.constraints.iter().enumerate() {
         let Some((point, curve)) = c.form.hold() else {
             continue;
@@ -493,12 +499,19 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
             _ => HoldKind::On,
         };
         if let Some(point) = point.element() {
+            if let HoldKind::TangentOn(a) = kind
+                && (tangent_on_at(sketch, a, point, curve, lookup).is_some()
+                    || both_lines(a, curve, lookup))
+            {
+                continue;
+            }
             holds
                 .entry((curve, point))
                 .or_default()
                 .push((i, &c.id, kind));
             if let HoldKind::TangentOn(a) = kind {
                 tangent_ons.entry((curve, point, a)).or_insert((i, &c.id));
+                pairs.entry((a, curve)).or_insert((i, point));
             }
         }
     }
@@ -635,8 +648,17 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 } else if let Some((point, ending, other, holder, kind)) = {
                     // Either curve may be the one ending on the other: each way round, the
                     // tangent kept for a hold after it, and a hold before it of an end of x
-                    // on y (one way round, then the other): the first tangent_on of x, which
-                    // makes x tangent where it holds the end already, else the first hold.
+                    // on y: the first tangent_on of the pair, either way round, which makes
+                    // its a tangent where it holds the end already, named as its a, its at,
+                    // and its b; else the first hold of an end of x on y, one way round, then
+                    // the other.
+                    let mut tangent_on: Option<(
+                        usize,
+                        &ElementId,
+                        &Reference,
+                        &Reference,
+                        &ElementId,
+                    )> = None;
                     let mut found = None;
                     for (x, y) in [(a, b), (b, a)] {
                         let Some(curve) = x.element() else {
@@ -651,28 +673,28 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                         for &end in &ends {
                             tangents.entry((y, end)).or_insert((&constraint.id, x));
                         }
+                        for &end in &ends {
+                            if let Some(&(place, id)) = tangent_ons.get(&(y, end, x))
+                                && place < i
+                                && tangent_on.is_none_or(|(first, ..)| place < first)
+                            {
+                                tangent_on = Some((place, end, x, y, id));
+                            }
+                        }
                         if found.is_none() {
-                            let tangent_on = ends
+                            found = ends
                                 .iter()
                                 .filter_map(|&end| {
-                                    let &(place, id) = tangent_ons.get(&(y, end, x))?;
-                                    (place < i).then_some((place, end, id, HoldKind::TangentOn(x)))
+                                    let &(place, id, kind) = holds.get(&(y, end))?.first()?;
+                                    (place < i).then_some((place, end, id, kind))
                                 })
-                                .min_by_key(|&(place, ..)| place);
-                            found = tangent_on
-                                .or_else(|| {
-                                    ends.iter()
-                                        .filter_map(|&end| {
-                                            let &(place, id, kind) =
-                                                holds.get(&(y, end))?.first()?;
-                                            (place < i).then_some((place, end, id, kind))
-                                        })
-                                        .min_by_key(|&(place, ..)| place)
-                                })
+                                .min_by_key(|&(place, ..)| place)
                                 .map(|(_, end, id, kind)| (end, x, y, id, kind));
                         }
                     }
-                    found
+                    tangent_on
+                        .map(|(_, end, x, y, id)| (end, x, y, id, HoldKind::TangentOn(x)))
+                        .or(found)
                 } {
                     // A curve that ends on another is tangent there or not at all: FreeCAD
                     // makes an `on` and an edge tangency one endpoint-to-edge tangency
@@ -687,7 +709,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             point,
                             other,
                             kind,
-                            tangent_ons.contains_key(&(other, point, ending)),
+                            tangency(&tangent_ons, &pairs, ending, point, other),
                         ),
                     ));
                 }
@@ -723,9 +745,15 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                 ));
             }
             Form::TangentOn { a, at: end, b, .. } => {
+                let problem = end
+                    .element()
+                    .and_then(|point| tangent_on_at(sketch, a, point, b, lookup));
+                let lines = both_lines(a, b, lookup);
                 // The tangent rule's pair, refused here when the tangent_on comes after the
-                // tangent.
-                if let Some(point) = end.element()
+                // tangent; a tangent_on refused on its own holds nothing for the rule.
+                if problem.is_none()
+                    && !lines
+                    && let Some(point) = end.element()
                     && let Some(&(tangent, ending)) = tangents.get(&(b, point))
                 {
                     add(refuse(
@@ -738,45 +766,37 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             point,
                             b,
                             HoldKind::TangentOn(a),
-                            tangent_ons.contains_key(&(b, point, ending)),
+                            tangency(&tangent_ons, &pairs, ending, point, b),
                         ),
                     ));
                 }
-                if let Some(point) = end.element() {
-                    let ends = a.element().map(|a| ends_of(sketch, a, lookup));
-                    let ends_b = b.element().map(|b| ends_of(sketch, b, lookup));
-                    if !ends.is_some_and(|e| e.contains(&point)) {
-                        add(refuse(
-                            &format!("{at}.at"),
+                if let Some(point) = end.element()
+                    && let Some(problem) = problem
+                {
+                    let (message, suggestion) = match problem {
+                        TangentOnAt::NotAnEndOfA => (
                             format!("a tangent_on's at, point {point}, isn't an end of its a, {a}"),
                             format!("name the end of {a} that lies on {b}"),
-                        ));
-                    } else if ends_b.is_some_and(|e| e.contains(&point)) {
-                        add(refuse(
-                            &format!("{at}.at"),
+                        ),
+                        TangentOnAt::AnEndOfB => (
                             format!(
                                 "a tangent_on's at, point {point}, is an end of its b, {b}, too: the curves meet there"
                             ),
                             format!("make it a tangent_at, at point {point}"),
-                        ));
-                    } else if b
-                        .element()
-                        .is_some_and(|b| own_points(sketch, b, lookup).contains(&point))
-                    {
+                        ),
                         // b's own centre: the end on b would need it of no radius.
-                        add(refuse(
-                            &format!("{at}.at"),
+                        TangentOnAt::PartOfB => (
                             format!(
                                 "a tangent_on's at, point {point}, is part of its b, {b}, itself"
                             ),
                             format!(
                                 "name the end of {a} that lies on {b}, not a point of {b}'s own"
                             ),
-                        ));
-                    }
+                        ),
+                    };
+                    add(refuse(&format!("{at}.at"), message, suggestion));
                 }
-                // Index 0 is a, 2 is b.
-                if is_line(0) && is_line(2) {
+                if lines {
                     add(refuse(
                         &format!("{at}.b"),
                         "a tangent_on takes a curve ending on a circle or arc, or an arc ending on a line: two lines can't be tangent".to_owned(),
@@ -822,7 +842,7 @@ pub(super) fn check(sketch: &Sketch, refuse: Refuse<'_>, add: &mut dyn FnMut(Err
                             end,
                             curve,
                             kind,
-                            tangent_ons.contains_key(&(curve, end, ending)),
+                            tangency(&tangent_ons, &pairs, ending, end, curve),
                         ),
                     ));
                 }
@@ -1101,25 +1121,103 @@ enum HoldKind<'a> {
     Midpoint(&'a ElementId),
 }
 
+/// What the gate refuses of a `tangent_on`'s `at`, `point`, given its a and b: the first of
+/// these three it finds, in this order.
+#[derive(Clone, Copy)]
+enum TangentOnAt {
+    /// `point` isn't an end of a (nor, so, an element of the sketch's at all, if no point has
+    /// its ID).
+    NotAnEndOfA,
+    /// `point` is an end of b too: the curves meet there, a `tangent_at`'s case.
+    AnEndOfB,
+    /// `point` is one of b's own points, such as its centre.
+    PartOfB,
+}
+
+/// What's wrong with a `tangent_on` of `a` at `point` on `b` for its `at`, if anything: the
+/// tangent_on's own refusal, and what keeps the tangent rule from counting it as making `a`
+/// and `b` tangent.
+fn tangent_on_at(
+    sketch: &Sketch,
+    a: &Reference,
+    point: &ElementId,
+    b: &Reference,
+    lookup: impl Fn(&ElementId) -> Option<Place> + Copy,
+) -> Option<TangentOnAt> {
+    let end_of = |curve: &Reference| {
+        curve
+            .element()
+            .is_some_and(|c| ends_of(sketch, c, lookup).contains(&point))
+    };
+    if !end_of(a) {
+        Some(TangentOnAt::NotAnEndOfA)
+    } else if end_of(b) {
+        Some(TangentOnAt::AnEndOfB)
+    } else if b
+        .element()
+        .is_some_and(|c| own_points(sketch, c, lookup).contains(&point))
+    {
+        Some(TangentOnAt::PartOfB)
+    } else {
+        None
+    }
+}
+
+/// Whether `a` and `b` are both lines or axes, which no `tangent_on` (or `tangent`) makes
+/// tangent.
+fn both_lines(
+    a: &Reference,
+    b: &Reference,
+    lookup: impl Fn(&ElementId) -> Option<Place> + Copy,
+) -> bool {
+    let line = |r: &Reference| match r {
+        Reference::XAxis | Reference::YAxis => true,
+        Reference::Element(id) => lookup(id).is_some_and(|p| p.kind == ElementKind::Line),
+        Reference::Origin => false,
+    };
+    line(a) && line(b)
+}
+
+/// The point a `tangent_on` of `ending` and `other`, either way round, makes them tangent at,
+/// wherever it is in the list: `point` where `ending`'s own `tangent_on` holds it on `other`
+/// (each `tangent_on` by the curve and point it holds and its a, `tangent_ons`), else the `at`
+/// of the first `tangent_on` of the two in the list (each by its a and b, `pairs`).
+fn tangency<'a>(
+    tangent_ons: &BTreeMap<(&'a Reference, &'a ElementId, &'a Reference), (usize, &'a ElementId)>,
+    pairs: &BTreeMap<(&'a Reference, &'a Reference), (usize, &'a ElementId)>,
+    ending: &'a Reference,
+    point: &'a ElementId,
+    other: &'a Reference,
+) -> Option<&'a ElementId> {
+    if tangent_ons.contains_key(&(other, point, ending)) {
+        return Some(point);
+    }
+    [pairs.get(&(ending, other)), pairs.get(&(other, ending))]
+        .into_iter()
+        .flatten()
+        .min_by_key(|&&(place, _)| place)
+        .map(|&(_, at)| at)
+}
+
 /// What makes one tangency of an edge `tangent` of `ending` and `other` and the constraint
-/// holding `ending`'s end, `point`, on `other` (`hold`). Where a `tangent_on` of `ending`
-/// holds `point` on `other` (`tangent_there`), wherever it is in the list and whichever hold
-/// is named, it already says what the edge tangent does, so the edge tangent goes: no
-/// suggestion asks for a `tangent_on` the sketch has. Otherwise an `on` and the edge tangent
-/// become one `tangent_on`; a `tangent_on` that makes another curve tangent there (ending at
-/// the same point) stays, holding the point, and the edge tangent becomes a `tangent_on` of
-/// its own, as it does beside a `midpoint`, which stays too, holding the point at the line's
-/// middle.
+/// holding `ending`'s end, `point`, on `other` (`hold`). Where a `tangent_on` of the two,
+/// either way round, makes them tangent (at `tangent_there`, from [`tangency`]), wherever it
+/// is in the list and whichever hold is named, it already says what the edge tangent does,
+/// so the edge tangent goes: no suggestion asks for a `tangent_on` the sketch has, or for a
+/// second tangency of the two. Otherwise an `on` and the edge tangent become one
+/// `tangent_on`; a `tangent_on` that makes another curve tangent there (ending at the same
+/// point) stays, holding the point, and the edge tangent becomes a `tangent_on` of its own, as
+/// it does beside a `midpoint`, which stays too, holding the point at the line's middle.
 fn one_tangency(
     ending: &Reference,
     point: &ElementId,
     other: &Reference,
     hold: HoldKind<'_>,
-    tangent_there: bool,
+    tangent_there: Option<&ElementId>,
 ) -> String {
-    if tangent_there {
+    if let Some(at) = tangent_there {
         return format!(
-            "remove the tangent: the tangent_on already makes them tangent at point {point}"
+            "remove the tangent: the tangent_on already makes them tangent at point {at}"
         );
     }
     match hold {
