@@ -81,11 +81,14 @@ pub const FAKE_WAIT: Duration = Duration::from_secs(60);
 /// worker's, or STEP worker's, and every frame is drawn on lavapipe.
 pub const SLICE_WAIT: Duration = Duration::from_secs(120);
 
-/// The longest one frame's drawing on lavapipe may take, the GPU's work submitted and read
-/// back ([`LavapipeRenderer`]): a wait that long is a hang. egui_kittest's own renderer gives
-/// it 10 s, which a loaded runner's lavapipe passes: on CI's gate the slice failed so, and a
-/// test confined to two CPUs with 12 busy loops on them fails there in its first frames.
-pub const RENDER_WAIT: Duration = Duration::from_secs(100);
+/// The longest one wait for lavapipe may take, a frame's drawing or its read back
+/// ([`LavapipeRenderer`]): a wait that long is a hang, as [`FAKE_WAIT`] is for a wait on the
+/// app's answers. egui_kittest's own renderer gives each 10 s, which a loaded runner's
+/// lavapipe passes: CI's gate failed the slice so (run 44237373733, "PollError: The requested
+/// Wait timed out"), and on the CI VM, with a test confined to two CPUs and 80 busy loops on
+/// them for its first two minutes, one wait took 10.9 s. Below nextest's 120 s for a test, so
+/// a hang is said by the test, naming the wait, not killed by nextest with nothing said.
+pub const RENDER_WAIT: Duration = Duration::from_secs(60);
 
 /// A kernel the app is driven on here, and how long [`step_until`] waits on it.
 pub trait AppKernel: Clients + 'static {
@@ -1485,10 +1488,6 @@ impl LavapipeRenderer {
             submission_index: submission,
             timeout: Some(RENDER_WAIT),
         });
-        let took = start.elapsed();
-        if took > Duration::from_secs(1) {
-            eprintln!("render wait: {what} took {took:?}");
-        }
         waited.map(|_| ()).map_err(|e| {
             format!(
                 "lavapipe didn't finish {what} in {:?} ({RENDER_WAIT:?} allowed): {e}",
