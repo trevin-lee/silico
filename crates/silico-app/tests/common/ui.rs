@@ -688,6 +688,21 @@ pub fn pick_origin_plane<P: AppKernel>(h: &mut AppUi<P>, plane: &str) {
         h.query_by_label(silico_app::status::PICK_WORDS).is_some()
     });
     let row = plane.strip_suffix(" plane").unwrap_or(plane);
+    // Scrolled into the browser's view, as a person would, where the pane is too short to
+    // show it (a window at its least height).
+    for _ in 0..40 {
+        let pane = h.get_by_role_and_label(Role::Pane, "Browser").rect();
+        let at = h
+            .get_by_role_and_label(Role::Pane, "Browser")
+            .get_by_label(row)
+            .rect();
+        if pane.contains_rect(at) {
+            break;
+        }
+        let down = if at.top() > pane.top() { -1.0 } else { 1.0 };
+        wheel(h, pane.center(), MouseWheelUnit::Line, down);
+        step(h);
+    }
     h.get_by_role_and_label(Role::Pane, "Browser")
         .get_by_label(row)
         .click();

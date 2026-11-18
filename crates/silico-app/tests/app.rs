@@ -18136,7 +18136,7 @@ fn each_toolbar_button_names_its_command_and_says_what_it_does_or_that_it_isnt_b
         (
             "CREATE",
             "Create Sketch",
-            vec!["Sketches on an origin plane"],
+            vec!["Pick an origin plane or a flat face, then sketch on it"],
         ),
         ("MODIFY", "Fillet", vec!["Rounds the selected edges"]),
         ("MODIFY", "Chamfer", vec!["Bevels the selected edges"]),
@@ -54405,17 +54405,18 @@ fn the_context_menus_create_sketch_shows_the_origin_planes_and_esc_ends_the_pick
     step(&mut h);
     h.key_press(Key::Enter);
     step_until(&mut h, "its pick", picking);
-    planes_become(
-        &mut h,
-        &record,
-        &[("XY", false), ("XZ", false), ("YZ", false)],
-    );
-    let at = xy_off_the_box(&h);
-    h.hover_at(at);
+    // The pointer still where the menu opened, on XY off the box: lit.
     planes_become(
         &mut h,
         &record,
         &[("XY", true), ("XZ", false), ("YZ", false)],
+    );
+    // Off XY's square (y below −4): none lit.
+    h.hover_at(above_at(&h, 20.0, -7.0, [0.0, 0.0]));
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", false)],
     );
     h.key_press(Key::Escape);
     step_until(&mut h, "the pick ended", |h| !picking(h));
@@ -54722,10 +54723,11 @@ fn a_click_on_nothing_keeps_the_pick_and_esc_or_cancel_ends_it_sending_nothing()
 }
 
 #[test]
-fn leaving_the_part_for_home_ends_its_pick() {
+fn leaving_the_part_for_home_or_another_tab_ends_its_pick() {
     // interact.js's switch of document sets `S.pickPlane = null`, as Fusion's ends the
     // command under way: Home shown over the part ends its pick, and the part shown again
-    // has none on, its hint gone and its planes back to their eyes.
+    // has none on, its hint gone and its planes back to their eyes; another part's tab
+    // shown ends it too.
     let f = fixture();
     let (mut h, record) = box_from_above(&f);
     begin_pick(&mut h);
@@ -54750,6 +54752,14 @@ fn leaving_the_part_for_home_ends_its_pick() {
     assert!(!picking(&h));
     assert!(pick_hint(&h).is_none());
     planes_become(&mut h, &record, &[]);
+    // Another tab shown over it (a new part) ends it too.
+    begin_pick(&mut h);
+    new_part(&mut h);
+    step_until(&mut h, "the new part shown", |h| {
+        h.state().tabs().len() == 2
+    });
+    step(&mut h);
+    assert!(!picking(&h), "the box's pick ended as the new part showed");
     assert_eq!(never_waits::waits(), 0);
 }
 

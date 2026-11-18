@@ -1096,6 +1096,11 @@ impl<P: Clients + 'static> App<P> {
             }
         }
         let start_shown = self.start_shown();
+        // Home over the tab shown hides its canvas too: its Create Sketch pick ends, as a tab
+        // left does (`Tab::canvas_unshown`).
+        if start_shown && let Some(tab) = shown.and_then(|at| self.tabs.get_mut(at)) {
+            tab.end_plane_pick();
+        }
         if start_shown && !self.start_was_shown {
             // Shown again: each recent document looked for again, off this thread, so a
             // document saved meanwhile shows its new time.
