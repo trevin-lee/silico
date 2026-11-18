@@ -535,6 +535,10 @@ pub struct View {
     /// The origin plane whose browser row the pointer is on, set by the browser each frame
     /// it's drawn: drawn hovered, its eye open or not (`crate::planes`).
     pub plane_hovered: Option<silico_core::document::OriginPlane>,
+    /// The origin planes the last frame drew, in `crate::planes::ORIGIN_PLANES`' order: what
+    /// Create Sketch's pick casts on (`crate::plane_pick`), as the prototype's `VP.pickPlane`
+    /// casts on the planes it shows.
+    planes_drawn: Vec<silico_core::document::OriginPlane>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
     /// The serial of the newest frame that carried a pick of this view's: an answer to a
@@ -627,6 +631,7 @@ impl Default for View {
             linked: None,
             ringed_feature: None,
             plane_hovered: None,
+            planes_drawn: Vec::new(),
             picking: None,
             picked: None,
             last_asked: None,
@@ -816,6 +821,11 @@ impl View {
     /// read again.
     pub fn bodies_of(&self) -> Option<(u64, Revision)> {
         self.model.map(|revision| (self.read_published, revision))
+    }
+
+    /// The origin planes the last frame drew, in `crate::planes::ORIGIN_PLANES`' order.
+    pub fn planes_drawn(&self) -> &[silico_core::document::OriginPlane] {
+        &self.planes_drawn
     }
 
     /// How many `meshes` reads the tab has started.
@@ -1984,13 +1994,14 @@ pub fn show<P: Clients + 'static>(
         }
         lines
     };
-    // The origin planes, by their eyes, the browser row hovered, and Create Sketch's planes
-    // if they're open (`crate::planes`), whatever mode the tab is in.
-    let planes_menu = crate::planes::menu(ui.ctx());
+    // The origin planes, by their eyes, the browser row hovered, and Create Sketch's pick's
+    // if it's on (`crate::planes`), whatever mode the tab is in.
     let planes = crate::planes::drawn(
         |plane| tab.shown(&crate::tab::Hideable::Origin(crate::planes::row_of(plane))),
         tab.view.plane_hovered,
-        planes_menu,
+        tab.plane_pick
+            .as_ref()
+            .map(crate::plane_pick::PlanePick::lit_plane),
     );
     let sketch_boxes: Vec<[[f64; 3]; 2]> = lines
         .iter()
@@ -2144,9 +2155,12 @@ pub fn show<P: Clients + 'static>(
         None => drawing.frames,
     };
     // A plane its eye shows is in the view's reach; one shown for a moment (its row hovered,
-    // Create Sketch's planes open) is drawn only if the view as it is holds it, never
-    // zooming it out.
-    let planes: Vec<silico_render::render::Plane> = planes
+    // Create Sketch's pick on) is drawn only if the view as it is holds it, never zooming it
+    // out.
+    let planes: Vec<(
+        silico_core::document::OriginPlane,
+        silico_render::render::Plane,
+    )> = planes
         .into_iter()
         .filter(|drawn| {
             drawn.shown
@@ -2158,9 +2172,11 @@ pub fn show<P: Clients + 'static>(
                     )
                 })
         })
-        .map(|drawn| drawn.plane)
+        .map(|drawn| (drawn.of, drawn.plane))
         .collect();
-    crate::planes::frame_took(ui.ctx(), planes_menu);
+    view.planes_drawn = planes.iter().map(|(of, _)| *of).collect();
+    let planes: Vec<silico_render::render::Plane> =
+        planes.into_iter().map(|(_, plane)| plane).collect();
     let frame = FrameData {
         serial,
         camera: view.camera.clone(),
@@ -2234,8 +2250,10 @@ pub fn show<P: Clients + 'static>(
     if tab.view.transition.is_some() {
         ui.ctx().request_repaint();
     }
-    // An empty part's hint, above the bar: Create Sketch, as the toolbar's.
-    crate::canvas_hint::empty_part(ui, rect, tab, sessions);
+    // An empty part's hint, above the bar: Create Sketch, as the toolbar's. And Create
+    // Sketch's pick's, at the top, with its Cancel.
+    crate::canvas_hint::empty_part(ui, rect, tab);
+    crate::canvas_hint::plane_pick(ui, rect, tab);
 }
 
 /// The faces `feature` made in `bodies`, as each face's name says ([`Name::feature`]), in

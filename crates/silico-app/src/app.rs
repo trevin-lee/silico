@@ -1249,9 +1249,6 @@ impl<P: Clients + 'static> App<P> {
             }
             ui.ctx().request_repaint();
         }
-        // Every menu drawn: Create Sketch's planes as the viewport's frame took them, or the
-        // next frame asked for.
-        crate::planes::settle(ui.ctx());
         self.after_drawing(ui, next_frame, top);
     }
 
@@ -3165,6 +3162,7 @@ impl<P: Clients + 'static> App<P> {
                 &toolbar::Shown {
                     in_sketch: shown.is_some_and(Tab::in_sketch),
                     create_sketch: Some(shown.is_some_and(Tab::can_sketch)),
+                    picking: shown.is_some_and(|tab| tab.plane_pick.is_some()),
                     can_open: &can_open,
                     why_closed: &why_closed,
                     selected: shown.is_some_and(Tab::selection_clearable),
@@ -3196,8 +3194,8 @@ impl<P: Clients + 'static> App<P> {
             Some(toolbar::Act::AllFilters) => {
                 tab.selection_mut().filter = crate::selection::Filter::default();
             }
-            Some(toolbar::Act::CreateSketch(plane)) => {
-                tab.create_sketch(&self.sessions, plane);
+            Some(toolbar::Act::CreateSketch) => {
+                tab.begin_plane_pick();
                 *next_frame = true;
             }
             Some(toolbar::Act::FinishSketch) => {

@@ -659,8 +659,8 @@ pub fn sketch_mode<P: AppKernel>(h: &AppUi<P>) -> Option<&silico_app::sketch::Sk
     h.state().tabs()[0].sketch.as_ref()
 }
 
-/// Create Sketch on the plane labelled `plane` in the part `part`'s tab, once Create Sketch
-/// is on: sketch mode open, its sketch added and read.
+/// Create Sketch on the origin plane labelled `plane` ("XY plane") in the part `part`'s tab,
+/// once Create Sketch is on: sketch mode open, its sketch added and read.
 pub fn begin_sketch_on<P: AppKernel>(h: &mut AppUi<P>, part: &str, plane: &str) {
     step_until(h, "Create Sketch on", |h| {
         !h.get_by_role_and_label(Role::Toolbar, "CREATE")
@@ -668,14 +668,7 @@ pub fn begin_sketch_on<P: AppKernel>(h: &mut AppUi<P>, part: &str, plane: &str) 
             .accesskit_node()
             .is_disabled()
     });
-    h.get_by_role_and_label(Role::Toolbar, "CREATE")
-        .get_by_label("Create Sketch")
-        .click();
-    step_until(h, "its planes", |h| {
-        h.query_by_role_and_label(Role::Button, plane).is_some()
-    });
-    step(h);
-    h.get_by_role_and_label(Role::Button, plane).click();
+    pick_origin_plane(h, plane);
     step_until(h, "its sketch added and read", |h| {
         tab_named(h, part)
             .sketch
@@ -684,15 +677,26 @@ pub fn begin_sketch_on<P: AppKernel>(h: &mut AppUi<P>, part: &str, plane: &str) 
     });
 }
 
-/// Create Sketch from CREATE's menu, on the plane labelled `plane` ("XY plane"): sketch
-/// mode open, and its sketch's add answered.
-pub fn create_sketch<P: AppKernel>(h: &mut AppUi<P>, plane: &str) {
+/// CREATE's Create Sketch clicked, its pick begun, and the origin plane labelled `plane`
+/// ("XY plane") picked by its row in the browser, as Fusion's browser gives a plane a sketch
+/// is asked for (`silico_app::plane_pick`; a pick in the canvas is the canvas's tests').
+pub fn pick_origin_plane<P: AppKernel>(h: &mut AppUi<P>, plane: &str) {
     h.get_by_role_and_label(Role::Toolbar, "CREATE")
         .get_by_label("Create Sketch")
         .click();
-    step(h);
-    step(h);
-    h.get_by_role_and_label(Role::Button, plane).click();
+    step_until(h, "its pick", |h| {
+        h.query_by_label(silico_app::status::PICK_WORDS).is_some()
+    });
+    let row = plane.strip_suffix(" plane").unwrap_or(plane);
+    h.get_by_role_and_label(Role::Pane, "Browser")
+        .get_by_label(row)
+        .click();
+}
+
+/// Create Sketch on the origin plane labelled `plane` ("XY plane"), picked by its row in the
+/// browser ([`pick_origin_plane`]): sketch mode open, and its sketch's add answered.
+pub fn create_sketch<P: AppKernel>(h: &mut AppUi<P>, plane: &str) {
+    pick_origin_plane(h, plane);
     step_until(h, "its sketch added", |h| {
         sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
     });

@@ -6,8 +6,9 @@
 //!
 //! **Driven as a person drives it.** Every step is a click, a key, or typed text: through
 //! the accessibility tree, or the canvas's own pointer events (a sketch's corners clicked at
-//! the screen places the frame's own camera shows them at, the fillet's edge clicked where
-//! the renderer draws it and found in lavapipe's ID buffer). Only reads are taken from the
+//! the screen places the frame's own camera shows them at, each sketch's plane picked in the
+//! canvas where the frame draws it, and the fillet's edge clicked where the renderer draws
+//! it and found in lavapipe's ID buffer). Only reads are taken from the
 //! app's state (where the frame shows a place, what a read holds, what the tab answered),
 //! never a method that acts. Where the views put the sketch under the app's own overlays,
 //! the session pans and zooms the canvas as a person would ([`clear_view`]).
@@ -71,6 +72,7 @@ use silico_app::App;
 use silico_app::sketch::screen::Screen;
 use silico_core::cache::Cache;
 use silico_core::command::Sessions;
+use silico_core::document::OriginPlane;
 use silico_core::fake::never_waits;
 use silico_core::pool::KernelPool;
 use silico_core::sketch_states::{ConstraintState, SketchState};
@@ -221,6 +223,47 @@ fn standard_view(h: &mut AppUi<KernelPool>, key: Key, looking: [f64; 3]) {
     };
     step_until(h, "the view chosen", along);
     settle_frame(h);
+}
+
+/// Where the frame shows `at`, a point of the document, on the screen.
+fn on_screen(h: &AppUi<KernelPool>, at: [f64; 3]) -> Pos2 {
+    let frame = frame(h).unwrap();
+    let px = project(&frame.camera, frame.size_px, at).unwrap();
+    let ppp = frame.pixels_per_point;
+    frame.rect.min + eframe::egui::vec2(px[0] as f32 / ppp, px[1] as f32 / ppp)
+}
+
+/// Create Sketch, and `plane` picked in the canvas at `at`, a point of its square the bodies
+/// don't hide, as a person picks it: CREATE's Create Sketch clicked, the wheel zoomed out a
+/// notch at a time at the canvas's centre while `at` is under an overlay or off the canvas,
+/// the pointer onto it until the pick lights `plane` there, and a click; then frames stepped
+/// until its sketch is added.
+fn pick_plane(h: &mut AppUi<KernelPool>, plane: OriginPlane, at: [f64; 3]) {
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(h, "the pick", |h| h.state().tabs()[0].plane_pick.is_some());
+    settle_frame(h);
+    let centre = free(h).center();
+    let mut notches = 0;
+    while !clear(h, on_screen(h, at), 12.0) {
+        assert!(notches < 20, "{at:?} never clear: {:?}", overlays(h));
+        wheel(h, centre, MouseWheelUnit::Line, -1.0);
+        settle_frame(h);
+        notches += 1;
+    }
+    let place = on_screen(h, at);
+    move_to(h, place);
+    step_until(h, &format!("{plane:?} lit at {place:?}"), |h| {
+        h.state().tabs()[0]
+            .plane_pick
+            .as_ref()
+            .is_some_and(|pick| pick.lit_plane() == Some(plane))
+    });
+    click_as_a_person(h, place, Modifiers::NONE);
+    step_until(h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
 }
 
 /// A click at the open sketch's place `at`, where the frame shows it, clear of the overlays.
@@ -619,10 +662,11 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         new_part(h);
         settled(h);
 
-        // --- Sketch 1, the L, on XZ: sketch x is +X, sketch y is +Z. Front (Command+1)
-        // looks along +Y, face-on. Its corners, (0, 0), (60, 0), (60, 5), (5, 5), (5, 50),
-        // (0, 50), and the places its dimensions are picked and placed.
-        create_sketch(h, "XZ plane");
+        // --- Sketch 1, the L, on XZ: sketch x is +X, sketch y is +Z, picked in the canvas
+        // at (21, 0, 21), its square's middle, the part empty. Front (Command+1) looks along
+        // +Y, face-on. Its corners, (0, 0), (60, 0), (60, 5), (5, 5), (5, 50), (0, 50), and the
+        // places its dimensions are picked and placed.
+        pick_plane(h, OriginPlane::Xz, [21.0, 0.0, 21.0]);
         sketch_read(h);
         let s1 = sketch_mode(h).unwrap().sketch.clone().unwrap();
         standard_view(h, Key::Num1, [0.0, 1.0, 0.0]);
@@ -700,9 +744,12 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         phase("the pad");
 
         // --- Sketch 2, the base's holes, on XY. Top (Command+5) looks down −Z, fitted to
-        // the legs. C, the Circle tool: each centre, then a place on its rim; the second
-        // centre lines up above the first, which the tool added and so woke.
-        create_sketch(h, "XY plane");
+        // the legs: XY picked in the canvas at (−2, 20, 0), in its square left of the legs
+        // (x from 0), which hide the rest of it. C, the Circle tool: each centre, then a place
+        // on its rim; the second centre lines up above the first, which the tool added and so
+        // woke.
+        standard_view(h, Key::Num5, [0.0, 0.0, -1.0]);
+        pick_plane(h, OriginPlane::Xy, [-2.0, 20.0, 0.0]);
         sketch_read(h);
         let s2 = sketch_mode(h).unwrap().sketch.clone().unwrap();
         standard_view(h, Key::Num5, [0.0, 0.0, -1.0]);
@@ -735,9 +782,10 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         phase("pocket 1");
 
         // --- Sketch 3, the upright's holes, on YZ: sketch x is +Y, sketch y is +Z. Right
-        // (Command+4) looks along −X, Y to the right. The second centre level with the
-        // first.
-        create_sketch(h, "YZ plane");
+        // (Command+4) looks along −X, Y to the right: YZ picked in the canvas at (0, 43, 20),
+        // in its square past the legs (y to 40). The second centre level with the first.
+        standard_view(h, Key::Num4, [-1.0, 0.0, 0.0]);
+        pick_plane(h, OriginPlane::Yz, [0.0, 43.0, 20.0]);
         sketch_read(h);
         let s3 = sketch_mode(h).unwrap().sketch.clone().unwrap();
         standard_view(h, Key::Num4, [-1.0, 0.0, 0.0]);
