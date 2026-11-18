@@ -1178,12 +1178,9 @@ pub(super) fn remove_feature(
     place_of(checked.document(), id)?;
     // Every feature that can't do without it, all at once (a pattern copying it and a
     // fillet naming its edges alike: docs/design/m6.0-patterns.md, section 6).
-    let removed = chain::remove_all(checked, id).map_err(|refusals| {
-        let mut problems = Problems::none();
-        for refusal in refusals {
-            problems.push(refusal);
-        }
-        problems
+    let removed = chain::remove_all(checked, id, PROBLEMS_LISTED).map_err(|refused| {
+        let unlisted = refused.total.saturating_sub(refused.errors.len());
+        Problems::with_unlisted(refused.errors, u64::try_from(unlisted).unwrap_or(u64::MAX))
     })?;
     let candidate = candidate(&removed.document, "feature")?;
     Ok((removed, candidate))

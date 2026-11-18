@@ -501,7 +501,10 @@ fn a_pattern_is_a_child_of_each_original_in_the_designs_edits() {
     .unwrap_err();
     assert_eq!(as_example(&error), examples[3]);
     // Removing the original: the pattern's refusal, and the chamfer's, which names both.
-    let refusals = silico_core::document::chain::removal_refusals(&checked, &id("q0000002"));
+    let refusals =
+        silico_core::document::chain::removal_refusals(&checked, &id("q0000002"), usize::MAX);
+    assert_eq!(refusals.total, 2);
+    let refusals = refusals.errors;
     let written: Vec<String> = refusals.iter().map(as_example).collect();
     assert_eq!(written.len(), 2, "{written:?}");
     assert_eq!(written[0], examples[5]);
@@ -1095,10 +1098,11 @@ fn three_directions_of_huge_counts_are_refused_not_a_panic() {
 #[test]
 fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
     // The review's hostile files: 600,000 skips, each past nothing and none repeated;
-    // 1,000,000 originals no feature has; and 20,000 pockets in one chain, each an original.
+    // 1,000,000 originals no feature has; and 60,000 pockets in one chain, each an original.
     // Each repeat found by a look-up, each refusal made only if it's listed, and each
     // original's chain read from the roots worked once, so each checks in well under the
-    // CPU time a square would take.
+    // CPU time a square would take. (Measured on the CI VM: the chain case takes 2 s of CPU
+    // checked by roots, and 22 s checked by a list of the chain searched for each original.)
     let n: u32 = 600_000;
     let skips: Vec<String> = (1..n).map(|k| format!("[{k}]")).collect();
     let text = edited(
@@ -1106,11 +1110,29 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
         DIRECTION_0,
         &DIRECTION_0.replace("\"count\": 3", &format!("\"count\": {n}")),
     );
-    // Past the cap (600,000 by 2), so refused, but checked.
+    // Past the cap (600,000 by 2), so refused at the count that passes it alone, and that
+    // alone: none of the 599,999 distinct skips is taken for a repeat.
     let refused = within(Duration::from_secs(10), move || {
-        Checked::new(read(text.as_bytes()).unwrap()).is_err()
+        let invalid = Checked::new(read(text.as_bytes()).unwrap()).unwrap_err();
+        let errors: Vec<(Option<String>, String)> = invalid
+            .errors()
+            .iter()
+            .map(|e| (e.parameter().map(str::to_owned), e.message().to_owned()))
+            .collect();
+        (invalid.total(), errors)
     });
-    assert!(refused);
+    assert_eq!(refused.0, 1, "{:?}", refused.1);
+    assert_eq!(
+        refused.1[0].0.as_deref(),
+        Some("directions.0.count"),
+        "{:?}",
+        refused.1
+    );
+    assert!(
+        refused.1[0].1.contains("has 1200000 instances in all"),
+        "{:?}",
+        refused.1
+    );
 
     let ids: Vec<String> = (0..1_000_000u32).map(|k| format!("\"z{k:07}\"")).collect();
     let text = edited(
@@ -1128,11 +1150,11 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
     });
     assert_eq!(total, 1_000_000);
 
-    // The plate's outline, plate, and notch sketch, then 20,000 pockets of the notch, each on
+    // The plate's outline, plate, and notch sketch, then 60,000 pockets of the notch, each on
     // the one before, and a mirror of them all: every original in its base's chain.
     let plate = plate_text();
     let head = &plate[..plate.find("    {\n      \"id\": \"q0000001\"").unwrap()];
-    let pockets = 20_000u32;
+    let pockets = 60_000u32;
     let mut text = head.to_owned();
     let mut base = "p0000001".to_owned();
     for k in 1..=pockets {
@@ -1338,7 +1360,8 @@ fn set_field_of_one_skip_gives_back_the_place_it_lands() {
 fn removal_suggestion(text: &str, removed: &str, child: &str) -> String {
     let checked = Checked::new(read(text.as_bytes()).unwrap())
         .unwrap_or_else(|invalid| panic!("{:?}", invalid.errors()));
-    let refusals = silico_core::document::chain::removal_refusals(&checked, &id(removed));
+    let refusals =
+        silico_core::document::chain::removal_refusals(&checked, &id(removed), usize::MAX).errors;
     let refusal = refusals
         .iter()
         .find(|e| {

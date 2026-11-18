@@ -170,10 +170,10 @@ pub fn insert_place(document: &Document, before: Option<&FeatureId>) -> Result<u
 /// whose sketch it is, a feature that stores names of its elements (checked directly, since
 /// a removed maker's name no longer parses), a pattern that copies it, and a feature whose
 /// stored names' makers its base would no longer be built from (the lineage rule, open item
-/// 2b). Refused with the first refusal; [`remove_all`] gives every one.
+/// 2b). Refused with the first refusal; [`remove_all`] gives more.
 pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
-    remove_all(checked, id).map_err(|refusals| {
-        refusals.into_iter().next().unwrap_or_else(|| {
+    remove_all(checked, id, 1).map_err(|refused| {
+        refused.errors.into_iter().next().unwrap_or_else(|| {
             Error::new(
                 ErrorCode::Internal,
                 format!("removing {id} was refused with no reason given"),
@@ -185,26 +185,27 @@ pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
 
 /// As [`remove`], refused with every feature that can't do without `id`, at once
 /// (`remove_feature`: a pattern copying it and a fillet naming its edges alike,
-/// docs/design/m6.0-patterns.md, section 6), the children found in one pass.
-pub fn remove_all(checked: &Checked, id: &FeatureId) -> Result<Removed, Vec<Error>> {
+/// docs/design/m6.0-patterns.md, section 6), the children found in one pass, the first
+/// `listed` built and every one counted.
+pub fn remove_all(checked: &Checked, id: &FeatureId, listed: usize) -> Result<Removed, Refusals> {
     let document = checked.document();
     let index = Index::of(document);
     let at = index
         .place(id)
-        .ok_or_else(|| vec![no_feature(id, "feature")])?;
+        .ok_or_else(|| Refusals::one(no_feature(id, "feature")))?;
     let removed = &document.features[at];
-    let refusals = removal_refusals(checked, id);
-    if !refusals.is_empty() {
+    let refusals = removal_refusals(checked, id, listed);
+    if refusals.total > 0 {
         return Err(refusals);
     }
     let mut edited = document.clone();
     if let Some((c, field)) = index.consumer(id) {
         stand_in(document, &index, &mut edited, removed, c, field, "remove")
-            .map_err(|e| vec![e])?;
+            .map_err(Refusals::one)?;
     }
     edited.features.remove(at);
     if let Some((feature, maker)) = lineage_broken(document, &edited) {
-        return Err(vec![Error::new(
+        return Err(Refusals::one(Error::new(
             ErrorCode::InvalidInput,
             format!(
                 "{feature} names elements of {maker}, which its base would no longer be built from without {}",
@@ -213,7 +214,7 @@ pub fn remove_all(checked: &Checked, id: &FeatureId) -> Result<Removed, Vec<Erro
         )
         .with_feature(removed.id.as_str())
         .with_parameter("feature")
-        .with_suggestion(format!("remove {feature} first"))]);
+        .with_suggestion(format!("remove {feature} first"))));
     }
     let rewired = rewired(document, &edited);
     Ok(Removed {
@@ -224,19 +225,47 @@ pub fn remove_all(checked: &Checked, id: &FeatureId) -> Result<Removed, Vec<Erro
     })
 }
 
+/// The refusals of a removal: the first of them built, and how many there are in all.
+#[derive(Debug)]
+pub struct Refusals {
+    /// The refusals built, in timeline order: at most as many as were asked for.
+    pub errors: Vec<Error>,
+    /// How many there are, built or not.
+    pub total: usize,
+}
+
+impl Refusals {
+    fn one(error: Error) -> Self {
+        Refusals {
+            errors: vec![error],
+            total: 1,
+        }
+    }
+}
+
 /// Every refusal of removing `id` for a feature that can't do without it, one a child, in
 /// timeline order, naming both (the design's `remove_feature`, and a pattern's originals,
 /// docs/design/m6.0-patterns.md, section 6): its sketch's users, the features naming its
-/// elements, and the patterns copying it. [`remove`] refuses with the first; `remove_feature`
-/// gives them all at once. None for a feature the document hasn't.
-pub fn removal_refusals(checked: &Checked, id: &FeatureId) -> Vec<Error> {
+/// elements, and the patterns copying it. Each counted, and the first `listed` built, so a
+/// sketch a hundred thousand features use costs a count past those. [`remove`] refuses with
+/// the first; `remove_feature` gives as many as it lists. None for a feature the document
+/// hasn't.
+pub fn removal_refusals(checked: &Checked, id: &FeatureId, listed: usize) -> Refusals {
     let document = checked.document();
     let index = Index::of(document);
-    let Some(removed) = index.place(id).and_then(|at| document.features.get(at)) else {
-        return Vec::new();
+    let mut refusals = Refusals {
+        errors: Vec::new(),
+        total: 0,
     };
-    children(document, &index, id)
-        .map(|(child, why)| {
+    let Some(removed) = index.place(id).and_then(|at| document.features.get(at)) else {
+        return refusals;
+    };
+    for (child, why) in children(document, &index, id) {
+        refusals.total += 1;
+        if refusals.errors.len() >= listed {
+            continue;
+        }
+        refusals.errors.push(
             Error::new(
                 ErrorCode::InvalidInput,
                 format!(
@@ -264,9 +293,10 @@ pub fn removal_refusals(checked: &Checked, id: &FeatureId) -> Vec<Error> {
                     "remove {} first, or take {} out of its copies.features",
                     child.id, removed.id
                 ),
-            })
-        })
-        .collect()
+            }),
+        );
+    }
+    refusals
 }
 
 /// The feature `id` moved before the feature `before`, or to the end for none (the design's
