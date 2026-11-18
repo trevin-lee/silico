@@ -149,13 +149,15 @@ trap 'rm -f "$nextest_config"' EXIT
 # baseline lengthens them, an unloaded one leaves them as they were. cargo-mutants has no
 # upper bound on it, and nextest doesn't stop at a first failure (.config/nextest.toml), so
 # a mutant that hangs many tests can run to the limit. Against the plan's bound (mutants.yml:
-# 80 mutants a shard, at 540 s each, inside half the job's 24 hours): while the baseline
-# stays under 600 s the limit is the 30 minutes it was. Above that, a mutant that times out
-# costs at most 2 baselines more than one that doesn't (3 against about 1): at an 800 s
-# baseline, 80 mutants take about 18 hours and 13 timeouts still fit in 24. Past a 1080 s
-# baseline, 80 ordinary mutants alone pass 24 hours whatever the limit, and the summary reads
-# the shard incomplete. A fixed 30 minutes would instead time out every mutant once the
-# baseline passed it, each a timeout triaged as missed.
+# 80 mutants a shard at 540 s each, 12 hours, half the job's 24), the other 12 hours hold the
+# baseline (its build, up to 780 s on 2026-11-16, and its tests) and what each timeout takes
+# past 540 s, its limit less 540: up to (43200 - 780 - B) / (max(1800, 3B) - 540) timeouts
+# for a baseline of B seconds. While the baseline stays under 600 s the limit is the 30
+# minutes it was, and 33 fit; at 800 s, 22; at 1305 s, 12 (run 44253716210's, 2026-11-18,
+# whose other mutants took about 250 s each, build and tests, against that baseline); at
+# 1800 s, 8, where --timeout 1800 tested none. A shard past them ends at its job's 24 hours,
+# and the summary reads it incomplete. A fixed 30 minutes would instead time out every
+# mutant once the baseline passed it, each a timeout triaged as missed.
 #
 # The workspace's tests take about 15.5 minutes in a gate at about 7 threads at full priority
 # (#430's, run 42658028231, 2026-11-09), longer at a shard's 2 to 4 at the idle weight, and
