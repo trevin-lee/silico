@@ -1306,8 +1306,8 @@ impl<P: Clients + 'static> App<P> {
         tab.finish_rename(&self.sessions, renaming.feature, &renaming.text)
     }
 
-    /// What the start page's `act` asks: a new untitled part, Open's panel, the shortcut
-    /// sheet, a recent document opened (or its tab shown, if it's open), a missing one
+    /// What the start page's `act` asks: a new untitled part, Open's panel, the command
+    /// search, the shortcut sheet, a recent document opened (or its tab shown, if it's open), a missing one
     /// removed from Recent (said in a toast, as the prototype's `openRecent` says it), or
     /// the MCP config copied.
     fn start_act(&mut self, ui: &Ui, act: start::Act, next_frame: &mut bool) {
@@ -1318,6 +1318,7 @@ impl<P: Clients + 'static> App<P> {
                 *next_frame = true;
             }
             start::Act::Open => self.ask_open(ui.ctx()),
+            start::Act::Search => self.search = Some(Search::default()),
             start::Act::Shortcuts => self.sheet = Some(Sheet::default()),
             start::Act::Recent(path) => *next_frame |= self.open_recent(&path),
             // Said once the list's thread tells it's done (`poll`).
