@@ -301,7 +301,7 @@ fn each_gate_refusal_on_the_plate_is_its_example_byte_for_byte() {
         ),
         // The skip refusals on the 3 by 2 grid.
         (13, grid_skip("[[0]]")),
-        (14, grid_skip("[[3]]")),
+        (14, grid_skip("[[1, 1, 1]]")),
         (15, grid_skip("[[1], [1]]")),
         (16, grid_skip("[[2, 0]]")),
         // A revolve's x_axis, an origin plane, and a vertex as a direction.
@@ -454,7 +454,9 @@ fn a_counts_and_skips_rules_hold_at_their_edges() {
         one[0]
     );
     assert!(refused(&grid_skip("[[2, 1]]")).is_empty());
-    assert_eq!(refused(&grid_skip("[[2, 2]]")).len(), 1);
+    // Past a count, kept (Main, 2026-11-17, following FreeCAD main's 0ea40a10e2).
+    assert!(refused(&grid_skip("[[2, 2]]")).is_empty());
+    assert!(refused(&grid_skip("[[3]]")).is_empty());
     let four = edited(
         &grid_skip("[[3], [2, 1]]"),
         DIRECTION_0,
@@ -726,4 +728,581 @@ fn a_step_of_exactly_occts_tolerance_is_refused_and_one_past_it_taken() {
         at[0]
     );
     assert!(refused(&over(10)).is_empty());
+}
+
+/// The plate with its grid set to FreeCAD's suppression pattern (`TestLinearPattern.py`'s
+/// `makeSuppressionPattern`): spacing 10 each way, `counts` instances, `skip` as given.
+fn suppression_grid(counts: (u32, u32), skip: &str) -> String {
+    edited(
+        &edited(
+            &grid_skip(skip),
+            DIRECTION_0,
+            &format!(
+                "\"distribution\": {{\"type\": \"spacing\", \"length\": 10}},\n          \"count\": {}",
+                counts.0
+            ),
+        ),
+        DIRECTION_1,
+        &format!(
+            "\"distribution\": {{\"type\": \"spacing\", \"length\": 10}},\n          \"count\": {}",
+            counts.1
+        ),
+    )
+}
+
+/// The grid's `skip` as the gate holds it, and those in range.
+fn held_skip(text: &str) -> (Vec<Vec<u32>>, Vec<Vec<u32>>) {
+    let checked = Checked::new(read(text.as_bytes()).unwrap())
+        .unwrap_or_else(|invalid| panic!("{:?}", invalid.errors()));
+    let grid = checked.feature(&id("t0000001")).unwrap();
+    let silico_core::document::Operation::LinearPattern {
+        directions, skip, ..
+    } = &grid.operation
+    else {
+        panic!("not a linear pattern");
+    };
+    let counts: Vec<u32> = directions.iter().map(|d| d.count).collect();
+    let in_range = silico_core::document::skipped_in_range(skip, &counts)
+        .into_iter()
+        .map(|s| s.0.clone())
+        .collect();
+    (skip.iter().map(|s| s.0.clone()).collect(), in_range)
+}
+
+#[test]
+fn a_skip_keeps_its_grid_position_through_counts_lowered_and_raised_as_freecad_mains() {
+    // TestLinearPattern.testSuppressionKeepsGridPosition (FreeCAD main, 0ea40a10e2): a 3 × 3
+    // grid with (1, 2) suppressed (its flat index 5). Direction 2 raised to 4: still (1, 2).
+    // Counts lowered to 1 and 2: kept, and in range no more. Back to 3 and 3: in range
+    // again. FreeCAD's volumes (11000, 2000, 8000) are M6.3's to rebuild.
+    let skipped = vec![vec![1, 2]];
+    assert_eq!(
+        held_skip(&suppression_grid((3, 3), "[[1, 2]]")),
+        (skipped.clone(), skipped.clone())
+    );
+    assert_eq!(
+        held_skip(&suppression_grid((3, 4), "[[1, 2]]")),
+        (skipped.clone(), skipped.clone())
+    );
+    assert_eq!(
+        held_skip(&suppression_grid((1, 2), "[[1, 2]]")),
+        (skipped.clone(), Vec::new())
+    );
+    assert_eq!(
+        held_skip(&suppression_grid((3, 3), "[[1, 2]]")),
+        (skipped.clone(), skipped)
+    );
+}
+
+#[test]
+fn a_skip_past_a_count_is_saved_and_read_back_as_freecad_mains_is() {
+    // TestLinearPattern.testSuppressionPersistence: (1, 2) skipped, direction 2's count 1
+    // ("save an out-of-range suppression"), saved and opened: the skip is there, and with
+    // direction 2's count 4 it's in range, (1, 2).
+    let out = suppression_grid((3, 1), "[[1, 2]]");
+    let saved = write(
+        &Checked::new(read(out.as_bytes()).unwrap())
+            .unwrap()
+            .into_document(),
+    )
+    .unwrap();
+    assert!(
+        saved.contains("\"skip\": [\n        [1, 2]\n      ]"),
+        "{saved}"
+    );
+    let opened = edited(
+        &saved,
+        "\"distribution\": {\"type\": \"spacing\", \"length\": 10},\n          \"count\": 1",
+        "\"distribution\": {\"type\": \"spacing\", \"length\": 10},\n          \"count\": 4",
+    );
+    assert_eq!(held_skip(&opened), (vec![vec![1, 2]], vec![vec![1, 2]]));
+}
+
+#[test]
+fn only_the_skips_inside_the_grid_take_effect_as_freecad_mains_project() {
+    // TestLinearPattern.testSuppressedIndicesOnlyProjectPositionsInsideTheGrid: a 3 × 2
+    // grid with (0, 1), (2, 1), (3, 0), and (0, 2) skipped (FreeCAD's (-1, 0) has no
+    // spelling: Silico has no negative offsets) keeps all four, and takes (0, 1) and
+    // (2, 1), FreeCAD's flat [1, 5]. (3, 0) is written [3].
+    let (held, in_range) = held_skip(&suppression_grid((3, 2), "[[0, 1], [2, 1], [3], [0, 2]]"));
+    assert_eq!(held, [vec![0, 1], vec![0, 2], vec![2, 1], vec![3]]);
+    assert_eq!(in_range, [vec![0, 1], vec![2, 1]]);
+}
+
+#[test]
+fn a_patterns_misspelt_forms_and_stray_members_are_refused_by_the_reader() {
+    // Each of the readers' refusals, at its path: a form that isn't one, a member a part
+    // can't have, a count or an offset that isn't a whole number or is past 32 bits, and an
+    // empty reference.
+    let plate = plate_text();
+    let copies =
+        "\"copies\": {\"type\": \"features\", \"features\": [\"q0000002\"]},\n      \"directions\"";
+    let cases: Vec<(&str, String, &str)> = vec![
+        (
+            DIRECTION_0,
+            DIRECTION_0.replace("\"extent\"", "\"extents\""),
+            "directions.0.distribution.type",
+        ),
+        (
+            DIRECTION_0,
+            DIRECTION_0.replace("\"length\": 80}", "\"length\": 80, \"angle\": 5}"),
+            "directions.0.distribution.angle",
+        ),
+        (
+            DIRECTION_0,
+            DIRECTION_0.replace("\"count\": 3", "\"count\": 3, \"skip\": 1"),
+            "directions.0.skip",
+        ),
+        (
+            copies,
+            copies.replace("\"features\", \"features\": [\"q0000002\"]", "\"solids\""),
+            "copies.type",
+        ),
+        (
+            copies,
+            copies.replace(
+                "\"features\": [\"q0000002\"]",
+                "\"features\": [\"q0000002\"], \"count\": 1",
+            ),
+            "copies.count",
+        ),
+        (
+            POLAR,
+            POLAR.replace("\"extent\"", "\"spaced\""),
+            "distribution.type",
+        ),
+        (
+            DIRECTION_0,
+            DIRECTION_0.replace("\"count\": 3", "\"count\": 3.5"),
+            "directions.0.count",
+        ),
+        (
+            DIRECTION_0,
+            DIRECTION_0.replace("\"count\": 3", "\"count\": -3"),
+            "directions.0.count",
+        ),
+        (
+            DIRECTION_0,
+            DIRECTION_0.replace("\"count\": 3", "\"count\": 4294967296"),
+            "directions.0.count",
+        ),
+        (
+            POLAR,
+            POLAR.replace("\"count\": 4", "\"count\": 4294967296"),
+            "count",
+        ),
+        (
+            "\"along\": \"x\",",
+            "\"along\": \"\",".to_owned(),
+            "directions.0.along",
+        ),
+        ("\"plane\": \"yz\"", "\"plane\": 3".to_owned(), "plane"),
+    ];
+    for (from, to, parameter) in cases {
+        let error = read(edited(&plate, from, &to).as_bytes()).unwrap_err();
+        assert_eq!(error.code(), silico_core::ErrorCode::InvalidInput, "{to}");
+        assert_eq!(error.parameter(), Some(parameter), "{to}: {error}");
+    }
+    for (skip, parameter) in [
+        ("[[1.5]]", "skip.0.0"),
+        ("[[1, 4294967296]]", "skip.0.1"),
+        ("[1]", "skip.0"),
+    ] {
+        let error = read(grid_skip(skip).as_bytes()).unwrap_err();
+        assert_eq!(error.parameter(), Some(parameter), "{skip}: {error}");
+    }
+}
+
+#[test]
+fn a_polar_patterns_count_and_angle_are_refused_at_their_edges() {
+    // Count 0 and 1,001; an angle of 0, with one instance and with four; and OCCT's angular
+    // tolerance, by hand: a nanodegree over n steps turns 1e-9 × π/180 / n radians, at or
+    // under 1e-12 from n = 18 (9.696e-13), over it at n = 17 (1.027e-12).
+    let polar = |distribution: &str, count: u32| {
+        edited(
+            &plate_text(),
+            POLAR,
+            &format!("\"distribution\": {distribution},\n      \"count\": {count}"),
+        )
+    };
+    let whole = "{\"type\": \"extent\", \"angle\": 360}";
+    let zero = refused(&polar(whole, 0));
+    assert_eq!(zero.len(), 1, "{zero:?}");
+    assert!(zero[0].contains("\"parameter\": \"count\""), "{}", zero[0]);
+    assert!(
+        zero[0].contains("polar_pattern count must be at least 1, got 0"),
+        "{}",
+        zero[0]
+    );
+    let over = refused(&polar(whole, 1001));
+    assert_eq!(over.len(), 1, "{over:?}");
+    assert!(over[0].contains("\"parameter\": \"count\""), "{}", over[0]);
+    assert!(
+        over[0].contains("has 1001 instances in all, more than"),
+        "{}",
+        over[0]
+    );
+    for count in [1, 4] {
+        let error = refused(&polar("{\"type\": \"spacing\", \"angle\": 0}", count));
+        assert_eq!(error.len(), 1, "{error:?}");
+        assert!(error[0].contains("got 0°"), "{}", error[0]);
+        assert!(
+            error[0].contains("give the polar_pattern an angle above 0°"),
+            "{}",
+            error[0]
+        );
+    }
+    let tiny = "{\"type\": \"extent\", \"angle\": 0.000000001}";
+    let at = refused(&polar(tiny, 19));
+    assert_eq!(at.len(), 1, "{at:?}");
+    assert!(at[0].contains("within OCCT's 1e-12 radians"), "{}", at[0]);
+    assert!(refused(&polar(tiny, 18)).is_empty());
+    // A polar skip of two offsets is refused; one past the count is kept.
+    let skip = |skip: &str| {
+        edited(
+            &plate_text(),
+            "\"count\": 4,\n      \"skip\": []",
+            &format!("\"count\": 4,\n      \"skip\": {skip}"),
+        )
+    };
+    let two = refused(&skip("[[1, 1]]"));
+    assert_eq!(two.len(), 1, "{two:?}");
+    assert!(
+        two[0].contains("has 2 offsets, and polar_pattern t0000002 has 1 direction"),
+        "{}",
+        two[0]
+    );
+    assert!(refused(&skip("[[4]]")).is_empty());
+}
+
+#[test]
+fn a_linear_patterns_reach_directions_and_originals_hold_at_their_edges() {
+    // Five instances 250000 mm apart reach exactly a kilometre (taken); a nanometre more each
+    // passes it. A length of exactly a kilometre is taken. No direction, and three, are
+    // refused. And the originals' other refusals.
+    let five = |length: &str| {
+        edited(
+            &plate_text(),
+            DIRECTION_0,
+            &format!(
+                "\"distribution\": {{\"type\": \"spacing\", \"length\": {length}}},\n          \"count\": 5"
+            ),
+        )
+    };
+    assert!(refused(&five("250000")).is_empty());
+    let past = refused(&five("250000.000001"));
+    assert_eq!(past.len(), 1, "{past:?}");
+    assert!(past[0].contains("reaches 1000000.000004 mm"), "{}", past[0]);
+    let kilometre = edited(&plate_text(), "\"length\": 80}", "\"length\": 1000000}");
+    assert!(refused(&kilometre).is_empty());
+    let copies = "\"features\": [\"q0000002\"]},\n      \"directions\"";
+    for (to, says, suggestion) in [
+        (
+            "\"features\": [\"zzzzzzzz\"]},\n      \"directions\"",
+            "copies.features.0 zzzzzzzz isn't the ID of any feature",
+            "use the ID of a feature before this one",
+        ),
+        (
+            "\"features\": [\"t0000001\"]},\n      \"directions\"",
+            "copies.features.0 t0000001 is this feature: a feature can't copy itself",
+            "use the ID of a feature before this one",
+        ),
+        (
+            "\"features\": [\"s0000003\"]},\n      \"directions\"",
+            "copies.features.0 s0000003 is Corner hole outline, a sketch, not a pad, pocket, revolve, or groove",
+            "copy the pads, pockets, revolves, or grooves it's built from",
+        ),
+    ] {
+        let errors = refused(&edited(&plate_text(), copies, to));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains(says), "{}", errors[0]);
+        assert!(errors[0].contains(suggestion), "{}", errors[0]);
+    }
+}
+
+#[test]
+fn a_linear_pattern_of_no_direction_or_three_is_refused_at_directions() {
+    let at = plate_text();
+    let start = at.find("\"directions\": [\n").unwrap();
+    let end = at
+        .find("\n      \"skip\": []\n    },\n    {\n      \"id\": \"s0000004\"")
+        .unwrap();
+    let directions = &at[start..end];
+    let none = at.replacen(directions, "\"directions\": [],", 1);
+    let errors = refused(&none);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("\"parameter\": \"directions\""),
+        "{}",
+        errors[0]
+    );
+    assert!(
+        errors[0].contains("linear_pattern t0000001 has 0 directions"),
+        "{}",
+        errors[0]
+    );
+    let third = directions.replacen(
+        "\n      ],",
+        ",\n        {\"along\": \"z\", \"reversed\": false, \"distribution\": {\"type\": \"extent\", \"length\": 10}, \"count\": 1}\n      ],",
+        1,
+    );
+    let three = at.replacen(directions, &third, 1);
+    let errors = refused(&three);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("linear_pattern t0000001 has 3 directions"),
+        "{}",
+        errors[0]
+    );
+}
+
+#[test]
+fn three_directions_of_huge_counts_are_refused_not_a_panic() {
+    // 2^22 each way three times is 2^66, past u64: the product is past the cap, never a
+    // panic or a wrapped 0 (the review's case).
+    let at = plate_text();
+    let big = 4_194_304;
+    let two = edited(
+        &edited(
+            &at,
+            DIRECTION_0,
+            &DIRECTION_0.replace("\"count\": 3", &format!("\"count\": {big}")),
+        ),
+        DIRECTION_1,
+        &DIRECTION_1.replace("\"count\": 2", &format!("\"count\": {big}")),
+    );
+    let third = two.replacen(
+        "\n      ],\n      \"skip\"",
+        &format!(",\n        {{\"along\": \"z\", \"reversed\": false, \"distribution\": {{\"type\": \"spacing\", \"length\": 0.001}}, \"count\": {big}}}\n      ],\n      \"skip\""),
+        1,
+    );
+    let errors = refused(&third);
+    assert!(
+        errors.iter().any(|e| e.contains("has 3 directions")),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("has more than 18446744073709551615 instances in all")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn a_long_skip_or_copies_list_is_checked_in_linear_time() {
+    // The review's hostile files: 600,000 skips, each past nothing and none repeated, and
+    // 1,000,000 originals no feature has. Each repeat found by a look-up, and each refusal
+    // made only if it's listed, so both check in well under the time a square would take.
+    let n: u32 = 600_000;
+    let skips: Vec<String> = (1..n).map(|k| format!("[{k}]")).collect();
+    let text = edited(
+        &grid_skip(&format!("[{}]", skips.join(", "))),
+        DIRECTION_0,
+        &DIRECTION_0.replace("\"count\": 3", &format!("\"count\": {n}")),
+    );
+    let document = read(text.as_bytes()).unwrap();
+    let start = std::time::Instant::now();
+    let checked = Checked::new(document);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+    // Past the cap (600,000 by 2), so refused, but checked.
+    assert!(checked.is_err());
+    let ids: Vec<String> = (0..1_000_000u32).map(|k| format!("\"z{k:07}\"")).collect();
+    let text = edited(
+        &plate_text(),
+        "\"features\": [\"q0000002\"]},\n      \"directions\"",
+        &format!(
+            "\"features\": [{}]}},\n      \"directions\"",
+            ids.join(", ")
+        ),
+    );
+    let document = read(text.as_bytes()).unwrap();
+    let start = std::time::Instant::now();
+    let invalid = Checked::new(document).unwrap_err();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        start.elapsed()
+    );
+    assert_eq!(invalid.total(), 1_000_000);
+}
+
+#[test]
+fn patterns_that_differ_in_a_value_are_not_canonically_equal() {
+    let plate = plate();
+    for (from, to) in [
+        (POLAR, POLAR.replace("\"count\": 4", "\"count\": 5")),
+        (DIRECTION_0, DIRECTION_0.replace("80", "81")),
+        ("\"plane\": \"yz\"", "\"plane\": \"xz\"".to_owned()),
+        (GRID_SKIP, GRID_SKIP.replace("[]", "[[1]]")),
+        (
+            "\"copies\": {\"type\": \"features\", \"features\": [\"q0000001\"]},\n      \"plane\"",
+            "\"copies\": {\"type\": \"solid\"},\n      \"plane\"".to_owned(),
+        ),
+    ] {
+        let other = read(edited(&plate_text(), from, &to).as_bytes()).unwrap();
+        assert!(!plate.canonically_eq(&other), "{to}");
+    }
+}
+
+#[test]
+fn a_pattern_moves_to_just_after_its_original_and_an_original_to_just_before_its_pattern() {
+    // The moves the refusals mustn't catch: on the plate, with the boss's sketch moved
+    // between the corner hole and its grid, the grid moved to just after the hole, and the
+    // hole to just before the grid.
+    use silico_core::document::chain::move_feature;
+    let checked = Checked::new(plate()).unwrap();
+    let spaced = Checked::new(
+        move_feature(&checked, &id("s0000004"), Some(&id("t0000001")))
+            .unwrap()
+            .document,
+    )
+    .unwrap();
+    let order = |document: &Document| {
+        document
+            .features
+            .iter()
+            .map(|f| f.id.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let at = |list: &[String], f: &str| list.iter().position(|x| x == f).unwrap();
+    let before = order(spaced.document());
+    assert_eq!(at(&before, "s0000004") + 1, at(&before, "t0000001"));
+    let grid = move_feature(&spaced, &id("t0000001"), Some(&id("s0000004"))).unwrap();
+    let after = order(&grid.document);
+    assert_eq!(at(&after, "q0000002") + 1, at(&after, "t0000001"));
+    let hole = move_feature(&spaced, &id("q0000002"), Some(&id("t0000001"))).unwrap();
+    let after = order(&hole.document);
+    assert_eq!(at(&after, "q0000002") + 1, at(&after, "t0000001"));
+}
+
+#[test]
+fn each_origin_word_of_the_wrong_kind_is_told_the_one_it_means() {
+    // A plane as a direction or an axis is offered its normal, with its sense (xz's is −Y,
+    // D6); an axis as a mirror plane the plane square to it.
+    for (from, to, says) in [
+        (
+            "\"along\": \"x\",",
+            "\"along\": \"xy\",",
+            "give the plane's normal, z, or name an edge or a face",
+        ),
+        (
+            "\"along\": \"x\",",
+            "\"along\": \"xz\",",
+            "give the plane's normal, y, with reversed true, or name an edge or a face",
+        ),
+        (
+            "\"along\": \"x\",",
+            "\"along\": \"yz\",",
+            "give the plane's normal, x, or name an edge or a face",
+        ),
+        (
+            "\"axis\": \"z\",",
+            "\"axis\": \"xy\",",
+            "give the plane's normal, z, or name an edge",
+        ),
+        (
+            "\"plane\": \"yz\"",
+            "\"plane\": \"x\"",
+            "give the plane square to it, yz, or name a planar face",
+        ),
+        (
+            "\"plane\": \"yz\"",
+            "\"plane\": \"y\"",
+            "give the plane square to it, xz, or name a planar face",
+        ),
+    ] {
+        let errors = refused(&edited(&plate_text(), from, to));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].contains(says), "{to}: {}", errors[0]);
+    }
+    let axis = refused(&edited(
+        &plate_text(),
+        "\"axis\": \"z\",",
+        "\"axis\": \"xy\",",
+    ));
+    assert!(
+        axis[0].contains("axis, \\\"xy\\\", is an origin plane: an axis is x, y, or z, or a straight or circular edge by its name"),
+        "{}",
+        axis[0]
+    );
+}
+
+#[test]
+fn the_gate_names_the_original_that_is_suppressed_by_its_place() {
+    // The grid copying both pockets of its chain, the notch and the corner hole, the second
+    // suppressed: its first refusal is at copies.features.1, the hole.
+    let mut hand = plate();
+    for feature in &mut hand.features {
+        if feature.id == id("q0000002") {
+            feature.suppressed = true;
+        }
+        if feature.id == id("t0000001")
+            && let silico_core::document::Operation::LinearPattern { copies, .. } =
+                &mut feature.operation
+        {
+            *copies = silico_core::document::Copies::Features {
+                features: vec![id("q0000001"), id("q0000002")],
+            };
+        }
+    }
+    let invalid = Checked::new(hand).unwrap_err();
+    let first = invalid
+        .errors()
+        .iter()
+        .find(|e| e.feature() == Some("t0000001"))
+        .unwrap();
+    assert_eq!(first.parameter(), Some("copies.features.1"), "{first}");
+    assert!(
+        first
+            .message()
+            .contains("it copies q0000002, which is suppressed"),
+        "{first}"
+    );
+}
+
+#[test]
+fn set_field_of_one_skip_gives_back_the_place_it_lands() {
+    // The review's case: a grid with skip [[1], [2]], skip.0 set to [5], is written
+    // [[2], [5]], and the result's `after` is [5], read where it lands, skip.1.
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("secret");
+    let sketches = silico_core::fake::FakeSketches::new();
+    let sessions = silico_core::command::Sessions::with_stand_ins(
+        std::sync::Arc::new(silico_core::fake::FakeKernel::new(2).unwrap()),
+        move |cache| silico_core::cache::Cache::with_secret(cache, &secret),
+        move || Ok(Box::new(sketches.clone()) as Box<dyn silico_core::sketch::SketchSolver>),
+    );
+    let path = dir.path().join("plate.silico");
+    let grid = edited(
+        &grid_skip("[[1], [2]]"),
+        DIRECTION_0,
+        &DIRECTION_0.replace("\"count\": 3", "\"count\": 6"),
+    );
+    std::fs::write(&path, &grid).unwrap();
+    let session = answered(sessions.open(&path, false)).session.unwrap();
+    let set = answered(sessions.set_field(
+        &session.id,
+        session.revision,
+        id("t0000001"),
+        "skip.0".to_owned(),
+        silico_core::document::json::read(b"[5]").unwrap(),
+    ))
+    .result
+    .unwrap();
+    // Before the fix, `after` read skip.0 of the sorted set, [2].
+    let written = wire(&set.to_wire(), Layout::OneLine).unwrap();
+    assert!(
+        written.contains("\"before\": [1], \"after\": [5]"),
+        "{written}"
+    );
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains("\"skip\": [\n        [2],\n        [5]\n      ]"),
+        "{saved}"
+    );
 }

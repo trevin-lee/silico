@@ -139,6 +139,9 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             .map(|&(_, kind)| kind)
     };
 
+    // Each feature's chain's root, for a pattern's originals (in its base's chain).
+    let roots = super::pattern_gate::roots(features, &holder);
+
     // Every feature that has to be suppressed with those the text suppresses, to a fixed
     // point, so a hand edit's every dependent is refused in one check, by place.
     let links = super::suppression::Links::of(features);
@@ -303,9 +306,10 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             &super::pattern_gate::Around {
                 features,
                 holder: &holder,
+                roots: &roots,
             },
             &refuse,
-            &mut |error| problems.add(|| error),
+            &mut |refusal| problems.add(refusal),
         );
         // The edges a fillet or chamfer names: at least one, each an edge's name, by
         // features before it, none twice.
@@ -337,15 +341,14 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
             let wanted: Vec<&str> = kinds.iter().map(|kind| kind.a_word()).collect();
             let wanted = wanted.join(" or ");
             let pattern = PatternField::of(field);
-            let advice = match (field, &pattern) {
-                (NameField::Edge(_), _) => {
-                    "write the edge's name as Silico names it (feature.type.Edge(...)), of a feature before this one"
-                }
-                (NameField::Face, _) => {
+            let advice = match &pattern {
+                Some(pattern) => pattern.kind_advice,
+                None if matches!(field, NameField::Face) => {
                     "write the face's name as Silico names it (feature.type.Face...), of a feature before this sketch"
                 }
-                (_, Some(pattern)) => pattern.kind_advice,
-                (_, None) => "",
+                None => {
+                    "write the edge's name as Silico names it (feature.type.Edge(...)), of a feature before this one"
+                }
             };
             // An origin word of the wrong kind: a plane as a direction or an axis, an axis
             // as a mirror plane.
@@ -708,84 +711,83 @@ fn made_of_sketch(
 /// takes beside a name, and the advice for a name it can't read and for one of the wrong
 /// kind (docs/design/m6.0-patterns.md, section 4.1).
 struct PatternField {
+    field: NameField,
     origin_words: &'static str,
     parse_advice: &'static str,
     kind_advice: &'static str,
-    /// The origin words of the other kind, and what's said of one: a plane as a direction
-    /// or an axis, an axis as a mirror plane.
-    misplaced: fn(&str, &str) -> Option<(String, String)>,
 }
 
 impl PatternField {
     fn of(field: NameField) -> Option<Self> {
-        Some(match field {
-            NameField::Along(_) => PatternField {
-                origin_words: "x, y, or z",
-                parse_advice: "give x, y, or z (the model's axes; a revolve's x_axis is its sketch's, and +x is a face sketch's x), or name an edge or a face",
-                kind_advice: "name a straight edge or a planar face, as elements or query gives it, or give x, y, or z",
-                misplaced: |parameter, text| {
-                    let normal = plane_normal(text)?;
-                    Some((
-                        format!(
-                            "{parameter}, {}, is an origin plane: a direction is x, y, or z, or a straight edge or a planar face by its name",
-                            shown(text)
-                        ),
-                        format!("give the plane's normal, {normal}, or name an edge or a face"),
-                    ))
-                },
-            },
-            NameField::Axis => PatternField {
-                origin_words: "x, y, or z",
-                parse_advice: "give x, y, or z (the model's axes; a revolve's x_axis is its sketch's, and +x is a face sketch's x), or name an edge",
-                kind_advice: "name a straight or circular edge, or give x, y, or z; a face's normal is a linear pattern's direction",
-                misplaced: |parameter, text| {
-                    let normal = plane_normal(text)?;
-                    Some((
-                        format!(
-                            "{parameter}, {}, is an origin plane: an axis is x, y, or z, or a straight or circular edge by its name",
-                            shown(text)
-                        ),
-                        format!("give the plane's normal, {normal}, or name an edge"),
-                    ))
-                },
-            },
-            NameField::Plane => PatternField {
-                origin_words: "xy, xz, or yz",
-                parse_advice: "give xy, xz, or yz (the origin's planes), or name a planar face",
-                kind_advice: "name a planar face, as elements or query gives it, or give xy, xz, or yz",
-                misplaced: |parameter, text| {
-                    let square = match super::OriginAxis::new(text)? {
-                        super::OriginAxis::X => "yz",
-                        super::OriginAxis::Y => "xz",
-                        super::OriginAxis::Z => "xy",
-                    };
-                    Some((
-                        format!(
-                            "{parameter}, {}, is an origin axis: a mirror plane is xy, xz, yz, or a planar face by its name",
-                            shown(text)
-                        ),
-                        format!("give the plane square to it, {square}, or name a planar face"),
-                    ))
-                },
-            },
+        let (origin_words, parse_advice, kind_advice) = match field {
+            NameField::Along(_) => (
+                "x, y, or z",
+                "give x, y, or z (the model's axes; a revolve's x_axis is its sketch's, and +x is a face sketch's x), or name an edge or a face",
+                "name a straight edge or a planar face, as elements or query gives it, or give x, y, or z",
+            ),
+            NameField::Axis => (
+                "x, y, or z",
+                "give x, y, or z (the model's axes; a revolve's x_axis is its sketch's, and +x is a face sketch's x), or name an edge",
+                "name a straight or circular edge, or give x, y, or z; a face's normal is a linear pattern's direction",
+            ),
+            NameField::Plane => (
+                "xy, xz, or yz",
+                "give xy, xz, or yz (the origin's planes), or name a planar face",
+                "name a planar face, as elements or query gives it, or give xy, xz, or yz",
+            ),
             NameField::Edge(_) | NameField::Face => return None,
+        };
+        Some(PatternField {
+            field,
+            origin_words,
+            parse_advice,
+            kind_advice,
         })
     }
 
     /// What's said of `text`, stored at `parameter`, if it's an origin word of the other
-    /// kind.
+    /// kind: a plane as a direction or an axis (its normal, with its sense, is offered), an
+    /// axis as a mirror plane (the plane square to it is).
     fn misplaced(&self, parameter: &str, text: &str) -> Option<(String, String)> {
-        (self.misplaced)(parameter, text)
-    }
-}
-
-/// The origin axis an origin plane, `text`, is square to, if it's one: `xy`'s is `z`.
-fn plane_normal(text: &str) -> Option<&'static str> {
-    match text {
-        "xy" => Some("z"),
-        "xz" => Some("y"),
-        "yz" => Some("x"),
-        _ => None,
+        let shown = shown(text);
+        match self.field {
+            NameField::Along(_) | NameField::Axis => {
+                let (axis, reversed) =
+                    super::pattern::origin_normal(super::pattern::origin_plane(text)?);
+                let normal = if reversed {
+                    format!("{}, with reversed true", axis.as_str())
+                } else {
+                    axis.as_str().to_owned()
+                };
+                let (is, named) = match self.field {
+                    NameField::Axis => (
+                        "an axis is x, y, or z, or a straight or circular edge by its name",
+                        "name an edge",
+                    ),
+                    _ => (
+                        "a direction is x, y, or z, or a straight edge or a planar face by its name",
+                        "name an edge or a face",
+                    ),
+                };
+                Some((
+                    format!("{parameter}, {shown}, is an origin plane: {is}"),
+                    format!("give the plane's normal, {normal}, or {named}"),
+                ))
+            }
+            NameField::Plane => {
+                let square = super::OriginAxis::new(text)?.square_plane();
+                Some((
+                    format!(
+                        "{parameter}, {shown}, is an origin axis: a mirror plane is xy, xz, yz, or a planar face by its name"
+                    ),
+                    format!(
+                        "give the plane square to it, {}, or name a planar face",
+                        square.as_str()
+                    ),
+                ))
+            }
+            NameField::Edge(_) | NameField::Face => None,
+        }
     }
 }
 

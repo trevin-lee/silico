@@ -581,7 +581,7 @@
           "type": "object"
         },
         {
-          "description": "`base`'s solid with copies of `copies` placed along one or two `directions`, each\ninstance's steps along them by place, `skip`'s instances left out\n(docs/design/m6.0-patterns.md, section 2).",
+          "description": "`base`'s solid with copies of `copies` placed along one or two `directions`, each\ninstance's steps along them by place, `skip`'s instances left out.",
           "properties": {
             "base": {
               "$ref": "#/$defs/FeatureId"
@@ -906,7 +906,7 @@
       ]
     },
     "OriginAxis": {
-      "description": "One of the model's axes from the origin, along +X, +Y, or +Z, as the origin's planes are\n`xy`, `xz`, `yz`; its sense is a pattern's `reversed`'s alone (Fable, 2026-11-10). Not a\nrevolve's `x_axis`, which is its sketch's, nor a face sketch's `+x`.",
+      "description": "One of the model's axes from the origin, along +X, +Y, or +Z, as the origin's planes are\n`xy`, `xz`, `yz`; its sense is a pattern's `reversed`'s alone. Not a revolve's `x_axis`,\nwhich is its sketch's, nor a face sketch's `+x`.",
       "enum": [
         "x",
         "y",

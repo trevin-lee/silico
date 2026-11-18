@@ -42,7 +42,9 @@ pub(crate) use model::{cloned, compared};
 pub use pattern::{
     AxisReference, Copies, DirectionReference, LinearDirection, LinearDistribution, MOST_INSTANCES,
     MirrorPlane, OriginAxis, OriginOrName, PatternFeature, PolarDistribution, Skipped,
+    skipped_in_range,
 };
+pub(crate) use pattern::{sorted_features, sorted_skip};
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub(crate) use reach::changed as changed_features;
 pub use reach::{Before, QuotedIds, net_reach, net_reach_but, with_users};

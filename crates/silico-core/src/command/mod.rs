@@ -566,11 +566,8 @@ pub fn outline(document: &Document) -> String {
         // names differ by field (docs/design/m6.0-patterns.md, section 2.5).
         for (field, stored) in operation.stored_names() {
             let label = match field {
-                document::NameField::Edge(_) | document::NameField::Face => field
-                    .kinds()
-                    .first()
-                    .map_or("", |kind| kind.word())
-                    .to_owned(),
+                document::NameField::Edge(_) => "edge".to_owned(),
+                document::NameField::Face => "face".to_owned(),
                 document::NameField::Along(_)
                 | document::NameField::Axis
                 | document::NameField::Plane => field.to_string(),

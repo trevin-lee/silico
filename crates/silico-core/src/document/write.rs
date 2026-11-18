@@ -473,7 +473,7 @@ fn polar_distribution(distribution: PolarDistribution) -> Out<'static> {
 }
 
 /// A pattern's `skip`, its instances sorted (section 3's order), a set, an instance to a
-/// line ([`NAME_LISTS`]), each on one line.
+/// line ([`ITEM_LISTS`]), each on one line.
 fn skipped(skip: &[Skipped]) -> (&'static str, Out<'_>) {
     let items = sorted_skip(skip)
         .into_iter()
@@ -834,14 +834,14 @@ pub(crate) fn point(position: &Position) -> Out<'static> {
 /// The lists a person adds to and removes from one item at a time, which the canonical form
 /// writes an item to a line, so an edit to one is a line of the diff ([`field_list`]): a
 /// fillet's and a chamfer's `edges`, and a pattern's `skip` (Fable, 2026-11-10).
-pub(crate) const NAME_LISTS: &[&str] = &["edges", "skip"];
+pub(crate) const ITEM_LISTS: &[&str] = &["edges", "skip"];
 
 /// The list `items`, the value of a feature's field `field`, laid out as the canonical form
-/// lays that field out: an item to a line for one of [`NAME_LISTS`], otherwise on one line
+/// lays that field out: an item to a line for one of [`ITEM_LISTS`], otherwise on one line
 /// where it holds no object. The one place that decides it, for the document's writer
 /// ([`names`]) and for what `set_field` gives back of a field (`command::wire::Json::field`).
 pub(crate) fn field_list<'a>(field: &str, items: Vec<Out<'a>>) -> Out<'a> {
-    if NAME_LISTS.contains(&field) {
+    if ITEM_LISTS.contains(&field) {
         Out::Lines(items)
     } else {
         Out::Array(items)

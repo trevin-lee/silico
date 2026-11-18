@@ -99,15 +99,8 @@ pub struct Excepted {
 /// and none that's named already (its base).
 fn inputs(document: &Document, feature: &crate::document::Feature) -> Vec<FeatureId> {
     let originals = feature.operation.originals();
-    // What it uses, but its originals, which `uses` gives last: its base first, even where
-    // it's an original too.
-    let uses: Vec<FeatureId> = feature.operation.uses().collect();
-    let mut inputs: Vec<FeatureId> = Vec::new();
-    inputs.extend(
-        uses.iter()
-            .take(uses.len().saturating_sub(originals.len()))
-            .cloned(),
-    );
+    // What it uses but its originals: its base first, even where it's an original too.
+    let mut inputs: Vec<FeatureId> = feature.operation.uses_but_originals().collect();
     let mut placed: Vec<(usize, &FeatureId)> = originals
         .iter()
         .filter_map(|original| {

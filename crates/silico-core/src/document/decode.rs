@@ -14,13 +14,13 @@ use super::model::{
 };
 use super::pattern::{
     Copies, LinearDirection, LinearDistribution, MOST_INSTANCES, OriginAxis, OriginOrName,
-    PolarDistribution, Skipped,
+    PolarDistribution, Skipped, origin_plane,
 };
 use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 use super::sketch::{
     AxisToken, CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, FacePlane, Form,
-    LineSide, MemberPaths, OriginPlane, Plane, Reference, Sketch, SketchArc, SketchCircle,
-    SketchConstraint, SketchLine, SketchPoint, TangentSide, member_id,
+    LineSide, MemberPaths, Plane, Reference, Sketch, SketchArc, SketchCircle, SketchConstraint,
+    SketchLine, SketchPoint, TangentSide, member_id,
 };
 use crate::naming::{NAMING_SCHEME_NUMBER, NAMING_SCHEMES_READ, UNRECORDED_NAMING_SCHEME};
 use crate::{Error, ErrorCode};
@@ -673,11 +673,7 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
         "mirror" => Operation::Mirror {
             base: reference(fields, "base")?,
             copies: copies(fields)?,
-            plane: origin_or_name(fields, "plane", |text| {
-                OriginPlane::ALL
-                    .into_iter()
-                    .find(|plane| plane.as_str() == text)
-            })?,
+            plane: origin_or_name(fields, "plane", origin_plane)?,
         },
         // A type in FEATURE_TYPES with no arm here: Silico's bug, not the document's.
         other => {
@@ -696,7 +692,7 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
 fn copies(fields: &mut Fields) -> Result<Copies, Error> {
     let node = fields.take("copies")?;
     let mut copies = Fields::of(node, fields.feature(), Some("copies"), "copies")?.under("copies");
-    let (form, _) = form(&mut copies, &["features", "solid"])?;
+    let form = form(&mut copies, &["features", "solid"])?;
     let read = if form == "features" {
         let node = copies.take("features")?;
         let feature = copies.feature();
@@ -723,13 +719,13 @@ fn copies(fields: &mut Fields) -> Result<Copies, Error> {
 
 /// A tagged object's form (`type`), one of `forms`, and where it's written: a pattern's
 /// `copies`, or a `distribution`.
-fn form(fields: &mut Fields, forms: &[&str]) -> Result<(String, At), Error> {
+fn form(fields: &mut Fields, forms: &[&str]) -> Result<String, Error> {
     let type_node = fields.take("type")?;
     let at = type_node.at;
     let name = fields.name("type");
     let form = string(type_node, fields.feature(), &name)?;
     if forms.contains(&form.as_str()) {
-        return Ok((form, at));
+        return Ok(form);
     }
     Err(refuse(
         fields.feature(),
@@ -803,7 +799,7 @@ fn distribution_form(fields: &mut Fields) -> Result<(Fields, String), Error> {
     let node = fields.take("distribution")?;
     let path = fields.name("distribution");
     let mut distribution = Fields::of(node, fields.feature(), Some(&path), &path)?.under(&path);
-    let (form, _) = form(&mut distribution, &["extent", "spacing"])?;
+    let form = form(&mut distribution, &["extent", "spacing"])?;
     Ok((distribution, form))
 }
 
@@ -1318,9 +1314,7 @@ fn plane(fields: &mut Fields) -> Result<Plane, Error> {
             ));
         }
     };
-    OriginPlane::ALL
-        .into_iter()
-        .find(|p| p.as_str() == text)
+    origin_plane(text)
         .map(Plane::Origin)
         .ok_or_else(|| {
             refuse(

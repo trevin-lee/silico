@@ -11,7 +11,7 @@ use silico_protocol::{BooleanOp, ElementKind, ElementRef, Primitive};
 use super::fingerprint::Fingerprint;
 use super::pattern::{
     AxisReference, AxisReferenceSchema, Copies, LinearDirection, MirrorPlane, MirrorPlaneSchema,
-    PatternFeature, PolarDistribution, Skipped,
+    PatternFeature, PolarDistribution, Skipped, sorted_features, sorted_skip,
 };
 use super::quantity::{Angle, Length};
 use super::sketch::{ElementId, Reference, Sketch};
@@ -615,8 +615,7 @@ pub enum Operation {
         extent: TurnExtent,
     },
     /// `base`'s solid with copies of `copies` placed along one or two `directions`, each
-    /// instance's steps along them by place, `skip`'s instances left out
-    /// (docs/design/m6.0-patterns.md, section 2).
+    /// instance's steps along them by place, `skip`'s instances left out.
     #[serde(rename = "linear_pattern")]
     LinearPattern {
         base: FeatureId,
@@ -874,19 +873,18 @@ impl Operation {
     /// writes them, sorted; any other operation as it is.
     pub(crate) fn in_written_order(&self) -> Operation {
         let mut sorted = self.clone();
-        match &mut sorted {
+        let (copies, skip) = match &mut sorted {
             Operation::LinearPattern { copies, skip, .. }
-            | Operation::PolarPattern { copies, skip, .. } => {
-                skip.sort();
-                if let Copies::Features { features } = copies {
-                    features.sort();
-                }
-            }
-            Operation::Mirror {
-                copies: Copies::Features { features },
-                ..
-            } => features.sort(),
-            _ => {}
+            | Operation::PolarPattern { copies, skip, .. } => (copies, Some(skip)),
+            Operation::Mirror { copies, .. } => (copies, None),
+            _ => return sorted,
+        };
+        // In the order the writer writes them: the one order of each set.
+        if let Copies::Features { features } = copies {
+            *features = sorted_features(features).into_iter().cloned().collect();
+        }
+        if let Some(skip) = skip {
+            *skip = sorted_skip(skip).into_iter().cloned().collect();
         }
         sorted
     }
@@ -1060,6 +1058,13 @@ impl Operation {
     /// face and so the sketch, then the originals a pattern copies, in the order held, whose
     /// edits move or change its copies. What an edit of one of them reaches.
     pub fn uses(&self) -> impl Iterator<Item = FeatureId> + '_ {
+        self.uses_but_originals()
+            .chain(self.originals().iter().cloned())
+    }
+
+    /// What [`uses`](Self::uses) gives but a pattern's originals: what it consumes, the sketch
+    /// it sweeps, and a sketch's face's feature.
+    pub fn uses_but_originals(&self) -> impl Iterator<Item = FeatureId> + '_ {
         let face = match self {
             Operation::Sketch(sketch) => sketch.plane.face().and_then(|face| face.feature()),
             _ => None,
@@ -1069,7 +1074,15 @@ impl Operation {
             .map(|(_, id)| id.clone())
             .chain(self.sketch().cloned())
             .chain(face)
-            .chain(self.originals().iter().cloned())
+    }
+
+    /// Its `base`, if it has one: the solid it builds on, its chain's link (a boolean's
+    /// tool isn't one).
+    pub fn base(&self) -> Option<&FeatureId> {
+        self.inputs()
+            .into_iter()
+            .find(|(field, _)| *field == "base")
+            .map(|(_, id)| id)
     }
 
     /// What a pattern or mirror copies; none for another feature.

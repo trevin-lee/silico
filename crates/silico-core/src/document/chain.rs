@@ -168,23 +168,43 @@ pub fn insert_place(document: &Document, before: Option<&FeatureId>) -> Result<u
 /// which then begins the body. Refused, naming both features, where nothing can stand in:
 /// a chain's root under a feature that needs a base (or as a boolean's tool), a feature
 /// whose sketch it is, a feature that stores names of its elements (checked directly, since
-/// a removed maker's name no longer parses), and a feature whose stored names' makers its
-/// base would no longer be built from (the lineage rule, open item 2b).
+/// a removed maker's name no longer parses), a pattern that copies it, and a feature whose
+/// stored names' makers its base would no longer be built from (the lineage rule, open item
+/// 2b). Refused with the first refusal; [`remove_all`] gives every one.
 pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
+    remove_all(checked, id).map_err(|refusals| {
+        refusals.into_iter().next().unwrap_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("removing {id} was refused with no reason given"),
+            )
+            .with_suggestion(crate::worker::SILICO_BUG)
+        })
+    })
+}
+
+/// As [`remove`], refused with every feature that can't do without `id`, at once
+/// (`remove_feature`: a pattern copying it and a fillet naming its edges alike,
+/// docs/design/m6.0-patterns.md, section 6), the children found in one pass.
+pub fn remove_all(checked: &Checked, id: &FeatureId) -> Result<Removed, Vec<Error>> {
     let document = checked.document();
     let index = Index::of(document);
-    let at = index.place(id).ok_or_else(|| no_feature(id, "feature"))?;
+    let at = index
+        .place(id)
+        .ok_or_else(|| vec![no_feature(id, "feature")])?;
     let removed = &document.features[at];
-    if let Some(refusal) = removal_refusals(checked, id).into_iter().next() {
-        return Err(refusal);
+    let refusals = removal_refusals(checked, id);
+    if !refusals.is_empty() {
+        return Err(refusals);
     }
     let mut edited = document.clone();
     if let Some((c, field)) = index.consumer(id) {
-        stand_in(document, &index, &mut edited, removed, c, field, "remove")?;
+        stand_in(document, &index, &mut edited, removed, c, field, "remove")
+            .map_err(|e| vec![e])?;
     }
     edited.features.remove(at);
     if let Some((feature, maker)) = lineage_broken(document, &edited) {
-        return Err(Error::new(
+        return Err(vec![Error::new(
             ErrorCode::InvalidInput,
             format!(
                 "{feature} names elements of {maker}, which its base would no longer be built from without {}",
@@ -193,7 +213,7 @@ pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
         )
         .with_feature(removed.id.as_str())
         .with_parameter("feature")
-        .with_suggestion(format!("remove {feature} first")));
+        .with_suggestion(format!("remove {feature} first"))]);
     }
     let rewired = rewired(document, &edited);
     Ok(Removed {
@@ -236,8 +256,9 @@ pub fn removal_refusals(checked: &Checked, id: &FeatureId) -> Vec<Error> {
                     child.id
                 ),
                 Child::Names => format!(
-                    "remove {} first, or set its edges to names of other features' elements",
-                    child.id
+                    "remove {} first, or set its {} to names of other features' elements",
+                    child.id,
+                    names_field(&child.operation)
                 ),
                 Child::Copies => format!(
                     "remove {} first, or take {} out of its copies.features",
@@ -369,7 +390,7 @@ pub fn move_feature(
         .with_suggestion(suggestion));
     }
 
-    let base = base_of(&moving.operation);
+    let base = moving.operation.base();
     let consumer = index.consumer(id);
     // Left between its base and its consumer: only its place changes.
     let after_base = base.and_then(others).is_none_or(|p| p < place_to);
@@ -402,7 +423,8 @@ pub fn move_feature(
         .with_parameter("before")
         .with_suggestion(if feature == moving.id {
             format!(
-                "keep {feature} after {maker}, whose elements it names, or set its edges to names of other features' elements"
+                "keep {feature} after {maker}, whose elements it names, or set its {} to names of other features' elements",
+                names_field(&moving.operation)
             )
         } else {
             format!("move {} elsewhere, or remove {feature} first", moving.id)
@@ -441,7 +463,7 @@ fn join(
             up = edited
                 .features
                 .get(i)
-                .and_then(|f| base_of(&f.operation))
+                .and_then(|f| f.operation.base())
                 .and_then(|b| index.place(b));
         }
         // Down the chain from its old consumer, where it named it as its base: each next
@@ -578,7 +600,7 @@ fn stand_in(
     let Some(target) = edited.features.get_mut(at) else {
         return Ok(());
     };
-    match base_of(&removed.operation) {
+    match removed.operation.base() {
         Some(base) => {
             set_input(&mut target.operation, field, Some(base.clone()));
             Ok(())
@@ -645,11 +667,11 @@ fn stand_in(
 fn lineage_broken(before: &Document, edited: &Document) -> Option<(FeatureId, FeatureId)> {
     let (old, new) = (Lineage::of(before), Lineage::of(edited));
     edited.features.iter().find_map(|feature| {
-        let base = base_of(&feature.operation)?;
+        let base = feature.operation.base()?;
         let was = old
             .index
             .feature(&feature.id)
-            .and_then(|f| base_of(&f.operation))?;
+            .and_then(|f| f.operation.base())?;
         feature.operation.stored_names().find_map(|(_, stored)| {
             let makers: Vec<&FeatureId> = name_makers(&new.index, stored.as_str())
                 .into_iter()
@@ -795,6 +817,19 @@ fn children<'a>(
         })
 }
 
+/// The field of `operation` that stores element names, as a suggestion names it: a fillet's
+/// or chamfer's `edges`, a sketch's `plane.face`, a linear pattern's directions' `along`, a
+/// polar pattern's `axis`, a mirror's `plane`.
+fn names_field(operation: &Operation) -> &'static str {
+    match operation {
+        Operation::Sketch(_) => "plane.face",
+        Operation::LinearPattern { .. } => "directions' along",
+        Operation::PolarPattern { .. } => "axis",
+        Operation::Mirror { .. } => "plane",
+        _ => "edges",
+    }
+}
+
 /// The refusal of a move that puts `moving` before `parent`.
 fn come_before(moving: &Feature, parent: &FeatureId, why: &str) -> Error {
     Error::new(
@@ -895,14 +930,6 @@ impl<'a> Index<'a> {
     fn consumer(&self, id: &FeatureId) -> Option<(usize, &'static str)> {
         self.consumers.get(id).copied()
     }
-}
-
-fn base_of(operation: &Operation) -> Option<&FeatureId> {
-    operation
-        .inputs()
-        .into_iter()
-        .find(|(field, _)| *field == "base")
-        .map(|(_, base)| base)
 }
 
 /// Whether a feature of this type has a `base` at all (a primitive and a sketch haven't).

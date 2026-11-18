@@ -15,8 +15,8 @@ use super::{Angle, ElementName, FeatureId, Length, OriginPlane};
 pub const MOST_INSTANCES: u64 = 1000;
 
 /// One of the model's axes from the origin, along +X, +Y, or +Z, as the origin's planes are
-/// `xy`, `xz`, `yz`; its sense is a pattern's `reversed`'s alone (Fable, 2026-11-10). Not a
-/// revolve's `x_axis`, which is its sketch's, nor a face sketch's `+x`.
+/// `xy`, `xz`, `yz`; its sense is a pattern's `reversed`'s alone. Not a revolve's `x_axis`,
+/// which is its sketch's, nor a face sketch's `+x`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OriginAxis {
@@ -42,14 +42,31 @@ impl OriginAxis {
         Self::ALL.into_iter().find(|axis| axis.as_str() == text)
     }
 
-    /// Its unit vector, along +X, +Y, or +Z.
-    pub fn direction(self) -> [f64; 3] {
+    /// The origin plane square to it: `x`'s is `yz`.
+    pub fn square_plane(self) -> OriginPlane {
         match self {
-            OriginAxis::X => [1.0, 0.0, 0.0],
-            OriginAxis::Y => [0.0, 1.0, 0.0],
-            OriginAxis::Z => [0.0, 0.0, 1.0],
+            OriginAxis::X => OriginPlane::Yz,
+            OriginAxis::Y => OriginPlane::Xz,
+            OriginAxis::Z => OriginPlane::Xy,
         }
     }
+}
+
+/// An origin plane's normal as an origin axis and a pattern's `reversed` say it (D6, as the
+/// sketch's plane has it): `xy`'s is +Z, `xz`'s −Y, `yz`'s +X.
+pub fn origin_normal(plane: OriginPlane) -> (OriginAxis, bool) {
+    match plane {
+        OriginPlane::Xy => (OriginAxis::Z, false),
+        OriginPlane::Xz => (OriginAxis::Y, true),
+        OriginPlane::Yz => (OriginAxis::X, false),
+    }
+}
+
+/// The origin plane `text` writes, if it's one.
+pub fn origin_plane(text: &str) -> Option<OriginPlane> {
+    OriginPlane::ALL
+        .into_iter()
+        .find(|plane| plane.as_str() == text)
 }
 
 /// An origin word or an element of the base's solid by its stable name: what a pattern's
@@ -318,19 +335,38 @@ impl JsonSchema for Skipped {
     }
 }
 
-/// `skip`'s instances in the order the file writes them: direction 1's offset first, as
-/// section 3 orders instances, then the next.
+/// `skip`'s instances in the order the file writes them, and the gate holds them in:
+/// direction 1's offset first, then the next (an instance's offsets compared in turn, a
+/// shorter instance, its trailing zeros left off, first). The one order both use.
 pub(crate) fn sorted_skip(skip: &[Skipped]) -> Vec<&Skipped> {
     let mut sorted: Vec<&Skipped> = skip.iter().collect();
     sorted.sort();
     sorted
 }
 
-/// `copies.features` in the order the file writes them: by ID.
+/// `copies.features` in the order the file writes them, and the gate holds them in: by ID.
+/// The one order both use.
 pub(crate) fn sorted_features(features: &[FeatureId]) -> Vec<&FeatureId> {
     let mut sorted: Vec<&FeatureId> = features.iter().collect();
     sorted.sort();
     sorted
+}
+
+/// The instances of `skip` a pattern of `counts` (one a direction) has: each offset below
+/// its direction's count. A skip past a count is kept in the document, and takes effect
+/// again once the count reaches it (as FreeCAD main keeps "positions outside the current
+/// pattern", `0ea40a10e2`; Main, 2026-11-17).
+pub fn skipped_in_range<'a>(skip: &'a [Skipped], counts: &[u32]) -> Vec<&'a Skipped> {
+    skip.iter()
+        .filter(|instance| {
+            instance.offsets().len() <= counts.len()
+                && instance
+                    .offsets()
+                    .iter()
+                    .zip(counts)
+                    .all(|(offset, count)| offset < count)
+        })
+        .collect()
 }
 
 /// Which of the three a pattern feature is.

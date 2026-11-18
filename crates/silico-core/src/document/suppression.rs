@@ -65,7 +65,9 @@ pub(crate) fn standing(
         } else if !feature.suppressed {
             Some(at)
         } else {
-            base_of(&feature.operation)
+            feature
+                .operation
+                .base()
                 .and_then(place)
                 .filter(|&base| base < at)
                 .and_then(|base| standing.get(base).copied().flatten())
@@ -423,7 +425,7 @@ fn lost(
 ) -> Option<(usize, Cause)> {
     let base = features
         .get(at)
-        .and_then(|f| base_of(&f.operation))
+        .and_then(|f| f.operation.base())
         .and_then(|b| links.place(b))
         .filter(|&b| b < at)?;
     made.iter().find_map(|&(field, maker)| {
@@ -532,7 +534,9 @@ pub(crate) fn dependents(
         } else if !now {
             Some(i)
         } else {
-            base_of(&feature.operation)
+            feature
+                .operation
+                .base()
                 .and_then(|b| links.place(b))
                 .filter(|&b| b < i)
                 .and_then(|b| standing.get(b).copied().flatten())
@@ -783,7 +787,7 @@ fn suppressed_root(
         // Each base comes before its feature, so the walk ends.
         match features
             .get(at)
-            .and_then(|f| base_of(&f.operation))
+            .and_then(|f| f.operation.base())
             .and_then(place)
             .filter(|&b| b < at)
         {
@@ -817,14 +821,6 @@ fn no_feature(id: &FeatureId) -> Error {
     )
     .with_parameter("feature")
     .with_suggestion("name a feature by its ID, as the document holds it")
-}
-
-fn base_of(operation: &Operation) -> Option<&FeatureId> {
-    operation
-        .inputs()
-        .into_iter()
-        .find(|(field, _)| *field == "base")
-        .map(|(_, base)| base)
 }
 
 #[cfg(test)]
@@ -1028,7 +1024,7 @@ mod tests {
     ) -> Option<(usize, Cause)> {
         let base = features
             .get(at)
-            .and_then(|f| base_of(&f.operation))
+            .and_then(|f| f.operation.base())
             .and_then(|b| links.place(b))
             .filter(|&b| b < at)?;
         made.iter().find_map(|&(field, maker)| {
@@ -1118,7 +1114,9 @@ mod tests {
             } else if !flags.get(i).copied().unwrap_or(false) {
                 Some(i)
             } else {
-                base_of(&feature.operation)
+                feature
+                    .operation
+                    .base()
                     .and_then(|b| links.place(b))
                     .filter(|&b| b < i)
                     .and_then(|b| standing.get(b).copied().flatten())
