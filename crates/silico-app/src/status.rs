@@ -134,7 +134,8 @@ pub struct Bar {
     /// What the tab's last suppression or deletion did (the prototype's toast): what went
     /// with the feature, or what was rewired in its place.
     pub told: Option<String>,
-    /// The features the tab's last split, trim, or join listed, to be checked: a warning.
+    /// The features every split, trim, or join of the tab's last action listed, each once,
+    /// to be checked: a warning.
     pub to_check: Option<String>,
     /// What the selection says (M5.7): what the pointer is over in the canvas, or how many
     /// elements are selected; and what the last change to it dropped, and why.
@@ -197,8 +198,8 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
         said,
         buttons: Some((tab.stoppable(), tab.can_rebuild())),
         messages: message.into_iter().chain(tab.message.clone()).collect(),
-        told: tab.outcome.told.clone(),
-        to_check: tab.outcome.to_check.clone(),
+        told: tab.edit_words.told.clone(),
+        to_check: tab.edit_words.to_check.clone(),
         selection: selection_words(tab.selection()),
         disk: status.and_then(|status| status.disk),
         saved: Some(saved),

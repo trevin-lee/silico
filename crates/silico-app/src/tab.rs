@@ -1460,7 +1460,7 @@ pub struct Tab {
     pub message: Option<String>,
     /// What the person's last action did, as said to them until their next action, as
     /// [`message`](Self::message) is.
-    pub outcome: Outcome,
+    pub edit_words: EditWords,
     /// A feature's name being typed in its timeline item's or browser row's own field (F2,
     /// or a menu's Rename), until Enter or a click away sends it or Esc drops it.
     pub renaming: Option<crate::feature_menu::Renaming>,
@@ -1709,7 +1709,7 @@ impl Reshape {
 
 /// A split, trim, or join as it was sent: the edit, the kind of the curve it changed (for a
 /// join, of both pieces; none if it isn't known, or the pieces differ), and the tab's
-/// [`Outcome::hushes`] as it was queued, so an answer that comes after the person's next action
+/// [`EditWords::hushes`] as it was queued, so an answer that comes after the person's next action
 /// says nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Reshaped {
@@ -1723,7 +1723,7 @@ struct Reshaped {
 /// split, trim, or join edits that action asked listed, to be checked. Each let-go is
 /// counted, so an answer to an edit asked before the latest says nothing.
 #[derive(Debug, Default)]
-pub struct Outcome {
+pub struct EditWords {
     /// What the last suppression or deletion did (the prototype's toast, in the status
     /// bar): what it suppressed with the feature, or rewired in its place.
     pub told: Option<String>,
@@ -1736,7 +1736,7 @@ pub struct Outcome {
     hushes: u64,
 }
 
-impl Outcome {
+impl EditWords {
     /// What's said let go, for the person's next action, and any split, trim, or join still
     /// to answer kept from saying anything.
     pub fn let_go(&mut self) {
@@ -1805,6 +1805,17 @@ impl Listed {
             self.edit.done()
         ))
     }
+}
+
+/// `features` put in the order of the timeline `entries`; one they don't list (yet) after
+/// them all, in the order it came.
+fn in_timeline_order(features: &mut [FeatureId], entries: &[Entry]) {
+    features.sort_by_key(|feature| {
+        entries
+            .iter()
+            .position(|entry| entry.id == *feature)
+            .unwrap_or(usize::MAX)
+    });
 }
 
 /// What a refusal says to the person: its first error's message and suggestion.
@@ -1896,7 +1907,7 @@ impl Tab {
             unmade: Vec::new(),
             edit_undone: None,
             message: None,
-            outcome: Outcome::default(),
+            edit_words: EditWords::default(),
             renaming: None,
             selected_in: crate::feature_menu::Place::Timeline,
             reveal_browser: false,
@@ -3834,7 +3845,7 @@ impl Tab {
                     self.applied(&sending, &response);
                     match response.result {
                         Ok(done) => {
-                            self.outcome.told =
+                            self.edit_words.told =
                                 crate::feature_menu::suppressed_words(&done, |id| self.name_of(id));
                         }
                         Err(problems) => self.message = Some(said(&problems)),
@@ -3864,7 +3875,7 @@ impl Tab {
                             if self.selection.has_feature(&removed.feature.id) {
                                 self.selection.clear();
                             }
-                            self.outcome.told =
+                            self.edit_words.told =
                                 Some(crate::feature_menu::removed_words(&removed, |id| {
                                     self.name_of(id)
                                 }));
@@ -4478,7 +4489,7 @@ impl Tab {
                         Err(problems) => {
                             self.message = Some(said(&problems));
                             // What a repair said it did, it didn't.
-                            self.outcome.told = None;
+                            self.edit_words.told = None;
                             if self.dialog_answered(&field, &value, false) {
                                 self.refused.remove(&field);
                             } else {
@@ -5587,7 +5598,7 @@ impl Tab {
     /// deletion did, let go.
     fn hush(&mut self) {
         self.message = None;
-        self.outcome.let_go();
+        self.edit_words.let_go();
     }
 
     /// What a split, trim, or join sent as `reshaped` lists in `references` said, with what
@@ -5595,26 +5606,23 @@ impl Tab {
     /// acted since it was queued: each feature once, in timeline order. One that lists none
     /// adds nothing.
     fn say_to_check(&mut self, reshaped: &Reshaped, references: &[FeatureId]) {
-        if reshaped.hushed != self.outcome.hushes || references.is_empty() {
+        if reshaped.hushed != self.edit_words.hushes || references.is_empty() {
             return;
         }
         let mut listed = self
-            .outcome
+            .edit_words
             .listed
             .take()
             .unwrap_or_else(|| Listed::of(reshaped));
         listed.add(reshaped, references);
-        // In the timeline's order; one it doesn't list (yet) after, as it came.
-        let place = |feature: &FeatureId| {
-            self.timeline
-                .as_ref()
-                .and_then(|timeline| timeline.features.as_ref())
-                .and_then(|entries| entries.iter().position(|entry| entry.id == *feature))
-                .unwrap_or(usize::MAX)
-        };
-        listed.features.sort_by_key(place);
-        self.outcome.to_check = listed.words(|id| self.name_of(id));
-        self.outcome.listed = Some(listed);
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        in_timeline_order(&mut listed.features, entries);
+        self.edit_words.to_check = listed.words(|id| self.name_of(id));
+        self.edit_words.listed = Some(listed);
     }
 
     /// The kind of sketch mode's curve `id`, as its newest read has it.
@@ -7387,7 +7395,7 @@ impl Tab {
             Ok((edit, told)) => {
                 let words = Words::Then(broken.feature.clone(), crate::repair::USED_STEP);
                 self.edit_with_words(sessions, edit, Some(words));
-                self.outcome.told = Some(told);
+                self.edit_words.told = Some(told);
                 true
             }
             Err(why) => {
@@ -7436,7 +7444,7 @@ impl Tab {
             Ok((edit, told)) => {
                 let words = Words::Then(broken.feature.clone(), crate::repair::REMOVED_STEP);
                 self.edit_with_words(sessions, edit, Some(words));
-                self.outcome.told = Some(told);
+                self.edit_words.told = Some(told);
                 true
             }
             Err(why) => {
@@ -7511,7 +7519,7 @@ impl Tab {
         let started = self.dialog_changed(sessions);
         if started {
             let made = crate::repair::Made::Dialog;
-            self.outcome.told = Some(if used {
+            self.edit_words.told = Some(if used {
                 crate::repair::used_words(name, chamfer, made)
             } else {
                 crate::repair::removed_words(name, made)
@@ -7959,7 +7967,7 @@ impl Tab {
         if let Some(mode) = self.sketch.take() {
             if !ok {
                 // Cancel takes back what sketch mode did: what its edits said goes too.
-                self.outcome.let_go();
+                self.edit_words.let_go();
                 let serial = mode.serial;
                 let mut dropped = None;
                 self.edits.queue.retain(|queued| match queued {
@@ -8200,7 +8208,7 @@ impl Tab {
                 }
             };
             self.message = None;
-            self.outcome.let_go();
+            self.edit_words.let_go();
             self.edits.queue.push_back(next);
             asked = true;
         }
@@ -8226,7 +8234,7 @@ impl Tab {
         // The person's next action: what the last edit said is let go before these are
         // queued, so a split or trim among them says what its own answer lists.
         if !closing {
-            self.outcome.let_go();
+            self.edit_words.let_go();
         }
         for request in requests {
             let next = match request {
@@ -8252,13 +8260,13 @@ impl Tab {
                     sketch: sketch.clone(),
                     curve,
                     pick,
-                    hushed: self.outcome.hushes,
+                    hushed: self.edit_words.hushes,
                 },
                 Request::Split { curve, at } => Queued::SketchSplit {
                     sketch: sketch.clone(),
                     curve,
                     at,
-                    hushed: self.outcome.hushes,
+                    hushed: self.edit_words.hushes,
                 },
                 Request::Extend {
                     curve,
@@ -8307,7 +8315,7 @@ impl Tab {
             Deletion::Join(point) => Queued::SketchJoin {
                 sketch,
                 point,
-                hushed: self.outcome.hushes,
+                hushed: self.edit_words.hushes,
             },
         });
         self.advance(sessions);
@@ -9311,6 +9319,30 @@ mod tests {
     use super::*;
 
     use silico_core::command::{Rebuild, RebuildState, Transaction};
+
+    #[test]
+    fn features_to_check_are_put_in_timeline_order_and_one_it_doesnt_list_goes_last() {
+        let ids = |ids: &[&str]| -> Vec<FeatureId> {
+            ids.iter().map(|id| FeatureId::new(id).unwrap()).collect()
+        };
+        let entries = [
+            entry("p0000001", 0, 0),
+            entry("f0000001", 0, 0),
+            entry("f0000002", 0, 0),
+        ];
+        // Two the timeline doesn't list (yet), each after those it does, in the order they
+        // came; the rest in the timeline's order.
+        let mut features = ids(&["c0000002", "f0000002", "c0000001", "f0000001"]);
+        in_timeline_order(&mut features, &entries);
+        assert_eq!(
+            features,
+            ids(&["f0000001", "f0000002", "c0000002", "c0000001"])
+        );
+        // No timeline yet: as they came.
+        let mut features = ids(&["f0000002", "f0000001"]);
+        in_timeline_order(&mut features, &[]);
+        assert_eq!(features, ids(&["f0000002", "f0000001"]));
+    }
 
     #[test]
     fn a_sketch_edits_words_name_each_feature_listed_and_what_was_done_to_which_curve() {
@@ -12941,7 +12973,7 @@ mod tests {
         );
         assert_eq!(tab.sent, sent, "{case}: sent");
         assert_eq!(tab.message.as_deref(), Some(crate::repair::STALE), "{case}");
-        assert_eq!(tab.outcome.told, None, "{case}");
+        assert_eq!(tab.edit_words.told, None, "{case}");
         assert!(
             !tab.remove_reference(sessions, card),
             "{case}: Remove started"
@@ -12974,10 +13006,10 @@ mod tests {
         tab.sketch = Some(crate::sketch::SketchMode::new(1, None));
         let sent = tab.sent.clone();
         let why = Some("Finish or cancel the sketch first");
-        tab.outcome.told = Some("Round now rounds the edge you picked.".to_owned());
+        tab.edit_words.told = Some("Round now rounds the edge you picked.".to_owned());
         assert!(!tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
         assert_eq!(tab.message.as_deref(), why);
-        assert_eq!(tab.outcome.told, None);
+        assert_eq!(tab.edit_words.told, None);
         tab.message = None;
         assert!(!tab.remove_reference(&sessions, &card));
         assert_eq!(tab.message.as_deref(), why);
@@ -13085,7 +13117,7 @@ mod tests {
         assert!(tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
         assert_eq!(tab.sent.last(), Some(&Sent::Edit("edges.1".to_owned())));
         assert_eq!(
-            tab.outcome.told.as_deref(),
+            tab.edit_words.told.as_deref(),
             Some("Round now rounds the edge you picked. Undo puts the broken reference back.")
         );
     }

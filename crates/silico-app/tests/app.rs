@@ -24900,13 +24900,13 @@ fn del_and_backspace_delete_the_sketchs_selection_in_sketch_mode_and_the_feature
         // A side selected: it goes, and what the last deletion did, said, goes with the
         // person's next action, as #398's does.
         select_member(&mut h, member, silico_core::document::ElementKind::Line);
-        h.state_mut().tabs_mut()[0].outcome.told = Some("Deleted Washer".to_owned());
+        h.state_mut().tabs_mut()[0].edit_words.told = Some("Deleted Washer".to_owned());
         h.key_press(key);
         step(&mut h);
         settled(&mut h);
         assert_eq!(sketch_removes(&h), at + 1, "{key:?}");
         assert!(features_removed(&h).is_empty(), "{key:?}");
-        assert_eq!(h.state().tabs()[0].outcome.told, None, "{key:?}");
+        assert_eq!(h.state().tabs()[0].edit_words.told, None, "{key:?}");
         let text = text_of(&f.sessions, &h);
         assert!(!text.contains(member), "{key:?}: {text}");
         assert!(text.contains("s0000001"), "{key:?}: {text}");
@@ -26842,7 +26842,7 @@ const BOXED_ROUNDED: &str = r#"{
 /// anything and the status bar shows it.
 fn said_to_check(h: &AppHarness) -> Option<String> {
     h.state().tabs()[0]
-        .outcome
+        .edit_words
         .to_check
         .clone()
         .filter(|words| in_status_bar(h, words))
@@ -26908,7 +26908,7 @@ fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_chang
     settled(&mut h);
     assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
     step(&mut h);
-    assert_eq!(h.state().tabs()[0].outcome.to_check, None);
+    assert_eq!(h.state().tabs()[0].edit_words.to_check, None);
     assert!(!anywhere(
         &h,
         "Near round and Far round use the line you split: check them"
@@ -26945,7 +26945,7 @@ fn a_split_trim_or_join_says_in_the_status_bar_which_features_name_what_it_chang
     sketch_events(&f, &mut h, &clicked(40.0, 20.0));
     settled(&mut h);
     assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
-    assert_eq!(h.state().tabs()[0].outcome.to_check, None);
+    assert_eq!(h.state().tabs()[0].edit_words.to_check, None);
     assert!(!anywhere(
         &h,
         "Far round uses the line you trimmed: check it"
@@ -26971,7 +26971,7 @@ fn cancel_of_the_sketch_lets_go_of_what_its_split_said() {
     settled(&mut h);
     assert!(sketch_mode(&h).is_none());
     assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
-    assert_eq!(h.state().tabs()[0].outcome.to_check, None);
+    assert_eq!(h.state().tabs()[0].edit_words.to_check, None);
     assert!(!anywhere(&h, NEAR_ROUND_SPLIT));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -27018,7 +27018,7 @@ fn a_drag_after_a_split_lets_go_of_what_the_split_said() {
     settled(&mut h);
     step_until(&mut h, "the drag over", |h| the_drag(h).is_none());
     assert!(drag_sends(&h, "drag_end") >= 1);
-    assert_eq!(h.state().tabs()[0].outcome.to_check, None);
+    assert_eq!(h.state().tabs()[0].edit_words.to_check, None);
     assert!(!anywhere(&h, NEAR_ROUND_SPLIT));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -27064,7 +27064,7 @@ fn a_split_answered_after_the_next_edit_was_asked_says_nothing() {
     for _ in 0..3 {
         step(&mut h);
     }
-    assert_eq!(h.state().tabs()[0].outcome.to_check, None);
+    assert_eq!(h.state().tabs()[0].edit_words.to_check, None);
     assert!(!anywhere(
         &h,
         "Near round and Far round use the line you split: check them"
@@ -27092,6 +27092,30 @@ fn power_trim_across_two_named_lines_says_both() {
     step_until(&mut h, "both trims' words", |h| {
         said_to_check(h).as_deref()
             == Some("Near round and Far round use the lines you trimmed: check them")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn power_trim_across_a_named_and_an_unnamed_line_says_the_line() {
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    sketch_read(&mut h);
+    h.key_press(eframe::egui::Key::T);
+    step(&mut h);
+    // A drag from (40, 35) to (55, 20), along y = 75 - x: it crosses na000003 (y = 30) at
+    // (45, 30), whose points pa000003 and pa000004 no feature names, then na000002
+    // (x = 50) at (50, 25), whose start pa000002 Near round names. Both lines go; one
+    // trim lists Near round, the other nothing, so one line is said.
+    sketch_events(&f, &mut h, &dragged([40.0, 35.0], [55.0, 20.0]));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    let ids: Vec<&str> = sketch.lines.iter().map(|line| line.id.as_str()).collect();
+    assert_eq!(ids, ["na000001", "na000004"]);
+    step_until(&mut h, "the trim's words", |h| {
+        said_to_check(h).as_deref() == Some("Near round uses the line you trimmed: check it")
     });
     assert_eq!(never_waits::waits(), 0);
 }
@@ -27125,7 +27149,7 @@ fn cancel_while_a_split_is_answering_says_nothing_of_it() {
     for _ in 0..3 {
         step(&mut h);
     }
-    assert_eq!(h.state().tabs()[0].outcome.to_check, None);
+    assert_eq!(h.state().tabs()[0].edit_words.to_check, None);
     assert!(!anywhere(
         &h,
         "Near round and Far round use the line you split: check them"
@@ -31042,7 +31066,7 @@ fn a_dimensions_value_typed_lets_go_of_what_the_last_edit_said_as_every_next_edi
     // What a split said of the features it listed, then the bottom's length typed in its
     // Modify box: the person's next action, so the words go, as a click's or a Delete's do.
     let told = "Near round uses the line you split: check it";
-    h.state_mut().tabs_mut()[0].outcome.to_check = Some(told.to_owned());
+    h.state_mut().tabs_mut()[0].edit_words.to_check = Some(told.to_owned());
     step(&mut h);
     assert!(in_status_bar(&h, told));
     edit_length(&f, &mut h, "98");
@@ -31052,7 +31076,7 @@ fn a_dimensions_value_typed_lets_go_of_what_the_last_edit_said_as_every_next_edi
             .as_deref(),
         Some("98")
     );
-    assert_eq!(h.state().tabs()[0].outcome.to_check, None);
+    assert_eq!(h.state().tabs()[0].edit_words.to_check, None);
     assert!(!in_status_bar(&h, told));
     assert_eq!(never_waits::waits(), 0);
 }
@@ -43043,7 +43067,7 @@ fn in_the_fillets_dialog_remove_the_edge_empties_its_box_and_ok_waits_for_an_edg
     assert!(!ok_enabled(&h));
     // The box emptied sends nothing (`edges` names at least one): nothing is said done.
     assert_eq!(h.state().tabs()[0].sent, sent);
-    assert_eq!(h.state().tabs()[0].outcome.told, None);
+    assert_eq!(h.state().tabs()[0].edit_words.told, None);
     assert_eq!(status_said(&h, "Inside corner no longer"), None);
     cancel_dialog(&mut h);
     assert_eq!(text_of(&f.sessions, &h), before);
@@ -43263,7 +43287,7 @@ fn use_on_a_card_read_before_an_undo_mended_its_name_writes_nothing_and_says_why
         h.state().tabs()[0].message.as_deref(),
         Some("The model has changed since this card was read: try again once it has rebuilt")
     );
-    assert_eq!(h.state().tabs()[0].outcome.told, None);
+    assert_eq!(h.state().tabs()[0].edit_words.told, None);
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].sent, sent);
     assert_eq!(text_of(&f.sessions, &h), mended);
