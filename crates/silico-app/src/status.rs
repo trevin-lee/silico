@@ -135,7 +135,7 @@ pub struct Bar {
     /// with the feature, or what was rewired in its place.
     pub told: Option<String>,
     /// The features the tab's last split, trim, or join listed, to be checked: a warning.
-    pub check: Option<String>,
+    pub to_check: Option<String>,
     /// What the selection says (M5.7): what the pointer is over in the canvas, or how many
     /// elements are selected; and what the last change to it dropped, and why.
     pub selection: Vec<String>,
@@ -197,8 +197,8 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
         said,
         buttons: Some((tab.stoppable(), tab.can_rebuild())),
         messages: message.into_iter().chain(tab.message.clone()).collect(),
-        told: tab.told.clone(),
-        check: tab.check.clone(),
+        told: tab.outcome.told.clone(),
+        to_check: tab.outcome.to_check.clone(),
         selection: selection_words(tab.selection()),
         disk: status.and_then(|status| status.disk),
         saved: Some(saved),
@@ -216,7 +216,7 @@ pub fn unopened(warming: Option<Warming>, message: Option<String>) -> Bar {
         buttons: None,
         messages: message.into_iter().collect(),
         told: None,
-        check: None,
+        to_check: None,
         selection: Vec::new(),
         disk: None,
         saved: None,
@@ -383,8 +383,8 @@ fn middle(ui: &mut Ui, bar: &Bar) {
     if let Some(told) = &bar.told {
         item(ui, None, told, theme::STATUS_TEXT);
     }
-    if let Some(check) = &bar.check {
-        item(ui, Some(Mark::Icon(Icon::Warn)), check, theme::WARNING);
+    if let Some(to_check) = &bar.to_check {
+        item(ui, Some(Mark::Icon(Icon::Warn)), to_check, theme::WARNING);
     }
     if bar.sketch.is_none() {
         for words in &bar.selection {
@@ -1130,7 +1130,7 @@ mod tests {
             buttons: Some(buttons),
             messages: Vec::new(),
             told: None,
-            check: None,
+            to_check: None,
             selection: Vec::new(),
             disk,
             saved: Some(saved),
@@ -1306,7 +1306,7 @@ mod tests {
             None,
         );
         shown.told = Some("Deleted Pin".to_owned());
-        shown.check = Some("Near round uses the line you split: check it".to_owned());
+        shown.to_check = Some("Near round uses the line you split: check it".to_owned());
         let h = drawn(shown);
         let rebuild = widget(&h, Role::Button, "Rebuild");
         let left =
