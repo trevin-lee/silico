@@ -8,9 +8,12 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use silico_core::command::wire::{Layout, ToWire, write as wire};
 use silico_core::document::{Checked, Document, FeatureId, read, write};
+
+use super::within::within;
 
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
@@ -1090,10 +1093,12 @@ fn three_directions_of_huge_counts_are_refused_not_a_panic() {
 }
 
 #[test]
-fn a_long_skip_or_copies_list_is_checked_in_linear_time() {
-    // The review's hostile files: 600,000 skips, each past nothing and none repeated, and
-    // 1,000,000 originals no feature has. Each repeat found by a look-up, and each refusal
-    // made only if it's listed, so both check in well under the time a square would take.
+fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
+    // The review's hostile files: 600,000 skips, each past nothing and none repeated;
+    // 1,000,000 originals no feature has; and 20,000 pockets in one chain, each an original.
+    // Each repeat found by a look-up, each refusal made only if it's listed, and each
+    // original's chain read from the roots worked once, so each checks in well under the
+    // CPU time a square would take.
     let n: u32 = 600_000;
     let skips: Vec<String> = (1..n).map(|k| format!("[{k}]")).collect();
     let text = edited(
@@ -1101,16 +1106,12 @@ fn a_long_skip_or_copies_list_is_checked_in_linear_time() {
         DIRECTION_0,
         &DIRECTION_0.replace("\"count\": 3", &format!("\"count\": {n}")),
     );
-    let document = read(text.as_bytes()).unwrap();
-    let start = std::time::Instant::now();
-    let checked = Checked::new(document);
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(10),
-        "{:?}",
-        start.elapsed()
-    );
     // Past the cap (600,000 by 2), so refused, but checked.
-    assert!(checked.is_err());
+    let refused = within(Duration::from_secs(10), move || {
+        Checked::new(read(text.as_bytes()).unwrap()).is_err()
+    });
+    assert!(refused);
+
     let ids: Vec<String> = (0..1_000_000u32).map(|k| format!("\"z{k:07}\"")).collect();
     let text = edited(
         &plate_text(),
@@ -1120,15 +1121,36 @@ fn a_long_skip_or_copies_list_is_checked_in_linear_time() {
             ids.join(", ")
         ),
     );
-    let document = read(text.as_bytes()).unwrap();
-    let start = std::time::Instant::now();
-    let invalid = Checked::new(document).unwrap_err();
-    assert!(
-        start.elapsed() < std::time::Duration::from_secs(10),
-        "{:?}",
-        start.elapsed()
-    );
-    assert_eq!(invalid.total(), 1_000_000);
+    let total = within(Duration::from_secs(10), move || {
+        Checked::new(read(text.as_bytes()).unwrap())
+            .unwrap_err()
+            .total()
+    });
+    assert_eq!(total, 1_000_000);
+
+    // The plate's outline, plate, and notch sketch, then 20,000 pockets of the notch, each on
+    // the one before, and a mirror of them all: every original in its base's chain.
+    let plate = plate_text();
+    let head = &plate[..plate.find("    {\n      \"id\": \"q0000001\"").unwrap()];
+    let pockets = 20_000u32;
+    let mut text = head.to_owned();
+    let mut base = "p0000001".to_owned();
+    for k in 1..=pockets {
+        let id = format!("q{k:07}");
+        text.push_str(&format!(
+            "    {{\"id\": \"{id}\", \"type\": \"pocket\", \"v\": 1, \"name\": \"Notch {k}\", \"base\": \"{base}\", \"sketch\": \"s0000002\", \"extent\": {{\"type\": \"through_all\", \"reversed\": true}}}},\n"
+        ));
+        base = id;
+    }
+    let originals: Vec<String> = (1..=pockets).map(|k| format!("\"q{k:07}\"")).collect();
+    text.push_str(&format!(
+        "    {{\"id\": \"m0000001\", \"type\": \"mirror\", \"v\": 1, \"name\": \"Mirror\", \"base\": \"{base}\", \"copies\": {{\"type\": \"features\", \"features\": [{}]}}, \"plane\": \"yz\"}}\n  ]\n}}\n",
+        originals.join(", ")
+    ));
+    let taken = within(Duration::from_secs(10), move || {
+        Checked::new(read(text.as_bytes()).unwrap()).map(|_| ())
+    });
+    assert!(taken.is_ok(), "{taken:?}");
 }
 
 #[test]
@@ -1214,6 +1236,11 @@ fn each_origin_word_of_the_wrong_kind_is_told_the_one_it_means() {
             "\"plane\": \"yz\"",
             "\"plane\": \"y\"",
             "give the plane square to it, xz, or name a planar face",
+        ),
+        (
+            "\"plane\": \"yz\"",
+            "\"plane\": \"z\"",
+            "give the plane square to it, xy, or name a planar face",
         ),
     ] {
         let errors = refused(&edited(&plate_text(), from, to));
@@ -1305,4 +1332,202 @@ fn set_field_of_one_skip_gives_back_the_place_it_lands() {
         saved.contains("\"skip\": [\n        [2],\n        [5]\n      ]"),
         "{saved}"
     );
+}
+
+/// The refusal of removing `removed` from `text` that names `child`, its suggestion.
+fn removal_suggestion(text: &str, removed: &str, child: &str) -> String {
+    let checked = Checked::new(read(text.as_bytes()).unwrap())
+        .unwrap_or_else(|invalid| panic!("{:?}", invalid.errors()));
+    let refusals = silico_core::document::chain::removal_refusals(&checked, &id(removed));
+    let refusal = refusals
+        .iter()
+        .find(|e| {
+            e.message()
+                .starts_with(&format!("{child} names {removed}'s elements"))
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "{:?}",
+                refusals.iter().map(|e| e.message()).collect::<Vec<_>>()
+            )
+        });
+    refusal.suggestion().unwrap().to_owned()
+}
+
+#[test]
+fn a_pattern_naming_an_element_is_told_the_field_that_names_it() {
+    // Section 2.3's names: each pattern names an element by its own field, and removing the
+    // element's maker says which field to set, not a fillet's `edges`.
+    let linear = edited(
+        &plate_text(),
+        "\"along\": \"x\"",
+        "\"along\": \"p0000001.pad.Edge(M s0000001.sketch.Edge.na000001)\"",
+    );
+    assert_eq!(
+        removal_suggestion(&linear, "p0000001", "t0000001"),
+        "remove t0000001 first, or set its directions' along to names of other features' elements"
+    );
+    let polar = edited(
+        &plate_text(),
+        "\"axis\": \"z\"",
+        "\"axis\": \"p0000002.pad.Edge(G s0000004.sketch.Edge.cd000001)\"",
+    );
+    assert_eq!(
+        removal_suggestion(&polar, "p0000002", "t0000002"),
+        "remove t0000002 first, or set its axis to names of other features' elements"
+    );
+    let mirror = edited(
+        &plate_text(),
+        "\"plane\": \"yz\"",
+        "\"plane\": \"p0000001.pad.Face(G s0000001.sketch.Edge.na000003)\"",
+    );
+    assert_eq!(
+        removal_suggestion(&mirror, "p0000001", "m0000001"),
+        "remove m0000001 first, or set its plane to names of other features' elements"
+    );
+    // A mirror of its solid in the notch's wall, moved before the notch: its base would be
+    // the plate, not built from the notch, so the lineage refuses it, naming its plane.
+    let walled = edited(
+        &plate_text(),
+        "\"copies\": {\"type\": \"features\", \"features\": [\"q0000001\"]},\n      \"plane\": \"yz\"",
+        "\"copies\": {\"type\": \"solid\"},\n      \"plane\": \"q0000001.pocket.Face(G s0000002.sketch.Edge.nb000001)\"",
+    );
+    let checked = Checked::new(read(walled.as_bytes()).unwrap())
+        .unwrap_or_else(|invalid| panic!("{:?}", invalid.errors()));
+    let error = silico_core::document::chain::move_feature(
+        &checked,
+        &id("m0000001"),
+        Some(&id("q0000001")),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error.message(),
+        "m0000001 names elements of q0000001, which its base would no longer be built from once m0000001 moves there"
+    );
+    assert_eq!(
+        error.suggestion(),
+        Some(
+            "keep m0000001 after q0000001, whose elements it names, or set its plane to names of other features' elements"
+        )
+    );
+}
+
+/// `sessions` on the fakes, with `text` open from a file in `dir`: the session and its path.
+fn opened(
+    dir: &std::path::Path,
+    text: &str,
+) -> (
+    silico_core::command::Sessions<std::sync::Arc<silico_core::fake::FakeKernel>>,
+    silico_core::command::SessionId,
+    silico_core::command::Revision,
+    PathBuf,
+) {
+    let secret = dir.join("secret");
+    let sketches = silico_core::fake::FakeSketches::new();
+    let sessions = silico_core::command::Sessions::with_stand_ins(
+        std::sync::Arc::new(silico_core::fake::FakeKernel::new(2).unwrap()),
+        move |cache| silico_core::cache::Cache::with_secret(cache, &secret),
+        move || Ok(Box::new(sketches.clone()) as Box<dyn silico_core::sketch::SketchSolver>),
+    );
+    let path = dir.join("plate.silico");
+    std::fs::write(&path, text).unwrap();
+    let session = answered(sessions.open(&path, false)).session.unwrap();
+    (sessions, session.id, session.revision, path)
+}
+
+#[test]
+fn set_field_of_one_original_or_of_inside_a_skip_gives_back_where_it_lands() {
+    // An original of [q0000001, q0000002] set to p0000001 is written first: `after` is read
+    // at copies.features.0, where it lands, not at .1, which is q0000001 once sorted.
+    let dir = tempfile::tempdir().unwrap();
+    let two = edited(
+        &plate_text(),
+        "\"features\": [\"q0000002\"]},\n      \"directions\"",
+        "\"features\": [\"q0000001\", \"q0000002\"]},\n      \"directions\"",
+    );
+    let (sessions, session, revision, path) = opened(dir.path(), &two);
+    let set = answered(sessions.set_field(
+        &session,
+        revision,
+        id("t0000001"),
+        "copies.features.1".to_owned(),
+        silico_core::document::json::read(b"\"p0000001\"").unwrap(),
+    ))
+    .result
+    .unwrap();
+    let written = wire(&set.to_wire(), Layout::OneLine).unwrap();
+    assert!(
+        written.contains("\"before\": \"q0000002\", \"after\": \"p0000001\""),
+        "{written}"
+    );
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains("\"features\": [\"p0000001\", \"q0000001\"]"),
+        "{saved}"
+    );
+
+    // Inside an instance: skip.0.0 of [[1], [2]] set to 5 is written [[2], [5]]: `after` is
+    // read at skip.1.0, 5, not at skip.0.0, 2.
+    let dir = tempfile::tempdir().unwrap();
+    let grid = edited(
+        &grid_skip("[[1], [2]]"),
+        DIRECTION_0,
+        &DIRECTION_0.replace("\"count\": 3", "\"count\": 6"),
+    );
+    let (sessions, session, revision, path) = opened(dir.path(), &grid);
+    let set = answered(sessions.set_field(
+        &session,
+        revision,
+        id("t0000001"),
+        "skip.0.0".to_owned(),
+        silico_core::document::json::read(b"5").unwrap(),
+    ))
+    .result
+    .unwrap();
+    let written = wire(&set.to_wire(), Layout::OneLine).unwrap();
+    assert!(written.contains("\"before\": 1, \"after\": 5"), "{written}");
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        saved.contains("\"skip\": [\n        [2],\n        [5]\n      ]"),
+        "{saved}"
+    );
+}
+
+#[test]
+fn removing_an_original_copied_past_the_list_lists_a_hundred_and_counts_them_all() {
+    // The notch copied by 150 mirrors, each on the one before: removing it lists the first
+    // hundred refusals, in timeline order, and counts all 150.
+    let plate = plate_text();
+    let head = &plate[..plate.find("    {\n      \"id\": \"m0000001\"").unwrap()];
+    let mut text = head.to_owned();
+    let mut base = "q0000001".to_owned();
+    let mirrors = 150u32;
+    for k in 1..=mirrors {
+        let id = format!("m{k:07}");
+        let comma = if k == mirrors { "" } else { "," };
+        text.push_str(&format!(
+            "    {{\"id\": \"{id}\", \"type\": \"mirror\", \"v\": 1, \"name\": \"Mirror {k}\", \"base\": \"{base}\", \"copies\": {{\"type\": \"features\", \"features\": [\"q0000001\"]}}, \"plane\": \"yz\"}}{comma}\n"
+        ));
+        base = id;
+    }
+    text.push_str("  ]\n}\n");
+    let dir = tempfile::tempdir().unwrap();
+    let (sessions, session, revision, _) = opened(dir.path(), &text);
+    let problems = answered(sessions.remove_feature(&session, revision, id("q0000001")))
+        .result
+        .unwrap_err();
+    assert_eq!(problems.total(), u64::from(mirrors));
+    assert_eq!(
+        problems.errors().len(),
+        silico_core::document::PROBLEMS_LISTED
+    );
+    for (k, error) in problems.errors().iter().enumerate() {
+        assert_eq!(
+            error.message(),
+            format!(
+                "m{:07} copies q0000001, so q0000001 can't be removed",
+                k + 1
+            )
+        );
+    }
 }

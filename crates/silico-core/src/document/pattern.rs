@@ -397,3 +397,31 @@ impl From<PatternFeature> for crate::naming::OpCode {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_origin_planes_normal_is_the_sketch_planes() {
+        // The advice for a plane given as a direction (`origin_normal`) and the plane a sketch
+        // sweeps from (`SketchPlane::normal`) name the same direction, so the two can't drift.
+        for plane in OriginPlane::ALL {
+            let (axis, reversed) = origin_normal(plane);
+            let sign = if reversed { -1.0 } else { 1.0 };
+            let unit = match axis {
+                OriginAxis::X => [sign, 0.0, 0.0],
+                OriginAxis::Y => [0.0, sign, 0.0],
+                OriginAxis::Z => [0.0, 0.0, sign],
+            };
+            assert_eq!(
+                unit,
+                silico_protocol::SketchPlane::from(plane).normal(),
+                "{}",
+                plane.as_str()
+            );
+            // And square to it, as `square_plane` has it.
+            assert_eq!(axis.square_plane(), plane);
+        }
+    }
+}

@@ -81,6 +81,8 @@ impl<'a> Gate<'a, '_> {
         self.kind.word()
     }
 
+    /// A refusal whose words are already made: for a field's one refusal. A refusal of each
+    /// item of a list, which may be a million, goes through [`Gate::add_with`].
     fn add(&mut self, parameter: String, message: String, suggestion: String) {
         let refuse = self.refuse;
         (self.found)(Box::new(move || refuse(&parameter, message, suggestion)));
@@ -190,10 +192,7 @@ impl<'a> Gate<'a, '_> {
         if counts.is_empty() || total.is_some_and(|total| total <= MOST_INSTANCES) {
             return;
         }
-        let total = total.map_or_else(
-            || "more than 18446744073709551615".to_owned(),
-            |t| t.to_string(),
-        );
+        let total = total.map_or_else(|| format!("more than {}", u64::MAX), |t| t.to_string());
         let (what, id) = (self.what(), self.id);
         let linear = self.kind == PatternFeature::Linear;
         let parameter = match counts.iter().position(|&c| u64::from(c) > MOST_INSTANCES) {

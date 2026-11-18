@@ -717,8 +717,8 @@ fn copies(fields: &mut Fields) -> Result<Copies, Error> {
     Ok(read)
 }
 
-/// A tagged object's form (`type`), one of `forms`, and where it's written: a pattern's
-/// `copies`, or a `distribution`.
+/// A tagged object's form (`type`), one of `forms`: a pattern's `copies`, or a
+/// `distribution`.
 fn form(fields: &mut Fields, forms: &[&str]) -> Result<String, Error> {
     let type_node = fields.take("type")?;
     let at = type_node.at;
