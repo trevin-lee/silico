@@ -82,7 +82,7 @@ fn every_feature_type_reads_and_writes_on_one_line() {
     let text = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "00000000", "type": "sphere", "v": 1, "name": "S", "position": [1, 2, 3], "radius": 0.000001},
     {"id": "11111111", "type": "cone", "v": 1, "name": "C", "position": [0, 0, 0], "radius1": 5, "radius2": 0, "height": 7.25},
@@ -127,7 +127,7 @@ fn every_feature_type_reads_and_writes_on_one_line() {
 
 #[test]
 fn a_document_with_no_features_writes_an_empty_array() {
-    let text = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": []\n}\n";
+    let text = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": []\n}\n";
     let document = read(text.as_bytes()).unwrap();
     assert!(document.features.is_empty());
     assert_eq!(write(&document).unwrap(), text);
@@ -176,7 +176,7 @@ fn any_spelling_of_the_same_document_writes_the_same_canonical_bytes() {
     let tidy = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de", "note": "Clearance for an M5 bolt"}
   ]
@@ -696,7 +696,17 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
         assert_eq!(made.word(), operation.type_name());
         words += 1;
     }
-    assert_eq!(words, silico_core::naming::TypeWord::all().count());
+    // A pattern's and a mirror's words (scheme 6, N10) come before their types do (M6.2).
+    let copying = silico_core::naming::TypeWord::all()
+        .filter(|w| {
+            matches!(w, silico_core::naming::TypeWord::Operation(op) if op.directions().is_some())
+        })
+        .count();
+    assert_eq!(copying, 3);
+    assert_eq!(
+        words + copying,
+        silico_core::naming::TypeWord::all().count()
+    );
     let validator = &*VALIDATOR;
     for operation in samples {
         let document = Document {

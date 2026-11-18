@@ -683,6 +683,89 @@ fn the_sessions_own_reload_is_filed_under_reload_in_its_logs() {
     assert_eq!(reloaded[0].spans[0], "reload", "{:?}", reloaded[0].spans);
 }
 
+/// The message of the event the session's own reload logs as it reloads.
+const RELOADED: &str = "the file changed outside the session: reloaded";
+
+/// A layer that holds the thread logging [`RELOADED`], before the layers after it see the
+/// event (the core's, which keeps it in the session's logs), until it's told the test has
+/// looked, or for [`HOLD_RELOADED`] at most: as long as a thread that has it may hold any
+/// lock it holds.
+struct HoldReloaded {
+    looked: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+}
+
+/// How long [`HoldReloaded`] holds the thread logging [`RELOADED`] if it's never told the
+/// test has looked: the test's `status` waiting on the session's held state, which that
+/// thread holds as it logs.
+const HOLD_RELOADED: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for HoldReloaded {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        struct Message(String);
+        impl tracing::field::Visit for Message {
+            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                if field.name() == "message" {
+                    self.0 = format!("{value:?}");
+                }
+            }
+        }
+        let mut message = Message(String::new());
+        event.record(&mut message);
+        if message.0 == RELOADED {
+            let _ = self.looked.lock().unwrap().recv_timeout(HOLD_RELOADED);
+        }
+    }
+}
+
+#[test]
+fn the_sessions_own_reload_is_in_its_logs_before_its_new_revision_is_seen() {
+    // The reload logs that it reloaded before it lets go of the session's held state, so
+    // whoever sees its new revision (`status`) finds the event in the session's logs too.
+    // A layer ahead of the core's holds the event until the test has looked: had the reload
+    // let go first, `status` would give the new revision while the event wasn't kept yet.
+    let (looked, waiting) = std::sync::mpsc::channel();
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry()
+            .with(HoldReloaded {
+                looked: std::sync::Mutex::new(waiting),
+            })
+            .with(silico_core::command::logs::layer()),
+    )
+    .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let sessions = sessions(Arc::new(FakeKernel::new(1).unwrap()), &dir)
+        .watching_disk(
+            std::time::Duration::ZERO,
+            reading("part.silico", b"", Arc::default()),
+            Arc::new(std::time::Instant::now),
+        )
+        .unwrap();
+    let box_text = rounded("f0000001");
+    let s1 = opened(&sessions, &dir, "part.silico", &box_text);
+    std::fs::write(
+        dir.path().join("part.silico"),
+        box_text.replace(r#""radius": 2"#, r#""radius": 3"#),
+    )
+    .unwrap();
+    // `status` starts the comparisons that find it; the session reloads it itself.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while sessions.status(&s1).session.unwrap().revision.number() < 2 {
+        assert!(std::time::Instant::now() < deadline, "never reloaded");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let logs = every(&sessions, &s1);
+    let _ = looked.send(());
+    assert_eq!(
+        messages(&logs.events)
+            .iter()
+            .filter(|message| message.starts_with(RELOADED))
+            .count(),
+        1,
+        "the new revision was seen before the reload's event was kept: {:?}",
+        logs.events
+    );
+}
+
 /// What `session` logs, read through `read_logs` until an event whose message starts with
 /// `start` is kept, `status` asked meanwhile (each starting a comparison, these sessions
 /// comparing with no interval): the first such event.

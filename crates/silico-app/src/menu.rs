@@ -226,6 +226,12 @@ pub fn separator(ui: &mut Ui, width: f32) {
 /// `.danger`'s words are red, off too. Its response, labelled as [`Item::said`] says, its
 /// keys its keyboard shortcut ([`Item::shortcut`]).
 pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
+    item_sized(ui, item, width, theme::MENU_ITEM_HEIGHT)
+}
+
+/// [`item`], `height` high (the command search's rows are 28: `.palette-modal .mi`), its
+/// parts centred on it as on a menu's.
+pub fn item_sized(ui: &mut Ui, item: &Item<'_>, width: f32, height: f32) -> Response {
     let said = item.said();
     let shortcut = item.shortcut(ui.ctx());
     // Painted at the menu's opacity, not faded further when off: `.menu .mi:disabled` is
@@ -233,8 +239,7 @@ pub fn item(ui: &mut Ui, item: &Item<'_>, width: f32) -> Response {
     let opacity = ui.opacity();
     let response = ui.add_enabled(item.off.is_none(), |ui: &mut Ui| {
         ui.set_opacity(opacity);
-        let (rect, response) =
-            ui.allocate_exact_size(vec2(width, theme::MENU_ITEM_HEIGHT), Sense::click());
+        let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
         let enabled = ui.is_enabled();
         response.widget_info(|| match item.checked {
             Some(Checked::Choice(on)) => {

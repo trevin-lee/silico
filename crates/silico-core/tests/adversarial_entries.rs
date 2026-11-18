@@ -1400,7 +1400,7 @@ fn a_session_not_open_is_refused_naming_session_for_either_model() {
 const SKETCH_ONLY: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {
       "id": "k7f2qx3m",

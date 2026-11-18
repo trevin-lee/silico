@@ -2073,6 +2073,17 @@ mod tests {
         near, near_rect, painted, rects, sized, text_shape, widget,
     };
 
+    #[test]
+    fn a_select_and_a_segmented_choice_behind_a_modal_keep_their_own_look_on_or_off() {
+        let options = ["Blind".to_owned(), "Through all".to_owned()];
+        crate::modal::tests::drawn_alike_behind(|ui, on| {
+            select(ui, "Extent", &options, 0, on);
+        });
+        crate::modal::tests::drawn_alike_behind(|ui, on| {
+            segmented(ui, &options, 1, on);
+        });
+    }
+
     /// styles.css: `.dlg-footer .btn { flex: 1; height: 26px }`; `.btn { gap: 6px }`;
     /// `.btn .kbd { margin-left: 2px; opacity: .55 }`, its border and words the button's
     /// (`.btn-secondary`'s Gray.750); `.kbd { height: 16px }`.

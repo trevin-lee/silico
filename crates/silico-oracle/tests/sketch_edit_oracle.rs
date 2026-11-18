@@ -14,10 +14,11 @@ use silico_core::document::{
 };
 use silico_core::sketch::{SketchWorker, Translation};
 use silico_oracle::sketch::{FreecadGeometry, freecad_sketch};
+use silico_oracle::sketch_edit::rerun::{REPRODUCED, Reran, rejudge, rerun_differing};
 use silico_oracle::sketch_edit::{
     self, Edit, EditCase, ExtendBy, FcConstraint, FcGeometry, FreecadEdit, FreecadEdited, KNOWN,
-    Plan, Prepared, Refusal, Rule, SilicoSide, Theirs, Verdict, freecad_outcomes, plan, prepare,
-    rule, silico_side, verdict, without_known,
+    PlacedSolve, Plan, Prepared, Refusal, Rule, SilicoSide, Theirs, Verdict, freecad_outcomes,
+    plan, prepare, rule, silico_side, verdict, without_known,
 };
 
 const CASES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/oracle");
@@ -971,6 +972,159 @@ fn an_arc_extend_whose_solve_fails_is_no_edit_made() {
         let (_, shown, stale) = without_known(vec![v], &known);
         assert!(shown.is_empty() && stale.len() == 1, "{shown:?} {stale:?}");
     }
+}
+
+#[test]
+fn an_arc_extend_whose_solve_gives_a_result_the_file_cant_hold_is_the_solve_failing_rule() {
+    // `sketch-extend-sweep --seed 158 --count 500`'s case 266: an arc's shared end, Silico's
+    // solve from the written end collapsing the line n0000013 (invalid_result), where FreeCAD's
+    // from its own start, setRange moving only the arc's end, solves (#328, investigated
+    // 2026-11-16): the note's refusal (#se-an-arc-swept-a-whole-turn), agreeing.
+    let mut sweep = silico_oracle::generate::sketch_extend_cases(158, 500).unwrap();
+    let case = sweep.swap_remove(266);
+    assert_eq!(case.name, "extend_158_266");
+    let mut worker = SketchWorker::start().unwrap();
+    let p = prepare(&case, &mut worker).unwrap();
+    assert!(p.problems.is_empty(), "{:?}", p.problems);
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    let Err(e) = &s.ours.outcome else {
+        panic!("solved: {:?}", s.ours);
+    };
+    assert_eq!(e.code(), silico_core::ErrorCode::InvalidResult, "{e}");
+    assert!(format!("{e:?}").contains("n0000013"), "{e:?}");
+    assert_eq!(rule(&p), Some(Rule::ExtendSolveFails));
+    let theirs = freecad_outcomes(std::slice::from_ref(&p)).unwrap();
+    let v = verdict(&p, theirs[0].as_ref());
+    agrees(&v);
+    assert!(
+        v.excused
+            .iter()
+            .any(|e| e.contains("#se-an-arc-swept-a-whole-turn")),
+        "{v:?}"
+    );
+    // The same solve refused under another code (over-constrained): no rule, a difference.
+    let mut other = p.clone();
+    let SilicoSide::Edited(s) = &mut other.silico else {
+        panic!("{:?}", other.silico);
+    };
+    s.ours.outcome = Err(silico_core::Error::new(
+        silico_core::ErrorCode::OverConstrained,
+        "by hand",
+    ));
+    assert_eq!(rule(&other), None);
+    assert!(!verdict(&other, theirs[0].as_ref()).how.is_empty());
+}
+
+#[test]
+fn an_extend_through_a_lines_flip_freecad_lands_either_side_of_compares_all_but_its_places() {
+    // `sketch-extend-sweep --seed 146 --count 500`'s case 424 (FRAME_VARIES): FreeCAD's drag
+    // lands on one of two frames by its process's state, and Silico's on the other, pinned whole:
+    // each of the seven points its drag moved at both coordinates (p0000012 at x 35.873736898,
+    // which puts a0000017's radius at 3.947421693), every other point where the case drew it.
+    // Only the places the drag settles go uncompared; the rest is compared, so this run's
+    // FreeCAD agrees whichever frame it lands on.
+    let mut sweep = silico_oracle::generate::sketch_extend_cases(146, 500).unwrap();
+    let case = sweep.swap_remove(424);
+    assert_eq!(case.name, "extend_146_424");
+    let mut worker = SketchWorker::start().unwrap();
+    let p = prepare(&case, &mut worker).unwrap();
+    assert!(p.problems.is_empty(), "{:?}", p.problems);
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    assert!(s.ours.outcome.is_ok(), "{:?}", s.ours);
+    let theirs = freecad_outcomes(std::slice::from_ref(&p)).unwrap();
+    let v = verdict(&p, theirs[0].as_ref());
+    agrees(&v);
+    assert!(
+        v.excused
+            .iter()
+            .any(|e| e.contains("lands on one of two frames") && e.contains("7 points")),
+        "{v:?}"
+    );
+    // FreeCAD's frame the other of the two, or anywhere: still only places.
+    let elsewhere = doctored(&theirs[0], |fc| {
+        for list in [&mut fc.edited, &mut fc.geometry] {
+            for g in list.iter_mut() {
+                for at in g.points.values_mut() {
+                    at[0] += 0.386;
+                }
+            }
+        }
+    });
+    agrees(&verdict(&p, Some(&elsewhere)));
+    // Silico's degrees of freedom otherwise: a difference, the frame's places notwithstanding.
+    let mut fewer = p.clone();
+    let SilicoSide::Edited(s) = &mut fewer.silico else {
+        panic!("{:?}", fewer.silico);
+    };
+    s.ours.dofs += 1;
+    let v = verdict(&fewer, theirs[0].as_ref());
+    assert!(
+        v.how.iter().any(|h| h.contains("degrees of freedom")),
+        "{v:?}"
+    );
+    // FreeCAD not making the edit, its solve failing (-1) or its extend raising: a difference.
+    let failed = doctored(&theirs[0], |fc| fc.after.code = -1);
+    assert!(!verdict(&p, Some(&failed)).how.is_empty());
+    let raised = Theirs::Failed("Not able to extend geometry".to_owned());
+    assert!(!verdict(&p, Some(&raised)).how.is_empty());
+    // Silico's frame off the one pinned anywhere: its places compared, a difference. The
+    // reviewer's p0000012 y by 1e-3 mm; each coordinate of each of the seven points the drag
+    // moved (the extend's `modified`), alone, by 1e-5 mm, past the drag's band of 5e-7; and a
+    // point it didn't move. (An arc's radius is its centre's distance to its start, both pinned
+    // points; the sketch has no circle.)
+    let off = |change: &dyn Fn(&mut Sketch)| {
+        let off = changed(&case, &p, change);
+        let v = verdict(&off, theirs[0].as_ref());
+        assert!(
+            !v.how.is_empty() && !v.excused.iter().any(|e| e.contains("two frames")),
+            "{v:?}"
+        );
+    };
+    let nudge = |id: ElementId, axis: usize, by: f64| {
+        move |sketch: &mut Sketch| {
+            let q = sketch.points.iter_mut().find(|q| q.id == id).unwrap();
+            let c = if axis == 0 { &mut q.x } else { &mut q.y };
+            *c = silico_core::document::Coordinate::new(c.mm() + by).unwrap();
+        }
+    };
+    off(&nudge(id("p0000012"), 1, 1e-3));
+    let moved = [
+        "p0000001", "p0000002", "p0000003", "p0000012", "p0000015", "p0000016", "p0000030",
+    ];
+    let SilicoSide::Edited(s) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    let modified: Vec<&str> = s.edited.modified.iter().map(ElementId::as_str).collect();
+    assert_eq!(modified, moved);
+    for point in moved {
+        for axis in [0, 1] {
+            off(&nudge(id(point), axis, 1e-5));
+        }
+    }
+    let unmoved = p
+        .sketch
+        .points
+        .iter()
+        .map(|q| q.id.clone())
+        .find(|q| !moved.contains(&q.as_str()))
+        .unwrap();
+    off(&nudge(unmoved, 0, 1e-5));
+    // A report beyond places is no known case either: KNOWN holds no entry that hides it.
+    let v = Verdict {
+        case: "extend_146_424".into(),
+        how: vec![
+            "degrees of freedom: Silico 3, FreeCAD 2; constraint k0000020 missing in Silico's"
+                .into(),
+        ],
+        made: true,
+        ..Verdict::default()
+    };
+    let (differ, _, _) = without_known(vec![v], KNOWN);
+    assert_eq!(differ.len(), 1);
 }
 
 #[test]
@@ -4002,9 +4156,11 @@ fn an_extend_whose_solve_fails_from_the_written_end_is_refused_and_excused_where
         let v = verdict(p, Some(&other));
         assert!(v.excused.is_empty() && !v.how.is_empty(), "{v:?}");
     }
-    // The same refusal for the arc's end: FreeCAD's arc with its end turned on by the
-    // request's angle about the drawn centre, its start where it was drawn, is excused; its
-    // start turned instead (FreeCAD's own edit of the start) is a difference.
+    // The same refusal for the arc's end, p0000019, which no other curve shares: Silico's write
+    // and FreeCAD's setRange start the two solves alike there (#se-a-line-s-end-goes-through),
+    // so a solve Silico fails where FreeCAD's succeeds is no rule's, and a difference even with
+    // FreeCAD's arc turned exactly as requested (its end on by the request's angle about the
+    // drawn centre, its start where it was drawn); its start turned instead too.
     let mut at_end = p.clone();
     let Edit::Extend { end, by, .. } = &mut at_end.edit else {
         panic!("{:?}", at_end.edit)
@@ -4037,9 +4193,15 @@ fn an_extend_whose_solve_fails_from_the_written_end_is_refused_and_excused_where
         *g.points.get_mut("3").unwrap() = centre;
         g.radius = Some(radius);
     });
+    assert_eq!(rule(&at_end), None, "{:?}", at_end.silico);
     let v = verdict(&at_end, Some(&end_turned));
-    agrees(&v);
-    assert_eq!(v.excused.len(), 1, "{v:?}");
+    assert!(v.excused.is_empty() && !v.how.is_empty(), "{v:?}");
+    assert!(
+        v.how
+            .iter()
+            .any(|h| h.contains("FreeCAD's solve gave 0") && h.contains("solve_failed")),
+        "{v:?}"
+    );
     // Its end turned as requested, but its start moved 1e-6 too: a difference.
     let Theirs::Edited(start_moved) = &end_turned else {
         unreachable!()
@@ -4862,6 +5024,186 @@ fn a_merge_its_command_judges_worse_is_refused_and_agrees_with_freecads_rollback
     }
 }
 
+/// The nightly sweeps' edit_169_486, edit_175_299, and edit_158_347, prepared, with FreeCAD's
+/// outcome of each: merges of points apart whose solve Silico's command judges worse
+/// ([`Rule::MergeSolveWorse`]).
+fn merges_judged_worse() -> (Vec<Prepared>, Vec<Option<Theirs>>) {
+    let mut worker = SketchWorker::start().unwrap();
+    let prepared: Vec<Prepared> = [(169u64, 486usize), (175, 299), (158, 347)]
+        .into_iter()
+        .map(|(seed, n)| {
+            let mut sweep = silico_oracle::generate::sketch_edit_cases(seed, 500).unwrap();
+            prepare(&sweep.swap_remove(n), &mut worker).unwrap()
+        })
+        .collect();
+    let theirs = freecad_outcomes(&prepared).unwrap();
+    (prepared, theirs)
+}
+
+/// FreeCAD's merge of one of [`merges_judged_worse`], checked to be as measured: Silico's
+/// refusal the rule's, and FreeCAD's merge solved worse (-2 or -3), with its solve from
+/// Silico's start where it has one.
+fn judged_worse<'a>(p: &Prepared, fc: &'a Option<Theirs>) -> &'a FreecadEdited {
+    assert_eq!(
+        rule(p),
+        Some(Rule::MergeSolveWorse),
+        "{}: {:?}",
+        p.name,
+        p.silico
+    );
+    let Some(Theirs::Edited(edited)) = fc else {
+        panic!("{}: {fc:?}", p.name);
+    };
+    assert!(
+        [-2, -3].contains(&edited.after.code),
+        "{}: {edited:?}",
+        p.name
+    );
+    edited
+}
+
+/// The indices (from 1) of FreeCAD's constraints that Silico's refusal of `p` names.
+fn named_by_refusal(p: &Prepared, edited: &FreecadEdited) -> Vec<usize> {
+    let SilicoSide::Refused(r) = &p.silico else {
+        panic!("{:?}", p.silico);
+    };
+    let named: Vec<usize> = (1..=edited.constraints.len())
+        .filter(|i| {
+            r.elements
+                .iter()
+                .any(|id| edited.constraints[i - 1].name == format!("s_{id}"))
+        })
+        .collect();
+    assert_eq!(named.len(), r.elements.len(), "{}: {r:?}", p.name);
+    named
+}
+
+#[test]
+fn a_merge_its_command_judges_worse_agrees_with_freecads_rollback_as_a_conflict_too() {
+    // The nightly sweeps' edit_169_486, edit_175_299, and edit_158_347: Silico's merge solve,
+    // from the kept point's place, finds constraints redundant that the sketch's before didn't,
+    // so its command refuses it (MergeSolveWorse); FreeCAD's, from the points apart, calls the
+    // dependent constraints conflicting (-3: 169_486 and 175_299 in 3 of 3 runs alone and their
+    // nights' sweeps, 158_347 in its sweep) or redundant (-2: 158_347 in a run alone), which its
+    // Coincident command rolls back. Both refuse the merge as worse: agreement either way,
+    // where each constraint Silico names is among those FreeCAD newly finds redundant or
+    // conflicting.
+    let (prepared, theirs) = merges_judged_worse();
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        let edited = judged_worse(p, fc);
+        let v = verdict(p, fc.as_ref());
+        agrees(&v);
+        assert!(
+            v.refused && v.modulo.iter().any(|c| c == "se-merge-built"),
+            "{v:?}"
+        );
+        // FreeCAD's rollback as a conflict, whatever this run gave: the constraints Silico
+        // names conflicting (-3), nothing else redundant. Agrees.
+        let named = named_by_refusal(p, edited);
+        let as_conflict = {
+            let named = named.clone();
+            doctored(fc, move |fc| {
+                fc.after.code = -3;
+                fc.after.conflicting = named;
+                fc.after.redundant = fc.before.redundant.clone();
+            })
+        };
+        let v = verdict(p, Some(&as_conflict));
+        agrees(&v);
+        assert!(v.refused, "{}: {v:?}", p.name);
+        // From there: Silico's named constraints in neither list, nothing newly conflicting,
+        // or a constraint newly malformed: a difference each.
+        let as_conflict = Some(as_conflict);
+        let unnamed = (1..=edited.constraints.len())
+            .find(|i| !named.contains(i) && !edited.before.conflicting.contains(i))
+            .unwrap();
+        let changes: Vec<(&str, Doctoring)> = vec![
+            (
+                "other constraints conflicting",
+                Box::new(move |fc| fc.after.conflicting = vec![unnamed]),
+            ),
+            (
+                "nothing newly conflicting",
+                Box::new(|fc| fc.after.conflicting = fc.before.conflicting.clone()),
+            ),
+            (
+                "a constraint malformed",
+                Box::new(move |fc| fc.after.malformed.push(unnamed)),
+            ),
+        ];
+        for (what, change) in changes {
+            let v = verdict(p, Some(&doctored(&as_conflict, |fc| change(fc))));
+            assert!(!v.how.is_empty(), "{}: {what}: {v:?}", p.name);
+        }
+    }
+}
+
+#[test]
+fn a_merge_freecad_solves_clean_from_silicos_start_differs_however_its_own_start_rolls_back() {
+    // The three of the conflict test above, FreeCAD's merge from the points apart rolled back
+    // as a conflict (-3) or for redundancy (-2) of the constraints Silico names, but its solve
+    // of the same merge from Silico's start, the kept point's place, clean: what FreeCAD would
+    // make from where Silico's merge starts, so Silico's refusal is a difference, not FreeCAD's
+    // rollback (#se-the-first-point-the-request-names).
+    let (prepared, theirs) = merges_judged_worse();
+    for (p, fc) in prepared.iter().zip(&theirs) {
+        let edited = judged_worse(p, fc);
+        let named = named_by_refusal(p, edited);
+        for code in [-3, -2] {
+            let named = named.clone();
+            let clean_from_silicos_start = doctored(fc, move |fc| {
+                fc.after.code = code;
+                if code == -3 {
+                    fc.after.conflicting = named;
+                    fc.after.redundant = fc.before.redundant.clone();
+                } else {
+                    fc.after.redundant = named;
+                    fc.after.conflicting = fc.before.conflicting.clone();
+                }
+                // Where the harness made no solve from Silico's start (FreeCAD refused the
+                // placed merge, or the placement can't be built), one made for the test.
+                let geometry = fc.geometry.clone();
+                let placed = fc.placed.get_or_insert_with(|| PlacedSolve {
+                    solve: fc.before.clone(),
+                    geometry,
+                });
+                placed.solve.code = 0;
+                placed.solve.conflicting = fc.before.conflicting.clone();
+                placed.solve.redundant = fc.before.redundant.clone();
+                placed.solve.malformed = fc.before.malformed.clone();
+            });
+            let v = verdict(p, Some(&clean_from_silicos_start));
+            assert!(!v.refused && !v.how.is_empty(), "{}: {code}: {v:?}", p.name);
+            // From Silico's start, worse but by other constraints than Silico names: a
+            // difference too.
+            let unnamed = (1..=edited.constraints.len())
+                .find(|i| {
+                    !named_by_refusal(p, edited).contains(i)
+                        && !edited.before.conflicting.contains(i)
+                        && !edited.before.redundant.contains(i)
+                })
+                .unwrap();
+            let others_from_silicos_start = doctored(&Some(clean_from_silicos_start), |fc| {
+                let placed = fc.placed.as_mut().unwrap();
+                placed.solve.code = -3;
+                placed.solve.conflicting.push(unnamed);
+            });
+            let v = verdict(p, Some(&others_from_silicos_start));
+            assert!(!v.refused && !v.how.is_empty(), "{}: {code}: {v:?}", p.name);
+            // And worse by the named ones: agreement, as the conflict test's.
+            let named = named_by_refusal(p, edited);
+            let named_from_silicos_start = doctored(&Some(others_from_silicos_start), |fc| {
+                let placed = fc.placed.as_mut().unwrap();
+                placed.solve.conflicting = fc.before.conflicting.clone();
+                placed.solve.conflicting.extend(named);
+            });
+            let v = verdict(p, Some(&named_from_silicos_start));
+            agrees(&v);
+            assert!(v.refused, "{}: {code}: {v:?}", p.name);
+        }
+    }
+}
+
 #[test]
 fn a_merge_whose_solve_conflicts_from_the_kept_points_place_is_excused_where_freecads_solves() {
     // `sketch-edit-sweep --seed 90 --count 500`'s case 370: p0000002 merged into p0000004
@@ -5125,4 +5467,1146 @@ fn a_trimmed_end_two_cutters_cut_at_one_place_is_excused_only_for_freecads_other
             && !v.how.iter().any(|h| h.contains(joined)),
         "{v}"
     );
+}
+
+// ---- The sweeps' reruns (#541): FreeCAD varying run to run ----
+
+/// split_level_line (the level line (0, 0) to (10, 0) split at x 4), its FreeCAD outcome
+/// from one run, and FreeCAD's outcome with the split point, n0000003's end and w0000001's
+/// start (FreeCAD's geometry 0 at 2 and 1 at 1), at x `at`, before the solve and after it.
+fn split_at(at: f64) -> (EditCase, Prepared, Option<Theirs>, Theirs) {
+    let (mut cases, mut prepared, mut theirs) = both(&["split_level_line"]);
+    let (case, p, fc) = (cases.remove(0), prepared.remove(0), theirs.remove(0));
+    agrees(&verdict(&p, fc.as_ref()));
+    let slid = doctored(&fc, |fc| {
+        for list in [&mut fc.edited, &mut fc.geometry] {
+            for (g, pos) in [(0, "2"), (1, "1")] {
+                let place = list[g].points.get_mut(pos).unwrap();
+                assert_eq!(*place, [4.0, 0.0], "geometry {g} at {pos}");
+                place[0] = at;
+            }
+        }
+    });
+    (case, p, fc, slid)
+}
+
+/// What FreeCAD's runs gave, where they varied.
+fn varied_as(reran: &Reran) -> (&[String], &[String]) {
+    match reran {
+        Reran::Varied { varied, uncompared } => (varied, uncompared),
+        other => panic!("FreeCAD's runs didn't vary: {other:?}"),
+    }
+}
+
+#[test]
+fn a_sweep_case_freecad_slides_otherwise_in_one_run_is_left_uncompared_only_there() {
+    // FreeCAD's sweep run leaves the split point, free to slide along the line, at x 4.5, and
+    // its two runs alone at 4, where Silico's is: the places differ in the sweep's run alone,
+    // at the two FreeCAD places that are Silico's w0000000, each 0.5 mm apart, before the
+    // solve and after it. Every difference is one of those, so none is compared.
+    let (_, p, fc, slid) = split_at(4.5);
+    let first = verdict(&p, Some(&slid));
+    assert!(first.how.iter().any(|h| h.contains("w0000000")), "{first}");
+    let runs = [Some(slid), fc.clone(), fc.clone()];
+    let (v, reran) = rejudge(&p, &runs);
+    agrees(&v);
+    let (varied, uncompared) = varied_as(&reran);
+    assert_eq!(
+        varied,
+        [
+            "its places after the edit, before the solve (2 places or radii, up to 5e-1 mm apart)",
+            "its places after the solve (2 places or radii, up to 5e-1 mm apart)",
+        ]
+    );
+    // Each of the sweep's run's differences, said as that run gave it.
+    let said: Vec<String> = first.how.iter().map(|h| format!("{h} (run 1)")).collect();
+    assert_eq!(uncompared, said);
+    // Where every run slides it, FreeCAD reproduces its answer: compared in full.
+    let (_, p, _, slid) = split_at(4.5);
+    let runs = [Some(slid.clone()), Some(slid.clone()), Some(slid)];
+    let (v, reran) = rejudge(&p, &runs);
+    assert_eq!(reran, Reran::Alike);
+    assert_eq!(v, first);
+}
+
+#[test]
+fn a_difference_every_run_of_freecad_reproduces_is_kept_beside_one_it_varies_on() {
+    // Silico's horizontal k0000004 dropped: FreeCAD's Horizontal unmatched and one freedom
+    // more (2 against 1, the split point's slide and the line's tilt), against every run of
+    // FreeCAD; and the sweep's run sliding the split point to 4.5, which the runs alone don't.
+    // Only the slide is left uncompared.
+    let (case, p, fc, slid) = split_at(4.5);
+    let p = changed(&case, &p, |s| {
+        s.constraints.retain(|c| c.id != id("k0000004"));
+    });
+    let reproduced = [
+        "FreeCAD has Horizontal(n0000003) (from k0000004), Silico hasn't",
+        "degrees of freedom 2 against FreeCAD's 1",
+    ];
+    let first = verdict(&p, Some(&slid));
+    assert!(first.how.len() > reproduced.len(), "{first}");
+    let (v, reran) = rejudge(&p, &[Some(slid), fc.clone(), fc]);
+    assert_eq!(v.how, reproduced, "{v}");
+    let (_, uncompared) = varied_as(&reran);
+    assert_eq!(uncompared.len(), first.how.len() - reproduced.len());
+    assert!(
+        uncompared
+            .iter()
+            .all(|u| u.contains("w0000000") && u.ends_with("(run 1)")),
+        "{uncompared:?}"
+    );
+}
+
+#[test]
+fn freecads_runs_within_the_drag_band_of_each_other_are_one_answer() {
+    // The sweep's run 4e-7 mm off Silico's split point (past the comparison's 1e-8), the runs
+    // alone on it: within REPRODUCED (5e-7) of each other, so FreeCAD's answer is the same,
+    // and Silico's 4e-7 from it a difference. 6e-7 off, FreeCAD's answer varies there, and
+    // what only the sweep's run gives isn't compared.
+    assert_eq!(REPRODUCED, 5e-7);
+    let (_, p, fc, near) = split_at(4.0 + 4e-7);
+    let first = verdict(&p, Some(&near));
+    assert!(!first.how.is_empty(), "{first}");
+    let (v, reran) = rejudge(&p, &[Some(near), fc.clone(), fc.clone()]);
+    assert_eq!(reran, Reran::Alike);
+    assert_eq!(v, first);
+    let (_, p, fc, far) = split_at(4.0 + 6e-7);
+    let (v, reran) = rejudge(&p, &[Some(far), fc.clone(), fc]);
+    agrees(&v);
+    varied_as(&reran);
+}
+
+#[test]
+fn where_freecad_raises_in_one_run_its_edits_in_the_others_are_compared() {
+    // FreeCAD's split raising in one run and made in the other two, alike: what the two give
+    // against Silico's is compared, a difference whichever run raised; what the raise gives
+    // isn't.
+    let raised = Theirs::Failed("ValueError: split failed".to_owned());
+    let refused =
+        "FreeCAD refused (its edit raised: ValueError: split failed); Silico made the edit";
+    let (case, p, fc, _) = split_at(4.0);
+    let outcome = "its outcome (run 1 raised \"ValueError: split failed\", run 2 made the edit, run 3 made the edit)";
+    // The sweep's run raising, Silico's edit as FreeCAD's alone: no difference left.
+    let (v, reran) = rejudge(&p, &[Some(raised.clone()), fc.clone(), fc.clone()]);
+    agrees(&v);
+    let (varied, uncompared) = varied_as(&reran);
+    assert_eq!(varied, [outcome]);
+    assert_eq!(uncompared, [format!("{refused} (run 1)")]);
+    // Silico's horizontal dropped (as above): its two differences, from the two runs that
+    // made the edit, whichever raised.
+    let p = changed(&case, &p, |s| {
+        s.constraints.retain(|c| c.id != id("k0000004"));
+    });
+    let reproduced = [
+        "FreeCAD has Horizontal(n0000003) (from k0000004), Silico hasn't",
+        "degrees of freedom 2 against FreeCAD's 1",
+    ];
+    for runs in [
+        [Some(raised.clone()), fc.clone(), fc.clone()],
+        [fc.clone(), Some(raised.clone()), fc.clone()],
+    ] {
+        let (v, reran) = rejudge(&p, &runs);
+        assert_eq!(v.how, reproduced, "{v}");
+        let (_, uncompared) = varied_as(&reran);
+        assert_eq!(uncompared.len(), 1, "{uncompared:?}");
+        assert!(uncompared[0].starts_with(refused), "{uncompared:?}");
+    }
+}
+
+#[test]
+fn a_difference_is_reproduced_whatever_freecad_says_beside_it() {
+    // FreeCAD's solve failing (-1) in every run, where Silico's solves: a difference each run
+    // gives, though the values FreeCAD's line lists beside it differ, its length k0000005
+    // 10.5 in the second run (which that run gives as a difference of its own, left
+    // uncompared).
+    let (_, p, fc, _) = split_at(4.0);
+    let failed = doctored(&fc, |fc| fc.after.code = -1);
+    let longer = doctored(&Some(failed.clone()), |fc| {
+        let length = fc
+            .constraints
+            .iter_mut()
+            .find(|c| c.name == "s_k0000005")
+            .unwrap();
+        assert_eq!(length.value, 10.0);
+        length.value = 10.5;
+    });
+    let first = verdict(&p, Some(&failed));
+    assert_eq!(first.how.len(), 1, "{first}");
+    assert!(
+        first.how[0].starts_with("FreeCAD's solve gave -1 (degrees of freedom 1, values ")
+            && first.how[0].ends_with("), Silico's a solution"),
+        "{first}"
+    );
+    let (v, reran) = rejudge(&p, &[Some(failed.clone()), Some(longer), Some(failed)]);
+    assert_eq!(v.how, first.how, "{v}");
+    let (varied, uncompared) = varied_as(&reran);
+    assert_eq!(varied, ["its constraints"]);
+    assert!(
+        uncompared
+            .iter()
+            .any(|u| u.contains("10.5") && u.ends_with("(run 2)")),
+        "{uncompared:?}"
+    );
+    assert!(
+        !uncompared
+            .iter()
+            .any(|u| u.starts_with("FreeCAD's solve gave")),
+        "{uncompared:?}"
+    );
+}
+
+#[test]
+fn a_refusal_the_note_doesnt_give_is_a_difference_whatever_freecads_runs_answer() {
+    // Silico refusing the split for a reason of no rule of the note's: a difference against
+    // the edit FreeCAD made and against its raise alike, so its runs varying leaves it whole.
+    let (_, p, fc, _) = split_at(4.0);
+    let p = Prepared {
+        silico: SilicoSide::Refused(Refusal::from("refused by hand")),
+        ..p
+    };
+    assert_eq!(rule(&p), None);
+    let raised = Theirs::Failed("ValueError: split failed".to_owned());
+    let first = verdict(&p, fc.as_ref());
+    assert_eq!(first.how.len(), 1, "{first}");
+    let (v, reran) = rejudge(&p, &[fc.clone(), Some(raised), fc]);
+    assert_eq!(v, first);
+    let (varied, uncompared) = varied_as(&reran);
+    assert_eq!(varied.len(), 1, "{varied:?}");
+    assert!(uncompared.is_empty(), "{uncompared:?}");
+}
+
+#[test]
+fn a_rerun_the_harness_fails_on_or_a_crash_ended_alike_leaves_the_first_run_compared() {
+    let (_, p, fc, slid) = split_at(4.5);
+    let first = verdict(&p, Some(&slid));
+    // The harness's own failure in a run alone: the sweep's run's verdict, unjudged.
+    let harness = Theirs::Harness("KeyError: 'geometry'".to_owned());
+    let (v, reran) = rejudge(&p, &[Some(slid), fc, Some(harness)]);
+    assert_eq!(v, first);
+    assert!(
+        matches!(&reran, Reran::Unjudged(why) if why.contains("run 3") && why.contains("KeyError")),
+        "{reran:?}"
+    );
+    // FreeCAD crashing every run, the same way, its last output aside: one answer.
+    let crashed = |tail: &str| {
+        Theirs::Lost(format!(
+            "FreeCAD crashed building it by a segmentation fault (signal: 11 (SIGSEGV)); its last output:\n{tail}"
+        ))
+    };
+    let first = verdict(&p, Some(&crashed("at 0x7f01")));
+    assert_eq!(first.how.len(), 1, "{first}");
+    let runs = [
+        Some(crashed("at 0x7f01")),
+        Some(crashed("at 0x7f02")),
+        Some(crashed("at 0x7f03")),
+    ];
+    let (v, reran) = rejudge(&p, &runs);
+    assert_eq!(reran, Reran::Alike);
+    assert_eq!(v, first);
+}
+
+/// FreeCAD's split_level_line outcome `fc` with its split point (n0000003's end and
+/// w0000001's start) at x `before` before the solve and `after` after it.
+fn rv550_at(fc: &Option<Theirs>, before: f64, after: f64) -> Theirs {
+    doctored(fc, |fc| {
+        for (list, at) in [(&mut fc.edited, before), (&mut fc.geometry, after)] {
+            for (g, pos) in [(0, "2"), (1, "1")] {
+                list[g].points.get_mut(pos).unwrap()[0] = at;
+            }
+        }
+    })
+}
+
+#[test]
+fn rv550_silico_a_millimetre_off_every_run_is_kept_where_freecad_jitters_1e6() {
+    // Review of #550: FreeCAD's runs put the split point at 5, 5 + 1e-6 and 5 - 1e-6, past
+    // REPRODUCED of each other, and Silico's at 4, a millimetre from every one of them: no run
+    // agrees with Silico there, so the difference is kept.
+    let (_, p, fc, _) = split_at(4.0);
+    let runs = [
+        Some(rv550_at(&fc, 5.0, 5.0)),
+        Some(rv550_at(&fc, 5.0 + 1e-6, 5.0 + 1e-6)),
+        Some(rv550_at(&fc, 5.0 - 1e-6, 5.0 - 1e-6)),
+    ];
+    let (v, reran) = rejudge(&p, &runs);
+    assert!(
+        v.how.iter().any(|h| h.contains("w0000000")),
+        "{v}\n{reran:?}"
+    );
+    // Every one of the first run's differences, each a place of w0000000's.
+    let first = verdict(&p, runs[0].as_ref());
+    assert!(!first.how.is_empty());
+    assert_eq!(v.how, first.how, "{reran:?}");
+    varied_as(&reran);
+}
+
+#[test]
+fn where_freecads_solve_fails_in_some_runs_the_places_are_compared_with_its_solution() {
+    // FreeCAD's solve succeeding in the sweep's run, the split point at 5 after it, and failing
+    // (-1) in the two alone; Silico's solved, its point at 4, a millimetre from FreeCAD's only
+    // solution: the places are compared against the run whose solve succeeded, a difference.
+    // The failures, Silico's solving where they don't, are what's left uncompared.
+    let (_, p, fc, _) = split_at(4.0);
+    let solved = rv550_at(&fc, 4.0, 5.0);
+    let failed = doctored(&Some(solved.clone()), |fc| fc.after.code = -1);
+    let first = verdict(&p, Some(&solved));
+    assert!(
+        !first.how.is_empty() && first.how.iter().all(|h| h.contains("w0000000")),
+        "{first}"
+    );
+    for runs in [
+        [
+            Some(solved.clone()),
+            Some(failed.clone()),
+            Some(failed.clone()),
+        ],
+        [
+            Some(failed.clone()),
+            Some(failed.clone()),
+            Some(solved.clone()),
+        ],
+    ] {
+        let (v, reran) = rejudge(&p, &runs);
+        assert_eq!(v.how, first.how, "{reran:?}");
+        let (_, uncompared) = varied_as(&reran);
+        assert_eq!(uncompared.len(), 1, "{uncompared:?}");
+        assert!(
+            uncompared[0].starts_with("FreeCAD's solve gave -1 ("),
+            "{uncompared:?}"
+        );
+    }
+}
+
+#[test]
+fn a_crash_and_a_hang_are_two_answers_and_a_loss_every_run_is_still_a_difference() {
+    // FreeCAD crashing in two runs and hanging in the third: two ways of ending, which aren't
+    // one answer; but FreeCAD gave no outcome in any run, where Silico made the edit, so that
+    // difference is every run's and kept.
+    let (_, p, _, _) = split_at(4.0);
+    let crashed = Theirs::Lost("FreeCAD crashed building it (exit status: 1)".to_owned());
+    let hung = Theirs::Lost("FreeCAD took longer than 120 s building it".to_owned());
+    let first = verdict(&p, Some(&crashed));
+    assert_eq!(first.how.len(), 1, "{first}");
+    let (v, reran) = rejudge(&p, &[Some(crashed.clone()), Some(hung), Some(crashed)]);
+    let (varied, uncompared) = varied_as(&reran);
+    assert!(
+        varied.len() == 1 && varied[0].starts_with("its outcome ("),
+        "{varied:?}"
+    );
+    assert!(uncompared.is_empty(), "{uncompared:?}");
+    assert_eq!(v.how, first.how);
+}
+
+#[test]
+fn an_edit_freecad_made_in_one_run_alone_is_still_compared_with_silicos() {
+    // FreeCAD raising in two runs and making the edit in one: what its edit made there (its
+    // constraints, its degrees of freedom) is its edit code's, not what varies, so Silico's
+    // horizontal dropped is compared with it, two differences kept; only the raise, the kind
+    // of outcome the other runs gave, is left uncompared.
+    let (case, p, fc, _) = split_at(4.0);
+    let p = changed(&case, &p, |s| {
+        s.constraints.retain(|c| c.id != id("k0000004"));
+    });
+    let raised = Theirs::Failed("ValueError: split failed".to_owned());
+    let (v, reran) = rejudge(&p, &[Some(raised.clone()), fc, Some(raised)]);
+    assert_eq!(
+        v.how,
+        [
+            "FreeCAD has Horizontal(n0000003) (from k0000004), Silico hasn't",
+            "degrees of freedom 2 against FreeCAD's 1",
+        ],
+        "{reran:?}"
+    );
+    let (_, uncompared) = varied_as(&reran);
+    assert_eq!(
+        uncompared,
+        [
+            "FreeCAD refused (its edit raised: ValueError: split failed); Silico made the edit (run 1, 3)"
+        ]
+    );
+}
+
+#[test]
+fn a_run_with_a_constraint_more_snaps_its_values_by_constraint_name() {
+    // The sweep's run gives the length k0000005 as 10 + 4e-7 (past VALUE_TOLERANCE, 1e-9, of
+    // Silico's 10, within REPRODUCED) and has, listed before it, a reference of the same kind
+    // and references, s_k0000099, at 20; the runs alone give it as 10, without the reference.
+    // Matched by name, the runs alone's length is the sweep's within REPRODUCED, one answer,
+    // so Silico's 4e-7 from it is kept, whatever the count or the reference's value.
+    let (_, p, fc, _) = split_at(4.0);
+    let longer = doctored(&fc, |fc| {
+        let at = fc
+            .constraints
+            .iter()
+            .position(|c| c.name == "s_k0000005")
+            .unwrap();
+        let mut reference = fc.constraints[at].clone();
+        assert_eq!(reference.value, 10.0);
+        fc.constraints[at].value = 10.0 + 4e-7;
+        reference.name = "s_k0000099".to_owned();
+        reference.driving = false;
+        reference.value = 20.0;
+        fc.constraints.insert(at, reference);
+    });
+    let first = verdict(&p, Some(&longer));
+    let length: Vec<&String> = first
+        .how
+        .iter()
+        .filter(|h| h.contains("in Silico's (k0000005)"))
+        .collect();
+    assert_eq!(length.len(), 1, "{first}");
+    let (v, reran) = rejudge(&p, &[Some(longer), fc.clone(), fc]);
+    assert!(v.how.contains(length[0]), "{v}\n{reran:?}");
+}
+#[test]
+fn a_sweep_reruns_at_most_its_cap_of_differing_cases_and_says_which_it_didnt() {
+    // Five cases: one agreeing, four differing (Silico's split point moved to 4.5), the cap 2,
+    // FreeCAD's runs alone stubbed with its first run: two cases run again (four runs alone),
+    // each the same answer every run; the other two compared as their first run has it, each
+    // said not to have been run again; the agreeing one not run again at all.
+    let (case, p, fc, _) = split_at(4.0);
+    let differs = changed(&case, &p, |s| {
+        let q = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("w0000000"))
+            .unwrap();
+        q.x = silico_core::document::Coordinate::new(4.5).unwrap();
+    });
+    let mut prepared = vec![p];
+    for n in 0..4 {
+        prepared.push(Prepared {
+            name: format!("differs_{n}"),
+            ..differs.clone()
+        });
+    }
+    let first = vec![fc.clone(); prepared.len()];
+    let mut calls = Vec::new();
+    let (verdicts, reruns) = rerun_differing(&prepared, first, 2, |p| {
+        calls.push(p.name.clone());
+        Ok(fc.clone())
+    })
+    .unwrap();
+    assert_eq!(calls, ["differs_0", "differs_0", "differs_1", "differs_1"]);
+    agrees(&verdicts[0]);
+    assert!(verdicts[1..].iter().all(|v| !v.how.is_empty()));
+    let said: Vec<(&str, usize, bool)> = reruns
+        .iter()
+        .map(|r| {
+            let not_again =
+                matches!(&r.reran, Reran::Unjudged(why) if why.starts_with("not run again"));
+            (r.case.as_str(), r.runs, not_again)
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            ("differs_0", 3, false),
+            ("differs_1", 3, false),
+            ("differs_2", 1, true),
+            ("differs_3", 1, true),
+        ]
+    );
+    assert!(reruns[..2].iter().all(|r| r.reran == Reran::Alike));
+}
+
+#[test]
+fn a_run_with_a_curve_more_snaps_its_places_by_curve_not_by_count() {
+    // The sweep's run puts the split point 4e-7 off Silico's after the solve; the runs alone
+    // put it on Silico's, one of them with a curve more listed first (a copy of w0000001 as
+    // geometry 99 at index 0, every constraint's reference shifted past it). Within
+    // REPRODUCED of the first run, the split point is the same answer in every run, matched
+    // by its curve's ID and kind whatever its index or the count, so Silico's 4e-7 from it is
+    // kept.
+    let (_, p, fc, _) = split_at(4.0);
+    let off = rv550_at(&fc, 4.0, 4.0 + 4e-7);
+    let more = curve_first(&rv550_at(&fc, 4.0, 4.0));
+    let first = verdict(&p, Some(&off));
+    assert!(
+        !first.how.is_empty() && first.how.iter().all(|h| h.contains("w0000000")),
+        "{first}"
+    );
+    let (v, reran) = rejudge(&p, &[Some(off), Some(more), fc]);
+    assert_eq!(v.how, first.how, "{reran:?}");
+}
+
+/// `t` with a curve more listed first: a copy of its geometry 1 as geometry 99, at index 0
+/// before the edit's solve and after it, every constraint's reference to a curve shifted past
+/// it.
+fn curve_first(t: &Theirs) -> Theirs {
+    doctored(&Some(t.clone()), |fc| {
+        for list in [&mut fc.edited, &mut fc.geometry] {
+            let mut copy = list[1].clone();
+            copy.id = 99;
+            list.insert(0, copy);
+        }
+        for c in &mut fc.constraints {
+            for r in &mut c.refs {
+                if r[0] >= 0 {
+                    r[0] += 1;
+                }
+            }
+        }
+    })
+}
+
+// ---- #550 round 3: a difference is left uncompared only where some run agrees with Silico ----
+
+#[test]
+fn rv550c_a_constraint_every_run_has_and_silico_hasnt_is_kept() {
+    let (_, p, fc, _) = split_at(4.0);
+    let with = |name: &str| {
+        doctored(&fc, |fc| {
+            let at = fc
+                .constraints
+                .iter()
+                .position(|c| c.name == "s_k0000005")
+                .unwrap();
+            let mut r = fc.constraints[at].clone();
+            r.name = name.to_owned();
+            r.driving = false;
+            r.value = 20.0;
+            fc.constraints.push(r);
+        })
+    };
+    let (one, two) = (with("s_k0000099"), with("s_k0000098"));
+    let first = verdict(&p, Some(&one));
+    assert!(!first.how.is_empty(), "{first}");
+    let (v, reran) = rejudge(&p, &[Some(one), Some(two.clone()), Some(two)]);
+    assert!(!v.how.is_empty(), "{first}\n{v}\n{reran:?}");
+}
+
+#[test]
+fn rv550c_an_edit_no_run_of_freecad_makes_is_still_a_difference() {
+    let (_, p, _, _) = split_at(4.0);
+    let raised = Theirs::Failed("ValueError: split failed".to_owned());
+    let crashed = Theirs::Lost("FreeCAD crashed building it (exit status: 1)".to_owned());
+    assert_eq!(verdict(&p, Some(&raised)).how.len(), 1);
+    let (v, reran) = rejudge(&p, &[Some(raised.clone()), Some(raised), Some(crashed)]);
+    assert!(!v.how.is_empty(), "{v}\n{reran:?}");
+}
+
+/// `p` against three runs of FreeCAD, each giving a line with `kind` in it (in the first run's
+/// own verdict too) whose FreeCAD side differs run to run, Silico's differing from all three:
+/// the line is kept, as often as the run giving it least often does.
+fn kept_whatever_freecad_says(p: &Prepared, runs: [Theirs; 3], kind: &str) {
+    let given = |t: &Theirs| {
+        verdict(p, Some(t))
+            .how
+            .iter()
+            .filter(|h| h.contains(kind))
+            .count()
+    };
+    let least = runs.iter().map(given).min().unwrap();
+    assert!(least > 0, "{kind}: {}", verdict(p, Some(&runs[0])));
+    let full: Vec<Vec<String>> = runs.iter().map(|t| verdict(p, Some(t)).how).collect();
+    assert!(
+        full.windows(2).any(|w| w[0] != w[1]),
+        "{kind}: the runs' lines don't differ: {full:?}"
+    );
+    let runs = runs.map(Some);
+    let (v, reran) = rejudge(p, &runs);
+    let kept = v.how.iter().filter(|h| h.contains(kind)).count();
+    assert_eq!(kept, least, "{kind}: {v}\n{reran:?}");
+}
+
+#[test]
+fn every_kind_of_difference_is_kept_whatever_freecads_runs_say_beside_silicos() {
+    let (case, p, fc, _) = split_at(4.0);
+    let fc_with = |change: &dyn Fn(&mut FreecadEdited)| doctored(&fc, |fc| change(fc));
+    let index_of = |fc: &FreecadEdited, name: &str| {
+        fc.constraints.iter().position(|c| c.name == name).unwrap()
+    };
+    // FreeCAD's model malformed before the edit, by other constraints each run.
+    kept_whatever_freecad_says(
+        &p,
+        [1, 2, 3].map(|i| fc_with(&|fc| fc.before.malformed = vec![i])),
+        "FreeCAD's model of the sketch, before the edit, has malformed constraints",
+    );
+    // A curve FreeCAD has that Silico hasn't, of another kind each run (and so FreeCAD's
+    // count of new curves otherwise than Silico's, a curve more or two).
+    let extra = |kind: &'static str, n: usize| {
+        move |fc: &mut FreecadEdited| {
+            for k in 0..n {
+                let mut g = fc.geometry[1].clone();
+                g.id = 90 + i64::try_from(k).unwrap();
+                g.kind = kind.to_owned();
+                fc.geometry.push(g);
+            }
+        }
+    };
+    let runs = [
+        fc_with(&extra("line", 1)),
+        fc_with(&extra("arc", 2)),
+        fc_with(&extra("point", 1)),
+    ];
+    kept_whatever_freecad_says(&p, runs.clone(), "FreeCAD has a ");
+    kept_whatever_freecad_says(
+        &p,
+        runs,
+        "Silico's edit made 1 new curves (w0000001), FreeCAD's ",
+    );
+    // Silico's piece another kind than FreeCAD's, FreeCAD's another each run.
+    let kind = |k: &'static str| {
+        move |fc: &mut FreecadEdited| {
+            fc.geometry[1].kind = k.to_owned();
+        }
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [
+            fc_with(&kind("arc")),
+            fc_with(&kind("circle")),
+            fc_with(&kind("ellipse")),
+        ],
+        "Silico's w0000001 is a line, FreeCAD's a ",
+    );
+    // FreeCAD's split pieces apart where Silico's are one point, joined otherwise each run.
+    let apart = |also: Option<[i32; 2]>| {
+        move |fc: &mut FreecadEdited| {
+            fc.constraints
+                .retain(|c| !(c.kind == "Tangent" && c.refs == [[0, 2], [1, 1]]));
+            if let Some(other) = also {
+                let mut c = fc.constraints[0].clone();
+                c.kind = "Coincident".to_owned();
+                c.refs = vec![[0, 2], other];
+                c.name = String::new();
+                c.driving = true;
+                fc.constraints.push(c);
+            }
+        }
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [
+            fc_with(&apart(None)),
+            fc_with(&apart(Some([1, 2]))),
+            fc_with(&apart(None)),
+        ],
+        "Silico's point w0000000 is one point, which FreeCAD has apart",
+    );
+    // FreeCAD's length k0000005 otherwise than Silico's 10, otherwise each run.
+    let length = |value: f64| {
+        move |fc: &mut FreecadEdited| {
+            let at = index_of(fc, "s_k0000005");
+            fc.constraints[at].value = value;
+        }
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [
+            fc_with(&length(10.5)),
+            fc_with(&length(11.0)),
+            fc_with(&length(12.0)),
+        ],
+        "in Silico's (k0000005), ",
+    );
+    // A constraint FreeCAD finds redundant or conflicting that Silico hasn't, otherwise each
+    // run.
+    let found = |conflicting: bool| {
+        move |fc: &mut FreecadEdited| {
+            let at = index_of(fc, "s_k0000005");
+            let mut r = fc.constraints[at].clone();
+            r.name = "s_k0000099".to_owned();
+            r.driving = false;
+            fc.constraints.push(r);
+            let n = fc.constraints.len();
+            if conflicting {
+                fc.after.conflicting = vec![n];
+            } else {
+                fc.after.redundant = vec![n];
+            }
+        }
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [
+            fc_with(&found(false)),
+            fc_with(&found(true)),
+            fc_with(&found(false)),
+        ],
+        "FreeCAD finds its ",
+    );
+    // FreeCAD's degrees of freedom, its diagnostic lists, and its constraints malformed,
+    // otherwise than Silico's, otherwise each run.
+    kept_whatever_freecad_says(
+        &p,
+        [2, 3, 4].map(|d| fc_with(&|fc| fc.after.dof = d)),
+        "degrees of freedom 1 against FreeCAD's ",
+    );
+    let listed = |name: &'static str| {
+        move |fc: &mut FreecadEdited| {
+            fc.after.redundant = vec![index_of(fc, name) + 1];
+        }
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [
+            fc_with(&listed("s_k0000005")),
+            fc_with(&listed("s_k0000004")),
+            fc_with(&listed("s_k0000005")),
+        ],
+        "redundant [] against FreeCAD's ",
+    );
+    let malformed = |name: &'static str| {
+        move |fc: &mut FreecadEdited| {
+            fc.after.malformed = vec![index_of(fc, name) + 1];
+        }
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [
+            fc_with(&malformed("s_k0000005")),
+            fc_with(&malformed("s_k0000004")),
+            fc_with(&malformed("s_k0000005")),
+        ],
+        "FreeCAD found constraints malformed: ",
+    );
+    // FreeCAD's solve failing otherwise each run, where Silico's solves.
+    kept_whatever_freecad_says(
+        &p,
+        [-1, -3, -4].map(|code| fc_with(&|fc| fc.after.code = code)),
+        "FreeCAD's solve gave ",
+    );
+    // A curve FreeCAD keeps that Silico's edit removed (n0000003, with what names it), at
+    // another index in one run.
+    let removed = changed(&case, &p, |s| {
+        s.lines.retain(|l| l.id != id("n0000003"));
+        s.constraints
+            .retain(|c| !format!("{c:?}").contains("n0000003"));
+    });
+    let swapped = doctored(&fc, |fc| {
+        for list in [&mut fc.edited, &mut fc.geometry] {
+            list.swap(0, 1);
+        }
+        for c in &mut fc.constraints {
+            for r in &mut c.refs {
+                r[0] = match r[0] {
+                    0 => 1,
+                    1 => 0,
+                    g => g,
+                };
+            }
+        }
+    });
+    kept_whatever_freecad_says(
+        &removed,
+        [fc.clone().unwrap(), swapped.clone(), fc.clone().unwrap()],
+        "FreeCAD keeps line n0000003 (geometry ",
+    );
+    // ... and its kind otherwise in one run.
+    let arc = doctored(&Some(swapped.clone()), |fc| {
+        fc.geometry[1].kind = "arc".to_owned()
+    });
+    kept_whatever_freecad_says(
+        &removed,
+        [fc.clone().unwrap(), arc, swapped],
+        "FreeCAD keeps ",
+    );
+    // FreeCAD's model conflicting before the edit, by other constraints each run.
+    kept_whatever_freecad_says(
+        &p,
+        [1, 2, 3].map(|i| fc_with(&|fc| fc.before.conflicting = vec![i])),
+        "FreeCAD's model of the sketch, before the edit, has malformed constraints",
+    );
+    // A curve FreeCAD has that Silico hasn't, of one kind, elsewhere each run.
+    let placed = |x: f64| {
+        move |fc: &mut FreecadEdited| {
+            let mut g = fc.geometry[1].clone();
+            g.id = 90;
+            for at in g.points.values_mut() {
+                at[0] += x;
+            }
+            fc.geometry.push(g);
+        }
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [
+            fc_with(&placed(1.0)),
+            fc_with(&placed(2.0)),
+            fc_with(&placed(3.0)),
+        ],
+        "FreeCAD has a ",
+    );
+    // Silico's points w0000000 and p0000002 joined by FreeCAD, through other places each
+    // run: n0000003's end to w0000001's end, with or without the split's own Tangent.
+    let joined = |tangent: bool| {
+        move |fc: &mut FreecadEdited| {
+            if !tangent {
+                fc.constraints
+                    .retain(|c| !(c.kind == "Tangent" && c.refs == [[0, 2], [1, 1]]));
+            }
+            let mut c = fc.constraints[0].clone();
+            c.kind = "Coincident".to_owned();
+            c.refs = vec![[0, 2], [1, 2]];
+            c.name = String::new();
+            c.driving = true;
+            fc.constraints.push(c);
+        }
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [
+            fc_with(&joined(true)),
+            fc_with(&joined(false)),
+            fc_with(&joined(true)),
+        ],
+        "FreeCAD joins ",
+    );
+    // A constraint FreeCAD finds redundant that Silico hasn't, another each run.
+    let found_of = |name: &'static str| {
+        move |fc: &mut FreecadEdited| {
+            let at = index_of(fc, name);
+            let mut r = fc.constraints[at].clone();
+            r.name = "s_k0000099".to_owned();
+            r.driving = false;
+            fc.constraints.push(r);
+            fc.after.redundant = vec![fc.constraints.len()];
+        }
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [
+            fc_with(&found_of("s_k0000005")),
+            fc_with(&found_of("s_k0000004")),
+            fc_with(&found_of("s_k0000005")),
+        ],
+        "FreeCAD finds its ",
+    );
+}
+
+#[test]
+fn a_refusal_freecads_edits_dont_excuse_is_kept_whatever_each_edit_is() {
+    // split_line_at_freecads_position: Silico refuses a split position off the line by the
+    // note's rule, excused only where FreeCAD's pieces meet at the position's projection with
+    // the far ends where they were; FreeCAD's first piece's start moved 1 mm, and its degrees
+    // of freedom otherwise each run, the refusal against FreeCAD's edit is every run's.
+    let (_, prepared, theirs) = both(&["split_line_at_freecads_position"]);
+    let p = &prepared[0];
+    assert!(rule(p).is_some(), "{:?}", p.silico);
+    let moved = |dof: i32| {
+        doctored(&theirs[0], |fc| {
+            for list in [&mut fc.edited, &mut fc.geometry] {
+                list[0].points.get_mut("1").unwrap()[0] += 1.0;
+            }
+            fc.after.dof += dof;
+        })
+    };
+    kept_whatever_freecad_says(p, [moved(0), moved(1), moved(2)], "Silico refused (");
+}
+
+#[test]
+fn a_radius_freecads_runs_give_otherwise_is_kept_where_silicos_differs_from_all() {
+    // split_circle_at_two_positions: each arc's radius in FreeCAD's result 1, 1 + 1e-6 and 1 -
+    // 1e-6 more than Silico's, before the solve and after it.
+    let (_, prepared, theirs) = both(&["split_circle_at_two_positions"]);
+    let p = &prepared[0];
+    agrees(&verdict(p, theirs[0].as_ref()));
+    let grown = |by: f64| {
+        doctored(&theirs[0], |fc| {
+            for list in [&mut fc.edited, &mut fc.geometry] {
+                for g in list.iter_mut() {
+                    if let Some(r) = &mut g.radius {
+                        *r += by;
+                    }
+                }
+            }
+        })
+    };
+    let runs = [grown(1.0), grown(1.0 + 1e-6), grown(1.0 - 1e-6)];
+    let first = verdict(p, Some(&runs[0]));
+    let radii: Vec<&String> = first.how.iter().filter(|h| h.contains("radius")).collect();
+    assert!(!radii.is_empty(), "{first}");
+    let (v, reran) = rejudge(p, &runs.map(Some));
+    for line in radii {
+        assert!(v.how.contains(line), "{line}\n{v}\n{reran:?}");
+    }
+}
+
+#[test]
+fn a_dragged_point_freecads_runs_settle_otherwise_is_kept_where_silicos_differs_from_all() {
+    // extend_probe_line_end_by_5: the drag slides the line to (5, 0)-(15, 0); FreeCAD's start
+    // after the solve 1, 1 + 1e-6 and 1 - 1e-6 mm farther along x than Silico's in its three
+    // runs, past the drag's band of every one.
+    let (_, prepared, theirs) = both(&["extend_probe_line_end_by_5"]);
+    let p = &prepared[0];
+    agrees(&verdict(p, theirs[0].as_ref()));
+    let slid = |by: f64| {
+        doctored(&theirs[0], |fc| {
+            fc.geometry[0].points.get_mut("1").unwrap()[0] += by;
+        })
+    };
+    kept_whatever_freecad_says(
+        p,
+        [slid(1.0), slid(1.0 + 1e-6), slid(1.0 - 1e-6)],
+        "which the drag moved, is at",
+    );
+}
+
+/// The one case `name`, prepared, with FreeCAD's outcome of it.
+fn one(name: &str) -> (Prepared, Option<Theirs>) {
+    let (_, mut prepared, mut theirs) = both(&[name]);
+    (prepared.remove(0), theirs.remove(0))
+}
+
+#[test]
+fn a_circles_radius_freecads_solves_give_otherwise_is_kept_where_silicos_differs_from_all() {
+    // split_line_at_tangent_contact_side: the circle the line is tangent to stays whole; its
+    // radius after FreeCAD's solve 1, 1 + 1e-6 and 1 - 1e-6 more than Silico's.
+    let (p, fc) = one("split_line_at_tangent_contact_side");
+    agrees(&verdict(&p, fc.as_ref()));
+    let grown = |by: f64| {
+        doctored(&fc, |fc| {
+            for g in &mut fc.geometry {
+                if g.kind == "circle"
+                    && let Some(r) = &mut g.radius
+                {
+                    *r += by;
+                }
+            }
+        })
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [grown(1.0), grown(1.0 + 1e-6), grown(1.0 - 1e-6)],
+        "'s radius ",
+    );
+}
+
+#[test]
+fn a_reference_freecad_measures_otherwise_each_run_is_kept_where_silicos_differs() {
+    // extend_line_beside_a_reference: a reference dimension the extend doesn't reach, which
+    // FreeCAD measures 1, 1 + 1e-6 and 1 - 1e-6 more than Silico.
+    let (p, fc) = one("extend_line_beside_a_reference");
+    agrees(&verdict(&p, fc.as_ref()));
+    let longer = |by: f64| {
+        doctored(&fc, |fc| {
+            for c in fc.constraints.iter_mut().filter(|c| !c.driving) {
+                c.value += by;
+            }
+        })
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [longer(1.0), longer(1.0 + 1e-6), longer(1.0 - 1e-6)],
+        "reference ",
+    );
+}
+
+#[test]
+fn a_tangency_freecad_locks_otherwise_each_run_is_kept_where_silicos_differs() {
+    // split_arc_keeps_end_tangents: each Tangent's angle in FreeCAD's result 0.5, 0.5 + 1e-6
+    // and 0.5 - 1e-6 off, so the direction each tangency at an end is locked to isn't
+    // Silico's in any run.
+    let (p, fc) = one("split_arc_keeps_end_tangents");
+    agrees(&verdict(&p, fc.as_ref()));
+    let turned = |by: f64| {
+        doctored(&fc, |fc| {
+            for c in fc.constraints.iter_mut().filter(|c| c.kind == "Tangent") {
+                c.value += by;
+            }
+        })
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [turned(0.5), turned(0.5 + 1e-6), turned(0.5 - 1e-6)],
+        "tangency ",
+    );
+}
+
+#[test]
+fn a_shared_arc_ends_neighbour_freecad_moves_otherwise_each_run_is_kept() {
+    // extend_arc_start_with_tangent: FreeCAD's setRange leaves the neighbour's end where the
+    // case drew it; here it moves it 1, 1 + 1e-6 and 1 - 1e-6 mm, past where the case drew it
+    // in every run. The neighbour's end is found as the place whose move gives the line.
+    let (p, fc) = one("extend_arc_start_with_tangent");
+    agrees(&verdict(&p, fc.as_ref()));
+    let Some(Theirs::Edited(edited)) = &fc else {
+        panic!("{fc:?}");
+    };
+    let kind = "not where the case drew it";
+    let nudged = |g: usize, pos: &str, by: f64| {
+        let pos = pos.to_owned();
+        doctored(&fc, move |fc| {
+            fc.edited[g].points.get_mut(&pos).unwrap()[0] += by
+        })
+    };
+    let (g, pos) = edited
+        .edited
+        .iter()
+        .enumerate()
+        .flat_map(|(g, geo)| geo.points.keys().map(move |pos| (g, pos.clone())))
+        .find(|(g, pos)| {
+            verdict(&p, Some(&nudged(*g, pos, 1.0)))
+                .how
+                .iter()
+                .any(|h| h.contains(kind))
+        })
+        .unwrap();
+    kept_whatever_freecad_says(
+        &p,
+        [
+            nudged(g, &pos, 1.0),
+            nudged(g, &pos, 1.0 + 1e-6),
+            nudged(g, &pos, 1.0 - 1e-6),
+        ],
+        kind,
+    );
+}
+
+#[test]
+fn a_point_silicos_edit_writes_off_is_kept_where_a_run_of_freecad_moves_it_elsewhere() {
+    // extend_line_with_reference_length: a drag a reference reaches, so after the solve only
+    // the points neither solve moved are compared by place; its lone point p0000006, drawn at
+    // (20, 20), written by Silico's edit (changed here) at (21, 20), where Silico's solve
+    // leaves it. FreeCAD's solve leaves it at (20, 20) in two runs and moves it 1e-6 in the
+    // third, which then doesn't compare it: that isn't agreeing with Silico, so the difference
+    // is kept, whichever run moved it. Where a run has it at Silico's place, it isn't.
+    let (cases, prepared, theirs) = both(&["extend_line_with_reference_length"]);
+    let p = changed(&cases[0], &prepared[0], |s| {
+        let q = s
+            .points
+            .iter_mut()
+            .find(|q| q.id == id("p0000006"))
+            .unwrap();
+        q.x = silico_core::document::Coordinate::new(21.0).unwrap();
+    });
+    let at = |x: f64| {
+        doctored(&theirs[0], |fc| {
+            for g in &mut fc.geometry {
+                for place in g.points.values_mut() {
+                    if *place == [20.0, 20.0] {
+                        place[0] = x;
+                    }
+                }
+            }
+        })
+    };
+    let (left, nudged, there) = (at(20.0), at(20.0 + 1e-6), at(21.0));
+    let kind = "Silico's point p0000006, which neither solve moved";
+    let first = verdict(&p, Some(&left));
+    assert!(first.how.iter().any(|h| h.contains(kind)), "{first}");
+    assert!(
+        !verdict(&p, Some(&nudged))
+            .how
+            .iter()
+            .any(|h| h.contains(kind)),
+        "the run whose solve moves it doesn't compare it"
+    );
+    for runs in [
+        [left.clone(), nudged.clone(), left.clone()],
+        [nudged.clone(), left.clone(), left.clone()],
+    ] {
+        let (v, reran) = rejudge(&p, &runs.map(Some));
+        assert_eq!(
+            v.how.iter().filter(|h| h.contains(kind)).count(),
+            1,
+            "{v}\n{reran:?}"
+        );
+    }
+    let (v, reran) = rejudge(&p, &[Some(left), Some(nudged), Some(there)]);
+    assert!(!v.how.iter().any(|h| h.contains(kind)), "{v}\n{reran:?}");
+}
+
+#[test]
+fn a_circle_on_a_dragged_end_freecads_runs_size_otherwise_is_kept_where_silicos_differs() {
+    // extend_probe_line_end_by_5, with a circle c0000099 of radius 2 about the dragged end
+    // p0000002 in Silico's result (no hand case has one): its radius after FreeCAD's solve 1,
+    // 1 + 1e-6 and 1 - 1e-6 more than Silico's in its three runs, past the drag's band of
+    // every one.
+    let (cases, prepared, theirs) = both(&["extend_probe_line_end_by_5"]);
+    let SilicoSide::Edited(s) = &prepared[0].silico else {
+        panic!("{:?}", prepared[0].silico);
+    };
+    let mut edited = s.edited.clone();
+    edited
+        .sketch
+        .circles
+        .push(silico_core::document::SketchCircle {
+            id: id("c0000099"),
+            center: id("p0000002"),
+            radius: silico_core::document::Coordinate::new(2.0).unwrap(),
+            construction: false,
+        });
+    edited.added.push(id("c0000099"));
+    let mut worker = SketchWorker::start().unwrap();
+    let silico = silico_side(&cases[0].document, cases[0].feature, edited, &mut worker).unwrap();
+    assert!(matches!(silico, SilicoSide::Edited(_)), "{silico:?}");
+    let p = Prepared {
+        silico,
+        ..prepared[0].clone()
+    };
+    let circled = |by: f64| {
+        doctored(&theirs[0], |fc| {
+            let centre = fc.geometry[0].points["2"];
+            fc.geometry.push(FcGeometry {
+                id: 99,
+                kind: "circle".to_owned(),
+                points: std::collections::BTreeMap::from([("3".to_owned(), centre)]),
+                radius: Some(2.0 + by),
+                construction: false,
+            });
+        })
+    };
+    kept_whatever_freecad_says(
+        &p,
+        [circled(1.0), circled(1.0 + 1e-6), circled(1.0 - 1e-6)],
+        "whose points the drag moved, has radius",
+    );
+}
+
+#[test]
+fn a_difference_one_run_gives_more_often_than_another_is_kept_as_often_as_the_other() {
+    // FreeCAD's result with copies of its piece w0000001 added: three in the sweep's run, one
+    // in each run alone, so the piece is unmatched and FreeCAD has four lines Silico hasn't,
+    // all alike, in the sweep's run and two in each other. Each run gives that difference, at
+    // least twice: kept twice; the sweep's other two left uncompared, said once, as its.
+    let (_, p, fc, _) = split_at(4.0);
+    let copies = |n: i64| {
+        doctored(&fc, |fc| {
+            for k in 0..n {
+                let mut g = fc.geometry[1].clone();
+                g.id = 90 + k;
+                fc.geometry.push(g);
+            }
+        })
+    };
+    let kind = "FreeCAD has a line (";
+    let given = |t: &Theirs| {
+        verdict(&p, Some(t))
+            .how
+            .iter()
+            .filter(|h| h.starts_with(kind))
+            .count()
+    };
+    assert_eq!((given(&copies(3)), given(&copies(1))), (4, 2));
+    let (v, reran) = rejudge(&p, &[Some(copies(3)), Some(copies(1)), Some(copies(1))]);
+    assert_eq!(
+        v.how.iter().filter(|h| h.starts_with(kind)).count(),
+        2,
+        "{v}\n{reran:?}"
+    );
+    let (_, uncompared) = varied_as(&reran);
+    let said: Vec<&String> = uncompared.iter().filter(|u| u.starts_with(kind)).collect();
+    assert_eq!(said.len(), 1, "{uncompared:?}");
+    assert!(said[0].ends_with(" that Silico hasn't (run 1)"), "{said:?}");
+}
+
+#[test]
+fn a_sweeps_run_with_reruns_gives_each_cases_verdict_and_reruns_none_that_agree() {
+    // Two hand cases that agree with FreeCAD: their verdicts, by name, in order, no
+    // difference, and no case run again.
+    let all = sketch_edit::load(Path::new(CASES)).unwrap();
+    let cases: Vec<EditCase> = all
+        .into_iter()
+        .filter(|c| c.name == "split_level_line" || c.name == "merge_touching_ends")
+        .collect();
+    let (verdicts, reruns) = silico_oracle::sketch_edit::rerun::run_rerunning(&cases).unwrap();
+    let names: Vec<&str> = verdicts.iter().map(|v| v.case.as_str()).collect();
+    let expected: Vec<&str> = cases.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, expected);
+    assert_eq!(names.len(), 2);
+    verdicts.iter().for_each(agrees);
+    assert!(reruns.is_empty(), "{reruns:?}");
 }

@@ -151,14 +151,18 @@ pub fn anywhere<P: AppKernel>(h: &AppUi<P>, label: &str) -> bool {
     h.query_by_label(label).is_some()
 }
 
-/// Stepped until nothing of the tab's is under way and its last answer's revision is read:
+/// Stepped until nothing of the tab's is under way and its last answer's revision is read
+/// ([`is_settled`]).
+pub fn settled<P: AppKernel>(h: &mut AppUi<P>) {
+    step_until(h, "everything answered", is_settled);
+}
+
+/// Whether nothing of the first tab's is under way and its last answer's revision is read:
 /// its edits, its steps, a dialog's add, and the timeline read at that revision
 /// (`applying`), which answers a frame or more after them.
-pub fn settled<P: AppKernel>(h: &mut AppUi<P>) {
-    step_until(h, "everything answered", |h| {
-        let tab = &h.state().tabs()[0];
-        tab.edits.idle() && !tab.applying() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
-    });
+pub fn is_settled<P: AppKernel>(h: &AppUi<P>) -> bool {
+    let tab = &h.state().tabs()[0];
+    tab.edits.idle() && !tab.applying() && tab.dialog.as_ref().is_none_or(|d| !d.adding)
 }
 
 // --- The app bar and the status bar --------------------------------------------------------
@@ -241,6 +245,23 @@ pub fn close_window<P: AppKernel>(h: &mut AppUi<P>) {
         .unwrap()
         .events
         .clear();
+}
+
+/// egui's `animation_time`, in every style, `seconds`: what decides whether the viewport eases
+/// to a view worked out whole (Home, Fit, a named view, Look At) or takes it at once
+/// (`silico_app::transition::Motion::of`). The view transitions' own tests set it above 0.
+pub fn animation_time<S>(h: &Harness<'_, S>, seconds: f32) {
+    h.ctx.all_styles_mut(|style| style.animation_time = seconds);
+}
+
+/// The app's look applied to a harness, as main.rs applies it (`theme::apply`: its fonts,
+/// without which every text lays out empty, and its style), but for egui's animation time,
+/// kept at egui_kittest's 0, which `theme::apply` would set to egui's own 0.2: the tests
+/// look at the app a frame at a time, each view asked for taken at once. A test of motion
+/// sets it again ([`animation_time`]).
+pub fn apply_look<S>(h: &Harness<'_, S>) {
+    silico_app::theme::apply(&h.ctx);
+    animation_time(h, 0.0);
 }
 
 /// The delay the last frame asked for the next one at.
@@ -677,6 +698,70 @@ pub fn create_sketch<P: AppKernel>(h: &mut AppUi<P>, plane: &str) {
     });
 }
 
+/// A point placed at the sketch's (x, y) in the sketch mode of the tab `part`, by the Point
+/// tool: a click given to the tab's own sketch frame (`Tab::sketch_frame`, the overlay's way
+/// in), on a thread marked so a wait there counts, through a projection of ten points a
+/// millimetre about (100, 500); then frames stepped until its add has answered. A new
+/// sketch's Finish keeps it only if it holds something, so a part begun sketch-first draws
+/// this before its Finish.
+pub fn place_point_in<P: AppKernel>(h: &mut AppUi<P>, part: &str, x: f64, y: f64) {
+    use silico_app::sketch::{FrameInput, PointerAction, PointerEvent};
+    let project = |at: [f64; 2]| {
+        Some(Pos2::new(
+            (100.0 + 10.0 * at[0]) as f32,
+            (500.0 - 10.0 * at[1]) as f32,
+        ))
+    };
+    let to_plane = |at: Pos2| {
+        Some([
+            (f64::from(at.x) - 100.0) / 10.0,
+            (500.0 - f64::from(at.y)) / 10.0,
+        ])
+    };
+    let at = project([x, y]).unwrap();
+    let events = [PointerAction::Press, PointerAction::Release].map(|action| PointerEvent {
+        action,
+        at,
+        shift: false,
+        ctrl: false,
+    });
+    let place = h
+        .state()
+        .tabs()
+        .iter()
+        .position(|tab| tab.name() == part)
+        .unwrap_or_else(|| panic!("no tab {part}"));
+    let points = |h: &AppUi<P>| {
+        h.state().tabs()[place]
+            .sketch
+            .as_ref()
+            .and_then(|mode| mode.drawable())
+            .map(|read| read.members.points.len())
+    };
+    let before = points(h).unwrap_or_else(|| panic!("{part}'s sketch not read"));
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(h.state().sessions());
+        let tab = &mut h.state_mut().tabs_mut()[place];
+        tab.sketch_tool(Some(silico_core::sketch_tools::ToolKind::Point));
+        let ctx = eframe::egui::Context::default();
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let input = FrameInput {
+                events: &events,
+                pointer: Some(at),
+                project: &project,
+                to_plane: &to_plane,
+            };
+            tab.sketch_frame(&sessions, &painter, &input);
+        });
+        output.textures_delta.clear();
+    }
+    step_until(h, "the point added and read", |h| {
+        points(h).is_some_and(|now| now == before + 1)
+    });
+}
+
 /// Stepped until sketch mode's newest read holds a sketch.
 pub fn sketch_read<P: AppKernel>(h: &mut AppUi<P>) {
     step_until(h, "the sketch read", |h| {
@@ -936,7 +1021,7 @@ pub fn meshes_settled_in<P: AppKernel>(h: &mut AppUi<P>, tab: usize) {
 pub const PLATE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Plate", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}, {"id": "pa000004", "x": 0, "y": 20, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []},
     {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}
@@ -1397,7 +1482,7 @@ pub fn failing_kernel(kernel: &FakeKernel) -> Arc<AtomicBool> {
 pub const EXAMPLE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -1414,7 +1499,7 @@ pub const EXAMPLE: &str = r#"{
 pub const SKETCHED_EXAMPLE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -1432,7 +1517,7 @@ pub const SKETCHED_EXAMPLE: &str = r#"{
 pub const TWO_BOXES: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Small", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50},
     {"id": "a91cw0de", "type": "box", "v": 1, "name": "Large", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
@@ -1444,7 +1529,7 @@ pub const TWO_BOXES: &str = r#"{
 pub const A_BOX: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
   ]

@@ -117,6 +117,19 @@ bash "$keep" "$tmp/out/none" "$tmp/results/early" >/dev/null || fail "a missing 
 [ "$(ls -A "$tmp/results/early")" = kept ] || fail "a missing mutants.out: not the marker alone"
 pass
 
+# A shard whose cargo-mutants found no mutants at all (.github/mutants-none.sh): no list, but
+# its markers, `none` with a file that matched nothing among them, are kept as they are.
+found=$tmp/found-none/mutants.out
+mkdir -p "$found"
+echo 0 >"$found/shard"
+echo "2 threads" >"$found/threads"
+echo "no file in the tree matches crates/typo.rs" >"$found/none"
+bash "$keep" "$found" "$tmp/results/found-none" >/dev/null || fail "a shard that found no mutants failed it"
+[ "$(ls -A "$tmp/results/found-none" | sort | tr '\n' ' ')" = "kept none shard threads " ] ||
+  fail "a shard that found no mutants: kept $(ls -A "$tmp/results/found-none" | tr '\n' ' ')"
+cmp -s "$found/none" "$tmp/results/found-none/none" || fail "a shard that found no mutants: its none marker changed"
+pass
+
 # A mutants.out with no outcomes.json yet (stopped mid-baseline: cargo-mutants writes it only
 # once the baseline ends): its lists kept, and the baseline's log so far, and nothing fails.
 partial=$tmp/partial/mutants.out

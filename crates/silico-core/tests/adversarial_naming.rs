@@ -20,7 +20,8 @@ use silico_core::kernel::{
     ElementCounts, ElementFate, ElementKind, ElementRef, History, InputHistory, Reported, Topology,
 };
 use silico_core::naming::{
-    ElementMap, Maker, Name, OpCode, Place, Raw, Relation, Source, TypeWord, freecad,
+    Copied, ElementMap, Instance, Maker, Name, OpCode, Place, Raw, Relation, Source, TypeWord,
+    freecad,
 };
 
 #[path = "common/within.rs"]
@@ -986,9 +987,29 @@ fn written_out(name: &Name) -> u64 {
             .chain(more)
             .map(Arc::as_ref)
             .collect(),
-        Name::Duplicate { name, .. } | Name::Modified { name, .. } => vec![name.as_ref()],
+        Name::Duplicate { name, .. }
+        | Name::Modified { name, .. }
+        | Name::Copy { of: name, .. } => vec![name.as_ref()],
     };
     1 + parts.into_iter().map(written_out).sum::<u64>()
+}
+
+/// The plate cut by the tool once for each `(p, q)`, in turn, each history checked: its
+/// Face1 and Face2 grow as the tests below work them by hand.
+fn cut_chain(steps: &[(u32, u32)]) -> ElementMap {
+    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
+    let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
+    for (n, &(p, q)) in steps.iter().enumerate() {
+        let history = crossed_with_tool(p, q);
+        history.validate(2).unwrap();
+        map = ElementMap::operation(
+            id(&format!("f{n:07}")),
+            OpCode::Cut,
+            &[&map, &tool],
+            &history,
+        );
+    }
+    map
 }
 
 #[test]
@@ -1002,9 +1023,7 @@ fn a_name_of_exactly_the_most_names_is_kept_and_one_more_is_numbered() {
     // 62, 124 and 126, 252 and 254, 509 and 510, 1021 and 1023, 2047 and 2048. Then (0, 1):
     // Face1 is 1 + 4095 = 4096 names, at the bound, so it's kept; Face2 is 4097, past it,
     // so it's named by its number, unstable.
-    let tool = ElementMap::by_number(id("tttttttt"), OpCode::Fuse, BOX);
-    let mut map = ElementMap::by_number(id("pppppppp"), OpCode::Fuse, BOX);
-    let steps = [
+    let map = cut_chain(&[
         (1, 3),
         (1, 3),
         (1, 3),
@@ -1015,17 +1034,7 @@ fn a_name_of_exactly_the_most_names_is_kept_and_one_more_is_numbered() {
         (1, 3),
         (2, 3),
         (0, 1),
-    ];
-    for (n, (p, q)) in steps.into_iter().enumerate() {
-        let history = crossed_with_tool(p, q);
-        history.validate(2).unwrap();
-        map = ElementMap::operation(
-            id(&format!("f{n:07}")),
-            OpCode::Cut,
-            &[&map, &tool],
-            &history,
-        );
-    }
+    ]);
     let face1 = map.name(element(ElementKind::Face, 1)).unwrap();
     assert_eq!(written_out(&face1), 4096);
     assert!(matches!(*face1, Name::Derived { .. }), "{face1}");
@@ -1033,6 +1042,100 @@ fn a_name_of_exactly_the_most_names_is_kept_and_one_more_is_numbered() {
     let face2 = map.name(element(ElementKind::Face, 2)).unwrap();
     assert_eq!(face2.to_string(), "f0000009.cut.Face2");
     assert!(map.is_unstable(&face2));
+}
+
+#[test]
+fn a_copy_of_a_name_at_the_most_names_is_left_out_and_a_lighter_one_is_copied() {
+    // N10: a copy is a name more, so the copy of a name already 4,096 names written out
+    // would be 4,097, past the bound the parser reads to: the copy's map leaves it out
+    // (never numbering it by the tool's number), and copies the rest. The map is the one
+    // the test above works by hand, its Face1 at the bound.
+    let map = cut_chain(&[
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (2, 3),
+        (1, 3),
+        (2, 3),
+        (0, 1),
+    ]);
+    let face1 = map.name(element(ElementKind::Face, 1)).unwrap();
+    assert_eq!(written_out(&face1), 4096);
+    let one = Instance::new(&[1]).unwrap();
+    let copied =
+        ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    assert_eq!(copied.name(element(ElementKind::Face, 1)), None);
+    // Every other element is copied, each name wrapped once and under the bound.
+    let mut kept = 0;
+    for (element, names) in map.iter() {
+        if element == self::element(ElementKind::Face, 1) {
+            continue;
+        }
+        let own = &names[0];
+        let copy = copied.name(element).unwrap();
+        assert_eq!(
+            copy.to_string(),
+            format!("m0000001.mirror.{}(S1 {own})", kind_word(element.kind))
+        );
+        assert!(written_out(&copy) <= 4096, "{copy}");
+        kept += 1;
+    }
+    assert!(kept > 0);
+    assert_eq!(copied.iter().count(), map.iter().count() - 1);
+}
+
+#[test]
+fn a_copy_of_exactly_the_most_names_is_kept_and_one_more_is_left_out() {
+    // The bound's edge: worked by hand with the rule above (next 1 + a + b + p, or + q),
+    // (1, 3) six times gives 252 and 254, then (2, 3) 509 and 510, (1, 3) 1021 and 1023,
+    // (1, 2) 2046 and 2047, (1, 2) 4095 and 4096. Face1's copy is 4,096 names, at the
+    // bound, so it's kept; Face2's would be 4,097, so it's left out.
+    let map = cut_chain(&[
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (1, 3),
+        (2, 3),
+        (1, 3),
+        (1, 2),
+        (1, 2),
+    ]);
+    let face1 = map.name(element(ElementKind::Face, 1)).unwrap();
+    let face2 = map.name(element(ElementKind::Face, 2)).unwrap();
+    assert_eq!(written_out(&face1), 4095);
+    assert_eq!(written_out(&face2), 4096);
+    let one = Instance::new(&[1]).unwrap();
+    let copied =
+        ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    let kept = copied.name(element(ElementKind::Face, 1)).unwrap();
+    assert_eq!(written_out(&kept), 4096);
+    assert_eq!(
+        kept.to_string(),
+        format!("m0000001.mirror.Face(S1 {face1})")
+    );
+    assert!(!copied.is_unstable(&kept));
+    assert_eq!(copied.name(element(ElementKind::Face, 2)), None);
+    // The parser agrees at the edge: the copy kept reads back as itself, and the one left
+    // out, 4,097 names, is refused.
+    let any = |_: &FeatureId| Some(Maker::By(OpCode::Fuse));
+    assert_eq!(Name::parse(&kept.to_string(), &any).unwrap(), *kept);
+    let past = format!("m0000001.mirror.Face(S1 {face2})");
+    let error = Name::parse(&past, &any).unwrap_err();
+    assert!(error.why.contains("more than 4096 names"), "{error}");
+}
+
+fn kind_word(kind: ElementKind) -> &'static str {
+    match kind {
+        ElementKind::Vertex => "Vertex",
+        ElementKind::Edge => "Edge",
+        ElementKind::Face => "Face",
+        ElementKind::Solid => "Solid",
+    }
 }
 
 #[test]

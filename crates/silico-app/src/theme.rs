@@ -511,6 +511,17 @@ pub const VIEWPORT_EDGE_WIDTH: f32 = 1.5;
 /// A shown sketch's curves drawn among the bodies (the prototype's `syncSketchLines`
 /// lines), their width in points.
 pub const VIEWPORT_SKETCH_WIDTH: f32 = 1.5;
+/// An origin plane's fill (`crate::planes`, the prototype's `buildPlanes`): `#9f9f9f` at
+/// 0.08.
+pub const VIEWPORT_PLANE_FILL: Rgba8 = rgba8_of(GRAY_600, 20);
+/// Its outline: `#9f9f9f` at 0.6.
+pub const VIEWPORT_PLANE_OUTLINE: Rgba8 = rgba8_of(GRAY_600, 153);
+/// Its outline's width, in points: the prototype's 1 px.
+pub const VIEWPORT_PLANE_WIDTH: f32 = 1.0;
+/// A hovered origin plane's fill (`VP.setPlanes`' hover): `#186add` at 0.32.
+pub const VIEWPORT_PLANE_HOVER_FILL: Rgba8 = rgba8_of(SELECTION_BG, 82);
+/// Its outline: `#4676ff` at 0.6.
+pub const VIEWPORT_PLANE_HOVER_OUTLINE: Rgba8 = rgba8_of(FOCUS, 153);
 /// A hovered face's tint: white, mixed in at [`VIEWPORT_HOVER_TINT_AMOUNT`].
 pub const VIEWPORT_HOVER_TINT: Rgba8 = rgba8(0xffffff);
 /// How much of [`VIEWPORT_HOVER_TINT`] a hovered face takes.
@@ -583,10 +594,16 @@ pub const BOX_SELECT_CROSSING_DASH: [f32; 2] = [4.0, 3.0];
 /// bottom-right of the canvas): Gray.200 inside a Gray.250 border, `--r`'s corners, a menu's
 /// shadow (`0 6px 18px`, black at 60%), padded 7 over and under, 10 at the left and 8 at the
 /// right, at most 420 wide, its text as the body's; 12 in from the canvas's right and 58 up
-/// from its foot; shown for 3.8 seconds (app.js's `toast`).
+/// from its foot; shown for 3.8 seconds (app.js's `toast`). Several stack in a column, 6
+/// apart, the newest last (`#toasts`' `gap: 6px`); each has its icon at the left, 8 from its
+/// words (`.toast`'s `gap: 8px`), in the words' colour (`svg.i`'s `currentColor`). Its 420
+/// counts its border and padding (`box-sizing: border-box`).
 pub const TOAST_BG: Color32 = GRAY_200;
 pub const TOAST_BORDER: Color32 = GRAY_250;
 pub const TOAST_TEXT: Color32 = TEXT_DEFAULT;
+pub const TOAST_ICON: Color32 = TOAST_TEXT;
+pub const TOAST_GAP: f32 = 6.0;
+pub const TOAST_ICON_GAP: f32 = 8.0;
 pub const TOAST_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
 pub const TOAST_SHADOW: Shadow = Shadow {
     offset: [0, 6],
@@ -749,6 +766,13 @@ pub const TOOLTIP_SHADOW: Shadow = Shadow {
     color: with_alpha(GRAY_0, 153),
 };
 
+/// How long a view transition takes, in seconds (DESIGN.md's *egui mapping*: "a 200 ms view
+/// transition"; the prototype's `animateTo` takes 220 ms by default, DESIGN.md the 200):
+/// Home, Fit, a named view, a ViewCube click, and Look At ease to their view over it
+/// (`crate::transition`). The app's own, not egui's `animation_time`, which only says
+/// whether the view moves at all (0: it jumps).
+pub const VIEW_TRANSITION_SECONDS: f64 = 0.2;
+
 /// The ViewCube's side, and its margin from the canvas's top and right (the prototype's
 /// viewport.js:101, `CUBE` and `CUBE_M`).
 pub const VIEW_CUBE_SIDE: f32 = 92.0;
@@ -903,6 +927,28 @@ pub const NAVIGATION_BAR_SEPARATOR_MARGIN: f32 = 3.0;
 /// the button's).
 pub const NAVIGATION_BAR_MENU_GAP: f32 = 4.0;
 
+/// A hint over the canvas (`.canvas-hint`, `crate::canvas_hint`): Gray.200 inside a 1
+/// Gray.250 border, `--r`'s corners, the navigation bar's shadow (`0 4px 14px`, black at
+/// half), padded 6 above and below, 8 at its right and 12 at its left, 10 between its icon,
+/// its words, and its button; its words body text ([`TEXT_DEFAULT`], the page's colour),
+/// their emphasis [`TEXT_STRONG`] (`.strong`), and its icon their colour (`currentColor`).
+pub const CANVAS_HINT_BG: Color32 = FLOATING_BG;
+pub const CANVAS_HINT_BORDER: Color32 = PANEL_BORDER;
+pub const CANVAS_HINT_SHADOW: Shadow = NAVIGATION_BAR_SHADOW;
+pub const CANVAS_HINT_PADDING: Margin = Margin {
+    left: 12,
+    right: 8,
+    top: 6,
+    bottom: 6,
+};
+pub const CANVAS_HINT_GAP: f32 = 10.0;
+pub const CANVAS_HINT_TEXT: Color32 = TEXT_DEFAULT;
+pub const CANVAS_HINT_STRONG: Color32 = TEXT_STRONG;
+/// Where the empty part's hint stands, centred across the canvas: its bottom 64 above the
+/// canvas's (app.js's `top:auto;bottom:64px`, over `.canvas-hint`'s `top: 18px`), clear of
+/// the navigation bar under it.
+pub const CANVAS_HINT_BOTTOM: f32 = 64.0;
+
 /// A small button's height (`.btn`): Copy MCP config, and the dialogs' buttons.
 pub const BUTTON_HEIGHT: f32 = 22.0;
 
@@ -923,6 +969,9 @@ pub const APP_BAR_PADDING: f32 = 8.0;
 
 /// The space between the bar's items (`#appbar`'s `gap`).
 pub const APP_BAR_ITEM_SPACING: f32 = 2.0;
+
+/// New part's margin before it, after the documents' tabs (its `margin-left:4px`).
+pub const APP_BAR_NEW_MARGIN: f32 = 4.0;
 
 /// The bar's border below it (`#appbar`'s `border-bottom`, Gray.250).
 pub const APP_BAR_BORDER: Color32 = PANEL_BORDER;
@@ -1671,6 +1720,52 @@ pub const SHEET_NOTE_MARGIN: f32 = 6.0;
 pub const SHEET_NOTE_PADDING: f32 = 8.0;
 pub const SHEET_NOTE_BORDER: Color32 = PANEL_BORDER;
 
+// ---- The command search (`.palette-modal`; DESIGN.md's *Command search*) ----
+
+/// The box (`.palette-modal`): 520 wide, its border in it (`box-sizing: border-box`), 96 from
+/// the window's top and centred across it; Gray.200 inside a 1 px Gray.350 border, `--r`'s
+/// corners, and a modal's shadow (`0 15px 50px rgba(0,0,0,.7)`).
+pub const SEARCH_WIDTH: f32 = 520.0;
+pub const SEARCH_TOP: f32 = 96.0;
+pub const SEARCH_BG: Color32 = FLOATING_BG;
+pub const SEARCH_BORDER: Color32 = STROKE_STRONG;
+pub const SEARCH_CORNER_RADIUS: u8 = NORMAL_CORNER_RADIUS;
+pub const SEARCH_SHADOW: Shadow = Shadow {
+    offset: [0, 15],
+    blur: 50,
+    spread: 0,
+    color: with_alpha(GRAY_0, 179),
+};
+/// Its backdrop over the window (the prototype's inline `background: rgba(0,0,0,.35)`).
+pub const SEARCH_BACKDROP: Color32 = with_alpha(GRAY_0, 89);
+/// Its field's row (`.pm-input`): 38 high, its 1 px Gray.250 rule under it in that; padded
+/// 12 at its sides, the search icon (Gray.550) 8 before the field, whose words are 13 high
+/// in Gray.1000.
+pub const SEARCH_INPUT_HEIGHT: f32 = 38.0;
+pub const SEARCH_INPUT_PADDING: f32 = 12.0;
+pub const SEARCH_INPUT_GAP: f32 = 8.0;
+pub const SEARCH_INPUT_SIZE: f32 = 13.0;
+pub const SEARCH_INPUT_TEXT: Color32 = TEXT_STRONG;
+pub const SEARCH_ICON: Color32 = TEXT_SUBDUED;
+pub const SEARCH_RULE: Color32 = PANEL_BORDER;
+/// Its list (`.pm-list`): at most 340 high, its padding of 4 in that, scrolling past it; each
+/// row a menu's item (`.menu .mi`) 28 high (`.palette-modal .mi`).
+pub const SEARCH_LIST_MAX_HEIGHT: f32 = 340.0;
+pub const SEARCH_LIST_PADDING: f32 = 4.0;
+pub const SEARCH_ROW_HEIGHT: f32 = 28.0;
+/// Its foot (`.pm-foot`): over a 1 px Gray.250 rule, padded 6 over and under and 12 at its
+/// sides, its parts 14 apart, 10.5 high in Gray.550 on a line of the body's, its keys as key
+/// caps.
+pub const SEARCH_FOOT_PADDING: Margin = Margin {
+    left: 12,
+    right: 12,
+    top: 6,
+    bottom: 6,
+};
+pub const SEARCH_FOOT_GAP: f32 = 14.0;
+pub const SEARCH_FOOT_SIZE: f32 = 10.5;
+pub const SEARCH_FOOT_TEXT: Color32 = TEXT_SUBDUED;
+
 // ---- Banners over the canvas (`.canvas-banner`) ----
 
 /// A banner's place over the canvas: 10 from its left and top, 148 from its right, clear of
@@ -1837,6 +1932,16 @@ pub const START_RECENT_HOVER_BG: Color32 = GRAY_200;
 pub const START_THUMB_WIDTH: f32 = 52.0;
 pub const START_THUMB_HEIGHT: f32 = 40.0;
 pub const START_THUMB_BG: Color32 = GRAY_0;
+
+/// The note under Recent that a dropped document opens (`.drop-note`): the space above it
+/// (`.recent`'s `margin-bottom: 30px`, the larger of the two margins that meet there while
+/// Samples isn't built; the note's own is 26), its padding, and its border, 1 px dashed in
+/// Gray.350, its dashes and gaps each 3 long, as a browser draws a 1 px dashed border.
+pub const START_DROP_NOTE_MARGIN: f32 = 30.0;
+pub const START_DROP_NOTE_PADDING: f32 = 14.0;
+pub const START_DROP_NOTE_BORDER: Color32 = GRAY_350;
+pub const START_DROP_NOTE_DASH: f32 = 3.0;
+pub const START_DROP_NOTE_DASH_GAP: f32 = 3.0;
 
 // ---- Type (DESIGN.md, *Type*) ----
 
@@ -2262,6 +2367,13 @@ mod tests {
             ("TOOLTIP_SHADOW", TOOLTIP_SHADOW.color, [0, 0, 0], 0.6),
             // `.modal`'s shadow, `rgba(0,0,0,.7)`.
             ("MODAL_SHADOW", MODAL_SHADOW.color, [0, 0, 0], 0.7),
+            // `.canvas-hint`'s shadow, `rgba(0,0,0,.5)`.
+            (
+                "CANVAS_HINT_SHADOW",
+                CANVAS_HINT_SHADOW.color,
+                [0, 0, 0],
+                0.5,
+            ),
             // `.canvas-banner .btn-secondary`, `rgba(255,255,255,.08)`, `.16` hovered.
             ("BANNER_BUTTON_BG", BANNER_BUTTON_BG, [255, 255, 255], 0.08),
             (
@@ -2299,6 +2411,57 @@ mod tests {
         }
         // viewport.js's `buildGrid`, its `axis`: the grid's axes at 0.9.
         assert_eq!(VIEWPORT_GRID_AXIS_ALPHA, of_255(0.9));
+    }
+
+    /// The command search's tokens, typed from styles.css's `.palette-modal` rules and
+    /// renderPalette's backdrop (`rgba(0,0,0,.35)`), not from the constants they're made of.
+    #[test]
+    fn the_command_searchs_tokens_are_the_prototypes() {
+        assert_eq!(SEARCH_WIDTH, 520.0);
+        assert_eq!(SEARCH_TOP, 96.0);
+        assert_eq!(SEARCH_BG, Color32::from_rgb(0x21, 0x21, 0x21));
+        assert_eq!(SEARCH_BORDER, Color32::from_rgb(0x52, 0x51, 0x51));
+        assert_eq!(SEARCH_CORNER_RADIUS, 6);
+        assert_eq!(
+            SEARCH_SHADOW,
+            Shadow {
+                offset: [0, 15],
+                blur: 50,
+                spread: 0,
+                color: Color32::from_rgba_unmultiplied(0, 0, 0, 179),
+            }
+        );
+        assert_eq!(
+            SEARCH_BACKDROP,
+            Color32::from_rgba_unmultiplied(0, 0, 0, 89)
+        );
+        assert_eq!(
+            (SEARCH_INPUT_HEIGHT, SEARCH_INPUT_PADDING, SEARCH_INPUT_GAP),
+            (38.0, 12.0, 8.0)
+        );
+        assert_eq!(SEARCH_INPUT_SIZE, 13.0);
+        assert_eq!(SEARCH_INPUT_TEXT, Color32::from_rgb(0xff, 0xff, 0xff));
+        assert_eq!(SEARCH_ICON, Color32::from_rgb(0x93, 0x90, 0x90));
+        assert_eq!(SEARCH_RULE, Color32::from_rgb(0x27, 0x26, 0x26));
+        assert_eq!(
+            (
+                SEARCH_LIST_MAX_HEIGHT,
+                SEARCH_LIST_PADDING,
+                SEARCH_ROW_HEIGHT
+            ),
+            (340.0, 4.0, 28.0)
+        );
+        assert_eq!(
+            SEARCH_FOOT_PADDING,
+            Margin {
+                left: 12,
+                right: 12,
+                top: 6,
+                bottom: 6
+            }
+        );
+        assert_eq!((SEARCH_FOOT_GAP, SEARCH_FOOT_SIZE), (14.0, 10.5));
+        assert_eq!(SEARCH_FOOT_TEXT, Color32::from_rgb(0x93, 0x90, 0x90));
     }
 
     /// The prototype's colours for the tokens built from others, typed from its sources.
@@ -2414,9 +2577,33 @@ mod tests {
                 VIEWPORT_FEATURE_HOVER_TINT,
                 [0xd4, 0xdb, 0xff, 0xff],
             ),
+            // viewport.js's `buildPlanes` and `VP.setPlanes`: `#9f9f9f` at `opacity: 0.08`
+            // filled (0.08 × 255 = 20.4), `lineMesh(…, '#9f9f9f', 1, 0.6)` outlined (153);
+            // hovered `#186add` at 0.32 (81.6), its outline `#4676ff` at the outline's 0.6.
+            (
+                "VIEWPORT_PLANE_FILL",
+                VIEWPORT_PLANE_FILL,
+                [0x9f, 0x9f, 0x9f, 20],
+            ),
+            (
+                "VIEWPORT_PLANE_OUTLINE",
+                VIEWPORT_PLANE_OUTLINE,
+                [0x9f, 0x9f, 0x9f, 153],
+            ),
+            (
+                "VIEWPORT_PLANE_HOVER_FILL",
+                VIEWPORT_PLANE_HOVER_FILL,
+                [0x18, 0x6a, 0xdd, 82],
+            ),
+            (
+                "VIEWPORT_PLANE_HOVER_OUTLINE",
+                VIEWPORT_PLANE_HOVER_OUTLINE,
+                [0x46, 0x76, 0xff, 153],
+            ),
         ] {
             assert_eq!(color, rgba, "{name}");
         }
+        assert_eq!(VIEWPORT_PLANE_WIDTH, 1.0);
         // viewport.js's `applyHighlight`: a maker's face `uTintAmt.value = 0.4` (DESIGN.md's
         // "tint 40%").
         assert_eq!(VIEWPORT_FEATURE_HOVER_TINT_AMOUNT, 0.4);
@@ -2770,6 +2957,8 @@ mod tests {
         // viewport.js:101: `CUBE = 92, CUBE_M = 16`.
         assert_eq!(VIEW_CUBE_SIDE, 92.0);
         assert_eq!(VIEW_CUBE_MARGIN, 16.0);
+        // DESIGN.md's *egui mapping*: "a 200 ms view transition".
+        assert_eq!(VIEW_TRANSITION_SECONDS, 0.2);
         // `.nav-bar`: 12 from the bottom; `.nav-bar .ab-btn` 24 high, 3 of padding, and a
         // 1 border. Across: five buttons of `min-width: 26px`, the display menu's two 14
         // icons, 4 apart, in 5 of padding at each side, the grid's 26, the separator's 1
@@ -2956,6 +3145,43 @@ mod tests {
         );
         // The display menu 4 above its button (`r.top - 4`).
         assert_eq!(NAVIGATION_BAR_MENU_GAP, 4.0);
+    }
+
+    /// A hint over the canvas, typed from styles.css's `.canvas-hint` and app.js's empty
+    /// part's `top:auto;bottom:64px`.
+    #[test]
+    fn the_canvas_hints_look_is_the_prototypes() {
+        let opaque = |hex: u32| {
+            let [_, r, g, b] = hex.to_be_bytes();
+            Color32::from_rgb(r, g, b)
+        };
+        // `bottom: 64px`; `gap: 10px; padding: 6px 8px 6px 12px; background: var(--g200);
+        // border: 1px solid var(--g250); border-radius: var(--r); box-shadow: 0 4px 14px
+        // rgba(0,0,0,.5)`; the page's text `var(--g750)`, `.strong`'s `var(--g1000)`.
+        assert_eq!(CANVAS_HINT_BOTTOM, 64.0);
+        assert_eq!(CANVAS_HINT_GAP, 10.0);
+        assert_eq!(
+            CANVAS_HINT_PADDING,
+            Margin {
+                left: 12,
+                right: 8,
+                top: 6,
+                bottom: 6
+            }
+        );
+        assert_eq!(CANVAS_HINT_BG, opaque(0x212121));
+        assert_eq!(CANVAS_HINT_BORDER, opaque(0x272626));
+        assert_eq!(NORMAL_CORNER_RADIUS, 6);
+        assert_eq!(
+            (
+                CANVAS_HINT_SHADOW.offset,
+                CANVAS_HINT_SHADOW.blur,
+                CANVAS_HINT_SHADOW.spread,
+            ),
+            ([0, 4], 14, 0)
+        );
+        assert_eq!(CANVAS_HINT_TEXT, opaque(0xcfcfcf));
+        assert_eq!(CANVAS_HINT_STRONG, opaque(0xffffff));
     }
 
     // ---- A key cap's border, as `.kbd` draws it (border 1/1/2/1, radius 3, border-box) ----

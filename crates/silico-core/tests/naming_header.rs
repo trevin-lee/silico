@@ -1,13 +1,17 @@
 //! M4.0: the document's header records the naming scheme its names were written under
-//! (`naming`). The canonical writer always writes it; the reader takes the scheme Silico
-//! names by, reads a document without it (saved before M4.0) as scheme 5, and refuses every
-//! other value, naming the field. Expected texts, messages, and places are written by hand
-//! (places counted with Python's `str.index` on the text, not by this reader).
+//! (`naming`). The canonical writer always writes it, as the scheme Silico names by (6 since
+//! M6.1); the reader takes 5 and 6 (6 a strict superset of 5, N10), reads a document without
+//! it (saved before M4.0) as scheme 5, and refuses every other value, naming the field.
+//! Inputs stay at 5 where they were; what Silico writes says 6. Expected texts, messages,
+//! and places are written by hand (places counted with Python's `str.index` on the text, not
+//! by this reader).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use silico_core::ErrorCode;
 use silico_core::document::{Checked, NamingScheme, read, schema, write};
-use silico_core::naming::{NAMING_SCHEME, NAMING_SCHEME_NUMBER, UNRECORDED_NAMING_SCHEME};
+use silico_core::naming::{
+    NAMING_SCHEME, NAMING_SCHEME_NUMBER, NAMING_SCHEMES_READ, UNRECORDED_NAMING_SCHEME,
+};
 
 /// The document saved under scheme 5 (protected, with the maintainer), by `silico fmt` on
 /// the real kernel, fingerprints and all: names of each form scheme 5 writes, a hole's rim
@@ -38,8 +42,10 @@ fn refused(text: &str) -> silico_core::Error {
 
 #[test]
 fn the_schemes_number_is_the_one_its_bytes_hold() {
-    assert_eq!(NAMING_SCHEME, b"silico naming 5\n");
-    assert_eq!(NAMING_SCHEME_NUMBER, 5);
+    assert_eq!(NAMING_SCHEME, b"silico naming 6\n");
+    assert_eq!(NAMING_SCHEME_NUMBER, 6);
+    // 6 reads 5's names as they are (N10).
+    assert_eq!(NAMING_SCHEMES_READ, [5, 6]);
     assert_eq!(
         NAMING_SCHEME,
         format!("silico naming {NAMING_SCHEME_NUMBER}\n").as_bytes()
@@ -55,12 +61,23 @@ fn a_document_that_records_no_scheme_is_read_as_scheme_5_forever() {
 }
 
 #[test]
-fn the_fixture_reads_and_writes_back_byte_for_byte() {
+fn the_fixture_reads_and_writes_back_differing_in_its_naming_line_alone() {
+    // Saved under 5 and read under 6, which reads 5's names as they are: written back, the
+    // save says 6, and no other byte moves.
     let text = fixture();
+    assert_eq!(text.matches("\n  \"naming\": 5,\n").count(), 1);
     let document = read(text.as_bytes()).unwrap();
     assert_eq!(document.naming, NamingScheme);
     assert_eq!(document.features.len(), 8);
-    assert_eq!(write(&document).unwrap(), text);
+    let written = write(&document).unwrap();
+    assert_eq!(
+        written,
+        text.replacen("\n  \"naming\": 5,\n", "\n  \"naming\": 6,\n", 1)
+    );
+    // And the save reads back as the same document, written alike.
+    let again = read(written.as_bytes()).unwrap();
+    assert_eq!(again, document);
+    assert_eq!(write(&again).unwrap(), written);
 }
 
 #[test]
@@ -72,7 +89,7 @@ fn the_fixtures_names_pass_the_gate() {
 }
 
 #[test]
-fn a_document_without_naming_is_read_as_scheme_5_and_written_with_it() {
+fn a_document_without_naming_is_read_as_scheme_5_and_written_as_6() {
     // Saved before M4.0: keys in another order, spaced otherwise, no `naming`.
     let old = r#"{"units": {"resolution": "1nm", "length": "mm"}, "silico": 1, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}]}"#;
     let document = read(old.as_bytes()).unwrap();
@@ -80,7 +97,7 @@ fn a_document_without_naming_is_read_as_scheme_5_and_written_with_it() {
     let want = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
   ]
@@ -95,14 +112,22 @@ fn a_document_without_naming_is_read_as_scheme_5_and_written_with_it() {
 
 #[test]
 fn naming_is_read_wherever_the_header_writes_it_and_written_after_units() {
-    let first = r#"{"naming": 5, "features": [], "silico": 1, "units": {"length": "mm", "resolution": "1nm"}}"#;
-    let want = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": []\n}\n";
-    assert_eq!(write(&read(first.as_bytes()).unwrap()).unwrap(), want);
+    let want = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": []\n}\n";
+    for scheme in ["5", "6"] {
+        let first = format!(
+            r#"{{"naming": {scheme}, "features": [], "silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}}}"#
+        );
+        assert_eq!(
+            write(&read(first.as_bytes()).unwrap()).unwrap(),
+            want,
+            "{scheme}"
+        );
+    }
 }
 
 #[test]
 fn a_scheme_this_silico_doesnt_read_is_refused_naming_it() {
-    for value in ["4", "6", "0", "99999999999999999999"] {
+    for value in ["4", "7", "0", "99999999999999999999"] {
         let err = refused(&with_naming(value));
         assert_eq!(err.parameter(), Some("naming"), "{value}: {err}");
         assert_eq!(err.feature(), None, "{value}: {err}");
@@ -116,7 +141,7 @@ fn a_scheme_this_silico_doesnt_read_is_refused_naming_it() {
         );
         assert_eq!(
             err.suggestion(),
-            Some("this Silico reads naming scheme 5: open it in the Silico that wrote it"),
+            Some("this Silico reads naming schemes 5 and 6: open it in the Silico that wrote it"),
             "{value}"
         );
     }
@@ -152,7 +177,7 @@ fn a_scheme_that_isnt_a_whole_number_is_refused_as_silico_would_be() {
         );
         assert_eq!(
             err.suggestion(),
-            Some("write naming as a whole number, such as 5"),
+            Some("write naming as a whole number, such as 6"),
             "{value}"
         );
     }
@@ -183,10 +208,12 @@ fn a_scheme_that_isnt_a_whole_number_is_refused_as_silico_would_be() {
 }
 
 #[test]
-fn the_scheme_this_silico_reads_is_read() {
-    let document = read(with_naming("5").as_bytes()).unwrap();
-    assert_eq!(document.naming, NamingScheme);
-    assert!(document.features.is_empty());
+fn the_schemes_this_silico_reads_are_read() {
+    for scheme in ["5", "6"] {
+        let document = read(with_naming(scheme).as_bytes()).unwrap();
+        assert_eq!(document.naming, NamingScheme, "{scheme}");
+        assert!(document.features.is_empty(), "{scheme}");
+    }
 }
 
 #[test]
@@ -257,7 +284,7 @@ fn a_byte_order_mark_before_a_scheme_5_document_is_refused() {
 }
 
 #[test]
-fn the_schema_requires_naming_and_takes_only_5() {
+fn the_schema_requires_naming_and_takes_5_or_6() {
     let schema: serde_json::Value = serde_json::from_str(&schema().unwrap()).unwrap();
     assert_eq!(
         schema["required"],
@@ -273,15 +300,16 @@ fn the_schema_requires_naming_and_takes_only_5() {
     assert_eq!(
         schema["$defs"]["NamingScheme"],
         serde_json::json!({
-            "const": 5,
-            "description": "The naming scheme the document's element names were written under: 5. A document without it was saved before Silico recorded it, and is read as scheme 5."
+            "enum": [5, 6],
+            "description": "The naming scheme the document's element names were written under: 5 or 6, and every save writes 6. A document without it was saved before Silico recorded it, and is read as scheme 5."
         })
     );
     let validator = jsonschema::validator_for(&schema).unwrap();
     let valid = |text: &str| validator.is_valid(&serde_json::from_str(text).unwrap());
     assert!(valid(&with_naming("5")));
+    assert!(valid(&with_naming("6")));
     assert!(valid(&fixture()));
-    for value in ["4", "6", "\"5\"", "5.5", "null"] {
+    for value in ["4", "7", "\"5\"", "\"6\"", "5.5", "null"] {
         assert!(!valid(&with_naming(value)), "{value}");
     }
     // The schema asks new documents to say their scheme; the reader still reads one saved

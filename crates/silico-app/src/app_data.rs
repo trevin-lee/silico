@@ -1,8 +1,9 @@
 //! The app's own files in the platform's app-data folder ([`folder`]): the recent documents
-//! (`crate::recent`) and the side panes' widths (`crate::pane_widths`), each kept by a thread
-//! of its own. What they share is here: where the folder is, a capped read that never hangs
-//! on what isn't a regular file ([`read_capped`]), and a write a reader never sees half of
-//! ([`write`]).
+//! (`crate::recent`), the side panes' widths (`crate::pane_widths`), and the start page's
+//! thumbnails (`crate::thumbs`), each kept by a thread of its own. What they share is here:
+//! where the folder is, capped reads that never hang on what isn't a regular file
+//! ([`read_capped`], [`read_up_to`]), and a write a reader never sees half of ([`write`],
+//! [`write_bytes`]).
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -22,15 +23,7 @@ pub(crate) fn folder() -> Option<PathBuf> {
 /// `file`'s first `max` bytes, if it's a regular file that can be read (a pipe, which could
 /// hang the read, isn't); if there's more, the line the cap cuts is dropped too.
 pub(crate) fn read_capped(file: &Path, max: usize) -> Option<Vec<u8>> {
-    if !std::fs::metadata(file).ok()?.is_file() {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(file)
-        .ok()?
-        .take(max as u64 + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    let mut bytes = read_up_to(file, max)?;
     if bytes.len() > max {
         bytes.truncate(max);
         let whole = bytes
@@ -42,14 +35,34 @@ pub(crate) fn read_capped(file: &Path, max: usize) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
+/// `file`'s first `max` bytes and one more, if there's more, so the caller can tell: none if
+/// it isn't a regular file that can be read (a pipe, which could hang the read, isn't).
+pub(crate) fn read_up_to(file: &Path, max: usize) -> Option<Vec<u8>> {
+    if !std::fs::metadata(file).ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(file)
+        .ok()?
+        .take(max as u64 + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(bytes)
+}
+
 /// The number of the next file written beside a kept one: with the process's ID, a name no
 /// other write, in this instance of the app or another, uses at once.
 static WRITES: AtomicU64 = AtomicU64::new(0);
 
-/// `text` written to `file`, its folder made if it isn't there: to a file of its own beside
+/// `text` written to `file`, as [`write_bytes`] writes it.
+pub(crate) fn write(file: &Path, text: &str) -> std::io::Result<()> {
+    write_bytes(file, text.as_bytes())
+}
+
+/// `bytes` written to `file`, its folder made if it isn't there: to a file of its own beside
 /// it first, flushed to the disk, then moved over it, so a reader never sees half of it;
 /// that file removed if the write fails.
-pub(crate) fn write(file: &Path, text: &str) -> std::io::Result<()> {
+pub(crate) fn write_bytes(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(folder) = file.parent() {
         std::fs::create_dir_all(folder)?;
     }
@@ -62,7 +75,7 @@ pub(crate) fn write(file: &Path, text: &str) -> std::io::Result<()> {
     let beside = PathBuf::from(beside);
     let written = (|| {
         let mut new = std::fs::File::create(&beside)?;
-        new.write_all(text.as_bytes())?;
+        new.write_all(bytes)?;
         new.sync_all()?;
         std::fs::rename(&beside, file)
     })();

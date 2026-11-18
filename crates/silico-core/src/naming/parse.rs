@@ -18,11 +18,17 @@
 //!                                                  from the elements above (1 to 5)
 //!          | feature "." type "." kind "(L " name ( ", " name )* ")"  from those below (1 to 5)
 //!          | feature ".sketch." ( "Edge" | "Vertex" ) "." id     a sketch's curve or point
+//!          | feature "." type "." kind "(" ( "C" | "S" ) instance " " name ")"
+//!                                  a copy (scheme 6, N10): `C` of a tool's element, `S` of
+//!                                  the base solid's, placed at `instance`
 //! source   = ( "M" | "G" | "I" ) [ place ] " " name
 //! place    = count "/" count                                 rank/size, size >= 2
+//! instance = offset ( "," offset )*     one a direction, direction 1's first, the last 1 or more
+//! offset   = "0" | a number from 1, no leading zero, at most 2^32 - 1
 //! type     = "box" | "cylinder" | "sphere" | "cone" | "torus"   a primitive's: by number only
 //!          | "cut" | "fuse" | "common" | "fillet" | "chamfer"   an operation's: any form, its
 //!          | "pad" | "pocket" | "revolve" | "groove"            number the last resort, unstable
+//!          | "linear_pattern" | "polar_pattern" | "mirror"      the only ones that copy
 //!          | "sketch"                    `Face1` (its only region), its IDs, `U` and `L` only
 //! kind     = "Vertex" | "Edge" | "Face" | "Solid"
 //! id       = 8 characters of the ID alphabet
@@ -32,12 +38,22 @@
 //! A sketch's elements are in no solid, so a name that is one, whole, is refused: they
 //! appear only as sources in what a feature made of them (docs/design/m3.6-sketch-features.md,
 //! S4).
+//!
+//! A copy is read by the type word its text writes (N8, N10), whatever the feature is now:
+//! refused under a word that copies nothing, with more offsets than its word has directions
+//! (two for `linear_pattern`, one for `polar_pattern` and `mirror`), in any spelling but an
+//! instance's one (`C`, `C0`, `C2,0`, `C02`, `C2,`), as a tool's copy (`C`) of anything
+//! but a sweep's element (a tool is always a sweep step), or as a solid's copy (`S`) of a
+//! sketch's element, which is in no solid. An instance the feature doesn't make reads, and
+//! finds nothing.
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::build::{MOST_DEPTH, MOST_SOURCES, MOST_WEIGHT};
-use super::{Name, OpCode, Place, PrimitiveKind, Raw, Relation, Source, TypeWord};
+use super::{
+    Copied, Instance, Name, OpCode, Place, PrimitiveKind, Raw, Relation, Source, TypeWord,
+};
 use crate::document::{ElementId, FeatureId, Made, Operation};
 use crate::kernel::{ElementKind, ElementRef};
 
@@ -269,6 +285,9 @@ impl Reader<'_> {
             Head::Whole(name) => return Ok(name),
             Head::Parts(feature, operation, kind) => (feature, operation, kind),
         };
+        if matches!(self.peek(), Some(b'C' | b'S')) {
+            return self.copy(depth, feature, operation, kind);
+        }
         let mut tallest = 0;
         let name = if self.eat("U") {
             let place = self.place()?;
@@ -434,6 +453,111 @@ impl Reader<'_> {
                 )))
             }
         }
+    }
+
+    /// The rest of a copy's name, from its letter (`C` or `S`) on: what `feature`'s
+    /// `operation` made of an element of a tool or of its base solid, placed at an
+    /// instance (N10).
+    #[inline(never)]
+    fn copy(
+        &mut self,
+        depth: u32,
+        feature: FeatureId,
+        operation: OpCode,
+        kind: ElementKind,
+    ) -> Result<Name, NameError> {
+        let Some(directions) = operation.directions() else {
+            return Err(self.error(&format!(
+                "a {} copies nothing: only a linear_pattern, polar_pattern, or mirror names an element by its copy (`(C…)` or `(S…)`)",
+                operation.word()
+            )));
+        };
+        let copied = if self.eat("C") {
+            Copied::Tool
+        } else {
+            self.expect("S")?;
+            Copied::Solid
+        };
+        let mut offsets = Vec::new();
+        // Where the last offset begins.
+        let last_at = loop {
+            let at = self.at;
+            offsets.push(self.offset()?);
+            if !self.eat(",") {
+                break at;
+            }
+            if offsets.len() == directions {
+                // At the `,` that begins one offset too many.
+                self.at -= 1;
+                return Err(self.error(&match directions {
+                    1 => format!(
+                        "a {}'s copy is placed along one direction: its instance is one offset",
+                        operation.word()
+                    ),
+                    _ => format!(
+                        "a {}'s copy is placed along at most {directions} directions: its instance is at most {directions} offsets",
+                        operation.word()
+                    ),
+                }));
+            }
+        };
+        // The one spelling: no trailing zero, so neither the original (every offset 0) nor
+        // an instance written with a zero more than it has.
+        let instance = match (offsets.last(), Instance::new(&offsets)) {
+            (Some(&last), Some(instance)) if last > 0 => instance,
+            _ => {
+                self.at = last_at;
+                return Err(self.error(
+                    "an instance's last offset is 1 or more: trailing zeros are left off, and the original is no copy",
+                ));
+            }
+        };
+        self.expect(" ")?;
+        let inner_at = self.at;
+        let of = self.name(depth + 1)?;
+        let end = self.at;
+        // Where the inner name writes its type, past its feature's ID and its `.`.
+        self.at = inner_at + crate::document::ID_LENGTH + 1;
+        let made = of.type_word();
+        if !copied.wraps(made) {
+            return Err(self.error(&match copied {
+                Copied::Tool => format!(
+                    "a copy marked `C` is of a tool's element, a pad's, pocket's, revolve's, or groove's, and a {made}'s isn't one: a copy of the base solid's element is marked `S`"
+                ),
+                Copied::Solid => "a copy marked `S` is of the base solid's element, and a sketch's elements are in no solid".to_owned(),
+            }));
+        }
+        self.at = end;
+        self.expect(")")?;
+        self.height += 1;
+        if self.height > MOST_DEPTH {
+            return Err(self.too_deep());
+        }
+        Ok(Name::Copy {
+            feature,
+            operation,
+            kind,
+            copied,
+            instance,
+            of: Arc::new(of),
+        })
+    }
+
+    /// An instance's offset: 0, or a number from 1 without a leading zero, that fits in 32
+    /// bits.
+    fn offset(&mut self) -> Result<u32, NameError> {
+        if self.peek() == Some(b'0') {
+            self.at += 1;
+            if self.peek().is_some_and(|b| b.is_ascii_digit()) {
+                self.at -= 1;
+                return Err(self.error("an offset is 0 or a number without a leading zero"));
+            }
+            return Ok(0);
+        }
+        if !self.peek().is_some_and(|b| b.is_ascii_digit()) {
+            return Err(self.error("expected an offset, a whole number from 0"));
+        }
+        Ok(self.count()?.get())
     }
 
     /// A source, `depth` names inside another; [`Reader::height`] its name's.

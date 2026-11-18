@@ -766,7 +766,7 @@ fn version_is_answered_with_every_limit_as_the_design_gives_them_and_no_session(
     assert_eq!(
         write(&response(&ran), Layout::Canonical).unwrap(),
         format!(
-            "{{\n  \"ok\": true,\n  \"session\": null,\n  \"model\": null,\n  \"result\": {{\n    \"api\": 1,\n    \"format\": 1,\n    \"naming\": 5,\n    \"limits\": {}\n  }}\n}}",
+            "{{\n  \"ok\": true,\n  \"session\": null,\n  \"model\": null,\n  \"result\": {{\n    \"api\": 1,\n    \"format\": 1,\n    \"naming\": 6,\n    \"limits\": {}\n  }}\n}}",
             one_line(&VERSION.limits)
         )
     );

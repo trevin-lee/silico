@@ -35,12 +35,17 @@ impl Random {
     }
 }
 
+/// Never -0: a value just below zero rounds to 0, unsigned, as the document's reader refuses
+/// "-0" (adding 0 makes -0 into 0 and leaves every other value as it is).
 fn thousandths(x: f64) -> f64 {
-    (x * 1000.0).round() / 1000.0
+    (x * 1000.0).round() / 1000.0 + 0.0
 }
 
 /// Generated cases whose difference from FreeCAD is understood, as the corpus's are
-/// ([`crate::corpus::Known`]): reported as known wherever a sweep makes them.
+/// ([`crate::corpus::Known`]): reported as known wherever a sweep makes them. Their kind
+/// beyond this one case, FreeCAD's result inside out or invalid where Silico refuses it as
+/// invalid, is a rule ([`crate::without_freecads_no_solid`], with the sweeps' cases measured),
+/// applied after this list.
 pub const KNOWN: &[crate::corpus::Known] = &[crate::corpus::Known {
     case: "generated_15_96",
     difference: "FreeCAD built it; Silico failed: invalid_result: Cut gave an invalid result, \
@@ -309,6 +314,36 @@ mod tests {
         ] {
             assert!(seen.contains(operation), "no {operation} in 300 cases");
         }
+    }
+
+    #[test]
+    fn a_value_rounded_to_zero_from_below_is_zero_not_minus_zero() {
+        // The document's reader refuses -0 ("zero written with a minus sign"), so a value a
+        // generated case writes must never round to it: -0.0004 rounds to 0, unsigned.
+        for x in [-0.0004, -0.0001, -0.0, -1e-12] {
+            let rounded = super::thousandths(x);
+            assert_eq!(
+                rounded.to_bits(),
+                0.0_f64.to_bits(),
+                "{x} rounded to {rounded}"
+            );
+        }
+        // And the rest round as before, their sign kept.
+        assert_eq!(super::thousandths(-0.0006), -0.001);
+        assert_eq!(super::thousandths(-29.9996), -30.0);
+        assert_eq!(super::thousandths(12.3454), 12.345);
+    }
+
+    #[test]
+    fn seed_158s_sketch_edits_are_all_read_and_gated() {
+        // The night of seed 158 (2026-11-12) stopped at edit_158_258: its rectangle's corner,
+        // drawn between -30 and 0, rounded to -0, a dimension's value the reader refuses (its
+        // constraint k0000012), and the sweep exited 2, unrun. Every case must be read and
+        // pass the gate.
+        let edits = super::sketch_edit_cases(158, 500).unwrap();
+        assert_eq!(edits.len(), 500);
+        assert_eq!(edits[258].name, "edit_158_258");
+        assert_eq!(super::sketch_extend_cases(158, 500).unwrap().len(), 500);
     }
 }
 

@@ -31,19 +31,26 @@ use crate::kernel::{BooleanOp, ElementCounts, ElementKind, ElementRef};
 /// this, and its result is kept on disk, so a result another scheme made, from the edges
 /// its names found then, is never taken for this one's (the review found a warm cache
 /// re-pointing a fillet after the cone's numbers changed).
-pub const NAMING_SCHEME: &[u8] = b"silico naming 5\n";
+pub const NAMING_SCHEME: &[u8] = b"silico naming 6\n";
 
 /// The naming scheme's number, the one [`NAMING_SCHEME`] holds: what a document's header
-/// records (`naming`, M4.0) as the scheme its names were written under. Bumped with it.
-pub const NAMING_SCHEME_NUMBER: u32 = 5;
+/// records (`naming`, M4.0) as the scheme its names were written under, and what every
+/// save writes. Bumped with it.
+pub const NAMING_SCHEME_NUMBER: u32 = 6;
+
+/// The schemes whose names this Silico reads, as they are: its own, and 5, of which it's a
+/// strict superset (N10, docs/design/m2.7-naming.md: scheme 6 adds the copy form and three
+/// type words, and every scheme-5 name is a scheme-6 name, written alike, naming the same
+/// element). A document of either is read with no migration; any other is refused, naming
+/// its `naming`.
+pub const NAMING_SCHEMES_READ: [u32; 2] = [5, NAMING_SCHEME_NUMBER];
 
 /// The scheme a document that records none is read as: 5, the scheme Silico named by when
 /// the header gained `naming` (M4.0). Only documents saved before then lack the field, and
 /// their names read safely as scheme 5's: those saved under scheme 4 are the same names,
 /// and scheme 2's are refused or find nothing, never re-pointed (docs/ports/naming.md).
 /// This stays 5 when [`NAMING_SCHEME_NUMBER`] moves on, and such a document is then read as
-/// scheme 5's (and refused, as any other scheme's is, until Silico reads 5's names), never
-/// as the new scheme's.
+/// scheme 5's (as [`NAMING_SCHEMES_READ`] reads 5's names), never as the new scheme's.
 pub const UNRECORDED_NAMING_SCHEME: u32 = 5;
 
 /// The operation that derived an element: written in Silico's form as the document's type
@@ -66,6 +73,12 @@ pub enum OpCode {
     /// A sketch's faces, made of its profile: named by its elements' IDs, its only region
     /// `Face1` (S4).
     Sketch,
+    /// A pattern's or mirror's steps, each fusing copies of a tool or of its base solid into
+    /// its base, or cutting them from it (N10, scheme 6): their copies' elements are named
+    /// [`Name::Copy`], and every input is bitten at every step.
+    LinearPattern,
+    PolarPattern,
+    Mirror,
 }
 
 /// Which of a feature's steps names its elements (design S4): the sweep of a pad's,
@@ -110,7 +123,7 @@ impl From<BooleanOp> for OpCode {
 }
 
 impl OpCode {
-    pub const ALL: [OpCode; 10] = [
+    pub const ALL: [OpCode; 13] = [
         OpCode::Fuse,
         OpCode::Cut,
         OpCode::Common,
@@ -121,6 +134,9 @@ impl OpCode {
         OpCode::Revolve,
         OpCode::Groove,
         OpCode::Sketch,
+        OpCode::LinearPattern,
+        OpCode::PolarPattern,
+        OpCode::Mirror,
     ];
 
     /// The word a name writes, which is the type the document writes.
@@ -136,7 +152,39 @@ impl OpCode {
             OpCode::Revolve => "revolve",
             OpCode::Groove => "groove",
             OpCode::Sketch => "sketch",
+            OpCode::LinearPattern => "linear_pattern",
+            OpCode::PolarPattern => "polar_pattern",
+            OpCode::Mirror => "mirror",
         }
+    }
+
+    /// The most directions a copy's instance may step along, for an operation that copies
+    /// (a linear pattern's two, a polar pattern's or a mirror's one: a mirror is a pattern of
+    /// two instances, N10); none for one that copies nothing, whose names never hold a copy.
+    pub fn directions(self) -> Option<usize> {
+        match self {
+            OpCode::LinearPattern => Some(2),
+            OpCode::PolarPattern | OpCode::Mirror => Some(1),
+            OpCode::Fuse
+            | OpCode::Cut
+            | OpCode::Common
+            | OpCode::Fillet
+            | OpCode::Chamfer
+            | OpCode::Pad
+            | OpCode::Pocket
+            | OpCode::Revolve
+            | OpCode::Groove
+            | OpCode::Sketch => None,
+        }
+    }
+
+    /// Whether it's a sweep feature's (a pad's, pocket's, revolve's, or groove's), whose
+    /// sweep step is the only tool a pattern copies (N10: a copy marked `C` is of one).
+    pub fn sweeps(self) -> bool {
+        matches!(
+            self,
+            OpCode::Pad | OpCode::Pocket | OpCode::Revolve | OpCode::Groove
+        )
     }
 
     /// Whether the operation keeps what of input `input` lies outside its other operand
@@ -158,13 +206,14 @@ impl OpCode {
     /// a fuse both outsides, a fillet or chamfer its input's outside. A pad's or revolve's
     /// fuse, and a pocket's or groove's cut, bite both their base and their own sweep: its
     /// elements already say the feature and its type, and nothing else operates on it. A
-    /// sweep keeps neither side of its profile, which is in no solid. A sketch's faces are
-    /// named by their IDs, never through this; outside, were they asked.
+    /// sweep keeps neither side of its profile, which is in no solid. A pattern's or mirror's
+    /// steps bite every input, base and copies, as a sweep feature's boolean bites its own
+    /// sweep (N10): a copy's side is fixed by its letter and its tool's type word, never by
+    /// an `I`. A sketch's faces are named by their IDs, never through this; outside, were
+    /// they asked.
     pub fn side(self, stage: Stage, input: usize) -> Side {
         match (self, stage) {
-            (OpCode::Pad | OpCode::Pocket | OpCode::Revolve | OpCode::Groove, Stage::Sweep) => {
-                Side::Neither
-            }
+            (op, Stage::Sweep) if op.sweeps() => Side::Neither,
             (OpCode::Cut, _) if input == 0 => Side::Outside,
             (OpCode::Cut | OpCode::Common, _) => Side::Inside,
             (
@@ -175,7 +224,10 @@ impl OpCode {
                 | OpCode::Pocket
                 | OpCode::Revolve
                 | OpCode::Groove
-                | OpCode::Sketch,
+                | OpCode::Sketch
+                | OpCode::LinearPattern
+                | OpCode::PolarPattern
+                | OpCode::Mirror,
                 _,
             ) => Side::Outside,
         }
@@ -185,6 +237,12 @@ impl OpCode {
     /// (`XTR`, `RVL`) for every element it names, its fuse's or cut's too, where FreeCAD
     /// writes `FUS` or `CUT` for those: one word names every step of the feature (S4), so
     /// FreeCAD's form, held for comparison and FreeCAD's orders, says the feature's.
+    ///
+    /// A pattern's or mirror's is `FUS`, though FreeCAD 1.1's `Transformed` cuts a
+    /// subtractive tool's copies (`FeatureTransformed.cpp:392`, `:399` at the 1.1 branch
+    /// point, `af2d42a4aa`), so its form of a cut
+    /// step's elements writes `CUT`: no step names a copy yet, and M6.3 settles the cut
+    /// step's form, pinned by a test, before any does (docs/design/m2.7-naming.md, N10).
     pub fn code(self) -> &'static str {
         match self {
             OpCode::Fuse => "FUS",
@@ -195,7 +253,75 @@ impl OpCode {
             OpCode::Pad | OpCode::Pocket => "XTR",
             OpCode::Revolve | OpCode::Groove => "RVL",
             OpCode::Sketch => "SKT",
+            OpCode::LinearPattern | OpCode::PolarPattern | OpCode::Mirror => "FUS",
         }
+    }
+}
+
+/// What a copy's element is a copy of (N10): an element of a feature's tool, marked `C`
+/// (`t.linear_pattern.Face(C2 q.pocket.Face(…))`), the tool always a sweep step, so its
+/// side is its type word's (a pad's or revolve's fused, a pocket's or groove's cut); or an
+/// element of the base solid, marked `S` (`m.mirror.Face(S1 p.pad.Face(…))`), always fused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Copied {
+    Tool,
+    Solid,
+}
+
+impl Copied {
+    /// The letter a copy's name writes.
+    pub fn letter(self) -> char {
+        match self {
+            Copied::Tool => 'C',
+            Copied::Solid => 'S',
+        }
+    }
+
+    /// Whether a copy of this letter may wrap a name whose type word is `made` (N10): a
+    /// tool's copy (`C`) only a sweep's, a tool being always a sweep step; a solid's (`S`)
+    /// anything but a sketch's, whose elements are in no solid. The one rule the parser
+    /// reads names by and [`ElementMap::copy`] builds them by, so a map never holds a copy
+    /// a reference to it can't store.
+    pub fn wraps(self, made: TypeWord) -> bool {
+        match (self, made) {
+            (Copied::Tool, TypeWord::Operation(op)) => op.sweeps(),
+            (Copied::Tool, TypeWord::Primitive(_)) => false,
+            (Copied::Solid, made) => made != TypeWord::Operation(OpCode::Sketch),
+        }
+    }
+}
+
+/// Where a copy was placed (N10): its steps from the original along each of its feature's
+/// directions, direction 1 first, trailing zeros left off, so its last offset is 1 or more
+/// and the original, every offset 0, is no instance (its elements are unmarked). One
+/// spelling an instance: (2) and (2, 0) are one, written `2`, so a second direction added
+/// renames no copy.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Instance(Box<[u32]>);
+
+impl Instance {
+    /// The instance `offsets` steps from the original along each direction, trailing zeros
+    /// left off; none for the original itself (every offset 0, or none).
+    pub fn new(offsets: &[u32]) -> Option<Instance> {
+        let last = offsets.iter().rposition(|&offset| offset > 0)?;
+        offsets.get(..=last).map(|kept| Instance(kept.into()))
+    }
+
+    /// Its offsets, direction 1's first, the last 1 or more.
+    pub fn offsets(&self) -> &[u32] {
+        &self.0
+    }
+}
+
+impl fmt::Display for Instance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (i, offset) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{offset}")?;
+        }
+        Ok(())
     }
 }
 
@@ -417,6 +543,19 @@ pub enum Name {
         kind: ElementKind,
         id: ElementId,
     },
+    /// A copy of the element `of` names, placed at `instance` by `feature`'s `operation`, a
+    /// pattern or mirror (N10, scheme 6): `of` an element of a feature's tool (`C`) or of
+    /// the base solid (`S`), as `copied` says. The copy's element is the tool's, wrapped once,
+    /// so its parts are `of`'s: a copy of an unstable name is unstable, and the depth bound
+    /// counts a level for it. The original is never a copy: its elements are the base's.
+    Copy {
+        feature: FeatureId,
+        operation: OpCode,
+        kind: ElementKind,
+        copied: Copied,
+        instance: Instance,
+        of: Arc<Name>,
+    },
 }
 
 /// The operation that last modified a [`Name::Modified`] element, for its FreeCAD form
@@ -457,7 +596,8 @@ impl Name {
             Name::Derived { kind, .. }
             | Name::Upper { kind, .. }
             | Name::Lower { kind, .. }
-            | Name::Sketch { kind, .. } => *kind,
+            | Name::Sketch { kind, .. }
+            | Name::Copy { kind, .. } => *kind,
             Name::Duplicate { name, .. } | Name::Modified { name, .. } => name.kind(),
         }
     }
@@ -525,6 +665,10 @@ impl Name {
                     name.collect_features(found, seen);
                 }
             }
+            Name::Copy { feature, of, .. } => {
+                add(feature, found, seen);
+                of.collect_features(found, seen);
+            }
             Name::Duplicate { name, .. } | Name::Modified { name, .. } => {
                 name.collect_features(found, seen);
             }
@@ -539,8 +683,24 @@ impl Name {
             | Name::Derived { feature, .. }
             | Name::Upper { feature, .. }
             | Name::Lower { feature, .. }
-            | Name::Sketch { feature, .. } => feature,
+            | Name::Sketch { feature, .. }
+            | Name::Copy { feature, .. } => feature,
             Name::Duplicate { name, .. } | Name::Modified { name, .. } => name.feature(),
+        }
+    }
+
+    /// The type its text writes after its first feature (N8): a name by number its
+    /// feature's, a derived one or a copy its operation's, a sketch's `sketch`; a duplicate's
+    /// or a modified element's, its name's.
+    pub fn type_word(&self) -> TypeWord {
+        match self {
+            Name::Element { made, .. } => *made,
+            Name::Derived { operation, .. }
+            | Name::Upper { operation, .. }
+            | Name::Lower { operation, .. }
+            | Name::Copy { operation, .. } => TypeWord::Operation(*operation),
+            Name::Sketch { .. } => TypeWord::Operation(OpCode::Sketch),
+            Name::Duplicate { name, .. } | Name::Modified { name, .. } => name.type_word(),
         }
     }
 
@@ -564,7 +724,9 @@ impl Name {
                 .collect(),
             Name::Upper { upper, more, .. } => std::iter::once(upper).chain(more).collect(),
             Name::Lower { first, more, .. } => std::iter::once(first).chain(more).collect(),
-            Name::Duplicate { name, .. } | Name::Modified { name, .. } => vec![name],
+            Name::Duplicate { name, .. }
+            | Name::Modified { name, .. }
+            | Name::Copy { of: name, .. } => vec![name],
         }
     }
 }
@@ -584,6 +746,7 @@ impl Ord for Name {
             Name::Duplicate { .. } => 4,
             Name::Modified { .. } => 5,
             Name::Sketch { .. } => 6,
+            Name::Copy { .. } => 7,
         };
         variant(a).cmp(&variant(b)).then_with(|| match (a, b) {
             (
@@ -681,6 +844,30 @@ impl Ord for Name {
                     id: i,
                 },
             ) => feature.cmp(f).then(kind.cmp(k)).then_with(|| id.cmp(i)),
+            (
+                Name::Copy {
+                    feature,
+                    operation,
+                    kind,
+                    copied,
+                    instance,
+                    of,
+                },
+                Name::Copy {
+                    feature: f,
+                    operation: o,
+                    kind: k,
+                    copied: c,
+                    instance: i,
+                    of: n,
+                },
+            ) => feature
+                .cmp(f)
+                .then(operation.cmp(o))
+                .then(kind.cmp(k))
+                .then(copied.cmp(c))
+                .then_with(|| instance.cmp(i))
+                .then_with(|| of.cmp(n)),
             // Different variants are ordered above; a `Modified` is never an identity.
             _ => std::cmp::Ordering::Equal,
         })
@@ -766,6 +953,21 @@ impl std::hash::Hash for Name {
                 feature.hash(state);
                 kind.hash(state);
                 id.hash(state);
+            }
+            Name::Copy {
+                feature,
+                operation,
+                kind,
+                copied,
+                instance,
+                of,
+            } => {
+                feature.hash(state);
+                operation.hash(state);
+                kind.hash(state);
+                copied.hash(state);
+                instance.hash(state);
+                of.hash(state);
             }
             Name::Modified { .. } => {}
         }
@@ -877,6 +1079,20 @@ impl fmt::Display for Name {
                 "{feature}.{}.{}.{id}",
                 OpCode::Sketch.word(),
                 kind_word(*kind)
+            ),
+            Name::Copy {
+                feature,
+                operation,
+                kind,
+                copied,
+                instance,
+                of,
+            } => write!(
+                f,
+                "{feature}.{}.{}({}{instance} {of})",
+                operation.word(),
+                kind_word(*kind),
+                copied.letter()
             ),
         }
     }

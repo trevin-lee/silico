@@ -649,7 +649,7 @@ fn a_feature_that_isnt_an_object_is_refused_naming_its_place() {
 fn a_feature_written_with_its_fields_out_of_order_and_respaced_is_canonical() {
     let text = "{\"features\":[{\"height\":1,\"width\":1,\"length\":1,\"position\":[0,0,0],\"name\":\"B\",\
                 \"v\":1,\"type\":\"box\",\"id\":\"k7f2qx3m\"}],\"units\":{\"resolution\":\"1nm\",\"length\":\"mm\"},\"silico\":1}";
-    let want = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    \
+    let want = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": [\n    \
                 {\"id\": \"k7f2qx3m\", \"type\": \"box\", \"v\": 1, \"name\": \"B\", \"position\": [0, 0, 0], \"length\": 1, \"width\": 1, \"height\": 1}\n  ]\n}\n";
     assert_eq!(write(&read(text.as_bytes()).unwrap()).unwrap(), want);
 }

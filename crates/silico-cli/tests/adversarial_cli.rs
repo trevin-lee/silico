@@ -35,7 +35,7 @@ const EXAMPLE: &str = r#"{
 const EXAMPLE_CANONICAL: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}
   ]
@@ -116,13 +116,19 @@ impl Ran {
     }
 }
 
-/// Waits for `child` up to `deadline`, killing it after: `status` is `None` if it hung,
-/// and then its stderr ends with where its time went ([`run::diagnosis`]).
-fn finish(child: Child, deadline: Duration) -> Ran {
-    let f = run::finish(child, deadline, true);
+/// Waits for `child` for what's left of the test's budget ([`run::left`]), killing it
+/// after: `status` is `None` if it hung, and then its stderr ends with where its time went
+/// ([`run::diagnosis`]).
+fn finish(child: Child) -> Ran {
+    let f = run::finish(child, run::left(), true);
     let mut stderr = f.stderr.clone();
     if f.status.is_none() {
-        stderr.push_str(&format!("\n(ran past {deadline:?}) {}", run::diagnosis(&f)));
+        stderr.push_str(&format!(
+            "\n(killed after {:?}, when the test's {:?} ran out) {}",
+            f.took,
+            run::BUDGET,
+            run::diagnosis(&f)
+        ));
     }
     Ran {
         status: f.status,
@@ -300,11 +306,10 @@ fn a_fifo_with_no_writer_is_refused_not_waited_on() {
         let child = command(&scratch, &worker(), &[os(c), os("part.silico")])
             .spawn()
             .unwrap();
-        let out = finish(child, run::DEADLINE);
+        let out = finish(child);
         assert!(
             out.status.is_some(),
-            "silico {c} on a FIFO hung for {:?}: {}",
-            run::DEADLINE,
+            "silico {c} on a FIFO hung: {}",
             out.stderr
         );
         assert_eq!(out.code(), Some(2), "{c}: {}", out.stderr);
@@ -349,7 +354,7 @@ fn reading_stops_at_the_most_a_document_may_be() {
         }
         written
     });
-    let out = finish(child, run::DEADLINE);
+    let out = finish(child);
     drop(held);
     let written = writer.join().unwrap();
     assert!(out.status.is_some(), "hung: {}", out.stderr);
@@ -598,7 +603,7 @@ fn fmt_doesnt_overwrite_an_edit_made_while_it_rebuilt() {
     let mut child = command(&scratch, &slow, &[os("fmt"), os("part.silico")])
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + run::DEADLINE;
+    let deadline = std::time::Instant::now() + run::left();
     while !started.exists() {
         assert!(
             child.try_wait().unwrap().is_none(),
@@ -610,7 +615,7 @@ fn fmt_doesnt_overwrite_an_edit_made_while_it_rebuilt() {
     let edited = EXAMPLE.replace(r#""length": 40"#, r#""length": 41"#);
     std::fs::write(&file, &edited).unwrap();
     std::fs::write(&edited_mark, "").unwrap();
-    let out = finish(child, run::DEADLINE);
+    let out = finish(child);
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         edited,
@@ -639,7 +644,7 @@ fn two_fmts_at_once_leave_one_canonical_file_and_nothing_beside_it() {
     let b = command(&scratch, &worker(), &[os("fmt"), os("part.silico")])
         .spawn()
         .unwrap();
-    let (a, b) = (finish(a, run::DEADLINE), finish(b, run::DEADLINE));
+    let (a, b) = (finish(a), finish(b));
     // Each writes, or finds the file the other wrote changed under it and leaves it to
     // them (exit 2, saying so), never writing over it: at least one writes.
     let ok_or_left = |out: &Ran| {

@@ -45,11 +45,17 @@ pub(crate) struct Sheet {
     focused: bool,
 }
 
-/// The sheet over the window: whether it's asked closed (its × or its backdrop).
-pub(crate) fn show(ctx: &egui::Context, sheet: &mut Sheet) -> bool {
+/// The sheet's modal, by its name: what it's drawn on.
+pub(crate) fn id() -> egui::Id {
+    egui::Id::new("shortcut-sheet")
+}
+
+/// The sheet over the window, inert if `behind` a question asked over it (a quit's, a
+/// replace's): whether it's asked closed (its × or its backdrop).
+pub(crate) fn show(ctx: &egui::Context, sheet: &mut Sheet, behind: bool) -> bool {
     let window = ctx.content_rect().width();
     let width = theme::SHEET_WIDTH.min(window - theme::SHEET_WINDOW_MARGIN);
-    let (closed, backdrop) = modal::show_sized(ctx, egui::Id::new("shortcut-sheet"), width, |ui| {
+    let (closed, backdrop) = modal::show_sized(ctx, id(), width, behind, |ui| {
         ui.scope_builder(UiBuilder::new().id_salt("shortcut-sheet"), |ui| {
             ui.ctx().accesskit_node_builder(ui.unique_id(), |node| {
                 node.set_role(egui::accesskit::Role::Dialog);
@@ -523,7 +529,7 @@ mod tests {
         };
         let mut h = Harness::builder().with_size(window).build_ui_state(
             |ui, (sheet, closed): &mut (Sheet, bool)| {
-                *closed |= show(ui.ctx(), sheet);
+                *closed |= show(ui.ctx(), sheet, false);
             },
             (open, false),
         );
@@ -653,21 +659,21 @@ mod tests {
         // Each group's height: its title's 16 line, 4, its 1 underline, 4, and 22 a row.
         let height =
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
-        // By hand: File 5 rows (135), Edit 4 (113: Undo, Redo, Rename, Delete), Rebuild 4
-        // (113: Rebuild, Rebuild everything, Reload, Stop), View 13 (311, Look At its last
-        // key's), Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1 (47). The least
-        // height that takes three columns, filled in order, is 460: below it View can't take
-        // Selection (311 + 14 + 135 = 460), and Selection to Help (135 + 14 + 69 + 14 + 223 +
-        // 14 + 47 = 516) take two more. At 460, File, Edit, and Rebuild (135 + 14 + 113 + 14 +
-        // 113 = 389); View and Selection (460); Dialogs, Sketch, and Help (69 + 14 + 223 + 14
-        // + 47 = 367).
+        // By hand: File 5 rows (135), Edit 5 (135: Undo, Redo, Search commands, Rename,
+        // Delete), Rebuild 4 (113: Rebuild, Rebuild everything, Reload, Stop), View 13 (311,
+        // Look At its last key's), Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1
+        // (47). The least height that takes three columns, filled in order, is 460: below it
+        // View can't take Selection (311 + 14 + 135 = 460), and Selection to Help (135 + 14 +
+        // 69 + 14 + 223 + 14 + 47 = 516) take two more. At 460, File, Edit, and Rebuild (135
+        // + 14 + 135 + 14 + 113 = 411); View and Selection (460); Dialogs, Sketch, and Help
+        // (69 + 14 + 223 + 14 + 47 = 367).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
             (
                 "REBUILD",
                 0,
-                height(5.0) + height(4.0) + 2.0 * css::GROUP_GAP,
+                height(5.0) + height(5.0) + 2.0 * css::GROUP_GAP,
             ),
             ("VIEW", 1, 0.0),
             ("SELECTION", 1, height(13.0) + css::GROUP_GAP),
@@ -975,9 +981,11 @@ mod tests {
         assert!(body.width() < 2.0 * css::COLUMN_MIN_W + css::COLUMN_GAP);
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
         let mut down = 0.0;
+        // Edit's five, as the prototype's `CMD` has them: Undo, Redo, Search commands (S),
+        // Rename, and Delete.
         for (name, rows) in [
             ("FILE", 5.0),
-            ("EDIT", 4.0),
+            ("EDIT", 5.0),
             ("REBUILD", 4.0),
             ("VIEW", 13.0),
             ("SELECTION", 5.0),

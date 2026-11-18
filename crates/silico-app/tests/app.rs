@@ -36,16 +36,17 @@ use tempfile::TempDir;
 use ui::{
     A_BOX, ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT,
     FakeBrowser, In, PLATE, PLATE_END, SKETCHED_EXAMPLE, TRIAD_DOT, TWO_BOXES, added, advance,
-    answer_question, anywhere, arrow_dots, arrow_shafts, begin_sketch_on, body_of, boxed,
-    button_event, choose, chosen, click_in_one_frame, click_over_two_frames, close_window, create,
-    create_sketch, cursor, dialog, dialog_length, dialog_open, double_click, drag, every_face,
-    everything, f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front,
-    hand_clock, hover_item, image_centre, in_status_bar, lavapipe_render_state, leave_sketch,
+    animation_time, answer_question, anywhere, apply_look, arrow_dots, arrow_shafts,
+    begin_sketch_on, body_of, boxed, button_event, choose, chosen, click_in_one_frame,
+    click_over_two_frames, close_window, create, create_sketch, cursor, dialog, dialog_length,
+    dialog_open, double_click, drag, edit_plates_pad, every_face, everything, f2_typed,
+    faces_made_by, failing_kernel, field, fields_of, from_the_front, hand_clock, hover_item,
+    image_centre, in_status_bar, is_settled, lavapipe_render_state, leave_sketch,
     leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
     modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
-    pad_extent, pads_extent, plain_read, plates_pad_from_the_front, pointer_away, press, prompt,
-    redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of, select,
-    selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
+    pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front, pointer_away,
+    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
+    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
     stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
     tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
     view_label, view_label_node, view_mut, wheel, window_told, written,
@@ -112,7 +113,7 @@ impl Fixture {
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
         // The app's look, as main.rs gives it: its fonts above all, without which every
         // text lays out empty and a field's cursor never leaves its start.
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 
@@ -342,7 +343,7 @@ fn in_window(
             .with_size((window + 2.0 * MARGIN, 800.0 + 2.0 * MARGIN))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the panes", |h| {
         h.query_by_role_and_label(Role::Pane, "Viewport").is_some()
@@ -1121,7 +1122,7 @@ fn at_the_windows_least_width_the_app_bar_toolbar_and_status_bar_fit() {
             .with_size((least.0 + 2.0 * MARGIN, least.1 + 2.0 * MARGIN))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the timeline read", |h| {
         h.state()
@@ -1857,7 +1858,7 @@ fn reloaded_sub(from: u64, to: u64) -> String {
 const BLOCK_AND_PLATE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}},
     {"id": "p2t8wn4c", "type": "box", "v": 1, "name": "Plate", "position": [50, 0, 0], "length": 10, "width": 10, "height": 2, "fingerprint": {"volume": 200, "area": 280, "center": [55, 5, 1], "bbox": [50, 0, 0, 60, 10, 2], "faces": 6, "edges": 12, "vertices": 8}}
@@ -2009,11 +2010,11 @@ fn a_reload_lists_features_added_removed_and_moved_each_in_its_words() {
 /// A block, 40 × 20 × 10, in canonical form, with the fingerprint it rebuilds to on the
 /// fake kernel: volume 40 × 20 × 10 = 8000, area 2(800 + 400 + 200) = 2800, centre its
 /// middle, (20, 10, 5), to z = 10.
-const BLOCK_10: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"center\": [20, 10, 5], \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+const BLOCK_10: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 10,\n      \"fingerprint\": {\"volume\": 8000, \"area\": 2800, \"center\": [20, 10, 5], \"bbox\": [0, 0, 0, 40, 20, 10], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 /// The agent's change: the block 11 high, its fingerprint volume 40 × 20 × 11 = 8800, area
 /// 2(800 + 440 + 220) = 2920, centre (20, 10, 5.5), to z = 11.
-const BLOCK_11: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 5,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"center\": [20, 10, 5.5], \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
+const BLOCK_11: &str = "{\n  \"silico\": 1,\n  \"units\": {\"length\": \"mm\", \"resolution\": \"1nm\"},\n  \"naming\": 6,\n  \"features\": [\n    {\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": 40,\n      \"width\": 20,\n      \"height\": 11,\n      \"fingerprint\": {\"volume\": 8800, \"area\": 2920, \"center\": [20, 10, 5.5], \"bbox\": [0, 0, 0, 40, 20, 11], \"faces\": 6, \"edges\": 12, \"vertices\": 8}\n    }\n  ]\n}\n";
 
 /// [`BLOCK_10`] `height` high, with the fingerprint it rebuilds to on the fake kernel:
 /// volume 40 × 20 × `height`, area 2(800 + 40 `height` + 20 `height`), centre its middle,
@@ -2855,7 +2856,7 @@ fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
             };
             h.set_render_every_step(true);
             // The app's fonts, look, and icons, as main.rs sets them, so the shot has words.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("blocks.silico", BLOCK_AND_PLATE);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "its features", |h| {
@@ -3115,7 +3116,7 @@ fn the_waker_asks_a_frame_as_a_held_command_answers_and_idle_frames_come_each_in
                 App::new(Arc::clone(&f.sessions)),
             )
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the tab", |h| !h.state().tabs().is_empty());
     assert!(f.kernel.wait_running(2, WAIT));
@@ -3890,7 +3891,7 @@ fn the_window_for_missing_workers_says_each_and_quits() {
         |ui, app: &mut Missing| app.frame(ui),
         Missing::new(lines.clone()),
     );
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     // Laid out again in the app's fonts, so the click lands where Quit is drawn.
     h.step();
     for line in &lines {
@@ -4911,10 +4912,11 @@ fn sketch_modes_own_edits_are_named_by_the_sketch_and_its_finish_makes_them_one_
     step_until(&mut h, "one counted", |h| {
         in_status_bar(h, "Unsaved · 1 edit")
     });
-    // Create Sketch, Finished: "Add" and the name its add gave it (`'Add ' + name`), the
-    // second sketch of the part.
+    // Create Sketch, a line drawn, Finished: "Add" and the name its add gave it (`'Add ' +
+    // name`), the second sketch of the part.
     create_sketch(&mut h, "XY plane");
     settled(&mut h);
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
     leave_sketch(&mut h, true);
     assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Sketch2");
     assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
@@ -4974,22 +4976,13 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
     // characters with an ellipsis (`changes::SHOWN_CHARS`).
     let f = fixture();
     let (plate, triangle) = ("W".repeat(400), "V".repeat(400));
-    let text = SKETCHED
-        .replace(r#""name": "Plate""#, &format!(r#""name": "{plate}""#))
-        .replace(r#""name": "Triangle""#, &format!(r#""name": "{triangle}""#));
-    let (mut h, _) = f.opened("long.silico", &text);
+    let (mut h, _) = f.opened("long.silico", &sketched_named(&triangle, Some(&plate)));
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", &triangle));
-    let edit = |h: &mut AppHarness, id: &str, sketch: bool| {
+    {
         let sessions = Arc::clone(&f.sessions);
-        let id = silico_core::document::FeatureId::new(id).unwrap();
-        let tab = &mut h.state_mut().tabs_mut()[0];
-        if sketch {
-            tab.edit_sketch(&sessions, &id);
-        } else {
-            tab.edit_feature(&sessions, &id);
-        }
-    };
-    edit(&mut h, "b0000001", false);
+        let plate = silico_core::document::FeatureId::new("b0000001").unwrap();
+        h.state_mut().tabs_mut()[0].edit_feature(&sessions, &plate);
+    }
     step_until(&mut h, "its dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Box").is_some()
     });
@@ -5002,22 +4995,187 @@ fn a_long_named_features_ok_and_a_long_named_sketchs_finish_are_cut_at_sixty_cha
         tooltip_title(&mut h, "Undo"),
         format!("Undo: Edit {}…", "W".repeat(60))
     );
-    edit(&mut h, "s0000001", true);
-    sketch_read(&mut h);
-    settled(&mut h);
+    triangle_edited(&f, &mut h);
     delete_line(&mut h, "na000000");
-    // Finished through the tab: the sketch bar draws the whole name, its Finish past the
-    // window's edge.
-    {
-        let sessions = Arc::clone(&f.sessions);
-        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, true);
-    }
-    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
-    settled(&mut h);
+    // Finished through the sketch bar, whose name is cut to fit (#466).
+    leave_sketch(&mut h, true);
     assert_eq!(
         tooltip_title(&mut h, "Undo"),
         format!("Undo: Edit {}…", "V".repeat(60))
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_long_named_sketchs_bar_keeps_cancel_and_finish_in_the_window_and_finish_finishes_it() {
+    // #466: the triangle named 400 W's, open in sketch mode with a line deleted, at the
+    // window's least size (888 by 336) and at a usual one (1280 by 800). The bar's Cancel and
+    // Finish Sketch lie inside the window, its left and its tag inside the canvas; at 1280 the bar inside the canvas less 10 at its
+    // left and 148 at its right, clear of the ViewCube (1280 − 248 − 296 = 736, so at most
+    // 578 wide); its name whole in the tree,
+    // the painted one cut with an ellipsis. Finish, clicked at its middle, keeps the edit:
+    // one step named for the sketch, cut at 60 characters.
+    let triangle = "W".repeat(400);
+    let text = sketched_named(&triangle, None);
+    let least = (
+        silico_app::theme::WINDOW_MIN_WIDTH,
+        silico_app::theme::WINDOW_MIN_HEIGHT,
+    );
+    assert_eq!(least, (888.0, 336.0));
+    for (width, height) in [least, (1280.0, 800.0)] {
+        let f = fixture();
+        let size = (width + 2.0 * MARGIN, height + 2.0 * MARGIN);
+        let mut h = opened_sized(&f, "long.silico", &text, size);
+        triangle_edited(&f, &mut h);
+        delete_line(&mut h, "na000000");
+        let window = eframe::egui::Rect::from_min_size(
+            eframe::egui::pos2(MARGIN, MARGIN),
+            eframe::egui::vec2(width, height),
+        );
+        let bar = h.get_by_role_and_label(Role::Toolbar, "Sketch bar");
+        for word in ["Cancel", "Finish Sketch"] {
+            let rect = bar.get_by_label(word).rect();
+            assert!(window.contains_rect(rect), "{word} at {rect:?}, {width}");
+        }
+        let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+        // Its left at least 10 inside the canvas, and its tag in the canvas, at each size: at
+        // 888 the canvas is 888 − 248 − 296 = 344 (the panes at the prototype's widths),
+        // narrower than the bar, which runs right from its 10 past the canvas's right, inside
+        // the window.
+        assert!(
+            bar.rect().left() >= canvas.left() + 10.0,
+            "{:?} in {canvas:?}, {width}",
+            bar.rect()
+        );
+        let tag = bar.get_by_label("SKETCH").rect();
+        assert!(canvas.contains_rect(tag), "{tag:?} in {canvas:?}, {width}");
+        if width == least.0 {
+            assert_eq!(canvas.width(), 344.0);
+        }
+        if width == 1280.0 {
+            assert_eq!(canvas.width(), 736.0);
+            let inside = eframe::egui::Rect::from_x_y_ranges(
+                canvas.left() + 10.0..=canvas.right() - 148.0,
+                canvas.y_range(),
+            );
+            assert_eq!(inside.width(), 578.0);
+            assert!(
+                inside.contains_rect(bar.rect()),
+                "{:?} in {canvas:?}",
+                bar.rect()
+            );
+        }
+        let names: Vec<String> = bar
+            .query_all_by_role(Role::Label)
+            .filter_map(|node| node.accesskit_node().value())
+            .collect();
+        assert!(names.contains(&triangle), "{names:?}");
+        // The bar's own (the browser and the timeline paint it too).
+        let painted: Vec<String> = painted_in(&h, bar.rect())
+            .into_iter()
+            .filter_map(|shape| match shape {
+                eframe::egui::Shape::Text(text) if text.galley.text() == triangle => {
+                    Some(text.galley.rows.iter().map(|row| row.text()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        let [shown] = painted.as_slice() else {
+            panic!("{painted:?}");
+        };
+        assert!(shown.ends_with('…'), "{shown}");
+        assert!(shown.starts_with('W') && shown.len() < 400, "{shown}");
+        leave_sketch(&mut h, true);
+        assert_eq!(
+            tooltip_title(&mut h, "Undo"),
+            format!("Undo: Edit {}…", "W".repeat(60))
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+/// [`SKETCHED`] with its triangle named `triangle`, and its plate `plate` if given.
+fn sketched_named(triangle: &str, plate: Option<&str>) -> String {
+    let text = SKETCHED.replace(r#""name": "Triangle""#, &format!(r#""name": "{triangle}""#));
+    match plate {
+        Some(plate) => text.replace(r#""name": "Plate""#, &format!(r#""name": "{plate}""#)),
+        None => text,
+    }
+}
+
+/// [`SKETCHED`]'s triangle opened in sketch mode through the tab, read, and everything
+/// answered.
+fn triangle_edited(f: &Fixture, h: &mut AppHarness) {
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let id = silico_core::document::FeatureId::new("s0000001").unwrap();
+        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &id);
+    }
+    sketch_read(h);
+    settled(h);
+}
+
+#[test]
+fn a_sketch_bar_with_a_usual_long_name_keeps_clear_of_the_viewcube_and_home_view_works() {
+    // #466's review: the triangle named "Mounting bracket base profile" (29 characters) at
+    // 1280 by 800. Centred, the bar would reach the ViewCube's Home view (its column 24 wide,
+    // its right 4 left of the cube, which is 16 in from the canvas's right and 92 wide); it's
+    // kept at least 148 from the canvas's right (`theme::BANNER_MARGIN_RIGHT`, as a banner
+    // is), shifted left, clear of Home view, its ▾, and the cube, its name whole. Front, then
+    // Home view, each clicked at its middle, give their views: from −y, then from
+    // (1, −1, 1)/√3.
+    let f = fixture();
+    let name = "Mounting bracket base profile";
+    assert_eq!(name.chars().count(), 29);
+    let (mut h, _record) = f.drawn("bracket.silico", &sketched_named(name, None));
+    meshes_settled(&mut h);
+    triangle_edited(&f, &mut h);
+    let canvas = h.get_by_role_and_label(Role::Pane, "Viewport").rect();
+    let bar = h.get_by_role_and_label(Role::Toolbar, "Sketch bar").rect();
+    assert!(
+        bar.right() <= canvas.right() - 148.0,
+        "{bar:?} in {canvas:?}"
+    );
+    assert!(bar.left() >= canvas.left() + 10.0, "{bar:?} in {canvas:?}");
+    // Centred it would reach past the 148: so it's moved left, its right at the 148 (to
+    // within the pixel its left is rounded down to).
+    assert!(canvas.center().x + bar.width() / 2.0 > canvas.right() - 148.0);
+    assert!(
+        bar.right() > canvas.right() - 149.0,
+        "{bar:?} in {canvas:?}"
+    );
+    let cube = h.get_by_role_and_label(Role::Group, "ViewCube");
+    let controls = [
+        cube.get_by_label("Home view").rect(),
+        cube.get_by_label("View cube options").rect(),
+        silico_app::viewport::view_cube_rect(canvas),
+    ];
+    for control in controls {
+        assert!(!bar.intersects(control), "{bar:?} over {control:?}");
+    }
+    let rows = painted_in(&h, bar)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            eframe::egui::Shape::Text(text) if text.galley.text() == name => {
+                Some((text.galley.elided, text.galley.rows.len()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(rows, [(false, 1)]);
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Front")
+        .click();
+    step(&mut h);
+    let front = view(&h).camera().clone();
+    near(view_direction(&front), [0.0, -1.0, 0.0], 1e-12);
+    h.get_by_role_and_label(Role::Group, "ViewCube")
+        .get_by_label("Home view")
+        .click();
+    step(&mut h);
+    let d = 1.0 / 3f64.sqrt();
+    near(view_direction(view(&h).camera()), [d, -d, d], 1e-12);
+    assert!(sketch_mode(&h).is_some());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -6168,7 +6326,7 @@ fn save_as_is_off_while_the_tab_closes() {
 const SKETCHED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000002", "type": "box", "v": 1, "name": "Washer", "position": [50, 0, 0], "length": 5, "width": 5, "height": 1},
     {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
@@ -7316,7 +7474,7 @@ fn edit_feature_from_the_context_menu_opens_the_same_dialog() {
 const ROUND_PRIMITIVES: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "e0000001", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5},
     {"id": "e0000002", "type": "cone", "v": 1, "name": "Spike", "position": [30, 0, 0], "radius1": 5, "radius2": 1, "height": 10},
@@ -8348,7 +8506,7 @@ fn a_suppressed_feature_whose_chain_stands_is_the_tip_and_a_consumed_one_never_i
     let consumed = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
     {"id": "b0000002", "type": "box", "v": 1, "name": "Washer", "position": [50, 0, 0], "length": 5, "width": 5, "height": 1},
@@ -9053,7 +9211,7 @@ fn a_stopped_rebuild_with_nothing_published_reads_nothing_more_and_asks_for_no_f
                 App::new(Arc::clone(&f.sessions)),
             )
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     let (mut h, hold) = first_rebuild_stopped_in(&f, h);
     quiet_wakes(&mut h);
     let woken = h.state().wakes();
@@ -10394,7 +10552,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h.state_mut().open(path.to_str().unwrap(), false);
         (h, record)
     }
@@ -12173,7 +12331,7 @@ fn a_middle_double_click_fits() {
 const UNMEASURED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 20, "width": 20, "height": 20}
   ]
@@ -12381,7 +12539,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             // Each frame drawn: egui's paint callbacks prepared and painted, as a window's.
             h.set_render_every_step(true);
             let path = f.file("box.silico", A_BOX);
@@ -12571,6 +12729,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     edges: true,
                     vertices: None,
                     lines: Vec::new(),
+                    planes: Vec::new(),
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
                 ViewRenderer::forget(renderer, 1);
@@ -12593,7 +12752,7 @@ fn a_viewport_with_no_renderer_says_why_in_its_pane() {
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     step(&mut h);
     // With no document, the start page shows, and no viewport.
     assert!(h.query_by_role_and_label(Role::Pane, "Viewport").is_none());
@@ -12691,7 +12850,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h.state_mut().open(path.to_str().unwrap(), false);
         meshes_settled(&mut h);
         h.state_mut().tabs_mut()[0].watch = Some(watching(&seen));
@@ -13527,7 +13686,7 @@ impl Fixture {
         let h = Harness::builder()
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 
@@ -14795,7 +14954,7 @@ fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             // As main.rs does, once at startup.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -15114,7 +15273,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             // As main.rs does, once at startup.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             step(&mut h);
             let ppp = h.ctx.pixels_per_point();
@@ -15281,7 +15440,7 @@ impl Fixture {
         let h = Harness::builder()
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         h
     }
 
@@ -15393,7 +15552,7 @@ fn with_no_document_the_start_page_shows_new_open_recent_and_copy_mcp_config() {
     let f = fixture();
     let mut h = f.remembering();
     let start = start_page(&h);
-    for button in ["New part", "Open…", "Copy MCP config"] {
+    for button in ["New part", "Open…", "Search commands", "Copy MCP config"] {
         assert!(
             start
                 .query_by_role_and_label(Role::Button, button)
@@ -16161,7 +16320,7 @@ fn the_start_page_draws_in_the_themes_colours_on_lavapipe() {
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             recents_read(&mut h);
             for _ in 0..5 {
@@ -16256,6 +16415,863 @@ fn a_recent_documents_click_that_starts_an_open_asks_for_the_next_frame_itself()
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- The start page's extras: Keyboard shortcuts, each row's time, Remove from list, the
+// arrow keys, and a drop (the prototype's `renderStart`, `openRecent`, and `keydown`) ----
+
+/// 2026-11-15 14:30:00 UTC, the wall clock these tests' apps are given: 20,772 days of
+/// 86,400 s from the epoch (56 years of 365 days, 14 leap days, then 318), and 52,200.
+const NOON_AND_A_HALF: i64 = 1_794_753_000;
+
+/// The file at `path` given `seconds` after the epoch as its modified time, as a save does
+/// (std's `File::set_modified`, as the core's cache tests set theirs).
+fn modified_at(path: &Path, seconds: i64) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + Duration::from_secs(seconds.try_into().unwrap()))
+        .unwrap();
+}
+
+impl Fixture {
+    /// The app keeping its recent documents in [`recents_file`](Self::recents_file), which
+    /// lists `paths`, its wall clock `clock`'s seconds after the epoch, the list read.
+    fn remembering_at(
+        &self,
+        paths: &[&Path],
+        clock: &Arc<std::sync::atomic::AtomicI64>,
+    ) -> AppHarness {
+        let file = self.recents_file();
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mut text = String::from("silico recent-documents 1\n");
+        for path in paths {
+            text.push_str(path.to_str().unwrap());
+            text.push('\n');
+        }
+        std::fs::write(&file, text).unwrap();
+        self.remembering_at_file(clock)
+    }
+
+    /// The app keeping its recent documents in [`recents_file`](Self::recents_file) as it
+    /// is, its wall clock `clock`'s, the list read.
+    fn remembering_at_file(&self, clock: &Arc<std::sync::atomic::AtomicI64>) -> AppHarness {
+        let clock = Arc::clone(clock);
+        let wall: silico_app::app::WallClock =
+            Arc::new(move || jiff::Timestamp::from_second(clock.load(Ordering::SeqCst)).ok());
+        let file = self.recents_file();
+        let mut h = self.app_made(|app| app.remembering(Recents::at(file)).dated(wall));
+        recents_read(&mut h);
+        h
+    }
+}
+
+/// The labels in Recent that aren't its rows or its links: each row's time.
+fn recent_times(h: &AppHarness) -> Vec<String> {
+    start_page(h)
+        .get_by_role_and_label(Role::List, "Recent")
+        .query_all_by_role(Role::Label)
+        .filter_map(|node| {
+            // egui gives a label's text as its value.
+            let node = node.accesskit_node();
+            node.label().or_else(|| node.value())
+        })
+        .collect()
+}
+
+#[test]
+fn the_start_pages_keyboard_shortcuts_opens_the_sheet_as_question_mark_does() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    let shortcuts = start_page(&h).get_by_role_and_label(Role::Button, "Keyboard shortcuts");
+    shortcuts.click();
+    step_until(&mut h, "the sheet", sheet_open);
+    // Its close gives the start page back, the sheet closed.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    assert!(start_shown(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_pages_search_commands_opens_the_command_search_as_s_does() {
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    assert!(!search_open(&h));
+    start_page(&h)
+        .get_by_role_and_label(Role::Button, "Search commands")
+        .click();
+    step_until(&mut h, "the search", search_open);
+    step_until(&mut h, "its field focused", search_focused);
+    // Every command listed, as S opens it: New part's row runs as Ctrl+N does.
+    search_for(&mut h, "new part", "New part File");
+    h.key_press(Key::Enter);
+    step_until(&mut h, "the search closed", |h| !search_open(h));
+    step_until(&mut h, "an untitled part", |h| h.state().tabs().len() == 1);
+    assert_eq!(h.state().tabs()[0].name(), "Untitled");
+    step_until(&mut h, "the start page left", |h| !start_shown(h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn each_recent_document_says_when_its_file_was_modified_by_the_wall_clock() {
+    let f = fixture();
+    let recent = f.file("recent.silico", EXAMPLE);
+    let old = f.file("old.silico", EXAMPLE);
+    // Thirty minutes before the clock, and 2001-02-03 12:00 UTC (11,356 days and 43,200 s):
+    // "Feb 3, 2001" in any time zone within 12 hours of UTC.
+    modified_at(&recent, NOON_AND_A_HALF - 30 * 60);
+    modified_at(&old, 981_201_600);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&recent, &old], &clock);
+    step_until(&mut h, "each time", |h| {
+        recent_times(h) == ["30 min ago", "Feb 3, 2001"]
+    });
+    // The clock moves on five minutes: said again at the next frame.
+    clock.store(NOON_AND_A_HALF + 5 * 60, Ordering::SeqCst);
+    step_until(&mut h, "the time said anew", |h| {
+        recent_times(h) == ["35 min ago", "Feb 3, 2001"]
+    });
+    // A document opened, then saved meanwhile (its time set as a save sets it): Home looks
+    // through the list again, and says its new time.
+    open_and_wait(&mut h, &old);
+    // Listed first with the time its open read, 2001's, before it's saved: so the new time
+    // can only come from Home's look through the list.
+    step_until(&mut h, "old listed first with its first time", |h| {
+        h.state()
+            .recents()
+            .and_then(|recents| recents.list().first())
+            .is_some_and(|first| {
+                first.path == old.to_str().unwrap()
+                    && first.modified.map(|time| time.as_second()) == Some(981_201_600)
+            })
+    });
+    modified_at(&old, NOON_AND_A_HALF + 3 * 60);
+    home_button(&h).click();
+    step_until(&mut h, "old's new time, first", |h| {
+        start_shown(h)
+            && recent_names(h) == ["old.silico", "recent.silico"]
+            && recent_times(h) == ["2 min ago", "35 min ago"]
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_looks_through_recent_once_as_it_is_shown_not_at_each_frame() {
+    // Home looks through the list again as the page is shown; while it stays shown, a file
+    // saved meanwhile keeps the time the last look found. The list's thread takes its asks
+    // in order, so once a removal asked after five frames is done, a look asked in any of
+    // them would have been done too.
+    let f = fixture();
+    let part = f.file("part.silico", EXAMPLE);
+    let gone = f.dir.path().join("gone.silico");
+    modified_at(&part, NOON_AND_A_HALF - 30 * 60);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&part, &gone], &clock);
+    step_until(&mut h, "part's time, and gone marked", |h| {
+        recent_times(h).first().map(String::as_str) == Some("30 min ago")
+            && recent_rows(h)
+                .iter()
+                .any(|(name, said)| name == "gone.silico" && said.ends_with(", not found"))
+    });
+    modified_at(&part, NOON_AND_A_HALF - 10 * 60);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    start_page(&h)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    step_until(&mut h, "gone removed", |h| {
+        recent_names(h) == ["part.silico"]
+    });
+    assert_eq!(recent_times(&h), ["30 min ago"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn remove_from_list_drops_a_missing_document_opens_nothing_and_a_restart_reads_it_gone() {
+    let f = fixture();
+    let kept = f.file("kept.silico", EXAMPLE);
+    let gone = f.dir.path().join("gone.silico");
+    let also = f.dir.path().join("also-gone.silico");
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&gone, &kept, &also], &clock);
+    step_until(&mut h, "the missing marked", |h| {
+        recent_rows(h)
+            .iter()
+            .filter(|(_, said)| said.ends_with(", not found"))
+            .count()
+            == 2
+    });
+    let links = |h: &AppHarness| {
+        start_page(h)
+            .query_all_by_role_and_label(Role::Link, "Remove from list")
+            .map(|node| {
+                node.accesskit_node()
+                    .description()
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+    };
+    let (gone_at, kept_at, also_at) = (
+        gone.to_str().unwrap(),
+        kept.to_str().unwrap(),
+        also.to_str().unwrap(),
+    );
+    // A link for each missing document, none for the one that's there.
+    assert_eq!(links(&h), [gone_at, also_at]);
+    start_page(&h)
+        .query_all_by_role_and_label(Role::Link, "Remove from list")
+        .find(|node| node.accesskit_node().description().as_deref() == Some(gone_at))
+        .unwrap()
+        .click();
+    // Said only once the list's thread has dropped it: never with it still listed.
+    step_until(&mut h, "gone removed", |h| {
+        let listed = recent_names(h);
+        assert!(
+            h.state().toast().is_none() || !listed.contains(&"gone.silico".to_owned()),
+            "said removed while still listed: {listed:?}"
+        );
+        listed == ["kept.silico", "also-gone.silico"] && h.state().toast().is_some()
+    });
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Removed gone.silico from Recent")
+    );
+    assert!(anywhere(&h, "Removed gone.silico from Recent"));
+    // The row's own click didn't come with it: nothing opened, and no open's refusal said.
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(h.state().message(), None);
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!("silico recent-documents 1\n{kept_at}\n{also_at}\n")
+    );
+    // The app started again reads the list without it.
+    drop(h);
+    let mut again = f.remembering_at_file(&clock);
+    step_until(&mut again, "the list read again", |h| {
+        recent_names(h) == ["kept.silico", "also-gone.silico"]
+    });
+    // The last missing one removed; kept goes from disk and is removed in turn, by its link
+    // once the list is looked through again (the start page shown again): Recent is empty.
+    start_page(&again)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    step_until(&mut again, "also removed", |h| {
+        recent_names(h) == ["kept.silico"]
+    });
+    std::fs::remove_file(&kept).unwrap();
+    open_and_wait(&mut again, &f.file("other.silico", EXAMPLE));
+    home_button(&again).click();
+    step_until(&mut again, "kept marked", |h| {
+        start_shown(h)
+            && recent_rows(h)
+                .iter()
+                .any(|(name, said)| name == "kept.silico" && said.ends_with(", not found"))
+    });
+    start_page(&again)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    step_until(&mut again, "kept removed", |h| {
+        recent_names(h) == ["other.silico"]
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        format!(
+            "silico recent-documents 1\n{}\n",
+            f.dir.path().join("other.silico").to_str().unwrap()
+        )
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn removing_the_last_recent_document_shows_recents_empty_state() {
+    let f = fixture();
+    let gone = f.dir.path().join("gone.silico");
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&gone], &clock);
+    step_until(&mut h, "gone marked", |h| {
+        recent_rows(h)
+            == [(
+                "gone.silico".to_owned(),
+                format!("{}, not found", gone.to_str().unwrap()),
+            )]
+    });
+    start_page(&h)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    step_until(&mut h, "Recent's empty state", |h| {
+        recent_names(h).is_empty()
+            && start_page(h)
+                .query_by_label("No recent documents yet: each you open or make is listed here.")
+                .is_some()
+    });
+    assert_eq!(
+        std::fs::read_to_string(f.recents_file()).unwrap(),
+        "silico recent-documents 1\n"
+    );
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether Recent's row labelled `name` has the keyboard's focus.
+fn row_focused(h: &AppHarness, name: &str) -> bool {
+    start_page(h)
+        .get_by_role_and_label(Role::List, "Recent")
+        .get_by_role_and_label(Role::Button, name)
+        .accesskit_node()
+        .is_focused()
+}
+
+/// The names of Recent's rows that have the keyboard's focus.
+fn rows_focused(h: &AppHarness) -> Vec<String> {
+    recent_names(h)
+        .into_iter()
+        .filter(|name| row_focused(h, name))
+        .collect()
+}
+
+#[test]
+fn up_and_down_move_along_recent_clamped_and_enter_opens_the_row_focused() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let two = f.file("two.silico", EXAMPLE);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&one, &two], &clock);
+    step_until(&mut h, "both listed", |h| {
+        recent_names(h) == ["one.silico", "two.silico"]
+    });
+    assert!(rows_focused(&h).is_empty());
+    for (key, want) in [
+        (Key::ArrowDown, "one.silico"),
+        (Key::ArrowDown, "two.silico"),
+        (Key::ArrowDown, "two.silico"),
+        (Key::ArrowUp, "one.silico"),
+        (Key::ArrowUp, "one.silico"),
+        (Key::ArrowDown, "two.silico"),
+    ] {
+        h.key_press(key);
+        step(&mut h);
+        step(&mut h);
+        assert_eq!(rows_focused(&h), [want], "after {key:?}");
+    }
+    // Enter opens the row focused, two, as its click does.
+    h.key_press(Key::Enter);
+    step_until(&mut h, "two's tab", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .map(|tab| tab.name().to_owned())
+            .collect::<Vec<_>>()
+            == ["two.silico"]
+    });
+    assert!(!start_shown(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn recents_arrows_are_not_taken_while_typing_or_under_the_sheet() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&one], &clock);
+    step_until(&mut h, "listed", |h| recent_names(h) == ["one.silico"]);
+    // Ctrl+O with no native dialogs: the typed Open's field has the keyboard. ↓ is the
+    // field's, never Recent's.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::O);
+    step_until(&mut h, "the typed Open", |h| anywhere(h, "Open document"));
+    h.get_by_role_and_label(Role::TextInput, "Path").focus();
+    step_until(&mut h, "its field typed in", |h| h.ctx.text_edit_focused());
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert!(rows_focused(&h).is_empty());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the typed Open closed", |h| {
+        !anywhere(h, "Open document")
+    });
+    // The sheet open over the page: its keys, not Recent's.
+    step(&mut h);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert!(rows_focused(&h).is_empty());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    // Nothing over the page: ↓ is Recent's again.
+    step(&mut h);
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(rows_focused(&h), ["one.silico"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_on_a_missing_recent_document_does_what_its_click_does() {
+    let f = fixture();
+    let kept = f.file("kept.silico", EXAMPLE);
+    let gone = f.dir.path().join("gone.silico");
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&gone, &kept], &clock);
+    step_until(&mut h, "gone marked", |h| {
+        recent_rows(h)
+            .first()
+            .is_some_and(|(_, said)| said.ends_with(", not found"))
+    });
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(rows_focused(&h), ["gone.silico"]);
+    h.key_press(Key::Enter);
+    // As a click on it (a_recent_document_no_longer_there_is_said_and_dropped_from_the_list):
+    // its open refused, said, and it's dropped from the list.
+    let folder = f.dir.path().display().to_string();
+    let said =
+        format!("gone.silico isn't in {folder} any more, so it's no longer listed in Recent");
+    step_until(&mut h, "gone said and dropped", |h| {
+        h.state().message() == Some(said.as_str()) && recent_names(h) == ["kept.silico"]
+    });
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A file dropped on the window, as eframe gives it.
+#[derive(Debug)]
+struct Dropped(PathBuf);
+
+impl eframe::egui::DroppedFile for Dropped {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+
+    fn bytes(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.0).map_err(|e| e.to_string())
+    }
+}
+
+/// `paths` dropped on the window together, in that order, taken by the next frame.
+fn dropped(h: &mut AppHarness, paths: &[&Path]) {
+    for path in paths {
+        h.input_mut()
+            .dropped_files
+            .push(Arc::new(Dropped(path.to_path_buf())));
+    }
+    step(h);
+}
+
+/// The open tabs' names, in their order.
+fn tab_names(h: &AppHarness) -> Vec<String> {
+    h.state()
+        .tabs()
+        .iter()
+        .map(|tab| tab.name().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_silico_file_dropped_on_the_start_page_opens_and_is_listed_in_recent() {
+    let f = fixture();
+    let part = f.file("part.silico", EXAMPLE);
+    let mut h = f.remembering();
+    dropped(&mut h, &[&part]);
+    step_until(&mut h, "part's tab", |h| tab_names(h) == ["part.silico"]);
+    assert_eq!(
+        h.state().tabs()[0].path.as_deref(),
+        Some(part.to_str().unwrap())
+    );
+    assert!(!start_shown(&h));
+    home_button(&h).click();
+    step_until(&mut h, "Recent", |h| {
+        start_shown(h) && recent_names(h) == ["part.silico"]
+    });
+    assert_eq!(h.state().toast(), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn several_files_dropped_open_in_order_and_those_not_silico_are_named_in_a_toast() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let notes = f.file("notes.txt", "not a part");
+    let two = f.file("two.SILICO", EXAMPLE);
+    let picture = f.file("photo.png", "");
+    let mut h = f.app();
+    step(&mut h);
+    dropped(&mut h, &[&one, &notes, &two, &picture]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("notes.txt, photo.png aren't .silico documents, so they weren't opened")
+    );
+    // The toast on the start page, over its bottom right.
+    step(&mut h);
+    assert!(anywhere(
+        &h,
+        "notes.txt, photo.png aren't .silico documents, so they weren't opened"
+    ));
+    step_until(&mut h, "both tabs", |h| {
+        tab_names(h) == ["one.silico", "two.SILICO"]
+    });
+    // The last dropped shown, as the last of several opens asked is.
+    let shown = h.get_by_role_and_label(Role::Button, "two.SILICO");
+    assert_eq!(toggled(&shown), Some(true));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_dropped_that_isnt_silico_is_refused_by_name_and_nothing_opens() {
+    let f = fixture();
+    let notes = f.file("notes.txt", EXAMPLE);
+    let mut h = f.app();
+    step(&mut h);
+    dropped(&mut h, &[&notes]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("notes.txt isn't a .silico document, so it wasn't opened")
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(h.state().message(), None);
+    assert!(start_shown(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_silico_file_dropped_with_a_document_open_opens_a_tab_and_one_open_already_is_shown() {
+    let f = fixture();
+    let (mut h, first) = f.opened("first.silico", EXAMPLE);
+    let second = f.file("second.silico", EXAMPLE);
+    dropped(&mut h, &[&second]);
+    step_until(&mut h, "second's tab, shown", |h| {
+        tab_names(h) == ["first.silico", "second.silico"]
+            && toggled(&h.get_by_role_and_label(Role::Button, "second.silico")) == Some(true)
+    });
+    // The first dropped again: its tab shown, not opened a second time.
+    dropped(&mut h, &[&first]);
+    step_until(&mut h, "first shown", |h| {
+        toggled(&h.get_by_role_and_label(Role::Button, "first.silico")) == Some(true)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(tab_names(&h), ["first.silico", "second.silico"]);
+    assert_eq!(h.state().message(), None);
+    // A file that isn't one dropped over the document: refused in the canvas's toast.
+    let picture = f.file("photo.png", "");
+    dropped(&mut h, &[&picture]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("photo.png isn't a .silico document, so it wasn't opened")
+    );
+    step(&mut h);
+    assert!(anywhere(
+        &h,
+        "photo.png isn't a .silico document, so it wasn't opened"
+    ));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dropped_silico_that_isnt_a_document_is_refused_as_opens_pick_of_it_is() {
+    let f = fixture();
+    // A folder by a document's name: there, but no document.
+    let folder = f.dir.path().join("folder.silico");
+    std::fs::create_dir(&folder).unwrap();
+    let mut opened = f.app();
+    step(&mut opened);
+    opened.state_mut().open(folder.to_str().unwrap(), false);
+    step_until(&mut opened, "Open's refusal", |h| {
+        h.state().message().is_some()
+    });
+    let refused = opened.state().message().unwrap().to_owned();
+    drop(opened);
+    let mut h = f.app();
+    step(&mut h);
+    dropped(&mut h, &[&folder]);
+    step_until(&mut h, "the drop's refusal", |h| {
+        h.state().message().is_some()
+    });
+    assert_eq!(h.state().message(), Some(refused.as_str()));
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(h.state().toast(), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// `name`'s tab edited, unsaved: its Pin renamed PinQ.
+fn pin_renamed(h: &mut AppHarness, name: &str) {
+    step_until(h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(h, "Pin");
+    type_name(h, "Q");
+    step_until(h, "unsaved", |h| anywhere(h, &format!("{name} *")));
+}
+
+#[test]
+fn a_file_dropped_while_a_quit_closes_the_tabs_isnt_opened_and_the_window_still_closes() {
+    let f = fixture();
+    let (mut h, a) = f.opened("a.silico", EXAMPLE);
+    let b = f.file("b.silico", EXAMPLE);
+    pin_renamed(&mut h, "a.silico");
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    // Save all, its save held: the quit closing the tabs, no question asked.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.get_by_role_and_label(Role::Button, "Save all")
+        .click_accesskit();
+    step_until(&mut h, "the question answered", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_none()
+    });
+    assert_eq!(tab_names(&h), ["a.silico"]);
+    dropped(&mut h, &[&b]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Quitting: b.silico not opened")
+    );
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(names_in(&a), ["Block", "PinQ", "Hole"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_dropped_under_a_question_isnt_opened_and_the_quit_it_asks_goes_on() {
+    let f = fixture();
+    let (mut h, _) = f.opened("a.silico", EXAMPLE);
+    let b = f.file("b.silico", EXAMPLE);
+    pin_renamed(&mut h, "a.silico");
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    dropped(&mut h, &[&b]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Answer the question first: b.silico not opened")
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(tab_names(&h), ["a.silico"]);
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step_until(&mut h, "the window closing", |h| {
+        window_told(h, ViewportCommand::Close)
+    });
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn recents_arrows_are_not_taken_under_a_question_or_with_a_menu_open() {
+    let f = fixture();
+    let one = f.file("one.silico", EXAMPLE);
+    let a = f.file("a.silico", EXAMPLE);
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&one], &clock);
+    // A menu open over the start page: File's.
+    step_until(&mut h, "listed", |h| recent_names(h) == ["one.silico"]);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(eframe::egui::Popup::is_any_open(&h.ctx), "File's menu");
+    h.key_press(Key::ArrowDown);
+    step(&mut h);
+    step(&mut h);
+    assert!(rows_focused(&h).is_empty());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| {
+        !eframe::egui::Popup::is_any_open(&h.ctx)
+    });
+    // A question asked over Home: a quit with an edited document.
+    open_and_wait(&mut h, &a);
+    pin_renamed(&mut h, "a.silico");
+    home_button(&h).click();
+    step_until(&mut h, "Home", |h| {
+        start_shown(h) && recent_names(h) == ["a.silico", "one.silico"]
+    });
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    assert!(start_shown(&h));
+    // Save all focused, then ↓ alone in a frame's input (egui_kittest's key_press steps a
+    // frame for its release too): the focus stays on one of the question's buttons. Were
+    // the arrows Recent's under it, ↓ would hand the focus to a row behind the modal, which
+    // egui takes back at once, leaving nothing focused.
+    h.get_by_role_and_label(Role::Button, "Save all").focus();
+    step(&mut h);
+    step(&mut h);
+    let on_the_question = |h: &AppHarness| {
+        ["Don't save", "Cancel", "Save all"].iter().any(|label| {
+            h.get_by_role_and_label(Role::Button, label)
+                .accesskit_node()
+                .is_focused()
+        })
+    };
+    assert!(on_the_question(&h), "Save all never focused");
+    h.input_mut().events.push(eframe::egui::Event::Key {
+        key: Key::ArrowDown,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Modifiers::NONE,
+    });
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(rows_focused(&h).is_empty());
+        assert!(on_the_question(&h), "the question's focus lost");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_dropped_under_the_command_search_isnt_opened() {
+    // The command search is a modal too (#487, #528): a drop under it is said and opens
+    // nothing.
+    let f = fixture();
+    let b = f.file("b.silico", EXAMPLE);
+    let mut h = f.app();
+    step(&mut h);
+    h.key_press(Key::S);
+    step_until(&mut h, "the search", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Search commands")
+            .is_some()
+    });
+    dropped(&mut h, &[&b]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Close the command search first: b.silico not opened")
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_file_dropped_under_the_shortcut_sheet_isnt_opened_until_it_closes() {
+    // No input acts behind a modal (#487), the sheet's too: the drop is said, and opens
+    // nothing, until the sheet has gone.
+    let f = fixture();
+    let b = f.file("b.silico", EXAMPLE);
+    let mut h = f.app();
+    step(&mut h);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    dropped(&mut h, &[&b]);
+    assert_eq!(
+        h.state().toast().map(|(said, _)| said),
+        Some("Close the shortcut sheet first: b.silico not opened")
+    );
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(h.state().tabs().is_empty());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    dropped(&mut h, &[&b]);
+    step_until(&mut h, "b's tab", |h| tab_names(h) == ["b.silico"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_dropped_by_another_path_to_an_open_one_is_refused_as_the_core_says() {
+    let f = fixture();
+    let (mut h, first) = f.opened("first.silico", EXAMPLE);
+    let second = f.file("second.silico", EXAMPLE);
+    open_and_wait(&mut h, &second);
+    // The fixture's folder again through a link: another path, its text unlike the tab's.
+    let link = f.dir.path().join("link");
+    std::os::unix::fs::symlink(f.dir.path(), &link).unwrap();
+    let through = link.join("first.silico");
+    assert_ne!(through, first);
+    // Not the tab's path's text: opened, and refused by the core, which holds it in the
+    // first tab's session, its refusal said as Open's is (the app never reads the session
+    // out of the message; m4.1-command-api.md: a client switches on the code).
+    dropped(&mut h, &[&through]);
+    let holder = h.state().tabs()[0].id.to_string();
+    step_until(&mut h, "the core's refusal said", |h| {
+        h.state()
+            .message()
+            .is_some_and(|said| said.contains(&format!("is already open in session {holder}")))
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(tab_names(&h), ["first.silico", "second.silico"]);
+    assert_eq!(
+        toggled(&h.get_by_role_and_label(Role::Button, "second.silico")),
+        Some(true)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_removal_whose_list_cant_be_written_is_said_and_the_row_stays() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let gone = f.dir.path().join("gone.silico");
+    let clock = Arc::new(std::sync::atomic::AtomicI64::new(NOON_AND_A_HALF));
+    let mut h = f.remembering_at(&[&gone], &clock);
+    step_until(&mut h, "gone marked", |h| {
+        recent_rows(h)
+            .first()
+            .is_some_and(|(_, said)| said.ends_with(", not found"))
+    });
+    // The list's folder read-only: its file can't be written anew.
+    let folder = f.recents_file().parent().unwrap().to_path_buf();
+    let before = std::fs::read_to_string(f.recents_file()).unwrap();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    start_page(&h)
+        .get_by_role_and_label(Role::Link, "Remove from list")
+        .click();
+    let said = "gone.silico couldn't be removed from Recent: its list couldn't be written";
+    // Stepped by hand, not by step_until, so the folder is made writable again whatever
+    // happens (the test's directory removed after).
+    let told = (0..2000).any(|_| {
+        step(&mut h);
+        std::thread::sleep(Duration::from_millis(5));
+        h.state().toast().map(|(toast, _)| toast) == Some(said)
+    });
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(told, "never said; the toast: {:?}", h.state().toast());
+    // Still listed, still missing, as the file still has it.
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(
+        recent_rows(&h),
+        [(
+            "gone.silico".to_owned(),
+            format!("{}, not found", gone.to_str().unwrap())
+        )]
+    );
+    assert_eq!(std::fs::read_to_string(f.recents_file()).unwrap(), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- The app bar (docs/design/m5-ui/DESIGN.md, *Layout*; styles.css's `.ab-*`, `.doc-tab`) ----
 
 impl Fixture {
@@ -16263,7 +17279,7 @@ impl Fixture {
     /// `names` open, each the example, the last shown.
     fn themed_with(&self, names: &[&str]) -> AppHarness {
         let mut h = self.app();
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         for name in names {
             let path = self.file(name, EXAMPLE);
             open_and_wait(&mut h, &path);
@@ -16412,6 +17428,126 @@ fn the_app_bar_holds_home_file_save_undo_and_redo_then_the_tabs_as_the_prototype
     };
     assert!(left_border("example.silico"));
     assert!(!left_border("other.silico"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Where the app bar's items end, 8 short of its right (`#appbar`'s padding). The harness
+/// draws the app inset in the window by as much at each side as Home is inset from the
+/// window's left beyond the bar's padding and gap (8 and 2, off macOS).
+fn bar_right(h: &AppHarness, window: eframe::egui::Rect) -> f32 {
+    let inset = home_button(h).rect().left() - (8.0 + 2.0) - window.left();
+    window.right() - inset - 8.0
+}
+
+#[test]
+fn after_the_tabs_the_app_bar_holds_new_part_then_search_and_shortcuts_at_its_right() {
+    let f = fixture();
+    let mut h = f.themed_with(&["example.silico", "other.silico"]);
+    let rect = |h: &AppHarness, label: &str| bar_button(h, label).rect();
+    let window = h.ctx.content_rect();
+    // `.ab-btn`, an icon alone: 24 by 22, centred on the tabs' row.
+    for label in ["New part", "Search commands", "Keyboard shortcuts"] {
+        assert_eq!(
+            rect(&h, label).size(),
+            eframe::egui::vec2(24.0, 22.0),
+            "{label}"
+        );
+        assert_eq!(
+            rect(&h, label).center().y,
+            rect(&h, "Redo").center().y,
+            "{label}"
+        );
+    }
+    // New part, 2 (`#appbar`'s `gap`) and 4 (its `margin-left`) beyond the last tab; the
+    // tab ends 6 of padding and its 1 point border after its ×.
+    let near = |a: f32, b: f32| (a - b).abs() <= 1.0 / 16.0;
+    let last = rect(&h, "Close other.silico").right() + 6.0 + 1.0;
+    let gap = rect(&h, "New part").left() - last;
+    assert!(near(gap, 2.0 + 4.0), "{gap}");
+    // Keyboard shortcuts 8 short of the bar's right (`#appbar`'s padding), Search commands
+    // 2 before it (`.ab-right`'s `gap`).
+    assert!(near(
+        rect(&h, "Keyboard shortcuts").right(),
+        bar_right(&h, window)
+    ));
+    assert!(near(
+        rect(&h, "Keyboard shortcuts").left() - rect(&h, "Search commands").right(),
+        2.0
+    ));
+    // Each runs as its key does: Search commands opens the command search, Keyboard
+    // shortcuts the sheet, and New part an untitled part, shown.
+    bar_button(&h, "Search commands").click();
+    step_until(&mut h, "the search", search_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the search closed", |h| !search_open(h));
+    bar_button(&h, "Keyboard shortcuts").click();
+    step_until(&mut h, "the sheet", sheet_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    bar_button(&h, "New part").click();
+    step_until(&mut h, "its tab", |h| h.state().tabs().len() == 3);
+    assert_eq!(h.state().tabs()[2].name(), "Untitled");
+    step_until(&mut h, "it shown", |h| {
+        toggled(&bar_button(h, "Untitled")) == Some(true)
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn tabs_wider_than_the_bar_scroll_under_new_part_and_the_right_group_never_cover_them() {
+    let f = fixture();
+    let mut h = f.themed_with(&["first.silico", "second.silico", "third.silico"]);
+    // Too narrow for the three tabs: the strip scrolls, and what's after it keeps its place.
+    h.set_size(eframe::egui::vec2(560.0, 400.0));
+    step(&mut h);
+    step(&mut h);
+    let rect = |label: &str| bar_button(&h, label).rect();
+    let near = |a: f32, b: f32| (a - b).abs() <= 1.0 / 16.0;
+    let window = h.ctx.content_rect();
+    assert_eq!(window.width(), 560.0);
+    assert!(near(
+        rect("Keyboard shortcuts").right(),
+        bar_right(&h, window)
+    ));
+    // The spacer at its least: New part 2 before Search commands, and the strip's room
+    // ending 2 + 4 before New part.
+    let gap = rect("Search commands").left() - rect("New part").right();
+    assert!(near(gap, 2.0), "{gap}");
+    // The tabs drawn past the strip's room are clipped there: no tab's ink reaches New
+    // part.
+    let strip_end = rect("New part").left() - 6.0;
+    assert!(
+        rect("third.silico").right() > strip_end,
+        "the tabs fit: {:?}",
+        rect("third.silico")
+    );
+    // The shapes drawn after Redo in the bar's row, reaching past the strip's end and
+    // starting short of New part: a tab's fill, text, or border, not the bar's own
+    // background or border, which start at its left. Some are there (the shown tab, cut
+    // by the strip), each clipped at the strip's end, never beyond it: the tabs scroll
+    // under nothing.
+    let tabs_left = rect("Redo").right();
+    let past: Vec<_> = h
+        .output()
+        .shapes
+        .iter()
+        .filter(|clipped| {
+            let bounds = clipped.shape.visual_bounding_rect();
+            bounds.is_positive()
+                && bounds.min.y < 29.0
+                && bounds.min.x > tabs_left
+                && bounds.max.x > strip_end + 1.0 / 16.0
+                && bounds.min.x < rect("New part").left()
+        })
+        .map(|clipped| clipped.clip_rect.max.x)
+        .collect();
+    assert!(!past.is_empty(), "no tab reaches past the strip's end");
+    let reaching: Vec<f32> = past
+        .iter()
+        .copied()
+        .filter(|clip| (clip - strip_end).abs() > 1.0 / 16.0)
+        .collect();
+    assert!(reaching.is_empty(), "{reaching:?}");
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -16724,9 +17860,15 @@ fn tabs_wider_than_the_bar_scroll_across_rather_than_squeeze() {
     // Wider than the window, so scrolled: the newest, shown, in view at the right; the
     // first out of view, left of the separator.
     assert!(width(&h, last) * 12.0 > window.width());
+    // The strip ends 2 + 4 before New part (#appbar's gap, its margin): the newest tab, its
+    // × with 6 of padding and the 1 point border after it, in view short of that, within
+    // the half point the scroll's offset can leave (it ends 0.1 past, scrolled to).
+    let strip_end = bar_button(&h, "New part").rect().left() - 6.0;
     assert!(
-        bar_button(&h, &close(last)).rect().right() <= window.right(),
-        "{window:?}"
+        bar_button(&h, &close(last)).rect().right() + 6.0 + 1.0 <= strip_end + 0.5,
+        "{:?} {strip_end} {:?}",
+        bar_button(&h, &close(last)).rect(),
+        bar_button(&h, last).rect()
     );
     assert!(bar_button(&h, &names[0]).rect().left() < redo.right());
     // The wheel over the tabs scrolls them back: the first where it was, after the
@@ -16754,7 +17896,7 @@ fn tabs_wider_than_the_bar_scroll_across_rather_than_squeeze() {
         step(&mut h);
     }
     let shown = bar_button(&h, "Close document-12.silico").rect();
-    assert!(shown.right() <= window.right(), "{shown:?}");
+    assert!(shown.right() + 6.0 + 1.0 <= strip_end + 0.5, "{shown:?}");
     assert!(shown.left() > redo.right(), "{shown:?}");
     assert_eq!(never_waits::waits(), 0);
 }
@@ -16779,7 +17921,7 @@ fn the_app_bar_draws_the_shown_tab_in_gray_200_on_lavapipe() {
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("bracket.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -17373,7 +18515,7 @@ fn toolbar_with(
             },
             stub,
         );
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.step();
     h.step();
     h
@@ -17724,7 +18866,7 @@ fn the_toolbar_draws_solid_in_gray_200_and_its_hovered_button_in_gray_300_on_lav
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("bracket.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -17881,14 +19023,23 @@ fn the_browser_lists_the_document_then_origin_bodies_and_sketches_each_row_with_
     assert!(bodies.query_by_label("Triangle").is_none());
     let sketches = browser(&h).get_by_role_and_label(Role::Group, "Sketches");
     assert!(sketches.query_by_label("Triangle").is_some());
-    // An eye on each row of a thing that can be hidden; a caret on the document's and each
-    // header's.
-    for name in ["Origin", "X", "XY", "Washer", "Plate", "Triangle"] {
+    // An eye on each row of a thing that can be hidden, an origin plane's closed (they open
+    // hidden, as the prototype's do), and the Origin folder's, the planes'; a caret on the
+    // document's and each header's.
+    for name in ["Origin", "X", "Washer", "Plate", "Triangle"] {
         assert!(
             browser(&h)
                 .query_by_label(&format!("Hide {name}"))
                 .is_some(),
             "{name}"
+        );
+    }
+    for named in ["XY", "origin planes"] {
+        assert!(
+            browser(&h)
+                .query_by_label(&format!("Show {named}"))
+                .is_some(),
+            "{named}"
         );
     }
     for name in ["sketched", "Origin", "Bodies", "Sketches"] {
@@ -17960,7 +19111,7 @@ fn an_empty_group_says_what_makes_its_first_row() {
 const METAS: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000002", "type": "box", "v": 1, "name": "Washer", "position": [50, 0, 0], "length": 5, "width": 5, "height": 1},
     {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
@@ -18117,7 +19268,7 @@ fn health_of(h: &AppHarness, name: &str) -> Option<silico_core::timeline::Health
 const SUPPRESSED_BELOW: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
@@ -18152,7 +19303,7 @@ fn a_suppressed_feature_below_a_tip_in_error_is_skipped_for_the_meta() {
 const NONE_HEALTHY: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10, "fingerprint": {"volume": 1, "area": 6, "center": [0, 0, 0], "bbox": [0, 0, 0, 1, 1, 1], "faces": 6, "edges": 12, "vertices": 8}},
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
@@ -18431,7 +19582,7 @@ fn a_400_character_meta_is_cut_short_and_leaves_the_rows_name_room() {
 const TWINS: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Cube", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50},
     {"id": "a91cw0de", "type": "box", "v": 1, "name": "Cube", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
@@ -18634,7 +19785,7 @@ fn h_with_a_feature_the_browser_doesnt_list_selected_hides_nothing() {
 const SKETCHED_FAILING: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000002", "type": "box", "v": 1, "name": "Washer", "position": [50, 0, 0], "length": 5, "width": 5, "height": 1},
     {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
@@ -18669,7 +19820,7 @@ fn the_browsers_rows_are_filled_as_the_prototype_fills_them_and_its_mark_is_red_
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("sketched.silico", SKETCHED_FAILING);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -18724,7 +19875,7 @@ fn the_browsers_rows_are_filled_as_the_prototype_fills_them_and_its_mark_is_red_
 const LADDER: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []},
@@ -19110,7 +20261,7 @@ fn the_timeline_draws_a_selected_item_blue_and_a_failed_one_red_on_lavapipe() {
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("ladder.silico", LADDER);
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -19870,7 +21021,7 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             // Two features, each healthy, with no warning's line along its bottom, which
             // would take the ring's place (`.warn`'s `box-shadow`, after
@@ -20608,6 +21759,70 @@ fn press_chord(h: &mut AppHarness, chord: Chord) {
     }
 }
 
+/// One way to run a command of the registry: one of its chords pressed, or the command
+/// search.
+#[derive(Debug, Clone, Copy)]
+enum Way {
+    Keys(Chord),
+    Search(Command),
+}
+
+/// The ways `command` is run: each of its chords, or, `search`, the command search alone.
+fn ways_of(command: Command, search: bool) -> Vec<Way> {
+    if search {
+        vec![Way::Search(command)]
+    } else {
+        keys_of(command).into_iter().map(Way::Keys).collect()
+    }
+}
+
+/// `way` taken: its chord pressed, or the command run from the search
+/// ([`run_from_search`]).
+fn by_way(h: &mut AppHarness, way: Way) {
+    match way {
+        Way::Keys(chord) => press_chord(h, chord),
+        Way::Search(command) => run_from_search(h, command),
+    }
+}
+
+/// `command` run from the command search as a person runs it: any field let go of (a click
+/// on the toolbar's tab), S, its name typed, and its row, which must be on, clicked; stepped
+/// until the search closes.
+fn run_from_search(h: &mut AppHarness, command: Command) {
+    if h.ctx.text_edit_focused() {
+        let tab = if h.query_by_role_and_label(Role::Tab, "SKETCH").is_some() {
+            "SKETCH"
+        } else {
+            "SOLID"
+        };
+        h.get_by_role_and_label(Role::Tab, tab).click();
+        step(h);
+        step(h);
+        assert!(!h.ctx.text_edit_focused(), "a field still has the keyboard");
+    }
+    open_search(h);
+    let entry = command.entry();
+    let words = format!("{} {}", entry.label, entry.group.name());
+    search_field(h).type_text(entry.label);
+    step_until(h, &words, |h| {
+        search_field(h).value().as_deref() == Some(entry.label) && search_words(h).contains(&words)
+    });
+    assert!(
+        !search_row(h, &words).accesskit_node().is_disabled(),
+        "{words} is off"
+    );
+    search_row(h, &words).click();
+    if command == Command::Search {
+        // It opens the search again, empty, at once (the frame it closes in can be a pass
+        // of the step that opens it again).
+        step_until(h, "the search opened again", |h| {
+            search_field(h).value().as_deref() == Some("")
+        });
+    } else {
+        step_until(h, "the search closed", |h| !search_open(h));
+    }
+}
+
 /// `command`'s chords, each a key's.
 fn keys_of(command: Command) -> Vec<Chord> {
     let keys = command.entry().keys.to_vec();
@@ -20790,6 +22005,22 @@ fn under_the_sheet_no_shortcut_acts() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn every_command_the_search_lists_runs_from_it_as_its_keys_and_its_button_do() {
+    // Each command the search lists (the registry's but OK, Cancel, and the pointer's three:
+    // 43, the three past its first 40 among them, found by name), run from the search in a
+    // state where it can run: what its keys and its button do, by the same checks.
+    let listed: Vec<&silico_app::shortcuts::Entry> = REGISTRY
+        .iter()
+        .filter(|entry| !silico_app::search::LEFT_OUT.contains(&entry.command))
+        .collect();
+    assert_eq!(listed.len(), 43);
+    for entry in listed {
+        same_every_way(entry, true);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// The view moved off where `camera` looks, as a pan does: its eye and target 7 along x.
 fn panned(h: &mut AppHarness) {
     let mut camera = view(h).camera().clone();
@@ -20870,6 +22101,440 @@ fn f6_is_the_navigation_bars_fit_and_home_the_view_cubes_home() {
         .click();
     step(&mut h);
     assert_eq!(view(&h).camera(), &home);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- View transitions (DESIGN.md's *egui mapping*; the prototype's `VP.animateTo`) ----
+//
+// Expected values by hand from the prototype's ease, `2t²` to the middle and `1 − (2 − 2t)²/2`
+// after it, over the app's 200 ms at the fixture's sixtieth of a second a frame (12 frames):
+// 3 frames in, 0.125 of the way; 6, half; 7, 1 − (5/6)²/2 = 47/72; and the azimuth and the
+// elevation each moved by that much, the azimuth the short way round.
+
+use silico_app::viewport::ViewAsk;
+use silico_core::views::NamedView;
+
+/// The camera the fake renderer was last given.
+fn drawn_camera(record: &Record) -> silico_protocol::Camera {
+    record.lock().unwrap().frames.last().unwrap().camera.clone()
+}
+
+/// The azimuth and the elevation of `camera`'s view, in degrees, as the prototype's camera
+/// holds them: the azimuth from the front (−y) toward +x, the elevation up from level.
+fn azimuth_and_elevation(camera: &silico_protocol::Camera) -> (f64, f64) {
+    let d = view_direction(camera);
+    (
+        libm::atan2(d[0], -d[1]).to_degrees(),
+        libm::asin(d[2]).to_degrees(),
+    )
+}
+
+/// `frames` frames stepped with a transition under way through each, its label `said`, a
+/// frame asked for at once after each.
+#[track_caller]
+fn transition_frames(h: &mut AppHarness, frames: usize, said: &str) {
+    for frame in 0..frames {
+        step(h);
+        assert!(view(h).transition().is_some(), "ended at frame {frame}");
+        assert_eq!(view_label(h), said);
+        assert_eq!(repaint_delay(h), Some(Duration::ZERO));
+    }
+}
+
+/// The app's own frames idle: one asked for at most [`IDLE_FRAME`] on, never at once.
+fn frames_idle(h: &AppHarness) -> bool {
+    repaint_delay(h).is_some_and(|delay| delay > Duration::from_millis(100) && delay <= IDLE_FRAME)
+}
+
+#[test]
+fn a_named_view_eases_there_over_200_ms_and_ends_on_the_camera_a_jump_gives() {
+    // With egui's animation time at 0, as the harness sets it, Ctrl+4 and Ctrl+1 are taken
+    // in the frame they're given: the right view's camera and the front's, the cut's box's
+    // centre their target. At egui's own 0.2, the right view asked (as Ctrl+4 and the
+    // cube's menu ask it) is taken that frame and the front drawn, then eased from: 3 frames on (0.05 s) the azimuth 0.125 of 90°,
+    // 11.25°, level, the eye as far out; 6 frames on half, 45°, the height halfway between
+    // the two views'; 12 frames on (0.2 s) the right view's camera to the bit, as the jump
+    // gave it. The label names the front until that frame and the right from it; a frame
+    // is asked for at once until then, and the frames are idle after.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+    step(&mut h);
+    let right = view(&h).camera().clone();
+    assert!(view(&h).transition().is_none());
+    assert!(looks_from(&right, [1.0, 0.0, 0.0]));
+    assert_eq!(view_label(&h), "Orthographic · Right");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let front = view(&h).camera().clone();
+    assert!(view(&h).transition().is_none());
+    assert!(looks_from(&front, [0.0, -1.0, 0.0]));
+    assert_eq!(drawn_camera(&record), front);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    let target = [20.0, 10.0, 5.0];
+    near(front.target, target, 1e-12);
+    near(right.target, target, 1e-12);
+    let out = |camera: &silico_protocol::Camera| {
+        let d = minus(camera.eye, camera.target);
+        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt()
+    };
+    assert!((out(&front) - out(&right)).abs() < 1e-9);
+    let heights = (ortho_height(&front), ortho_height(&right));
+    assert_ne!(heights.0, heights.1);
+
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    step(&mut h);
+    let start = h.ctx.input(|input| input.time);
+    assert!(view(&h).transition().is_some());
+    assert_eq!(view(&h).camera(), &front);
+    assert_eq!(drawn_camera(&record), front);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    let frame = 1.0 / 60.0;
+    let elapsed = |h: &AppHarness| h.ctx.input(|input| input.time) - start;
+
+    transition_frames(&mut h, 3, "Orthographic · Front");
+    assert!((elapsed(&h) - 3.0 * frame).abs() < 1e-6, "{}", elapsed(&h));
+    let quarter = view(&h).camera().clone();
+    assert_eq!(drawn_camera(&record), quarter);
+    let (azimuth, elevation) = azimuth_and_elevation(&quarter);
+    assert!((azimuth - 11.25).abs() < 1e-4, "{azimuth}");
+    assert!(elevation.abs() < 1e-9, "{elevation}");
+    near(quarter.target, target, 1e-9);
+    assert!((out(&quarter) - out(&front)).abs() < 1e-9);
+    near(quarter.up, [0.0, 0.0, 1.0], 1e-12);
+
+    transition_frames(&mut h, 3, "Orthographic · Front");
+    let half = view(&h).camera().clone();
+    assert_eq!(drawn_camera(&record), half);
+    let (azimuth, _) = azimuth_and_elevation(&half);
+    assert!((azimuth - 45.0).abs() < 1e-4, "{azimuth}");
+    let between = (heights.0 + heights.1) / 2.0;
+    assert!(
+        (ortho_height(&half) - between).abs() < 1e-6 * between,
+        "{} against {between}",
+        ortho_height(&half)
+    );
+
+    transition_frames(&mut h, 5, "Orthographic · Front");
+    step(&mut h);
+    assert!((elapsed(&h) - 12.0 * frame).abs() < 1e-6, "{}", elapsed(&h));
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(drawn_camera(&record), right);
+    assert_eq!(view_label(&h), "Orthographic · Right");
+    meshes_settled(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(frames_idle(&h), "{:?}", repaint_delay(&h));
+    assert_eq!(view(&h).camera(), &right);
+    // The right view asked again where it is: nothing to ease, taken at once.
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &right);
+    // The top asked, then the front 2 frames on: the front eased to from where the top's
+    // had reached, the label naming the right, where the first began, until the front's
+    // end, then the front, to the bit.
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Top));
+    step(&mut h);
+    transition_frames(&mut h, 2, "Orthographic · Right");
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Front));
+    transition_frames(&mut h, 12, "Orthographic · Right");
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &front);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_middle_drag_or_the_wheel_mid_transition_ends_it_where_the_view_had_reached() {
+    // From the front, the right view asked, 6 frames: half the way, 45°. Then the middle
+    // button pressed: that frame ends it where it was drawn, what the press was on, so at
+    // 45°: the pan's 40 points left move the target 40 points' worth along that view's
+    // right, (cos 45°, sin 45°, 0), and the view never goes on to the right. Then the top
+    // view from there (its azimuth 0, its right +x), 3 frames, and the wheel: its frame
+    // moves it on a fourth (2 · (1/3)² = 2/9 of the way: the azimuth 45° · 7/9 = 35°, the
+    // elevation 90° · 2/9 = 20°) and ends it, the zoom keeping that view's direction.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    step(&mut h);
+    transition_frames(&mut h, 6, "Orthographic · Front");
+    let press = |h: &AppHarness, at: eframe::egui::Pos2, pressed: bool| {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    };
+    press(&h, at, true);
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    let reached = view(&h).camera().clone();
+    let (azimuth, elevation) = azimuth_and_elevation(&reached);
+    assert!((azimuth - 45.0).abs() < 1e-4, "{azimuth}");
+    assert!(elevation.abs() < 1e-9, "{elevation}");
+    // Named for the view it's at once the transition ends: none.
+    assert_eq!(view_label(&h), "Orthographic");
+    let to = at - eframe::egui::vec2(40.0, 0.0);
+    h.hover_at(to);
+    step(&mut h);
+    press(&h, to, false);
+    step(&mut h);
+    let mm = ortho_height(&reached) / f64::from(the_viewport(&h).height());
+    let a = 45f64.to_radians();
+    let panned = view(&h).camera().clone();
+    let along = [40.0 * mm * libm::cos(a), 40.0 * mm * libm::sin(a), 0.0];
+    near(
+        panned.target,
+        std::array::from_fn(|k| reached.target[k] + along[k]),
+        1e-3 * mm,
+    );
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &panned);
+
+    h.hover_at(at);
+    step(&mut h);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Top));
+    step(&mut h);
+    transition_frames(&mut h, 3, "Orthographic");
+    h.event(eframe::egui::Event::MouseWheel {
+        unit: eframe::egui::MouseWheelUnit::Point,
+        delta: eframe::egui::vec2(0.0, 50.0),
+        phase: eframe::egui::TouchPhase::Move,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    let zoomed = view(&h).camera().clone();
+    let (azimuth, elevation) = azimuth_and_elevation(&zoomed);
+    assert!((azimuth - 35.0).abs() < 1e-4, "{azimuth}");
+    assert!((elevation - 20.0).abs() < 1e-4, "{elevation}");
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &zoomed);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_a_face_during_a_transition_ends_it_where_it_was_drawn_and_selects_the_face() {
+    // At egui's 0.2, Ctrl+1 from the home view, two frames more, then a click on the box's
+    // front face: its press ends the transition with the camera it pressed on, unmoved, so
+    // the pick asked of it is answered and the face selected by its name.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, record) = f.drawn("box.silico", A_BOX);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.2);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    step(&mut h);
+    step(&mut h);
+    assert!(view(&h).transition().is_some());
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    assert!(view(&h).transition().is_some());
+    let drawn = view(&h).camera().clone();
+    let centre = pixel_at(&h, at);
+    answering(&record, Some((1, Face(3), centre)), None);
+    button_event(
+        &h,
+        at,
+        eframe::egui::PointerButton::Primary,
+        true,
+        Modifiers::NONE,
+    );
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &drawn);
+    button_event(
+        &h,
+        at,
+        eframe::egui::PointerButton::Primary,
+        false,
+        Modifiers::NONE,
+    );
+    step(&mut h);
+    selected_until(&mut h, &["k7f2qx3m.box.Face3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_press_in_the_frame_a_transitions_time_runs_out_lands_on_the_view_asked_for() {
+    // At egui's 0.2 the right view asked from the front, 11 frames of its 12 stepped (the
+    // last drawn 11/12 of its time in, ease 1 − (1/6)²/2 = 71/72 of the way), then the middle
+    // button pressed in the twelfth: its time is up, so the press ends it on the right view
+    // to the bit, named, not where the eleventh drew it, 1.25° short.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+    step(&mut h);
+    let right = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let at = the_viewport(&h).center();
+    h.hover_at(at);
+    step(&mut h);
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    transition_frames(&mut h, 12, "Orthographic · Front");
+    let (azimuth, _) = azimuth_and_elevation(view(&h).camera());
+    assert!((azimuth - 90.0 * 71.0 / 72.0).abs() < 1e-3, "{azimuth}");
+    let middle = |h: &AppHarness, pressed: bool| {
+        h.event(eframe::egui::Event::PointerButton {
+            pos: at,
+            button: eframe::egui::PointerButton::Middle,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    };
+    middle(&h, true);
+    step(&mut h);
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(view_label(&h), "Orthographic · Right");
+    middle(&h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_projection_chosen_mid_transition_takes_the_view_asked_for_in_it() {
+    // At egui's 0, Ctrl+4 then the cube menu's Perspective: the right view in perspective,
+    // named so. Back to the front, orthographic; then at 0.2 the right view asked and, 3
+    // frames on, Perspective chosen: the transition ends on that same camera, named.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    let choose = |h: &mut AppHarness, word: &str| {
+        h.get_by_role_and_label(Role::Menu, "View cube options")
+            .get_by_label(word)
+            .click();
+        step(h);
+        step(h);
+    };
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num4);
+    step(&mut h);
+    cube_options(&mut h);
+    choose(&mut h, "Perspective");
+    let right = view(&h).camera().clone();
+    assert!(view(&h).perspective());
+    assert!(looks_from(&right, [1.0, 0.0, 0.0]));
+    assert_eq!(view_label(&h), "Perspective · Right");
+    cube_options(&mut h);
+    choose(&mut h, "Orthographic");
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    assert_eq!(view_label(&h), "Orthographic · Front");
+    animation_time(&h, 0.2);
+    cube_options(&mut h);
+    view_mut(&mut h).ask(ViewAsk::Named(NamedView::Right));
+    transition_frames(&mut h, 3, "Orthographic · Front");
+    choose(&mut h, "Perspective");
+    assert!(view(&h).transition().is_none());
+    assert!(view(&h).perspective());
+    assert_eq!(view(&h).camera(), &right);
+    assert_eq!(view_label(&h), "Perspective · Right");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A view asked for, by name, and how.
+type Asked = (&'static str, fn(&mut AppHarness));
+
+#[test]
+fn home_fit_and_look_at_ease_to_the_camera_each_jump_gives() {
+    // From the front panned off, each of Home (its key and the cube's), F6, the navigation
+    // bar's Fit, and Look At at the left face: at egui's animation time 0 the view it gives
+    // at once; at 0.2 a transition under way from the frame it's asked in, a frame asked for
+    // at once, and at its end the same camera to the bit.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    animation_time(&h, 0.0);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step(&mut h);
+    let mut start = view(&h).camera().clone();
+    start.eye[0] += 7.0;
+    start.target[0] += 7.0;
+    let asks: [Asked; 5] = [
+        ("Home", |h| h.key_press(Key::Home)),
+        ("the cube's Home", |h| {
+            h.get_by_role_and_label(Role::Group, "ViewCube")
+                .get_by_label("Home view")
+                .click();
+        }),
+        ("F6", |h| h.key_press(Key::F6)),
+        ("Fit", |h| {
+            h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+                .get_by_label("Fit")
+                .click();
+        }),
+        ("Look At", |h| {
+            h.state_mut().tabs_mut()[0].look_at_face([-1.0, 0.0, 0.0]);
+        }),
+    ];
+    for (name, ask) in asks {
+        animation_time(&h, 0.0);
+        view_mut(&mut h).set_camera(start.clone());
+        step(&mut h);
+        ask(&mut h);
+        step(&mut h);
+        step(&mut h);
+        assert!(view(&h).transition().is_none(), "{name}");
+        let jumped = view(&h).camera().clone();
+        assert_ne!(jumped, start, "{name}");
+        animation_time(&h, 0.2);
+        view_mut(&mut h).set_camera(start.clone());
+        // Settled, any read it wants answered, and the frames idle.
+        meshes_settled(&mut h);
+        step_until(&mut h, "idle frames", frames_idle);
+        ask(&mut h);
+        step(&mut h);
+        // Under way, and the next frame asked for at once, even where it began in a frame
+        // with no input and the camera not yet moved (Look At's), or after the frame's own
+        // ask (the cube's and the bar's are taken after the canvas is drawn).
+        assert!(view(&h).transition().is_some(), "{name}");
+        assert_eq!(repaint_delay(&h), Some(Duration::ZERO), "{name}");
+        step(&mut h);
+        assert!(view(&h).transition().is_some(), "{name}");
+        assert_ne!(view(&h).camera(), &jumped, "{name}");
+        step_until(&mut h, "the transition's end", |h| {
+            view(h).transition().is_none()
+        });
+        assert_eq!(view(&h).camera(), &jumped, "{name}");
+    }
+    // A camera set as a control sets it, mid-transition: taken, and the transition over.
+    h.key_press(Key::Home);
+    step(&mut h);
+    assert!(view(&h).transition().is_some());
+    view_mut(&mut h).set_camera(start.clone());
+    for _ in 0..15 {
+        step(&mut h);
+    }
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &start);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -21141,10 +22806,10 @@ fn a_rebuild_everything_check_an_edit_overtook_marks_nothing_once_it_answers() {
 
 // ---- Each command's keys do what its button or menu item does ----
 
-/// A question's modal (Open's, Save As's) asked by `chord`, then by `click`: each
+/// A question's modal (Open's, Save As's) asked by `way`, then by `click`: each
 /// asks `title`.
-fn same_question(h: &mut AppHarness, chord: Chord, title: &str, click: impl Fn(&mut AppHarness)) {
-    press_chord(h, chord);
+fn same_question(h: &mut AppHarness, way: Way, title: &str, click: impl Fn(&mut AppHarness)) {
+    by_way(h, way);
     step_until(h, title, |h| anywhere(h, title));
     h.key_press(Key::Escape);
     step_until(h, "the question gone", |h| !anywhere(h, title));
@@ -21189,20 +22854,20 @@ fn stopped_then_resumed(stop: impl Fn(&mut AppHarness), resume: impl Fn(&mut App
     assert_eq!(h.state().tabs()[0].rebuilds, 1);
 }
 
-/// A view command's keys and its ViewCube part (or the navigation bar's Fit): from a view
-/// moved off, the same camera.
-fn same_view(command: Command, part: impl Fn(&AppHarness) -> egui_kittest::Node<'_>) {
+/// A view command's keys (or, `search`, the command search) and its ViewCube part (or the
+/// navigation bar's Fit): from a view moved off, the same camera.
+fn same_view(command: Command, search: bool, part: impl Fn(&AppHarness) -> egui_kittest::Node<'_>) {
     let f = fixture();
     let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
-    for chord in keys_of(command) {
+    for way in ways_of(command, search) {
         // Looked at from the view the command gives (so its cube part faces the viewer),
         // then moved off; from there, by its keys, and from there again, by its part.
-        press_chord(&mut h, chord);
+        by_way(&mut h, way);
         step(&mut h);
         panned(&mut h);
         let moved = view(&h).camera().clone();
-        press_chord(&mut h, chord);
+        by_way(&mut h, way);
         step(&mut h);
         let keyed = view(&h).camera().clone();
         assert_ne!(keyed, moved, "{command:?} moved nothing");
@@ -21242,26 +22907,21 @@ fn toolbar_finish(h: &AppHarness) -> egui_kittest::Node<'_> {
         .unwrap()
 }
 
-/// In sketch mode, what the SKETCH button labelled `label` turns on, by `chords` and by the
+/// In sketch mode, what the SKETCH button labelled `label` turns on, by `ways` and by the
 /// button: from off, on, then off again, each way; `on` saying whether it is, and the button
 /// shown pressed or not with it.
-fn same_toggle(
-    h: &mut AppHarness,
-    label: &str,
-    chords: Vec<Chord>,
-    on: impl Fn(&AppHarness) -> bool,
-) {
+fn same_toggle(h: &mut AppHarness, label: &str, ways: Vec<Way>, on: impl Fn(&AppHarness) -> bool) {
     let pressed = |h: &AppHarness| toggled(&sketch_button(h, label));
     assert_eq!(
         (on(h), pressed(h)),
         (false, Some(false)),
         "{label} at first"
     );
-    for chord in chords {
+    for way in ways {
         for by_keys in [true, false] {
             for want in [true, false] {
                 if by_keys {
-                    press_chord(h, chord);
+                    by_way(h, way);
                 } else {
                     sketch_button(h, label).click();
                 }
@@ -21278,562 +22938,615 @@ fn same_toggle(
     }
 }
 
-#[test]
-fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
-    for entry in REGISTRY {
-        let command = entry.command;
-        match command {
-            Command::New => {
-                // An untitled part at once, by its keys and by the start page's own button,
-                // labelled as the registry names the command: each from a fresh app, so
-                // each is the run's first, "Untitled".
-                let untitled = |ask: &dyn Fn(&mut AppHarness)| {
-                    let f = fixture();
-                    let mut h = f.app();
-                    step(&mut h);
-                    ask(&mut h);
-                    step_until(&mut h, "the untitled part's tab", |h| {
-                        h.state().tabs().len() == 1
-                    });
-                    let tab = &h.state().tabs()[0];
-                    assert_eq!((tab.name(), tab.path.as_deref()), ("Untitled", None));
-                };
-                for chord in keys_of(command) {
-                    untitled(&|h| press_chord(h, chord));
-                }
-                untitled(&|h| {
+/// What `entry`'s command does, by its keys or, `search`, by the command search, and by its
+/// button or menu item: each way the same, from the same setup, by the same checks. Every
+/// command of the registry has its arm.
+fn same_every_way(entry: &silico_app::shortcuts::Entry, search: bool) {
+    let command = entry.command;
+    match command {
+        Command::New => {
+            // An untitled part at once, by its keys and by the start page's own button,
+            // labelled as the registry names the command: each from a fresh app, so
+            // each is the run's first, "Untitled".
+            let untitled = |ask: &dyn Fn(&mut AppHarness)| {
+                let f = fixture();
+                let mut h = f.app();
+                step(&mut h);
+                ask(&mut h);
+                step_until(&mut h, "the untitled part's tab", |h| {
+                    h.state().tabs().len() == 1
+                });
+                let tab = &h.state().tabs()[0];
+                assert_eq!((tab.name(), tab.path.as_deref()), ("Untitled", None));
+            };
+            for way in ways_of(command, search) {
+                untitled(&|h| by_way(h, way));
+            }
+            untitled(&|h| {
+                start_page(h).get_by_label(entry.label).click();
+                step(h);
+            });
+        }
+        Command::Open => {
+            // The start page's own, labelled as the registry names the command.
+            let f = fixture();
+            let mut h = f.app();
+            step(&mut h);
+            for way in ways_of(command, search) {
+                same_question(&mut h, way, "Open document", |h| {
                     start_page(h).get_by_label(entry.label).click();
                     step(h);
                 });
             }
-            Command::Open => {
-                // The start page's own, labelled as the registry names the command.
-                let f = fixture();
-                let mut h = f.app();
-                step(&mut h);
-                for chord in keys_of(command) {
-                    same_question(&mut h, chord, "Open document", |h| {
-                        start_page(h).get_by_label(entry.label).click();
-                        step(h);
-                    });
-                }
+        }
+        Command::SaveAs => {
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+            for way in ways_of(command, search) {
+                same_question(&mut h, way, "Save example.silico as", |h| {
+                    from_file_menu(h, entry.label);
+                });
             }
-            Command::SaveAs => {
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-                for chord in keys_of(command) {
-                    same_question(&mut h, chord, "Save example.silico as", |h| {
-                        from_file_menu(h, entry.label);
-                    });
-                }
+        }
+        Command::Close => {
+            let f = fixture();
+            let (mut h, path) = f.opened("example.silico", EXAMPLE);
+            for way in ways_of(command, search) {
+                by_way(&mut h, way);
+                step_until(&mut h, "closed by its keys", |h| {
+                    h.state().tabs().is_empty()
+                });
+                h.state_mut().open(path.to_str().unwrap(), false);
+                step_until(&mut h, "open again", |h| h.state().tabs().len() == 1);
+                from_file_menu(&mut h, entry.label);
+                step_until(&mut h, "closed by File", |h| h.state().tabs().is_empty());
             }
-            Command::Close => {
-                let f = fixture();
-                let (mut h, path) = f.opened("example.silico", EXAMPLE);
-                for chord in keys_of(command) {
-                    press_chord(&mut h, chord);
-                    step_until(&mut h, "closed by its keys", |h| {
-                        h.state().tabs().is_empty()
-                    });
-                    h.state_mut().open(path.to_str().unwrap(), false);
-                    step_until(&mut h, "open again", |h| h.state().tabs().len() == 1);
-                    from_file_menu(&mut h, entry.label);
-                    step_until(&mut h, "closed by File", |h| h.state().tabs().is_empty());
-                }
+        }
+        Command::Save => {
+            let f = fixture();
+            let (mut h, path) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+            select(&mut h, "Pin");
+            for way in ways_of(command, search) {
+                renamed(&mut h, "K", "PinK");
+                by_way(&mut h, way);
+                step_until(&mut h, "saved by its keys", |h| {
+                    !anywhere(h, "example.silico *")
+                });
+                assert_eq!(names_in(&path), ["Block", "PinK", "Hole"]);
+                renamed(&mut h, "L", "PinKL");
+                h.get_by_role_and_label(Role::Button, entry.label).click();
+                step_until(&mut h, "saved by its button", |h| {
+                    !anywhere(h, "example.silico *")
+                });
+                assert_eq!(names_in(&path), ["Block", "PinKL", "Hole"]);
             }
-            Command::Save => {
-                let f = fixture();
-                let (mut h, path) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-                select(&mut h, "Pin");
-                for chord in keys_of(command) {
-                    renamed(&mut h, "K", "PinK");
-                    press_chord(&mut h, chord);
-                    step_until(&mut h, "saved by its keys", |h| {
-                        !anywhere(h, "example.silico *")
-                    });
-                    assert_eq!(names_in(&path), ["Block", "PinK", "Hole"]);
-                    renamed(&mut h, "L", "PinKL");
-                    h.get_by_role_and_label(Role::Button, entry.label).click();
-                    step_until(&mut h, "saved by its button", |h| {
-                        !anywhere(h, "example.silico *")
-                    });
-                    assert_eq!(names_in(&path), ["Block", "PinKL", "Hole"]);
-                }
-            }
-            Command::Undo | Command::Redo => {
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-                select(&mut h, "Pin");
-                renamed(&mut h, "A", "PinA");
-                let undo = command == Command::Undo;
-                for chord in keys_of(command) {
-                    // Undo's from PinA to Pin, Redo's from Pin to PinA: by its keys, then
-                    // by its button, the other's button between.
-                    let (from, to, other) = if undo {
-                        ("PinA", "Pin", "Redo")
-                    } else {
-                        ("Pin", "PinA", "Undo")
-                    };
-                    if !undo {
-                        h.get_by_role_and_label(Role::Button, other).click();
-                        step_until(&mut h, from, |h| shows(h, "Timeline", from));
-                    }
-                    press_chord(&mut h, chord);
-                    step_until(&mut h, "by its keys", |h| shows(h, "Timeline", to));
+        }
+        Command::Undo | Command::Redo => {
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+            select(&mut h, "Pin");
+            renamed(&mut h, "A", "PinA");
+            let undo = command == Command::Undo;
+            for way in ways_of(command, search) {
+                // Undo's from PinA to Pin, Redo's from Pin to PinA: by its keys, then
+                // by its button, the other's button between.
+                let (from, to, other) = if undo {
+                    ("PinA", "Pin", "Redo")
+                } else {
+                    ("Pin", "PinA", "Undo")
+                };
+                if !undo {
                     h.get_by_role_and_label(Role::Button, other).click();
                     step_until(&mut h, from, |h| shows(h, "Timeline", from));
-                    h.get_by_role_and_label(Role::Button, entry.label).click();
-                    step_until(&mut h, "by its button", |h| shows(h, "Timeline", to));
-                    if undo {
-                        h.get_by_role_and_label(Role::Button, other).click();
-                        step_until(&mut h, from, |h| shows(h, "Timeline", from));
-                    }
+                }
+                by_way(&mut h, way);
+                step_until(&mut h, "by its keys", |h| shows(h, "Timeline", to));
+                h.get_by_role_and_label(Role::Button, other).click();
+                step_until(&mut h, from, |h| shows(h, "Timeline", from));
+                h.get_by_role_and_label(Role::Button, entry.label).click();
+                step_until(&mut h, "by its button", |h| shows(h, "Timeline", to));
+                if undo {
+                    h.get_by_role_and_label(Role::Button, other).click();
+                    step_until(&mut h, from, |h| shows(h, "Timeline", from));
                 }
             }
-            Command::Stop => {
-                for chord in keys_of(command) {
-                    stopped_then_resumed(
-                        |h| press_chord(h, chord),
-                        |h| h.get_by_role_and_label(Role::Button, "Rebuild").click(),
-                    );
-                }
+        }
+        Command::Stop => {
+            for way in ways_of(command, search) {
                 stopped_then_resumed(
-                    |h| h.get_by_role_and_label(Role::Button, "Stop").click(),
+                    |h| by_way(h, way),
                     |h| h.get_by_role_and_label(Role::Button, "Rebuild").click(),
                 );
             }
-            Command::Rebuild => {
-                for chord in keys_of(command) {
-                    stopped_then_resumed(
-                        |h| h.get_by_role_and_label(Role::Button, "Stop").click(),
-                        |h| press_chord(h, chord),
-                    );
+            stopped_then_resumed(
+                |h| h.get_by_role_and_label(Role::Button, "Stop").click(),
+                |h| h.get_by_role_and_label(Role::Button, "Rebuild").click(),
+            );
+        }
+        Command::Rebuild => {
+            for way in ways_of(command, search) {
+                stopped_then_resumed(
+                    |h| h.get_by_role_and_label(Role::Button, "Stop").click(),
+                    |h| by_way(h, way),
+                );
+            }
+        }
+        // No button or menu item has it yet (the start page's waits on #522): its keys
+        // open the search, which its own tests cover (s_opens_the_command_search_…).
+        Command::Search => {
+            let f = fixture();
+            let mut h = f.app();
+            step(&mut h);
+            for way in ways_of(command, search) {
+                by_way(&mut h, way);
+                step_until(&mut h, "the search, its field empty", |h| {
+                    search_open(h) && search_field(h).value().as_deref() == Some("")
+                });
+                h.key_press(Key::Escape);
+                step_until(&mut h, "the search closed", |h| !search_open(h));
+            }
+        }
+        // No button or menu item has it: each way rebuilds everything once (its own test,
+        // ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it).
+        Command::RebuildAll => {
+            if !search {
+                assert_eq!(
+                    keys_of(command),
+                    [Chord::Key(eframe::egui::KeyboardShortcut::new(
+                        Modifiers::COMMAND | Modifiers::SHIFT,
+                        Key::B
+                    ))]
+                );
+            }
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+            settled(&mut h);
+            for (done, way) in (0u64..).zip(ways_of(command, search)) {
+                by_way(&mut h, way);
+                step_until(&mut h, "rebuilt everything", |h| {
+                    let tab = &h.state().tabs()[0];
+                    tab.rebuilds_all == done + 1 && !tab.checking()
+                });
+            }
+        }
+        // Its keys and the File menu's Reload each rebuild everything once, as Rebuild
+        // everything does (its own tests: command_r_reads_a_file_changed_on_disk_….
+        Command::Reload => {
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
+            settled(&mut h);
+            let mut asked = 0;
+            let mut reload = |h: &mut AppHarness, how: &dyn Fn(&mut AppHarness)| {
+                how(h);
+                asked += 1;
+                step_until(h, "rebuilt everything", |h| {
+                    let tab = &h.state().tabs()[0];
+                    tab.rebuilds_all == asked && !tab.checking()
+                });
+            };
+            for way in ways_of(command, search) {
+                reload(&mut h, &|h| by_way(h, way));
+            }
+            reload(&mut h, &|h| from_file_menu(h, entry.label));
+        }
+        Command::Fit => same_view(command, search, |h| {
+            h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
+                .get_by_label(entry.label)
+        }),
+        Command::Home => same_view(command, search, |h| {
+            h.get_by_role_and_label(Role::Group, "ViewCube")
+                .get_by_label(entry.label)
+        }),
+        Command::Front
+        | Command::Back
+        | Command::Left
+        | Command::Right
+        | Command::Top
+        | Command::Bottom => same_view(command, search, |h| {
+            h.get_by_role_and_label(Role::Group, "ViewCube")
+                .get_by_label(entry.label)
+        }),
+        Command::Isometric => same_view(command, search, |h| {
+            h.get_by_role_and_label(Role::Group, "ViewCube")
+                .get_by_label("Top front right")
+        }),
+        Command::LookAt => {
+            // In sketch mode, by its keys, by the Sketch Palette's Look At, and by the
+            // navigation bar's, each from a view moved off: the same camera (Look At's
+            // own tests check which).
+            let f = fixture();
+            let mut h = triangle_opened(&f);
+            for way in ways_of(command, search) {
+                by_way(&mut h, way);
+                step(&mut h);
+                step(&mut h);
+                panned(&mut h);
+                let moved = view(&h).camera().clone();
+                by_way(&mut h, way);
+                step(&mut h);
+                step(&mut h);
+                let keyed = view(&h).camera().clone();
+                assert_ne!(keyed, moved, "Look At moved nothing");
+                for (holder, role, what) in [
+                    ("Sketch Palette", Role::Group, "the palette's Look At"),
+                    (
+                        "Navigation bar",
+                        Role::Toolbar,
+                        "the navigation bar's Look At",
+                    ),
+                ] {
+                    view_mut(&mut h).set_camera(moved.clone());
+                    step(&mut h);
+                    h.get_by_role_and_label(role, holder)
+                        .get_by_role_and_label(Role::Button, entry.label)
+                        .click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(view(&h).camera(), &keyed, "{what}");
                 }
             }
-            // Its own test: no button or menu item has it
-            // (ctrl_shift_b_rebuilds_every_feature_anew_and_esc_stops_it).
-            Command::RebuildAll => assert_eq!(
-                keys_of(command),
-                [Chord::Key(eframe::egui::KeyboardShortcut::new(
-                    Modifiers::COMMAND | Modifiers::SHIFT,
-                    Key::B
-                ))]
-            ),
-            // Its keys and the File menu's Reload each rebuild everything once, as Rebuild
-            // everything does (its own tests: command_r_reads_a_file_changed_on_disk_….
-            Command::Reload => {
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "rebuilt", |h| rebuilt_at(h, 1));
-                settled(&mut h);
-                let mut asked = 0;
-                let mut reload = |h: &mut AppHarness, how: &dyn Fn(&mut AppHarness)| {
-                    how(h);
-                    asked += 1;
-                    step_until(h, "rebuilt everything", |h| {
-                        let tab = &h.state().tabs()[0];
-                        tab.rebuilds_all == asked && !tab.checking()
-                    });
-                };
-                for chord in keys_of(command) {
-                    reload(&mut h, &|h| press_chord(h, chord));
-                }
-                reload(&mut h, &|h| from_file_menu(h, entry.label));
-            }
-            Command::Fit => same_view(command, |h| {
-                h.get_by_role_and_label(Role::Toolbar, "Navigation bar")
-                    .get_by_label(entry.label)
-            }),
-            Command::Home => same_view(command, |h| {
-                h.get_by_role_and_label(Role::Group, "ViewCube")
-                    .get_by_label(entry.label)
-            }),
-            Command::Front
-            | Command::Back
-            | Command::Left
-            | Command::Right
-            | Command::Top
-            | Command::Bottom => same_view(command, |h| {
-                h.get_by_role_and_label(Role::Group, "ViewCube")
-                    .get_by_label(entry.label)
-            }),
-            Command::Isometric => same_view(command, |h| {
-                h.get_by_role_and_label(Role::Group, "ViewCube")
-                    .get_by_label("Top front right")
-            }),
-            Command::LookAt => {
-                // In sketch mode, by its keys, by the Sketch Palette's Look At, and by the
-                // navigation bar's, each from a view moved off: the same camera (Look At's
-                // own tests check which).
-                let f = fixture();
-                let mut h = triangle_opened(&f);
-                for chord in keys_of(command) {
-                    press_chord(&mut h, chord);
-                    step(&mut h);
-                    step(&mut h);
-                    panned(&mut h);
-                    let moved = view(&h).camera().clone();
-                    press_chord(&mut h, chord);
-                    step(&mut h);
-                    step(&mut h);
-                    let keyed = view(&h).camera().clone();
-                    assert_ne!(keyed, moved, "Look At moved nothing");
-                    for (holder, role, what) in [
-                        ("Sketch Palette", Role::Group, "the palette's Look At"),
-                        (
-                            "Navigation bar",
-                            Role::Toolbar,
-                            "the navigation bar's Look At",
-                        ),
-                    ] {
-                        view_mut(&mut h).set_camera(moved.clone());
-                        step(&mut h);
-                        h.get_by_role_and_label(role, holder)
-                            .get_by_role_and_label(Role::Button, entry.label)
-                            .click();
-                        step(&mut h);
-                        step(&mut h);
-                        assert_eq!(view(&h).camera(), &keyed, "{what}");
-                    }
-                }
-            }
-            // The pointer's: the viewport takes them, no key (their own tests: the middle
-            // button's pan and orbit, the wheel's zoom).
-            Command::WhatsWrong => {
-                // No keys: the status bar's errors open it, a button whose tooltip is the
-                // registry's (What's Wrong's own test covers the timeline and the browser).
-                assert!(entry.keys.is_empty());
-                let f = fixture();
-                let mut h = three_blocks(&f);
+        }
+        // The pointer's: the viewport takes them, no key (their own tests: the middle
+        // button's pan and orbit, the wheel's zoom).
+        Command::WhatsWrong => {
+            // No keys: the status bar's errors open it, a button whose tooltip is the
+            // registry's (What's Wrong's own test covers the timeline and the browser).
+            assert!(entry.keys.is_empty());
+            let f = fixture();
+            let mut h = three_blocks(&f);
+            if search {
+                by_way(&mut h, Way::Search(command));
+            } else {
                 h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
                     .click();
-                step_until(&mut h, "What's Wrong open", |h| whats_wrong(h).is_some());
             }
-            Command::Orbit | Command::Pan | Command::Zoom => assert!(
+            step_until(&mut h, "What's Wrong open", |h| whats_wrong(h).is_some());
+        }
+        Command::Orbit | Command::Pan | Command::Zoom => {
+            assert!(!search, "the search leaves {command:?} out");
+            assert!(
                 entry
                     .keys
                     .iter()
                     .all(|chord| matches!(chord, Chord::Pointer(..)))
-            ),
-            Command::ClearSelection => {
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-                for chord in keys_of(command) {
-                    select(&mut h, "Pin");
-                    pointer_away(&mut h);
-                    press_chord(&mut h, chord);
-                    step(&mut h);
-                    assert!(h.state().tabs()[0].selection().is_empty(), "by its keys");
-                    select(&mut h, "Pin");
-                    pointer_away(&mut h);
-                    h.get_by_role_and_label(Role::Toolbar, "SELECT")
-                        .get_by_role_and_label(Role::Button, "SELECT")
-                        .click();
-                    step_until(&mut h, "SELECT's drop-down", |h| {
-                        h.query_by_role_and_label(Role::Menu, "SELECT").is_some()
-                    });
-                    step(&mut h);
-                    h.get_by_role_and_label(Role::Menu, "SELECT")
-                        .query_all_by_role(Role::Button)
-                        .find(|node| {
-                            node.accesskit_node()
-                                .label()
-                                .is_some_and(|label| label.starts_with(entry.label))
-                        })
-                        .unwrap()
-                        .click();
-                    step(&mut h);
-                    step(&mut h);
-                    assert!(h.state().tabs()[0].selection().is_empty(), "by SELECT's");
-                }
-            }
-            Command::Hide => {
-                let f = fixture();
-                let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES);
-                meshes_settled(&mut h);
-                step_until(&mut h, "the browser's bodies", |h| {
-                    shows(h, "Browser", "Large")
-                });
-                browser(&h).get_by_label("Large").click();
-                step_until(&mut h, "Large selected", |h| {
-                    toggled(&browser(h).get_by_label("Large")) == Some(true)
-                });
-                let hidden = |h: &AppHarness| h.state().tabs()[0].overrides.clone();
-                for chord in keys_of(command) {
-                    // By its keys, hidden and shown again; then by Large's eye, the same.
-                    press_chord(&mut h, chord);
-                    step(&mut h);
-                    step(&mut h);
-                    assert!(shows(&h, "Browser", "Show Large"), "hidden by its keys");
-                    let by_keys = hidden(&h);
-                    press_chord(&mut h, chord);
-                    step(&mut h);
-                    step(&mut h);
-                    assert!(shows(&h, "Browser", "Hide Large"), "shown by its keys");
-                    assert!(hidden(&h).is_empty());
-                    browser(&h).get_by_label("Hide Large").click();
-                    step(&mut h);
-                    step(&mut h);
-                    assert!(shows(&h, "Browser", "Show Large"), "hidden by its eye");
-                    assert_eq!(hidden(&h), by_keys);
-                    browser(&h).get_by_label("Show Large").click();
-                    step(&mut h);
-                    step(&mut h);
-                    assert!(hidden(&h).is_empty());
-                }
-            }
-            Command::FilterFace | Command::FilterEdge | Command::FilterVertex => {
-                // Its key toggles its kind in the filter, the others kept, and back again;
-                // so does SELECT's button, pressed while the kind is taken (M5.0, open item
-                // 24: each a toggle in the set).
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
-                let filter = |h: &AppHarness| h.state().tabs()[0].selection().filter;
-                let kinds = |h: &AppHarness| {
-                    let f = filter(h);
-                    (f.faces, f.edges, f.vertices)
-                };
-                let off = match command {
-                    Command::FilterFace => (false, true, true),
-                    Command::FilterEdge => (true, false, true),
-                    _ => (true, true, false),
-                };
-                let pressed = |h: &AppHarness| {
-                    toggled(
-                        &h.get_by_role_and_label(Role::Toolbar, "SELECT")
-                            .get_by_label(entry.label),
-                    )
-                };
-                for chord in keys_of(command) {
-                    assert_eq!(kinds(&h), (true, true, true));
-                    pointer_away(&mut h);
-                    press_chord(&mut h, chord);
-                    step(&mut h);
-                    step(&mut h);
-                    assert_eq!(kinds(&h), off, "{command:?} by its key");
-                    assert_eq!(pressed(&h), Some(false));
-                    press_chord(&mut h, chord);
-                    step(&mut h);
-                    step(&mut h);
-                    assert_eq!(kinds(&h), (true, true, true), "and back");
-                    assert_eq!(pressed(&h), Some(true));
-                    h.get_by_role_and_label(Role::Toolbar, "SELECT")
-                        .get_by_label(entry.label)
-                        .click();
-                    step(&mut h);
-                    step(&mut h);
-                    assert_eq!(kinds(&h), off, "{command:?} by SELECT's button");
-                    h.get_by_role_and_label(Role::Toolbar, "SELECT")
-                        .get_by_label(entry.label)
-                        .click();
-                    step(&mut h);
-                    step(&mut h);
-                    assert_eq!(kinds(&h), (true, true, true));
-                }
-            }
-            Command::Ok | Command::Cancel => {
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-                let ok = command == Command::Ok;
-                let pads = |h: &AppHarness| text_of(&f.sessions, h).matches("\"pad\"").count();
-                let mut kept = pads(&h);
-                for chord in keys_of(command) {
-                    for by_keys in [true, false] {
-                        open_pad_on_triangle(&mut h);
-                        added(&mut h);
-                        settled(&mut h);
-                        // Its preview built: Esc would stop one still rebuilding first.
-                        step_until(&mut h, "the preview built", |h| {
-                            let tab = &h.state().tabs()[0];
-                            tab.status.as_ref().is_some_and(|status| {
-                                status.rebuild.revision == tab.revision
-                                    && status.rebuild.state
-                                        == silico_core::command::RebuildState::Done
-                            })
-                        });
-                        if by_keys {
-                            press_chord(&mut h, chord);
-                        } else {
-                            dialog(&h)
-                                .get_by_role_and_label(Role::Button, entry.label)
-                                .click();
-                        }
-                        step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
-                        settled(&mut h);
-                        kept += usize::from(ok);
-                        assert_eq!(pads(&h), kept, "{command:?}, by its keys: {by_keys}");
-                    }
-                }
-            }
-            Command::Line
-            | Command::Rectangle
-            | Command::Circle
-            | Command::Arc
-            | Command::Point
-            | Command::Trim
-            | Command::Dimension => {
-                use silico_app::sketch::tools::Choice;
-                use silico_core::sketch_tools::ToolKind;
-                // The prototype's tools (app.js's `CMD`, interact.js's `setTool`): the
-                // rectangle the corner one and the arc the 3-point one, Fusion's first.
-                let choice = match command {
-                    Command::Line => Choice::Draw(ToolKind::Line),
-                    Command::Rectangle => Choice::Draw(ToolKind::CornerRectangle),
-                    Command::Circle => Choice::Draw(ToolKind::Circle),
-                    Command::Arc => Choice::Draw(ToolKind::ThreePointArc),
-                    Command::Point => Choice::Draw(ToolKind::Point),
-                    Command::Trim => Choice::Trim,
-                    _ => Choice::Dimension,
-                };
-                let f = fixture();
-                let mut h = triangle_opened(&f);
-                let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
-                same_toggle(&mut h, entry.label, keys_of(command), |h| {
-                    tool(h)
-                        .map(|chosen| assert_eq!(chosen, choice, "{command:?}"))
-                        .is_some()
-                });
-                assert_eq!(never_waits::waits(), 0);
-            }
-            Command::Construction => {
-                let f = fixture();
-                let mut h = triangle_opened(&f);
-                same_toggle(&mut h, entry.label, keys_of(command), |h| {
-                    sketch_mode(h).unwrap().settings.construction
-                });
-                assert_eq!(never_waits::waits(), 0);
-            }
-            Command::FinishSketch => {
-                use silico_app::sketch::tools::Choice;
-                use silico_core::sketch_tools::ToolKind;
-                let f = fixture();
-                let mut h = triangle_opened(&f);
-                let points = |h: &AppHarness| sketch_of_text(&f, h, "s0000001").points.len();
-                for chord in keys_of(command) {
-                    for by_keys in [true, false] {
-                        // A point added, so Finish (it's kept) differs from Cancel (it's
-                        // dropped).
-                        let before = points(&h);
-                        h.state_mut().tabs_mut()[0].sketch_toggle(Choice::Draw(ToolKind::Point));
-                        sketch_events(&f, &mut h, &clicked(30.0 + before as f64, 5.0));
-                        settled(&mut h);
-                        assert_eq!(points(&h), before + 1);
-                        if by_keys {
-                            press_chord(&mut h, chord);
-                        } else {
-                            toolbar_finish(&h).click();
-                        }
-                        step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
-                        settled(&mut h);
-                        assert_eq!(points(&h), before + 1, "kept, by its keys: {by_keys}");
-                        // Open again, for the next.
-                        let sessions = Arc::clone(&f.sessions);
-                        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &sketch_id("s0000001"));
-                        sketch_read(&mut h);
-                    }
-                }
-                assert_eq!(never_waits::waits(), 0);
-            }
-            Command::Rename => {
-                // By its keys, then by the timeline's menu item labelled as the registry
-                // names the command: each opens the selected feature's field, and Enter
-                // writes the name typed.
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+            );
+        }
+        Command::ClearSelection => {
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+            for way in ways_of(command, search) {
                 select(&mut h, "Pin");
-                for chord in keys_of(command) {
-                    press_chord(&mut h, chord);
-                    renamed_in_field(&mut h, "Pin", "Peg");
-                    menu_on(&mut h, "Timeline", "Peg");
-                    menu_click(&mut h, "PEG", entry.label);
-                    renamed_in_field(&mut h, "Peg", "Pin");
-                }
-                assert_eq!(
-                    names_of(&text_of(&f.sessions, &h)),
-                    ["Block", "Pin", "Hole"]
-                );
-            }
-            Command::Delete => {
-                // Each of its keys, then the menu's item: the hole deleted, then undone.
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-                for chord in keys_of(command) {
-                    select(&mut h, "Hole");
-                    press_chord(&mut h, chord);
-                    step_until(&mut h, "deleted by its keys", |h| {
-                        !shows(h, "Timeline", "Hole")
-                    });
-                    assert_eq!(names_of(&text_of(&f.sessions, &h)), ["Block", "Pin"]);
-                    h.get_by_role_and_label(Role::Button, "Undo").click();
-                    step_until(&mut h, "undone", |h| shows(h, "Timeline", "Hole"));
-                    settled(&mut h);
-                }
-                menu_on(&mut h, "Timeline", "Hole");
-                menu_click(&mut h, "HOLE", entry.label);
-                step_until(&mut h, "deleted by its menu", |h| {
-                    !shows(h, "Timeline", "Hole")
+                pointer_away(&mut h);
+                by_way(&mut h, way);
+                step(&mut h);
+                assert!(h.state().tabs()[0].selection().is_empty(), "by its keys");
+                select(&mut h, "Pin");
+                pointer_away(&mut h);
+                h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                    .get_by_role_and_label(Role::Button, "SELECT")
+                    .click();
+                step_until(&mut h, "SELECT's drop-down", |h| {
+                    h.query_by_role_and_label(Role::Menu, "SELECT").is_some()
                 });
-                assert_eq!(names_of(&text_of(&f.sessions, &h)), ["Block", "Pin"]);
+                step(&mut h);
+                h.get_by_role_and_label(Role::Menu, "SELECT")
+                    .query_all_by_role(Role::Button)
+                    .find(|node| {
+                        node.accesskit_node()
+                            .label()
+                            .is_some_and(|label| label.starts_with(entry.label))
+                    })
+                    .unwrap()
+                    .click();
+                step(&mut h);
+                step(&mut h);
+                assert!(h.state().tabs()[0].selection().is_empty(), "by SELECT's");
             }
-            Command::Suppress | Command::FindInBrowser | Command::FindInTimeline => {
-                // No keys, as the prototype gives none: each the menus' item, labelled as
-                // the registry names the command (their own tests cover what each does).
-                assert!(entry.keys.is_empty());
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Browser", "Hole"));
-                let pane = if command == Command::FindInTimeline {
-                    "Browser"
-                } else {
-                    "Timeline"
-                };
-                menu_on(&mut h, pane, "Hole");
-                menu_click(&mut h, "HOLE", entry.label);
-                match command {
-                    Command::Suppress => step_until(&mut h, "suppressed", |h| {
-                        text_of(&f.sessions, h).contains(r#""name": "Hole", "suppressed": true,"#)
-                    }),
-                    // Found: the hole selected, as the right-click left it, and from then
-                    // on selected in the other pane (where F2 renames it), which the
-                    // right-click's selection isn't.
-                    _ => {
-                        let other = if command == Command::FindInBrowser {
-                            silico_app::feature_menu::Place::Browser
-                        } else {
-                            silico_app::feature_menu::Place::Timeline
-                        };
-                        step_until(&mut h, "found", |h| {
-                            let tab = &h.state().tabs()[0];
-                            tab.selection().feature().map(|id| id.as_str()) == Some("m3tq8v0z")
-                                && tab.selected_in == other
-                        });
+        }
+        Command::Hide => {
+            let f = fixture();
+            let (mut h, _record) = f.drawn("boxes.silico", TWO_BOXES);
+            meshes_settled(&mut h);
+            step_until(&mut h, "the browser's bodies", |h| {
+                shows(h, "Browser", "Large")
+            });
+            browser(&h).get_by_label("Large").click();
+            step_until(&mut h, "Large selected", |h| {
+                toggled(&browser(h).get_by_label("Large")) == Some(true)
+            });
+            let hidden = |h: &AppHarness| h.state().tabs()[0].overrides.clone();
+            for way in ways_of(command, search) {
+                // By its keys, hidden and shown again; then by Large's eye, the same.
+                by_way(&mut h, way);
+                step(&mut h);
+                step(&mut h);
+                assert!(shows(&h, "Browser", "Show Large"), "hidden by its keys");
+                let by_keys = hidden(&h);
+                by_way(&mut h, way);
+                step(&mut h);
+                step(&mut h);
+                assert!(shows(&h, "Browser", "Hide Large"), "shown by its keys");
+                assert!(hidden(&h).is_empty());
+                browser(&h).get_by_label("Hide Large").click();
+                step(&mut h);
+                step(&mut h);
+                assert!(shows(&h, "Browser", "Show Large"), "hidden by its eye");
+                assert_eq!(hidden(&h), by_keys);
+                browser(&h).get_by_label("Show Large").click();
+                step(&mut h);
+                step(&mut h);
+                assert!(hidden(&h).is_empty());
+            }
+        }
+        Command::FilterFace | Command::FilterEdge | Command::FilterVertex => {
+            // Its key toggles its kind in the filter, the others kept, and back again;
+            // so does SELECT's button, pressed while the kind is taken (M5.0, open item
+            // 24: each a toggle in the set).
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+            let filter = |h: &AppHarness| h.state().tabs()[0].selection().filter;
+            let kinds = |h: &AppHarness| {
+                let f = filter(h);
+                (f.faces, f.edges, f.vertices)
+            };
+            let off = match command {
+                Command::FilterFace => (false, true, true),
+                Command::FilterEdge => (true, false, true),
+                _ => (true, true, false),
+            };
+            let pressed = |h: &AppHarness| {
+                toggled(
+                    &h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                        .get_by_label(entry.label),
+                )
+            };
+            for way in ways_of(command, search) {
+                assert_eq!(kinds(&h), (true, true, true));
+                pointer_away(&mut h);
+                by_way(&mut h, way);
+                step(&mut h);
+                step(&mut h);
+                assert_eq!(kinds(&h), off, "{command:?} by its key");
+                assert_eq!(pressed(&h), Some(false));
+                by_way(&mut h, way);
+                step(&mut h);
+                step(&mut h);
+                assert_eq!(kinds(&h), (true, true, true), "and back");
+                assert_eq!(pressed(&h), Some(true));
+                h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                    .get_by_label(entry.label)
+                    .click();
+                step(&mut h);
+                step(&mut h);
+                assert_eq!(kinds(&h), off, "{command:?} by SELECT's button");
+                h.get_by_role_and_label(Role::Toolbar, "SELECT")
+                    .get_by_label(entry.label)
+                    .click();
+                step(&mut h);
+                step(&mut h);
+                assert_eq!(kinds(&h), (true, true, true));
+            }
+        }
+        Command::Ok | Command::Cancel => {
+            assert!(!search, "the search leaves {command:?} out");
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+            let ok = command == Command::Ok;
+            let pads = |h: &AppHarness| text_of(&f.sessions, h).matches("\"pad\"").count();
+            let mut kept = pads(&h);
+            for way in ways_of(command, search) {
+                for by_keys in [true, false] {
+                    open_pad_on_triangle(&mut h);
+                    added(&mut h);
+                    settled(&mut h);
+                    // Its preview built: Esc would stop one still rebuilding first.
+                    step_until(&mut h, "the preview built", |h| {
+                        let tab = &h.state().tabs()[0];
+                        tab.status.as_ref().is_some_and(|status| {
+                            status.rebuild.revision == tab.revision
+                                && status.rebuild.state == silico_core::command::RebuildState::Done
+                        })
+                    });
+                    if by_keys {
+                        by_way(&mut h, way);
+                    } else {
+                        dialog(&h)
+                            .get_by_role_and_label(Role::Button, entry.label)
+                            .click();
                     }
-                }
-            }
-            Command::Shortcuts => {
-                let f = fixture();
-                let (mut h, _) = f.opened("example.silico", EXAMPLE);
-                step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-                for chord in keys_of(command) {
-                    press_chord(&mut h, chord);
-                    step_until(&mut h, "the sheet by its keys", sheet_open);
-                    h.key_press(Key::Escape);
-                    step_until(&mut h, "closed", |h| !sheet_open(h));
-                    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
-                    step_until(&mut h, "the sheet by its button", sheet_open);
-                    h.key_press(Key::Escape);
-                    step_until(&mut h, "closed", |h| !sheet_open(h));
+                    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+                    settled(&mut h);
+                    kept += usize::from(ok);
+                    assert_eq!(pads(&h), kept, "{command:?}, by its keys: {by_keys}");
                 }
             }
         }
+        Command::Line
+        | Command::Rectangle
+        | Command::Circle
+        | Command::Arc
+        | Command::Point
+        | Command::Trim
+        | Command::Dimension => {
+            use silico_app::sketch::tools::Choice;
+            use silico_core::sketch_tools::ToolKind;
+            // The prototype's tools (app.js's `CMD`, interact.js's `setTool`): the
+            // rectangle the corner one and the arc the 3-point one, Fusion's first.
+            let choice = match command {
+                Command::Line => Choice::Draw(ToolKind::Line),
+                Command::Rectangle => Choice::Draw(ToolKind::CornerRectangle),
+                Command::Circle => Choice::Draw(ToolKind::Circle),
+                Command::Arc => Choice::Draw(ToolKind::ThreePointArc),
+                Command::Point => Choice::Draw(ToolKind::Point),
+                Command::Trim => Choice::Trim,
+                _ => Choice::Dimension,
+            };
+            let f = fixture();
+            let mut h = triangle_opened(&f);
+            let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
+            same_toggle(&mut h, entry.label, ways_of(command, search), |h| {
+                tool(h)
+                    .map(|chosen| assert_eq!(chosen, choice, "{command:?}"))
+                    .is_some()
+            });
+            assert_eq!(never_waits::waits(), 0);
+        }
+        Command::Construction => {
+            let f = fixture();
+            let mut h = triangle_opened(&f);
+            same_toggle(&mut h, entry.label, ways_of(command, search), |h| {
+                sketch_mode(h).unwrap().settings.construction
+            });
+            assert_eq!(never_waits::waits(), 0);
+        }
+        Command::FinishSketch => {
+            use silico_app::sketch::tools::Choice;
+            use silico_core::sketch_tools::ToolKind;
+            let f = fixture();
+            let mut h = triangle_opened(&f);
+            let points = |h: &AppHarness| sketch_of_text(&f, h, "s0000001").points.len();
+            for way in ways_of(command, search) {
+                for by_keys in [true, false] {
+                    // A point added, so Finish (it's kept) differs from Cancel (it's
+                    // dropped).
+                    let before = points(&h);
+                    h.state_mut().tabs_mut()[0].sketch_toggle(Choice::Draw(ToolKind::Point));
+                    sketch_events(&f, &mut h, &clicked(30.0 + before as f64, 5.0));
+                    settled(&mut h);
+                    assert_eq!(points(&h), before + 1);
+                    if by_keys {
+                        by_way(&mut h, way);
+                    } else {
+                        toolbar_finish(&h).click();
+                    }
+                    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+                    settled(&mut h);
+                    assert_eq!(points(&h), before + 1, "kept, by its keys: {by_keys}");
+                    // Open again, for the next.
+                    let sessions = Arc::clone(&f.sessions);
+                    h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &sketch_id("s0000001"));
+                    sketch_read(&mut h);
+                }
+            }
+            assert_eq!(never_waits::waits(), 0);
+        }
+        Command::Rename => {
+            // By its keys, then by the timeline's menu item labelled as the registry
+            // names the command: each opens the selected feature's field, and Enter
+            // writes the name typed.
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+            select(&mut h, "Pin");
+            for way in ways_of(command, search) {
+                by_way(&mut h, way);
+                renamed_in_field(&mut h, "Pin", "Peg");
+                menu_on(&mut h, "Timeline", "Peg");
+                menu_click(&mut h, "PEG", entry.label);
+                renamed_in_field(&mut h, "Peg", "Pin");
+            }
+            assert_eq!(
+                names_of(&text_of(&f.sessions, &h)),
+                ["Block", "Pin", "Hole"]
+            );
+        }
+        Command::Delete => {
+            // Each of its keys, then the menu's item: the hole deleted, then undone.
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+            for way in ways_of(command, search) {
+                select(&mut h, "Hole");
+                by_way(&mut h, way);
+                step_until(&mut h, "deleted by its keys", |h| {
+                    !shows(h, "Timeline", "Hole")
+                });
+                assert_eq!(names_of(&text_of(&f.sessions, &h)), ["Block", "Pin"]);
+                h.get_by_role_and_label(Role::Button, "Undo").click();
+                step_until(&mut h, "undone", |h| shows(h, "Timeline", "Hole"));
+                settled(&mut h);
+            }
+            menu_on(&mut h, "Timeline", "Hole");
+            menu_click(&mut h, "HOLE", entry.label);
+            step_until(&mut h, "deleted by its menu", |h| {
+                !shows(h, "Timeline", "Hole")
+            });
+            assert_eq!(names_of(&text_of(&f.sessions, &h)), ["Block", "Pin"]);
+        }
+        Command::Suppress | Command::FindInBrowser | Command::FindInTimeline => {
+            // No keys, as the prototype gives none: each the menus' item, labelled as
+            // the registry names the command (their own tests cover what each does).
+            assert!(entry.keys.is_empty());
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Browser", "Hole"));
+            let pane = if command == Command::FindInTimeline {
+                "Browser"
+            } else {
+                "Timeline"
+            };
+            menu_on(&mut h, pane, "Hole");
+            if search {
+                // Selected by its right click, as a left click would, the menu closed.
+                h.key_press(Key::Escape);
+                step_until(&mut h, "the menu closed", |h| {
+                    h.query_by_role_and_label(Role::Menu, "HOLE").is_none()
+                });
+                by_way(&mut h, Way::Search(command));
+            } else {
+                menu_click(&mut h, "HOLE", entry.label);
+            }
+            match command {
+                Command::Suppress => step_until(&mut h, "suppressed", |h| {
+                    text_of(&f.sessions, h).contains(r#""name": "Hole", "suppressed": true,"#)
+                }),
+                // Found: the hole selected, as the right-click left it, and from then
+                // on selected in the other pane (where F2 renames it), which the
+                // right-click's selection isn't.
+                _ => {
+                    let other = if command == Command::FindInBrowser {
+                        silico_app::feature_menu::Place::Browser
+                    } else {
+                        silico_app::feature_menu::Place::Timeline
+                    };
+                    step_until(&mut h, "found", |h| {
+                        let tab = &h.state().tabs()[0];
+                        tab.selection().feature().map(|id| id.as_str()) == Some("m3tq8v0z")
+                            && tab.selected_in == other
+                    });
+                }
+            }
+        }
+        Command::Shortcuts => {
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+            for way in ways_of(command, search) {
+                by_way(&mut h, way);
+                step_until(&mut h, "the sheet by its keys", sheet_open);
+                h.key_press(Key::Escape);
+                step_until(&mut h, "closed", |h| !sheet_open(h));
+                h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+                step_until(&mut h, "the sheet by its button", sheet_open);
+                h.key_press(Key::Escape);
+                step_until(&mut h, "closed", |h| !sheet_open(h));
+            }
+        }
+    }
+}
+
+#[test]
+fn every_registry_commands_keys_do_what_its_button_or_menu_item_does() {
+    for entry in &REGISTRY {
+        same_every_way(entry, false);
     }
     // The tooltips name the keys the registry does: Save's, Undo's, and Redo's.
     let f = fixture();
@@ -22142,7 +23855,7 @@ fn empty_sketch(name: &str, plane: &str) -> Vec<(String, Plain)> {
 }
 
 #[test]
-fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_it_one_undo() {
+fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_a_line_one_undo() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", EXAMPLE);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
@@ -22175,12 +23888,18 @@ fn create_sketch_on_xy_adds_an_empty_sketch_opens_sketch_mode_and_finish_keeps_i
             .accesskit_node()
             .is_disabled()
     );
-    leave_sketch(&mut h, true);
-    assert!(fields_of(&text_of(&f.sessions, &h), "Sketch1").is_some());
+    // A line drawn, so the sketch holds something: Finish keeps it, the add and the line
+    // one step, "Add" and its name, and no discard said.
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
+    assert_eq!(sketch_of_text(&f, &h, id.as_str()).lines.len(), 1);
     assert!(
         h.query_by_role_and_label(Role::Toolbar, "Sketch bar")
             .is_none()
     );
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Sketch1");
     // One undo takes the whole sketch back.
     h.get_by_role_and_label(Role::Button, "Undo").click();
     step(&mut h);
@@ -22206,7 +23925,9 @@ fn cancel_of_a_sketch_that_began_the_transaction_rolls_it_back_byte_for_byte() {
         fields_of(&text_of(&f.sessions, &h), "Sketch1"),
         Some(empty_sketch("Sketch1", r#""xz""#))
     );
-    leave_sketch(&mut h, false);
+    leave_sketch_unsettled(&mut h, false);
+    // Cancel's own: nothing said of a discard.
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
     assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
     let tab = &h.state().tabs()[0];
     assert!(!tab.transaction);
@@ -22234,6 +23955,469 @@ fn cancel_of_a_sketch_after_earlier_edits_undoes_to_where_it_opened_byte_for_byt
     let tab = &h.state().tabs()[0];
     assert!(tab.transaction);
     assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// What Finish of a new sketch holding nothing says, as the prototype's `finish` words it
+/// (docs/design/m5-ui/js/sketch.js).
+const DISCARDED: &str = "Empty sketch discarded. Nothing was added.";
+
+/// Stepped until everything of the first tab's has answered, as [`settled`]; each toast
+/// shown on the way, in order, never one already shown when it began (an earlier step's,
+/// still up).
+fn toasts_till_settled(h: &mut AppHarness) -> Vec<String> {
+    let shown = |h: &AppHarness| -> Vec<(String, f64)> {
+        h.state()
+            .toasts()
+            .iter()
+            .map(|shown| (shown.toast.text.clone(), shown.at))
+            .collect()
+    };
+    let before = shown(h);
+    let seen = std::cell::RefCell::new(Vec::<(String, f64)>::new());
+    step_until(h, "everything answered", |h| {
+        let mut seen = seen.borrow_mut();
+        for toast in shown(h) {
+            if !before.contains(&toast) && !seen.contains(&toast) {
+                seen.push(toast);
+            }
+        }
+        is_settled(h)
+    });
+    seen.into_inner()
+        .into_iter()
+        .map(|(text, _)| text)
+        .collect()
+}
+
+/// A line drawn in the open sketch by the Line tool (L), clicked at `from` then at `to`, and
+/// its add answered.
+fn draw_line(f: &Fixture, h: &mut AppHarness, from: [f64; 2], to: [f64; 2]) {
+    h.key_press(eframe::egui::Key::L);
+    step(h);
+    sketch_events(f, h, &clicked(from[0], from[1]));
+    sketch_events(f, h, &clicked(to[0], to[1]));
+    settled(h);
+}
+
+/// Whether the timeline or the browser lists `name`, once each has read the tab's revision.
+fn listed(h: &AppHarness, name: &str) -> bool {
+    shows(h, "Timeline", name) || shows(h, "Browser", name)
+}
+
+#[test]
+fn finish_of_a_new_sketch_with_nothing_drawn_is_its_cancel_said_and_frees_its_name() {
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    settled(&mut h);
+    step_until(&mut h, "Sketch1 listed", |h| listed(h, "Sketch1"));
+    leave_sketch_unsettled(&mut h, true);
+    // Said once, in the prototype's words.
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    // Its add began the transaction: rolled back, as Cancel's is, so the document is the
+    // file's bytes again, no transaction open, and nothing to undo.
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    assert_eq!(tab.unsaved_edits(), 0);
+    step_until(&mut h, "Sketch1 gone", |h| {
+        !listed(h, "Sketch1") && shows(h, "Timeline", "Hole")
+    });
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo");
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Undo")
+            .accesskit_node()
+            .is_disabled()
+    );
+    // Its name free: the next Create Sketch's is Sketch1 again.
+    create_sketch(&mut h, "XY plane");
+    settled(&mut h);
+    assert_eq!(
+        fields_of(&text_of(&f.sessions, &h), "Sketch1"),
+        Some(empty_sketch("Sketch1", r#""xy""#))
+    );
+    assert_eq!(fields_of(&text_of(&f.sessions, &h), "Sketch2"), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_of_a_new_empty_sketch_after_an_edit_undoes_to_the_edit_and_leaves_no_step() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let before = text_of(&f.sessions, &h);
+    assert!(before.contains(r#""name": "PinK""#));
+    let opened_at = h.state().tabs()[0].revision;
+    create_sketch(&mut h, "YZ plane");
+    settled(&mut h);
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    // Undone back to where sketch mode opened, as Cancel's is: the rename kept, the next
+    // Undo the rename's, nothing to redo, and the bar counting the rename alone.
+    assert_eq!(text_of(&f.sessions, &h), before);
+    let tab = &h.state().tabs()[0];
+    assert!(tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Undo(Some(opened_at))));
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
+    assert_eq!(tooltip_title(&mut h, "Redo"), "Redo");
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    undo_by_key(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_of_a_new_sketch_whose_only_line_was_deleted_discards_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
+    let line = sketch_of_text(&f, &h, id.as_str()).lines[0]
+        .id
+        .as_str()
+        .to_owned();
+    read_with_lines(&mut h, 1);
+    // The tool left (Esc), the line deleted: its ends go
+    // with it, used by no other curve, so the sketch holds nothing again.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    delete_line(&mut h, &line);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!(
+        (sketch.points.len(), sketch.lines.len()),
+        (0, 0),
+        "{sketch:?}"
+    );
+    read_with_lines(&mut h, 0);
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert!(!h.state().tabs()[0].transaction);
+    step_until(&mut h, "Sketch1 gone", |h| {
+        !listed(h, "Sketch1") && shows(h, "Timeline", "Hole")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_drawn_in_the_frame_finish_is_pressed_keeps_the_new_sketch() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    settled(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &clicked(10.0, 10.0));
+    settled(&mut h);
+    // The line's second click and Finish in one frame: its add queued or under way, never
+    // answered, and sketch mode's last read of an empty sketch.
+    hand_camera(&mut h);
+    {
+        let _marked = never_waits::marked();
+        let ctx = eframe::egui::Context::default();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        let events = clicked(30.0, 20.0);
+        let pointer = events.last().map(|event| event.at);
+        let mut output = ctx.run_ui(eframe::egui::RawInput::default(), |ui| {
+            let painter = ui.painter().clone();
+            let input = silico_app::sketch::FrameInput {
+                events: &events,
+                pointer,
+                project: &to_screen,
+                to_plane: &to_sketch,
+            };
+            tab.sketch_frame(&sessions, &painter, &input);
+        });
+        output.textures_delta.clear();
+        let read = tab.sketch.as_ref().unwrap().drawable().unwrap();
+        assert!(read.members.lines.is_empty());
+        // Its add queued or sent, unanswered.
+        assert!(tab.unsettled());
+        tab.finish_sketch(&sessions, true);
+    }
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.points.len(), sketch.lines.len()), (2, 1));
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Add Sketch1");
+    step_until(&mut h, "Sketch1 listed", |h| listed(h, "Sketch1"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Create Sketch on XY in EXAMPLE, after renaming Pin to PinK first if `edited`; its sketch
+/// added, read, and everything answered. The session's text before Create Sketch.
+fn new_empty_sketch(f: &Fixture, edited: bool) -> (AppHarness, String) {
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    if edited {
+        select(&mut h, "Pin");
+        type_name(&mut h, "K");
+        settled(&mut h);
+    }
+    let before = text_of(&f.sessions, &h);
+    assert_eq!(before.contains(r#""name": "PinK""#), edited);
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    settled(&mut h);
+    (h, before)
+}
+
+#[test]
+fn a_save_and_create_sketch_asked_while_an_empty_new_sketchs_finish_is_judged_wait_for_it() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, false);
+    let path = f.dir.path().join("example.silico");
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.finish_sketch(&sessions, true);
+        assert!(tab.sketch.is_none());
+        // Its judgement's read under way: the close isn't taken yet, so no sketch mode opens,
+        // and Create Sketch pressed opens none.
+        assert!(!tab.can_sketch());
+        tab.create_sketch(&sessions, silico_core::document::OriginPlane::Xz);
+        assert!(tab.sketch.is_none());
+        // A save waits for the discard, so it writes nothing of the sketch.
+        tab.save(&sessions, false);
+    }
+    // The save comes after the discard, which left nothing to write (#514's toast).
+    assert_eq!(
+        toasts_till_settled(&mut h),
+        [
+            DISCARDED,
+            "Nothing to save: example.silico matches the file."
+        ]
+    );
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert!(!h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_only_line_deleted_in_the_frame_finish_is_pressed_discards_the_new_sketch() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, false);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
+    let line = sketch_of_text(&f, &h, id.as_str()).lines[0]
+        .id
+        .as_str()
+        .to_owned();
+    read_with_lines(&mut h, 1);
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    select_member(&mut h, &line, silico_core::document::ElementKind::Line);
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_delete(&sessions);
+        // The removal queued or sent, unanswered, and the last read still shows the line.
+        assert!(tab.unsettled());
+        let read = tab.sketch.as_ref().unwrap().drawable().unwrap();
+        assert_eq!(read.members.lines.len(), 1);
+        tab.finish_sketch(&sessions, true);
+    }
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert!(!h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_are_off_while_an_empty_new_sketchs_finish_is_judged() {
+    let f = fixture();
+    let (mut h, renamed) = new_empty_sketch(&f, true);
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        // Undo was on before: sketch mode's own add, after the rename.
+        tab.finish_sketch(&sessions, true);
+        // Till the close is taken, its undo back to where sketch mode opened still to send,
+        // Undo would go past it to the rename (the app's Ctrl+Z steps only if it's on).
+        assert!(!tab.undoable());
+        assert!(!tab.redoable());
+    }
+    // The discard undoes to the rename alone.
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), renamed);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Pin");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_is_off_while_an_empty_new_sketchs_finish_is_judged_though_its_line_was_undone() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, false);
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
+    read_with_lines(&mut h, 1);
+    // The line undone inside sketch mode: Redo would give it back.
+    undo_by_key(&mut h);
+    read_with_lines(&mut h, 0);
+    assert!(h.state().tabs()[0].redoable());
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.finish_sketch(&sessions, true);
+        // Till the close is taken, Redo would go past the discard's rollback.
+        assert!(!tab.redoable());
+    }
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert!(
+        !h.state().tabs()[0]
+            .sent
+            .iter()
+            .any(|sent| matches!(sent, Sent::Redo(_)))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_then_a_revert_asked_while_an_empty_new_sketchs_finish_is_judged_keep_the_discard() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, false);
+    let path = f.dir.path().join("example.silico");
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.finish_sketch(&sessions, true);
+        // The save asked first saves what was asked before it, the Finish among them; the
+        // revert after it drops nothing of that.
+        tab.save(&sessions, false);
+        tab.revert(&sessions, false);
+    }
+    // The save comes after the discard, which left nothing to write (#514's toast).
+    assert_eq!(
+        toasts_till_settled(&mut h),
+        [
+            DISCARDED,
+            "Nothing to save: example.silico matches the file."
+        ]
+    );
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert!(!h.state().tabs()[0].transaction);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_is_off_while_an_edit_sketchs_cancel_waits_behind_an_edit_in_flight() {
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    select(&mut h, "Plate");
+    type_name(&mut h, "K");
+    settled(&mut h);
+    let renamed = text_of(&f.sessions, &h);
+    assert!(renamed.contains(r#""name": "PlateK""#));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    settled(&mut h);
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        // An edit made in sketch mode, then its Cancel, queued behind it.
+        tab.edit(
+            &sessions,
+            silico_app::tab::Edit {
+                feature: sketch_id("b0000002"),
+                field: "name".to_owned(),
+                value: json::read(br#""WasherK""#).unwrap(),
+            },
+        );
+        assert!(!tab.edits.idle());
+        tab.finish_sketch(&sessions, false);
+        // Its undo back to where sketch mode opened still to send: Undo now would come after
+        // it and take back the rename too.
+        assert!(!tab.undoable());
+    }
+    settled(&mut h);
+    // The Cancel took back the edit made in it, and only that.
+    assert_eq!(text_of(&f.sessions, &h), renamed);
+    assert_eq!(tooltip_title(&mut h, "Undo"), "Undo: Rename Plate");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_revert_asked_while_an_empty_new_sketchs_finish_is_judged_drops_the_close_and_says_nothing() {
+    let f = fixture();
+    let (mut h, _) = new_empty_sketch(&f, true);
+    let undos = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .sent
+            .iter()
+            .filter(|sent| matches!(sent, Sent::Undo(_)))
+            .count()
+    };
+    let before = undos(&h);
+    {
+        let _marked = never_waits::marked();
+        let sessions = Arc::clone(&f.sessions);
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.finish_sketch(&sessions, true);
+        tab.revert(&sessions, false);
+    }
+    // The revert rolls the rename and the sketch back together; the close it dropped sends
+    // no undo of its own, and no discard is said of a part going back to its file.
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.transaction);
+    assert_eq!(tab.sent.last(), Some(&Sent::Rollback));
+    assert_eq!(undos(&h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A box and an empty sketch, written by hand.
+const BLANK_SKETCHED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 5,
+  "features": [
+    {"id": "b0000001", "type": "box", "v": 1, "name": "Plate", "position": [0, 0, -10], "length": 40, "width": 40, "height": 10},
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Blank", "plane": "xy", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]
+}
+"#;
+
+#[test]
+fn edit_sketch_of_an_empty_sketch_finished_keeps_it_and_says_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("blank.silico", BLANK_SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Blank"));
+    double_click(&mut h, "Browser", "Blank");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    assert_eq!(sketch_mode(&h).unwrap().sketch, Some(sketch_id("s0000001")));
+    let sent = h.state().tabs()[0].sent.len();
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), Vec::<String>::new());
+    assert_eq!(text_of(&f.sessions, &h), BLANK_SKETCHED);
+    assert_eq!(h.state().tabs()[0].sent.len(), sent);
+    assert!(listed(&h, "Blank"));
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -22329,7 +24513,7 @@ fn delete_removes_the_selection_and_the_sketch_loses_those_members() {
 const SPLIT: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Split", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 60, "y": 0, "construction": false}, {"id": "pa000003", "x": 30, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000003", "construction": false}, {"id": "na000002", "from": "pa000003", "to": "pa000002", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "tangent_at", "a": "na000001", "b": "na000002", "at": "pa000003", "direction": "same"}]}
   ]
@@ -22480,7 +24664,7 @@ fn another_clients_edit_inside_sketch_mode_is_no_reload_and_cancel_undoes_it_wit
 const FOUR_SKETCHES: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []},
     {"id": "s0000002", "type": "sketch", "v": 1, "name": "Tight", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 5, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "distance", "a": "pa000001", "b": "pa000002", "value": 5, "driving": true}]},
@@ -22979,7 +25163,7 @@ fn a_name_being_typed_as_sketch_mode_opens_is_sent_first_its_field_closed_and_ca
 const ONE_SKETCH: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Loose", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}
   ]
@@ -23041,7 +25225,7 @@ fn a_lone_sketchs_prefix_is_read_once_kept_and_drawn_before_its_name_in_the_brow
 const ON_A_FACE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Top", "plane": {"face": "b0000001.box.Face6", "x": "+x", "reversed": false}, "points": [{"id": "pa000001", "x": 1, "y": 1, "construction": false}, {"id": "pa000002", "x": 5, "y": 1, "construction": false}, {"id": "pa000003", "x": 5, "y": 3, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []}
@@ -23189,7 +25373,7 @@ fn planar_boxes(kernel: &FakeKernel) {
 const BLOCK: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "b0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}
   ]
@@ -23220,6 +25404,27 @@ fn create_sketch_on_a_face_writes_the_face_and_the_core_fills_in_its_x() {
     assert!(sketch_mode(&h).unwrap().plane_problem().is_none());
     leave_sketch(&mut h, false);
     assert_eq!(text_of(&f.sessions, &h), BLOCK);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_of_a_new_sketch_on_a_face_with_nothing_drawn_discards_it() {
+    let f = fixture();
+    planar_boxes(&f.kernel);
+    let (mut h, _) = f.opened("block.silico", BLOCK);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    let sessions = Arc::clone(h.state().sessions());
+    h.state_mut().tabs_mut()[0].create_sketch_on_face(&sessions, "b0000001.box.Face6");
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    settled(&mut h);
+    assert!(fields_of(&text_of(&f.sessions, &h), "Sketch1").is_some());
+    sketch_read(&mut h);
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(toasts_till_settled(&mut h), [DISCARDED]);
+    assert_eq!(text_of(&f.sessions, &h), BLOCK);
+    assert!(!h.state().tabs()[0].transaction);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -24431,7 +26636,7 @@ fn crowded() -> String {
         r#"{{
   "silico": 1,
   "units": {{"length": "mm", "resolution": "1nm"}},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {{"id": "s0000001", "type": "sketch", "v": 1, "name": "Crowded", "plane": "xy", "points": [{}], "lines": [], "circles": [], "arcs": [], "constraints": []}}
   ]
@@ -24533,7 +26738,7 @@ fn automatic_relations_off_in_the_palette_adds_no_horizontal() {
 const CROSSED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Cross", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 20, "y": -10, "construction": false}, {"id": "pa000004", "x": 20, "y": 10, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000003", "to": "pa000004", "construction": false}], "circles": [], "arcs": [], "constraints": []}
   ]
@@ -25830,7 +28035,7 @@ fn a_placed_dimension_double_clicked_is_set_as_typed_and_an_over_defining_edit_o
 const BOXED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]}
   ]
@@ -26559,7 +28764,7 @@ fn sketch_modes_selection_keeps_pick_order_takes_the_origin_and_the_axes_and_del
 const RELATING: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Relate", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}, {"id": "pb000001", "x": 70, "y": 10, "construction": false}, {"id": "pb000002", "x": 80, "y": 10, "construction": false}, {"id": "pb000003", "x": 70, "y": 40, "construction": false}, {"id": "pc000001", "x": 100, "y": 20, "construction": false}, {"id": "pd000001", "x": 80, "y": 25, "construction": false}, {"id": "pd000002", "x": 100, "y": 25, "construction": false}, {"id": "pe000001", "x": 30, "y": 0, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}, {"id": "nd000001", "from": "pd000001", "to": "pd000002", "construction": false}], "circles": [{"id": "cc000001", "center": "pc000001", "radius": 5, "construction": false}], "arcs": [], "constraints": [{"id": "kd000001", "type": "on", "point": "pd000002", "curve": "cc000001"}, {"id": "ke000001", "type": "on", "point": "pe000001", "curve": "x_axis"}]}
   ]
@@ -27280,14 +29485,22 @@ fn an_undo_behind_a_click_waiting_on_a_stopped_rebuild_runs_once_the_stop_is_see
     }
     stop_the_held_rebuild(&f, &mut h);
     // Let go in a later poll, not in its press's call: said in the status bar, not toasted
-    // (the app takes a tab's toast in the frame that sets it).
+    // (the app takes a tab's toast in the frame that sets it). The Undo, once it's done, is
+    // (its own toast, "Undid: …").
     step_until(&mut h, "the Vertical let go", |h| {
         h.state().tabs()[0]
             .message
             .as_deref()
             .is_some_and(|said| said.starts_with("Vertical wasn't added: "))
     });
-    assert_eq!(toast_said(&h), None);
+    assert!(
+        !h.state()
+            .toasts()
+            .iter()
+            .any(|shown| shown.toast.text.starts_with("Vertical")),
+        "{:?}",
+        h.state().toasts()
+    );
     settled(&mut h);
     let tab = &h.state().tabs()[0];
     let said = tab.message.clone().unwrap_or_default();
@@ -27922,7 +30135,7 @@ fn delete_during_a_drag_waits_for_its_end_then_goes_against_its_revision_and_bot
 const BOXED_LENGTH: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}, {"id": "ka000005", "type": "length", "line": "na000001", "value": 40, "driving": true}]}
   ]
@@ -28168,7 +30381,7 @@ fn esc_while_the_begin_is_unanswered_ends_the_drag_once_it_answers() {
 const CIRCLED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Round", "plane": "xy", "points": [{"id": "pc000001", "x": 30, "y": 30, "construction": false}], "lines": [], "circles": [{"id": "ca000001", "center": "pc000001", "radius": 10, "construction": false}], "arcs": [], "constraints": []}
   ]
@@ -28571,7 +30784,7 @@ fn sketch_modes_menu_is_never_open_with_smart_dimension_on() {
 const CONSTRUCTING: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Construct", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 10, "y": 30, "construction": false}, {"id": "pa000004", "x": 50, "y": 30, "construction": false}, {"id": "pa000005", "x": 10, "y": 50, "construction": false}, {"id": "pa000006", "x": 50, "y": 50, "construction": false}, {"id": "pb000001", "x": 100, "y": 60, "construction": false}, {"id": "pb000002", "x": 110, "y": 60, "construction": false}, {"id": "pb000003", "x": 90, "y": 60, "construction": false}, {"id": "pc000001", "x": 100, "y": 20, "construction": false}, {"id": "pd000001", "x": 70, "y": 40, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000003", "from": "pa000005", "to": "pa000006", "construction": true}], "circles": [{"id": "cc000001", "center": "pc000001", "radius": 5, "construction": false}], "arcs": [{"id": "ab000001", "center": "pb000001", "start": "pb000002", "end": "pb000003", "construction": false}], "constraints": [{"id": "kd000001", "type": "horizontal", "line": "na000001"}]}
   ]
@@ -29749,7 +31962,7 @@ fn a_dimension_whose_text_is_under_the_palette_opens_its_modify_box_whole_in_the
 const BOXED_BESIDE_A_BLOCK: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [-100, -100, 0], "length": 40, "width": 20, "height": 10},
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]}
@@ -30076,7 +32289,7 @@ fn opened_scaled(
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
     // The app's look, as main.rs gives it and `Fixture::app` does.
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h.state_mut().open(path.to_str().unwrap(), false);
     step_until(&mut h, "the timeline read", |h| {
         h.state()
@@ -30324,7 +32537,7 @@ fn after_the_over_define_prompts_cancel_redo_is_off_and_its_key_sends_nothing_bu
 const BOXED_PADDED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Box", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 50, "y": 10, "construction": false}, {"id": "pa000003", "x": 50, "y": 30, "construction": false}, {"id": "pa000004", "x": 10, "y": 30, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "horizontal", "line": "na000001"}, {"id": "ka000002", "type": "vertical", "line": "na000002"}, {"id": "ka000003", "type": "horizontal", "line": "na000003"}, {"id": "ka000004", "type": "vertical", "line": "na000004"}]},
     {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}
@@ -30933,8 +33146,8 @@ fn begin_sketch_on_xy(h: &mut AppHarness, part: &str) {
     begin_sketch_on(h, part, "XY plane");
 }
 
-/// Finish Sketch (⌘↵) in the part `part`, shown, which keeps its sketch: sketch mode
-/// closed, and the part's edits held, unsaved, its tab marked.
+/// Finish Sketch (⌘↵) in the part `part`, shown, which keeps its sketch (one holding
+/// something): sketch mode closed, and the part's edits held, unsaved, its tab marked.
 fn finish_sketch_unsaved(h: &mut AppHarness, part: &str) {
     h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
     let marked = format!("{part} *");
@@ -30944,10 +33157,12 @@ fn finish_sketch_unsaved(h: &mut AppHarness, part: &str) {
     });
 }
 
-/// A sketch added to the part `part`, shown: [`begin_sketch_on_xy`], then Finish Sketch,
-/// which keeps it, empty, as "Sketch1".
+/// A sketch added to the part `part`, shown: [`begin_sketch_on_xy`], a point placed at
+/// (10, 10), then Finish Sketch, which keeps it, holding the point, as "Sketch1" (one
+/// holding nothing it would discard).
 fn add_sketch(h: &mut AppHarness, part: &str) {
     begin_sketch_on_xy(h, part);
+    place_point_in(h, part, 10.0, 10.0);
     finish_sketch_unsaved(h, part);
 }
 
@@ -32245,7 +34460,7 @@ fn a_right_click_pressed_away_from_its_release_in_one_frame_opens_the_sketch_men
 const TWO_BLOCKS: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "box", "v": 1, "name": "Other", "position": [80, 0, 0], "length": 10, "width": 10, "height": 10}
@@ -32857,7 +35072,7 @@ fn a_selected_face_edge_and_vertex_show_their_kind_their_measures_and_their_name
 const A_PIN: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [0, 0, 0], "radius": 2.5, "height": 12}
   ]
@@ -33396,7 +35611,7 @@ fn a_sketch_on_a_face_consumes_nothing_so_a_pocket_or_pad_from_it_takes_that_bod
 const BLOCK_AND_PIN: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12}
@@ -33430,7 +35645,7 @@ fn a_pocket_or_pad_from_a_sketch_on_the_first_bodys_face_builds_on_that_body_not
 const BLOCK_PIN_AND_LOOSE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -33508,7 +35723,7 @@ fn a_sketch_picked_back_after_another_takes_the_sweep_back_to_its_body() {
 const POCKETED_MID: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -33566,7 +35781,7 @@ fn edit_feature_on_a_sweep_keeps_its_base_when_another_bodys_face_sketch_is_pick
 const JOINED_SUPPRESSED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -34119,7 +36334,7 @@ fn numbering_fuse() -> silico_core::kernel::History {
 const FUSED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Base", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1},
     {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Tool", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1},
@@ -34381,7 +36596,7 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
             };
             h.set_render_every_step(true);
             // In the theme, its fonts and icons, as main.rs applies them: for the screenshot.
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
             meshes_settled(&mut h);
@@ -36015,7 +38230,7 @@ fn a_fillet_dialog_fed_the_selection_of_two_edges_writes_a_fillet_naming_them() 
         r#"{{
   "silico": 1,
   "units": {{"length": "mm", "resolution": "1nm"}},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
     {{
@@ -36474,7 +38689,7 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("box.silico", A_BOX);
             h.state_mut().open(path.to_str().unwrap(), false);
             meshes_settled(&mut h);
@@ -36570,7 +38785,7 @@ fn cancel_dialog(h: &mut AppHarness) {
 const BOX_ROUND: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "radius": 0.5}
@@ -36655,7 +38870,7 @@ fn a_fillets_radius_opens_at_the_last_okd_cancel_leaves_it_and_edit_feature_show
 const MID_CHAIN: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3"], "radius": 1},
@@ -37093,7 +39308,7 @@ fn a_union_takes_two_bodies_clicked_in_the_canvas_and_ok_writes_a_fuse_of_them()
         r#"{{
   "silico": 1,
   "units": {{"length": "mm", "resolution": "1nm"}},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
     {{"id": "a91cw0de", "type": "box", "v": 1, "name": "Other", "position": [80, 0, 0], "length": 10, "width": 10, "height": 10}},
@@ -37502,7 +39717,7 @@ fn a_swap_made_while_the_add_waits_is_refused_and_the_boxes_follow_the_document(
 const FOUR_BLOCKS: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "c0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
     {"id": "a0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
@@ -37577,7 +39792,7 @@ fn ok_stays_off_while_a_box_holds_a_body_unsent_behind_an_edit_and_comes_on_once
 const UNION_BETWEEN: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "c0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
     {"id": "a0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
@@ -37993,7 +40208,7 @@ fn the_booleans_are_off_with_one_body_saying_why_and_on_with_two() {
 const THREE_BLOCKS: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "c0000001", "type": "box", "v": 1, "name": "First", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10},
     {"id": "a0000001", "type": "box", "v": 1, "name": "Second", "position": [20, 0, 0], "length": 20, "width": 10, "height": 10},
@@ -38216,7 +40431,7 @@ fn whats_wrong_lists_the_first_hundred_warnings_and_counts_the_thirty_past_them(
         .collect::<Vec<_>>()
         .join(",\n");
     let text = format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{blocks}\n  ]\n}}\n"
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n{blocks}\n  ]\n}}\n"
     );
     let (mut h, _) = f.opened("many.silico", &text);
     step_until(&mut h, "the timeline warned", |h| {
@@ -38267,7 +40482,7 @@ fn on_lavapipe_a_features_card_is_titled_by_its_name_and_its_message_wraps_acros
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("blocks.silico", THREE_BLOCKS);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "rebuilt with its two errors", |h| {
@@ -38324,7 +40539,7 @@ fn on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings() {
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             let path = f.file("blocks.silico", THREE_BLOCKS);
             h.state_mut().open(path.to_str().unwrap(), false);
             step_until(&mut h, "rebuilt with its two errors", |h| {
@@ -38468,7 +40683,7 @@ fn said_done(h: &AppHarness, start: &str) -> Option<String> {
 const EXAMPLE_PIN_SUPPRESSED: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "suppressed": true, "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -38481,7 +40696,7 @@ const EXAMPLE_PIN_SUPPRESSED: &str = r#"{
 const CHAIN: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -38497,7 +40712,7 @@ const CHAIN: &str = r#"{
 const CHAIN_WITHOUT_HOLE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -38936,7 +41151,7 @@ fn sketches_around_forty_blocks() -> String {
     }
     features.push(sketch("s0000002", "Back", 'b'));
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n{}\n  ]\n}}\n",
         features.join(",\n")
     )
 }
@@ -39036,7 +41251,7 @@ fn find_in_browser_and_find_in_timeline_select_the_feature_and_scroll_to_it() {
 const BLOCK_AND_SKETCH: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Triangle", "plane": "xy", "points": [{"id": "pa000000", "x": 0, "y": 0, "construction": false}, {"id": "pb000000", "x": 20, "y": 0, "construction": false}, {"id": "pc000000", "x": 0, "y": 10, "construction": false}], "lines": [{"id": "na000000", "from": "pa000000", "to": "pb000000", "construction": false}, {"id": "nb000000", "from": "pb000000", "to": "pc000000", "construction": false}, {"id": "nc000000", "from": "pc000000", "to": "pa000000", "construction": false}], "circles": [], "arcs": [], "constraints": []}
@@ -39063,7 +41278,7 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
         h.set_render_every_step(true);
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         let path = f.file("block.silico", BLOCK_AND_SKETCH);
         h.state_mut().open(path.to_str().unwrap(), false);
         step_until(&mut h, "rebuilt", |h| status_said(h, "Rebuilt").is_some());
@@ -39100,7 +41315,7 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
 /// a field's text is laid out and typed in as it is for a person.
 fn opened_themed(f: &Fixture, name: &str, text: &str) -> AppHarness {
     let (h, _) = f.opened(name, text);
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     h
 }
 
@@ -39720,7 +41935,7 @@ fn a_browser_rename_scrolled_out_of_view_then_clicked_away_to_a_dialog_comes_bef
 const CORNER: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [20, 10, -1], "radius": 2.5, "height": 12},
@@ -40479,7 +42694,7 @@ fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_car
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             // Opened with the pin already widened (an upstream edit made before it was
             // saved): the broken fillet builds nothing, so the cut's body is drawn, whose
             // elements the real box's mesh has, as a built fillet's it wouldn't.
@@ -42631,7 +44846,13 @@ fn select_others_boxes_are_kept_through_the_body_hidden_and_the_tab_hidden_made_
     // The tab hidden mid-drag (its drag's end given it unshown, as another document's tab is
     // shown over it), and shown again.
     h.hover_at(at);
-    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    button_event(
+        &h,
+        at,
+        eframe::egui::PointerButton::Primary,
+        true,
+        Modifiers::NONE,
+    );
     step(&mut h);
     // Another box (another key, so its meshes aren't the box's: the core gives a model's
     // meshes to every session that reads them, each tab making their boxes).
@@ -43770,7 +45991,7 @@ fn command_r_with_a_transaction_open_and_nothing_changed_ends_it_to_read_the_fil
 const TWO_POINTS: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Pair", "plane": "xy", "points": [{"id": "pa000001", "x": 10, "y": 10, "construction": false}, {"id": "pa000002", "x": 40, "y": 10.5, "construction": false}], "lines": [], "circles": [], "arcs": [], "constraints": []}
   ]
@@ -43813,7 +46034,7 @@ fn the_tools_read_the_sketchs_states_and_leave_out_a_direction_between_fixed_poi
 const ABSORBED_AND_LOOSE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Profile", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 30, "y": 0, "construction": false}, {"id": "pa000003", "x": 30, "y": 20, "construction": false}, {"id": "pa000004", "x": 0, "y": 20, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": []},
     {"id": "p0000001", "type": "pad", "v": 1, "name": "Legs", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}},
@@ -44423,14 +46644,21 @@ fn sketch_mode_drops_nothing_and_an_absorbed_sketch_edited_stays_hidden() {
         leave_sketch(&mut h, finish);
         assert!(kept(&h), "{name}, finished: {finish}");
     }
-    // A new sketch cancelled was never listed: no new row, the eyes as they were. One
-    // finished is listed with nothing built from it: shown.
+    // A new sketch cancelled was never listed: no new row, the eyes as they were; nor one
+    // finished with nothing drawn, which is discarded. One finished with a line is listed
+    // with nothing built from it: shown.
     let rows = h.state().tabs()[0].browser.sketches().len();
     create_sketch(&mut h, "XY plane");
     leave_sketch(&mut h, false);
     assert_eq!(h.state().tabs()[0].browser.sketches().len(), rows);
     assert!(kept(&h), "a new sketch cancelled");
     create_sketch(&mut h, "XY plane");
+    leave_sketch(&mut h, true);
+    assert_eq!(h.state().tabs()[0].browser.sketches().len(), rows);
+    assert!(kept(&h), "a new empty sketch finished");
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
     leave_sketch(&mut h, true);
     step_until(&mut h, "the new sketch listed", |h| {
         h.state().tabs()[0].browser.sketches().len() == rows + 1
@@ -44779,7 +47007,7 @@ fn on_lavapipe_a_shown_sketchs_line_is_drawn_on_its_face_in_eguis_image_and_its_
                     ))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
-            silico_app::theme::apply(&h.ctx);
+            apply_look(&h);
             h.set_render_every_step(true);
             let path = f.file("box.silico", &boxed_front_line());
             h.state_mut().open(path.to_str().unwrap(), false);
@@ -45162,7 +47390,7 @@ fn in_a_new_parts_first_sketch_front_keeps_the_sketch_bar_off_its_top() {
 const ON_TOP_ALONG_Y: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10},
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Top", "plane": {"face": "k7f2qx3m.box.Face6", "x": "+y", "reversed": false}, "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}
@@ -45256,11 +47484,12 @@ fn look_at_before_the_sketchs_first_read_says_so_and_the_view_stays() {
     let mut h = f.app();
     step(&mut h);
     new_part(&mut h);
+    // The toolbar is there once the tab is: queried, not got, so a frame still showing the
+    // start page waits rather than failing.
     step_until(&mut h, "Create Sketch on", |h| {
-        !h.get_by_role_and_label(Role::Toolbar, "CREATE")
-            .get_by_label("Create Sketch")
-            .accesskit_node()
-            .is_disabled()
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
     });
     f.sketches.hold();
     create_sketch(&mut h, "XY plane");
@@ -47952,5 +50181,5612 @@ fn a_drags_release_sends_the_value_it_held_back_in_the_releases_own_frame() {
     hold.release();
     settled(&mut h);
     assert_eq!(pads_extent(&f.sessions, &h), pad_extent("17", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Toasts (the prototype audit's item 19: app.js's `toast`, styles.css's `#toasts`) ----
+
+/// The toasts shown, oldest first: each one's words, icon, and when it was shown.
+fn toasts_shown(h: &AppHarness) -> Vec<(String, silico_app::toast::Kind, f64)> {
+    h.state()
+        .toasts()
+        .iter()
+        .map(|shown| (shown.toast.text.clone(), shown.toast.kind, shown.at))
+        .collect()
+}
+
+/// The newest toast's words, if one shows.
+fn newest_toast(h: &AppHarness) -> Option<String> {
+    h.state().toast().map(|(text, _)| text.to_owned())
+}
+
+/// Frames stepped until the newest toast says `text`, and it's drawn (from the frame after
+/// the one that asks for it).
+#[track_caller]
+fn toasted(h: &mut AppHarness, text: &str) {
+    step_until(h, text, |h| {
+        newest_toast(h).as_deref() == Some(text) && anywhere(h, text)
+    });
+}
+
+/// The name, in the accessibility tree, of the icon drawn 8 left of the toast saying `text`
+/// and centred across its line (`.toast`'s `gap: 8px`, `align-items: center`).
+fn toast_icon(h: &AppHarness, text: &str) -> Option<String> {
+    let words = h.get_by_label(text).rect();
+    h.query_all_by_role(Role::Image)
+        .find(|node| {
+            let icon = node.rect();
+            (icon.center().y - words.center().y).abs() <= 1.0
+                && (words.left() - icon.right() - 8.0).abs() <= 0.5
+        })
+        .and_then(|node| node.accesskit_node().label())
+}
+
+/// Command+`key` pressed, and a frame stepped.
+fn command_key(h: &mut AppHarness, key: eframe::egui::Key) {
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, key);
+    step(h);
+}
+
+#[test]
+fn toasts_stack_newest_last_each_taken_down_on_its_own_clock_asking_no_frame_once_gone() {
+    use eframe::egui::Key;
+    use silico_app::toast::Kind;
+    // Two shown a second apart (Undo with nothing to undo, then F5): both up, the newer
+    // under the older, each with the info icon; the first gone 3.8 s after it was shown
+    // with the second still up, then the second 3.8 s after it; then no frame asked for but
+    // the idle one.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    // The fade's time is egui's animation time, the app's egui's own 0.2 s (`theme::apply`):
+    // the harness keeps it at 0 (`apply_look`, #519), with which a toast goes unfaded.
+    animation_time(&h, 0.2);
+    meshes_settled(&mut h);
+    settled(&mut h);
+    let time = |h: &AppHarness| h.ctx.input(|input| input.time);
+    let frame = 1.0 / 60.0;
+    assert!(toasts_shown(&h).is_empty());
+    command_key(&mut h, Key::Z);
+    step_until(&mut h, "Undo's toast", |h| !toasts_shown(h).is_empty());
+    let first = toasts_shown(&h)[0].2;
+    while time(&h) < first + 1.0 {
+        step(&mut h);
+    }
+    h.key_press(Key::F5);
+    step(&mut h);
+    step(&mut h);
+    let shown = toasts_shown(&h);
+    assert_eq!(
+        shown
+            .iter()
+            .map(|(text, kind, _)| (text.as_str(), *kind))
+            .collect::<Vec<_>>(),
+        [
+            ("Nothing to undo", Kind::Info),
+            (silico_app::app::FILTERS_SAID, Kind::Info),
+        ]
+    );
+    let second = shown[1].2;
+    assert!(
+        (1.0..1.0 + 2.0 * frame).contains(&(second - first)),
+        "{first} {second}"
+    );
+    // Stacked: the newer under the older, 6 between their frames, so 22 between their
+    // words (each frame padded 7 over and under inside a border of 1), their right edges
+    // in line, 12 + 1 + 8 in from the canvas's right.
+    let older = h.get_by_label("Nothing to undo").rect();
+    let newer = h.get_by_label(silico_app::app::FILTERS_SAID).rect();
+    assert!(
+        (newer.top() - older.bottom() - 22.0).abs() <= 1.5,
+        "{older:?} {newer:?}"
+    );
+    let right = the_viewport(&h).right() - 12.0 - 1.0 - 8.0;
+    assert!((older.right() - right).abs() <= 1.0, "{older:?}");
+    assert!((newer.right() - right).abs() <= 1.0, "{newer:?}");
+    for text in ["Nothing to undo", silico_app::app::FILTERS_SAID] {
+        assert_eq!(toast_icon(&h, text).as_deref(), Some("Info"), "{text}");
+    }
+    // Up and whole, shown at once, with nothing fading: the frames come to ask for none at
+    // once, long before either fades.
+    step_until(&mut h, "no frame asked for at once", |h| {
+        repaint_delay(h) != Some(Duration::ZERO)
+    });
+    assert!(time(&h) - second < 1.0, "{}", time(&h) - second);
+    assert_eq!(toasts_shown(&h).len(), 2);
+    // Fading out over the last of its time (egui's animation time, the app's 0.2 s): each
+    // frame asked for at once then, so the fade is drawn.
+    while time(&h) - first < 3.8 - 1.0 / 24.0 {
+        step(&mut h);
+    }
+    assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
+    // The first taken down at 3.8 s, the second still up.
+    let mut frames = 0;
+    while toasts_shown(&h).len() == 2 {
+        assert!(time(&h) - first < 3.8, "up past its time");
+        step(&mut h);
+        frames += 1;
+        assert!(frames < 100_000, "never taken down");
+    }
+    let up = time(&h) - first;
+    assert!((3.8..3.8 + frame).contains(&up), "{up}");
+    assert_eq!(
+        newest_toast(&h).as_deref(),
+        Some(silico_app::app::FILTERS_SAID)
+    );
+    assert_eq!(toasts_shown(&h).len(), 1);
+    step(&mut h);
+    assert!(!anywhere(&h, "Nothing to undo"));
+    assert!(anywhere(&h, silico_app::app::FILTERS_SAID));
+    // The second at its own 3.8 s.
+    while !toasts_shown(&h).is_empty() {
+        assert!(time(&h) - second < 3.8, "up past its time");
+        step(&mut h);
+        frames += 1;
+        assert!(frames < 100_000, "never taken down");
+    }
+    let up = time(&h) - second;
+    assert!((3.8..3.8 + frame).contains(&up), "{up}");
+    step(&mut h);
+    assert!(!anywhere(&h, silico_app::app::FILTERS_SAID));
+    // None shown: the frame asked for is the idle one.
+    let delay = repaint_delay(&h);
+    assert!(
+        delay.is_some_and(|delay| {
+            delay > silico_core::disk::DISK_CHECK_INTERVAL && delay <= IDLE_FRAME
+        }),
+        "{delay:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_say_the_step_they_took_once_it_is_done_or_that_there_was_none() {
+    use eframe::egui::Key;
+    // The prototype's `undo` and `redo`: "Undid: " or "Redid: " and the step, as Undo's and
+    // Redo's tooltips name it ("Rename Pin", the name it replaced); with nothing to step,
+    // "Nothing to undo" and "Nothing to redo".
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    command_key(&mut h, Key::Z);
+    toasted(&mut h, "Nothing to undo");
+    command_key(&mut h, Key::Y);
+    toasted(&mut h, "Nothing to redo");
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    step_until(&mut h, "undoable", |h| h.state().tabs()[0].undoable());
+    // Said once the core has answered, never at the press: the session at the undo's new
+    // revision when it shows.
+    let before = h.state().tabs()[0].revision;
+    command_key(&mut h, Key::Z);
+    toasted(&mut h, "Undid: Rename Pin");
+    assert!(h.state().tabs()[0].revision > before);
+    assert_eq!(toast_icon(&h, "Undid: Rename Pin").as_deref(), Some("Info"));
+    settled(&mut h);
+    let before = h.state().tabs()[0].revision;
+    redo_by_key(&mut h);
+    toasted(&mut h, "Redid: Rename Pin");
+    assert!(h.state().tabs()[0].revision > before);
+    // Undone back to the file's document: nothing more to undo, said so.
+    undo_by_key(&mut h);
+    toasted(&mut h, "Undid: Rename Pin");
+    step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
+    command_key(&mut h, Key::Z);
+    toasted(&mut h, "Nothing to undo");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_says_what_it_wrote_at_which_revision_once_done_or_that_the_file_matches() {
+    use eframe::egui::Key;
+    use silico_app::toast::Kind;
+    // The prototype's `save`: "Saved <file> (revision N)" with its check icon, N the
+    // session's revision after the save (1 as opened, 2 after the rename, 3 once the save
+    // writes it, by hand); or "Nothing to save: <file> matches the file.", of a file
+    // `status` found unchanged.
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared", file_unchanged);
+    let matches = "Nothing to save: example.silico matches the file.";
+    command_key(&mut h, Key::S);
+    toasted(&mut h, matches);
+    assert_eq!(toast_icon(&h, matches).as_deref(), Some("Info"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    step_until(&mut h, "one counted", |h| {
+        in_status_bar(h, "Unsaved · 1 edit")
+    });
+    command_key(&mut h, Key::S);
+    let saved = "Saved example.silico (revision 3)";
+    toasted(&mut h, saved);
+    // Written by then, and the status bar says so too.
+    assert!(std::fs::read_to_string(&path).unwrap().contains("Pinx"));
+    let newest = toasts_shown(&h).pop().unwrap();
+    assert_eq!(newest.1, Kind::Check);
+    assert_eq!(toast_icon(&h, saved).as_deref(), Some("Done"));
+    step_until(&mut h, "saved", |h| in_status_bar(h, "Saved"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared again", file_unchanged);
+    command_key(&mut h, Key::S);
+    toasted(&mut h, matches);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether the first tab's last `status` found its file as the session last read or wrote it.
+fn file_unchanged(h: &AppHarness) -> bool {
+    h.state().tabs()[0]
+        .status
+        .as_ref()
+        .is_some_and(|status| status.disk == Some(silico_core::disk::Disk::Unchanged))
+}
+
+/// Command+`key` pressed once, then held: 30 of the system's repeats of it, each a frame.
+fn command_key_held(h: &mut AppHarness, key: eframe::egui::Key) {
+    use eframe::egui::{Event, Modifiers};
+    command_key(h, key);
+    for _ in 0..30 {
+        h.event(Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: true,
+            modifiers: Modifiers::COMMAND,
+        });
+        step(h);
+    }
+    step(h);
+}
+
+#[test]
+fn save_with_its_edits_undone_and_the_file_not_known_to_match_sends_the_commit() {
+    use eframe::egui::Key;
+    use silico_core::disk::{Disk, Found};
+    // The pin renamed, then undone back to the file's document: nothing unsaved, but the
+    // transaction open; then the file can't be read (the watch's reader says so). Save sends
+    // the commit in the frame it's pressed, the core's answer deciding: it writes nothing and
+    // ends the transaction, and "matches the file" isn't said.
+    let unreadable = Arc::new(AtomicBool::new(false));
+    let read: Reader = {
+        let unreadable = Arc::clone(&unreadable);
+        Arc::new(move |path: &Path| {
+            if unreadable.load(Ordering::SeqCst) {
+                Found::Unreadable
+            } else {
+                plain_read(path)
+            }
+        })
+    };
+    let f = fixture_reading(Some(read));
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    settled(&mut h);
+    undo_by_key(&mut h);
+    step_until(&mut h, "undone back", |h| {
+        !h.state().tabs()[0].unsaved() && h.state().tabs()[0].transaction
+    });
+    unreadable.store(true, Ordering::SeqCst);
+    step_until(&mut h, "the file found unreadable", |h| {
+        h.state().tabs()[0]
+            .status
+            .as_ref()
+            .is_some_and(|status| status.disk == Some(Disk::Unreadable))
+    });
+    assert_eq!(h.state().tabs()[0].saves, 0);
+    command_key(&mut h, Key::S);
+    assert_eq!(h.state().tabs()[0].saves, 1, "the commit sent at the press");
+    step_until(&mut h, "the transaction ended", |h| {
+        !h.state().tabs()[0].transaction
+    });
+    assert!(
+        !toasts_shown(&h)
+            .iter()
+            .any(|(text, ..)| text.starts_with("Nothing to save")),
+        "{:?}",
+        toasts_shown(&h)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_held_with_nothing_to_undo_shows_one_toast() {
+    // #514's review: each repeat of a held key asks again; a toast saying what one shown
+    // says, with its icon, isn't stacked again.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    command_key_held(&mut h, eframe::egui::Key::Z);
+    let shown: Vec<String> = toasts_shown(&h).into_iter().map(|t| t.0).collect();
+    assert_eq!(shown, ["Nothing to undo"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_held_on_a_clean_titled_part_shows_one_toast() {
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    step_until(&mut h, "its file compared", file_unchanged);
+    command_key_held(&mut h, eframe::egui::Key::S);
+    let shown: Vec<String> = toasts_shown(&h).into_iter().map(|t| t.0).collect();
+    assert_eq!(shown, ["Nothing to save: example.silico matches the file."]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_with_a_dialog_open_say_nothing_to_undo_or_redo_of_nothing() {
+    use eframe::egui::Key;
+    // A dialog open holds Undo off with its Cancel to come: "Nothing to undo" isn't said.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    settled(&mut h);
+    double_click(&mut h, "Timeline", "Block");
+    step_until(&mut h, "its dialog", dialog_open);
+    settled(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!h.state().tabs()[0].unsettled());
+    command_key(&mut h, Key::Z);
+    command_key(&mut h, Key::Y);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(dialog_open(&h));
+    assert_eq!(toasts_shown(&h), []);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_and_redo_with_a_sketch_drag_pressed_say_nothing_to_undo_or_redo_of_nothing() {
+    use eframe::egui::Key;
+    use silico_app::sketch::PointerAction::{Press, Release};
+    // A point pressed in sketch mode and held, its drag not begun: Undo is held off till its
+    // end, whose edit is to come. "Nothing to undo" isn't said. Its points under defined
+    // (`counting`), so a press on one grabs it.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    settled(&mut h);
+    sketch_events(&f, &mut h, &[pointer(Press, 50.0, 30.0)]);
+    step(&mut h);
+    assert!(the_drag(&h).is_some_and(|d| d.under_way() && !d.in_flight()));
+    assert!(!h.state().tabs()[0].unsettled());
+    command_key(&mut h, Key::Z);
+    command_key(&mut h, Key::Y);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(the_drag(&h).is_some_and(|d| d.under_way()));
+    assert_eq!(toasts_shown(&h), []);
+    sketch_events(&f, &mut h, &[pointer(Release, 50.0, 30.0)]);
+    step(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_save_answered_while_home_is_shown_is_not_said_once_the_document_is_shown_again() {
+    use eframe::egui::Key;
+    // The block's length edited, its rebuild held, so a save waits on it; Home shown, then
+    // the rebuild let go: the save answers while Home is shown, and what the tab would say
+    // is dropped, as a tab not shown's is, never shown later out of its context.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    settled(&mut h);
+    let hold = edit_the_block_held(&f, &mut h);
+    command_key(&mut h, Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    home_button(&h).click();
+    step_until(&mut h, "Home", start_shown);
+    hold.release();
+    step_until(&mut h, "saved", |h| !h.state().tabs()[0].unsaved());
+    assert!(std::fs::read_to_string(&path).unwrap().contains("41"));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(start_shown(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        !toasts_shown(&h)
+            .iter()
+            .any(|(text, ..)| text.starts_with("Saved")),
+        "{:?}",
+        toasts_shown(&h)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// From a rebuild of the example whose hole (its cut) is held, the block and the pin built:
+/// 3 of its plan's 4 steps, by hand (the block made at the origin; the pin made, then moved
+/// to its position, a primitive off the origin being two steps; the cut), `stop` stopping it:
+/// the toast says how far it got and Rebuild's key, off macOS, once `status` says it
+/// stopped.
+fn a_stop_said(stop: impl Fn(&mut AppHarness)) {
+    let f = fixture();
+    let hold = f.kernel.hold(|op| matches!(op, Op::Boolean { .. }));
+    let path = f.file("example.silico", EXAMPLE);
+    let mut h = f.app();
+    h.ctx.set_os(eframe::egui::os::OperatingSystem::Nix);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    let progress = |h: &AppHarness| {
+        h.state()
+            .tabs()
+            .first()
+            .and_then(|tab| tab.status.as_ref())
+            .and_then(|status| status.rebuild.progress.as_ref())
+            .map(|progress| (progress.done, progress.steps))
+    };
+    // The hole's cut started (and held): the block and the pin are built by then.
+    step_until(&mut h, "the hole's cut started", |_| {
+        f.kernel
+            .calls()
+            .iter()
+            .any(|call| matches!(call.op, Op::Boolean { .. }))
+    });
+    step_until(&mut h, "its status read", |h| progress(h).is_some());
+    assert_eq!(progress(&h), Some((3, 4)));
+    assert!(toasts_shown(&h).is_empty());
+    stop(&mut h);
+    let said = "Rebuild stopped at step 3 of 4. Rebuild (Ctrl+B) resumes it.";
+    toasted(&mut h, said);
+    assert!(rebuild_stopped(&h));
+    assert_eq!(toast_icon(&h, said).as_deref(), Some("Info"));
+    // The status bar says it too.
+    assert_eq!(
+        status_said(&h, "Rebuild stopped").as_deref(),
+        Some("Rebuild stopped at 3 of 4")
+    );
+    // Said once.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(toasts_shown(&h).len(), 1);
+    hold.release();
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_stop_button_says_how_far_the_rebuild_got_and_the_key_that_resumes_it() {
+    a_stop_said(|h| {
+        h.get_by_role_and_label(Role::Button, "Stop").click();
+        step(h);
+    });
+}
+
+#[test]
+fn esc_says_how_far_the_rebuild_it_stopped_got_and_the_key_that_resumes_it() {
+    a_stop_said(|h| {
+        h.key_press(eframe::egui::Key::Escape);
+        step(h);
+    });
+}
+
+// ---- #487: while a modal asks, nothing behind it takes input ----
+
+/// Whether `node` is on: not disabled in the accessibility tree.
+fn is_on(node: &egui_kittest::Node<'_>) -> bool {
+    !node.accesskit_node().is_disabled()
+}
+
+/// The one button labelled `label` that's on: behind a modal, any other is off.
+fn on_button<'a>(h: &'a AppHarness, label: &'a str) -> egui_kittest::Node<'a> {
+    let mut on = h
+        .query_all_by_role_and_label(Role::Button, label)
+        .filter(is_on);
+    let node = on.next().unwrap_or_else(|| panic!("no {label} on"));
+    assert!(on.next().is_none(), "two {label}s on");
+    node
+}
+
+/// The timeline's item `name`.
+fn timeline_item<'a>(h: &'a AppHarness, name: &'a str) -> egui_kittest::Node<'a> {
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label(name)
+}
+
+/// [`EXAMPLE`] open, its Pin renamed Pins, selected, and the edit held unsaved: the file's
+/// path.
+fn pins_held(f: &Fixture) -> (AppHarness, PathBuf) {
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
+    });
+    (h, path)
+}
+
+/// Behind a modal: the timeline's item `name` off, and a click on it through the
+/// accessibility tree (an agent's) selecting nothing; with `pointer`, a click of the pointer
+/// on it too (not where the modal's backdrop takes the click as its close, as the sheet's
+/// and What's Wrong's do).
+fn item_takes_no_click(h: &mut AppHarness, name: &str, pointer: bool) {
+    step(h);
+    assert!(
+        !is_on(&timeline_item(h, name)),
+        "{name} on behind the modal"
+    );
+    let selected = selected_features(h);
+    timeline_item(h, name).click_accesskit();
+    step(h);
+    if pointer {
+        timeline_item(h, name).click();
+        step(h);
+    }
+    step(h);
+    assert_eq!(
+        selected_features(h),
+        selected,
+        "{name} selected behind the modal"
+    );
+}
+
+/// With no modal open: the timeline's item `name` on, and a click on it through the
+/// accessibility tree selecting it, the feature `id`.
+fn item_takes_a_click(h: &mut AppHarness, name: &str, id: &str) {
+    step(h);
+    assert!(is_on(&timeline_item(h, name)), "{name} off with no modal");
+    timeline_item(h, name).click_accesskit();
+    step_until(h, "selected", |h| selected_features(h) == [id]);
+}
+
+#[test]
+fn behind_command_rs_question_the_banners_reload_is_off_and_a_click_on_it_drops_nothing() {
+    // #487: the amber banner's "Reload, discard my edits" (a revert) and ⌘R's question's (a
+    // reload, every feature rebuilt) on screen at once. Only the question's is on; the
+    // banner's, clicked through the accessibility tree or by the pointer, does nothing, and
+    // is on again once the question has gone.
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    let mine = text_of(&f.sessions, &h);
+    std::fs::write(&path, example_theirs()).unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, changed));
+    let reload = "Reload, discard my edits";
+    // The banner's, the only one yet: where it stands.
+    let banners = h.get_by_role_and_label(Role::Button, reload).rect();
+    command_r(&mut h);
+    let asked = "Reload example.silico from disk?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    // Each button of the name: whether it's the banner's, and whether it's on.
+    let buttons = |h: &AppHarness| -> Vec<(bool, bool)> {
+        let mut found: Vec<(bool, bool)> = h
+            .query_all_by_role_and_label(Role::Button, reload)
+            .map(|node| (node.rect() == banners, is_on(&node)))
+            .collect();
+        found.sort_unstable();
+        found
+    };
+    assert_eq!(buttons(&h), [(false, true), (true, false)]);
+    // The banner's clicked through the tree, then by the pointer: nothing dropped.
+    fn banner(h: &AppHarness, at: eframe::egui::Rect) -> egui_kittest::Node<'_> {
+        h.query_all_by_role_and_label(Role::Button, "Reload, discard my edits")
+            .find(|node| node.rect() == at)
+            .unwrap()
+    }
+    banner(&h, banners).click_accesskit();
+    step(&mut h);
+    banner(&h, banners).click();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, asked));
+    let tab = &h.state().tabs()[0];
+    assert!(tab.unsaved() && tab.transaction);
+    assert!(!tab.sent.contains(&Sent::Rollback), "{:?}", tab.sent);
+    assert_eq!(tab.rebuilds_all, 0);
+    assert_eq!(text_of(&f.sessions, &h), mine);
+    // Esc, the question's Cancel: the banner's on again, the edits kept.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    step(&mut h);
+    assert_eq!(buttons(&h), [(true, true)]);
+    assert!(h.state().tabs()[0].unsaved());
+    // Asked again, the question's own Reload, the one on: the edits dropped, the file read
+    // again, and every feature rebuilt, which the banner's revert doesn't do.
+    command_r(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    on_button(&h, reload).click();
+    step_until(&mut h, "reloaded and rebuilt", |h| {
+        let tab = &h.state().tabs()[0];
+        shows(h, "Timeline", "Drill") && !tab.unsaved() && tab.rebuilds_all == 1 && !tab.checking()
+    });
+    assert!(!anywhere(&h, asked));
+    assert_eq!(text_of(&f.sessions, &h), example_theirs());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_close_question_the_window_takes_no_click_and_esc_gives_it_back() {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    press_chord(&mut h, keys_of(Command::Close)[0]);
+    let asked = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    item_takes_no_click(&mut h, "Block", true);
+    // The app bar's Save off, the question's own on.
+    let saves: Vec<bool> = h
+        .query_all_by_role_and_label(Role::Button, "Save")
+        .map(|node| is_on(&node))
+        .collect();
+    assert_eq!(saves, [false, true]);
+    // Esc, its Cancel: the window takes clicks again, the edits kept.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_quit_question_the_window_takes_no_click_while_the_disk_watch_goes_on() {
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    item_takes_no_click(&mut h, "Block", true);
+    // The file changed on disk under it: found, and announced behind it, the banner off.
+    std::fs::write(&path, example_theirs()).unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, changed));
+    step(&mut h);
+    let keep = "Keep my edits…";
+    assert!(!is_on(&h.get_by_role_and_label(Role::Button, keep)));
+    // Its own Cancel, the one on: the window takes clicks again, the banner's too.
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains(asked).is_none()
+    });
+    step(&mut h);
+    assert!(is_on(&h.get_by_role_and_label(Role::Button, keep)));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_show_changes_the_banners_buttons_are_off_until_its_close() {
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    std::fs::write(&path, example_theirs()).unwrap();
+    let changed = "example.silico changed on disk while you have unsaved edits.";
+    step_until(&mut h, "the banner", |h| anywhere(h, changed));
+    on_button(&h, "Show changes").click_accesskit();
+    let asked = "What changed on disk";
+    step_until(&mut h, "Show changes", |h| anywhere(h, asked));
+    step(&mut h);
+    let banners = ["Show changes", "Reload, discard my edits", "Keep my edits…"];
+    for label in banners {
+        assert!(
+            !is_on(&h.get_by_role_and_label(Role::Button, label)),
+            "{label}"
+        );
+    }
+    item_takes_no_click(&mut h, "Block", true);
+    // Keep my edits…, clicked through the tree: nothing kept, the banner still offering it.
+    h.get_by_role_and_label(Role::Button, "Keep my edits…")
+        .click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(anywhere(&h, changed));
+    // Its own Close: the banner's on again.
+    on_button(&h, "Close").click_accesskit();
+    step_until(&mut h, "Show changes gone", |h| !anywhere(h, asked));
+    step(&mut h);
+    for label in banners {
+        assert!(
+            is_on(&h.get_by_role_and_label(Role::Button, label)),
+            "{label}"
+        );
+    }
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_export_dialog_the_window_takes_no_click_until_its_cancel() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    let title = "Export example.silico";
+    open_export(&mut h, title);
+    item_takes_no_click(&mut h, "Block", true);
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the dialog gone", |h| !anywhere(h, title));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_shortcut_sheet_the_window_takes_no_click_and_behind_a_question_over_it_neither_does_the_sheet()
+ {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    h.get_by_role_and_label(Role::Button, "Shortcuts").click();
+    step_until(&mut h, "the sheet", sheet_open);
+    // A pointer's click on the window lands on the sheet's backdrop, its close.
+    item_takes_no_click(&mut h, "Block", false);
+    // A quit's question over it: the sheet's × and filter off, a click on its × closing
+    // nothing.
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    step(&mut h);
+    fn sheets_close(h: &AppHarness) -> egui_kittest::Node<'_> {
+        the_sheet(h).get_by_role_and_label(Role::Button, "Close")
+    }
+    assert!(!is_on(&sheets_close(&h)));
+    assert!(!is_on(&the_sheet(&h).get_by_role(Role::TextInput)));
+    sheets_close(&h).click_accesskit();
+    step(&mut h);
+    step(&mut h);
+    assert!(sheet_open(&h));
+    // The question's Cancel: the sheet on again, the window still off under it.
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains(asked).is_none()
+    });
+    step(&mut h);
+    assert!(is_on(&sheets_close(&h)));
+    item_takes_no_click(&mut h, "Block", false);
+    // The sheet's ×: the window takes clicks again.
+    sheets_close(&h).click_accesskit();
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_whats_wrong_the_window_takes_no_click_until_esc_closes_it() {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click();
+    step_until(&mut h, "What's Wrong open", |h| whats_wrong(h).is_some());
+    item_takes_no_click(&mut h, "Second", false);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "What's Wrong closed", |h| whats_wrong(h).is_none());
+    item_takes_a_click(&mut h, "Second", "a0000001");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_over_define_prompt_sketch_modes_bar_and_keys_take_nothing_until_its_cancel() {
+    let f = fixture();
+    let (mut h, text) = over_define_offered(&f, None);
+    step_until(&mut h, "the prompt", |h| prompt(h).is_some());
+    step(&mut h);
+    fn finish(h: &AppHarness) -> egui_kittest::Node<'_> {
+        h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+            .get_by_role_and_label(Role::Button, "Finish Sketch")
+    }
+    assert!(!is_on(&finish(&h)));
+    // The bar's Finish Sketch clicked through the tree, L (the Line tool's key), and Ctrl+Z:
+    // none acts under it.
+    let choice = sketch_mode(&h).unwrap().tools.choice();
+    let sent = h.state().tabs()[0].sent.clone();
+    finish(&h).click_accesskit();
+    step(&mut h);
+    h.key_press(Key::L);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    assert!(prompt(&h).is_some());
+    assert!(sketch_mode(&h).is_some());
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), choice);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    // Esc, its Cancel: the edit undone, the bar on again.
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    assert_eq!(text_of(&f.sessions, &h), text);
+    step_until(&mut h, "the prompt closed", |h| prompt(h).is_none());
+    step(&mut h);
+    assert!(is_on(&finish(&h)));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #497's review: what comes while a modal is open, and every inert path tried ----
+
+/// The boxed rectangle in sketch mode, the solve counting a length of 99 as repeating the
+/// others, its bottom's Modify box open with 99 typed and accepted while the sketch worker
+/// is held: the over-define offer still to come. The document's text on disk.
+fn offer_on_its_way(f: &Fixture) -> (AppHarness, String) {
+    use silico_app::sketch::dimension::ModifyAction;
+    counting_redundant_99(f);
+    let mut h = boxed_length(f);
+    let on_disk = std::fs::read_to_string(f.dir.path().join("boxed.silico")).unwrap();
+    open_modify_box(f, &mut h);
+    modify_dimension(f, &mut h, ModifyAction::Typed("99".to_owned()));
+    f.sketches.hold();
+    modify_dimension(f, &mut h, ModifyAction::Accept);
+    (h, on_disk)
+}
+
+/// The sketch worker let go, and frames stepped until the offer [`offer_on_its_way`] waited
+/// for is the sketch mode's, and ten more.
+fn offer_come(f: &Fixture, h: &mut AppHarness) {
+    f.sketches.release();
+    step_until(h, "the offer", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.offer().is_some())
+    });
+    for _ in 0..10 {
+        step(h);
+    }
+}
+
+#[test]
+fn an_over_define_offer_that_comes_while_the_close_question_is_open_waits_until_it_has_gone() {
+    // #497's review, finding 1: egui raises an area first shown to the top of its order, so
+    // an offer drawn while the question was up stood over it, inert, and a click on its
+    // "Leave it driving" fell through to the question's "Don't save". Held back, it shows
+    // once the question has gone, on top, and takes the pointer.
+    let f = fixture();
+    let (mut h, on_disk) = offer_on_its_way(&f);
+    h.get_by_label("Close boxed.silico").click_accesskit();
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    offer_come(&f, &mut h);
+    assert!(
+        prompt(&h).is_none(),
+        "the offer drawn while the question is up"
+    );
+    assert!(anywhere(&h, question));
+    assert_ne!(text_of(&f.sessions, &h), on_disk);
+    // Its key, 1, does nothing under the question.
+    let sent = h.state().tabs()[0].sent.clone();
+    h.key_press(Key::Num1);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert!(sketch_mode(&h).unwrap().offer().is_some());
+    // The question's Cancel, by the pointer, the question on top: the offer shows.
+    let cancel = on_button(&h, "Cancel").rect().center();
+    click_in_one_frame(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    // Its "Leave it driving", by the pointer: chosen, the tab open, the edit kept.
+    choose_in_prompt(&mut h, "Leave it driving");
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(prompt(&h).is_none());
+    assert!(sketch_mode(&h).unwrap().offer().is_none());
+    assert_eq!(h.state().tabs().len(), 1);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_ne!(text_of(&f.sessions, &h), on_disk);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_over_define_offer_that_comes_while_the_shortcut_sheet_is_open_waits_until_it_closes() {
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    h.get_by_role_and_label(Role::Button, "Shortcuts")
+        .click_accesskit();
+    step_until(&mut h, "the sheet", sheet_open);
+    offer_come(&f, &mut h);
+    assert!(
+        prompt(&h).is_none(),
+        "the offer drawn while the sheet is open"
+    );
+    // The sheet's ×, by the pointer, the sheet on top: the offer shows; Esc is its Cancel.
+    let close = the_sheet(&h)
+        .get_by_role_and_label(Role::Button, "Close")
+        .rect()
+        .center();
+    click_in_one_frame(&mut h, close);
+    step_until(&mut h, "the offer shown", |h| {
+        !sheet_open(h) && prompt(h).is_some()
+    });
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_under_the_over_define_prompt_is_its_cancel_though_the_canvas_menu_was_open_as_it_came() {
+    // #497's review, finding 6: the canvas's menu, open as the offer comes, closes with it
+    // coming, so Esc goes to the prompt, not to the menu behind it.
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    let at = to_screen([20.0, 20.0]).unwrap();
+    h.state_mut().tabs_mut()[0].sketch.as_mut().unwrap().menu_at = Some(at);
+    step_until(&mut h, "the menu", |h| {
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_some()
+    });
+    offer_come(&f, &mut h);
+    assert!(prompt(&h).is_some());
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_none()
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Undo(None)));
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_egui_menu_open_as_a_question_comes_closes_with_none_of_its_items_left() {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    assert!(h.query_by_role_and_label(Role::Button, "Revert").is_some());
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    step(&mut h);
+    assert!(h.query_by_role_and_label(Role::Button, "Revert").is_none());
+    assert!(h.query_by_role_and_label(Role::Button, "Export…").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_a_question_over_whats_wrong_its_buttons_are_off_and_take_no_click() {
+    let f = fixture();
+    let mut h = three_blocks(&f);
+    select(&mut h, "Second");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.unsaved() && tab.edits.idle() && shows(h, "Timeline", "Secondx")
+    });
+    step_until(&mut h, "rebuilt", |h| {
+        h.query_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Rebuilt with 2 errors")
+        .click_accesskit();
+    step_until(&mut h, "three listed", |h| {
+        in_whats_wrong(h, "Feature: ").len() == 3
+    });
+    close_window(&mut h);
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    step(&mut h);
+    let buttons = |h: &AppHarness| -> Vec<bool> {
+        whats_wrong(h)
+            .unwrap()
+            .query_all_by_role(Role::Button)
+            .map(|node| is_on(&node))
+            .collect()
+    };
+    assert!(!buttons(&h).is_empty());
+    assert!(buttons(&h).iter().all(|on| !on), "{:?}", buttons(&h));
+    // Its Show in timeline and its ×, clicked through the tree: nothing.
+    let selected = selected_features(&h);
+    whats_wrong(&h)
+        .unwrap()
+        .query_all_by_role_and_label(Role::Button, "Show in timeline")
+        .next()
+        .unwrap()
+        .click_accesskit();
+    step(&mut h);
+    whats_wrong(&h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Close")
+        .click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(whats_wrong(&h).is_some());
+    assert_eq!(selected_features(&h), selected);
+    // The question's Cancel: What's Wrong on again.
+    on_button(&h, "Cancel").click_accesskit();
+    step_until(&mut h, "the question gone", |h| {
+        h.query_by_label_contains(asked).is_none()
+    });
+    step(&mut h);
+    assert!(buttons(&h).iter().all(|on| *on), "{:?}", buttons(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The boxed rectangle in sketch mode, its bottom's length set to 50 (repeating nothing):
+/// an edit held, so Close asks.
+fn boxed_edited(f: &Fixture) -> AppHarness {
+    counting(f);
+    let mut h = boxed_length(f);
+    edit_length(f, &mut h, "50");
+    step_until(&mut h, "the edit held", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.unsaved() && tab.edits.idle()
+    });
+    h
+}
+
+/// The tab's Close clicked through the tree, and stepped until its question is up.
+fn close_asked(h: &mut AppHarness) -> &'static str {
+    h.get_by_label("Close boxed.silico").click_accesskit();
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(h, "the question", |h| anywhere(h, question));
+    step(h);
+    question
+}
+
+#[test]
+fn behind_the_close_question_the_sketch_palette_is_off_and_takes_no_click() {
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    let profile = |h: &AppHarness| sketch_mode(h).unwrap().settings.show_profile;
+    let before = profile(&h);
+    let question = close_asked(&mut h);
+    let checkbox = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .get_by_label("Profile")
+            .accesskit_node()
+            .is_disabled()
+    };
+    assert!(checkbox(&h));
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_label("Profile")
+        .click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(profile(&h), before);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(!checkbox(&h));
+    h.get_by_role_and_label(Role::Group, "Sketch Palette")
+        .get_by_label("Profile")
+        .click_accesskit();
+    step_until(&mut h, "toggled", |h| profile(h) != before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_close_question_the_modify_boxs_accept_is_off_and_sends_nothing() {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    open_modify_box(&f, &mut h);
+    modify_dimension(&f, &mut h, ModifyAction::Typed("33".to_owned()));
+    step(&mut h);
+    let question = close_asked(&mut h);
+    fn accept(h: &AppHarness) -> egui_kittest::Node<'_> {
+        h.get_by_role_and_label(Role::Dialog, "Modify dimension")
+            .get_by_role_and_label(Role::Button, "Accept")
+    }
+    assert!(!is_on(&accept(&h)));
+    let sent = h.state().tabs()[0].sent.clone();
+    accept(&h).click_accesskit();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert!(sketch_mode(&h).unwrap().edit_box.is_some());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(is_on(&accept(&h)));
+    accept(&h).click_accesskit();
+    step_until(&mut h, "33 sent", |h| {
+        h.state().tabs()[0].sent.len() > sent.len()
+    });
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit("constraints.ka000005.value".to_owned()))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_canvas_menu_open_as_the_close_question_comes_closes_and_stays_closed() {
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    let at = to_screen([20.0, 20.0]).unwrap();
+    sketch_events(
+        &f,
+        &mut h,
+        &[silico_app::sketch::PointerEvent {
+            action: silico_app::sketch::PointerAction::RightClick,
+            at,
+            shift: false,
+            ctrl: false,
+        }],
+    );
+    let menu = |h: &AppHarness| {
+        h.query_by_role_and_label(Role::Menu, "Sketch menu")
+            .is_some()
+    };
+    step_until(&mut h, "the menu", menu);
+    let question = close_asked(&mut h);
+    assert!(!menu(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!menu(&h));
+    assert!(sketch_mode(&h).unwrap().menu_at.is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_name_typed_in_the_timeline_takes_no_key_once_a_question_comes_and_goes_as_typed() {
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    f2_typed(&mut h, "Block", "Base");
+    // The quit asked; then, in the first frame drawn under it, a key typed.
+    close_window(&mut h);
+    h.event(eframe::egui::Event::Text("Z".to_owned()));
+    step(&mut h);
+    // The field, drawn once more under it as its name is sent, is off.
+    assert!(
+        rename_field(&h, "Block").is_some_and(|field| field.accesskit_node().is_disabled()),
+        "the rename field on under the question"
+    );
+    let asked = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains(asked).is_some()
+    });
+    // The name sent as it was typed, before the key.
+    step_until(&mut h, "renamed", |h| {
+        shows(h, "Timeline", "Base") || shows(h, "Timeline", "BaseZ")
+    });
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(rename_field(&h, "Block").is_none());
+    assert!(!shows(&h, "Timeline", "BaseZ"));
+    assert!(text_of(&f.sessions, &h).contains(r#""name": "Base""#));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_middle_drag_held_as_a_modal_opens_ends_and_pans_no_further() {
+    // #497's review, finding 5: as SolidWorks ends a drag when a dialog takes the focus.
+    let f = fixture();
+    let (mut h, _seen) = f.overlaid(EXAMPLE);
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
+    let middle = eframe::egui::PointerButton::Middle;
+    let before = view(&h).camera().clone();
+    h.hover_at(at);
+    button_event(&h, at, middle, true, Modifiers::NONE);
+    step(&mut h);
+    h.hover_at(at + eframe::egui::vec2(20.0, 0.0));
+    step(&mut h);
+    let panned = view(&h).camera().clone();
+    assert_ne!(panned, before, "the middle button panned nothing");
+    // The shortcut sheet, by its key, the button still held: no further move pans.
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for i in 1..=4u8 {
+        h.hover_at(at + eframe::egui::vec2(20.0 + 10.0 * f32::from(i), 0.0));
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &panned);
+    button_event(
+        &h,
+        at + eframe::egui::vec2(60.0, 0.0),
+        middle,
+        false,
+        Modifiers::NONE,
+    );
+    step(&mut h);
+    // Closed, the pointer moved: still none.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    h.hover_at(at + eframe::egui::vec2(80.0, 0.0));
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &panned);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_left_press_held_as_a_modal_opens_is_cancelled_and_its_moves_and_release_go_nowhere() {
+    // #497's reviews: what was held is cancelled as the modal comes, as the focus going
+    // cancels it (m5.0-app.md, a drag cut short), and nothing after it is handed on.
+    use silico_app::viewport::LeftKind::{Cancel, Press};
+    let f = fixture();
+    let (mut h, seen) = f.overlaid(EXAMPLE);
+    let at = the_viewport(&h).center() - eframe::egui::vec2(100.0, 0.0);
+    let left = eframe::egui::PointerButton::Primary;
+    h.hover_at(at);
+    step(&mut h);
+    left_taken(&seen);
+    button_event(&h, at, left, true, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let pressed = left_taken(&seen);
+    assert_eq!(kinds(&pressed), [Press]);
+    let pressed_at = pressed[0].event.at_px;
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let cut = left_taken(&seen);
+    assert_eq!(kinds(&cut), [Cancel]);
+    assert_eq!(cut[0].event.at_px, pressed_at);
+    h.hover_at(at + eframe::egui::vec2(30.0, 0.0));
+    step(&mut h);
+    button_event(
+        &h,
+        at + eframe::egui::vec2(30.0, 0.0),
+        left,
+        false,
+        Modifiers::NONE,
+    );
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(left_taken(&seen).is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A shape as it looks: a text by what it says, in which font and colours, and where (not
+/// where in the font atlas its glyphs are, which the atlas moves as it grows with new text,
+/// the sheet's); a mesh by its corners, their colours, and its texture, not where in the
+/// texture it reads, for the same reason; a line coloured by a function (the canvas's grid
+/// fading out) by its points and width, the function being made again each frame; any other
+/// shape whole.
+#[derive(Debug, PartialEq)]
+enum Looks {
+    Text {
+        pos: eframe::egui::Pos2,
+        job: Arc<eframe::egui::text::LayoutJob>,
+        underline: eframe::egui::Stroke,
+        fallback: eframe::egui::Color32,
+        over: Option<eframe::egui::Color32>,
+        opacity: f32,
+        angle: f32,
+    },
+    Shape(eframe::egui::Shape),
+}
+
+/// What the frame painted under any modal, each shape as it looks ([`Looks`]): its shapes up
+/// to the first modal's backdrop (a rectangle over the whole window in
+/// [`silico_app::theme::MODAL_BACKDROP`]).
+fn window_painted(h: &AppHarness) -> Vec<Looks> {
+    use eframe::egui::Shape;
+    use eframe::egui::epaint::ColorMode;
+    fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+        match shape {
+            Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+            shape => out.push(shape.clone()),
+        }
+    }
+    let mut out = Vec::new();
+    for clipped in &h.output().shapes {
+        flatten(&clipped.shape, &mut out);
+    }
+    let window = h.ctx.content_rect();
+    let backdrop = out.iter().position(|shape| {
+        matches!(shape, Shape::Rect(rect)
+            if rect.fill == silico_app::theme::MODAL_BACKDROP && rect.rect.contains_rect(window))
+    });
+    out.truncate(backdrop.unwrap_or(out.len()));
+    out.into_iter()
+        .map(|shape| match shape {
+            Shape::Text(text) => Looks::Text {
+                pos: text.pos,
+                job: Arc::clone(&text.galley.job),
+                underline: text.underline,
+                fallback: text.fallback_color,
+                over: text.override_text_color,
+                opacity: text.opacity_factor,
+                angle: text.angle,
+            },
+            Shape::Path(mut path) if matches!(path.stroke.color, ColorMode::UV(_)) => {
+                path.stroke.color = ColorMode::Solid(eframe::egui::Color32::TRANSPARENT);
+                Looks::Shape(Shape::Path(path))
+            }
+            Shape::Mesh(mut mesh) => {
+                for vertex in &mut Arc::make_mut(&mut mesh).vertices {
+                    vertex.uv = eframe::egui::Pos2::ZERO;
+                }
+                Looks::Shape(Shape::Mesh(mesh))
+            }
+            shape => Looks::Shape(shape),
+        })
+        .collect()
+}
+
+#[test]
+fn behind_the_shortcut_sheet_the_window_is_painted_as_it_is_with_none_open() {
+    // #497's review, finding 2: the prototype's backdrop only dims (styles.css `.backdrop`);
+    // nothing behind it is drawn off. Every shape of the window's, the bars', the panes'
+    // (egui_tiles draws each in a `Ui` of its own), and the timeline's, the same under the
+    // sheet as with no modal.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    pointer_away(&mut h);
+    settled(&mut h);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let open = window_painted(&h);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!is_on(&timeline_item(&h, "Block")));
+    let under = window_painted(&h);
+    assert_eq!(under.len(), open.len(), "the window's shapes, counted");
+    for (at, (under, open)) in under.iter().zip(&open).enumerate() {
+        assert_eq!(under, open, "shape {at}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_shortcut_sheet_opened_by_its_button_keeps_the_keyboard_in_its_filter() {
+    // The focus taken from behind a modal is only what's behind it: the sheet, opened by a
+    // click partway through a frame, keeps its filter's.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    h.get_by_role_and_label(Role::Button, "Shortcuts")
+        .click_accesskit();
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(the_sheet(&h).get_by_role(Role::TextInput).is_focused());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_dragged_as_the_sheet_comes_adds_nothing_behind_it() {
+    // #497's review, round 2: a click-drag line's press and moves add nothing, its release
+    // does; the sheet coming with the button down cancels the gesture, as the focus going
+    // does, so nothing is added behind the sheet.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(Key::L);
+    step(&mut h);
+    let sent = h.state().tabs()[0].sent.clone();
+    pane_press(&mut h, [10.0, 50.0]);
+    pane_move(&mut h, [20.0, 55.0]);
+    pane_move(&mut h, [30.0, 60.0]);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].sent,
+        sent,
+        "an edit sent behind the sheet, the button never let go"
+    );
+    // Let go under the sheet, then the sheet closed: still nothing.
+    pane_release(&mut h, [30.0, 60.0]);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dimension_pressed_as_the_sheet_comes_places_nothing_and_opens_no_modify_box() {
+    // #497's review, round 2: Smart Dimension's press, the sheet coming before its release,
+    // places nothing and opens no Modify box, which, first shown then, egui would raise over
+    // the sheet, inert, its ✓ and ✕ letting a click fall through to the sheet.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(Key::D);
+    step(&mut h);
+    let sent = h.state().tabs()[0].sent.clone();
+    pane_click(&mut h, [50.0, 20.0]);
+    pane_press(&mut h, [60.0, 20.0]);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).unwrap().modify_view().is_none());
+    assert!(modify_field(&h).is_none());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    pane_release(&mut h, [60.0, 20.0]);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert!(sketch_mode(&h).unwrap().modify_view().is_none());
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_box_dragged_as_the_sheet_comes_selects_nothing() {
+    // #497's review, round 2: as the focus going cancels a box, so does a modal coming.
+    use eframe::egui::Modifiers;
+    let f = fixture();
+    let (mut h, _record) = box_from_the_front(&f);
+    let (low, high) = (on_canvas(&h, -2.0, -2.0), on_canvas(&h, 42.0, 2.0));
+    box_drag(&mut h, low, high, Modifiers::NONE);
+    let before = selected_names(&h);
+    assert_eq!(before, box_edges(&[1, 5, 9, 10]));
+    // A crossing dragged, then the sheet comes, the button still down: nothing changes.
+    let (right_low, left_high) = (on_canvas(&h, 42.0, -2.0), on_canvas(&h, -2.0, 12.0));
+    box_press(&mut h, right_low, left_high, Modifiers::NONE);
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(selected_names(&h), before);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    box_release(&mut h, left_high, Modifiers::NONE);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(selected_names(&h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A key event pressed, with `modifiers`: one of a frame's events.
+fn key_event(key: Key, modifiers: eframe::egui::Modifiers) -> eframe::egui::Event {
+    eframe::egui::Event::Key {
+        key,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers,
+    }
+}
+
+/// The modifiers ⌘ (Ctrl elsewhere) puts on a key event, as the platform's window gives them.
+fn command_modifiers(h: &AppHarness) -> eframe::egui::Modifiers {
+    use eframe::egui::Modifiers;
+    use eframe::egui::os::OperatingSystem;
+    if h.ctx.os() == OperatingSystem::Mac {
+        Modifiers::MAC_CMD | Modifiers::COMMAND
+    } else {
+        Modifiers::CTRL | Modifiers::COMMAND
+    }
+}
+
+/// What the last frame painted, in the order painted (the lowest first): each text's words,
+/// and `None` for each modal's backdrop (a rectangle over the whole window, black at any
+/// opacity: [`silico_app::theme::MODAL_BACKDROP`], or less as egui fades a new modal in);
+/// nothing else.
+fn painted_stack(h: &AppHarness) -> Vec<Option<String>> {
+    use eframe::egui::Shape;
+    fn flatten(shape: &Shape, out: &mut Vec<Shape>) {
+        match shape {
+            Shape::Vec(shapes) => shapes.iter().for_each(|shape| flatten(shape, out)),
+            shape => out.push(shape.clone()),
+        }
+    }
+    let mut shapes = Vec::new();
+    for clipped in &h.output().shapes {
+        flatten(&clipped.shape, &mut shapes);
+    }
+    let window = h.ctx.content_rect();
+    shapes
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Text(text) => Some(Some(text.galley.text().to_owned())),
+            Shape::Rect(rect)
+                if matches!(rect.fill.to_array(), [0, 0, 0, alpha] if alpha > 0)
+                    && rect.rect.contains_rect(window) =>
+            {
+                Some(None)
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Where the last frame painted `words`, in [`painted_stack`]'s order, and where it painted
+/// the first modal's backdrop, if it did.
+fn painted_with_the_modal(h: &AppHarness, words: &str) -> (Vec<usize>, Option<usize>) {
+    let stack = painted_stack(h);
+    let at = (0..stack.len())
+        .filter(|&i| stack[i].as_deref() == Some(words))
+        .collect();
+    (at, stack.iter().position(Option::is_none))
+}
+
+/// Whether the last frame painted `words`, every time under the first modal's backdrop.
+fn painted_under_the_modal(h: &AppHarness, words: &str) -> bool {
+    let (at, backdrop) = painted_with_the_modal(h, words);
+    !at.is_empty() && backdrop.is_some_and(|backdrop| at.iter().all(|&i| i < backdrop))
+}
+
+/// Whether the last frame painted `words` over the first modal's backdrop, any time.
+fn painted_over_the_modal(h: &AppHarness, words: &str) -> bool {
+    let (at, backdrop) = painted_with_the_modal(h, words);
+    backdrop.is_some_and(|backdrop| at.iter().any(|&i| i > backdrop))
+}
+
+/// The boxed sketch open in sketch mode, seen from the top, the Line tool chosen.
+fn boxed_line_tool(f: &Fixture) -> AppHarness {
+    counting(f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    h.key_press(Key::L);
+    step(&mut h);
+    h
+}
+
+/// A click-drag line pressed at the top view's (10, 50) and moved to (30, 60), its button
+/// still down: the edits sent before it.
+fn line_held(h: &mut AppHarness) -> Vec<Sent> {
+    let sent = h.state().tabs()[0].sent.clone();
+    pane_press(h, [10.0, 50.0]);
+    pane_move(h, [20.0, 55.0]);
+    pane_move(h, [30.0, 60.0]);
+    sent
+}
+
+/// The left button let go at the top view's (30, 60), then `key`, in one frame, as a window
+/// gets two events between frames; the frame.
+fn let_go_then(h: &mut AppHarness, key: eframe::egui::Event) {
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let at = top_screen(h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key);
+    step(h);
+}
+
+#[test]
+fn a_line_let_go_before_the_sheets_key_in_one_frame_is_added() {
+    // #497's review, round 3: the release came before the key that opened the sheet, so the
+    // gesture was finished before any modal came; only what's still held after the frame's
+    // events is cancelled (as a release in the frame the tab changes is a release).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    let sent = line_held(&mut h);
+    let_go_then(
+        &mut h,
+        key_event(Key::Questionmark, eframe::egui::Modifiers::NONE),
+    );
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert!(
+        added.contains(&Sent::SketchEdit("sketch_add")),
+        "a line let go before the sheet's key, in one frame, was dropped: {added:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_close_in_one_frame_is_in_the_file_the_questions_save_writes() {
+    // #497's review, round 3: the release, then ⌘W, in one frame: the line is added, and the
+    // close question's Save writes it. A line drawn first, from (40, 50) to (45, 60), so
+    // there's an edit to ask about as ⌘W comes (before the canvas has the release).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    pane_press(&mut h, [40.0, 50.0]);
+    pane_move(&mut h, [42.0, 55.0]);
+    pane_move(&mut h, [45.0, 60.0]);
+    pane_release(&mut h, [45.0, 60.0]);
+    settled(&mut h);
+    assert!(h.state().tabs()[0].unsaved());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::W, command));
+    let asked = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    // The question's Save, not the application bar's (off behind it).
+    on_button(&h, "Save").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    let saved = std::fs::read(f.dir.path().join("example.silico")).unwrap();
+    let document = silico_core::document::read(&saved).unwrap();
+    let sketch = document
+        .features
+        .into_iter()
+        .find_map(|feature| match feature.operation {
+            silico_core::document::Operation::Sketch(sketch) => Some(sketch),
+            _ => None,
+        })
+        .unwrap();
+    // The box's four sides, the first line, and the line from (10, 50) to (30, 60) as it
+    // was let go.
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    let (from, to) = (
+        point_near(&sketch, 10.0, 50.0, 0.5),
+        point_near(&sketch, 30.0, 60.0, 0.5),
+    );
+    assert!(
+        sketch.lines.iter().any(|line| {
+            let ends = [line.from.as_str(), line.to.as_str()];
+            ends == [from.as_str(), to.as_str()] || ends == [to.as_str(), from.as_str()]
+        }),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dimension_let_go_before_the_sheets_key_in_one_frame_is_placed_under_the_sheet() {
+    // #497's review, round 3: Smart Dimension's release, then `?`, in one frame: the
+    // dimension is placed (its gesture was finished), and its Modify box drawn under the
+    // sheet, never over it (egui raises an area first shown over every other of its order,
+    // and never over a higher order), taking no keyboard there; once the sheet has gone, the
+    // box takes the keyboard, and what's typed reaches it.
+    use eframe::egui::{Event, Modifiers, PointerButton};
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.overlaid(BOXED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    sketch_read(&mut h);
+    top_view(&mut h);
+    // The sheet shown once, before any box: a box first shown in the frame the sheet is
+    // again, egui would keep above it, were they of one order.
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    h.key_press(Key::D);
+    step(&mut h);
+    pane_click(&mut h, [50.0, 20.0]);
+    pane_press(&mut h, [60.0, 20.0]);
+    let at = top_screen(&h, [60.0, 20.0]);
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    // Each frame: the box, once it's there, never over the sheet, and without the keyboard.
+    let under = |h: &AppHarness| {
+        let Some(view) = sketch_mode(h).unwrap().modify_view() else {
+            return;
+        };
+        if let Some(field) = modify_field(h) {
+            assert!(
+                !field.is_focused(),
+                "the box took the keyboard behind the sheet"
+            );
+            assert!(field.accesskit_node().is_disabled());
+        }
+        assert!(
+            !painted_over_the_modal(h, &view.text),
+            "the box's {:?} painted over the sheet: {:?}",
+            view.text,
+            painted_stack(h)
+        );
+    };
+    step(&mut h);
+    let mut frames = 0;
+    while !(sheet_open(&h) && modify_field(&h).is_some()) {
+        assert!(
+            frames < 600,
+            "the sheet and the box: {:?}",
+            painted_stack(&h)
+        );
+        step(&mut h);
+        under(&h);
+        frames += 1;
+    }
+    for _ in 0..5 {
+        step(&mut h);
+        under(&h);
+    }
+    // Drawn, dimmed, under the sheet drawn whole.
+    let measured = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    assert!(
+        painted_under_the_modal(&h, &measured),
+        "the box's {measured:?} not painted under the sheet: {:?}",
+        painted_stack(&h)
+    );
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    step(&mut h);
+    assert!(
+        modify_field(&h).is_some_and(|field| field.is_focused()),
+        "the box without the keyboard once the sheet has gone"
+    );
+    h.event(Event::Text("7".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{measured}7")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_toast_asked_while_a_modal_is_open_is_drawn_at_once_under_it() {
+    // #497's review, round 3: as the prototype's `#toasts` (z 650) sit under `.backdrop`
+    // (700), dimmed, their time running. F5 (its toast) and ⌘R (its question, the edits
+    // held) in one frame, as a window gets two keys between frames: the question comes
+    // before the toast is drawn, and the toast is drawn at once, under it.
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    // The keyboard off the name field: F5 is no field's key.
+    timeline_item(&h, "Block").click();
+    step_until(&mut h, "Block selected", |h| {
+        selected_features(h) == ["k7f2qx3m"]
+    });
+    assert!(!h.ctx.text_edit_focused());
+    let said = silico_app::app::FILTERS_SAID;
+    let asked = "Reload example.silico from disk?";
+    let command = command_modifiers(&h);
+    // The question shown once, then a toast after it, gone: in one frame each first shown
+    // again, egui keeps the toast above the question, were they of one order.
+    h.event(key_event(Key::R, command));
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    h.key_press(Key::F5);
+    step_until(&mut h, "the toast", |h| anywhere(h, said));
+    step_until(&mut h, "the toast gone", |h| !anywhere(h, said));
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::F5, eframe::egui::Modifiers::NONE));
+    events.push(key_event(Key::R, command));
+    step(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(anywhere(&h, said), "the toast not drawn under the question");
+        assert!(
+            painted_under_the_modal(&h, said),
+            "the toast drawn over the question: {:?}",
+            painted_stack(&h)
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_modify_box_takes_the_keyboard_back_once_the_close_question_has_gone() {
+    // #497's review, round 3: as SolidWorks' and Windows' dialogs give the focus back to the
+    // control that held it.
+    use eframe::egui::Event;
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    assert!(modify_field(&h).is_some_and(|field| field.is_focused()));
+    let before = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    h.event(Event::Text("3".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{before}3")
+    );
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    assert!(modify_field(&h).is_some_and(|field| !field.is_focused()));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    // Given back as the first frame drawn without the question ends; a frame more, typed in.
+    step(&mut h);
+    assert!(
+        modify_field(&h).is_some_and(|field| field.is_focused()),
+        "the box's field without the keyboard once the question has gone"
+    );
+    h.event(Event::Text("4".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{before}34")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_name_field_takes_the_keyboard_back_once_the_close_question_has_gone() {
+    // #497's review, round 3: a text field in a pane, the properties' Name.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    assert!(!name_field(&h).is_focused());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(
+        name_field(&h).is_focused(),
+        "the name field without the keyboard once the question has gone"
+    );
+    h.event(Event::Text("x".to_owned()));
+    step(&mut h);
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pinsx"));
+    step_until(&mut h, "renamed", |h| shows(h, "Timeline", "Pinsx"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_rename_field_opened_in_the_frame_a_question_comes_is_drawn_under_it() {
+    // #497's review, round 3: F2 and ⌘R in one frame open the timeline's rename field and
+    // the reload question over it; the field, of the order under the modals', is never drawn
+    // over the question, though its layer is newer.
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    let asked = "Reload example.silico from disk?";
+    let command = command_modifiers(&h);
+    timeline_item(&h, "Block").click();
+    step_until(&mut h, "Block selected", |h| {
+        selected_features(h) == ["k7f2qx3m"]
+    });
+    // The question shown once first.
+    h.event(key_event(Key::R, command));
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    step(&mut h);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, asked));
+    step(&mut h);
+    assert!(!h.ctx.text_edit_focused());
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::F2, eframe::egui::Modifiers::NONE));
+    events.push(key_event(Key::R, command));
+    step(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    let mut drawn = false;
+    for _ in 0..5 {
+        step(&mut h);
+        if let Some(field) = rename_field(&h, "Block") {
+            assert!(field.accesskit_node().is_disabled());
+            drawn = true;
+        }
+        assert!(
+            !painted_over_the_modal(&h, "Block"),
+            "the rename field painted over the question: {:?}",
+            painted_stack(&h)
+        );
+    }
+    assert!(drawn, "no rename field under the question");
+    assert!(painted_under_the_modal(&h, "Block"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_modify_box_stays_over_the_sketch_bar_after_a_press_on_the_bar() {
+    // #497's review, round 3: the box is of the order under the modals', the sketch bar's
+    // and the palette's; a press on the bar raises the bar among them, and the box, raised
+    // each frame, stays over it, as the prototype's `.modify-box` (z 40) is over
+    // `.sketch-bar` (26).
+    use eframe::egui::{Modifiers, PointerButton, Pos2};
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    let text = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    let bar = sketch_mode(&h).unwrap().panels.as_ref().unwrap().bar;
+    // On the bar's own padding, at its left: no button of its.
+    let at = Pos2::new(bar.left() + 3.0, bar.center().y);
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().map(|view| view.text),
+        Some(text.clone())
+    );
+    let stack = painted_stack(&h);
+    let last = |words: &str| {
+        stack
+            .iter()
+            .rposition(|painted| painted.as_deref() == Some(words))
+    };
+    assert!(
+        last(&text) > last("Finish Sketch"),
+        "the bar painted over the box: {stack:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_flip_arrows_click_let_go_before_the_sheets_key_in_one_frame_flips_the_pad() {
+    // #497's review, round 4: the release came before the key that opened the sheet, so the
+    // click was finished before any modal came; the grip is let go only after the canvas
+    // has handed on the frame's events.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    // On the flip arrow's shaft, 30 below the end: Reversed ticked.
+    click_over_two_frames(&mut h, up(c, -30.0), Modifiers::NONE);
+    step_until(&mut h, "Reversed ticked", reversed_ticked);
+    settled(&mut h);
+    // The flip arrow, turned with the pad, from 40 below the end to 68: pressed at 50 below,
+    // then let go there and `?`, in one frame.
+    let at = up(c, -50.0);
+    left_down_at(&mut h, at);
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    step(&mut h);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    settled(&mut h);
+    assert!(
+        !reversed_ticked(&h),
+        "a flip arrow's click let go before the sheet's key, in one frame, was dropped"
+    );
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("10", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_arrows_drag_as_the_sheet_comes_keeps_the_frames_last_move_before_its_key() {
+    // #497's review, round 4: the pointer moved 40 above the tip, then `?`, in one frame: the
+    // drag keeps that move's length, 10 + 40 / 4 = 20 mm (4 points a millimetre), never the
+    // 15 of the frame before, nor the 10 it was pressed at (as the modal's cancel would put
+    // back); the rest of its stream, under the sheet, does nothing.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    let c = plates_pad_from_the_front(&mut h);
+    let tip = up(c, 56.0);
+    left_down_at(&mut h, tip);
+    move_to(&mut h, up(tip, 20.0));
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("15")
+    );
+    let events = &mut h.input_mut().events;
+    events.push(Event::PointerMoved(up(tip, 40.0)));
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    step(&mut h);
+    step_until(&mut h, "the sheet", sheet_open);
+    // Under the sheet, the pointer on up the arrow and let go: nothing more of the dialog's.
+    move_to(&mut h, up(tip, 60.0));
+    left_up_at(&mut h, up(tip, 60.0));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    assert_eq!(dialog_length(&h.state().tabs()[0]).as_deref(), Some("20"));
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("20", false));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    settled(&mut h);
+    assert_eq!(
+        field(&h, In::Dialog, "Length").value().as_deref(),
+        Some("20")
+    );
+    assert_eq!(pads_extent(&f.sessions, &h), pad_extent("20", false));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_close_in_one_frame_with_nothing_edited_before_asks_and_is_saved() {
+    // #497's review, round 4: the release, then ⌘W, in one frame, with no edit before: the
+    // release's line is an edit, so the close question is asked (Close is decided once the
+    // canvas has had the frame's events), and its Save writes the line.
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    assert!(!h.state().tabs()[0].unsaved());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::W, command));
+    let asked = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    on_button(&h, "Save").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    let saved = std::fs::read(f.dir.path().join("example.silico")).unwrap();
+    let document = silico_core::document::read(&saved).unwrap();
+    let sketch = document
+        .features
+        .into_iter()
+        .find_map(|feature| match feature.operation {
+            silico_core::document::Operation::Sketch(sketch) => Some(sketch),
+            _ => None,
+        })
+        .unwrap();
+    // The box's four sides, and the line from (10, 50) to (30, 60) as it was let go.
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    let (from, to) = (
+        point_near(&sketch, 10.0, 50.0, 0.5),
+        point_near(&sketch, 30.0, 60.0, 0.5),
+    );
+    assert!(
+        sketch.lines.iter().any(|line| {
+            let ends = [line.from.as_str(), line.to.as_str()];
+            ends == [from.as_str(), to.as_str()] || ends == [to.as_str(), from.as_str()]
+        }),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether `sketch` holds a line whose ends lie within half a millimetre of `a` and `b`, in
+/// either direction.
+fn line_near(sketch: &silico_core::document::Sketch, a: [f64; 2], b: [f64; 2]) -> bool {
+    let near = |id: &str, at: [f64; 2]| {
+        sketch.points.iter().any(|point| {
+            point.id.as_str() == id
+                && (point.x.mm() - at[0]).abs() <= 0.5
+                && (point.y.mm() - at[1]).abs() <= 0.5
+        })
+    };
+    sketch.lines.iter().any(|line| {
+        let (from, to) = (line.from.as_str(), line.to.as_str());
+        (near(from, a) && near(to, b)) || (near(from, b) && near(to, a))
+    })
+}
+
+/// [`boxed_line_tool`], a click-drag line drawn from the top view's (40, 50) to (45, 60) and
+/// answered: an edit made before the frame a test's key comes in.
+fn boxed_line_drawn(f: &Fixture) -> AppHarness {
+    let mut h = boxed_line_tool(f);
+    pane_press(&mut h, [40.0, 50.0]);
+    pane_move(&mut h, [42.0, 55.0]);
+    pane_move(&mut h, [45.0, 60.0]);
+    pane_release(&mut h, [45.0, 60.0]);
+    settled(&mut h);
+    let sketch = sketch_of_text(f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [40.0, 50.0], [45.0, 60.0]), "{sketch:?}");
+    h
+}
+
+#[test]
+fn a_line_let_go_before_undo_in_one_frame_is_what_the_undo_takes_back() {
+    // #523: the release, then ⌘Z, in one frame: Undo is decided once the canvas has had the
+    // frame's events, so it waits behind the line's add and takes the line back, the line
+    // drawn before it kept (decided before the release, it took that one back instead).
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::Z, command));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [40.0, 50.0], [45.0, 60.0]), "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_redo_in_one_frame_leaves_nothing_to_redo() {
+    // #523: a line drawn and undone; then the release of another, then ⌘⇧Z, in one frame:
+    // Redo is decided once the canvas has had the frame's events, after the new line's add,
+    // which leaves nothing to redo (decided before the release, it put the undone line back).
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    assert!(h.state().tabs()[0].redoable());
+    line_held(&mut h);
+    let_go_then(&mut h, key_event(Key::Z, command | Modifiers::SHIFT));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [40.0, 50.0], [45.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert!(!h.state().tabs()[0].redoable());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_reload_in_one_frame_with_nothing_edited_before_is_asked_about() {
+    // #523: the release, then ⌘R, in one frame, with no edit before: Reload is decided once
+    // the canvas has had the frame's events, so the line's add is an edit it would drop,
+    // and it asks first, as it does of an edit made in an earlier frame (decided before the
+    // release, it reloaded at once, asking nothing).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    assert!(!h.state().tabs()[0].unsaved());
+    let sent = line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::R, command));
+    let asked = "Reload example.silico from disk?";
+    step_until(&mut h, "the question", |h| anywhere(h, asked));
+    assert_eq!(h.state().tabs()[0].rebuilds_all, 0, "reloaded unasked");
+    let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert!(
+        added.contains(&Sent::SketchEdit("sketch_add")),
+        "the line wasn't added: {added:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_before_finish_in_one_frame_is_in_the_finished_sketch() {
+    // #523: the release, then ⌘↵, in one frame: Finish is decided once the canvas has had the
+    // frame's events, so the line is added and then the sketch finished with it (decided
+    // before the release, sketch mode had gone when the release came, and the line with it).
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let_go_then(&mut h, key_event(Key::Enter, command));
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_let_go_before_save_in_one_frame_is_saved_with_the_sketchs_line() {
+    // #523: a line drawn; then the toolbar's Finish Sketch let go, then ⌘S, in one frame:
+    // Save is decided once the window has had the frame's events, so the click has ended
+    // sketch mode, whose edits Save waits for, and Save writes the line (decided before the
+    // release, sketch mode was still open, and Save did nothing).
+    use eframe::egui::PointerButton;
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let path = f.dir.path().join("example.silico");
+    let on_disk = |path: &Path| {
+        let saved = std::fs::read(path).unwrap();
+        let document = silico_core::document::read(&saved).unwrap();
+        document
+            .features
+            .into_iter()
+            .find_map(|feature| match feature.operation {
+                silico_core::document::Operation::Sketch(sketch) => Some(sketch),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(on_disk(&path).lines.len(), 4);
+    let at = toolbar_finish(&h).rect().center();
+    h.hover_at(at);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_some());
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    events.push(eframe::egui::Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    events.push(key_event(Key::S, command));
+    step(&mut h);
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    let sketch = on_disk(&path);
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [40.0, 50.0], [45.0, 60.0]), "{sketch:?}");
+    assert!(!h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_then_a_line_let_go_in_one_frame_undoes_the_line_before() {
+    // #535's review: ⌘Z, then the release, in one frame: each document key acts where it
+    // came among the frame's events, so this Undo, before the release, takes back the line
+    // drawn before, and the release then adds its line, as on main.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Z, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [40.0, 50.0], [45.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn finish_then_a_line_let_go_in_one_frame_finishes_the_sketch_without_it() {
+    // #535's review: ⌘↵, then the release, in one frame: Finish, before the release, ends
+    // sketch mode with the line still held, so its gesture is cut short and adds nothing, as
+    // a gesture held as a modal comes is.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Enter, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 4, "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn save_then_finish_let_go_in_one_frame_saves_nothing_as_sketch_mode_was_open() {
+    // #535's review: ⌘S, then Finish Sketch's release, in one frame: Save, before the
+    // release, finds sketch mode open, whose edits it waits for, and saves nothing; the
+    // click then finishes the sketch, its line in the document but not in the file.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let path = f.dir.path().join("example.silico");
+    let lines_on_disk = |path: &Path| {
+        let saved = std::fs::read(path).unwrap();
+        let document = silico_core::document::read(&saved).unwrap();
+        document
+            .features
+            .into_iter()
+            .find_map(|feature| match feature.operation {
+                silico_core::document::Operation::Sketch(sketch) => Some(sketch.lines.len()),
+                _ => None,
+            })
+            .unwrap()
+    };
+    assert_eq!(lines_on_disk(&path), 4);
+    let at = toolbar_finish(&h).rect().center();
+    h.hover_at(at);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::S, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    assert_eq!(lines_on_disk(&path), 4);
+    assert!(h.state().tabs()[0].unsaved());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_in_the_frame_a_click_opens_export_is_dropped_and_export_stays_up() {
+    // #535's review: a document key after the frame's release is decided once the window
+    // has had it, and not over a question that click opened, as no key acts under one: a
+    // click on File's Export… and ⌘Z in one frame leave the rename in, its undo count as it
+    // was, and Export's dialog up.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    renamed(&mut h, "K", "PinK");
+    settled(&mut h);
+    let undos = |h: &AppHarness| h.state().tabs()[0].transaction().map(|t| t.undo);
+    let before = undos(&h);
+    assert!(before.is_some_and(|undo| undo > 0), "{before:?}");
+    assert!(h.state().tabs()[0].undoable());
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    let at = h
+        .get_by_role_and_label(Role::Button, "Export…")
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    for pressed in [true, false] {
+        events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events.push(key_event(Key::Z, command));
+    step(&mut h);
+    step_until(&mut h, "the export dialog", |h| anywhere(h, EXPORT_EXAMPLE));
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(anywhere(&h, EXPORT_EXAMPLE), "Export's dialog gone");
+    }
+    settled(&mut h);
+    assert_eq!(undos(&h), before);
+    assert!(shows(&h, "Timeline", "PinK"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn close_then_a_line_let_go_in_one_frame_closes_the_clean_tab() {
+    // #535's review: ⌘W, then the release, in one frame: Close, before the release, finds
+    // the tab clean and closes it at once, the line held cut short, the file as it was.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    let path = f.dir.path().join("example.silico");
+    let on_disk = std::fs::read(&path).unwrap();
+    assert!(!h.state().tabs()[0].unsaved());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::W, command));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), on_disk);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_then_a_line_let_go_in_one_frame_redoes_the_line_before_and_adds_the_line() {
+    // #535's review: a line drawn and undone; then ⌘⇧Z, then the release of another, in
+    // one frame: Redo, before the release, puts the undone line back, and the release then
+    // adds its own (decided after the release, the new line would have left nothing to
+    // redo).
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_drawn(&f);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    line_held(&mut h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Z, command | Modifiers::SHIFT));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    assert!(line_near(&sketch, [40.0, 50.0], [45.0, 60.0]), "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether a toast saying `words` is shown.
+fn toast_shown(h: &AppHarness, words: &str) -> bool {
+    toasts_shown(h).iter().any(|(text, _, _)| text == words)
+}
+
+/// Whether a toast saying `words` showed in the frame just stepped or in any stepped until
+/// everything has answered, and three frames on.
+fn said_while_settling(h: &mut AppHarness, words: &str) -> bool {
+    let mut said = toast_shown(h, words);
+    for _ in 0..3 {
+        step(h);
+        said |= toast_shown(h, words);
+    }
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let tab = &h.state().tabs()[0];
+        if tab.edits.idle() && !tab.applying() {
+            break;
+        }
+        assert!(Instant::now() < deadline, "never settled");
+        step(h);
+        said |= toast_shown(h, words);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    for _ in 0..3 {
+        step(h);
+        said |= toast_shown(h, words);
+    }
+    said
+}
+
+/// [`boxed_line_tool`], a line pressed and held, then `key` and the release in one frame
+/// in the order `key_first` says; the frame.
+fn key_and_release(h: &mut AppHarness, key: eframe::egui::Event, key_first: bool) {
+    use eframe::egui::{Event, PointerButton};
+    let at = top_screen(h, [30.0, 60.0]);
+    let release = Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    };
+    let events = &mut h.input_mut().events;
+    if key_first {
+        events.extend([key, release]);
+    } else {
+        events.extend([release, key]);
+    }
+    step(h);
+}
+
+#[test]
+fn undo_with_nothing_to_undo_then_a_line_let_go_says_so_and_adds_the_line() {
+    // #535 with #514: sketch mode with no edit since it opened; ⌘Z, then the release, in one
+    // frame: Undo, before the release, finds nothing to undo and says so, and the release
+    // then adds the line, which stays.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    assert!(!h.state().tabs()[0].undoable());
+    line_held(&mut h);
+    let command = command_modifiers(&h);
+    key_and_release(&mut h, key_event(Key::Z, command), true);
+    assert!(said_while_settling(&mut h, NOTHING_TO_UNDO));
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_with_nothing_to_redo_by_side_of_the_release_says_so_only_before_it() {
+    // #535 with #514: sketch mode with nothing undone. ⌘⇧Z before the release finds nothing
+    // to redo and says so; after it, the release's add is under way, whose answer would move
+    // the counts, so it says nothing, as Redo pressed while an edit is under way doesn't.
+    // The line is added either way.
+    use silico_app::tab::NOTHING_TO_REDO;
+    for key_first in [true, false] {
+        let f = fixture();
+        let mut h = boxed_line_tool(&f);
+        assert!(!h.state().tabs()[0].redoable());
+        line_held(&mut h);
+        let command = command_modifiers(&h);
+        key_and_release(
+            &mut h,
+            key_event(Key::Z, command | Modifiers::SHIFT),
+            key_first,
+        );
+        let said = said_while_settling(&mut h, NOTHING_TO_REDO);
+        let sketch = sketch_of_text(&f, &h, "s0000001");
+        assert_eq!(said, key_first, "{key_first}");
+        assert_eq!(sketch.lines.len(), 5, "{key_first}: {sketch:?}");
+        assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn undo_right_after_the_first_line_is_let_go_takes_the_line_back() {
+    // #544: sketch mode with no edit since it opened; a line let go, then ⌘Z in the same
+    // frame or the next, its add (and the `begin` sent for it) still to answer. Undo waits
+    // for the add and takes the line back, as SolidWorks' Undo takes back the line just
+    // drawn; "Nothing to undo" is never said, and the line is there to redo.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    for next_frame in [false, true] {
+        let f = fixture();
+        let mut h = boxed_line_tool(&f);
+        settled(&mut h);
+        assert!(!h.state().tabs()[0].undoable());
+        let sent = line_held(&mut h);
+        let command = command_modifiers(&h);
+        if next_frame {
+            pane_release(&mut h, [30.0, 60.0]);
+            let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+            assert!(
+                added.contains(&Sent::SketchEdit("sketch_add")),
+                "the line wasn't sent: {added:?}"
+            );
+            h.input_mut().events.push(key_event(Key::Z, command));
+            step(&mut h);
+        } else {
+            let_go_then(&mut h, key_event(Key::Z, command));
+        }
+        let said = said_while_settling(&mut h, NOTHING_TO_UNDO);
+        settled(&mut h);
+        let tab = &h.state().tabs()[0];
+        let added = tab.sent[sent.len()..].to_vec();
+        let add = added
+            .iter()
+            .position(|sent| sent == &Sent::SketchEdit("sketch_add"));
+        let undo = added.iter().position(|sent| matches!(sent, Sent::Undo(_)));
+        assert!(
+            add.is_some_and(|add| undo.is_some_and(|undo| add < undo)),
+            "{next_frame}: {added:?}"
+        );
+        assert!(!said, "{next_frame}: said there was nothing to undo");
+        assert!(tab.redoable(), "{next_frame}");
+        let sketch = sketch_of_text(&f, &h, "s0000001");
+        assert_eq!(sketch.lines.len(), 4, "{next_frame}: {sketch:?}");
+        assert!(
+            !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+            "{next_frame}: {sketch:?}"
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn undo_in_sketch_mode_with_nothing_drawn_says_nothing_to_undo() {
+    // #544's other side: sketch mode with no edit since it opened and nothing under way:
+    // ⌘Z says "Nothing to undo" and sends nothing; the sketch keeps its four lines.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    assert!(!h.state().tabs()[0].unsettled());
+    let sent = h.state().tabs()[0].sent.clone();
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    assert!(said_while_settling(&mut h, NOTHING_TO_UNDO));
+    assert_eq!(h.state().tabs()[0].sent, sent);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_toast_stays_over_the_modify_box_and_the_palette_after_a_press_on_the_palette() {
+    // #497's review, round 4: the prototype's `#toasts` (z 650) are over `.modify-box` (40),
+    // `.sketch-bar` (26) and `.palette` (22); all of one egui order here, the toast is
+    // raised over them each frame, so neither a box first shown after it nor a press that
+    // raises the palette stands over it.
+    use eframe::egui::{PointerButton, Pos2};
+    let said = silico_app::app::FILTERS_SAID;
+    let f = fixture();
+    let mut h = boxed_edited(&f);
+    assert!(!h.ctx.text_edit_focused());
+    h.key_press(Key::F5);
+    step_until(&mut h, "the toast", |h| anywhere(h, said));
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    let last = |stack: &[Option<String>], words: &str| {
+        stack
+            .iter()
+            .rposition(|painted| painted.as_deref() == Some(words))
+    };
+    let text = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    let stack = painted_stack(&h);
+    assert!(last(&stack, said).is_some(), "{stack:?}");
+    assert!(
+        last(&stack, said) > last(&stack, &text),
+        "the Modify box painted over the toast: {stack:?}"
+    );
+    assert!(
+        last(&stack, said) > last(&stack, "SKETCH PALETTE"),
+        "the palette painted over the toast: {stack:?}"
+    );
+    // On the palette's own padding, at its top left: no control of its.
+    let palette = sketch_mode(&h).unwrap().panels.as_ref().unwrap().palette;
+    let at = Pos2::new(palette.left() + 3.0, palette.top() + 3.0);
+    h.hover_at(at);
+    button_event(&h, at, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    button_event(&h, at, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    step(&mut h);
+    let stack = painted_stack(&h);
+    assert!(last(&stack, said).is_some(), "the toast gone: {stack:?}");
+    assert!(
+        last(&stack, said) > last(&stack, "SKETCH PALETTE"),
+        "the palette painted over the toast after a press on it: {stack:?}"
+    );
+    if let Some(view) = sketch_mode(&h).unwrap().modify_view() {
+        assert!(
+            last(&stack, said) > last(&stack, &view.text),
+            "the Modify box painted over the toast: {stack:?}"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_field_whose_tab_closes_under_the_close_question_is_given_no_focus_back() {
+    // #497's review, round 4: the name field held the keyboard as the question came; Don't
+    // save closes its tab: the field isn't there to take it back, so nothing has the
+    // keyboard, and the app goes on (no panic, no accessibility tree naming a gone focus).
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    on_button(&h, "Don't save").click_accesskit();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), None);
+    assert!(!h.ctx.text_edit_focused());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_modify_box_takes_the_keyboard_back_after_the_question_and_the_offer_that_waited_under_it() {
+    // #497's review, round 4: the Modify box held the keyboard as the close question came;
+    // an over-define offer came under it and waited; the question's Cancel shows the offer,
+    // under which the box is drawn inert. The keyboard waits for the box through the offer
+    // too, and is given back once the offer has gone.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    step_until(&mut h, "the first box closed", |h| {
+        sketch_mode(h).unwrap().edit_box.is_none()
+    });
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    assert!(modify_field(&h).is_some_and(|field| field.is_focused()));
+    // ⌘W, the field holding the keyboard (a click on the tab's ✕ would take it first).
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    assert!(modify_field(&h).is_some_and(|field| !field.is_focused()));
+    offer_come(&f, &mut h);
+    let cancel = on_button(&h, "Cancel").rect().center();
+    click_in_one_frame(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(
+            modify_field(&h).is_some_and(|field| !field.is_focused()),
+            "the box took the keyboard under the offer"
+        );
+    }
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    step(&mut h);
+    step(&mut h);
+    assert!(
+        modify_field(&h).is_some_and(|field| field.is_focused()),
+        "the box's field without the keyboard once the question and the offer have gone"
+    );
+    let before = sketch_mode(&h).unwrap().modify_view().unwrap().text.clone();
+    h.event(Event::Text("4".to_owned()));
+    step(&mut h);
+    assert_eq!(
+        sketch_mode(&h).unwrap().modify_view().unwrap().text,
+        format!("{before}4")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_field_drawn_off_of_its_own_once_the_question_has_gone_is_given_no_focus_when_it_turns_on() {
+    // #497's review, round 5: the name field held the keyboard as ⌘W's question came; the
+    // question's Save starts the close, so the field is drawn off (an edit then would be
+    // dropped, #298's review) with no modal left: the keyboard is let go there. When the
+    // save is refused and the field turns on again, it's not given the keyboard back.
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture();
+    let (mut h, path) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    // The save held behind a check, and the folder made read-only, so it's refused.
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let folder = path.parent().unwrap().to_owned();
+    let was = std::fs::metadata(&folder).unwrap().permissions();
+    std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o555)).unwrap();
+    on_button(&h, "Save").click_accesskit();
+    step_until(&mut h, "closing, the question gone", |h| {
+        h.state().tabs()[0].closing() && !anywhere(h, question)
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!name_field(&h).is_focused());
+        assert!(name_field(&h).accesskit_node().is_disabled());
+    }
+    hold.release();
+    check.wait();
+    step_until(&mut h, "the close refused", |h| {
+        !h.state().tabs()[0].closing() && h.state().tabs()[0].edits.idle()
+    });
+    std::fs::set_permissions(&folder, was).unwrap();
+    step_until(&mut h, "the field on", |h| {
+        !name_field(h).accesskit_node().is_disabled()
+    });
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(
+            !name_field(&h).is_focused(),
+            "the keyboard given back to a field let go of while it was off"
+        );
+    }
+    assert_eq!(h.state().tabs().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_field_gone_while_the_offer_is_still_up_is_given_nothing_when_it_comes_back() {
+    // #497's review, round 5: the Modify box held the keyboard as ⌘W's question came; an
+    // offer came under it, shown once the question had gone. While the offer is up the box
+    // goes (its place behind the eye) and is let go of there; it comes back under the
+    // offer, and once the offer has gone it's not given the keyboard: it was gone.
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    step_until(&mut h, "the first box closed", |h| {
+        sketch_mode(h).unwrap().edit_box.is_none()
+    });
+    open_modify_box(&f, &mut h);
+    step(&mut h);
+    step(&mut h);
+    assert!(modify_field(&h).is_some_and(|field| field.is_focused()));
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to boxed.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    offer_come(&f, &mut h);
+    let cancel = on_button(&h, "Cancel").rect().center();
+    click_in_one_frame(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    step(&mut h);
+    assert!(modify_field(&h).is_some());
+    // The box's place behind the eye: looking up from 10 above the sketch's plane.
+    let camera = view(&h).camera().clone();
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Perspective {
+            field_of_view: 45.0,
+        },
+        eye: [0.0, 0.0, 10.0],
+        target: [0.0, 0.0, 20.0],
+        up: [0.0, 1.0, 0.0],
+    });
+    step_until(&mut h, "the box gone", |h| modify_field(h).is_none());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(prompt(&h).is_some());
+    view_mut(&mut h).set_camera(camera);
+    step_until(&mut h, "the box back", |h| modify_field(h).is_some());
+    step(&mut h);
+    assert!(prompt(&h).is_some());
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the offer gone", |h| prompt(h).is_none());
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(
+            modify_field(&h).is_some_and(|field| !field.is_focused()),
+            "the keyboard given back to a box let go of while it was gone"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn close_asked_in_the_frame_a_tab_with_an_offer_is_shown_asks_over_the_offer() {
+    // #497's review, round 5: ⌘W's Close is decided after the frame is drawn. A click on
+    // another tab's button, in the frame ⌘W comes, shows that tab, whose over-define
+    // offer came while it was hidden: the Close asked of the tab ⌘W was pressed in (its
+    // edits held) is asked over the offer, which waits under the question and shows once
+    // the question has gone.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = offer_on_its_way(&f);
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs, the other shown", |h| {
+        h.state().tabs().len() == 2 && shows(h, "Timeline", "Pin")
+    });
+    select(&mut h, "Pin");
+    type_name(&mut h, "s");
+    step_until(&mut h, "the other's edit held", |h| {
+        let tab = &h.state().tabs()[1];
+        tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Pins")
+    });
+    offer_come(&f, &mut h);
+    assert!(prompt(&h).is_none(), "the hidden tab's offer drawn");
+    // A click on boxed.silico's tab, pressed and let go, then ⌘W, in one frame.
+    let at = h
+        .get_by_role_and_label(Role::Button, "boxed.silico *")
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    for pressed in [true, false] {
+        events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events.push(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to other.silico before closing?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(
+            prompt(&h).is_none(),
+            "the offer drawn while the question is up"
+        );
+        assert!(sketch_mode(&h).unwrap().offer().is_some());
+    }
+    let cancel = on_button(&h, "Cancel").rect().center();
+    click_in_one_frame(&mut h, cancel);
+    step_until(&mut h, "the offer shown", |h| {
+        !anywhere(h, question) && prompt(h).is_some()
+    });
+    assert_eq!(h.state().tabs().len(), 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn close_in_the_frame_a_click_opens_export_is_dropped_and_export_stays_up() {
+    // #497's review, round 6: ⌘W's Close is decided after the frame is drawn, and not over
+    // a question a click opened meanwhile, as no key acts under one: a click on File's
+    // Export… and ⌘W in one frame leave the tab open, no Close question asked, Export's
+    // dialog up.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    assert!(!h.state().tabs()[0].unsaved());
+    h.get_by_label("File").click();
+    step(&mut h);
+    step(&mut h);
+    let at = h
+        .get_by_role_and_label(Role::Button, "Export…")
+        .rect()
+        .center();
+    h.hover_at(at);
+    step(&mut h);
+    let command = command_modifiers(&h);
+    let events = &mut h.input_mut().events;
+    for pressed in [true, false] {
+        events.push(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    events.push(key_event(Key::W, command));
+    step(&mut h);
+    step_until(&mut h, "the export dialog", |h| anywhere(h, EXPORT_EXAMPLE));
+    for _ in 0..5 {
+        step(&mut h);
+        assert_eq!(h.state().tabs().len(), 1, "the tab closed under Export");
+        assert!(anywhere(&h, EXPORT_EXAMPLE), "Export's dialog gone");
+        assert!(
+            !anywhere(&h, "Save changes to example.silico before closing?"),
+            "the Close question asked"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_line_let_go_after_the_sheets_key_in_one_frame_is_added() {
+    // #497's review, round 6: `?`, then the release, in one frame: the canvas reads the
+    // frame's pointer events after the keys, so the release of the press already held is
+    // handed on, as one before the key is, and ends its gesture.
+    use eframe::egui::{Event, PointerButton};
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    let sent = line_held(&mut h);
+    let at = top_screen(&h, [30.0, 60.0]);
+    let events = &mut h.input_mut().events;
+    events.push(key_event(Key::Questionmark, Modifiers::NONE));
+    events.push(Event::PointerButton {
+        pos: at,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    step_until(&mut h, "the sheet", sheet_open);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    settled(&mut h);
+    let added = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert!(
+        added.contains(&Sent::SketchEdit("sketch_add")),
+        "a line let go after the sheet's key, in one frame, was dropped: {added:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn typing_in_the_first_frame_under_the_close_question_never_reaches_the_name_field() {
+    // #497's mutants (app.rs `focused.layer_id != modal`): the field behind the modal loses
+    // the keyboard at the top of each frame a modal is on, before anything is drawn, as egui
+    // gives a focused field the frame's typing before it finds the field off. A key typed in
+    // the first frame the question is drawn reaches nothing; the name is as it was.
+    use eframe::egui::Event;
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    assert!(name_field(&h).is_focused());
+    let command = command_modifiers(&h);
+    h.event(key_event(Key::W, command));
+    step(&mut h);
+    let question = "Save changes to example.silico before closing?";
+    // The first frame drawn under the question, a key typed in it.
+    h.event(Event::Text("y".to_owned()));
+    step(&mut h);
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pins"));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(name_field(&h).value().as_deref(), Some("Pins"));
+    assert!(shows(&h, "Timeline", "Pins"));
+    assert!(!shows(&h, "Timeline", "Pinsy"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_keyboard_comes_back_to_each_widget_through_a_question_over_the_sheet() {
+    // #497's mutants (app.rs `focus_behind.retain(|(taken, _)| *taken != id)`): each widget a
+    // modal took the keyboard from is kept until its modal has gone. The Shortcuts button
+    // holds the keyboard as `?` opens the sheet, whose filter takes it; a quit's question
+    // over the sheet takes it from the filter. The question's Esc gives it back to the
+    // filter, and the sheet's Esc gives it back to the button.
+    let f = fixture();
+    let (mut h, _) = pins_held(&f);
+    h.get_by_role_and_label(Role::Button, "Shortcuts").focus();
+    step(&mut h);
+    step(&mut h);
+    let button = h.ctx.memory(|memory| memory.focused());
+    assert!(button.is_some());
+    assert!(!h.ctx.text_edit_focused());
+    h.key_press(Key::Questionmark);
+    step_until(&mut h, "the sheet", sheet_open);
+    step_until(&mut h, "the sheet's filter focused", |h| {
+        the_sheet(h).get_by_role(Role::TextInput).is_focused()
+    });
+    let filter = h.ctx.memory(|memory| memory.focused());
+    assert_ne!(filter, button);
+    close_window(&mut h);
+    let question = "Save changes before quitting?";
+    step_until(&mut h, "the question", |h| anywhere(h, question));
+    step(&mut h);
+    assert!(!the_sheet(&h).get_by_role(Role::TextInput).is_focused());
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the question gone", |h| !anywhere(h, question));
+    step(&mut h);
+    assert!(sheet_open(&h));
+    assert_eq!(h.ctx.memory(|memory| memory.focused()), filter);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the sheet closed", |h| !sheet_open(h));
+    step(&mut h);
+    assert_eq!(
+        h.ctx.memory(|memory| memory.focused()),
+        button,
+        "the Shortcuts button without the keyboard once the sheet has gone"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The empty part's hint and the timeline's arrows (the prototype audit's item 20) -------
+
+/// A document with no feature.
+const NO_FEATURES: &str =
+    r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": []}"#;
+
+/// The empty part's words (app.js's `renderCanvasUI`: "Start with a sketch: <b>Create
+/// Sketch</b>, then pick a plane."), as a screen reader reads them.
+const HINT_WORDS: &str = "Start with a sketch: Create Sketch, then pick a plane.";
+
+/// The empty part's hint, if it shows.
+fn hint(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
+    h.query_by_role_and_label(Role::Group, "Hint")
+}
+
+/// The labels of `node`'s descendants of `role`, in the tree's order (a label's, its text).
+fn labels_in(node: &egui_kittest::Node<'_>, role: Role) -> Vec<String> {
+    node.query_all_by_role(role)
+        .filter_map(|node| {
+            let node = node.accesskit_node();
+            if role == Role::Label {
+                node.value()
+            } else {
+                node.label()
+            }
+        })
+        .collect()
+}
+
+/// The hint's Create Sketch clicked, and Create Sketch's planes waited for.
+fn hints_planes(h: &mut AppHarness) {
+    hint(h)
+        .unwrap()
+        .get_by_role_and_label(Role::Button, "Create Sketch")
+        .click();
+    step_until(h, "Create Sketch's planes", |h| {
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_some()
+    });
+    // Laid out where it shows (a popup's first frame sizes it).
+    step(h);
+    step(h);
+}
+
+#[test]
+fn a_new_parts_canvas_says_start_with_a_sketch_and_its_create_sketch_opens_the_planes() {
+    // app.js's `renderCanvasUI`: a part open with no feature, no sketch open, and no plane
+    // being picked shows its `.canvas-hint`: the sketch icon, its words, and a primary
+    // Create Sketch that runs `createSketch`, the toolbar's command. The app's Create Sketch
+    // opens its planes (the menu CREATE's button opens), the hint standing under them; a
+    // plane chosen there opens sketch mode on a sketch on it, as one chosen from CREATE's
+    // does. Cancel takes it back: an empty part again, its hint back.
+    let f = fixture();
+    let mut h = f.app();
+    new_part(&mut h);
+    step_until(&mut h, "the hint", |h| hint(h).is_some());
+    let shown = hint(&h).unwrap();
+    assert_eq!(labels_in(&shown, Role::Label), [HINT_WORDS]);
+    assert_eq!(labels_in(&shown, Role::Button), ["Create Sketch"]);
+    hints_planes(&mut h);
+    let planes = h.get_by_role_and_label(Role::Menu, "Create Sketch");
+    assert_eq!(
+        labels_in(&planes, Role::Button),
+        ["XY plane", "XZ plane", "YZ plane"]
+    );
+    // The planes' anchor, it stays every frame they're open: no frame hides it as their pick.
+    for frame in 0..4 {
+        step(&mut h);
+        assert!(
+            hint(&h).is_some(),
+            "frame {frame}: the planes' anchor stays"
+        );
+        assert!(
+            h.query_by_role_and_label(Role::Menu, "Create Sketch")
+                .is_some(),
+            "frame {frame}: the planes stay open"
+        );
+    }
+    assert!(sketch_mode(&h).is_none());
+    h.get_by_role_and_label(Role::Button, "XZ plane").click();
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    assert!(hint(&h).is_none(), "gone in sketch mode");
+    // Sketch1 (SolidWorks' and Fusion's first name) on XZ, as CREATE's planes add it.
+    let fields = fields_of(&text_of(&f.sessions, &h), "Sketch1").unwrap();
+    assert!(
+        fields.contains(&("plane".to_owned(), Plain::String("xz".to_owned()))),
+        "{fields:?}"
+    );
+    leave_sketch(&mut h, false);
+    step_until(&mut h, "the hint back", |h| hint(h).is_some());
+    assert!(fields_of(&text_of(&f.sessions, &h), "Sketch1").is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_empty_parts_hint_goes_while_create_sketchs_planes_are_open_with_a_dialog_and_with_a_feature()
+{
+    // The prototype's `!d.features.length && !S.sketch && !S.pickPlane`: CREATE's Create
+    // Sketch opens its planes (the app's plane pick), and the hint goes while they're open,
+    // back once Esc closes them. With a dialog open (Pad's, which an empty part can open)
+    // the hint goes too: its Create Sketch couldn't open then, as CREATE's is off. A
+    // sketch finished is a feature: gone for good. A part opened with features never shows
+    // it.
+    let f = fixture();
+    let (mut h, _) = f.opened("empty.silico", NO_FEATURES);
+    step_until(&mut h, "the hint", |h| hint(h).is_some());
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(&mut h, "Create Sketch's planes", |h| {
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_some()
+    });
+    step(&mut h);
+    assert!(hint(&h).is_none(), "gone while the planes are open");
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the hint back", |h| hint(h).is_some());
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_none()
+    );
+    create(&mut h, "Pad");
+    step(&mut h);
+    assert!(hint(&h).is_none(), "gone with a dialog open");
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    step_until(&mut h, "the hint back", |h| hint(h).is_some());
+    hints_planes(&mut h);
+    h.get_by_role_and_label(Role::Button, "XY plane").click();
+    step_until(&mut h, "its sketch added", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
+    });
+    // A line drawn, so Finish keeps it (one holding nothing it would discard).
+    sketch_read(&mut h);
+    draw_line(&f, &mut h, [10.0, 10.0], [30.0, 20.0]);
+    leave_sketch(&mut h, true);
+    step_until(&mut h, "Sketch1 in the timeline", |h| {
+        shows(h, "Timeline", "Sketch1")
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(hint(&h).is_none(), "gone with a feature");
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    step(&mut h);
+    assert!(hint(&h).is_none(), "never with features");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The app with [`NO_FEATURES`] open, its viewport marked and its tab watched, every
+/// overlay's call kept (as [`Fixture::overlaid`]), once its hint shows.
+fn hinted(f: &Fixture) -> (AppHarness, Overlays) {
+    let path = f.file("empty.silico", NO_FEATURES);
+    let seen = Overlays::default();
+    let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(Marking(Arc::clone(&seen))));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 800.0))
+            .with_step_dt(1.0 / 60.0)
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    silico_app::theme::apply(&h.ctx);
+    h.state_mut().open(path.to_str().unwrap(), false);
+    step_until(&mut h, "the hint", |h| hint(h).is_some());
+    h.state_mut().tabs_mut()[0].watch = Some(watching(&seen));
+    step(&mut h);
+    (h, seen)
+}
+
+/// `got` at `expected`, within the half point egui may round a widget's place by.
+fn within_half_a_point(got: eframe::egui::Pos2, expected: eframe::egui::Pos2, what: &str) {
+    assert!(
+        (got - expected).length() <= 0.5,
+        "{what}: {got:?} against {expected:?}"
+    );
+}
+
+#[test]
+fn the_empty_parts_hint_stands_64_above_the_canvass_bottom_centred_and_takes_only_its_own_presses()
+{
+    // styles.css's `.canvas-hint`, app.js's `top:auto;bottom:64px`: centred across the
+    // canvas (`left: 50%; transform: translateX(-50%)`), its bottom 64 above the canvas's.
+    // Its height is its button's 22 (`.btn`), padded 6 above and below inside a 1 border:
+    // 22 + 2·6 + 2·1 = 36. Its button stands 8 + 1 in from its right and 6 + 1 down; its
+    // words after the icon, 1 + 12 + 14 + 10 = 37 in from its left, a line 16 high centred
+    // on the 22 (3 under its top), and 10 before the button. A press on its padding reaches
+    // nothing of the canvas's; one 6 left of it, on the canvas, does.
+    use eframe::egui::{Modifiers, PointerButton, Pos2};
+    use silico_app::viewport::LeftKind::{Press, Release};
+    let f = fixture();
+    let (mut h, seen) = hinted(&f);
+    let canvas = the_viewport(&h);
+    let chip = hint(&h).unwrap().rect();
+    assert!(
+        (chip.center().x - canvas.center().x).abs() < 1e-3,
+        "{chip:?} in {canvas:?}"
+    );
+    assert!(
+        (chip.bottom() - (canvas.bottom() - 64.0)).abs() < 1e-3,
+        "{chip:?} in {canvas:?}"
+    );
+    assert!((chip.height() - 36.0).abs() < 1e-3, "{chip:?}");
+    let shown = hint(&h).unwrap();
+    let button = shown
+        .get_by_role_and_label(Role::Button, "Create Sketch")
+        .rect();
+    within_half_a_point(
+        button.right_top(),
+        chip.right_top() + eframe::egui::vec2(-9.0, 7.0),
+        "button",
+    );
+    assert!((button.height() - 22.0).abs() < 1e-3, "{button:?}");
+    let words = shown.get_by_label(HINT_WORDS).rect();
+    within_half_a_point(
+        words.left_top(),
+        chip.left_top() + eframe::egui::vec2(37.0, 10.0),
+        "words",
+    );
+    assert!((words.height() - 16.0).abs() < 1e-3, "{words:?}");
+    assert!(
+        (button.left() - words.right() - 10.0).abs() <= 0.5,
+        "{words:?} {button:?}"
+    );
+    let (left, none) = (PointerButton::Primary, Modifiers::NONE);
+    let padding = Pos2::new(chip.left() + 5.0, chip.center().y);
+    left_taken(&seen);
+    h.hover_at(padding);
+    button_event(&h, padding, left, true, none);
+    button_event(&h, padding, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let taken = left_taken(&seen);
+    assert!(taken.is_empty(), "{taken:?}");
+    assert!(
+        h.query_by_role_and_label(Role::Menu, "Create Sketch")
+            .is_none()
+    );
+    for _ in 0..30 {
+        step(&mut h);
+    }
+    let beside = Pos2::new(chip.left() - 6.0, chip.center().y);
+    h.hover_at(beside);
+    button_event(&h, beside, left, true, none);
+    button_event(&h, beside, left, false, none);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(kinds(&left_taken(&seen)), [Press, Release]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The feature selected as itself, by its ID, if one is.
+fn feature_selected(h: &AppHarness) -> Option<String> {
+    h.state().tabs()[0]
+        .selection()
+        .feature()
+        .map(|id| id.as_str().to_owned())
+}
+
+/// Whether the timeline's item `name` is marked selected for a screen reader (egui's
+/// selectable label, toggled).
+fn item_selected(h: &AppHarness, name: &str) -> bool {
+    toggled(&timeline(h).get_by_label(name)) == Some(true)
+}
+
+/// `key` pressed with `modifiers`, and two frames drawn.
+fn pressed_with(h: &mut AppHarness, modifiers: eframe::egui::Modifiers, key: eframe::egui::Key) {
+    h.key_press_modifiers(modifiers, key);
+    step(h);
+    step(h);
+}
+
+/// The example's features in its timeline's order: Block, Pin, Hole.
+const BLOCK_ID: &str = "k7f2qx3m";
+const PIN_ID: &str = "a91cw0de";
+const HOLE_ID: &str = "m3tq8v0z";
+
+#[test]
+fn right_and_left_select_the_timelines_next_and_previous_feature_clamped_at_its_ends() {
+    // interact.js's `keydown`: with a feature selected, → and ← select the next or the
+    // previous in timeline order, `Math.max(0, Math.min(length - 1, i ± 1))`, through
+    // `selectFeature`, as a click on its item does: its item marked, its properties shown.
+    // The example's timeline is Block, Pin, Hole: from Pin, → is Hole and → again stays
+    // there; ← twice is Block, and ← again stays there.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Pin");
+    let steps = [
+        (Key::ArrowRight, HOLE_ID, "Hole"),
+        (Key::ArrowRight, HOLE_ID, "Hole"),
+        (Key::ArrowLeft, PIN_ID, "Pin"),
+        (Key::ArrowLeft, BLOCK_ID, "Block"),
+        (Key::ArrowLeft, BLOCK_ID, "Block"),
+        (Key::ArrowRight, PIN_ID, "Pin"),
+    ];
+    for (at, (key, id, name)) in steps.into_iter().enumerate() {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert_eq!(feature_selected(&h).as_deref(), Some(id), "step {at}");
+        assert!(item_selected(&h, name), "step {at}: {name}'s item");
+        let others = ["Block", "Pin", "Hole"]
+            .into_iter()
+            .filter(|other| *other != name);
+        for other in others {
+            assert!(!item_selected(&h, other), "step {at}: {other}'s item");
+        }
+        let shown = name_field(&h).value().unwrap_or_default();
+        assert!(
+            shown.ends_with(name),
+            "step {at}: properties show {shown:?}"
+        );
+    }
+    // Shift as the prototype has it, its `keydown` taking the arrow whatever Shift does.
+    pressed_with(&mut h, Modifiers::SHIFT, Key::ArrowRight);
+    assert_eq!(feature_selected(&h).as_deref(), Some(HOLE_ID));
+    // Never with Alt (`if (e.altKey) return`), nor Ctrl or Command (its `isMod` branch).
+    for modifiers in [Modifiers::ALT, Modifiers::COMMAND, Modifiers::CTRL] {
+        pressed_with(&mut h, modifiers, Key::ArrowLeft);
+        assert_eq!(
+            feature_selected(&h).as_deref(),
+            Some(HOLE_ID),
+            "{modifiers:?}"
+        );
+    }
+    // A key held down walks on, each repeat a step: two in one frame, from Hole to Block.
+    for repeat in [false, true] {
+        h.event(eframe::egui::Event::Key {
+            key: Key::ArrowLeft,
+            physical_key: None,
+            pressed: true,
+            repeat,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(feature_selected(&h).as_deref(), Some(BLOCK_ID));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_timelines_arrows_do_nothing_with_no_feature_selected_or_a_bodys_row_selected() {
+    // The prototype's `&& S.selFeature`: nothing selected, the arrows select nothing; a
+    // body's row (its `bodyRow`, which leaves `selFeature` null) neither.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let hole = silico_core::document::FeatureId::new(HOLE_ID).unwrap();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    for key in [Key::ArrowRight, Key::ArrowLeft] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert!(h.state().tabs()[0].selection().is_empty(), "{key:?}");
+    }
+    step_until(&mut h, "the browser's body", |h| {
+        browser(h).query_by_label("Hole").is_some()
+    });
+    browser(&h).get_by_label("Hole").click();
+    step_until(&mut h, "the body selected", |h| {
+        h.state().tabs()[0]
+            .selection()
+            .selected_as(&hole, silico_app::selection::SelectedAs::Body)
+    });
+    for key in [Key::ArrowLeft, Key::ArrowRight] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert!(
+            h.state().tabs()[0]
+                .selection()
+                .selected_as(&hole, silico_app::selection::SelectedAs::Body),
+            "{key:?}"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_timelines_arrows_are_a_fields_while_a_name_is_typed_and_a_menus_while_one_is_open() {
+    // The prototype's `if (typing) return` and its menu's own arrows: in the property
+    // panel's Name field, and in F2's rename field, → and ← move the cursor and select
+    // nothing; with the timeline's menu open (its right click selects Pin), or the
+    // navigation bar's Display settings, they're the menu's, Pin kept. Esc closes it, and
+    // → walks again.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Pin");
+    name_field(&h).focus();
+    step(&mut h);
+    for key in [Key::ArrowRight, Key::ArrowLeft, Key::ArrowLeft] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert_eq!(
+            feature_selected(&h).as_deref(),
+            Some(PIN_ID),
+            "Name, {key:?}"
+        );
+    }
+    assert!(name_field(&h).is_focused());
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    f2_typed(&mut h, "Pin", "Peg");
+    for key in [Key::ArrowRight, Key::ArrowLeft] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert_eq!(
+            feature_selected(&h).as_deref(),
+            Some(PIN_ID),
+            "rename, {key:?}"
+        );
+    }
+    assert_eq!(
+        rename_field(&h, "Pin").unwrap().value().as_deref(),
+        Some("Peg")
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(rename_field(&h, "Pin").is_none());
+    menu_on(&mut h, "Timeline", "Pin");
+    menu_head(&h, "PIN");
+    for key in [Key::ArrowRight, Key::ArrowLeft] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert_eq!(
+            feature_selected(&h).as_deref(),
+            Some(PIN_ID),
+            "menu, {key:?}"
+        );
+    }
+    menu_head(&h, "PIN");
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    // A menu that selects nothing as it stays open, the navigation bar's Display settings:
+    // the arrows its, Pin kept; Esc closes it, and → walks again.
+    click_on_bar(&mut h, "Display settings");
+    assert!(
+        eframe::egui::Popup::is_any_open(&h.ctx),
+        "Display settings open"
+    );
+    for key in [Key::ArrowRight, Key::ArrowLeft] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert_eq!(
+            feature_selected(&h).as_deref(),
+            Some(PIN_ID),
+            "display, {key:?}"
+        );
+    }
+    assert!(
+        eframe::egui::Popup::is_any_open(&h.ctx),
+        "Display settings still open"
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    assert!(!eframe::egui::Popup::is_any_open(&h.ctx));
+    pressed_with(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(feature_selected(&h).as_deref(), Some(HOLE_ID));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_timelines_arrows_walk_nothing_in_sketch_mode() {
+    // The prototype's `if (S.sketch) { …; return; }`: a sketch's keys go no further. Edit
+    // Sketch selected the triangle's sketch; → and ← leave it selected, and sketch mode open.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let mut h = triangle_in_sketch_mode(&f);
+    assert_eq!(feature_selected(&h).as_deref(), Some("s0000001"));
+    for key in [Key::ArrowLeft, Key::ArrowRight, Key::ArrowLeft] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert_eq!(feature_selected(&h).as_deref(), Some("s0000001"), "{key:?}");
+        assert!(sketch_mode(&h).is_some());
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_empty_parts_hint_paints_its_shadow_its_frame_and_the_sketch_icon() {
+    // `.canvas-hint`: `box-shadow: 0 4px 14px rgba(0,0,0,.5)` painted under `background:
+    // var(--g200); border: 1px solid var(--g250); border-radius: var(--r)` (6), both over the
+    // hint's rect, the shadow 4 lower; then `icon('sketch')`, 14 square in `currentColor`
+    // (the page's `--g750`), 1 + 12 = 13 in from the hint's left and centred on its 22-high
+    // row, 1 + 6 under its top: 1 + 6 + 11 − 7 = 11 down.
+    use eframe::egui::{Color32, CornerRadius, Shape, Stroke, StrokeKind, vec2};
+    let f = fixture();
+    let (mut h, _seen) = hinted(&f);
+    let chip = hint(&h).unwrap().rect();
+    let icon = eframe::egui::Rect::from_min_size(chip.min + vec2(13.0, 11.0), vec2(14.0, 14.0));
+    let near = |a: eframe::egui::Rect, b: eframe::egui::Rect| {
+        (a.min - b.min).length() <= 0.5 && (a.max - b.max).length() <= 0.5
+    };
+    // The icon's image, once loaded: a rectangle filled with its texture.
+    step_until(&mut h, "the icon painted", |h| {
+        shapes_painted(h)
+            .iter()
+            .any(|shape| matches!(shape, Shape::Rect(r) if r.brush.is_some() && near(r.rect, icon)))
+    });
+    let shapes = shapes_painted(&h);
+    let frame = shapes
+        .iter()
+        .position(|shape| {
+            matches!(shape, Shape::Rect(r) if r.fill == G200
+                && r.stroke == Stroke::new(1.0, G250)
+                && r.stroke_kind == StrokeKind::Inside
+                && r.corner_radius == CornerRadius::same(6)
+                && r.brush.is_none()
+                && near(r.rect, chip))
+        })
+        .unwrap_or_else(|| panic!("no frame at {chip:?}"));
+    let shadow = shapes
+        .iter()
+        .position(|shape| {
+            matches!(shape, Shape::Rect(r) if r.fill == Color32::from_rgba_unmultiplied(0, 0, 0, 128)
+                && r.blur_width == 14.0
+                && r.corner_radius == CornerRadius::same(6)
+                && near(r.rect, chip.translate(vec2(0.0, 4.0))))
+        })
+        .unwrap_or_else(|| panic!("no shadow under {chip:?}"));
+    assert!(shadow < frame, "the shadow under the frame");
+    let Some(Shape::Rect(image)) = shapes
+        .iter()
+        .find(|shape| matches!(shape, Shape::Rect(r) if r.brush.is_some() && near(r.rect, icon)))
+    else {
+        panic!("no icon at {icon:?}");
+    };
+    assert_eq!(image.fill, Color32::from_rgb(0xcf, 0xcf, 0xcf), "its tint");
+    let texture = image.brush.as_ref().unwrap().fill_texture_id;
+    let named = h
+        .ctx
+        .tex_manager()
+        .read()
+        .meta(texture)
+        .map(|meta| meta.name.clone());
+    assert_eq!(named.as_deref(), Some("bytes://silico/icons/sketch.svg"));
+    assert!(
+        shapes.iter().position(
+            |shape| matches!(shape, Shape::Rect(r) if r.brush.is_some() && near(r.rect, icon))
+        ) > Some(frame),
+        "the icon over the frame"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_empty_parts_hint_stays_hidden_with_only_a_failed_feature() {
+    // The prototype's `!d.features.length`: a feature that failed, and made no body, is a
+    // feature all the same.
+    let f = fixture();
+    f.kernel
+        .refuse(|op| is_box(op).then(|| Error::new(ErrorCode::KernelFailed, "the box came apart")));
+    let (mut h, _) = f.opened("block.silico", A_BOX);
+    step_until(&mut h, "the box's failure", |h| {
+        shows(h, "Timeline", "Block")
+            && timeline(h)
+                .query_all_by_label_contains("error")
+                .next()
+                .is_some()
+    });
+    assert!(h.state().tabs()[0].browser.bodies().is_empty());
+    for _ in 0..3 {
+        step(&mut h);
+        assert!(hint(&h).is_none());
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_timelines_arrows_walk_nothing_while_a_widget_has_the_keyboard() {
+    // egui moves the keyboard's focus by the arrows (its `begin_pass`): with a button focused
+    // (Tab's, here the navigation bar's Fit), → and ← move that focus, and select nothing.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Pin");
+    assert!(h.ctx.memory(|memory| memory.focused()).is_none());
+    bar_node(&h).get_by_label("Fit").focus();
+    step(&mut h);
+    assert!(h.ctx.memory(|memory| memory.focused()).is_some());
+    for key in [Key::ArrowRight, Key::ArrowLeft] {
+        h.key_press_modifiers(Modifiers::NONE, key);
+        step(&mut h);
+        assert_eq!(feature_selected(&h).as_deref(), Some(PIN_ID), "{key:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// What a step along the timeline leaves with a dialog open, to compare: the feature
+/// selected, the dialog's inputs' values and its active box, whether it's open, and how many
+/// requests the tab has sent.
+fn after_a_step(h: &AppHarness) -> (Option<String>, Option<String>, bool, usize) {
+    let tab = &h.state().tabs()[0];
+    let dialog = tab.dialog.as_ref().map(|dialog| {
+        let values: Vec<_> = dialog.inputs.iter().map(|input| &input.value).collect();
+        format!("{values:?} active {:?}", dialog.active)
+    });
+    (feature_selected(h), dialog, dialog_open(h), tab.sent.len())
+}
+
+/// With a dialog open, the timeline's item `from` clicked (which takes the keyboard from the
+/// dialog's field), → pressed: what that leaves is what `from` clicked, then `to` clicked,
+/// leaves, `to` the item after `from`. What both leave.
+fn arrow_as_click(
+    h: &mut AppHarness,
+    from: &str,
+    to: &str,
+) -> (Option<String>, Option<String>, bool, usize) {
+    timeline(h).get_by_label(from).click();
+    step(h);
+    step(h);
+    assert!(
+        h.ctx.memory(|memory| memory.focused()).is_none(),
+        "nothing focused"
+    );
+    h.key_press(eframe::egui::Key::ArrowRight);
+    step(h);
+    step(h);
+    let walked = after_a_step(h);
+    timeline(h).get_by_label(from).click();
+    step(h);
+    step(h);
+    timeline(h).get_by_label(to).click();
+    step(h);
+    step(h);
+    let clicked = after_a_step(h);
+    assert_eq!(walked, clicked);
+    assert!(dialog_open(h));
+    walked
+}
+
+#[test]
+fn with_an_edit_dialog_open_an_arrow_does_what_a_click_on_its_item_does() {
+    // The prototype's arrows take no account of a dialog (its `keydown` reaches them with one
+    // open, no field typed in), and `selectFeature` is what a click on the item does: the
+    // plate's pad's dialog open, the sketch's item clicked, → leaves what a click on the
+    // pad's item leaves: the pad selected, the dialog as it was, nothing sent.
+    let f = fixture();
+    let (mut h, _) = f.opened("plate.silico", PLATE);
+    edit_plates_pad(&mut h);
+    settled(&mut h);
+    let sent = h.state().tabs()[0].sent.len();
+    let left = arrow_as_click(&mut h, "Plate", "Pad");
+    assert_eq!(left.0.as_deref(), Some("p0000001"));
+    assert_eq!(left.3, sent);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn with_a_pads_sketch_box_active_an_arrow_onto_a_sketch_does_what_a_click_on_its_item_does() {
+    // A new pad's dialog, its sketch's box active and empty: a click on the triangle's
+    // timeline item selects it and leaves the box as it was (the browser's row fills it, the
+    // timeline's item doesn't); → onto it from the plate does the same.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    create(&mut h, "Pad");
+    settled(&mut h);
+    let before = after_a_step(&h).1;
+    let left = arrow_as_click(&mut h, "Plate", "Triangle");
+    assert_eq!(left.0.as_deref(), Some("s0000001"));
+    assert_eq!(left.1, before, "the box as it was");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_arrow_walks_from_a_sketchs_browser_row_and_onto_a_suppressed_feature() {
+    // A sketch's browser row selects it as itself (the prototype's `featureRow`), so the
+    // arrows walk from it, and the timeline is then where it was selected (F2's field opens
+    // there). A suppressed feature is in the timeline's order as any other: → stops on it.
+    use eframe::egui::{Key, Modifiers};
+    use silico_app::feature_menu::Place;
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    browser(&h).get_by_label("Triangle").click();
+    step_until(&mut h, "the sketch selected", |h| {
+        feature_selected(h).as_deref() == Some("s0000001")
+    });
+    assert_eq!(h.state().tabs()[0].selected_in, Place::Browser);
+    pressed_with(&mut h, Modifiers::NONE, Key::ArrowLeft);
+    assert_eq!(feature_selected(&h).as_deref(), Some(HOLE_ID));
+    assert_eq!(h.state().tabs()[0].selected_in, Place::Timeline);
+    let ghost = r#"    {"id": "g0000001", "type": "box", "v": 1, "name": "Ghost", "suppressed": true, "position": [0, 0, 0], "length": 1, "width": 1, "height": 1},"#;
+    let text = EXAMPLE.replacen(
+        "    {\"id\": \"a91cw0de\"",
+        &format!("{ghost}\n    {{\"id\": \"a91cw0de\""),
+        1,
+    );
+    let (mut h, _) = f.opened("ghost.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Ghost"));
+    select(&mut h, "Block");
+    pressed_with(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(feature_selected(&h).as_deref(), Some("g0000001"));
+    assert!(toggled(&timeline(&h).get_by_label("Ghost")) == Some(true));
+    pressed_with(&mut h, Modifiers::NONE, Key::ArrowRight);
+    assert_eq!(feature_selected(&h).as_deref(), Some(PIN_ID));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_timelines_arrows_walk_nothing_while_the_gate_refuses_the_document() {
+    // While the gate refuses the document its timeline may list an ID used twice, twice
+    // (`timeline`'s schema): here Block and Pin are both k7f2qx3m. Walked by ID, ← from Hole
+    // would find the first k7f2qx3m and → from there never pass Pin; so the arrows walk
+    // nothing until the document is mended.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let twice = EXAMPLE.replace("\"id\": \"a91cw0de\"", "\"id\": \"k7f2qx3m\"");
+    let (mut h, _) = f.opened("twice.silico", &twice);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    assert!(
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0)
+    );
+    timeline(&h).get_by_label("Hole").click();
+    step_until(&mut h, "Hole selected", |h| {
+        feature_selected(h).as_deref() == Some(HOLE_ID)
+    });
+    for key in [Key::ArrowLeft, Key::ArrowLeft, Key::ArrowRight] {
+        pressed_with(&mut h, Modifiers::NONE, key);
+        assert_eq!(feature_selected(&h).as_deref(), Some(HOLE_ID), "{key:?}");
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The origin planes drawn in the viewport (the prototype's `buildPlanes`, `VP.setPlanes`) ----
+
+/// The newest recorded frame's planes.
+fn last_planes(record: &Record) -> Vec<silico_render::render::Plane> {
+    record
+        .lock()
+        .unwrap()
+        .frames
+        .last()
+        .map(|frame| frame.planes.clone())
+        .unwrap_or_default()
+}
+
+/// The origin plane `name` as the prototype draws it, typed from viewport.js, not the app:
+/// `PLANES`' U and V (XY's x and y, XZ's x and z, YZ's y and z) and `Geo.rectShape(-4, -4,
+/// 46, 46)`, so its corner (−4, −4) and its sides 50 long; `#9f9f9f` at 0.08 (20 of 255)
+/// filled, at 0.6 (153) outlined, 1 px; hovered (`VP.setPlanes`' `on`), `#186add` at 0.32
+/// (82), outlined `#4676ff`.
+fn plane_by_hand(name: &str, hovered: bool) -> silico_render::render::Plane {
+    let (origin, u, v) = match name {
+        "XY" => ([-4.0, -4.0, 0.0], [50.0, 0.0, 0.0], [0.0, 50.0, 0.0]),
+        "XZ" => ([-4.0, 0.0, -4.0], [50.0, 0.0, 0.0], [0.0, 0.0, 50.0]),
+        "YZ" => ([0.0, -4.0, -4.0], [0.0, 50.0, 0.0], [0.0, 0.0, 50.0]),
+        _ => unreachable!("{name}"),
+    };
+    let (fill, outline) = if hovered {
+        ([0x18, 0x6a, 0xdd, 82], [0x46, 0x76, 0xff, 153])
+    } else {
+        ([0x9f, 0x9f, 0x9f, 20], [0x9f, 0x9f, 0x9f, 153])
+    };
+    silico_render::render::Plane {
+        origin,
+        u,
+        v,
+        fill,
+        outline,
+        width: 1.0,
+    }
+}
+
+/// Stepped until the newest frame's planes are `want` (each by name, hovered or not), then
+/// ten frames more, each the same.
+fn planes_become(h: &mut AppHarness, record: &Record, want: &[(&str, bool)]) {
+    let want: Vec<silico_render::render::Plane> = want
+        .iter()
+        .map(|(name, hovered)| plane_by_hand(name, *hovered))
+        .collect();
+    step_until(h, &format!("the planes {want:?}"), |_| {
+        last_planes(record) == want
+    });
+    for _ in 0..10 {
+        step(h);
+        assert_eq!(last_planes(record), want);
+    }
+}
+
+/// The browser's eye labelled `label` clicked, then the pointer taken off the browser (a
+/// plane's row under it would light its plane).
+fn click_browser_eye(h: &mut AppHarness, label: &str) {
+    browser(h).get_by_label(label).click();
+    step(h);
+    step(h);
+    pointer_away(h);
+}
+
+#[test]
+fn the_origin_planes_open_hidden_and_each_eye_draws_or_hides_its_plane_in_the_frame() {
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "a frame", |_| {
+        !record.lock().unwrap().frames.is_empty()
+    });
+    // Hidden as they open (the prototype's `vis.planes`, all false): no plane drawn.
+    planes_become(&mut h, &record, &[]);
+    click_browser_eye(&mut h, "Show XZ");
+    planes_become(&mut h, &record, &[("XZ", false)]);
+    click_browser_eye(&mut h, "Show XY");
+    planes_become(&mut h, &record, &[("XY", false), ("XZ", false)]);
+    click_browser_eye(&mut h, "Show YZ");
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", false)],
+    );
+    click_browser_eye(&mut h, "Hide XZ");
+    planes_become(&mut h, &record, &[("XY", false), ("YZ", false)]);
+    click_browser_eye(&mut h, "Hide XY");
+    click_browser_eye(&mut h, "Hide YZ");
+    planes_become(&mut h, &record, &[]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_origin_folders_eye_is_open_while_any_plane_shows_and_shows_or_hides_them_all() {
+    // The prototype's folder row: `eye: Object.values(S.vis.planes).some(Boolean)`, and its
+    // click `on = !any`, every plane set to it.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "a frame", |_| {
+        !record.lock().unwrap().frames.is_empty()
+    });
+    assert!(browser(&h).query_by_label("Hide origin planes").is_none());
+    click_browser_eye(&mut h, "Show origin planes");
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", false)],
+    );
+    for name in ["XY", "XZ", "YZ"] {
+        assert!(
+            browser(&h)
+                .query_by_label(&format!("Hide {name}"))
+                .is_some()
+        );
+    }
+    click_browser_eye(&mut h, "Hide origin planes");
+    planes_become(&mut h, &record, &[]);
+    // One plane shown: the folder's eye open, and its click hides that one.
+    click_browser_eye(&mut h, "Show YZ");
+    planes_become(&mut h, &record, &[("YZ", false)]);
+    assert!(browser(&h).query_by_label("Show origin planes").is_none());
+    click_browser_eye(&mut h, "Hide origin planes");
+    planes_become(&mut h, &record, &[]);
+    assert!(browser(&h).query_by_label("Show YZ").is_some());
+    // The origin point's and the axes' eyes are their own, untouched.
+    for name in ["Origin", "X", "Y", "Z"] {
+        assert!(
+            browser(&h)
+                .query_by_label(&format!("Hide {name}"))
+                .is_some()
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_planes_row_under_the_pointer_draws_it_in_the_hovers_colours_shown_or_not() {
+    // The prototype's `planeRow`: a plane its row picks out is shown, hidden or not, in
+    // `#186add` at 0.32 outlined `#4676ff`; the app's origin rows don't select, so the
+    // pointer on the row is what lights it.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "a frame", |_| {
+        !record.lock().unwrap().frames.is_empty()
+    });
+    let row = |h: &AppHarness, name: &str| browser(h).get_by_label(name).rect().center();
+    let at = row(&h, "YZ");
+    h.hover_at(at);
+    planes_become(&mut h, &record, &[("YZ", true)]);
+    pointer_away(&mut h);
+    planes_become(&mut h, &record, &[]);
+    // XZ shown: it stays plain beside YZ lit, and lit itself once its row is under the
+    // pointer.
+    click_browser_eye(&mut h, "Show XZ");
+    let at = row(&h, "YZ");
+    h.hover_at(at);
+    planes_become(&mut h, &record, &[("XZ", false), ("YZ", true)]);
+    let at = row(&h, "XZ");
+    h.hover_at(at);
+    planes_become(&mut h, &record, &[("XZ", true)]);
+    // The origin point's row lights nothing.
+    let at = row(&h, "X");
+    h.hover_at(at);
+    planes_become(&mut h, &record, &[("XZ", false)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn create_sketchs_planes_show_all_three_origin_planes_the_one_pointed_at_lit() {
+    // The prototype's `startPickPlane`: all three shown, the one under the pointer lit
+    // (`VP.setPlanes({ XY: true, XZ: true, YZ: true }, hp)`); in the app, the menu's item
+    // for it. Closed, the planes go back to their eyes (`endPickPlane`).
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    // The toolbar is there once the tab is: queried, not got, so a frame still showing the
+    // start page waits rather than failing.
+    step_until(&mut h, "Create Sketch on", |h| {
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    click_browser_eye(&mut h, "Show XY");
+    planes_become(&mut h, &record, &[("XY", false)]);
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "XZ plane")
+            .is_some()
+    });
+    let at = h
+        .get_by_role_and_label(Role::Button, "XZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", true), ("YZ", false)],
+    );
+    let at = h
+        .get_by_role_and_label(Role::Button, "YZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", true)],
+    );
+    h.key_press(Key::Escape);
+    step_until(&mut h, "its planes closed", |h| {
+        h.query_by_role_and_label(Role::Button, "XZ plane")
+            .is_none()
+    });
+    pointer_away(&mut h);
+    planes_become(&mut h, &record, &[("XY", false)]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_create_sketch_planes_show_the_origin_planes_and_close_with_it() {
+    // The canvas's menu is drawn after the frame is built: its planes are drawn from the
+    // frame after, and the frame after it closes draws none, each asked for.
+    use eframe::egui::{Key, Modifiers};
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    planes_become(&mut h, &record, &[]);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    let at = h
+        .get_by_role_and_label(Role::Button, "XY plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", true), ("XZ", false), ("YZ", false)],
+    );
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    planes_become(&mut h, &record, &[]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// The council's round 1 on #507.
+
+#[test]
+fn a_plane_shown_raises_the_least_view_but_one_hovered_never_moves_it() {
+    // From −y onto (20, 10, 5), zoomed to the least the body allows (its box, 40 by 20 by 10
+    // from the origin, reaches √525 = 22.9 mm from there). XY's square reaches √1997 = 44.69
+    // mm (to its corner (46, 46, 0)), so at 48 … rows its least is rows · 44.69 / 2^19 · 1.01,
+    // past the body's. Hovering YZ's row there (its square reaching √3377 mm) leaves the view
+    // as it is, and draws no plane, the view too small for it; XY's eye opened raises the view
+    // to XY's least, every frame drawn at it or above.
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    step_until(&mut h, "the body drawn", |_| {
+        record
+            .lock()
+            .unwrap()
+            .frames
+            .last()
+            .is_some_and(|frame| !frame.bodies.is_empty())
+    });
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 1e-5 },
+        eye: [20.0, -100.0, 5.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    // The body hidden and shown again: the view raised to the least it allows.
+    click_browser_eye(&mut h, "Hide Hole");
+    click_browser_eye(&mut h, "Show Hole");
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let rows = f64::from(record.lock().unwrap().frames.last().unwrap().size_px[1]);
+    let least = |squared: f64| rows * squared.sqrt() / 524_288.0 * 1.01;
+    let at_body = view(&h).camera().clone();
+    let body = ortho_height(&at_body);
+    assert!(body > 1e-5, "raised to the body's least: {body}");
+    assert!(
+        body < least(1997.0) * 0.99,
+        "{body} under XY's {}",
+        least(1997.0)
+    );
+    // YZ's row hovered: nothing moves, nothing drawn.
+    let at = browser(&h).get_by_label("YZ").rect().center();
+    h.hover_at(at);
+    for _ in 0..5 {
+        step(&mut h);
+        assert_eq!(*view(&h).camera(), at_body);
+        assert!(last_planes(&record).is_empty());
+    }
+    pointer_away(&mut h);
+    assert_eq!(*view(&h).camera(), at_body);
+    // XY's eye opened: raised to XY's least, and XY drawn.
+    click_browser_eye(&mut h, "Show XY");
+    planes_become(&mut h, &record, &[("XY", false)]);
+    let record = record.lock().unwrap();
+    let frame = record.frames.last().unwrap();
+    let height = ortho_height(&frame.camera);
+    assert!(
+        height >= least(1997.0) * (1.0 - 1e-12),
+        "{height} under {}",
+        least(1997.0)
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn create_sketchs_planes_left_open_with_the_pointer_still_ask_for_no_frame() {
+    // Open from the canvas's menu (drawn after the viewport's frame) and from the toolbar's
+    // button, the pointer resting on a plane's item: once the frames catch up, each asks for
+    // the next at the idle interval, not at once.
+    use eframe::egui::{Key, Modifiers};
+    let idle = |h: &AppHarness| {
+        let frame = Duration::from_millis(250);
+        let delay = repaint_delay(h);
+        assert!(
+            delay.is_some_and(|delay| delay >= IDLE_FRAME - frame && delay <= IDLE_FRAME),
+            "{delay:?}"
+        );
+    };
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    context_over_nothing(&mut h, &record);
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    step(&mut h);
+    step(&mut h);
+    h.key_press(Key::Enter);
+    step_until(&mut h, "its planes", planes_open);
+    let at = h
+        .get_by_role_and_label(Role::Button, "XZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", true), ("YZ", false)],
+    );
+    for _ in 0..5 {
+        step(&mut h);
+        idle(&h);
+    }
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    planes_become(&mut h, &record, &[]);
+    // The toolbar's.
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "YZ plane")
+            .is_some()
+    });
+    let at = h
+        .get_by_role_and_label(Role::Button, "YZ plane")
+        .rect()
+        .center();
+    h.hover_at(at);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", true)],
+    );
+    for _ in 0..5 {
+        step(&mut h);
+        idle(&h);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_plane_whose_item_has_the_keys_focus_is_lit() {
+    // The toolbar's Create Sketch planes, the pointer off them, Tab stepping the focus: each
+    // plane's item focused lights its plane, the other two plain. (The canvas's menu holds
+    // the keys for its own items, its planes the pointer's: canvas_menu.rs's SEAM.)
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    // The toolbar is there once the tab is: queried, not got, so a frame still showing the
+    // start page waits rather than failing.
+    step_until(&mut h, "Create Sketch on", |h| {
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .click();
+    step_until(&mut h, "its planes", |h| {
+        h.query_by_role_and_label(Role::Button, "XZ plane")
+            .is_some()
+    });
+    pointer_away(&mut h);
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", false), ("YZ", false)],
+    );
+    let names = [("XY plane", "XY"), ("XZ plane", "XZ"), ("YZ plane", "YZ")];
+    let mut visited = Vec::new();
+    for _ in 0..40 {
+        if h.query_by_role_and_label(Role::Button, "XY plane")
+            .is_none()
+        {
+            break;
+        }
+        h.key_press(Key::Tab);
+        step(&mut h);
+        step(&mut h);
+        let focused = names.iter().find(|(label, _)| {
+            h.query_by_role_and_label(Role::Button, label)
+                .is_some_and(|node| node.accesskit_node().is_focused())
+        });
+        if let Some((_, lit)) = focused {
+            let want: Vec<(&str, bool)> = ["XY", "XZ", "YZ"]
+                .iter()
+                .map(|name| (*name, name == lit))
+                .collect();
+            planes_become(&mut h, &record, &want);
+            if !visited.contains(lit) {
+                visited.push(*lit);
+            }
+        }
+    }
+    assert_eq!(visited, ["XY", "XZ", "YZ"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- #487: while a modal asks, nothing behind it takes input ----
+
+// ---- The start page's thumbnails (`silico_app::thumbs`) ----
+
+/// Sessions on the fake kernel that render through the core's stand-in renderer, which
+/// answers each render with `PNG {width}x{height}` and records its scene; each file compared
+/// on disk, and reloaded when it changes, if `watch`.
+fn thumbnailed_with(watch: bool) -> (Fixture, Arc<silico_core::fake::FakeRenderer>) {
+    let dir = tempfile::tempdir().unwrap();
+    let kernel = Arc::new(FakeKernel::new(2).unwrap());
+    let sketches = FakeSketches::new();
+    let renderer = Arc::new(silico_core::fake::FakeRenderer::new());
+    let sessions = stand_in_sessions(&dir, &kernel, &sketches);
+    let sessions = if watch {
+        let now: Clock = Arc::new(Instant::now);
+        sessions
+            .watching_disk(Duration::ZERO, Arc::new(plain_read), now)
+            .unwrap()
+    } else {
+        sessions
+    };
+    let sessions = sessions.rendering(Arc::clone(&renderer));
+    let f = Fixture {
+        dir,
+        kernel,
+        sketches,
+        sessions: Arc::new(sessions),
+    };
+    (f, renderer)
+}
+
+/// [`thumbnailed_with`], not watching the disk.
+fn thumbnailed() -> (Fixture, Arc<silico_core::fake::FakeRenderer>) {
+    thumbnailed_with(false)
+}
+
+impl Fixture {
+    /// Where these tests keep the thumbnails: beside the recent documents, not yet made.
+    fn thumbs_folder(&self) -> PathBuf {
+        self.dir.path().join("app-data").join("thumbnails")
+    }
+
+    /// The app keeping its recent documents and their thumbnails, the list read.
+    fn thumbnailing(&self) -> AppHarness {
+        let (file, folder) = (self.recents_file(), self.thumbs_folder());
+        let mut h = self.app_made(|app| {
+            app.remembering(Recents::at(file))
+                .thumbnailing(silico_app::thumbs::Thumbs::at(folder))
+        });
+        recents_read(&mut h);
+        h
+    }
+
+    /// The list of recent documents written as `paths`, before the app reads it.
+    fn listing(&self, paths: &[&Path]) {
+        std::fs::create_dir_all(self.recents_file().parent().unwrap()).unwrap();
+        let lines: Vec<&str> = paths.iter().map(|path| path.to_str().unwrap()).collect();
+        std::fs::write(
+            self.recents_file(),
+            format!("silico recent-documents 1\n{}\n", lines.join("\n")),
+        )
+        .unwrap();
+    }
+
+    /// The names of the files in the thumbnails' folder, sorted: none before it's made.
+    fn thumb_files(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.thumbs_folder()) else {
+            return Vec::new();
+        };
+        let mut names: Vec<String> = entries
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+/// The name a thumbnail of `bytes` is kept by: their SHA-256 in lower-case hex, `.png`.
+fn thumb_of(bytes: &[u8]) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::digest(bytes);
+    let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{hex}.png")
+}
+
+/// The app's thumbnails.
+fn thumbs(h: &AppHarness) -> &silico_app::thumbs::Thumbs {
+    h.state().thumbs().unwrap()
+}
+
+/// A PNG, 260 by 160, of one colour, as the png crate encodes it.
+fn plain_png(rgb: [u8; 3]) -> Vec<u8> {
+    let (width, height) = (260, 160);
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, width, height);
+    encoder.set_color(png::ColorType::Rgb);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().unwrap();
+    let data: Vec<u8> = (0..width * height).flat_map(|_| rgb).collect();
+    writer.write_image_data(&data).unwrap();
+    writer.finish().unwrap();
+    out
+}
+
+/// The picture in the thumbnail's place of the recent document `name`'s row, if one is drawn
+/// there: the texture of a rectangle filling the place inside its 1-point border.
+fn thumb_drawn(h: &AppHarness, name: &str) -> Option<eframe::egui::TextureId> {
+    use silico_app::theme;
+    let row = h.get_by_role_and_label(Role::Button, name).rect();
+    // `.recent-row`'s 6 in from its left, 52 by 40 on its middle; its border 1 wide.
+    let thumb = eframe::egui::Rect::from_min_size(
+        eframe::egui::pos2(row.left() + 6.0, row.center().y - 20.0),
+        eframe::egui::vec2(52.0, 40.0),
+    );
+    let inside = thumb.shrink(1.0);
+    assert_eq!(
+        (theme::START_RECENT_PADDING_LEFT, theme::START_THUMB_WIDTH),
+        (6.0, 52.0)
+    );
+    shapes_painted(h).into_iter().find_map(|shape| match shape {
+        eframe::egui::Shape::Rect(rect)
+            if (rect.rect.min - inside.min).length() < 1e-3
+                && (rect.rect.max - inside.max).length() < 1e-3 =>
+        {
+            rect.brush.map(|brush| brush.fill_texture_id)
+        }
+        _ => None,
+    })
+}
+
+/// The app bar's Home clicked: the start page shown over the tabs.
+fn home_shown(h: &mut AppHarness) {
+    home_button(h).click();
+    step_until(h, "the start page", start_shown);
+}
+
+/// The tab `name` closed by its Close, and gone.
+fn closed(h: &mut AppHarness, name: &str) {
+    h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
+        .click();
+    step_until(h, "the tab closed", |h| {
+        h.state().tabs().iter().all(|tab| tab.name() != name)
+    });
+}
+
+/// `n` frames stepped: time for anything that would be sent to be sent and answered.
+fn frames(h: &mut AppHarness, n: usize) {
+    for _ in 0..n {
+        step(h);
+    }
+}
+
+/// `n` frames stepped 10 ms apart: time too for the thumbnails' thread, and the commands, to
+/// answer what any of them asked.
+fn paced_frames(h: &mut AppHarness, n: usize) {
+    for _ in 0..n {
+        step(h);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn saves_and_reloads_with_the_start_page_hidden_draw_nothing_and_closing_draws_once() {
+    let (f, renderer) = thumbnailed_with(true);
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    // Saved twice, each a revision built outside a transaction: nothing drawn.
+    for (from, to) in [("Hole", "Bore"), ("Bore", "Drill")] {
+        f2_typed(&mut h, from, to);
+        h.key_press(Key::Enter);
+        step_until(&mut h, "renamed", |h| {
+            h.state().tabs()[0].edits.idle() && shows(h, "Timeline", to)
+        });
+        let saves = h.state().tabs()[0].saves;
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, Key::S);
+        step_until(&mut h, "saved", |h| {
+            let tab = &h.state().tabs()[0];
+            tab.saves == saves + 1 && !tab.unsettled() && !tab.transaction
+        });
+        frames(&mut h, 10);
+    }
+    // Changed on disk twice by another program, each reloaded: nothing drawn.
+    for note in ["An agent's first edit", "An agent's second edit"] {
+        let text = EXAMPLE.replace("Clearance for an M5 bolt", note);
+        std::fs::write(&path, &text).unwrap();
+        step_until(&mut h, "reloaded", |h| {
+            text_of(&f.sessions, h) == text
+                && h.state().tabs()[0].published == Some(h.state().tabs()[0].revision)
+        });
+        frames(&mut h, 10);
+    }
+    assert!(
+        renderer.sent().is_empty(),
+        "nothing drawn with the start page hidden"
+    );
+    // Closed: drawn once, as the file holds it, from Home's view at 260 by 160.
+    closed(&mut h, "block.silico");
+    let bytes = std::fs::read(&path).unwrap();
+    assert!(String::from_utf8_lossy(&bytes).contains("An agent's second edit"));
+    step_until(&mut h, "its thumbnail kept", |_| {
+        f.thumb_files() == [thumb_of(&bytes)]
+    });
+    assert_eq!(
+        std::fs::read(f.thumbs_folder().join(thumb_of(&bytes))).unwrap(),
+        b"PNG 260x160"
+    );
+    frames(&mut h, 10);
+    let sent = renderer.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!((sent[0].width, sent[0].height), (260, 160));
+    // Home's view, the top, front, right corner: the eye on (1, -1, 1) from the target.
+    let camera = &sent[0].camera;
+    let toward: Vec<f64> = (0..3).map(|i| camera.eye[i] - camera.target[i]).collect();
+    let length = toward.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let corner = 1.0 / 3.0f64.sqrt();
+    for (got, want) in toward.iter().zip([corner, -corner, corner]) {
+        assert!((got / length - want).abs() < 1e-12, "{toward:?}");
+    }
+    assert_eq!(thumbs(&h).renders_written, 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn showing_home_draws_each_open_tab_once_and_closing_it_then_draws_nothing_more() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    frames(&mut h, 10);
+    assert!(renderer.sent().is_empty(), "nothing drawn as it opens");
+    home_shown(&mut h);
+    step_until(&mut h, "its thumbnail kept", |h| {
+        thumbs(h).renders_written == 1 && f.thumb_files() == [thumb_of(EXAMPLE.as_bytes())]
+    });
+    frames(&mut h, 20);
+    assert_eq!(
+        renderer.sent().len(),
+        1,
+        "once while the start page is shown"
+    );
+    // Closed from the app bar, the start page still shown: its revision has its picture.
+    closed(&mut h, "block.silico");
+    frames(&mut h, 20);
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(thumbs(&h).renders_written, 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_part_whose_bytes_have_a_picture_is_not_drawn_again() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    let picture = plain_png([200, 40, 40]);
+    let kept = f.thumbs_folder().join(thumb_of(EXAMPLE.as_bytes()));
+    std::fs::write(&kept, &picture).unwrap();
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "its picture shown", |h| {
+        thumbs(h).picture(path.to_str().unwrap()).is_some()
+    });
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    home_shown(&mut h);
+    step_until(&mut h, "its picture found", |h| {
+        thumbs(h).already_pictured == 1
+    });
+    // Nor as it closes: its revision is known to have one.
+    closed(&mut h, "block.silico");
+    frames(&mut h, 20);
+    assert!(renderer.sent().is_empty());
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert_eq!(std::fs::read(&kept).unwrap(), picture);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_shows_a_parts_picture_only_for_the_bytes_it_was_drawn_from() {
+    let (f, renderer) = thumbnailed();
+    let drawn = f.file("drawn.silico", EXAMPLE);
+    let corrupt = f.file("corrupt.silico", TWO_BOXES);
+    let bare = f.file("bare.silico", A_BOX);
+    let gone = f.dir.path().join("gone.silico");
+    let folder = f.thumbs_folder();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join(thumb_of(EXAMPLE.as_bytes())),
+        plain_png([200, 40, 40]),
+    )
+    .unwrap();
+    // A corrupt picture: a PNG's signature, then nothing a PNG is.
+    std::fs::write(
+        folder.join(thumb_of(TWO_BOXES.as_bytes())),
+        b"\x89PNG\r\n\x1a\nnot the rest of one",
+    )
+    .unwrap();
+    f.listing(&[&drawn, &corrupt, &bare, &gone]);
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "the drawn part's picture", |h| {
+        thumbs(h).picture(drawn.to_str().unwrap()).is_some()
+    });
+    step(&mut h);
+    let texture = thumbs(&h).picture(drawn.to_str().unwrap()).unwrap();
+    // The cell inside its border, 50 by 38, at two pixels a point.
+    assert_eq!(texture.size(), [100, 76]);
+    let id = texture.id();
+    assert_eq!(thumb_drawn(&h, "drawn.silico"), Some(id));
+    // The others' icons: a corrupt picture, none, and a document not found.
+    for name in ["corrupt.silico", "bare.silico", "gone.silico"] {
+        assert_eq!(thumb_drawn(&h, name), None, "{name}");
+    }
+    assert!(renderer.sent().is_empty(), "nothing opened, nothing drawn");
+    drop(h);
+    // Changed by another program: its picture is of bytes it no longer has. The next start
+    // shows its icon.
+    std::fs::write(&drawn, SKETCHED_EXAMPLE).unwrap();
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "the pictures looked for", |h| thumbs(h).looks >= 1);
+    step(&mut h);
+    assert!(thumbs(&h).picture(drawn.to_str().unwrap()).is_none());
+    assert_eq!(thumb_drawn(&h, "drawn.silico"), None);
+    // Opened, and the start page shown over it: drawn for the bytes it has now.
+    open_and_wait(&mut h, &drawn);
+    settled(&mut h);
+    home_shown(&mut h);
+    step_until(&mut h, "drawn again", |_| {
+        f.thumb_files()
+            .contains(&thumb_of(SKETCHED_EXAMPLE.as_bytes()))
+    });
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_start_page_looks_again_each_time_it_is_shown() {
+    let (f, _renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    std::fs::write(
+        f.thumbs_folder().join(thumb_of(EXAMPLE.as_bytes())),
+        plain_png([200, 40, 40]),
+    )
+    .unwrap();
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    step_until(&mut h, "its picture shown", |h| {
+        thumbs(h).picture(path.to_str().unwrap()).is_some()
+    });
+    // Opened (the list as it was: it was first already), then changed on disk by another
+    // program while the start page is hidden.
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    std::fs::write(&path, SKETCHED_EXAMPLE).unwrap();
+    frames(&mut h, 10);
+    let looks = thumbs(&h).looks;
+    // Shown again: looked at again, so its picture, of bytes it no longer has, isn't shown.
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    assert!(thumbs(&h).picture(path.to_str().unwrap()).is_none());
+    // Not looked at again while it stays shown, its list the same.
+    let looks = thumbs(&h).looks;
+    paced_frames(&mut h, 20);
+    assert_eq!(thumbs(&h).looks, looks);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_picture_looked_at_again_keeps_its_texture_until_its_documents_bytes_change() {
+    let (f, _renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    std::fs::create_dir_all(f.thumbs_folder()).unwrap();
+    for (text, rgb) in [(EXAMPLE, [200, 40, 40]), (SKETCHED_EXAMPLE, [40, 40, 200])] {
+        std::fs::write(
+            f.thumbs_folder().join(thumb_of(text.as_bytes())),
+            plain_png(rgb),
+        )
+        .unwrap();
+    }
+    f.listing(&[&path]);
+    let mut h = f.thumbnailing();
+    let shown = |h: &AppHarness| {
+        thumbs(h)
+            .picture(path.to_str().unwrap())
+            .map(eframe::egui::TextureHandle::id)
+    };
+    step_until(&mut h, "its picture shown", |h| shown(h).is_some());
+    let first = shown(&h).unwrap();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    // Shown again, its bytes the same: looked at again, its picture's texture kept.
+    let looks = thumbs(&h).looks;
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    assert_eq!(shown(&h), Some(first));
+    // Its bytes changed by another program to those of the other picture kept: that one,
+    // uploaded.
+    std::fs::write(&path, SKETCHED_EXAMPLE).unwrap();
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    let looks = thumbs(&h).looks;
+    home_shown(&mut h);
+    step_until(&mut h, "looked at again", |h| thumbs(h).looks > looks);
+    let second = shown(&h).unwrap();
+    assert_ne!(second, first);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_render_refused_leaves_the_icon_and_says_nothing() {
+    let (f, renderer) = thumbnailed();
+    renderer.fail_with(Error::new(
+        ErrorCode::WorkerCrashed,
+        "the render worker crashed",
+    ));
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    settled(&mut h);
+    home_shown(&mut h);
+    step_until(&mut h, "the refusal taken", |h| {
+        thumbs(h).renders_dropped == 1
+    });
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert!(f.thumb_files().is_empty());
+    assert!(!anywhere(&h, "render worker"));
+    assert!(h.state().tabs()[0].message.is_none());
+    // Not tried again while the start page stays shown, nor while it's hidden; tried again
+    // once it's shown again.
+    paced_frames(&mut h, 20);
+    assert_eq!((renderer.sent().len(), thumbs(&h).renders_dropped), (1, 1));
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the document", |h| !start_shown(h));
+    paced_frames(&mut h, 20);
+    assert_eq!(renderer.sent().len(), 1);
+    home_shown(&mut h);
+    step_until(&mut h, "tried again", |h| thumbs(h).renders_dropped == 2);
+    assert_eq!(renderer.sent().len(), 2);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_untitled_part_is_never_drawn() {
+    let (f, renderer) = thumbnailed();
+    let mut h = f.thumbnailing();
+    new_part(&mut h);
+    settled(&mut h);
+    home_shown(&mut h);
+    frames(&mut h, 20);
+    closed(&mut h, "Untitled");
+    frames(&mut h, 20);
+    let thumbs = thumbs(&h);
+    assert_eq!(
+        (thumbs.renders_written, thumbs.renders_dropped),
+        (0, 0),
+        "no render asked"
+    );
+    assert!(renderer.sent().is_empty());
+    assert!(f.thumb_files().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Frames stepped until every tab's model is built at its revision, nothing of it under way.
+fn all_settled(h: &mut AppHarness) {
+    step_until(h, "every tab settled", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .all(|tab| tab.edits.idle() && !tab.unsettled() && tab.published == Some(tab.revision))
+    });
+}
+
+#[test]
+fn closed_tabs_go_at_once_and_their_pictures_and_closes_follow() {
+    let (f, renderer) = thumbnailed();
+    let names = ["a.silico", "b.silico", "c.silico"];
+    let texts: Vec<String> = names
+        .iter()
+        .map(|name| EXAMPLE.replace("Clearance for an M5 bolt", name))
+        .collect();
+    let paths: Vec<PathBuf> = names
+        .iter()
+        .zip(&texts)
+        .map(|(name, text)| f.file(name, text))
+        .collect();
+    let mut h = f.thumbnailing();
+    for path in &paths {
+        open_and_wait(&mut h, path);
+    }
+    all_settled(&mut h);
+    frames(&mut h, 10);
+    // Every render's meshing held, so no picture can be drawn.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    for name in names {
+        h.get_by_role_and_label(Role::Button, &format!("Close {name}"))
+            .click();
+        // Gone by the next frame, its picture still to draw.
+        step(&mut h);
+        step(&mut h);
+        assert!(
+            h.state().tabs().iter().all(|tab| tab.name() != name),
+            "{name} waited on its picture"
+        );
+    }
+    frames(&mut h, 10);
+    assert!(f.thumb_files().is_empty());
+    assert!(renderer.sent().is_empty());
+    hold.release();
+    let mut want: Vec<String> = texts.iter().map(|text| thumb_of(text.as_bytes())).collect();
+    want.sort();
+    step_until(&mut h, "every picture written", |_| f.thumb_files() == want);
+    assert_eq!(renderer.sent().len(), 3);
+    // And each session closed: each file opens again, which a session holding it refuses.
+    for path in &paths {
+        step_until(&mut h, "its session closed", |_| {
+            let opened = f.sessions.open(path, false).wait();
+            let closes = opened.result.is_ok();
+            if let Ok(opened) = opened.result {
+                f.sessions.close(&opened.session).wait().result.unwrap();
+            }
+            closes
+        });
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_quit_draws_nothing() {
+    let (f, renderer) = thumbnailed();
+    let saved = f.file("saved.silico", EXAMPLE);
+    let edited = f.file(
+        "edited.silico",
+        &EXAMPLE.replace("Clearance for an M5 bolt", "Edited"),
+    );
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &saved);
+    open_and_wait(&mut h, &edited);
+    all_settled(&mut h);
+    step_until(&mut h, "its timeline", |h| shows(h, "Timeline", "Hole"));
+    // The second edited, so the quit asks; the first saved and built.
+    f2_typed(&mut h, "Hole", "Bore");
+    h.key_press(Key::Enter);
+    step_until(&mut h, "renamed", |h| {
+        tab_named(h, "edited.silico").transaction && shows(h, "Timeline", "Bore")
+    });
+    close_window(&mut h);
+    step_until(&mut h, "the question", |h| {
+        h.query_by_label_contains("Save changes before quitting?")
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step_until(&mut h, "every tab closed", |h| h.state().tabs().is_empty());
+    frames(&mut h, 20);
+    assert!(renderer.sent().is_empty(), "a quit drew a picture");
+    assert_eq!(thumbs(&h).renders_written, 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn reopening_a_part_whose_session_is_still_closing_waits_for_the_close_and_then_opens() {
+    let (f, renderer) = thumbnailed();
+    let path = f.file("block.silico", EXAMPLE);
+    let mut h = f.thumbnailing();
+    open_and_wait(&mut h, &path);
+    all_settled(&mut h);
+    frames(&mut h, 10);
+    // Its render's meshing held: its session stays open, drawing, after its tab has gone.
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    closed(&mut h, "block.silico");
+    step_until(&mut h, "listed in Recent", |h| {
+        recent_names(h) == ["block.silico"]
+    });
+    // Clicked in Recent at once: held, not refused, and nothing opened yet.
+    h.get_by_role_and_label(Role::Button, "block.silico")
+        .click();
+    // Long enough for a refusal, which the core gives at once, to be said.
+    let until = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < until {
+        step(&mut h);
+    }
+    assert!(
+        h.state().tabs().is_empty(),
+        "opened before its session closed"
+    );
+    assert_eq!(h.state().message(), None, "the reopen was refused");
+    assert!(f.thumb_files().is_empty());
+    hold.release();
+    step_until(&mut h, "reopened", |h| {
+        h.state()
+            .tabs()
+            .iter()
+            .any(|tab| tab.name() == "block.silico")
+    });
+    assert_eq!(f.thumb_files(), [thumb_of(EXAMPLE.as_bytes())]);
+    assert_eq!(renderer.sent().len(), 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- The command search (S; the prototype audit's item 22) ----
+
+use eframe::egui::{Event, PointerButton, Pos2, Rect};
+
+/// Whether the command search is open.
+fn search_open(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::Dialog, "Search commands")
+        .is_some()
+}
+
+/// The command search's field.
+fn search_field(h: &AppHarness) -> egui_kittest::Node<'_> {
+    h.get_by_role_and_label(Role::TextInput, "Search commands")
+}
+
+/// Whether the command search's field has the keyboard.
+fn search_focused(h: &AppHarness) -> bool {
+    h.query_by_role_and_label(Role::TextInput, "Search commands")
+        .is_some_and(|field| field.accesskit_node().is_focused())
+}
+
+/// S pressed and the search open, its field with the keyboard.
+fn open_search(h: &mut AppHarness) {
+    h.key_press(Key::S);
+    step_until(h, "the search", search_open);
+    step_until(h, "its field focused", search_focused);
+}
+
+/// The search's rows, in order: each one's words (its name, then its group), whether the
+/// keys light it, and whether it's off.
+fn search_rows(h: &AppHarness) -> Vec<(String, bool, bool)> {
+    h.query_all_by_role(Role::ListBoxOption)
+        .map(|row| {
+            let node = row.accesskit_node();
+            (
+                node.label().unwrap_or_default(),
+                node.is_selected() == Some(true),
+                node.is_disabled(),
+            )
+        })
+        .collect()
+}
+
+/// The search's rows' words, in order.
+fn search_words(h: &AppHarness) -> Vec<String> {
+    search_rows(h)
+        .into_iter()
+        .map(|(words, ..)| words)
+        .collect()
+}
+
+/// The row lit by the keys, its words.
+fn search_lit(h: &AppHarness) -> Option<String> {
+    search_rows(h)
+        .into_iter()
+        .find(|(_, lit, _)| *lit)
+        .map(|(words, ..)| words)
+}
+
+/// `text` typed in the search's field, and the list read for it.
+fn search_for(h: &mut AppHarness, text: &str, first: &str) {
+    search_field(h).type_text(text);
+    step_until(h, first, |h| {
+        search_words(h).first().map(String::as_str) == Some(first)
+    });
+}
+
+/// The search's row whose words are `words`.
+fn search_row<'h>(h: &'h AppHarness, words: &'h str) -> egui_kittest::Node<'h> {
+    h.get_by_role_and_label(Role::ListBoxOption, words)
+}
+
+#[test]
+fn s_opens_the_command_search_with_its_field_focused_anywhere_but_while_typing() {
+    let f = fixture();
+    // On the start page.
+    let mut h = f.app();
+    step(&mut h);
+    open_search(&mut h);
+    // Its field's placeholder (the prototype's), and its foot.
+    assert_eq!(
+        search_field(&h).accesskit_node().placeholder(),
+        Some("Search commands")
+    );
+    for words in [
+        "↑↓ move",
+        "↵ run",
+        "Esc close",
+        "Agents reach the same commands over MCP",
+    ] {
+        assert!(
+            h.get_by_role_and_label(Role::Dialog, "Search commands")
+                .query_by_label(words)
+                .is_some(),
+            "{words}"
+        );
+    }
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    // In a document, and not while a field has the keyboard: the S is the field's.
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    name_field(&h).focus();
+    step(&mut h);
+    h.key_press(Key::S);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!search_open(&h), "opened while typing");
+    off_fields(&mut h, "SOLID");
+    open_search(&mut h);
+    // Under it, no shortcut acts: F6 moves no view, and what's typed is the field's (H
+    // hides nothing).
+    let camera = view(&h).camera().clone();
+    h.key_press(Key::F6);
+    search_field(&h).type_text("h");
+    h.key_press(Key::H);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &camera);
+    assert!(h.state().tabs()[0].overrides.is_empty());
+    assert!(search_open(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn s_opens_the_search_in_sketch_mode_and_leaves_sketch_modes_letters_their_own() {
+    use silico_app::sketch::tools::Choice;
+    use silico_core::sketch_tools::ToolKind;
+    let f = fixture();
+    let mut h = triangle_opened(&f);
+    let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
+    assert_eq!(tool(&h), None);
+    open_search(&mut h);
+    // L typed in the field is the field's, not Line's.
+    search_field(&h).type_text("l");
+    h.key_press(Key::L);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tool(&h), None);
+    assert!(search_open(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    // Closed, its field let the keyboard go, and L is Line's again; and the sketch is still
+    // open (Esc closed the search alone).
+    step(&mut h);
+    assert!(!h.ctx.text_edit_focused());
+    assert!(sketch_mode(&h).is_some());
+    h.key_press(Key::L);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(tool(&h), Some(Choice::Draw(ToolKind::Line)));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_search_lists_the_registry_narrowed_by_name_group_or_description() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    open_search(&mut h);
+    // Nothing typed: the registry's first 40 but OK, Cancel, Orbit, Pan, and Zoom, each
+    // its name and its group (app.js's CMD order, the app's registry's).
+    let all = search_words(&h);
+    assert_eq!(all.len(), 40, "{all:?}");
+    assert_eq!(
+        &all[..8],
+        [
+            "New part File",
+            "Open… File",
+            "Save File",
+            "Save As… File",
+            "Close File",
+            "Undo Edit",
+            "Redo Edit",
+            "Search commands Edit",
+        ]
+    );
+    assert_eq!(all[39], "Smart Dimension Sketch");
+    for left_out in ["OK Dialogs", "Cancel Dialogs", "Orbit View", "Pan View"] {
+        assert!(!all.iter().any(|words| words == left_out), "{left_out}");
+    }
+    assert!(!all.iter().any(|words| words.starts_with("Zoom")));
+    // Each row's keys, as the registry names them (kittest's is neither macOS nor Windows).
+    let keys = |h: &AppHarness, words: &str| {
+        search_row(h, words)
+            .accesskit_node()
+            .data()
+            .keyboard_shortcut()
+            .map(str::to_owned)
+    };
+    assert_eq!(keys(&h, "Save As… File").as_deref(), Some("Ctrl+Shift+S"));
+    assert_eq!(keys(&h, "Search commands Edit").as_deref(), Some("S"));
+    assert_eq!(keys(&h, "What's wrong Rebuild"), None);
+    // By name, its case aside: "FIT", Fit alone.
+    search_for(&mut h, "FIT", "Fit View");
+    assert_eq!(search_words(&h), ["Fit View"]);
+    assert_eq!(keys(&h, "Fit View").as_deref(), Some("F6"));
+    // By description alone: "cache" (Rebuild everything's "ignoring the cache").
+    retype(&mut h, In::Window, "Search commands", "cache");
+    step_until(&mut h, "by description", |h| {
+        search_words(h) == ["Rebuild everything Rebuild"]
+    });
+    // By group: Help's one.
+    retype(&mut h, In::Window, "Search commands", "help");
+    step_until(&mut h, "by group", |h| {
+        search_words(h) == ["Keyboard shortcuts Help"]
+    });
+    // Past the 40: Finish Sketch is found by name.
+    retype(&mut h, In::Window, "Search commands", "finish");
+    step_until(&mut h, "finish", |h| {
+        search_words(h) == ["Finish Sketch Sketch"]
+    });
+    // Only a left-out command's name: nothing, said as the prototype's `.mh` says it.
+    retype(&mut h, In::Window, "Search commands", "zoom");
+    step_until(&mut h, "nothing", |h| search_words(h).is_empty());
+    assert!(
+        h.get_by_role_and_label(Role::Dialog, "Search commands")
+            .query_by_label("NO COMMAND MATCHES")
+            .is_some()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_arrows_move_the_highlight_held_to_the_list_and_typing_puts_it_back_on_the_first() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    open_search(&mut h);
+    assert_eq!(search_lit(&h).as_deref(), Some("New part File"));
+    // ↑ on the first stays there.
+    h.key_press(Key::ArrowUp);
+    step(&mut h);
+    assert_eq!(search_lit(&h).as_deref(), Some("New part File"));
+    // ↓ three times: the fourth.
+    for _ in 0..3 {
+        h.key_press(Key::ArrowDown);
+        step(&mut h);
+    }
+    assert_eq!(search_lit(&h).as_deref(), Some("Save As… File"));
+    h.key_press(Key::ArrowUp);
+    step(&mut h);
+    assert_eq!(search_lit(&h).as_deref(), Some("Save File"));
+    // Typing: the first again. "save" lists Save and Save As…; ↓ past the last stays on it.
+    search_for(&mut h, "save", "Save File");
+    assert_eq!(search_words(&h), ["Save File", "Save As… File"]);
+    assert_eq!(search_lit(&h).as_deref(), Some("Save File"));
+    for _ in 0..4 {
+        h.key_press(Key::ArrowDown);
+        step(&mut h);
+    }
+    assert_eq!(search_lit(&h).as_deref(), Some("Save As… File"));
+    // Held there, so ↑ goes straight back to the first.
+    h.key_press(Key::ArrowUp);
+    step(&mut h);
+    assert_eq!(search_lit(&h).as_deref(), Some("Save File"));
+    // The field kept the keyboard throughout.
+    assert!(search_focused(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn enter_runs_the_highlighted_command_as_its_keys_do_and_closes_the_search() {
+    let f = fixture();
+    let (mut h, _record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    // F6's view, from a view moved off.
+    panned(&mut h);
+    let moved = view(&h).camera().clone();
+    h.key_press(Key::F6);
+    step(&mut h);
+    let fitted = view(&h).camera().clone();
+    assert_ne!(fitted, moved, "F6 moved nothing");
+    // From the same view moved off, Fit run from the search: the same view, the search
+    // closed.
+    view_mut(&mut h).set_camera(moved.clone());
+    step(&mut h);
+    open_search(&mut h);
+    search_for(&mut h, "fit", "Fit View");
+    h.key_press(Key::Enter);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &fitted);
+    // The field let the keyboard go: a key after is a command's again (F6, from moved off).
+    assert!(!h.ctx.text_edit_focused());
+    view_mut(&mut h).set_camera(moved);
+    step(&mut h);
+    h.key_press(Key::F6);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &fitted);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_runs_a_row_a_command_with_no_keys_too() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    let faces = |h: &AppHarness| h.state().tabs()[0].selection().filter.faces;
+    assert!(faces(&h));
+    // Faces, by a click: toggled as X toggles it.
+    open_search(&mut h);
+    search_for(&mut h, "faces", "Faces Selection");
+    search_row(&h, "Faces Selection").click();
+    step_until(&mut h, "closed", |h| !search_open(h));
+    step(&mut h);
+    step(&mut h);
+    assert!(!faces(&h));
+    // Suppress, which has no keys: the selected feature suppressed, as its menu item does.
+    select(&mut h, "Pin");
+    pointer_away(&mut h);
+    open_search(&mut h);
+    search_for(&mut h, "suppress", "Suppress Edit");
+    search_row(&h, "Suppress Edit").click();
+    step_until(&mut h, "closed", |h| !search_open(h));
+    step_until(&mut h, "suppressed", |h| {
+        said_done(h, "Suppressed").as_deref()
+            == Some("Suppressed Pin, and Hole, which depends on it")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_command_that_cant_run_is_listed_off_and_runs_neither_by_enter_nor_by_a_click() {
+    let f = fixture();
+    // The start page: New, Open, the search, and the sheet run; a document's are off, saying
+    // why.
+    let mut h = f.app();
+    step(&mut h);
+    open_search(&mut h);
+    let off = |h: &AppHarness, words: &str| search_row(h, words).accesskit_node().is_disabled();
+    let why = |h: &AppHarness, words: &str| search_row(h, words).accesskit_node().description();
+    assert!(!off(&h, "New part File"));
+    assert!(!off(&h, "Open… File"));
+    assert!(!off(&h, "Search commands Edit"));
+    assert!(off(&h, "Save File"));
+    assert_eq!(why(&h, "Save File").as_deref(), Some("No document open"));
+    assert!(off(&h, "Fit View"));
+    // Enter on New part, which runs: an untitled part, as Ctrl+N makes it.
+    h.key_press(Key::Enter);
+    step_until(&mut h, "the untitled part", |h| h.state().tabs().len() == 1);
+    assert!(!search_open(&h));
+    // In a document with nothing to undo, none wrong, and no sketch open: Undo is off
+    // (its button's look, no words), What's wrong off saying so, Line off.
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    settled(&mut h);
+    assert!(
+        h.get_by_role_and_label(Role::Button, "Undo")
+            .accesskit_node()
+            .is_disabled()
+    );
+    open_search(&mut h);
+    search_for(&mut h, "undo", "Undo Edit");
+    assert_eq!(search_rows(&h), [("Undo Edit".to_owned(), true, true)]);
+    assert_eq!(why(&h, "Undo Edit"), None);
+    // Enter on it: nothing run, the search still open.
+    h.key_press(Key::Enter);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(search_open(&h));
+    // A click on it: the same.
+    search_row(&h, "Undo Edit").click();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(search_open(&h));
+    // Find in browser for the pin, which the hole consumes: off, with its menu item's
+    // reason, and a click runs nothing.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    select(&mut h, "Pin");
+    pointer_away(&mut h);
+    open_search(&mut h);
+    search_for(&mut h, "find in", "Find in browser Edit");
+    assert!(off(&h, "Find in browser Edit"));
+    assert_eq!(
+        why(&h, "Find in browser Edit").as_deref(),
+        Some("It's inside a body: the browser lists bodies and sketches")
+    );
+    assert!(!off(&h, "Find in timeline Edit"));
+    let selected_in = h.state().tabs()[0].selected_in;
+    search_row(&h, "Find in browser Edit").click();
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(search_open(&h));
+    assert_eq!(h.state().tabs()[0].selected_in, selected_in);
+    // "line": Find in timeline's name, Line's, and Smart Dimension's description ("Pick a
+    // line"); the sketch's two off with no sketch open.
+    retype(&mut h, In::Window, "Search commands", "line");
+    step_until(&mut h, "Line", |h| {
+        search_words(h)
+            == [
+                "Find in timeline Edit",
+                "Line Sketch",
+                "Smart Dimension Sketch",
+            ]
+    });
+    assert!(off(&h, "Line Sketch"));
+    assert!(off(&h, "Smart Dimension Sketch"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn esc_or_a_click_on_the_backdrop_closes_the_search_running_nothing() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    open_search(&mut h);
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed by Esc", |h| !search_open(h));
+    // Esc was the search's alone: the selection stays.
+    step(&mut h);
+    assert!(!h.state().tabs()[0].selection().is_empty());
+    assert!(!h.ctx.text_edit_focused());
+    open_search(&mut h);
+    // A click on the backdrop, 20 left of the box and 20 under it: over the browser, whose
+    // row there is never reached.
+    let rect = h
+        .get_by_role_and_label(Role::Dialog, "Search commands")
+        .rect();
+    let at = Pos2::new(rect.left() - 20.0, rect.bottom() + 20.0);
+    h.event(Event::PointerMoved(at));
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+    }
+    step_until(&mut h, "closed by the backdrop", |h| !search_open(h));
+    step(&mut h);
+    assert!(!h.state().tabs()[0].selection().is_empty());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_search_is_520_wide_96_from_the_top_centred_and_as_high_as_its_parts() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    open_search(&mut h);
+    search_for(&mut h, "fit", "Fit View");
+    step(&mut h);
+    // `.palette-modal` in the 1280 by 800 window: 520 wide, its border in it, at (1280 −
+    // 520) / 2 = 380, 96 down. One row: the 1 border, the field's 38, the list's 4 + 28 +
+    // 4, the foot's 1 + 6 + 16 + 6, and the 1 border: 105.
+    let rect = h
+        .get_by_role_and_label(Role::Dialog, "Search commands")
+        .rect();
+    assert_eq!(
+        rect,
+        Rect::from_min_size(Pos2::new(380.0, 96.0), eframe::egui::vec2(520.0, 105.0))
+    );
+    // Its row: 28 high, 4 in from the box's border, under the field's 38.
+    let row = search_row(&h, "Fit View").rect();
+    assert_eq!(
+        row,
+        Rect::from_min_size(Pos2::new(385.0, 139.0), eframe::egui::vec2(510.0, 28.0))
+    );
+    // Every row listed, opened again: the list held to 340, so 1 + 38 + 340 + 29 + 1 = 409.
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    step(&mut h);
+    open_search(&mut h);
+    step_until(&mut h, "every row", |h| search_words(h).len() == 40);
+    step(&mut h);
+    let rect = h
+        .get_by_role_and_label(Role::Dialog, "Search commands")
+        .rect();
+    assert_eq!(
+        rect,
+        Rect::from_min_size(Pos2::new(380.0, 96.0), eframe::egui::vec2(520.0, 409.0))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether the search's row `words` is off, and its reason, if it says one.
+fn search_off(h: &AppHarness, words: &str) -> (bool, Option<String>) {
+    let row = search_row(h, words).accesskit_node();
+    (row.is_disabled(), row.description())
+}
+
+/// `text` typed over in the search's field, and the list read for it, `words` a row of it.
+fn search_retyped(h: &mut AppHarness, text: &str, words: &str) {
+    retype(h, In::Window, "Search commands", text);
+    step_until(h, words, |h| search_words(h).iter().any(|row| row == words));
+}
+
+/// Whether the feature menu headed `head` is open (its head outside the panes).
+fn feature_menu_open(h: &AppHarness, head: &str) -> bool {
+    h.query_all_by_label(head)
+        .any(|node| !in_pane(&node, "Browser") && !in_pane(&node, "Timeline"))
+}
+
+#[test]
+fn the_searchs_rows_are_off_by_their_buttons_menus_and_keys_rules_with_their_words() {
+    use silico_app::whats_wrong::NOTHING_WRONG;
+    let f = fixture();
+    // An empty part: nothing wrong, nothing running, nothing selected.
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step_until(&mut h, "its timeline", |h| {
+        h.state().tabs()[0].timeline.is_some()
+    });
+    settled(&mut h);
+    open_search(&mut h);
+    search_retyped(&mut h, "what", "What's wrong Rebuild");
+    assert_eq!(
+        search_off(&h, "What's wrong Rebuild"),
+        (true, Some(NOTHING_WRONG.to_owned()))
+    );
+    search_retyped(&mut h, "stop", "Stop rebuild Rebuild");
+    assert_eq!(search_off(&h, "Stop rebuild Rebuild"), (true, None));
+    search_retyped(&mut h, "clear", "Clear selection Selection");
+    assert_eq!(search_off(&h, "Clear selection Selection"), (true, None));
+    // Hide with nothing selected, and Look At saying what its key says.
+    search_retyped(&mut h, "hide", "Hide or show Selection");
+    assert_eq!(search_off(&h, "Hide or show Selection"), (true, None));
+    search_retyped(&mut h, "look", "Look At View");
+    assert_eq!(
+        search_off(&h, "Look At View"),
+        (true, Some(silico_app::tab::LOOK_AT_NO_FACE.to_owned()))
+    );
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    // In sketch mode, the sketch selected: Rename off with its menu's reason; Del, with
+    // nothing of the sketch selected, deletes nothing.
+    let mut h = triangle_in_sketch_mode(&f);
+    open_search(&mut h);
+    search_retyped(&mut h, "rename", "Rename Edit");
+    assert_eq!(
+        search_off(&h, "Rename Edit"),
+        (true, Some("Finish or cancel the sketch first".to_owned()))
+    );
+    search_retyped(&mut h, "delete", "Delete Edit");
+    assert_eq!(search_off(&h, "Delete Edit"), (true, None));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "closed", |h| !search_open(h));
+    // A dialog open: Reload off, saying what its key's toast says.
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    open_pad_on_triangle(&mut h);
+    added(&mut h);
+    // Its preview built and every answer in, so nothing takes the keyboard after this.
+    settled(&mut h);
+    if h.ctx.text_edit_focused() {
+        h.get_by_role_and_label(Role::Tab, "SOLID").click();
+        step(&mut h);
+        step(&mut h);
+    }
+    assert!(!h.ctx.text_edit_focused());
+    open_search(&mut h);
+    search_retyped(&mut h, "reload", "Reload Rebuild");
+    assert_eq!(
+        search_off(&h, "Reload Rebuild"),
+        (true, Some(silico_app::app::RELOAD_IN_DIALOG.to_owned()))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn suppress_reads_unsuppress_for_a_suppressed_feature_and_unsuppresses_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    menu_on(&mut h, "Timeline", "Pin");
+    menu_click(&mut h, "PIN", "Suppress");
+    step_until(&mut h, "suppressed", |h| {
+        said_done(h, "Suppressed").as_deref()
+            == Some("Suppressed Pin, and Hole, which depends on it")
+    });
+    settled(&mut h);
+    select(&mut h, "Pin");
+    pointer_away(&mut h);
+    open_search(&mut h);
+    // Found by the word it shows, as the Pin's menu names it.
+    search_for(&mut h, "unsupp", "Unsuppress Edit");
+    assert_eq!(search_words(&h), ["Unsuppress Edit"]);
+    search_row(&h, "Unsuppress Edit").click();
+    step_until(&mut h, "closed", |h| !search_open(h));
+    // The pin unsuppressed, the hole, which needs it, left suppressed (unsuppressing brings
+    // back what a feature needs, not what needs it).
+    step_until(&mut h, "unsuppressed", |h| {
+        said_done(h, "Unsuppressed").is_some_and(|said| said.starts_with("Unsuppressed Pin"))
+    });
+    settled(&mut h);
+    let text = text_of(&f.sessions, &h);
+    assert!(
+        !text.contains(r#""name": "Pin", "suppressed": true"#),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#""name": "Hole", "suppressed": true"#),
+        "{text}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn s_opens_nothing_over_a_menu_select_other_or_sketch_modes_menu_and_a_question_closes_it() {
+    let f = fixture();
+    // A feature's right-click menu: S is no command under it.
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    menu_on(&mut h, "Timeline", "Pin");
+    assert!(feature_menu_open(&h, "PIN"));
+    h.key_press(Key::S);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!search_open(&h), "opened over the feature's menu");
+    assert!(feature_menu_open(&h, "PIN"));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !feature_menu_open(h, "PIN"));
+    // A question coming while it's open (the window closed with an edit unsaved) closes it.
+    select(&mut h, "Pin");
+    renamed(&mut h, "K", "PinK");
+    h.get_by_role_and_label(Role::Tab, "SOLID").click();
+    step(&mut h);
+    step(&mut h);
+    open_search(&mut h);
+    close_window(&mut h);
+    step_until(&mut h, "the question, the search closed", |h| {
+        anywhere(h, "Don't save") && !search_open(h)
+    });
+    drop(h);
+    // Select Other's list.
+    let (mut h, _record) = box_from_above(&f);
+    let at = above_at(&h, 40.0, 10.0, [-2.0, 0.0]);
+    list_at(&mut h, at, "4 under the pointer");
+    h.key_press(Key::S);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!search_open(&h), "opened over Select Other");
+    assert!(select_other(&h).is_open());
+    drop(h);
+    // Sketch mode's canvas menu.
+    let mut h = triangle_in_sketch_mode(&f);
+    open_menu(&f, &mut h, 20.0, 20.0);
+    h.key_press(Key::S);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!search_open(&h), "opened over the sketch's menu");
+    assert!(sketch_menu(&h).is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn s_opens_nothing_over_the_over_define_prompt_and_an_offer_closes_the_search() {
+    use silico_app::sketch::dimension::ModifyAction;
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    fully_defined(&f, &mut h);
+    // The search open while an over-defining dimension's edit is out: the offer that
+    // comes closes it. Every solve held from before the edit, so its offer, which comes of
+    // the solve's diagnosis, can't come before the search opens; then let go.
+    dimension_at(&f, &mut h, [40.0, 10.0], [60.0, 10.0], "20");
+    modify_dimension(&f, &mut h, ModifyAction::Typed("30".to_owned()));
+    f.sketches.hold();
+    modify_dimension(&f, &mut h, ModifyAction::Accept);
+    h.key_press(Key::S);
+    step_until(&mut h, "the search", search_open);
+    assert!(prompt(&h).is_none());
+    assert!(sketch_mode(&h).is_some_and(|mode| mode.offer().is_none()));
+    f.sketches.release();
+    settled(&mut h);
+    read_with_constraints(&mut h, 9);
+    step_until(&mut h, "the prompt, the search closed", |h| {
+        prompt(h).is_some() && !search_open(h)
+    });
+    // Over the prompt, S opens nothing, and what's typed after is the prompt's: 1 is Make it
+    // driven, as the prompt's key.
+    let sent = h.state().tabs()[0].sent.len();
+    h.key_press(Key::S);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!search_open(&h), "opened over the prompt");
+    assert!(prompt(&h).is_some());
+    assert_eq!(
+        h.state().tabs()[0].sent.len(),
+        sent,
+        "S answered the prompt"
+    );
+    h.key_press(Key::Num1);
+    settled(&mut h);
+    assert!(
+        matches!(h.state().tabs()[0].sent.last(), Some(Sent::Edit(field)) if field.ends_with(".driving")),
+        "{:?}",
+        h.state().tabs()[0].sent.last()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn behind_the_command_search_the_window_takes_no_click_until_esc_closes_it() {
+    // #487's rule for the search too, one of the modals: the window behind it inert, the
+    // timeline's items off in the accessibility tree and an agent's click on one selecting
+    // nothing, until it closes.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Block"));
+    open_search(&mut h);
+    item_takes_no_click(&mut h, "Block", false);
+    assert!(search_open(&h));
+    assert!(search_focused(&h));
+    h.key_press(Key::Escape);
+    step_until(&mut h, "the search closed", |h| !search_open(h));
+    item_takes_a_click(&mut h, "Block", "k7f2qx3m");
     assert_eq!(never_waits::waits(), 0);
 }

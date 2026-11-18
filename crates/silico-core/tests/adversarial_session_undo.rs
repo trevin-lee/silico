@@ -52,7 +52,7 @@ fn fingerprint(length: u32) -> String {
 /// written by hand from M2.1's layout.
 fn canonical(length: u32, fingerprint: &str) -> String {
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n    {{\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": {length},\n      \"width\": 20,\n      \"height\": 10,\n      {fingerprint}\n    }}\n  ]\n}}\n"
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n    {{\n      \"id\": \"k7f2qx3m\",\n      \"type\": \"box\",\n      \"v\": 1,\n      \"name\": \"Block\",\n      \"position\": [0, 0, 0],\n      \"length\": {length},\n      \"width\": 20,\n      \"height\": 10,\n      {fingerprint}\n    }}\n  ]\n}}\n"
     )
 }
 

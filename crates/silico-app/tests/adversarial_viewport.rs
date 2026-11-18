@@ -33,12 +33,12 @@ use silico_protocol::{Camera, MAX_RENDER_SIDE, Mesh, Projection};
 use tempfile::TempDir;
 use ui::{
     ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT, In, PLATE, PLATE_END,
-    TRIAD_DOT, TWO_BOXES, advance, arrow_dots, arrow_shafts, body_of, button_event, dialog_open,
-    drag, edit_plates_pad, failing_kernel, field, from_the_front, hand_clock, hover_item,
-    image_centre, left_down_at, left_up_at, looks_from, meshes_settled, meshes_settled_in, move_to,
-    near_point, pad_extent, pads_extent, plates_pad_from_the_front, repaint_delay, reversed_ticked,
-    settled, stand_in_sessions, step, step_until, tessellated, the_viewport, triad_origin, up,
-    view, view_label, view_mut,
+    TRIAD_DOT, TWO_BOXES, advance, apply_look, arrow_dots, arrow_shafts, body_of, button_event,
+    dialog_open, drag, edit_plates_pad, failing_kernel, field, from_the_front, hand_clock,
+    hover_item, image_centre, left_down_at, left_up_at, looks_from, meshes_settled,
+    meshes_settled_in, move_to, near_point, pad_extent, pads_extent, plates_pad_from_the_front,
+    repaint_delay, reversed_ticked, settled, stand_in_sessions, step, step_until, tessellated,
+    the_viewport, triad_origin, up, view, view_label, view_mut,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -213,7 +213,7 @@ impl Fixture {
                 .with_size(size)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         let path = self.file(name, text);
         h.state_mut().open(&path, false);
         (h, record)
@@ -532,7 +532,7 @@ impl Fixture {
                 .with_step_dt(1.0 / 60.0)
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
-        silico_app::theme::apply(&h.ctx);
+        apply_look(&h);
         let path = self.file(name, text);
         h.state_mut().open(&path, false);
         (h, record)
@@ -1157,7 +1157,7 @@ fn a_pick_answered_two_frames_late_across_a_renumber_is_taken_only_by_its_own_ta
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     let path = f.file("a.silico", EXAMPLE);
     h.state_mut().open(&path, false);
     meshes_settled(&mut h);
@@ -1740,7 +1740,7 @@ fn a_renderer_backing_off_has_the_pane_ask_for_each_frame_at_once_until_it_stops
             .with_size((1280.0, 800.0))
             .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
     };
-    silico_app::theme::apply(&h.ctx);
+    apply_look(&h);
     let path = f.file("boxes.silico", TWO_BOXES);
     h.state_mut().open(&path, false);
     meshes_settled(&mut h);
@@ -1783,7 +1783,7 @@ fn huge_sketch(circles: usize) -> String {
         r#"{{
   "silico": 1,
   "units": {{"length": "mm", "resolution": "1nm"}},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {{"id": "s0000001", "type": "sketch", "v": 1, "name": "Huge", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": 0, "construction": false}}], "lines": [], "circles": [{}], "arcs": [], "constraints": []}}
   ]
@@ -1811,7 +1811,7 @@ fn huge_sketches(sketches: usize, circles: usize) -> String {
     };
     let features: Vec<String> = (1..=sketches).map(sketch).collect();
     format!(
-        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 5,\n  \"features\": [\n{}\n  ]\n}}\n",
+        "{{\n  \"silico\": 1,\n  \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}},\n  \"naming\": 6,\n  \"features\": [\n{}\n  ]\n}}\n",
         features.join(",\n")
     )
 }
@@ -2189,7 +2189,7 @@ fn a_view_changed_every_frame_is_named_by_the_label_of_the_frame_that_draws_it()
     assert!(looks_from(&drawn(&record), [0.0, 0.0, 1.0]));
     assert_eq!(view_label(&h), "Orthographic · Top");
     // The cube's top front edge, clickable from the top: its view, between the top's and
-    // the front's, is unnamed.
+    // the front's, is the core's top_front, which the label doesn't name.
     h.get_by_role_and_label(egui::accesskit::Role::Group, "ViewCube")
         .get_by_label("Top front")
         .click();
@@ -2381,7 +2381,7 @@ fn a_camera_that_makes_no_frame_draws_no_triad_and_the_label_says_the_projection
 const SMALL_ALONE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Small", "position": [0, 0, 0], "length": 50, "width": 50, "height": 50}
   ]
@@ -2392,7 +2392,7 @@ const SMALL_ALONE: &str = r#"{
 const LARGE_ALONE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "a91cw0de", "type": "box", "v": 1, "name": "Large", "position": [2000, 0, 0], "length": 1000, "width": 1000, "height": 1000}
   ]
@@ -3160,7 +3160,7 @@ fn seen_end_on_no_arrow_is_drawn_and_a_drag_where_it_would_be_changes_nothing() 
 const OPEN_PROFILE: &str = r#"{
   "silico": 1,
   "units": {"length": "mm", "resolution": "1nm"},
-  "naming": 5,
+  "naming": 6,
   "features": [
     {"id": "s0000001", "type": "sketch", "v": 1, "name": "Plate", "plane": "xy", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}], "circles": [], "arcs": [], "constraints": []},
     {"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 10, "reversed": false}}

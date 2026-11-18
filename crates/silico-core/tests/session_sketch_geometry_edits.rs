@@ -864,9 +864,12 @@ fn the_designs_unjoin_then_merge_on_the_bracket_are_their_results_and_refusals()
         "{envelope}"
     );
     assert_eq!(envelope["session"]["revision"], 14);
-    // The document is the one the unjoin began from, in canonical form.
+    // The document is the one the unjoin began from, in canonical form, written under
+    // scheme 6 as every save is (N10).
     let text: Value = serde_json::from_str(&f.text()).unwrap();
-    assert_eq!(text, serde_json::from_str::<Value>(&opened).unwrap());
+    let mut began = serde_json::from_str::<Value>(&opened).unwrap();
+    began["naming"] = json!(6);
+    assert_eq!(text, began);
 }
 
 #[test]

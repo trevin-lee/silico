@@ -150,6 +150,7 @@ pub(crate) fn styled_button(
     // Painted at the bar's opacity, not faded further when off: `.ab-btn:disabled` is
     // Gray.400 itself.
     let opacity = ui.opacity();
+    let own = enabled;
     ui.add_enabled(enabled, |ui: &mut Ui| {
         ui.set_opacity(opacity);
         let galley = text.map(|text| {
@@ -171,8 +172,9 @@ pub(crate) fn styled_button(
             return response;
         }
         // `.ab-btn:hover:not(:disabled)` outweighs `.ab-btn.on` (a class and two
-        // pseudo-classes to two classes), so a hovered button takes hovered's fill.
-        let (fill, color) = if !enabled {
+        // pseudo-classes to two classes), so a hovered button takes hovered's fill. Behind a
+        // modal, drawn as its own flag has it (#487).
+        let (fill, color) = if !crate::modal::looks_on(ui, own) {
             (None, theme::TEXT_DISABLED)
         } else if response.hovered() {
             (Some(theme::APP_BAR_BUTTON_HOVER_BG), theme::TEXT_STRONG)
@@ -581,12 +583,30 @@ fn paint_tab(
     );
 }
 
-/// The open documents' tabs, laid out by `add` in a row that scrolls across, by the wheel
-/// or a trackpad, when they're wider than the room left in the bar, rather than squeezing
-/// them; the shown tab's fill may run one point below the row, over the bar's border.
+/// An app bar button holding an icon alone: 14 in 5 of padding at each side.
+const ICON_BUTTON_WIDTH: f32 = ICON_SIZE + 2.0 * theme::APP_BAR_BUTTON_PADDING;
+
+/// The bar's two buttons at its right (`.ab-right`): Search commands and Keyboard
+/// shortcuts, 2 apart (its `gap`).
+pub(crate) const RIGHT_GROUP_WIDTH: f32 = 2.0 * ICON_BUTTON_WIDTH + theme::APP_BAR_ITEM_SPACING;
+
+/// What the bar keeps after the tabs, the spacer at its least: the gap after them, New
+/// part's margin and its button, the gap after it, the group at the right, and the bar's
+/// padding.
+const AFTER_TABS: f32 = theme::APP_BAR_ITEM_SPACING
+    + theme::APP_BAR_NEW_MARGIN
+    + ICON_BUTTON_WIDTH
+    + theme::APP_BAR_ITEM_SPACING
+    + RIGHT_GROUP_WIDTH
+    + theme::APP_BAR_PADDING;
+
+/// The open documents' tabs, laid out by `add` in a row as wide as they are, which scrolls
+/// across, by the wheel or a trackpad, when they're wider than the room left in the bar
+/// (what's after them kept, [`AFTER_TABS`]), rather than squeezing them; the shown tab's
+/// fill may run one point below the row, over the bar's border.
 pub(crate) fn tab_strip<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
     let room = Vec2::new(
-        (ui.available_width() - theme::APP_BAR_PADDING).max(0.0),
+        (ui.available_width() - AFTER_TABS).max(0.0),
         ui.available_height(),
     );
     let top = egui::Layout::left_to_right(egui::Align::Min);
@@ -618,6 +638,16 @@ mod tests {
     use egui_kittest::kittest::Queryable;
 
     use super::*;
+
+    #[test]
+    fn a_bar_button_behind_a_modal_keeps_its_own_look_on_or_off_and_shown_on() {
+        crate::modal::tests::drawn_alike_behind(|ui, on| {
+            button(ui, Icon::Save, None, "Save", on, None);
+        });
+        crate::modal::tests::drawn_alike_behind(|ui, on| {
+            button(ui, Icon::Undo, Some("Undo"), "Undo", on, Some(true));
+        });
+    }
 
     /// The prototype's tokens and geometry (docs/design/m5-ui/styles.css).
     mod css {
