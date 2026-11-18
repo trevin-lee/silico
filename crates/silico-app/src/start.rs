@@ -1,11 +1,11 @@
 //! The start page: what the window shows with no document open, and the Home tab while
 //! documents are (docs/design/m5-ui/DESIGN.md, *Start page or blank canvas?*, approved
-//! 2026-11-01). New, Open, and Keyboard shortcuts, the documents opened lately
-//! (`crate::recent`), each with when it was modified ([`when`]), and the note for agents
-//! with Copy MCP config, laid out as the prototype's `.st-wrap` lays them out: a column of
-//! its own at the left, Recent at the right, centred in the window, and under Recent the
-//! note that a document dropped on the window opens. The warm start's state ([`Warm`]) is
-//! the status bar's while no document is open.
+//! 2026-11-01). New, Open, Search commands, and Keyboard shortcuts, the documents opened
+//! lately (`crate::recent`), each with when it was modified ([`when`]), and the note for
+//! agents with Copy MCP config, laid out as the prototype's `.st-wrap` lays them out: a
+//! column of its own at the left, Recent at the right, centred in the window, and under
+//! Recent the note that a document dropped on the window opens. The warm start's state
+//! ([`Warm`]) is the status bar's while no document is open.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -203,6 +203,8 @@ pub(crate) enum Act {
     None,
     New,
     Open,
+    /// Search commands: the command search, as `S` opens it.
+    Search,
     /// Keyboard shortcuts: the shortcut sheet, as `?` opens it.
     Shortcuts,
     /// A recent document clicked (or its row's Enter), by its path.
@@ -370,8 +372,8 @@ pub(crate) fn page(ui: &mut Ui, shown: &Shown<'_>) -> Act {
     act
 }
 
-/// The left column: the logo and name, New, Open, and Keyboard shortcuts, and the note for
-/// agents. The prototype's Search commands (`S`) waits for the command search.
+/// The left column: the logo and name, New, Open, Search commands, and Keyboard shortcuts,
+/// and the note for agents.
 fn side(ui: &mut Ui, workspace_known: bool, act: &mut Act) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = theme::START_BRAND_GAP;
@@ -394,6 +396,10 @@ fn side(ui: &mut Ui, workspace_known: bool, act: &mut Act) {
     ui.add_space(theme::START_ACTION_GAP);
     if action(ui, Icon::Open, Command::Open, false).clicked() {
         *act = Act::Open;
+    }
+    ui.add_space(theme::START_ACTION_GAP);
+    if action(ui, Icon::Search, Command::Search, false).clicked() {
+        *act = Act::Search;
     }
     ui.add_space(theme::START_ACTION_GAP);
     if action(ui, Icon::Help, Command::Shortcuts, false).clicked() {
@@ -1567,20 +1573,24 @@ mod tests {
                 ),
                 "Open…",
             );
-            // Keyboard shortcuts, 4 below Open… (Search commands, the prototype's third, waits
-            // for the command search).
-            let shortcuts = button(&h, "Keyboard shortcuts");
+            // Search commands, then Keyboard shortcuts, each 4 below the one before.
+            let search = button(&h, "Search commands");
             sized(
-                shortcuts,
+                search,
                 Rect::from_min_size(
                     Pos2::new(left, open.bottom() + css::ACTIONS_GAP),
                     Vec2::new(css::SIDE, css::ACTION_HEIGHT),
                 ),
-                "Keyboard shortcuts",
+                "Search commands",
             );
-            assert!(
-                h.query_by_role_and_label(egui::accesskit::Role::Button, "Search commands")
-                    .is_none()
+            let shortcuts = button(&h, "Keyboard shortcuts");
+            sized(
+                shortcuts,
+                Rect::from_min_size(
+                    Pos2::new(left, search.bottom() + css::ACTIONS_GAP),
+                    Vec2::new(css::SIDE, css::ACTION_HEIGHT),
+                ),
+                "Keyboard shortcuts",
             );
             // The note's rule, 28 below them, the column's width, 1 of Gray.250; its text 16
             // below the rule, wrapped at the column's width.
@@ -1697,11 +1707,13 @@ mod tests {
         let mut h = drawn(|ui| {
             page(ui, &shown);
         });
-        // egui_kittest's platform is neither macOS nor Windows: Command is Ctrl. Keyboard
-        // shortcuts' one cap is `?` (app.js: `<span class="kbd">?</span>`).
+        // egui_kittest's platform is neither macOS nor Windows: Command is Ctrl. Search
+        // commands' one cap is `S`, Keyboard shortcuts' `?` (app.js:
+        // `<span class="kbd">S</span>`, `<span class="kbd">?</span>`).
         for (label, caps, primary) in [
             ("New part", &["N", "Ctrl"][..], true),
             ("Open…", &["O", "Ctrl"][..], false),
+            ("Search commands", &["S"][..], false),
             ("Keyboard shortcuts", &["?"][..], false),
         ] {
             let rect = button(&h, label);
@@ -1796,10 +1808,11 @@ mod tests {
             let ctrl = texts(&h, "Ctrl").remove(0).galley.size().x;
             assert!(ctrl + 10.0 > css::KBD_MIN_WIDTH, "{ctrl}");
         }
-        // Hovered: Open… and Keyboard shortcuts Gray.250 with white ink (`.st-action:hover`),
-        // New part white with black (`.st-action.primary:hover`).
+        // Hovered: Open…, Search commands, and Keyboard shortcuts Gray.250 with white ink
+        // (`.st-action:hover`), New part white with black (`.st-action.primary:hover`).
         for (label, fill, ink) in [
             ("Open…", css::G250, css::G1000),
+            ("Search commands", css::G250, css::G1000),
             ("Keyboard shortcuts", css::G250, css::G1000),
             ("New part", css::G1000, css::PRIMARY_HOVER_TEXT),
         ] {
