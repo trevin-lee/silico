@@ -55977,3 +55977,54 @@ fn behind_the_command_search_the_window_takes_no_click_until_esc_closes_it() {
     item_takes_a_click(&mut h, "Block", "k7f2qx3m");
     assert_eq!(never_waits::waits(), 0);
 }
+
+/// The app tests' renderer ([`LavapipeRenderer`]) against egui_kittest's own, which it ports:
+/// the same pixels, byte for byte, at widths whose rows are padded for wgpu's copy (1001 at
+/// 1.5, 97 at 2) and one that isn't (1280), so its unpadding is held to upstream's.
+#[test]
+fn the_port_draws_byte_for_byte_as_egui_kittests_renderer() {
+    on_lavapipe(
+        "the_port_draws_byte_for_byte_as_egui_kittests_renderer",
+        || {
+            fn draw(ui: &mut eframe::egui::Ui) {
+                ui.label("Lorem ipsum, a label at an odd width");
+                let (rect, _) = ui.allocate_exact_size(
+                    eframe::egui::vec2(77.0, 33.0),
+                    eframe::egui::Sense::hover(),
+                );
+                ui.painter().rect_filled(
+                    rect,
+                    4.0,
+                    eframe::egui::Color32::from_rgba_unmultiplied(0x18, 0x6a, 0xdd, 0x80),
+                );
+                ui.painter()
+                    .circle_stroke(rect.center(), 20.0, (1.5, eframe::egui::Color32::RED));
+                let _ = ui.button("A button");
+            }
+            for (size, ppp) in [
+                ((1001.0, 333.0), 1.5),
+                ((1280.0, 200.0), 1.0),
+                ((97.0, 41.0), 2.0),
+            ] {
+                let mut ours = Harness::builder()
+                    .with_size(size)
+                    .with_pixels_per_point(ppp)
+                    .renderer(LavapipeRenderer::from_render_state(lavapipe_render_state()))
+                    .build_ui(draw);
+                let mut theirs = Harness::builder()
+                    .with_size(size)
+                    .with_pixels_per_point(ppp)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        lavapipe_render_state(),
+                    ))
+                    .build_ui(draw);
+                ours.run();
+                theirs.run();
+                let (a, b) = (ours.render().unwrap(), theirs.render().unwrap());
+                assert_eq!(a.dimensions(), b.dimensions());
+                assert!(a.as_raw().iter().any(|&v| v != 0));
+                assert_eq!(a.as_raw(), b.as_raw(), "{size:?} at {ppp}");
+            }
+        },
+    );
+}

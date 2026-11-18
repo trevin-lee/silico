@@ -86,8 +86,10 @@ pub const SLICE_WAIT: Duration = Duration::from_secs(120);
 /// app's answers. egui_kittest's own renderer gives each 10 s, which a loaded runner's
 /// lavapipe passes: CI's gate failed the slice so (run 44237373733, "PollError: The requested
 /// Wait timed out"), and on the CI VM, with a test confined to two CPUs and 80 busy loops on
-/// them for its first two minutes, one wait took 10.9 s. Below nextest's 120 s for a test, so
-/// a hang is said by the test, naming the wait, not killed by nextest with nothing said.
+/// them for its first two minutes, one wait took 10.9 s. Below nextest's 120 s for an app
+/// test, so a hang in a test's first minute or so, or anywhere in the slice (given 10
+/// minutes), is said by the test, naming the wait; one later in a long app test (the hover
+/// and viewport tests run about 60 s) is still killed by nextest first, with nothing said.
 pub const RENDER_WAIT: Duration = Duration::from_secs(60);
 
 /// A kernel the app is driven on here, and how long [`step_until`] waits on it.
@@ -1609,8 +1611,8 @@ impl egui_kittest::TestRenderer for LavapipeRenderer {
             .map_async(wgpu::MapMode::Read, move |mapped| drop(sender.send(mapped)));
         self.wait(Some(submission), "reading the frame back")?;
         receiver
-            .recv()
-            .map_err(|e| format!("the frame's read back never answered: {e}"))?
+            .recv_timeout(RENDER_WAIT)
+            .map_err(|e| format!("the frame's read back never answered in {RENDER_WAIT:?}: {e}"))?
             .map_err(|e| format!("the frame's read back failed: {e}"))?;
         let mapped = buffer
             .slice(..)
