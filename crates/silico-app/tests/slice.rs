@@ -641,9 +641,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
             Harness::builder()
                 .with_size((1280.0, 800.0))
                 .with_step_dt(1.0 / 60.0)
-                .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                    state.clone(),
-                ))
+                .renderer(LavapipeRenderer::from_render_state(state.clone()))
                 .build_ui_state(|ui, app: &mut App<KernelPool>| app.frame(ui), app)
         };
         h.set_render_every_step(true);

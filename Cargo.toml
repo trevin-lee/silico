@@ -73,6 +73,8 @@ egui_tiles = "=0.17.1"
 egui_extras = { version = "=0.36.2", default-features = false, features = ["svg"] }
 # Drives the app through its accessibility tree in tests, with no GPU (dev only).
 egui_kittest = "=0.36.2"
+# The image egui_kittest's renderers give, named by the app tests' own renderer (dev only).
+image = { version = "0.25.10", default-features = false }
 silico-font = { path = "crates/silico-font" }
 # Sketch mode's profile fill: an outline and its holes, even-odd, in triangles (silico-app).
 lyon_tessellation = "1.0.23"
