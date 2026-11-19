@@ -861,11 +861,9 @@ impl Operation {
     pub fn canonically_eq(&self, other: &Operation) -> bool {
         match (self, other) {
             (Operation::Sketch(a), Operation::Sketch(b)) => a.canonically_eq(b),
-            // `copies.features` and `skip` are sets, written sorted.
-            (a, b) if a.type_name() == b.type_name() && a.copies().is_some() => {
-                a.in_written_order() == b.in_written_order()
-            }
-            _ => self == other,
+            // A pattern's `copies.features` and `skip` are sets, written sorted; any other
+            // operation is in written order as it is.
+            _ => self.in_written_order() == other.in_written_order(),
         }
     }
 

@@ -279,15 +279,10 @@ pub fn removal_refusals(checked: &Checked, id: &FeatureId, listed: usize) -> Ref
             .with_parameter("feature")
             .with_suggestion(match why {
                 Child::Sketch => format!("remove {} first", child.id),
-                // A sketch's stored name is its face's; a fillet's or chamfer's, its edges'.
-                Child::Names if matches!(child.operation, Operation::Sketch(_)) => format!(
-                    "remove {} first, or set its plane.face to another feature's face",
-                    child.id
-                ),
                 Child::Names => format!(
-                    "remove {} first, or set its {} to names of other features' elements",
+                    "remove {} first, or set its {}",
                     child.id,
-                    names_field(&child.operation)
+                    names_instead(&child.operation)
                 ),
                 Child::Copies => format!(
                     "remove {} first, or take {} out of its copies.features",
@@ -453,8 +448,8 @@ pub fn move_feature(
         .with_parameter("before")
         .with_suggestion(if feature == moving.id {
             format!(
-                "keep {feature} after {maker}, whose elements it names, or set its {} to names of other features' elements",
-                names_field(&moving.operation)
+                "keep {feature} after {maker}, whose elements it names, or set its {}",
+                names_instead(&moving.operation)
             )
         } else {
             format!("move {} elsewhere, or remove {feature} first", moving.id)
@@ -847,16 +842,17 @@ fn children<'a>(
         })
 }
 
-/// The field of `operation` that stores element names, as a suggestion names it: a fillet's
-/// or chamfer's `edges`, a sketch's `plane.face`, a linear pattern's directions' `along`, a
-/// polar pattern's `axis`, a mirror's `plane`.
-fn names_field(operation: &Operation) -> &'static str {
+/// The field of `operation` that stores element names, and what to set it to, as a
+/// suggestion gives them: a sketch's `plane.face` to another feature's face; a fillet's or
+/// chamfer's `edges`, a linear pattern's directions' `along`, a polar pattern's `axis`, or a
+/// mirror's `plane`, to names of other features' elements.
+fn names_instead(operation: &Operation) -> &'static str {
     match operation {
-        Operation::Sketch(_) => "plane.face",
-        Operation::LinearPattern { .. } => "directions' along",
-        Operation::PolarPattern { .. } => "axis",
-        Operation::Mirror { .. } => "plane",
-        _ => "edges",
+        Operation::Sketch(_) => "plane.face to another feature's face",
+        Operation::LinearPattern { .. } => "directions' along to names of other features' elements",
+        Operation::PolarPattern { .. } => "axis to names of other features' elements",
+        Operation::Mirror { .. } => "plane to names of other features' elements",
+        _ => "edges to names of other features' elements",
     }
 }
 

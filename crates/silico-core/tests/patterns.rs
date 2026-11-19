@@ -397,7 +397,8 @@ fn each_gate_refusal_on_the_plate_is_its_example_byte_for_byte() {
 fn a_whole_turns_instance_is_named_as_the_design_works_it_by_hand() {
     // From whole nanodegrees: 6 × 90° and 5 × 90° name instance 4, which lands on the
     // original; 4 × 90° is taken; 7 × 60° names instance 6; 5 × 100° names instance 4, at
-    // 400°, which passes it.
+    // 400°, which passes it; and the fewest that can reach a turn, 2 × 360°, name instance
+    // 1, the one copy, on the original.
     let polar = |count: u32, angle: u32| {
         edited(
             &plate_text(),
@@ -418,6 +419,7 @@ fn a_whole_turns_instance_is_named_as_the_design_works_it_by_hand() {
         (5, 90, "4", "360", "lands on"),
         (7, 60, "6", "360", "lands on"),
         (5, 100, "4", "400", "passes"),
+        (2, 360, "1", "360", "lands on"),
     ] {
         let (message, elements) = named(&polar(count, angle)).unwrap();
         assert!(
@@ -449,6 +451,20 @@ fn a_counts_and_skips_rules_hold_at_their_edges() {
         )
     };
     assert!(refused(&both(25, 40)).is_empty());
+    // 1,000 by 2 is 2,000, past the cap, but neither count passes it alone (1,000 is the
+    // cap itself), so the product is named at directions, as section 4.1 has it.
+    let product = refused(&both(1000, 2));
+    assert_eq!(product.len(), 1, "{product:?}");
+    assert!(
+        product[0].contains("\"parameter\": \"directions\""),
+        "{}",
+        product[0]
+    );
+    assert!(
+        product[0].contains("has 2000 instances in all (1000 by 2)"),
+        "{}",
+        product[0]
+    );
     let one = refused(&both(1001, 1));
     assert_eq!(one.len(), 1, "{one:?}");
     assert!(
@@ -962,6 +978,12 @@ fn a_polar_patterns_count_and_angle_are_refused_at_their_edges() {
     let at = refused(&polar(tiny, 19));
     assert_eq!(at.len(), 1, "{at:?}");
     assert!(at[0].contains("within OCCT's 1e-12 radians"), "{}", at[0]);
+    // 19 instances spread over an extent leave 18 gaps between them.
+    assert!(
+        at[0].contains("(0.000000001 degrees in 18 steps)"),
+        "{}",
+        at[0]
+    );
     assert!(refused(&polar(tiny, 18)).is_empty());
     // A polar skip of two offsets is refused; one past the count is kept.
     let skip = |skip: &str| {
@@ -1553,4 +1575,93 @@ fn removing_an_original_copied_past_the_list_lists_a_hundred_and_counts_them_all
             )
         );
     }
+}
+
+#[test]
+fn a_mirrors_originals_are_checked_as_a_patterns_are() {
+    // Section 2.1: a mirror's `copies` is "as a linear pattern's", so the plate's mirror
+    // copying no feature, or a feature no one has, is refused at copies.features in the
+    // words section 4.1 gives a pattern.
+    let copies =
+        "\"copies\": {\"type\": \"features\", \"features\": [\"q0000001\"]},\n      \"plane\"";
+    for (to, parameter, says) in [
+        (
+            "[]",
+            "copies.features",
+            "mirror m0000001 copies no features",
+        ),
+        (
+            "[\"zzzzzzzz\"]",
+            "copies.features.0",
+            "copies.features.0 zzzzzzzz isn't the ID of any feature",
+        ),
+    ] {
+        let text = edited(
+            &plate_text(),
+            copies,
+            &format!(
+                "\"copies\": {{\"type\": \"features\", \"features\": {to}}},\n      \"plane\""
+            ),
+        );
+        let invalid = Checked::new(read(text.as_bytes()).unwrap()).unwrap_err();
+        let errors: Vec<(Option<&str>, Option<&str>, &str)> = invalid
+            .errors()
+            .iter()
+            .map(|e| (e.feature(), e.parameter(), e.message()))
+            .collect();
+        assert_eq!(errors, [(Some("m0000001"), Some(parameter), says)]);
+    }
+}
+
+#[test]
+fn a_chamfer_as_an_original_is_told_to_copy_the_feature_it_bevels() {
+    // Section 4.1's fillet as an original, for the plate's chamfer: a mirror of the corner
+    // hole rim, after it, is refused in the fillet's words with chamfer's for fillet's.
+    let plate = plate_text();
+    let end = plate.rfind("\n  ]\n}\n").unwrap();
+    let text = format!(
+        "{},\n    {{\"id\": \"m0000002\", \"type\": \"mirror\", \"v\": 1, \"name\": \"Rim mirror\", \"base\": \"c0000001\", \"copies\": {{\"type\": \"features\", \"features\": [\"c0000001\"]}}, \"plane\": \"yz\"}}{}",
+        &plate[..end],
+        &plate[end..]
+    );
+    let invalid = Checked::new(read(text.as_bytes()).unwrap()).unwrap_err();
+    let errors: Vec<(Option<&str>, &str, Option<&str>)> = invalid
+        .errors()
+        .iter()
+        .map(|e| (e.parameter(), e.message(), e.suggestion()))
+        .collect();
+    assert_eq!(
+        errors,
+        [(
+            Some("copies.features.0"),
+            "copies.features.0 c0000001 is Corner hole rim, a chamfer, not a pad, pocket, revolve, or groove",
+            Some(
+                "copy the feature it bevels, then chamfer the copies' edges by name; or copy the whole base with a copies of type solid"
+            ),
+        )]
+    );
+}
+
+#[test]
+fn a_mirrors_originals_are_a_set_in_any_order() {
+    // D5: a mirror's copies.features is a set, as a pattern's is, so two mirrors that list
+    // the same originals in two orders are one document as canonical form writes it.
+    let copies = "\"features\": [\"q0000001\"]},\n      \"plane\"";
+    let listed = |features: &str| {
+        read(
+            edited(
+                &plate_text(),
+                copies,
+                &format!("\"features\": [{features}]}},\n      \"plane\""),
+            )
+            .as_bytes(),
+        )
+        .unwrap()
+    };
+    let sorted = listed("\"p0000001\", \"q0000001\"");
+    let shuffled = listed("\"q0000001\", \"p0000001\"");
+    assert_ne!(sorted, shuffled);
+    assert!(sorted.canonically_eq(&shuffled));
+    assert!(shuffled.canonically_eq(&sorted));
+    assert!(!sorted.canonically_eq(&listed("\"q0000001\"")));
 }

@@ -6,6 +6,7 @@
 
 use silico_protocol::{MAX_LENGTH, format_number};
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use super::model::{Feature, FeatureId, Made, Operation};
@@ -23,10 +24,6 @@ const KILOMETRE_NM: i64 = (MAX_LENGTH * 1e6) as i64;
 /// A whole turn in nanodegrees.
 const TURN_NDEG: i64 = 360 * 1_000_000_000;
 
-/// OCCT's linear tolerance, 1e-7 mm, in tenths of a nanometre: a step of it or less leaves a
-/// copy on the one before it (`check_copies`).
-const STEP_TENTHS_NM: i64 = 1;
-
 /// OCCT's angular tolerance, in radians: a turn within it of none leaves a copy on the one
 /// before it (`check_copies`).
 const ANGULAR_TOLERANCE: f64 = 1e-12;
@@ -41,9 +38,10 @@ pub(super) struct Around<'a> {
 
 /// Each feature's chain's root, by place: the first feature down its `base` links, each
 /// link to an earlier feature (a link forward, or to nothing, ends it there, as the gate
-/// refuses such a base on its own). A feature is in another's chain when they share a root
-/// and it comes no later: a solid is consumed once, so a chain is one line. Worked once a
-/// document, in timeline order, so the chain test costs a look-up, not a walk.
+/// refuses such a base on its own; only an earlier feature's root is worked yet, so the
+/// look-up finds none). A feature is in another's chain when they share a root and it comes
+/// no later: a solid is consumed once, so a chain is one line. Worked once a document, in
+/// timeline order, so the chain test costs a look-up, not a walk.
 pub(super) fn roots(
     features: &[Feature],
     holder: &dyn Fn(&FeatureId) -> Option<usize>,
@@ -54,7 +52,6 @@ pub(super) fn roots(
             .operation
             .base()
             .and_then(holder)
-            .filter(|&base| base < at)
             .and_then(|base| roots.get(base).copied())
             .unwrap_or(at);
         roots.push(root);
@@ -245,10 +242,10 @@ impl<'a> Gate<'a, '_> {
             );
             return;
         }
-        if count < 2 {
+        // One instance takes no step, and reaches nothing.
+        let Some(steps) = count.checked_sub(1).map(i64::from) else {
             return;
-        }
-        let steps = i64::from(count - 1);
+        };
         match direction.distribution {
             LinearDistribution::Spacing { length } => {
                 // The last instance's reach, exactly, in nanometres.
@@ -267,9 +264,10 @@ impl<'a> Gate<'a, '_> {
                 }
             }
             LinearDistribution::Extent { length } => {
-                // A step of length / steps, at most 1e-7 mm: in tenths of a nanometre,
-                // exactly.
-                if i128::from(length.nm()) * 10 <= i128::from(steps) * i128::from(STEP_TENTHS_NM) {
+                // A step of length / steps, at most OCCT's linear tolerance, 1e-7 mm, a tenth
+                // of a nanometre, where a copy lies on the one before it (`check_copies`):
+                // length * 10 tenths of a nanometre over steps at most 1, exactly.
+                if i128::from(length.nm()) * 10 <= i128::from(steps) {
                     let step = length.mm() / steps as f64;
                     self.add(
                         parameter,
@@ -301,15 +299,15 @@ impl<'a> Gate<'a, '_> {
                         Angle::from_ndeg(ndeg.saturating_neg())
                     ),
                 )
-            } else if ndeg > TURN_NDEG {
+            } else if ndeg == 0 {
+                (String::new(), format!("give the {what} an angle above 0°"))
+            } else {
                 (
                     String::new(),
                     format!(
                         "give the {what} an angle of at most 360°: 360 spreads its instances over a whole turn"
                     ),
                 )
-            } else {
-                (String::new(), format!("give the {what} an angle above 0°"))
             };
             self.add(
                 parameter.clone(),
@@ -323,12 +321,11 @@ impl<'a> Gate<'a, '_> {
         if count < 2 {
             return;
         }
-        // The first copy's turn: a whole turn spread over every instance, a part of one over
-        // the gaps between them, or the spacing.
+        // The first copy's turn: the angle over the gaps between the instances, or the
+        // spacing. A whole turn spreads over one gap more, the last instance short of the
+        // original, but no count brings it near the tolerance even over count - 1 gaps
+        // (360° in u32::MAX - 1 steps is 1.5e-9 radians), so only part of a turn is refused.
         let (step, steps) = match distribution {
-            PolarDistribution::Extent { .. } if ndeg == TURN_NDEG => {
-                (ndeg as f64 / f64::from(count), i64::from(count))
-            }
             PolarDistribution::Extent { .. } => {
                 (ndeg as f64 / f64::from(count - 1), i64::from(count - 1))
             }
@@ -435,41 +432,40 @@ impl<'a> Gate<'a, '_> {
             let in_chain = base_at.is_some_and(|base_at| {
                 at <= base_at && around.roots.get(at) == around.roots.get(base_at)
             });
-            let refusal: Option<(String, String)> = if at == index {
-                Some((
+            let refusal: Option<(String, String)> = match at.cmp(&index) {
+                Ordering::Equal => Some((
                     "is this feature: a feature can't copy itself".to_owned(),
                     "use the ID of a feature before this one".to_owned(),
-                ))
-            } else if at > index {
-                Some((
+                )),
+                Ordering::Greater => Some((
                     format!(
                         "is {}, which comes after this feature: a feature may use only features before it",
                         copied.name.as_str()
                     ),
                     "use the ID of a feature before this one".to_owned(),
-                ))
-            } else if copied.operation.sketch().is_none() {
-                let suggestion = match &copied.operation {
-                    Operation::Fillet { .. } => {
-                        "copy the feature it rounds, then fillet the copies' edges by name; or copy the whole base with a copies of type solid"
-                    }
-                    Operation::Chamfer { .. } => {
-                        "copy the feature it bevels, then chamfer the copies' edges by name; or copy the whole base with a copies of type solid"
-                    }
-                    _ => {
-                        "copy the pads, pockets, revolves, or grooves it's built from; or copy the whole base with a copies of type solid"
-                    }
-                };
-                Some((
-                    format!(
-                        "is {}, a {}, not a pad, pocket, revolve, or groove",
-                        copied.name.as_str(),
-                        copied.operation.type_name()
-                    ),
-                    suggestion.to_owned(),
-                ))
-            } else if !in_chain {
-                Some((
+                )),
+                Ordering::Less if copied.operation.sketch().is_none() => {
+                    let suggestion = match &copied.operation {
+                        Operation::Fillet { .. } => {
+                            "copy the feature it rounds, then fillet the copies' edges by name; or copy the whole base with a copies of type solid"
+                        }
+                        Operation::Chamfer { .. } => {
+                            "copy the feature it bevels, then chamfer the copies' edges by name; or copy the whole base with a copies of type solid"
+                        }
+                        _ => {
+                            "copy the pads, pockets, revolves, or grooves it's built from; or copy the whole base with a copies of type solid"
+                        }
+                    };
+                    Some((
+                        format!(
+                            "is {}, a {}, not a pad, pocket, revolve, or groove",
+                            copied.name.as_str(),
+                            copied.operation.type_name()
+                        ),
+                        suggestion.to_owned(),
+                    ))
+                }
+                Ordering::Less if !in_chain => Some((
                     format!(
                         "is {}, which isn't in base {base}'s chain, so {base}'s solid holds no instance of it",
                         copied.name.as_str()
@@ -477,9 +473,8 @@ impl<'a> Gate<'a, '_> {
                     format!(
                         "copy a feature that {base} is built on, or make the base the body whose chain holds {original}"
                     ),
-                ))
-            } else {
-                None
+                )),
+                Ordering::Less => None,
             };
             if let Some((said, suggestion)) = refusal {
                 let parameter = format!("copies.features.{i}");
