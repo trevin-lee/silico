@@ -748,8 +748,9 @@ fn feature<P: Clients + 'static>(
 
 /// The selected feature's PARAMETERS (`featureProps`' `section('Parameters')` and its
 /// rows, [`crate::parameters`]): a sketch's from its read, any other's from its text at the
-/// tab's revision, read here off the UI thread, the rows as last read shown meanwhile. None
-/// for a kind with none. The feature a Profile link asked selected, if one was clicked.
+/// tab's revision, read here off the UI thread, the rows as last read shown meanwhile; no
+/// section while there are none. The feature a Profile link asked selected, if one was
+/// clicked.
 fn parameters<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -761,8 +762,7 @@ fn parameters<P: Clients + 'static>(
         return None;
     }
     let rows = if entry.kind == "sketch" {
-        let read = tab.sketch_reads.held(&entry.id).map(|held| &*held.read);
-        sketch_rows(read, tab.sketch_reads.state(&entry.id))
+        sketch_rows(tab.sketch_reads.held(&entry.id).map(|held| &*held.read))
     } else {
         let (session, revision) = (tab.id, tab.revision);
         tab.parameters.poll(sessions, &session, &entry.id, revision);
@@ -778,6 +778,10 @@ fn parameters<P: Clients + 'static>(
             .map(|node| feature_rows(entry.kind, node, &context))
             .unwrap_or_default()
     };
+    // No section with no rows: a feature not read yet, or a suppressed sketch, never read.
+    if rows.is_empty() {
+        return None;
+    }
     properties::section(ui, "Parameters");
     let mut asked = None;
     for row in rows {
@@ -785,6 +789,14 @@ fn parameters<P: Clients + 'static>(
             Shown::Text(words, colour) => {
                 properties::text_row(ui, row.key, properties::body(&words, colour));
             }
+            Shown::Id(id) => properties::text_row(
+                ui,
+                row.key,
+                egui::text::LayoutJob::single_section(
+                    id,
+                    properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
+                ),
+            ),
             Shown::Link {
                 feature,
                 name,
@@ -1418,7 +1430,7 @@ fn sketch_prefix(tab: &Tab, id: &FeatureId) -> Option<&'static str> {
 /// plane by its name, as the prototype's `XY`, `XZ`, and `YZ`; a planar face as `Face`, the
 /// prototype's sketch on a face before it names one (sketch.js's `plane: opts.plane ||
 /// 'Face'`), since the name it stores (`k7f2qx3m.box.Face6`) is no word for a row's right.
-fn plane_meta(plane: &silico_core::document::Plane) -> &'static str {
+pub(crate) fn plane_meta(plane: &silico_core::document::Plane) -> &'static str {
     use silico_core::document::{OriginPlane, Plane};
     match plane {
         Plane::Origin(OriginPlane::Xy) => "XY",
@@ -4113,6 +4125,13 @@ mod property_panel_drawn {
     fn a_features_properties_are_drawn_as_feature_props_with_its_error_card_and_name_field() {
         let mut tab = part();
         tab.selection_mut().select_feature(fid("c0000001"));
+        // The cut's text as a read gives it: its target the block, its tool one the timeline
+        // doesn't list, named by its ID.
+        let cut = r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "Hole", "base": "b0000001", "tool": "t0000001"}"#;
+        tab.parameters.hold(
+            fid("c0000001"),
+            silico_core::document::json::read(cut.as_bytes()).unwrap(),
+        );
         let h = drawn(tab);
         let mut y = title_and_head(&h, "Hole", "Subtract · c0000001", body(css::FS_SMALL));
         // The line under the title: the type, then the ID in monospace.
@@ -4191,8 +4210,10 @@ mod property_panel_drawn {
             css::G550,
         );
         // PARAMETERS after the Name row (`section('Parameters')`), its rows the feature's text
-        // as read (this tab's session holds none, so none), then HEALTH.
+        // as read, each a `.prop` in the value's own type and Gray.800; then HEALTH.
         y = section_at(&h, "PARAMETERS", y + css::ROW_H);
+        y = row_at(&h, "Target Body", "Block", y, body(css::FS), css::G800);
+        y = row_at(&h, "Tool Body", "t0000001", y, body(css::FS), css::G800);
         y = section_at(&h, "HEALTH", y);
         y = row_at(&h, "State", "Error", y, body(css::FS), css::RED);
         y = row_at(&h, "ID", "c0000001", y, mono(), css::G800);

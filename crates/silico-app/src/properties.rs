@@ -2427,6 +2427,45 @@ mod tests {
     const G800: Color32 = Color32::from_rgb(0xe0, 0xdf, 0xdf);
 
     #[test]
+    fn a_link_rows_words_follow_the_link_6_after_it_in_the_values_type() {
+        // app.js's `featureProps` Profile: `<span class="link">Bracket profile</span> · 1
+        // region` in `.prop .v`, a flex row with `gap: 6px` (the words' leading space a flex
+        // item's, dropped): the link in `--info` where the value's column starts, then the
+        // words 6 after it, in the body's type, Gray.800, on its line.
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(320.0, 60.0))
+            .build_ui(|ui| {
+                ui.spacing_mut().item_spacing = Vec2::ZERO;
+                link_row_then(ui, "Profile", "Plate", Some("· 1 region"));
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let key = text_shape(&h, "Profile");
+        let link = text_shape(&h, "Plate");
+        let words = text_shape(&h, "· 1 region");
+        assert!(
+            near(link.pos.x, key.pos.x + KEY_W + ROW_GAP),
+            "the link at {:?}",
+            link.pos
+        );
+        assert_eq!(colour(&link), theme::INFO);
+        assert!(
+            near(words.pos.x, link.pos.x + link.galley.size().x + 6.0),
+            "the words at {:?}, the link at {:?}, {:?} wide",
+            words.pos,
+            link.pos,
+            link.galley.size()
+        );
+        font(&words, FS, "the words");
+        assert_eq!(colour(&words), G800);
+        assert!(near(
+            words.pos.y + words.galley.size().y / 2.0,
+            link.pos.y + link.galley.size().y / 2.0
+        ));
+        assert!(h.query_by_role_and_label(Role::Link, "Plate").is_some());
+    }
+
+    #[test]
     fn a_modals_list_row_is_drawn_as_prop_its_value_8_after_the_keys_96() {
         let place = Rect::from_min_size(Pos2::new(40.0, 30.0), Vec2::new(300.0, 100.0));
         let outside = Color32::from_rgb(0xad, 0xbb, 0xff);

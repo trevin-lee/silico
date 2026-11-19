@@ -21780,13 +21780,15 @@ fn click_in_properties(h: &mut AppHarness, role: Role, label: &str) {
     h.get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(role, label)
         .scroll_to_me();
-    // Scrolled smoothly: waited for until it's in the panel and still.
+    // Scrolled smoothly: waited for until it's still, where a click on its middle lands in
+    // the panel.
     let last = std::cell::Cell::new(None);
-    step_until(h, "it scrolled into the panel, and stopped", |h| {
+    let what = format!("{label} scrolled into the panel, and stopped");
+    step_until(h, &what, |h| {
         let pane = h.get_by_role_and_label(Role::Pane, "Properties").rect();
         let now = find(h);
         let still = last.replace(Some(now)) == Some(now);
-        still && pane.contains_rect(now)
+        still && pane.contains(now.center())
     });
     h.get_by_role_and_label(Role::Pane, "Properties")
         .get_by_role_and_label(role, label)
@@ -21857,17 +21859,19 @@ fn a_sketchs_a_pockets_and_a_fillets_parameters_are_the_prototypes_rows_and_a_bo
     let want = rows_of(&[
         ("Plane", "XZ"),
         ("Definition", "Fully defined"),
-        ("Curves", "2 circles"),
+        ("Curves", "2 circles, ⌀ 6 mm"),
         ("Dimensions", "None"),
     ]);
     step_until(&mut h, "the holes' parameters", |h| {
         parameter_rows(h) == want
     });
-    // A pocket's: its profile (two circles, two regions), its extent, and its base by name.
+    // A pocket's: its profile (two circles, two regions), its extent, its way (against
+    // its sketch's normal, −Y on XZ: +Y), and its base by name.
     select(&mut h, "Bores");
     let want = rows_of(&[
         ("Profile", "Holes · 2 regions"),
         ("Extent", "Through all"),
+        ("Direction", "Normal (+Y)"),
         ("Base", "Plate pad"),
     ]);
     step_until(&mut h, "the pocket's parameters", |h| {
@@ -21974,6 +21978,65 @@ fn on_a_document_the_gate_refused_the_panels_buttons_are_off_saying_why_as_the_m
         assert!(sketch_mode(&h).is_none());
         assert!(property_button(&h, "Unsuppress").is_none());
     }
+    // A refused document's sketch is never read: no PARAMETERS, never an empty header.
+    assert!(!shows(&h, "Properties", "PARAMETERS"));
+    assert!(shows(&h, "Properties", "HEALTH"));
+    // The pointer over the off Suppress: its reason in its tooltip, as an off menu item's.
+    property_button(&h, "Suppress").unwrap().hover();
+    step_until(&mut h, "Suppress's tooltip", |h| {
+        h.query_all_by_role(Role::Label).any(|node| {
+            let node = node.accesskit_node();
+            node.value().or_else(|| node.label()).as_deref() == Some(why)
+        })
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_features_text_is_read_once_for_each_revision_its_rows_kept_while_the_next_is_read() {
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, path) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    select(&mut h, "Plate pad");
+    let twelve = rows_of(&[
+        ("Profile", "Plate · 1 region"),
+        ("Extent", "Distance · 12 mm"),
+        ("Direction", "Normal (\u{2212}Y)"),
+    ]);
+    step_until(&mut h, "its parameters", |h| parameter_rows(h) == twelve);
+    let reads = |h: &AppHarness| h.state().tabs()[0].parameters.reads;
+    let before = reads(&h);
+    // Frames drawn with nothing changed read nothing again.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(reads(&h), before);
+    assert_eq!(parameter_rows(&h), twelve);
+    // Another program writes the pad 7.5 long: reloaded at a new revision, one read is
+    // sent, and the frame that sends it still shows the rows as last read.
+    std::fs::write(
+        &path,
+        PARAMETERS_PART.replace(r#""length": 12,"#, r#""length": 7.5,"#),
+    )
+    .unwrap();
+    step_until(&mut h, "the read of the new revision sent", |h| {
+        reads(h) == before + 1
+    });
+    assert_eq!(parameter_rows(&h), twelve, "the rows as last read, kept");
+    let seven = rows_of(&[
+        ("Profile", "Plate · 1 region"),
+        ("Extent", "Distance · 7.5 mm"),
+        ("Direction", "Normal (\u{2212}Y)"),
+    ]);
+    step_until(&mut h, "the new revision's rows", |h| {
+        parameter_rows(h) == seven
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(reads(&h), before + 1, "one read for the revision");
     assert_eq!(never_waits::waits(), 0);
 }
 
