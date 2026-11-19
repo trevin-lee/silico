@@ -3229,6 +3229,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_client_held_is_given_once_its_hold_is_dropped_unreleased() {
+        let kernel = Arc::new(FakeKernel::new(1).unwrap());
+        let hold = kernel.hold_clients(|thread| thread.name() == Some("held"));
+        let (given, told) = std::sync::mpsc::channel();
+        let asking = Arc::clone(&kernel);
+        let held = std::thread::Builder::new()
+            .name("held".to_owned())
+            .spawn(move || {
+                let _client = asking.client();
+                given.send(()).unwrap();
+            })
+            .unwrap();
+        assert!(
+            told.recv_timeout(std::time::Duration::from_millis(300))
+                .is_err(),
+            "given while held"
+        );
+        // Dropped, never released: the client asked for is given. (Bounded, so a hold its
+        // drop doesn't release fails here rather than hanging; the thread is then left.)
+        drop(hold);
+        told.recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the client wasn't given once its hold was dropped");
+        held.join().unwrap();
+    }
+
+    #[test]
     fn a_client_asked_for_on_a_held_thread_is_given_once_the_hold_is_released_and_others_at_once() {
         let kernel = Arc::new(FakeKernel::new(1).unwrap());
         let hold = kernel.hold_clients(|thread| thread.name() == Some("held"));
