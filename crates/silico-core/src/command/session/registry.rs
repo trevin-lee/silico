@@ -228,6 +228,10 @@ pub(super) fn start<P: Clients + 'static>(
     jobs: Receiver<Job<P::Client>>,
 ) -> Option<Started<P::Client>> {
     let opened = open(&registry, id, path, create).and_then(|(held, opened, cache, made)| {
+        // Its engine, with the kernel's client it rebuilds through, made before the book is
+        // taken, so a client slow to be given (a pool's own lock, a test's hold) keeps no
+        // other session's command waiting; one refused below is dropped, its client retired.
+        let engine = registry.engine(cache);
         let mut book = lock(&registry.book);
         if book.stopping {
             // The file it made, if it made one, goes with it (`made`'s drop).
@@ -251,7 +255,7 @@ pub(super) fn start<P: Clients + 'static>(
             held: Holding::new(held),
             queue: Mutex::new(Some(queue)),
             rebuilds: Mutex::new(Rebuilds {
-                engine: registry.engine(cache),
+                engine,
                 running: None,
                 published: None,
                 ended: None,
