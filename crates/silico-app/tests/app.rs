@@ -12498,13 +12498,18 @@ fn a_pick_waiting_for_its_answer_asks_for_frames_until_it_comes() {
 /// six faces in the box's order (Face3 its front, y = 0), two triangles each, and twelve
 /// edges, where the fake's own mesh is a triangle a face, all alike.
 fn meshes_a_real_box(f: &Fixture) {
-    f.kernel.answer_instead(|op| match op {
+    meshes_a_box_from(f, [0.0; 3]);
+}
+
+/// [`meshes_a_real_box`]'s box, its corner at `origin` rather than the origin.
+fn meshes_a_box_from(f: &Fixture, origin: [f64; 3]) {
+    f.kernel.answer_instead(move |op| match op {
         Op::Tessellate {
             deflection,
             at_least_the_floor,
             ..
         } => {
-            let mesh = silico_render::bench::box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            let mesh = silico_render::bench::box_mesh(origin, [40.0, 20.0, 10.0]);
             Some(if *at_least_the_floor {
                 silico_protocol::Reply::MeshAt(silico_protocol::MeshAt {
                     mesh,
@@ -43130,6 +43135,17 @@ fn from_above_scaled(
     pixels_per_point: f32,
 ) -> (AppHarness, Record) {
     meshes_a_real_box(f);
+    drawn_from_above(f, name, text, boxing, pixels_per_point)
+}
+
+/// [`from_above_scaled`] of meshes the fixture's kernel was already told to make.
+fn drawn_from_above(
+    f: &Fixture,
+    name: &str,
+    text: &str,
+    boxing: Option<silico_app::boxes::Build>,
+    pixels_per_point: f32,
+) -> (AppHarness, Record) {
     let (mut h, record) = f.drawn_scaled(name, text, None, boxing, pixels_per_point);
     meshes_settled(&mut h);
     view_mut(&mut h).set_camera(silico_protocol::Camera {
@@ -53521,6 +53537,18 @@ fn a_new_parts_canvas_says_start_with_a_sketch_and_its_create_sketch_begins_the_
         [silico_app::canvas_hint::PICK_WORDS]
     );
     assert_eq!(labels_in(&shown, Role::Button), ["Cancel"]);
+    // `.canvas-hint`'s `top: 18px`, centred across the canvas (`left: 50%;
+    // transform: translateX(-50%)`), within the half point egui may round a place by.
+    let canvas = the_viewport(&h);
+    let chip = shown.rect();
+    assert!(
+        (chip.top() - (canvas.top() + 18.0)).abs() <= 0.5,
+        "{chip:?} in {canvas:?}"
+    );
+    assert!(
+        (chip.center().x - canvas.center().x).abs() <= 0.5,
+        "{chip:?} in {canvas:?}"
+    );
     assert!(in_status_bar(&h, silico_app::status::PICK_WORDS));
     assert!(sketch_mode(&h).is_none());
     pick_hint(&h)
@@ -54622,6 +54650,389 @@ fn a_face_clicked_before_its_type_is_read_is_sketched_on_once_it_is() {
             "Sketch1",
             r#"{"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}"#
         ))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pick_begun_before_the_boxes_are_made_finds_xy_once_they_are() {
+    // #565's review: the pick holds the canvas, so it keeps Select Other's boxes up with the
+    // view's meshes itself. Begun before the box's boxes are made (held), the pointer on XY
+    // off the box finds XY once they are, and a click there starts its sketch.
+    let f = fixture();
+    let making = Arc::new(Making::default());
+    making.hold();
+    let (mut h, _record) = box_from_above_made(&f, Some(making.build()));
+    begin_pick(&mut h);
+    let at = xy_off_the_box(&h);
+    h.hover_at(at);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    making.release();
+    step_until(&mut h, "XY under the pointer", |h| {
+        pick_under(h)
+            == Some(silico_app::plane_pick::Under::Plane(
+                silico_core::document::OriginPlane::Xy,
+            ))
+    });
+    pick_at(&mut h, at);
+    let (_, features) = sketch_added(&f, &mut h);
+    assert_eq!(features[1], Some(empty_sketch("Sketch1", r#""xy""#)));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_while_new_meshes_boxes_are_made_waits_for_them_and_takes_the_face_under_it() {
+    // #565's review: a model published during the pick (the block's length set through the
+    // core) gives the view a new mesh, whose boxes are made again (held here). While they're
+    // held, XY off the box is still lit, met by no face there; a click on the box's top waits
+    // for them, as the selection keeps a click, rather than taking XY under the top or
+    // nothing; once they're made it's cast again and takes the top, a plane, so a sketch on
+    // it is added.
+    let f = fixture();
+    describes_a_real_box(&f);
+    let making = Arc::new(Making::default());
+    let (mut h, _record) = box_from_above_made(&f, Some(making.build()));
+    boxes_made(&mut h);
+    begin_pick(&mut h);
+    making.hold();
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "41");
+    let off = xy_off_the_box(&h);
+    h.hover_at(off);
+    step_until(&mut h, "XY lit while the boxes wait", |h| {
+        pick_under(h)
+            == Some(silico_app::plane_pick::Under::Plane(
+                silico_core::document::OriginPlane::Xy,
+            ))
+    });
+    let top = the_boxs_top(&h);
+    pick_at(&mut h, top);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).is_none(), "nothing taken before the boxes");
+    assert!(h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
+    making.release();
+    let (_, features) = sketch_added(&f, &mut h);
+    assert_eq!(
+        features[1],
+        Some(empty_sketch(
+            "Sketch1",
+            r#"{"face": "k7f2qx3m.box.Face6", "x": "+x", "reversed": false}"#
+        ))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_dialog_opened_during_the_pick_ends_it() {
+    // #565's review: sketch mode can't open under a dialog, so the pick ends as Pad's opens.
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    begin_pick(&mut h);
+    create(&mut h, "Pad");
+    step_until(&mut h, "the dialog", dialog_open);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(!picking(&h), "the pick still on under Pad's dialog");
+    assert!(pick_hint(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_opened_from_the_browser_during_the_pick_ends_it() {
+    // #565's review: Edit Sketch (a double-click on the sketch's row) opens sketch mode on
+    // Triangle while the pick is on; the pick ends with it, its hint gone.
+    let f = fixture();
+    let (mut h, _record) = f.drawn("sketched.silico", SKETCHED_EXAMPLE);
+    meshes_settled(&mut h);
+    step_until(&mut h, "Triangle listed", |h| {
+        shows(h, "Browser", "Triangle")
+    });
+    begin_pick(&mut h);
+    double_click(&mut h, "Browser", "Triangle");
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(!picking(&h), "the pick still on in sketch mode");
+    assert!(pick_hint(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_within_a_hundredth_of_a_millimetre_behind_a_plane_is_picked_before_it_and_one_farther_isnt()
+ {
+    // `VP.pickPlane`'s `fhAny.distance <= ph.distance + 0.01`, pinned from both sides: the box
+    // meshed with its foot at z = 0.005 or at z = 0.05, seen from below through (30, 10):
+    // XY, at z = 0, is met first, its foot 0.005 farther (within 0.01: the foot, Face5) or
+    // 0.05 farther (past it: XY).
+    use silico_app::plane_pick::Under;
+    use silico_core::document::OriginPlane;
+    for (z, foot) in [(0.005, true), (0.05, false)] {
+        let f = fixture();
+        meshes_a_box_from(&f, [0.0, 0.0, z]);
+        let (mut h, _record) = drawn_from_above(&f, "box.silico", A_BOX, None, 1.0);
+        boxes_made(&mut h);
+        begin_pick(&mut h);
+        view_mut(&mut h).set_camera(silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 60.0 },
+            eye: [30.0, 10.0, -100.0],
+            target: [30.0, 10.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+        });
+        for _ in 0..3 {
+            step(&mut h);
+        }
+        let centre = image_centre(&h);
+        h.hover_at(centre);
+        step_until(
+            &mut h,
+            &format!("the foot at {z}: picked"),
+            |h| match pick_under(h) {
+                Some(Under::Face(face)) => foot && face.name.to_string() == "k7f2qx3m.box.Face5",
+                Some(Under::Plane(plane)) => !foot && plane == OriginPlane::Xy,
+                None => false,
+            },
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_flat_face_no_store_can_name_is_refused_in_the_pick_saying_the_stores_words() {
+    // `decided`'s second refusal: FUSED's Face1 (its x = 0 side, from nothing in the fuse's
+    // history, named only by its number) is a plane, but no store takes its name. Seen from
+    // −x, it's on YZ, and taken before it (within 0.01); clicked, it's refused in a toast
+    // saying the store's own words (as the canvas menu's Sketch on this face is off with
+    // them), nothing sent, the pick still on.
+    let f = fixture();
+    planar_boxes(&f.kernel);
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: FakeKernel::resized(base, 1.0)?,
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, _record) = from_above_made(&f, "fused.silico", FUSED, None);
+    boxes_made(&mut h);
+    let before = text_of(&f.sessions, &h);
+    begin_pick(&mut h);
+    view_mut(&mut h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
+        eye: [-100.0, 10.0, 5.0],
+        target: [0.0, 10.0, 5.0],
+        up: [0.0, 0.0, 1.0],
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    let at = image_centre(&h);
+    h.hover_at(at);
+    step_until(&mut h, "Face1 lit", |h| {
+        view(h)
+            .hovered
+            .iter()
+            .eq([&(1, silico_app::renderer::Element::Face(1))])
+    });
+    pick_at(&mut h, at);
+    step_until(&mut h, "the refusal", |h| newest_toast(h).is_some());
+    let said = newest_toast(&h).unwrap();
+    assert!(said.starts_with("Face1 can't be sketched on: "), "{said}");
+    assert!(
+        said.contains(
+            "\"rrrrrrrr.fuse.Face1\", names a face, whose name is unstable (it came about as \
+             another element did, or is its number): an edit could make it another element"
+        ),
+        "{said}"
+    );
+    settled(&mut h);
+    assert!(picking(&h));
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(text_of(&f.sessions, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_whose_read_is_refused_is_refused_in_the_pick_saying_the_cores_words() {
+    // `decided`'s last refusal: the kernel refuses to describe the block, so `elements` can't
+    // read the top's type. Clicked, it's refused in a toast with the core's own words (read
+    // here from `elements` directly), nothing sent, the pick still on.
+    let f = fixture();
+    f.kernel.refuse(|op| {
+        matches!(op, Op::DescribeAll { .. }).then(|| {
+            silico_core::Error::new(ErrorCode::KernelFailed, "the worker couldn't describe it")
+        })
+    });
+    let (mut h, _record) = box_from_above(&f);
+    let before = text_of(&f.sessions, &h);
+    let session = h.state().tabs()[0].id;
+    let refused = f
+        .sessions
+        .elements(
+            &session,
+            silico_core::command::ModelChoice::Published,
+            Some(silico_core::document::FeatureId::new("k7f2qx3m").unwrap()),
+            None,
+            10,
+        )
+        .wait()
+        .result
+        .unwrap_err();
+    let words = refused.errors()[0].message().to_owned();
+    begin_pick(&mut h);
+    let top = the_boxs_top(&h);
+    pick_at(&mut h, top);
+    toasted(&mut h, &format!("Face6 couldn't be read: {words}"));
+    settled(&mut h);
+    assert!(picking(&h));
+    assert!(sketch_mode(&h).is_none());
+    assert!(view(&h).hovered.is_empty(), "a face not read isn't lit");
+    assert_eq!(text_of(&f.sessions, &h), before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_planes_row_reached_by_the_keys_is_lit_and_enter_picks_it() {
+    // The keyboard's way to a plane with the menu gone: Tab steps the focus to XZ's row in
+    // the browser, which lights XZ in the canvas while the pick is on (as the menu's focused
+    // item lit its plane), and Enter on it starts a sketch on XZ.
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    begin_pick(&mut h);
+    pointer_away(&mut h);
+    let focused = |h: &AppHarness| {
+        browser(h)
+            .query_by_label("XZ")
+            .is_some_and(|node| node.accesskit_node().is_focused())
+    };
+    for _ in 0..200 {
+        if focused(&h) {
+            break;
+        }
+        h.key_press(Key::Tab);
+        step(&mut h);
+    }
+    assert!(focused(&h), "XZ's row never took the focus");
+    planes_become(
+        &mut h,
+        &record,
+        &[("XY", false), ("XZ", true), ("YZ", false)],
+    );
+    h.key_press(Key::Enter);
+    let (_, features) = sketch_added(&f, &mut h);
+    assert_eq!(features[1], Some(empty_sketch("Sketch1", r#""xz""#)));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_faces_type_read_on_one_model_is_read_again_on_the_next() {
+    // A model published during the pick may type a face of the same name otherwise: the top,
+    // a plane, lit; the block then described with its top curved and its length set through
+    // the core, so a new model; the top read again, not lit, and refused when clicked.
+    let f = fixture();
+    let curved = Arc::new(AtomicBool::new(false));
+    let reads = Arc::clone(&curved);
+    f.kernel.answer_instead(move |op| match op {
+        Op::DescribeAll { shape } if FakeKernel::describe(shape)?.starts_with("box(") => {
+            let mut description = real_box_description();
+            if reads.load(Ordering::SeqCst) {
+                description.faces[5].surface = silico_core::kernel::Surface::Cylinder {
+                    axis: silico_core::kernel::Axis {
+                        origin: [20.0, 0.0, -10.0],
+                        direction: [0.0, 1.0, 0.0],
+                    },
+                    radius: 20.0,
+                };
+            }
+            Some(silico_protocol::Reply::DescribedAll(description))
+        }
+        _ => None,
+    });
+    let (mut h, _record) = box_from_above(&f);
+    begin_pick(&mut h);
+    let top = the_boxs_top(&h);
+    h.hover_at(top);
+    step_until(&mut h, "the top lit", |h| !view(h).hovered.is_empty());
+    curved.store(true, Ordering::SeqCst);
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "41");
+    h.hover_at(top);
+    step_until(&mut h, "the top read again, not lit", |h| {
+        matches!(pick_under(h), Some(silico_app::plane_pick::Under::Face(_)))
+            && view(h).hovered.is_empty()
+    });
+    for _ in 0..6 {
+        step(&mut h);
+        assert!(view(&h).hovered.is_empty(), "the old model's read kept");
+    }
+    pick_at(&mut h, top);
+    toasted(
+        &mut h,
+        "Face6 isn't flat. Pick an origin plane or a flat face to sketch on.",
+    );
+    assert!(picking(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_face_of_meshes_not_of_the_published_model_is_never_picked_and_hides_the_plane_behind_it() {
+    // While the view's meshes are of the model before the one published (the new model's
+    // meshes held), a face met first isn't named (its number may be another element in the
+    // new model): nothing is under the pointer on the box's top, not XY behind it; off the
+    // box XY still is. Once the meshes come, the top is.
+    use silico_app::plane_pick::Under;
+    use silico_core::document::OriginPlane;
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    begin_pick(&mut h);
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    let session = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&session).session.unwrap().revision;
+    let models = h.state().tabs()[0].published_models;
+    f.sessions
+        .set_field(
+            &session,
+            revision,
+            silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+            "length".to_owned(),
+            json::read(b"41").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new model", |h| {
+        h.state().tabs()[0].published_models != models
+    });
+    assert!(!meshes_current(&h));
+    let top = the_boxs_top(&h);
+    h.hover_at(top);
+    for _ in 0..6 {
+        step(&mut h);
+        assert_eq!(pick_under(&h), None, "a face of old meshes, or XY under it");
+    }
+    let off = xy_off_the_box(&h);
+    h.hover_at(off);
+    step_until(&mut h, "XY off the box", |h| {
+        pick_under(h) == Some(Under::Plane(OriginPlane::Xy))
+    });
+    hold.release();
+    meshes_settled(&mut h);
+    boxes_made(&mut h);
+    h.hover_at(top);
+    step_until(
+        &mut h,
+        "the top",
+        |h| matches!(pick_under(h), Some(Under::Face(face)) if face.name.to_string() == "k7f2qx3m.box.Face6"),
     );
     assert_eq!(never_waits::waits(), 0);
 }

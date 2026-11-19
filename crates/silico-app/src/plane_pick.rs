@@ -21,10 +21,14 @@
 //! sketch on it (`Tab::create_sketch`), and on a flat face one on the face by the name a
 //! store writes for it (`Tab::create_sketch_on_face`, as Sketch on this face does), the
 //! pick ended. A click on a face whose type isn't read yet waits for its read, and then does
-//! the same. A click on a face that isn't flat, or one no store can name, is refused, said
-//! in a toast in the prototype's words' style, and the pick goes on; a click on nothing
-//! does nothing, as the prototype's. Cancel, Esc, a dialog or a sketch opened, or the tab
-//! closing ends it.
+//! the same; one while a body drawn has its boxes still to come (made off the UI thread as
+//! the view takes a mesh) waits for them and is cast again then, unless the view moves first,
+//! as the selection keeps a click; meanwhile the pointer lights what it meets among the
+//! bodies whose boxes are made. A newer click supersedes one waiting. A click on a face
+//! that isn't flat, or one no store can name, is refused, said in a toast in the prototype's
+//! words' style, and the pick goes on; a click on nothing does nothing, as the prototype's.
+//! Create Sketch again begins it again, as the prototype's does. Cancel, Esc, a dialog or a
+//! sketch opened, Home or another tab shown, or the tab closing ends it.
 //!
 //! Where the prototype is silent, the app follows Fusion and SolidWorks: the nearest thing
 //! under the pointer is what's picked, so a face that isn't flat in front of a plane hides
@@ -101,18 +105,31 @@ pub enum Act {
 }
 
 /// The pick: what the pointer is over, a press on the canvas waiting for its release, a click
-/// on a face waiting for the face's type, and each face read for its type on the model its
-/// reads are of, with the read out.
+/// waiting for the boxes of a body the frame drew (its place, cast again once they're made),
+/// a click on a face waiting for the face's type, and each face read for its type on the
+/// model its reads are of, with the read out. A newer click supersedes either one waiting.
 #[derive(Default)]
 pub struct PlanePick {
     under: Option<Under>,
     press: Option<[f32; 2]>,
+    held: Option<Held>,
     clicked: Option<Face>,
     typed: BTreeMap<String, Typed>,
     model: Option<(u64, Revision)>,
     read: Measures,
     reading: Option<Reading>,
     asked: u64,
+}
+
+/// A click waiting for the boxes of a body its frame drew: where it was let go, in physical
+/// pixels from the canvas's top left, and the camera and size it was let go under, so a
+/// view moved since lets it go (its place was of the view before), as the selection lets a
+/// click go.
+#[derive(Debug, Clone, PartialEq)]
+struct Held {
+    at_px: [f32; 2],
+    camera: silico_protocol::Camera,
+    size_px: [u32; 2],
 }
 
 /// A face's read out: its name as the mesh names it, what the read is of, and the name a
@@ -158,9 +175,16 @@ impl PlanePick {
         self.under.as_ref()
     }
 
-    /// Whether a click on a face waits for the face's type.
+    /// Whether a click waits: for the boxes to cast it on, or for its face's type.
     pub fn waiting(&self) -> bool {
-        self.clicked.is_some()
+        self.held.is_some() || self.clicked.is_some()
+    }
+
+    /// A click on `face` waiting for its type, as one made before its read answered (a
+    /// test's, of what lets it go).
+    #[cfg(test)]
+    pub(crate) fn clicked_on(&mut self, face: Face) {
+        self.clicked = Some(face);
     }
 
     /// Whether `face` is a plane, as its read said; none until it has.
@@ -191,25 +215,49 @@ impl PlanePick {
         let before = (self.lit_plane(), self.lit_face().cloned());
         let click_px = inputs.click_distance * inputs.frame.pixels_per_point;
         let mut acts = Vec::new();
-        for event in &inputs.frame.left {
+        let frame = inputs.frame;
+        // A click held for the boxes: let go once the view moved, cast again once they're
+        // made.
+        if let Some(held) = self.held.take()
+            && held.camera == frame.camera
+            && held.size_px == frame.size_px
+        {
+            match under_at(inputs, held.at_px) {
+                Found::Waiting(_) => self.held = Some(held),
+                Found::Known(under) => acts.extend(under.and_then(|under| self.click(under))),
+            }
+        }
+        for event in &frame.left {
             match event.kind {
                 LeftKind::Press => self.press = Some(event.at_px),
                 LeftKind::Release => {
                     let pressed = self.press.take();
-                    if pressed.is_some_and(|at| distance(at, event.at_px) <= click_px)
-                        && let Some(under) = under_at(inputs, event.at_px)
-                    {
-                        acts.extend(self.click(under));
+                    if pressed.is_some_and(|at| distance(at, event.at_px) <= click_px) {
+                        // The newest click is the one that counts: any waiting goes.
+                        self.held = None;
+                        self.clicked = None;
+                        match under_at(inputs, event.at_px) {
+                            Found::Waiting(_) => {
+                                self.held = Some(Held {
+                                    at_px: event.at_px,
+                                    camera: frame.camera.clone(),
+                                    size_px: frame.size_px,
+                                });
+                            }
+                            Found::Known(under) => {
+                                acts.extend(under.and_then(|under| self.click(under)));
+                            }
+                        }
                     }
                 }
-                LeftKind::Cancel => self.press = None,
-                LeftKind::Move | LeftKind::DoubleClick => {}
+                // A stream cancelled ends with no release (`LeftKind::Cancel`): its press is
+                // never a click, and the next stream's press takes its place.
+                LeftKind::Cancel | LeftKind::Move | LeftKind::DoubleClick => {}
             }
         }
-        self.under = inputs
-            .frame
+        self.under = frame
             .pointer_px
-            .and_then(|at_px| under_at(inputs, at_px));
+            .and_then(|at_px| under_at(inputs, at_px).seen());
         self.read_type(sessions, session, inputs.selection);
         if let Some(face) = self.clicked.clone()
             && let Some(typed) = self.typed.get(face.name.to_string().as_str()).cloned()
@@ -222,8 +270,9 @@ impl PlanePick {
     }
 
     /// A click on `under`: a plane's sketch, or a face's once its type is known (waiting for
-    /// it until then).
+    /// it until then). It supersedes a click waiting on another face's type.
     fn click(&mut self, under: Under) -> Option<Act> {
+        self.clicked = None;
         match under {
             Under::Plane(plane) => Some(Act::Plane(plane)),
             Under::Face(face) => match self.typed.get(face.name.to_string().as_str()) {
@@ -345,26 +394,60 @@ fn decided(face: &Face, typed: &Typed) -> Option<Act> {
     })
 }
 
+/// What a cast of the pick finds under a pixel: what's there, known; or, while a body the
+/// frame drew has its boxes still to come, what's seen there among the rest, which a body
+/// not boxed yet may hide.
+#[derive(Debug, Clone, PartialEq)]
+enum Found {
+    Known(Option<Under>),
+    Waiting(Option<Under>),
+}
+
+impl Found {
+    /// What's seen there, known or not: what the pointer lights.
+    fn seen(self) -> Option<Under> {
+        match self {
+            Found::Known(under) | Found::Waiting(under) => under,
+        }
+    }
+}
+
 /// What's under the pixel at `at_px` (physical pixels from the canvas's top left) of
 /// `inputs`' frame: the origin plane or the face its ray meets first, a face before a plane
-/// within [`TIE_MM`] of it; none where neither is, or while a body drawn has its boxes still
-/// to come, or where a face of bodies not of the selection's model (not named yet) is met
-/// first.
-fn under_at(inputs: &Inputs<'_>, at_px: [f32; 2]) -> Option<Under> {
+/// within [`TIE_MM`] of it; none where neither is, or where a face of bodies not of the
+/// selection's model (not named yet) is met first. While a body drawn has its boxes still to
+/// come, the same among the faces of those whose boxes are made, [`Found::Waiting`].
+fn under_at(inputs: &Inputs<'_>, at_px: [f32; 2]) -> Found {
+    match inputs
+        .select_other
+        .face_met(inputs.view, inputs.frame, pixel_of(inputs, at_px))
+    {
+        Met::Waiting(hit) => Found::Waiting(nearest(inputs, at_px, hit)),
+        Met::Face(hit) => Found::Known(nearest(inputs, at_px, Some(hit))),
+        Met::Empty => Found::Known(nearest(inputs, at_px, None)),
+    }
+}
+
+/// The centre of the pixel at `at_px` of `inputs`' frame, clamped into it.
+fn pixel_of(inputs: &Inputs<'_>, at_px: [f32; 2]) -> [f64; 2] {
+    centre_of(square(at_px, inputs.frame.size_px, 0)).map(|c| f64::from(c) + 0.5)
+}
+
+/// Of the origin planes the frame drew and `face`, the face met first at `at_px`, if any:
+/// whichever the ray through it meets first, a face before a plane within [`TIE_MM`].
+fn nearest(
+    inputs: &Inputs<'_>,
+    at_px: [f32; 2],
+    face: Option<silico_render::render::Hit>,
+) -> Option<Under> {
     let frame = inputs.frame;
-    let pixel = centre_of(square(at_px, frame.size_px, 0)).map(|c| f64::from(c) + 0.5);
+    let pixel = pixel_of(inputs, at_px);
     let plane = crate::planes::under(
         &frame.camera,
         frame.size_px,
         pixel,
         inputs.view.planes_drawn(),
     );
-    let face = match inputs.select_other.face_met(inputs.view, frame, pixel) {
-        Met::Face(hit) => Some(hit),
-        Met::Empty => None,
-        // Not known yet: nothing, till the boxes are made (their thread asks for a frame).
-        Met::Waiting => return None,
-    };
     let Some(hit) = face else {
         return plane.map(|(plane, _)| Under::Plane(plane));
     };
@@ -384,4 +467,57 @@ fn under_at(inputs: &Inputs<'_>, at_px: [f32; 2]) -> Option<Under> {
         element: hit.element,
         name: Arc::clone(&named.name),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn face(n: u32) -> Face {
+        Face {
+            body: 1,
+            element: Element::Face(n),
+            name: Arc::new(Name::Element {
+                feature: silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+                made: silico_core::naming::TypeWord::Primitive(
+                    silico_core::naming::PrimitiveKind::Box,
+                ),
+                element: silico_protocol::ElementRef {
+                    kind: silico_protocol::ElementKind::Face,
+                    index: n,
+                },
+            }),
+        }
+    }
+
+    #[test]
+    fn a_newer_click_supersedes_one_waiting_for_its_faces_type() {
+        // #565's review: Face5 clicked before its type is read waits; Face6 clicked next,
+        // read as curved, is refused at once, and Face5's read answering later starts
+        // nothing: the newest click is the one that counts.
+        let mut pick = PlanePick::default();
+        assert_eq!(pick.click(Under::Face(face(5))), None);
+        assert!(pick.waiting());
+        pick.typed.insert(
+            face(6).name.to_string(),
+            Typed {
+                planar: Ok(false),
+                stored: Ok(Arc::clone(&face(6).name)),
+            },
+        );
+        assert_eq!(
+            pick.click(Under::Face(face(6))),
+            Some(Act::Say(
+                "Face6 isn't flat. Pick an origin plane or a flat face to sketch on.".to_owned()
+            ))
+        );
+        assert!(!pick.waiting(), "Face5's click let go");
+        // A plane clicked supersedes one waiting too.
+        assert_eq!(pick.click(Under::Face(face(5))), None);
+        assert_eq!(
+            pick.click(Under::Plane(OriginPlane::Xz)),
+            Some(Act::Plane(OriginPlane::Xz))
+        );
+        assert!(!pick.waiting());
+    }
 }

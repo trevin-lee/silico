@@ -1861,6 +1861,11 @@ impl Tab {
         painter: &eframe::egui::Painter,
         frame: &crate::viewport::ViewFrame,
     ) {
+        // Create Sketch's pick ends once sketch mode can't open: a dialog or a sketch opened
+        // another way (Edit Sketch, a feature's dialog), or the tab closing.
+        if self.plane_pick.is_some() && !self.can_sketch() {
+            self.end_plane_pick();
+        }
         if let Some(mode) = self.sketch.as_ref() {
             self.selection.canvas_claimed();
             self.box_select = Default::default();
@@ -7670,9 +7675,10 @@ impl Tab {
 
     /// Create Sketch's pick of a plane or a flat face begun (`crate::plane_pick`; the
     /// prototype's `startPickPlane`), the selection cleared, as it clears it; none unless
-    /// sketch mode can open ([`can_sketch`](Self::can_sketch)). One already on goes on.
+    /// sketch mode can open ([`can_sketch`](Self::can_sketch)). One already on begins again,
+    /// as the prototype's command runs `startPickPlane` again: a click it held let go.
     pub fn begin_plane_pick(&mut self) {
-        if !self.can_sketch() || self.plane_pick.is_some() {
+        if !self.can_sketch() {
             return;
         }
         tracing::debug!("plane_pick_begun");
@@ -7705,8 +7711,7 @@ impl Tab {
     /// Create Sketch's pick's share of the canvas's `frame` ([`overlay`](Self::overlay)),
     /// `current` whether the view's bodies are of the selection's model: the canvas claimed
     /// from the selection, its box, and Select Other; what the pointer is over found and
-    /// lit; and a click's sketch created, or its refusal said. The pick ends once sketch mode
-    /// can't open (a dialog or a sketch opened another way, the tab closing).
+    /// lit; and a click's sketch created, or its refusal said.
     fn plane_pick_frame<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -7714,15 +7719,14 @@ impl Tab {
         frame: &crate::viewport::ViewFrame,
         current: bool,
     ) {
-        if !self.can_sketch() {
-            self.end_plane_pick();
-            return;
-        }
         let ctx = painter.ctx();
         self.selection.canvas_claimed();
         self.box_select = Default::default();
         self.select_other
             .close(&mut self.selection, &mut self.view, ctx);
+        // The boxes the pick casts on kept up with the view's meshes, as Select Other's
+        // overlay keeps them (not called while the pick holds the canvas).
+        self.select_other.hold_boxes(&self.view, ctx);
         let Some(pick) = self.plane_pick.as_mut() else {
             return;
         };
@@ -15438,6 +15442,39 @@ mod tests {
             [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)]
         );
         assert_eq!(tab.sketch.as_ref().map(|mode| mode.undone), Some(0));
+    }
+
+    #[test]
+    fn create_sketch_again_while_its_pick_is_on_begins_it_again_letting_a_waiting_click_go() {
+        // #565's review: the prototype's command runs `startPickPlane` again, a fresh pick.
+        // A click waiting for its face's type is let go by it, so its read answering later
+        // starts nothing.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        tab.begin_plane_pick();
+        let face = crate::plane_pick::Face {
+            body: 1,
+            element: crate::renderer::Element::Face(6),
+            name: Arc::new(silico_core::naming::Name::Element {
+                feature: FeatureId::new("k7f2qx3m").unwrap(),
+                made: silico_core::naming::TypeWord::Primitive(
+                    silico_core::naming::PrimitiveKind::Box,
+                ),
+                element: silico_protocol::ElementRef {
+                    kind: silico_protocol::ElementKind::Face,
+                    index: 6,
+                },
+            }),
+        };
+        tab.plane_pick.as_mut().unwrap().clicked_on(face);
+        assert!(tab.plane_pick.as_ref().unwrap().waiting());
+        tab.begin_plane_pick();
+        assert!(tab.plane_pick.is_some());
+        assert!(!tab.plane_pick.as_ref().unwrap().waiting());
+        tab.end_plane_pick();
+        assert!(tab.plane_pick.is_none());
     }
 
     #[test]

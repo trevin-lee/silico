@@ -82,12 +82,12 @@ pub const HEADING: &str = "Under the pointer, nearest first";
 
 /// What a cast finds under a pointer ([`SelectOther::face_met`]): the face the ray meets
 /// first, with where and how deep; no face; or not known yet, while a body the frame drew
-/// has its boxes still to come.
+/// has its boxes still to come, with the face met first among those whose boxes are made.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Met {
     Face(Hit),
     Empty,
-    Waiting,
+    Waiting(Option<Hit>),
 }
 
 /// A key the menu takes while it's open, from `crate::app`'s keys (before the pane draws).
@@ -336,12 +336,21 @@ impl SelectOther {
     /// can be made; [`Cast::Waiting`] while a body the frame drew has its boxes still to come
     /// (asked for as the view takes its mesh, and a frame asked for as they're made): it
     /// never casts without a body that's drawn.
+    /// Each body's boxes asked for as `view` takes its mesh, made off the UI thread (`ctx`
+    /// asked for a frame as each is made), and those of a mesh it no longer holds let go:
+    /// nothing keeps an old mesh. Each frame, by whatever casts on them: Select Other's
+    /// overlay, or Create Sketch's pick while it holds the canvas (`crate::plane_pick`).
+    pub(crate) fn hold_boxes(&mut self, view: &View, ctx: &egui::Context) {
+        self.boxes
+            .hold(view.bodies().iter().map(|(n, body)| (*n, &body.mesh)), ctx);
+    }
+
     pub(crate) fn face_under(&self, view: &View, frame: &ViewFrame, pixel: [u32; 2]) -> Cast {
         let pointer = pixel.map(|c| f64::from(c) + 0.5);
         match self.face_met(view, frame, pointer) {
             Met::Face(hit) => Cast::Face(hit.body, hit.element),
             Met::Empty => Cast::Empty,
-            Met::Waiting => Cast::Waiting,
+            Met::Waiting(_) => Cast::Waiting,
         }
     }
 
@@ -349,10 +358,12 @@ impl SelectOther {
     /// `silico_render::render::ray` takes it) meets first, of a frame of `view`, cast on the
     /// bodies the frame drew as [`face_under`](Self::face_under) casts, with where it's met
     /// and its depth ([`Met::Face`]); [`Met::Empty`] where no face is met, or no box can be
-    /// made; [`Met::Waiting`] while a body the frame drew has its boxes still to come. Create
-    /// Sketch's pick's (`crate::plane_pick`).
+    /// made; [`Met::Waiting`] while a body the frame drew has its boxes still to come, with
+    /// the face met first among the bodies whose boxes are made, if one is. Create Sketch's
+    /// pick's (`crate::plane_pick`).
     pub(crate) fn face_met(&self, view: &View, frame: &ViewFrame, pointer: [f64; 2]) -> Met {
         let mut bodies: Vec<(u32, &Pickable)> = Vec::new();
+        let mut waiting = false;
         for n in &frame.drawn {
             let Some(body) = view.bodies().get(n) else {
                 continue;
@@ -360,18 +371,20 @@ impl SelectOther {
             match self.boxes.made_of(*n, &body.mesh) {
                 Some(pickable) => bodies.push((*n, pickable)),
                 None if self.boxes.failed() => return Met::Empty,
-                None => return Met::Waiting,
+                None => waiting = true,
             }
         }
-        match face_hit(
+        let hit = face_hit(
             &frame.camera,
             frame.size_px,
             frame.pixels_per_point,
             &bodies,
             pointer,
-        ) {
-            Some(hit) => Met::Face(hit),
-            None => Met::Empty,
+        );
+        match (waiting, hit) {
+            (true, hit) => Met::Waiting(hit),
+            (false, Some(hit)) => Met::Face(hit),
+            (false, None) => Met::Empty,
         }
     }
 
@@ -471,10 +484,7 @@ impl SelectOther {
                 return (self.canvas_events(selection, view, &given).0, None);
             }
         }
-        // Each body's boxes asked for as the view takes its mesh, made off the UI thread, and
-        // those of a mesh it no longer holds let go: nothing keeps an old mesh.
-        self.boxes
-            .hold(view.bodies().iter().map(|(n, body)| (*n, &body.mesh)), &ctx);
+        self.hold_boxes(view, &ctx);
         let menu_changed = self
             .menu
             .as_ref()
