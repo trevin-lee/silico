@@ -35,13 +35,13 @@ use silico_core::{Error, ErrorCode};
 use tempfile::TempDir;
 use ui::{
     A_BOX, ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT,
-    FakeBrowser, In, PLATE, PLATE_END, SKETCHED_EXAMPLE, TRIAD_DOT, TWO_BOXES, added, advance,
-    animation_time, answer_question, anywhere, apply_look, arrow_dots, arrow_shafts,
-    begin_sketch_on, body_of, boxed, button_event, choose, chosen, click_in_one_frame,
-    click_over_two_frames, close_window, create, create_sketch, cursor, dialog, dialog_length,
-    dialog_open, double_click, drag, edit_plates_pad, every_face, everything, f2_typed,
-    faces_made_by, failing_kernel, field, fields_of, from_the_front, hand_clock, hover_item,
-    image_centre, in_status_bar, is_settled, lavapipe_render_state, leave_sketch,
+    FakeBrowser, In, LavapipeRenderer, PLATE, PLATE_END, SKETCHED_EXAMPLE, TRIAD_DOT, TWO_BOXES,
+    added, advance, animation_time, answer_question, anywhere, apply_look, arrow_dots,
+    arrow_shafts, begin_sketch_on, body_of, boxed, button_event, choose, chosen,
+    click_in_one_frame, click_over_two_frames, close_window, create, create_sketch, cursor, dialog,
+    dialog_length, dialog_open, double_click, drag, edit_plates_pad, every_face, everything,
+    f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front, hand_clock,
+    hover_item, image_centre, in_status_bar, is_settled, lavapipe_render_state, leave_sketch,
     leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
     modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
     pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front, pointer_away,
@@ -2849,9 +2849,7 @@ fn the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks() {
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
@@ -12534,9 +12532,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             apply_look(&h);
@@ -14948,9 +14944,7 @@ fn the_themed_app_draws_its_panels_in_the_themes_colours_on_lavapipe() {
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             // As main.rs does, once at startup.
@@ -15267,9 +15261,7 @@ fn text_fields_are_drawn_as_the_prototypes_in_each_state_on_lavapipe() {
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             // As main.rs does, once at startup.
@@ -16315,9 +16307,7 @@ fn the_start_page_draws_in_the_themes_colours_on_lavapipe() {
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             apply_look(&h);
@@ -17916,9 +17906,7 @@ fn the_app_bar_draws_the_shown_tab_in_gray_200_on_lavapipe() {
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             apply_look(&h);
@@ -18861,9 +18849,7 @@ fn the_toolbar_draws_solid_in_gray_200_and_its_hovered_button_in_gray_300_on_lav
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             apply_look(&h);
@@ -18923,9 +18909,8 @@ fn the_sketch_tab_and_finish_sketch_are_blue_500_on_lavapipe() {
         "the_sketch_tab_and_finish_sketch_are_blue_500_on_lavapipe",
         || {
             let state = lavapipe_render_state();
-            let builder = Harness::builder().renderer(
-                egui_kittest::wgpu::WgpuTestRenderer::from_render_state(state.clone()),
-            );
+            let builder =
+                Harness::builder().renderer(LavapipeRenderer::from_render_state(state.clone()));
             let mut stub = ToolbarStub::new();
             stub.in_sketch = true;
             let mut h = toolbar_with(builder, stub);
@@ -19815,9 +19800,7 @@ fn the_browsers_rows_are_filled_as_the_prototype_fills_them_and_its_mark_is_red_
                     .with_size((1280.0, 800.0))
                     .with_pixels_per_point(2.0)
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             apply_look(&h);
@@ -20256,9 +20239,7 @@ fn the_timeline_draws_a_selected_item_blue_and_a_failed_one_red_on_lavapipe() {
                     .with_size((1280.0, 800.0))
                     .with_pixels_per_point(2.0)
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             apply_look(&h);
@@ -21016,9 +20997,7 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
                     .with_size((1280.0, 800.0))
                     .with_pixels_per_point(2.0)
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             apply_look(&h);
@@ -37091,9 +37070,7 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
@@ -39185,9 +39162,7 @@ fn on_lavapipe_the_fillet_dialog_lists_two_edges_picked_in_the_canvas_and_they_s
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
@@ -40978,9 +40953,7 @@ fn on_lavapipe_a_features_card_is_titled_by_its_name_and_its_message_wraps_acros
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
@@ -41035,9 +41008,7 @@ fn on_lavapipe_whats_wrong_shows_two_error_cards_and_a_warnings() {
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
@@ -41774,9 +41745,7 @@ fn on_lavapipe_the_timelines_menu_opens_on_a_feature() {
             Harness::builder()
                 .with_size((1280.0, 800.0))
                 .with_step_dt(1.0 / 60.0)
-                .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                    state.clone(),
-                ))
+                .renderer(LavapipeRenderer::from_render_state(state.clone()))
                 .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
         };
         h.set_render_every_step(true);
@@ -43190,9 +43159,7 @@ fn on_lavapipe_a_hovered_candidate_lights_its_edge_beside_the_broken_fillets_car
                 Harness::builder()
                     .with_size((1280.0, 800.0))
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             h.set_render_every_step(true);
@@ -47504,9 +47471,7 @@ fn on_lavapipe_a_shown_sketchs_line_is_drawn_on_its_face_in_eguis_image_and_its_
                     .with_size((1280.0, 800.0))
                     .with_pixels_per_point(2.0)
                     .with_step_dt(1.0 / 60.0)
-                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
-                        state.clone(),
-                    ))
+                    .renderer(LavapipeRenderer::from_render_state(state.clone()))
                     .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
             };
             apply_look(&h);
@@ -56291,4 +56256,55 @@ fn behind_the_command_search_the_window_takes_no_click_until_esc_closes_it() {
     step_until(&mut h, "the search closed", |h| !search_open(h));
     item_takes_a_click(&mut h, "Block", "k7f2qx3m");
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// The app tests' renderer ([`LavapipeRenderer`]) against egui_kittest's own, which it ports:
+/// the same pixels, byte for byte, at widths whose rows are padded for wgpu's copy (1001 at
+/// 1.5, 97 at 2) and one that isn't (1280), so its unpadding is held to upstream's.
+#[test]
+fn the_port_draws_byte_for_byte_as_egui_kittests_renderer() {
+    on_lavapipe(
+        "the_port_draws_byte_for_byte_as_egui_kittests_renderer",
+        || {
+            fn draw(ui: &mut eframe::egui::Ui) {
+                ui.label("Lorem ipsum, a label at an odd width");
+                let (rect, _) = ui.allocate_exact_size(
+                    eframe::egui::vec2(77.0, 33.0),
+                    eframe::egui::Sense::hover(),
+                );
+                ui.painter().rect_filled(
+                    rect,
+                    4.0,
+                    eframe::egui::Color32::from_rgba_unmultiplied(0x18, 0x6a, 0xdd, 0x80),
+                );
+                ui.painter()
+                    .circle_stroke(rect.center(), 20.0, (1.5, eframe::egui::Color32::RED));
+                let _ = ui.button("A button");
+            }
+            for (size, ppp) in [
+                ((1001.0, 333.0), 1.5),
+                ((1280.0, 200.0), 1.0),
+                ((97.0, 41.0), 2.0),
+            ] {
+                let mut ours = Harness::builder()
+                    .with_size(size)
+                    .with_pixels_per_point(ppp)
+                    .renderer(LavapipeRenderer::from_render_state(lavapipe_render_state()))
+                    .build_ui(draw);
+                let mut theirs = Harness::builder()
+                    .with_size(size)
+                    .with_pixels_per_point(ppp)
+                    .renderer(egui_kittest::wgpu::WgpuTestRenderer::from_render_state(
+                        lavapipe_render_state(),
+                    ))
+                    .build_ui(draw);
+                ours.run();
+                theirs.run();
+                let (a, b) = (ours.render().unwrap(), theirs.render().unwrap());
+                assert_eq!(a.dimensions(), b.dimensions());
+                assert!(a.as_raw().iter().any(|&v| v != 0));
+                assert_eq!(a.as_raw(), b.as_raw(), "{size:?} at {ppp}");
+            }
+        },
+    );
 }
