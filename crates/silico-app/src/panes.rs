@@ -302,6 +302,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
         if let Some(shown) = asked.planes_shown {
             tab.show_origin_planes(shown);
         }
+        if let Some(plane) = asked.plane_picked {
+            tab.pick_origin_plane(self.sessions, plane);
+            *self.next_frame = true;
+        }
         if tab.view.plane_hovered != asked.plane_hovered {
             tab.view.plane_hovered = asked.plane_hovered;
             // The canvas, drawn before the browser or after it, draws it from the next frame,
@@ -1296,6 +1300,8 @@ struct Asked {
     planes_shown: Option<bool>,
     /// The origin plane whose row the pointer is on, if one is.
     plane_hovered: Option<silico_core::document::OriginPlane>,
+    /// The origin plane whose row was clicked while Create Sketch's pick is on: picked.
+    plane_picked: Option<silico_core::document::OriginPlane>,
     /// A row clicked: its feature, and how its row selects it.
     selected: Option<(FeatureId, SelectedAs)>,
     /// A selected row Ctrl-clicked (Cmd on macOS): its feature taken out of the selection.
@@ -1476,12 +1482,21 @@ fn tree(
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
                 }
-                // A plane's row under the pointer lights its plane in the canvas.
-                if let Some(plane) = crate::planes::of_row(name)
-                    && (answer.row.hovered()
-                        || answer.eye.as_ref().is_some_and(egui::Response::hovered))
-                {
-                    asked.plane_hovered = Some(plane);
+                // A plane's row under the pointer lights its plane in the canvas, and, while
+                // Create Sketch's pick is on, one with the keys' focus too; clicked then (or
+                // Enter on it), it's picked (`crate::plane_pick`), as Fusion's browser and
+                // SolidWorks' tree give a plane a sketch is asked for.
+                if let Some(plane) = crate::planes::of_row(name) {
+                    let picking = tab.plane_pick.is_some();
+                    if answer.row.hovered()
+                        || answer.eye.as_ref().is_some_and(egui::Response::hovered)
+                        || (picking && answer.row.has_focus())
+                    {
+                        asked.plane_hovered = Some(plane);
+                    }
+                    if answer.row.clicked() && picking {
+                        asked.plane_picked = Some(plane);
+                    }
                 }
                 answer
                     .row
