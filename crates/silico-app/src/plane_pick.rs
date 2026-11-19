@@ -22,8 +22,8 @@
 //! store writes for it (`Tab::create_sketch_on_face`, as Sketch on this face does), the
 //! pick ended. A click on a face whose type isn't read yet waits for its read, and then does
 //! the same; one while a body drawn has its boxes still to come (made off the UI thread as
-//! the view takes a mesh) waits for them and is cast again then, unless the view moves first,
-//! as the selection keeps a click; meanwhile the pointer lights what it meets among the
+//! the view takes a mesh) waits for them and is cast again then, unless the view moves or
+//! another model is published first (said), as the selection keeps a click; meanwhile the pointer lights what it meets among the
 //! bodies whose boxes are made. A newer click supersedes one waiting. A click on a face
 //! that isn't flat, or one no store can name, is refused, said in a toast in the prototype's
 //! words' style, and the pick goes on; a click on nothing does nothing, as the prototype's.
@@ -204,50 +204,25 @@ impl PlanePick {
         inputs: &Inputs<'_>,
     ) -> (Vec<Act>, bool) {
         let _span = tracing::debug_span!("plane_pick_frame").entered();
-        let model = inputs.selection.model_of();
-        if model != self.model {
-            // Another model: what was read of its faces is of the old one.
-            self.model = model;
-            self.typed.clear();
-            self.clicked = None;
-            self.reading = None;
-        }
         let before = (self.lit_plane(), self.lit_face().cloned());
-        let click_px = inputs.click_distance * inputs.frame.pixels_per_point;
-        let mut acts = Vec::new();
         let frame = inputs.frame;
-        // A click held for the boxes: let go once the view moved, cast again once they're
-        // made.
-        if let Some(held) = self.held.take()
-            && held.camera == frame.camera
-            && held.size_px == frame.size_px
-        {
-            match under_at(inputs, held.at_px) {
-                Found::Waiting(_) => self.held = Some(held),
-                Found::Known(under) => acts.extend(under.and_then(|under| self.click(under))),
-            }
-        }
+        let mut acts: Vec<Act> = self
+            .model_is(inputs.selection.model_of())
+            .into_iter()
+            .collect();
+        // The frame's clicks: a press and its release within egui's click distance.
+        let click_px = inputs.click_distance * frame.pixels_per_point;
+        let mut clicks = Vec::new();
         for event in &frame.left {
             match event.kind {
                 LeftKind::Press => self.press = Some(event.at_px),
                 LeftKind::Release => {
-                    let pressed = self.press.take();
-                    if pressed.is_some_and(|at| distance(at, event.at_px) <= click_px) {
-                        // The newest click is the one that counts: any waiting goes.
-                        self.held = None;
-                        self.clicked = None;
-                        match under_at(inputs, event.at_px) {
-                            Found::Waiting(_) => {
-                                self.held = Some(Held {
-                                    at_px: event.at_px,
-                                    camera: frame.camera.clone(),
-                                    size_px: frame.size_px,
-                                });
-                            }
-                            Found::Known(under) => {
-                                acts.extend(under.and_then(|under| self.click(under)));
-                            }
-                        }
+                    if self
+                        .press
+                        .take()
+                        .is_some_and(|at| distance(at, event.at_px) <= click_px)
+                    {
+                        clicks.push(event.at_px);
                     }
                 }
                 // A stream cancelled ends with no release (`LeftKind::Cancel`): its press is
@@ -255,18 +230,78 @@ impl PlanePick {
                 LeftKind::Cancel | LeftKind::Move | LeftKind::DoubleClick => {}
             }
         }
-        self.under = frame
-            .pointer_px
-            .and_then(|at_px| under_at(inputs, at_px).seen());
+        let cast = |at_px| under_at(inputs, at_px);
+        acts.extend(self.clicks(&clicks, &frame.camera, frame.size_px, &cast));
+        self.under = frame.pointer_px.and_then(|at_px| cast(at_px).seen());
         self.read_type(sessions, session, inputs.selection);
-        if let Some(face) = self.clicked.clone()
-            && let Some(typed) = self.typed.get(face.name.to_string().as_str()).cloned()
-        {
-            self.clicked = None;
-            acts.extend(decided(&face, &typed));
-        }
+        acts.extend(self.answered());
         let after = (self.lit_plane(), self.lit_face().cloned());
         (acts, before != after)
+    }
+
+    /// The selection's model now `model`: if it's another than the one before, what was read
+    /// of its faces let go (it's of the old one), and so is a click on a face waiting for its
+    /// type; and a click held for the boxes, whose place would be cast on the new model's
+    /// meshes, not those it was aimed at, as the selection lets a click go
+    /// (`selection::CLICK_REPUBLISHED`), said.
+    fn model_is(&mut self, model: Option<(u64, Revision)>) -> Option<Act> {
+        if model == self.model {
+            return None;
+        }
+        self.model = model;
+        self.typed.clear();
+        self.clicked = None;
+        self.reading = None;
+        self.held
+            .take()
+            .map(|_| Act::Say(CLICK_REPUBLISHED.to_owned()))
+    }
+
+    /// The frame's clicks, at `clicks` (in physical pixels from the canvas's top left), in a
+    /// view from `camera` `size_px` in pixels, each cast by `cast`. The newest is the one that
+    /// counts: with any, a click waiting (for the boxes, or for its face's type) is let go and
+    /// the last of them taken; with none, a click held for the boxes is cast again (let go if
+    /// the view moved since). One cast while the boxes are still to come is held for them.
+    fn clicks(
+        &mut self,
+        clicks: &[[f32; 2]],
+        camera: &silico_protocol::Camera,
+        size_px: [u32; 2],
+        cast: &dyn Fn([f32; 2]) -> Found,
+    ) -> Option<Act> {
+        let at_px = match clicks.last() {
+            Some(at_px) => {
+                self.held = None;
+                self.clicked = None;
+                *at_px
+            }
+            None => {
+                let held = self.held.take()?;
+                if held.camera != *camera || held.size_px != size_px {
+                    return None;
+                }
+                held.at_px
+            }
+        };
+        match cast(at_px) {
+            Found::Waiting(_) => {
+                self.held = Some(Held {
+                    at_px,
+                    camera: camera.clone(),
+                    size_px,
+                });
+                None
+            }
+            Found::Known(under) => self.click(under?),
+        }
+    }
+
+    /// The face a click waits on, once its type is read: what the click asks.
+    fn answered(&mut self) -> Option<Act> {
+        let face = self.clicked.clone()?;
+        let typed = self.typed.get(face.name.to_string().as_str()).cloned()?;
+        self.clicked = None;
+        decided(&face, &typed)
     }
 
     /// A click on `under`: a plane's sketch, or a face's once its type is known (waiting for
@@ -394,6 +429,11 @@ fn decided(face: &Face, typed: &Typed) -> Option<Act> {
     })
 }
 
+/// What a toast says of a click held for the boxes let go as another model was published:
+/// what it would be picked on isn't what it was aimed at.
+pub const CLICK_REPUBLISHED: &str = "The click was let go: the model changed before what was \
+                                     under it could be found; click again";
+
 /// What a cast of the pick finds under a pixel: what's there, known; or, while a body the
 /// frame drew has its boxes still to come, what's seen there among the rest, which a body
 /// not boxed yet may hide.
@@ -519,5 +559,117 @@ mod tests {
             Some(Act::Plane(OriginPlane::Xz))
         );
         assert!(!pick.waiting());
+    }
+
+    /// A camera from above, and the size of its image, for `clicks`.
+    fn above() -> (silico_protocol::Camera, [u32; 2]) {
+        (
+            silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
+                eye: [20.0, 10.0, 100.0],
+                target: [20.0, 10.0, 0.0],
+                up: [0.0, 1.0, 0.0],
+            },
+            [400, 300],
+        )
+    }
+
+    /// A pixel's cast: Face5 at x 10, the boxes still to come at x 20, XY at x 30, XZ at
+    /// x 40, nothing elsewhere.
+    fn cast(at_px: [f32; 2]) -> Found {
+        match at_px[0] as u32 {
+            10 => Found::Known(Some(Under::Face(face(5)))),
+            20 => Found::Waiting(None),
+            30 => Found::Known(Some(Under::Plane(OriginPlane::Xy))),
+            40 => Found::Known(Some(Under::Plane(OriginPlane::Xz))),
+            _ => Found::Known(None),
+        }
+    }
+
+    #[test]
+    fn a_click_held_for_the_boxes_lets_a_click_waiting_for_a_faces_type_go() {
+        // #565's round 2: Face5 clicked before its type is read waits; a click next frame
+        // where the boxes are still to come is held for them, and lets Face5's go, so Face5's
+        // read answering (a plane, stored) asks nothing. The held click then cast once the
+        // boxes are made, on XY, is the one taken.
+        let (camera, size) = above();
+        let mut pick = PlanePick::default();
+        assert_eq!(pick.clicks(&[[10.0, 5.0]], &camera, size, &cast), None);
+        assert_eq!(pick.clicked, Some(face(5)));
+        assert_eq!(pick.clicks(&[[20.0, 5.0]], &camera, size, &cast), None);
+        assert_eq!(pick.clicked, None);
+        assert!(pick.held.is_some());
+        pick.typed.insert(
+            face(5).name.to_string(),
+            Typed {
+                planar: Ok(true),
+                stored: Ok(Arc::clone(&face(5).name)),
+            },
+        );
+        assert_eq!(pick.answered(), None, "Face5's click let go");
+        let made = |at_px: [f32; 2]| match at_px[0] as u32 {
+            20 => Found::Known(Some(Under::Plane(OriginPlane::Xy))),
+            _ => cast(at_px),
+        };
+        assert_eq!(
+            pick.clicks(&[], &camera, size, &made),
+            Some(Act::Plane(OriginPlane::Xy))
+        );
+        assert!(!pick.waiting());
+    }
+
+    #[test]
+    fn a_click_in_the_frame_a_held_click_could_be_cast_again_is_the_one_taken() {
+        // The newest wins: a click held for the boxes, and in the frame they're made a new
+        // click on XZ; only XZ is asked, never the held click's XY. Of two clicks in one
+        // frame, the last.
+        let (camera, size) = above();
+        let mut pick = PlanePick::default();
+        assert_eq!(pick.clicks(&[[20.0, 5.0]], &camera, size, &cast), None);
+        let made = |at_px: [f32; 2]| match at_px[0] as u32 {
+            20 => Found::Known(Some(Under::Plane(OriginPlane::Xy))),
+            _ => cast(at_px),
+        };
+        assert_eq!(
+            pick.clicks(&[[40.0, 5.0]], &camera, size, &made),
+            Some(Act::Plane(OriginPlane::Xz))
+        );
+        assert!(!pick.waiting());
+        assert_eq!(
+            pick.clicks(&[[30.0, 5.0], [40.0, 5.0]], &camera, size, &cast),
+            Some(Act::Plane(OriginPlane::Xz))
+        );
+    }
+
+    #[test]
+    fn a_click_held_for_the_boxes_is_let_go_by_a_view_moved_or_another_model_said() {
+        // As the selection lets a click go: the camera moved since (its place was of the view
+        // before), silently; another model published (what it would be cast on isn't what it
+        // was aimed at), said in the selection's way.
+        let (camera, size) = above();
+        let mut moved = camera.clone();
+        moved.eye[0] += 1.0;
+        let made = |_: [f32; 2]| Found::Known(Some(Under::Plane(OriginPlane::Xy)));
+        let mut pick = PlanePick::default();
+        assert_eq!(pick.clicks(&[[20.0, 5.0]], &camera, size, &cast), None);
+        assert_eq!(pick.clicks(&[], &moved, size, &made), None);
+        assert!(!pick.waiting());
+        assert_eq!(
+            pick.model_is(Some((1, Revision::from_number(1).unwrap()))),
+            None
+        );
+        assert_eq!(pick.clicks(&[[20.0, 5.0]], &camera, size, &cast), None);
+        assert_eq!(
+            pick.model_is(Some((1, Revision::from_number(1).unwrap()))),
+            None,
+            "the same model"
+        );
+        assert!(pick.waiting());
+        assert_eq!(
+            pick.model_is(Some((2, Revision::from_number(2).unwrap()))),
+            Some(Act::Say(CLICK_REPUBLISHED.to_owned()))
+        );
+        assert!(!pick.waiting());
+        assert_eq!(pick.clicks(&[], &camera, size, &made), None);
     }
 }

@@ -55001,6 +55001,68 @@ fn a_face_of_meshes_not_of_the_published_model_is_never_picked_and_hides_the_pla
 }
 
 #[test]
+fn a_click_held_for_the_boxes_is_let_go_when_another_model_comes() {
+    // #565's round 2: a click on the top while a new mesh's boxes are made is held for them;
+    // another model then published (the block 10 long, its mesh with it) would cast that
+    // place on meshes it wasn't aimed at (XY, past the shrunk box). It's let go and said, as
+    // the selection lets a click go, and nothing is added once the boxes are made.
+    let f = fixture();
+    describes_a_real_box(&f);
+    let small = Arc::new(AtomicBool::new(false));
+    let shrunk = Arc::clone(&small);
+    f.kernel.answer_instead(move |op| match op {
+        Op::Tessellate {
+            deflection,
+            at_least_the_floor,
+            ..
+        } => {
+            let length = if shrunk.load(Ordering::SeqCst) {
+                10.0
+            } else {
+                40.0
+            };
+            let mesh = silico_render::bench::box_mesh([0.0; 3], [length, 20.0, 10.0]);
+            Some(if *at_least_the_floor {
+                silico_protocol::Reply::MeshAt(silico_protocol::MeshAt {
+                    mesh,
+                    deflection: *deflection,
+                })
+            } else {
+                silico_protocol::Reply::Mesh(mesh)
+            })
+        }
+        _ => None,
+    });
+    let making = Arc::new(Making::default());
+    let (mut h, _record) = drawn_from_above(&f, "box.silico", A_BOX, Some(making.build()), 1.0);
+    boxes_made(&mut h);
+    begin_pick(&mut h);
+    making.hold();
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "41");
+    let top = the_boxs_top(&h);
+    pick_at(&mut h, top);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).is_none());
+    assert!(h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
+    let camera = view(&h).camera().clone();
+    small.store(true, Ordering::SeqCst);
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "10");
+    assert_eq!(view(&h).camera(), &camera);
+    toasted(&mut h, silico_app::plane_pick::CLICK_REPUBLISHED);
+    assert!(!h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
+    making.release();
+    boxes_made(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).is_none(), "{:?}", text_of(&f.sessions, &h));
+    assert!(picking(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_face_that_isnt_flat_is_refused_in_the_pick_and_the_pick_goes_on() {
     // The prototype lights and takes only a face whose `kind` is 'plane'. The box's top
     // described as a cylinder's side (as the context menu's test describes it): under the

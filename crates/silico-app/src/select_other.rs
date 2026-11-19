@@ -329,13 +329,6 @@ impl SelectOther {
         self.boxes.meshes().collect()
     }
 
-    /// The face under `pixel`'s centre in `frame`: of the bodies it drew (`view`'s meshes of
-    /// them), the one the ray meets first ([`face_hit`]), cast on their boxes. The
-    /// selection's where an edge's stroke covers its pick and the filter takes faces but not
-    /// edges ([`Selection::overlay`]). [`Cast::Empty`] where no face is there, or where no box
-    /// can be made; [`Cast::Waiting`] while a body the frame drew has its boxes still to come
-    /// (asked for as the view takes its mesh, and a frame asked for as they're made): it
-    /// never casts without a body that's drawn.
     /// Each body's boxes asked for as `view` takes its mesh, made off the UI thread (`ctx`
     /// asked for a frame as each is made), and those of a mesh it no longer holds let go:
     /// nothing keeps an old mesh. Each frame, by whatever casts on them: Select Other's
@@ -345,6 +338,13 @@ impl SelectOther {
             .hold(view.bodies().iter().map(|(n, body)| (*n, &body.mesh)), ctx);
     }
 
+    /// The face under `pixel`'s centre in `frame`: of the bodies it drew (`view`'s meshes of
+    /// them), the one the ray meets first ([`face_hit`]), cast on their boxes. The
+    /// selection's where an edge's stroke covers its pick and the filter takes faces but not
+    /// edges ([`Selection::overlay`]). [`Cast::Empty`] where no face is there, or where no box
+    /// can be made; [`Cast::Waiting`] while a body the frame drew has its boxes still to come
+    /// (asked for as the view takes its mesh, and a frame asked for as they're made): it
+    /// never casts without a body that's drawn.
     pub(crate) fn face_under(&self, view: &View, frame: &ViewFrame, pixel: [u32; 2]) -> Cast {
         let pointer = pixel.map(|c| f64::from(c) + 0.5);
         match self.face_met(view, frame, pointer) {
