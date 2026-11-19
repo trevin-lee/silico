@@ -21859,19 +21859,19 @@ fn a_sketchs_a_pockets_and_a_fillets_parameters_are_the_prototypes_rows_and_a_bo
     let want = rows_of(&[
         ("Plane", "XZ"),
         ("Definition", "Fully defined"),
-        ("Curves", "2 circles, ⌀ 6 mm"),
+        ("Curves", "2 circles, Ø 6 mm"),
         ("Dimensions", "None"),
     ]);
     step_until(&mut h, "the holes' parameters", |h| {
         parameter_rows(h) == want
     });
-    // A pocket's: its profile (two circles, two regions), its extent, its way (against
-    // its sketch's normal, −Y on XZ: +Y), and its base by name.
+    // A pocket's: its profile (two circles, two regions), its extent, its way (its default,
+    // against its sketch's normal, −Y on XZ: +Y), and its base by name.
     select(&mut h, "Bores");
     let want = rows_of(&[
         ("Profile", "Holes · 2 regions"),
         ("Extent", "Through all"),
-        ("Direction", "Normal (+Y)"),
+        ("Direction", "Default (+Y)"),
         ("Base", "Plate pad"),
     ]);
     step_until(&mut h, "the pocket's parameters", |h| {
@@ -21989,6 +21989,56 @@ fn on_a_document_the_gate_refused_the_panels_buttons_are_off_saying_why_as_the_m
             node.value().or_else(|| node.label()).as_deref() == Some(why)
         })
     });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn health_and_the_buttons_stay_put_while_a_selected_features_parameters_are_read() {
+    let f = fixture();
+    let (mut h, _) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    // The pad's rows read once, and its warning's card shown (its missing fingerprint), where
+    // its buttons then stand.
+    select(&mut h, "Plate pad");
+    step_until(&mut h, "its parameters and its card", |h| {
+        parameter_rows(h).len() == 3 && shows(h, "Properties", "fingerprint_missing")
+    });
+    let edit_at = |h: &AppHarness| property_button(h, "Edit feature").map(|button| button.rect());
+    let settled_at = edit_at(&h).unwrap();
+    // Another feature, then the pad again: its text is read again (the last read was the
+    // pocket's), and every frame from the click until it answers keeps the room its rows
+    // took, so the buttons never move.
+    select(&mut h, "Bores");
+    let reads = h.state().tabs()[0].parameters.reads;
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Plate pad")
+        .click();
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        step(&mut h);
+        // The frame drawn is the pad's (the click's own frame drew the pocket's, then took
+        // the click): its Name field says so.
+        if name_field(&h).value().as_deref() == Some("Plate pad") {
+            assert_eq!(
+                edit_at(&h),
+                Some(settled_at),
+                "Edit feature moved while the pad was read"
+            );
+            if parameter_rows(&h).len() == 3 {
+                break;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never the pad's rows again"
+        );
+    }
+    assert!(
+        h.state().tabs()[0].parameters.reads > reads,
+        "the pad's text read again"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 

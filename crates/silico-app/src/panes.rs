@@ -767,7 +767,7 @@ fn parameters<P: Clients + 'static>(
         let (session, revision) = (tab.id, tab.revision);
         tab.parameters.poll(sessions, &session, &entry.id, revision);
         let tab = &*tab;
-        let name = |id: &FeatureId| tab.name_of(id);
+        let name = |id: &FeatureId| tab.entry(id.as_str()).map(|entry| entry.name.clone());
         let sketch = |id: &FeatureId| tab.sketch_reads.held(id).map(|held| &*held.read);
         let context = Context {
             name: &name,
@@ -778,10 +778,28 @@ fn parameters<P: Clients + 'static>(
             .map(|node| feature_rows(entry.kind, node, &context))
             .unwrap_or_default()
     };
-    // No section with no rows: a feature not read yet, or a suppressed sketch, never read.
+    // No section with no rows (a suppressed sketch, never read); but while a feature's text
+    // is read, the room its kind's rows last took, so HEALTH and the buttons under it stay
+    // where they'll be once it answers.
     if rows.is_empty() {
+        let reading = entry.kind != "sketch" && tab.parameters.node(&entry.id).is_none();
+        if let Some(kept) = tab
+            .parameters
+            .last_shown(entry.kind)
+            .filter(|kept| reading && *kept > 0)
+        {
+            properties::section(ui, "Parameters");
+            ui.allocate_exact_size(
+                Vec2::new(
+                    ui.available_width(),
+                    kept as f32 * theme::PROPERTY_ROW_HEIGHT,
+                ),
+                Sense::hover(),
+            );
+        }
         return None;
     }
+    tab.parameters.showed(entry.kind, rows.len());
     properties::section(ui, "Parameters");
     let mut asked = None;
     for row in rows {
@@ -4213,7 +4231,8 @@ mod property_panel_drawn {
         // as read, each a `.prop` in the value's own type and Gray.800; then HEALTH.
         y = section_at(&h, "PARAMETERS", y + css::ROW_H);
         y = row_at(&h, "Target Body", "Block", y, body(css::FS), css::G800);
-        y = row_at(&h, "Tool Body", "t0000001", y, body(css::FS), css::G800);
+        // Its tool, which the timeline doesn't list, by its ID, in the monospace type.
+        y = row_at(&h, "Tool Body", "t0000001", y, mono(), css::G800);
         y = section_at(&h, "HEALTH", y);
         y = row_at(&h, "State", "Error", y, body(css::FS), css::RED);
         y = row_at(&h, "ID", "c0000001", y, mono(), css::G800);

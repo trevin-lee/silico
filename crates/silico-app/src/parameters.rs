@@ -20,11 +20,11 @@
 
 use eframe::egui::Color32;
 use silico_core::command::sketch::SketchRead;
-use silico_core::command::wire::Named;
+use silico_core::command::wire::{self, Json, Layout, Named};
 use silico_core::command::{Revision, Running, SessionId, Sessions, TextAnswer};
 use silico_core::document::json::{Node, Value};
 use silico_core::document::{
-    ANGLE_DECIMALS, Angle, Extent, FeatureId, Length, PadExtent, PocketExtent, SweepFeature,
+    ANGLE_DECIMALS, Angle, Extent, FeatureId, Length, PadExtent, Plane, PocketExtent, SweepFeature,
     TurnExtent, read_extent,
 };
 use silico_core::kernel::{Clients, SketchPlane};
@@ -90,6 +90,9 @@ pub struct FeatureRead {
     /// The feature and revision the last answer was for, whatever it said.
     answered: Option<(FeatureId, Revision)>,
     reading: Option<(FeatureId, Revision, Running<TextAnswer>)>,
+    /// How many rows each kind of feature last showed: the room its section keeps while a
+    /// feature of that kind is read, so what's under it doesn't move when the read answers.
+    shown: std::collections::BTreeMap<&'static str, usize>,
     /// How many reads it has sent: what a test counts.
     pub reads: u64,
 }
@@ -160,6 +163,16 @@ impl FeatureRead {
         self.held = Some(Held { feature, node });
     }
 
+    /// That a feature of the type `kind` showed `rows` rows.
+    pub fn showed(&mut self, kind: &'static str, rows: usize) {
+        self.shown.insert(kind, rows);
+    }
+
+    /// How many rows a feature of the type `kind` last showed, if one has.
+    pub fn last_shown(&self, kind: &str) -> Option<usize> {
+        self.shown.get(kind).copied()
+    }
+
     /// The feature `feature`'s text, as last read, if one was.
     pub fn node(&self, feature: &FeatureId) -> Option<&Node> {
         self.held
@@ -172,22 +185,42 @@ impl FeatureRead {
 /// What a feature's rows read besides its own text: the features' names, and the sketches'
 /// reads.
 pub struct Context<'a> {
-    pub name: &'a dyn Fn(&FeatureId) -> String,
+    /// A feature's name, if the timeline lists it.
+    pub name: &'a dyn Fn(&FeatureId) -> Option<String>,
     pub sketch: &'a dyn Fn(&FeatureId) -> Option<&'a SketchRead>,
 }
 
-/// The rows of a sketch, from its read: its plane as the browser names it; its definition
-/// in sketch mode's words and colours ([`crate::sketch::state_shown`]), but Fully defined
-/// in the value's own Gray.800, as `featureProps` leaves it; its curves, construction left
-/// out, counted by kind, and the circles' diameter if they share one (`2 circles, ⌀ 5.5
-/// mm`); and its driving dimensions' values. None before it's read (a suppressed sketch is
-/// never read).
+/// The rows of a sketch, from its read: its plane as the browser names it, and for a
+/// planar face, the face by its stored name, in the monospace type, `Face, reversed` if
+/// it's flipped; its definition in sketch mode's words and colours
+/// ([`crate::sketch::state_shown`]), but Fully defined in the value's own Gray.800, as
+/// `featureProps` leaves it; its curves, construction left out, counted by kind, and the
+/// circles' diameter if they share one (the prototype's `2 circles, ⌀ 5.5 mm`, in the
+/// canvas's Ø, as Dimensions marks a diameter); and its driving dimensions' values. None
+/// before it's read (a suppressed sketch is never read).
 pub fn sketch_rows(read: Option<&SketchRead>) -> Vec<Row> {
     let Some(read) = read else {
         return Vec::new();
     };
     let sketch = &read.members;
-    let mut rows = vec![text("Plane", crate::panes::plane_meta(&sketch.plane))];
+    let plane = crate::panes::plane_meta(&sketch.plane);
+    let mut rows = match &sketch.plane {
+        Plane::Face(face) => vec![
+            text(
+                "Plane",
+                if face.reversed {
+                    format!("{plane}, reversed")
+                } else {
+                    plane.to_owned()
+                },
+            ),
+            Row {
+                key: "Face",
+                value: Shown::Id(face.face.as_str().to_owned()),
+            },
+        ],
+        Plane::Origin(_) => vec![text("Plane", plane)],
+    };
     let shown = crate::sketch::state_shown(read);
     let empty = sketch.elements().next().is_none();
     let colour = if read.states.state == SketchState::FullyDefined && !empty {
@@ -227,7 +260,7 @@ pub fn sketch_rows(read: Option<&SketchRead>) -> Vec<Row> {
     if let [Some(first), rest @ ..] = diameters.as_slice()
         && rest.iter().all(|other| *other == Some(*first))
     {
-        curves.push(format!("⌀ {} mm", mm(*first)));
+        curves.push(format!("Ø {} mm", mm(*first)));
     }
     rows.push(text("Curves", none_or(curves.join(", "))));
     rows.push(text("Dimensions", none_or(dimensions(sketch))));
@@ -287,9 +320,18 @@ fn dimensions(sketch: &silico_core::document::Sketch) -> String {
     parts.join(" · ")
 }
 
-/// A length's millimetres, as the prototype's `fmt` writes them: at most two decimals.
+/// A length's millimetres, as the prototype's `fmt` writes them: at most two decimals, a
+/// negative one's minus a true minus, as a direction's is.
 fn mm(length: Length) -> String {
-    crate::properties::trimmed(i128::from(length.nm()), crate::properties::NM_PER_MM)
+    minus(crate::properties::trimmed(
+        i128::from(length.nm()),
+        crate::properties::NM_PER_MM,
+    ))
+}
+
+/// `written` with each hyphen-minus a true minus (U+2212).
+fn minus(written: String) -> String {
+    written.replace('-', "\u{2212}")
 }
 
 /// An angle's degrees, as the prototype's `fmt` writes them, with its sign.
@@ -297,7 +339,7 @@ fn degrees(angle: Angle) -> String {
     let per = 10_i128.pow(ANGLE_DECIMALS);
     format!(
         "{}°",
-        crate::properties::trimmed(i128::from(angle.ndeg()), per)
+        minus(crate::properties::trimmed(i128::from(angle.ndeg()), per))
     )
 }
 
@@ -321,26 +363,11 @@ fn length(node: &Node, key: &str) -> Option<Length> {
 }
 
 /// The extent `node` holds, of a feature of `kind`, read as the core reads a document's
-/// (`read_extent`, of its text written back from its tree): none if it doesn't read, as
-/// the core would refuse it.
+/// (`read_extent`, of its text as the core's writer writes it from its tree): none if it
+/// doesn't read, as the core would refuse it.
 fn extent_of(kind: SweepFeature, node: &Node) -> Option<Extent> {
-    let Value::Object(members) = &node.value else {
-        return None;
-    };
-    let mut written = Vec::with_capacity(members.len());
-    for member in members {
-        let value = match &member.value.value {
-            Value::Number(text) => text.clone(),
-            Value::String(text) => crate::dialog::quoted(text),
-            Value::Bool(on) => on.to_string(),
-            Value::Null => "null".to_owned(),
-            // An extent's values are numbers, a string, and a flag: anything else the
-            // core's reader refuses too.
-            Value::Array(_) | Value::Object(_) => return None,
-        };
-        written.push(format!("{}: {value}", crate::dialog::quoted(&member.key)));
-    }
-    read_extent(kind, &format!("{{{}}}", written.join(", "))).ok()
+    let text = wire::write(&Json::node(node), Layout::OneLine).ok()?;
+    read_extent(kind, &text).ok()
 }
 
 /// The rows of a feature of the type `kind` other than a sketch, from `node`, its text as
@@ -348,7 +375,7 @@ fn extent_of(kind: SweepFeature, node: &Node) -> Option<Extent> {
 /// row left out where its value isn't there or doesn't read.
 pub fn feature_rows(kind: &str, node: &Node, context: &Context<'_>) -> Vec<Row> {
     let mut rows = Vec::new();
-    let base = feature(node, "base").map(|base| text("Base", (context.name)(&base)));
+    let base = feature(node, "base").map(|base| named("Base", &base, context));
     let sweep_kind = match kind {
         "pad" => Some(SweepFeature::Pad),
         "pocket" => Some(SweepFeature::Pocket),
@@ -398,13 +425,25 @@ pub fn feature_rows(kind: &str, node: &Node, context: &Context<'_>) -> Vec<Row> 
         "fuse" | "cut" | "common" => {
             for (key, field) in [("Target Body", "base"), ("Tool Body", "tool")] {
                 if let Some(id) = feature(node, field) {
-                    rows.push(text(key, (context.name)(&id)));
+                    rows.push(named(key, &id, context));
                 }
             }
         }
         _ => {}
     }
     rows
+}
+
+/// A row naming the feature `id`: its name, or, where the timeline doesn't list it, its ID
+/// in the monospace type, as IDs are.
+fn named(key: &'static str, id: &FeatureId, context: &Context<'_>) -> Row {
+    match (context.name)(id) {
+        Some(name) => text(key, name),
+        None => Row {
+            key,
+            value: Shown::Id(id.as_str().to_owned()),
+        },
+    }
 }
 
 /// A sweep's Profile row: its sketch, a link that selects it, and once the sketch is read,
@@ -414,7 +453,7 @@ fn profile(sketch: &FeatureId, read: Option<&SketchRead>, context: &Context<'_>)
         key: "Profile",
         value: Shown::Link {
             feature: sketch.clone(),
-            name: (context.name)(sketch),
+            name: (context.name)(sketch).unwrap_or_else(|| sketch.as_str().to_owned()),
             after: read
                 .map(|read| format!("· {}", counted(read.regions.len(), "region", "regions"))),
         },
@@ -456,13 +495,15 @@ fn axis_row(axis: &str) -> Row {
     Row { key: "Axis", value }
 }
 
-/// The way a sweep goes, for an extent whose form says one (`reversed`): a pad's or a
-/// pocket's `Normal (−Y)` or `Reversed (+Y)`, the way the core's rule gives for the stored
-/// flag ([`sweep::prism_direction`]: a pad along its sketch's normal, a pocket against it)
-/// as a signed axis where it's one (the minus a true minus, as the prototype's), else as
-/// the prototype writes a direction, and not at all before the sketch is placed; a turn's
-/// sense, right-handed about its axis, or left-handed reversed. None for a form with no
-/// way to flip.
+/// The way a sweep goes, for an extent whose form says one (`reversed`): a pad's
+/// `Normal (−Y)` or `Reversed (+Y)` (the prototype's, its default along its sketch's
+/// normal), a pocket's `Default (+Y)` or `Reversed (−Y)` (its default against the normal,
+/// so not called Normal, which beside a pad's on the same sketch would read as another
+/// facing), the way the core's rule gives for the stored flag
+/// ([`sweep::prism_direction`]) as a signed axis where it's one (the minus a true minus,
+/// as the prototype's), else as the prototype writes a direction, and not at all before
+/// the sketch is placed; a turn's sense, right-handed about its axis, or left-handed
+/// reversed. None for a form with no way to flip.
 fn direction_words(kind: SweepFeature, extent: Extent, normal: Option<[f64; 3]>) -> Option<String> {
     let reversed = match extent {
         Extent::Pad(PadExtent::OneSide { reversed, .. })
@@ -481,7 +522,11 @@ fn direction_words(kind: SweepFeature, extent: Extent, normal: Option<[f64; 3]>)
         }
         _ => return None,
     };
-    let word = if reversed { "Reversed" } else { "Normal" };
+    let word = match (reversed, kind.adds()) {
+        (true, _) => "Reversed",
+        (false, true) => "Normal",
+        (false, false) => "Default",
+    };
     Some(match normal {
         Some(normal) => {
             let way = sweep::prism_direction(kind, reversed, normal);
@@ -502,11 +547,13 @@ fn way_words(way: [f64; 3]) -> String {
         }
         _ => {
             let written = crate::properties::direction(way);
-            written
-                .strip_prefix('(')
-                .and_then(|inner| inner.strip_suffix(')'))
-                .unwrap_or(&written)
-                .to_owned()
+            minus(
+                written
+                    .strip_prefix('(')
+                    .and_then(|inner| inner.strip_suffix(')'))
+                    .unwrap_or(&written)
+                    .to_owned(),
+            )
         }
     }
 }
@@ -521,12 +568,12 @@ mod tests {
         silico_core::document::json::read(text.as_bytes()).unwrap()
     }
 
-    fn named(id: &FeatureId) -> String {
+    fn named(id: &FeatureId) -> Option<String> {
         match id.as_str() {
-            "s0000001" => "Bracket profile".to_owned(),
-            "b0000001" => "Upright".to_owned(),
-            "t0000001" => "Pin".to_owned(),
-            other => other.to_owned(),
+            "s0000001" => Some("Bracket profile".to_owned()),
+            "b0000001" => Some("Upright".to_owned()),
+            "t0000001" => Some("Pin".to_owned()),
+            _ => None,
         }
     }
 
@@ -646,17 +693,17 @@ mod tests {
                 // reference length left out.
                 (
                     "Dimensions",
-                    "40, R10, Ø11, -12.5 mm · 0.5°, 90°".to_owned(),
+                    "40, R10, Ø11, \u{2212}12.5 mm · 0.5°, 90°".to_owned(),
                     theme::PROPERTY_VALUE
                 ),
             ]
         );
-        // Circles of one diameter: the prototype's `2 circles, ⌀ 5.5 mm`, on XZ; no
-        // dimensions.
+        // Circles of one diameter: the prototype's `2 circles, ⌀ 5.5 mm`, in the canvas's Ø,
+        // on XZ; no dimensions.
         let circles = sketch_read(CIRCLES, SketchPlane::Xz, SketchState::FullyDefined, 2);
         let shown = sketch_shown(&circles);
         assert_eq!(shown[0].1, "XZ");
-        assert_eq!(shown[2].1, "2 circles, ⌀ 5.5 mm");
+        assert_eq!(shown[2].1, "2 circles, Ø 5.5 mm");
         assert_eq!(shown[3].1, "None");
         // Two diameters: none said.
         let two = CIRCLES.replacen("2.75", "3", 1);
@@ -745,13 +792,26 @@ mod tests {
             x: [1.0, 0.0, 0.0],
             y: [0.0, 1.0, 0.0],
         };
-        let on_face = sketch_read(
-            &on_face,
-            SketchPlane::Face(frame),
-            SketchState::FullyDefined,
-            0,
+        let face_rows = |text: &str| {
+            let read = sketch_read(text, SketchPlane::Face(frame), SketchState::FullyDefined, 0);
+            shown(sketch_rows(Some(&read)))
+        };
+        // The face by its stored name, in the monospace type; flipped, said so.
+        assert_eq!(
+            face_rows(&on_face)[..2],
+            [
+                ("Plane", "Face".to_owned()),
+                ("Face", "`b0000001.box.Face6`".to_owned()),
+            ]
         );
-        assert_eq!(sketch_shown(&on_face)[0].1, "Face");
+        let flipped = on_face.replace(r#""reversed": false}"#, r#""reversed": true}"#);
+        assert_eq!(
+            face_rows(&flipped)[..2],
+            [
+                ("Plane", "Face, reversed".to_owned()),
+                ("Face", "`b0000001.box.Face6`".to_owned()),
+            ]
+        );
     }
 
     const PAD: &str = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 12, "reversed": false}}"#;
@@ -834,15 +894,16 @@ mod tests {
             [
                 ("Profile", "[Bracket profile]".to_owned()),
                 ("Extent", "Through all".to_owned()),
-                ("Direction", "Normal".to_owned()),
+                ("Direction", "Default".to_owned()),
                 ("Base", "Upright".to_owned()),
             ]
         );
-        // A pocket cuts against its sketch's normal: on XZ (−Y), +Y; reversed, −Y.
+        // A pocket cuts against its sketch's normal: on XZ (−Y), +Y, its default, never
+        // called Normal, which a pad on the same sketch going −Y is; reversed, −Y.
         let read = sketch_read(CIRCLES, SketchPlane::Xz, SketchState::FullyDefined, 2);
         assert_eq!(
             rows_read("pocket", pocket, Some(&read))[2],
-            ("Direction", "Normal (+Y)".to_owned())
+            ("Direction", "Default (+Y)".to_owned())
         );
         assert_eq!(
             rows_read("pocket", &pocket.replace("false", "true"), Some(&read))[2],
@@ -923,6 +984,11 @@ mod tests {
                 ]
             );
         }
+        // A tool the timeline doesn't list: its ID, in the monospace type.
+        assert_eq!(
+            rows("cut", &cut.replace("t0000001", "z0000009"))[1],
+            ("Tool Body", "`z0000009`".to_owned())
+        );
         // A primitive has none.
         let block = r#"{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}"#;
         assert_eq!(rows("box", block), []);
@@ -1023,7 +1089,7 @@ mod tests {
         let oblique = [0.6, 0.0, 0.8];
         assert_eq!(
             direction_words(SweepFeature::Pad, one_side(true), Some(oblique)).unwrap(),
-            "Reversed (-0.6, 0, -0.8)"
+            "Reversed (\u{2212}0.6, 0, \u{2212}0.8)"
         );
     }
 }
