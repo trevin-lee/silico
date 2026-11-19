@@ -1943,7 +1943,7 @@ pub(crate) fn quoted(text: &str) -> String {
 }
 
 /// `node`'s member `key`, if it's an object that has one.
-fn member<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
+pub(crate) fn member<'a>(node: &'a Node, key: &str) -> Option<&'a Node> {
     match &node.value {
         Json::Object(members) => members
             .iter()
