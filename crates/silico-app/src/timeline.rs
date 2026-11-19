@@ -3,7 +3,7 @@
 //! and *egui mapping*, and its `.tl-*` rules): a panel [`theme::TIMELINE_HEIGHT`] high,
 //! its label, each feature in order as its kind's icon on a 30 point item, and at its right
 //! how many errors and features there are, the errors a button that opens What's Wrong
-//! (`crate::whats_wrong`). The rebuild runs visibly along it: the running
+//! (`crate::whats_wrong`). The rebuild runs visibly along it: each running
 //! step's item spins, the items not yet known built are dimmed, and once it ends each item
 //! shows its health, a failed one red ([`step_of_each`]). A click selects a feature, a
 //! double-click (or Edit feature in its menu) opens its dialog (a sketch's, Edit Sketch,
@@ -25,7 +25,7 @@ use eframe::egui::{
     self, Align, Color32, CornerRadius, Layout, Rect, Sense, Shape, Stroke, Ui, UiBuilder, Vec2,
     WidgetInfo, WidgetType, pos2, vec2,
 };
-use silico_core::command::{Rebuild, RebuildState, Revision, Sessions};
+use silico_core::command::{Rebuild, RebuildState, Revision, Sessions, StepState};
 use silico_core::document::FeatureId;
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
@@ -48,12 +48,13 @@ pub enum Step {
     /// No rebuild running (or the feature suppressed): its health, as the newest timeline
     /// marks it.
     Settled(Health),
-    /// Built in the running rebuild: an input, however far back, of the step running, which
-    /// can't have started before it settled.
+    /// Built in the running rebuild, as `status` says it (its solid made, or kept from
+    /// before; a sketch, solved).
     Built,
-    /// The step running, as `status` names it.
+    /// A step of it running, as `status` says it.
     Running,
-    /// Not known to be built: after the running step in its lineage, or off it.
+    /// Not known to be built: not started, between its steps, or failed (said once the
+    /// rebuild ends).
     Queued,
 }
 
@@ -102,16 +103,17 @@ pub fn kind_words(kind: &str) -> &str {
 /// `revision`), shows of `rebuild`, the session's, as `status` gives it. Nothing is shown
 /// built unless it certainly is.
 ///
-/// While it runs, `status` names one feature, the first of the step started last of those
-/// running (`Progress::running`, `4kq2m7vd pad`), and counts the rest: that feature runs.
-/// If the rebuild is of the revision `entries` list, every input the running feature names
-/// there, however far back, is built (a step starts only once its inputs settle). If it's
-/// another revision's (a move or an edit answered, its timeline not read yet), the inputs
-/// listed may not be the ones rebuilt, so none is shown built. Every other feature is
-/// queued until the rebuild ends: one on another branch may have built already, but
-/// `status` doesn't say which. SEAM: with the features each settled step was planned for
-/// (or each step's state) in `Progress`, every built item would show so, and every running
-/// one spin, the parallel branches too.
+/// While it runs, each item's step is its feature's state in `status` alone
+/// (`Progress::features`, by the feature's ID): running if a step of it runs (every one
+/// running spins, the parallel branches' too), built once its solid is made (or kept from
+/// before), and queued otherwise, till the rebuild ends and its health shows. One snapshot
+/// says them all, so no item's step is put together from two reads: the timeline's
+/// listing can be another revision's than the rebuild's (a move or an edit answered, its
+/// timeline not read yet, or the other way), and an input it lists may not be one the
+/// rebuild has, nor a feature running have its inputs built (a pad's prism runs beside its
+/// base's step). A feature `status` doesn't list (one the rebuild's revision hasn't, or
+/// suppressed there) is queued. SEAM: a failure (failed, blocked, faulted) shows queued
+/// until the rebuild ends, as before `status` said them.
 ///
 /// A suppressed feature is never rebuilt: it stays suppressed throughout, if `entries` are
 /// the revision rebuilt.
@@ -125,42 +127,25 @@ pub fn step_of_each(entries: &[Entry], listed: Revision, rebuild: Option<&Rebuil
     let Some(rebuild) = rebuild.filter(|rebuild| rebuild.state == RebuildState::Running) else {
         return settled();
     };
-    let place: BTreeMap<&str, usize> = entries
-        .iter()
-        .enumerate()
-        .map(|(at, entry)| (entry.id.as_str(), at))
-        .collect();
-    let running = rebuild
+    let states: BTreeMap<&FeatureId, StepState> = rebuild
         .progress
-        .as_ref()
-        .and_then(|progress| progress.running.as_deref())
-        .and_then(|label| label.split_whitespace().next())
-        .and_then(|id| place.get(id).copied());
+        .iter()
+        .flat_map(|progress| progress.features.iter())
+        .collect();
     let same = rebuild.revision == listed;
-    let mut built = vec![false; entries.len()];
-    if let Some(at) = running.filter(|_| same) {
-        let mut inputs: Vec<&FeatureId> = entries[at].inputs.iter().collect();
-        while let Some(input) = inputs.pop() {
-            if let Some(&input_at) = place.get(input.as_str())
-                && !built[input_at]
-            {
-                built[input_at] = true;
-                inputs.extend(&entries[input_at].inputs);
-            }
-        }
-    }
     entries
         .iter()
-        .enumerate()
-        .map(|(at, entry)| {
+        .map(|entry| {
             if same && (entry.suppressed || entry.health == Health::Suppressed) {
-                Step::Settled(Health::Suppressed)
-            } else if running == Some(at) {
-                Step::Running
-            } else if built[at] {
-                Step::Built
-            } else {
-                Step::Queued
+                return Step::Settled(Health::Suppressed);
+            }
+            match states.get(&entry.id) {
+                Some(StepState::Running) => Step::Running,
+                Some(StepState::Built) => Step::Built,
+                Some(
+                    StepState::Queued | StepState::Failed | StepState::Blocked | StepState::Faulted,
+                )
+                | None => Step::Queued,
             }
         })
         .collect()
@@ -871,7 +856,7 @@ fn spinner(ui: &Ui, rect: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use silico_core::command::{FeatureStates, Progress};
+    use silico_core::command::Progress;
 
     fn entry(id: &str, kind: &'static str, inputs: &[&str], health: Health) -> Entry {
         Entry {
@@ -886,15 +871,24 @@ mod tests {
         }
     }
 
-    fn rebuild(state: RebuildState, running: Option<&str>) -> Rebuild {
+    /// A rebuild of the listed revision in `state`, `status` saying each of `states`: its
+    /// running label the first feature running, as the core words it.
+    fn rebuild(state: RebuildState, states: &[(&str, StepState)]) -> Rebuild {
+        let running = states
+            .iter()
+            .find(|(_, state)| *state == StepState::Running)
+            .map(|(id, _)| format!("{id} step"));
         Rebuild {
             revision: Revision::OPENED,
             state,
             progress: Some(Progress {
                 done: 0,
                 steps: 0,
-                running: running.map(str::to_owned),
-                features: FeatureStates::default(),
+                running,
+                features: states
+                    .iter()
+                    .map(|(id, state)| (FeatureId::new(id).unwrap(), *state))
+                    .collect(),
                 elapsed: std::time::Duration::ZERO,
             }),
         }
@@ -903,8 +897,7 @@ mod tests {
     const LISTED: Revision = Revision::OPENED;
 
     /// A plate, a sketch on its own, a pin off to the side, a pad of the sketch on the
-    /// plate, a cut of the pad by the pin, and a suppressed fillet of the cut. The pin is
-    /// before the pad but off its lineage: a pad running doesn't make it built.
+    /// plate, a cut of the pad by the pin, and a suppressed fillet of the cut.
     fn part() -> Vec<Entry> {
         vec![
             entry("b0000001", "box", &[], Health::Healthy),
@@ -926,82 +919,148 @@ mod tests {
         step_of_each(&part(), LISTED, rebuild)
     }
 
+    use StepState::{Blocked, Failed, Faulted};
+
+    /// `part`'s unsuppressed features, `status` saying each as given.
+    fn said([b, s, c, p, m]: [StepState; 5]) -> [(&'static str, StepState); 5] {
+        [
+            ("b0000001", b),
+            ("s0000001", s),
+            ("c0000001", c),
+            ("p0000001", p),
+            ("m0000001", m),
+        ]
+    }
+
     #[test]
     fn with_no_rebuild_running_each_item_is_its_health() {
         use Health::*;
         let want = [Healthy, Healthy, Warning, Healthy, Error, Suppressed].map(Step::Settled);
+        let states = said([
+            StepState::Built,
+            StepState::Built,
+            StepState::Queued,
+            StepState::Running,
+            StepState::Queued,
+        ]);
         for state in [
             RebuildState::Idle,
             RebuildState::Done,
             RebuildState::Stopped,
             RebuildState::Faulted,
         ] {
-            assert_eq!(
-                steps(Some(&rebuild(state, Some("p0000001 pad")))),
-                want,
-                "{state:?}"
-            );
+            assert_eq!(steps(Some(&rebuild(state, &states))), want, "{state:?}");
         }
         assert_eq!(steps(None), want);
     }
 
     #[test]
-    fn the_running_step_spins_its_inputs_are_built_and_the_rest_are_queued() {
+    fn while_a_rebuild_runs_each_item_is_its_features_state_in_status() {
         use Step::*;
         let suppressed = Settled(Health::Suppressed);
-        // The pad running: the plate and the sketch are its inputs, so built; the pin, before
-        // it but off its lineage, and the cut after it are queued; the fillet stays
-        // suppressed.
+        let running =
+            |states: [StepState; 5]| steps(Some(&rebuild(RebuildState::Running, &said(states))));
+        // The plate and the sketch built, the pad and the pin, on another branch, both
+        // running, the cut queued; the fillet stays suppressed.
         assert_eq!(
-            steps(Some(&rebuild(RebuildState::Running, Some("p0000001 pad")))),
-            [Built, Built, Queued, Running, Queued, suppressed]
+            running([
+                StepState::Built,
+                StepState::Built,
+                StepState::Running,
+                StepState::Running,
+                StepState::Queued
+            ]),
+            [Built, Built, Running, Running, Queued, suppressed]
         );
-        // The cut running: every input back to the plate built, the pin too.
+        // The pad's prism running beside its plate's step (it sweeps the sketch alone): the
+        // plate, its input, isn't shown built till `status` says it is.
         assert_eq!(
-            steps(Some(&rebuild(RebuildState::Running, Some("m0000001 cut")))),
+            running([
+                StepState::Running,
+                StepState::Built,
+                StepState::Queued,
+                StepState::Running,
+                StepState::Queued
+            ]),
+            [Running, Built, Queued, Running, Queued, suppressed]
+        );
+        // The cut running: every feature before it built, the pin too.
+        assert_eq!(
+            running([
+                StepState::Built,
+                StepState::Built,
+                StepState::Built,
+                StepState::Built,
+                StepState::Running
+            ]),
             [Built, Built, Built, Built, Running, suppressed]
         );
-        // Nothing running yet (its sketches solving, before its plan), or a feature the
-        // timeline doesn't list (a newer revision's): every unsuppressed one queued.
-        for running in [None, Some("z0000009 box"), Some("")] {
-            assert_eq!(
-                steps(Some(&rebuild(RebuildState::Running, running))),
-                [Queued, Queued, Queued, Queued, Queued, suppressed],
-                "{running:?}"
-            );
+        // Failed, blocked, or faulted mid-run: queued, its health said once the rebuild ends.
+        assert_eq!(
+            running([Failed, StepState::Built, Faulted, Blocked, Blocked]),
+            [Queued, Built, Queued, Queued, Queued, suppressed]
+        );
+        // Nothing said yet (no feature listed, or no progress), or a running label alone:
+        // every unsuppressed one queued.
+        let mut label_alone = rebuild(RebuildState::Running, &[]);
+        if let Some(progress) = label_alone.progress.as_mut() {
+            progress.running = Some("p0000001 pad".to_owned());
         }
         let no_progress = Rebuild {
             progress: None,
-            ..rebuild(RebuildState::Running, None)
+            ..rebuild(RebuildState::Running, &[])
         };
-        assert_eq!(
-            steps(Some(&no_progress)),
-            [Queued, Queued, Queued, Queued, Queued, suppressed]
-        );
+        for nothing in [
+            rebuild(RebuildState::Running, &[]),
+            label_alone,
+            no_progress,
+        ] {
+            assert_eq!(
+                steps(Some(&nothing)),
+                [Queued, Queued, Queued, Queued, Queued, suppressed],
+                "{nothing:?}"
+            );
+        }
     }
 
     #[test]
-    fn a_rebuild_of_another_revision_shows_nothing_built() {
+    fn a_rebuild_of_another_revision_shows_each_feature_as_its_status_says() {
         use Step::*;
-        // The timeline lists revision 1; the rebuild runs revision 2 (a move answered, its
-        // timeline not read yet), whose inputs may not be these: the cut runs, every other
-        // feature queued, the fillet too (revision 2 may have unsuppressed it).
+        // The timeline lists revision 1; the rebuild runs revision 2 (the plate edited, its
+        // timeline not read yet), the pad running. The plate and the sketch are built in
+        // the status that names the pad running, whichever revision the timeline lists: the
+        // two reads are never put together (issue #562).
+        let states = said([
+            StepState::Built,
+            StepState::Built,
+            StepState::Queued,
+            StepState::Running,
+            StepState::Queued,
+        ]);
         let newer = Rebuild {
             revision: LISTED.next().unwrap(),
-            ..rebuild(RebuildState::Running, Some("m0000001 cut"))
+            ..rebuild(RebuildState::Running, &states)
         };
+        // The fillet too follows `status`: revision 2 may have unsuppressed it, and its
+        // rebuild doesn't list it (suppressed there, or not built yet): queued.
         assert_eq!(
             steps(Some(&newer)),
-            [Queued, Queued, Queued, Queued, Running, Queued]
+            [Built, Built, Queued, Running, Queued, Queued]
         );
         // And the other way: a rebuild of an older revision than the one listed.
-        let older = Rebuild {
-            revision: LISTED,
-            ..rebuild(RebuildState::Running, Some("m0000001 cut"))
-        };
+        let older = rebuild(RebuildState::Running, &states);
         assert_eq!(
             step_of_each(&part(), LISTED.next().unwrap(), Some(&older)),
-            [Queued, Queued, Queued, Queued, Running, Queued]
+            [Built, Built, Queued, Running, Queued, Queued]
+        );
+        // A feature the rebuild's revision hasn't (removed there): queued.
+        let removed = Rebuild {
+            revision: LISTED.next().unwrap(),
+            ..rebuild(RebuildState::Running, &states[..4])
+        };
+        assert_eq!(
+            steps(Some(&removed)),
+            [Built, Built, Queued, Running, Queued, Queued]
         );
         // Ended, each item is its health whichever revision it was.
         let done = Rebuild {
@@ -1023,8 +1082,8 @@ mod tests {
     }
 
     #[test]
-    fn an_input_cycle_or_an_unknown_input_ends_the_walk() {
-        // Never in a checked document, but the walk mustn't loop on one.
+    fn the_inputs_listed_play_no_part_a_cycle_or_an_unknown_one_included() {
+        // Never in a checked document; the steps come from `status`, not a walk of them.
         let entries = [
             entry(
                 "a0000001",
@@ -1038,9 +1097,15 @@ mod tests {
             step_of_each(
                 &entries,
                 LISTED,
-                Some(&rebuild(RebuildState::Running, Some("a0000001 box")))
+                Some(&rebuild(
+                    RebuildState::Running,
+                    &[
+                        ("a0000001", StepState::Running),
+                        ("b0000001", StepState::Queued)
+                    ]
+                ))
             ),
-            [Step::Running, Step::Built]
+            [Step::Running, Step::Queued]
         );
     }
 
@@ -1315,7 +1380,14 @@ mod tests {
             suppressed: false,
             ..entry("b0000001", "box", &[], Health::Suppressed)
         };
-        let running = rebuild(RebuildState::Running, Some("c0000001 box"));
+        let running = rebuild(
+            RebuildState::Running,
+            &[
+                ("a0000001", StepState::Queued),
+                ("b0000001", StepState::Queued),
+                ("c0000001", StepState::Running),
+            ],
+        );
         assert_eq!(
             step_of_each(
                 &[
@@ -1861,8 +1933,8 @@ mod tests {
             assert_eq!(fills_at(&h, line(item(at))), [], "item {at}'s line");
         }
 
-        // The pad rebuilding: `.building`'s ring on it, its inputs as at rest, the rest
-        // `.queued` (`.45`), and no badge while it runs.
+        // The pad rebuilding: `.building`'s ring on it, its inputs, built as `status` says, as
+        // at rest, the rest `.queued` (`.45`), and no badge while it runs.
         let mut tab = tab_of(Some(&features()), 0);
         running(
             &mut tab,
@@ -1873,7 +1945,15 @@ mod tests {
                     done: 2,
                     steps: 4,
                     running: Some("p0000001 pad".to_owned()),
-                    features: FeatureStates::default(),
+                    features: [
+                        ("b0000001", StepState::Built),
+                        ("s0000001", StepState::Built),
+                        ("p0000001", StepState::Running),
+                        ("c0000001", StepState::Queued),
+                    ]
+                    .into_iter()
+                    .map(|(id, state)| (FeatureId::new(id).unwrap(), state))
+                    .collect(),
                     elapsed: std::time::Duration::ZERO,
                 }),
             },
