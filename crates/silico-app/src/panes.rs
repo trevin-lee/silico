@@ -4190,13 +4190,37 @@ mod property_panel_drawn {
             body(css::FS),
             css::G550,
         );
-        y = section_at(&h, "HEALTH", y + css::ROW_H);
+        // PARAMETERS after the Name row (`section('Parameters')`), its rows the feature's text
+        // as read (this tab's session holds none, so none), then HEALTH.
+        y = section_at(&h, "PARAMETERS", y + css::ROW_H);
+        y = section_at(&h, "HEALTH", y);
         y = row_at(&h, "State", "Error", y, body(css::FS), css::RED);
         y = row_at(&h, "ID", "c0000001", y, mono(), css::G800);
+        // `featureProps`' buttons, 10 under the rows: Edit feature (`.btn-secondary`,
+        // Gray.300) first, then Suppress (`.btn-ghost`, no fill), 6 after it.
+        let edit = h.get_by_role_and_label(Role::Button, "Edit feature").rect();
+        at(
+            edit.min,
+            Pos2::new(PANE.x + css::PAD, y + css::BUTTONS_PADDING),
+            "Edit feature",
+        );
+        assert!(near(edit.height(), css::BTN_H));
+        assert_eq!(
+            fills_at(&h, edit),
+            [(css::G300, CornerRadius::same(css::R_SM), Stroke::NONE)]
+        );
+        let suppress = h.get_by_role_and_label(Role::Button, "Suppress").rect();
+        at(
+            suppress.min,
+            Pos2::new(edit.right() + css::BUTTONS_GAP, edit.top()),
+            "Suppress",
+        );
+        assert!(near(suppress.height(), css::BTN_H));
+        assert!(fills_at(&h, suppress).is_empty(), "a ghost has no fill");
         hint_at(
             &h,
             "Hovering a feature in the timeline lights up the faces it made.",
-            y,
+            edit.bottom() + css::BUTTONS_PADDING,
         );
     }
 
