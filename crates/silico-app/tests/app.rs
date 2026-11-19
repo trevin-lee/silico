@@ -55050,7 +55050,7 @@ fn a_click_held_for_the_boxes_is_let_go_when_another_model_comes() {
     small.store(true, Ordering::SeqCst);
     set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "10");
     assert_eq!(view(&h).camera(), &camera);
-    toasted(&mut h, silico_app::plane_pick::CLICK_REPUBLISHED);
+    toasted(&mut h, silico_app::plane_pick::PICK_CLICK_LET_GO);
     assert!(!h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
     making.release();
     boxes_made(&mut h);
@@ -55059,6 +55059,90 @@ fn a_click_held_for_the_boxes_is_let_go_when_another_model_comes() {
     }
     assert!(sketch_mode(&h).is_none(), "{:?}", text_of(&f.sessions, &h));
     assert!(picking(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_held_on_an_old_models_meshes_is_never_cast_on_the_new_ones() {
+    // #565's round 3: a new model's mesh being boxed (held), then another model published
+    // whose meshes are held too, so the view still draws the 41's: a click on the top then is
+    // never held, and once the 10's meshes come and are boxed nothing is added (XY, past the
+    // shrunk box, was never under the click).
+    let f = fixture();
+    describes_a_real_box(&f);
+    let small = Arc::new(AtomicBool::new(false));
+    let shrunk = Arc::clone(&small);
+    f.kernel.answer_instead(move |op| match op {
+        Op::Tessellate {
+            deflection,
+            at_least_the_floor,
+            ..
+        } => {
+            let length = if shrunk.load(Ordering::SeqCst) {
+                10.0
+            } else {
+                40.0
+            };
+            let mesh = silico_render::bench::box_mesh([0.0; 3], [length, 20.0, 10.0]);
+            Some(if *at_least_the_floor {
+                silico_protocol::Reply::MeshAt(silico_protocol::MeshAt {
+                    mesh,
+                    deflection: *deflection,
+                })
+            } else {
+                silico_protocol::Reply::Mesh(mesh)
+            })
+        }
+        _ => None,
+    });
+    let making = Arc::new(Making::default());
+    let (mut h, _record) = drawn_from_above(&f, "box.silico", A_BOX, Some(making.build()), 1.0);
+    boxes_made(&mut h);
+    begin_pick(&mut h);
+    making.hold();
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "41");
+    let meshes = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    small.store(true, Ordering::SeqCst);
+    let session = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&session).session.unwrap().revision;
+    let models = h.state().tabs()[0].published_models;
+    f.sessions
+        .set_field(
+            &session,
+            revision,
+            silico_core::document::FeatureId::new("k7f2qx3m").unwrap(),
+            "length".to_owned(),
+            json::read(b"10").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new model", |h| {
+        h.state().tabs()[0].published_models != models
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(!meshes_current(&h), "the view still draws the 41's mesh");
+    let top = the_boxs_top(&h);
+    pick_at(&mut h, top);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).is_none());
+    assert!(!h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
+    meshes.release();
+    step_until(&mut h, "the 10's meshes", meshes_current);
+    making.release();
+    boxes_made(&mut h);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(
+        sketch_mode(&h).is_none(),
+        "a sketch made on what wasn't under the click: {:?}",
+        text_of(&f.sessions, &h)
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
