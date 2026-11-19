@@ -263,10 +263,12 @@ enum Queued {
         members: Vec<Reference>,
     },
     /// Delete of a split point in sketch mode: the pieces of the sketch `sketch` that share
-    /// `point` joined (`sketch_join`).
+    /// `point` joined (`sketch_join`); `hushed`, the tab's [`hushes`](Tab::hushes) as it was
+    /// queued.
     SketchJoin {
         sketch: FeatureId,
         point: ElementId,
+        hushed: u64,
     },
     /// A sketch tool's add (`sketch_add`), of sketch mode numbered `serial`, in the sketch
     /// `sketch`: its members, and the token its answer is given back by.
@@ -276,17 +278,19 @@ enum Queued {
         token: AddToken,
         members: NewMembers,
     },
-    /// Trim's `sketch_trim` of `curve` at `pick`.
+    /// Trim's `sketch_trim` of `curve` at `pick`; `hushed` as [`SketchJoin`](Self::SketchJoin)'s.
     SketchTrim {
         sketch: FeatureId,
         curve: ElementId,
         pick: [f64; 2],
+        hushed: u64,
     },
-    /// Split's `sketch_split` of `curve` at `at`.
+    /// Split's `sketch_split` of `curve` at `at`; `hushed` as [`SketchJoin`](Self::SketchJoin)'s.
     SketchSplit {
         sketch: FeatureId,
         curve: ElementId,
         at: Vec<[f64; 2]>,
+        hushed: u64,
     },
     /// Trim's or Extend's extend (`sketch_extend`) of `curve`'s `end` `by`, its undo step
     /// named by the tool it's `from`.
@@ -949,10 +953,12 @@ enum Under {
         running: Running<SketchEdited>,
         extend_click: bool,
     },
-    /// Sketch mode's Delete of a split point, a join, as it was sent.
+    /// Sketch mode's Delete of a split point, a join, as it was sent, and what its answer's
+    /// `references` are said of.
     SketchJoin {
         sending: Sending,
         running: Running<SketchJoined>,
+        reshaped: Reshaped,
     },
     /// A sketch tool's add, of sketch mode numbered `serial`, as it was sent, with the token
     /// its answer is given back by.
@@ -972,10 +978,12 @@ enum Under {
         sending: Sending,
         running: RelateRunning,
     },
-    /// Trim's or split's edit, as it was sent.
+    /// Trim's or split's edit, as it was sent, and what its answer's `references` are said
+    /// of.
     SketchCut {
         sending: Sending,
         running: Running<SketchCut>,
+        reshaped: Reshaped,
     },
     /// A placed dimension's value, of sketch mode numbered `serial`, as it was sent.
     DimensionValue {
@@ -1450,10 +1458,9 @@ pub struct Tab {
     /// The last refusal a command of the tab's answered, as said to the person, until
     /// their next action (an edit, a save, a revert, a step).
     pub message: Option<String>,
-    /// What the last suppression or deletion did, as said to the person (the prototype's
-    /// toast, in the status bar): what it suppressed with the feature, or rewired in its
-    /// place. Until their next action, as [`message`](Self::message) is.
-    pub told: Option<String>,
+    /// What the person's last action did, as said to them until their next action, as
+    /// [`message`](Self::message) is.
+    pub edit_words: EditWords,
     /// A feature's name being typed in its timeline item's or browser row's own field (F2,
     /// or a menu's Rename), until Enter or a click away sends it or Esc drops it.
     pub renaming: Option<crate::feature_menu::Renaming>,
@@ -1680,6 +1687,137 @@ pub(crate) fn name_value(name: &str) -> Result<Node, silico_core::document::json
     silico_core::document::json::read(crate::dialog::quoted(name).as_bytes())
 }
 
+/// A sketch edit whose answer lists the features that store a name made from what it
+/// changed (`references`: docs/design/m5.0-app.md, section 7, *What a result lists*).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reshape {
+    Split,
+    Trim,
+    Join,
+}
+
+impl Reshape {
+    /// What the person did, as the status bar says it: "the line you split".
+    fn done(self) -> &'static str {
+        match self {
+            Reshape::Split => "split",
+            Reshape::Trim => "trimmed",
+            Reshape::Join => "joined",
+        }
+    }
+}
+
+/// A split, trim, or join as it was sent: the edit, the kind of the curve it changed (for a
+/// join, of both pieces; none if it isn't known, or the pieces differ), and the tab's
+/// [`EditWords::hushes`] as it was queued, so an answer that comes after the person's next action
+/// says nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Reshaped {
+    edit: Reshape,
+    kind: Option<ElementKind>,
+    hushed: u64,
+}
+
+/// What the status bar says the person's last action did, until their next action
+/// ([`let_go`](Self::let_go)): what a suppression or deletion did, and the features the
+/// split, trim, or join edits that action asked listed, to be checked. Each let-go is
+/// counted, so an answer to an edit asked before the latest says nothing.
+#[derive(Debug, Default)]
+pub struct EditWords {
+    /// What the last suppression or deletion did (the prototype's toast, in the status
+    /// bar): what it suppressed with the feature, or rewired in its place.
+    pub told: Option<String>,
+    /// The features [`listed`](Self::listed) in words, said as a warning.
+    pub to_check: Option<String>,
+    /// The features the answers to the edits the person's last action asked listed (one
+    /// trim, or each a power trim's drag crossed), with what was done.
+    listed: Option<Listed>,
+    /// How many times what's said has been let go.
+    hushes: u64,
+}
+
+impl EditWords {
+    /// What's said let go, for the person's next action, and any split, trim, or join still
+    /// to answer kept from saying anything.
+    pub fn let_go(&mut self) {
+        self.told = None;
+        self.to_check = None;
+        self.listed = None;
+        self.hushes = self.hushes.wrapping_add(1);
+    }
+}
+
+/// The features split, trim, or join answers listed (`references`) since what's said was
+/// last let go: each once, in timeline order; with the edit, the kind of curve each
+/// changed (none if they differ or one isn't known), and how many edits listed any.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Listed {
+    edit: Reshape,
+    kind: Option<ElementKind>,
+    edits: usize,
+    features: Vec<FeatureId>,
+}
+
+impl Listed {
+    /// None listed yet, of `reshaped`'s edit and curve.
+    fn of(reshaped: &Reshaped) -> Self {
+        Listed {
+            edit: reshaped.edit,
+            kind: reshaped.kind,
+            edits: 0,
+            features: Vec::new(),
+        }
+    }
+
+    /// `references`, the answer to `reshaped`, added: each feature not listed yet after
+    /// those that are, the edits counted, and the curves' kind kept only if it's the same.
+    fn add(&mut self, reshaped: &Reshaped, references: &[FeatureId]) {
+        if self.kind != reshaped.kind {
+            self.kind = None;
+        }
+        self.edits += 1;
+        for feature in references {
+            if !self.features.contains(feature) {
+                self.features.push(feature.clone());
+            }
+        }
+    }
+
+    /// What the status bar says of them, by `name`, in their order: which use what the
+    /// edits changed, to be checked, since each such name may now find only part of what it
+    /// found, or nothing (open item 11). Nothing for none.
+    fn words(&self, name: impl Fn(&FeatureId) -> String) -> Option<String> {
+        let names: Vec<String> = self.features.iter().map(name).collect();
+        let (uses, them) = match names.len() {
+            0 => return None,
+            1 => ("uses", "it"),
+            _ => ("use", "them"),
+        };
+        let noun = self.kind.map_or("curve", ElementKind::noun);
+        let several = if self.edit == Reshape::Join || self.edits > 1 {
+            "s"
+        } else {
+            ""
+        };
+        Some(format!(
+            "{} {uses} the {noun}{several} you {}: check {them}",
+            crate::words::listed(&names, "and"),
+            self.edit.done()
+        ))
+    }
+}
+
+/// `features` put in the order of the timeline `entries`; one they don't list (yet) after
+/// them all, in the order it came.
+fn in_timeline_order(features: &mut [FeatureId], entries: &[Entry]) {
+    features.sort_by_key(|feature| {
+        entries
+            .iter()
+            .position(|entry| entry.id == *feature)
+            .unwrap_or(usize::MAX)
+    });
+}
+
 /// What a refusal says to the person: its first error's message and suggestion.
 pub fn said(problems: &Problems) -> String {
     problems.errors().first().map_or_else(
@@ -1769,7 +1907,7 @@ impl Tab {
             unmade: Vec::new(),
             edit_undone: None,
             message: None,
-            told: None,
+            edit_words: EditWords::default(),
             renaming: None,
             selected_in: crate::feature_menu::Place::Timeline,
             reveal_browser: false,
@@ -3707,7 +3845,7 @@ impl Tab {
                     self.applied(&sending, &response);
                     match response.result {
                         Ok(done) => {
-                            self.told =
+                            self.edit_words.told =
                                 crate::feature_menu::suppressed_words(&done, |id| self.name_of(id));
                         }
                         Err(problems) => self.message = Some(said(&problems)),
@@ -3737,9 +3875,10 @@ impl Tab {
                             if self.selection.has_feature(&removed.feature.id) {
                                 self.selection.clear();
                             }
-                            self.told = Some(crate::feature_menu::removed_words(&removed, |id| {
-                                self.name_of(id)
-                            }));
+                            self.edit_words.told =
+                                Some(crate::feature_menu::removed_words(&removed, |id| {
+                                    self.name_of(id)
+                                }));
                         }
                         Err(problems) => self.message = Some(said(&problems)),
                     }
@@ -3856,16 +3995,25 @@ impl Tab {
                     extend_click,
                 }),
             },
-            Under::SketchJoin { sending, running } => match running.try_take() {
+            Under::SketchJoin {
+                sending,
+                running,
+                reshaped,
+            } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(&sending, &response);
-                    if let Err(problems) = response.result {
-                        self.message = Some(said(&problems));
+                    match response.result {
+                        Ok(joined) => self.say_to_check(&reshaped, &joined.references),
+                        Err(problems) => self.message = Some(said(&problems)),
                     }
                     None
                 }
-                Err(running) => Some(Under::SketchJoin { sending, running }),
+                Err(running) => Some(Under::SketchJoin {
+                    sending,
+                    running,
+                    reshaped,
+                }),
             },
             Under::SketchAdd {
                 serial,
@@ -3975,16 +4123,25 @@ impl Tab {
                     running,
                 }),
             },
-            Under::SketchCut { sending, running } => match running.try_take() {
+            Under::SketchCut {
+                sending,
+                running,
+                reshaped,
+            } => match running.try_take() {
                 Ok(response) => {
                     self.took_session(&response);
                     self.applied(&sending, &response);
-                    if let Err(problems) = response.result {
-                        self.message = Some(said(&problems));
+                    match response.result {
+                        Ok(cut) => self.say_to_check(&reshaped, &cut.references),
+                        Err(problems) => self.message = Some(said(&problems)),
                     }
                     None
                 }
-                Err(running) => Some(Under::SketchCut { sending, running }),
+                Err(running) => Some(Under::SketchCut {
+                    sending,
+                    running,
+                    reshaped,
+                }),
             },
             Under::DimensionValue {
                 serial,
@@ -4332,7 +4489,7 @@ impl Tab {
                         Err(problems) => {
                             self.message = Some(said(&problems));
                             // What a repair said it did, it didn't.
-                            self.told = None;
+                            self.edit_words.told = None;
                             if self.dialog_answered(&field, &value, false) {
                                 self.refused.remove(&field);
                             } else {
@@ -4559,13 +4716,26 @@ impl Tab {
                         extend_click: false,
                     });
                 }
-                Queued::SketchJoin { sketch, point } => {
+                Queued::SketchJoin {
+                    sketch,
+                    point,
+                    hushed,
+                } => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
                     self.record(Sent::SketchEdit("sketch_join"));
+                    let reshaped = Reshaped {
+                        edit: Reshape::Join,
+                        kind: self.pieces_kind(&point),
+                        hushed,
+                    };
                     let sending = self.sending(step);
                     let running = sessions.sketch_join(&self.id, self.revision, sketch, point);
-                    self.under.push(Under::SketchJoin { sending, running });
+                    self.under.push(Under::SketchJoin {
+                        sending,
+                        running,
+                        reshaped,
+                    });
                 }
                 Queued::SketchAdd {
                     serial,
@@ -4676,23 +4846,47 @@ impl Tab {
                     sketch,
                     curve,
                     pick,
+                    hushed,
                 } => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
                     self.record(Sent::SketchEdit("sketch_trim"));
+                    let reshaped = Reshaped {
+                        edit: Reshape::Trim,
+                        kind: self.curve_kind(&curve),
+                        hushed,
+                    };
                     let sending = self.sending(step);
                     let running =
                         sessions.sketch_trim(&self.id, self.revision, sketch, curve, pick, None);
-                    self.under.push(Under::SketchCut { sending, running });
+                    self.under.push(Under::SketchCut {
+                        sending,
+                        running,
+                        reshaped,
+                    });
                 }
-                Queued::SketchSplit { sketch, curve, at } => {
+                Queued::SketchSplit {
+                    sketch,
+                    curve,
+                    at,
+                    hushed,
+                } => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
                     self.record(Sent::SketchEdit("sketch_split"));
+                    let reshaped = Reshaped {
+                        edit: Reshape::Split,
+                        kind: self.curve_kind(&curve),
+                        hushed,
+                    };
                     let sending = self.sending(step);
                     let running =
                         sessions.sketch_split(&self.id, self.revision, sketch, curve, at, None);
-                    self.under.push(Under::SketchCut { sending, running });
+                    self.under.push(Under::SketchCut {
+                        sending,
+                        running,
+                        reshaped,
+                    });
                 }
                 Queued::SketchExtend {
                     sketch,
@@ -5404,7 +5598,60 @@ impl Tab {
     /// deletion did, let go.
     fn hush(&mut self) {
         self.message = None;
-        self.told = None;
+        self.edit_words.let_go();
+    }
+
+    /// What a split, trim, or join sent as `reshaped` lists in `references` said, with what
+    /// the other edits the same action asked listed (a power trim's), unless the person has
+    /// acted since it was queued: each feature once, in timeline order. One that lists none
+    /// adds nothing.
+    fn say_to_check(&mut self, reshaped: &Reshaped, references: &[FeatureId]) {
+        if reshaped.hushed != self.edit_words.hushes || references.is_empty() {
+            return;
+        }
+        let mut listed = self
+            .edit_words
+            .listed
+            .take()
+            .unwrap_or_else(|| Listed::of(reshaped));
+        listed.add(reshaped, references);
+        let entries = self
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_deref())
+            .unwrap_or_default();
+        in_timeline_order(&mut listed.features, entries);
+        self.edit_words.to_check = listed.words(|id| self.name_of(id));
+        self.edit_words.listed = Some(listed);
+    }
+
+    /// The kind of sketch mode's curve `id`, as its newest read has it.
+    fn curve_kind(&self, id: &ElementId) -> Option<ElementKind> {
+        let read = self.sketch.as_ref()?.drawable()?;
+        read.members
+            .elements()
+            .find(|(member, _)| *member == id)
+            .map(|(_, kind)| kind)
+    }
+
+    /// The kind both pieces sharing `point` are, as sketch mode's newest read has them: none
+    /// if they differ, or it doesn't have them.
+    fn pieces_kind(&self, point: &ElementId) -> Option<ElementKind> {
+        let read = self.sketch.as_ref()?.drawable()?;
+        let members = &read.members;
+        let lines = members
+            .lines
+            .iter()
+            .filter(|line| line.from == *point || line.to == *point)
+            .map(|_| ElementKind::Line);
+        let arcs = members
+            .arcs
+            .iter()
+            .filter(|arc| arc.start == *point || arc.end == *point)
+            .map(|_| ElementKind::Arc);
+        let mut kinds = lines.chain(arcs);
+        let first = kinds.next()?;
+        kinds.all(|kind| kind == first).then_some(first)
     }
 
     /// Save (`commit`), then, if `then_close`, close: once everything asked before it has
@@ -7148,7 +7395,7 @@ impl Tab {
             Ok((edit, told)) => {
                 let words = Words::Then(broken.feature.clone(), crate::repair::USED_STEP);
                 self.edit_with_words(sessions, edit, Some(words));
-                self.told = Some(told);
+                self.edit_words.told = Some(told);
                 true
             }
             Err(why) => {
@@ -7197,7 +7444,7 @@ impl Tab {
             Ok((edit, told)) => {
                 let words = Words::Then(broken.feature.clone(), crate::repair::REMOVED_STEP);
                 self.edit_with_words(sessions, edit, Some(words));
-                self.told = Some(told);
+                self.edit_words.told = Some(told);
                 true
             }
             Err(why) => {
@@ -7272,7 +7519,7 @@ impl Tab {
         let started = self.dialog_changed(sessions);
         if started {
             let made = crate::repair::Made::Dialog;
-            self.told = Some(if used {
+            self.edit_words.told = Some(if used {
                 crate::repair::used_words(name, chamfer, made)
             } else {
                 crate::repair::removed_words(name, made)
@@ -7719,6 +7966,8 @@ impl Tab {
         // go, said, and an edit already planned is sent and taken back with the rest.
         if let Some(mode) = self.sketch.take() {
             if !ok {
+                // Cancel takes back what sketch mode did: what its edits said goes too.
+                self.edit_words.let_go();
                 let serial = mode.serial;
                 let mut dropped = None;
                 self.edits.queue.retain(|queued| match queued {
@@ -7859,7 +8108,7 @@ impl Tab {
             return;
         }
         if drag.wants_begin() && ready {
-            self.message = None;
+            self.hush();
             self.begin_if_none(sessions);
             self.supersede_preview();
             self.record(Sent::SketchEdit("drag_begin"));
@@ -7959,6 +8208,7 @@ impl Tab {
                 }
             };
             self.message = None;
+            self.edit_words.let_go();
             self.edits.queue.push_back(next);
             asked = true;
         }
@@ -7981,6 +8231,11 @@ impl Tab {
         };
         let serial = mode.serial;
         let mut queued = false;
+        // The person's next action: what the last edit said is let go before these are
+        // queued, so a split or trim among them says what its own answer lists.
+        if !closing {
+            self.edit_words.let_go();
+        }
         for request in requests {
             let next = match request {
                 Request::Add { token, members } => match NewMembers::of(&members) {
@@ -8005,11 +8260,13 @@ impl Tab {
                     sketch: sketch.clone(),
                     curve,
                     pick,
+                    hushed: self.edit_words.hushes,
                 },
                 Request::Split { curve, at } => Queued::SketchSplit {
                     sketch: sketch.clone(),
                     curve,
                     at,
+                    hushed: self.edit_words.hushes,
                 },
                 Request::Extend {
                     curve,
@@ -8055,7 +8312,11 @@ impl Tab {
         self.hush();
         self.edits.queue.push_back(match deletion {
             Deletion::Remove(members) => Queued::SketchRemove { sketch, members },
-            Deletion::Join(point) => Queued::SketchJoin { sketch, point },
+            Deletion::Join(point) => Queued::SketchJoin {
+                sketch,
+                point,
+                hushed: self.edit_words.hushes,
+            },
         });
         self.advance(sessions);
     }
@@ -9056,7 +9317,107 @@ fn chain(entries: &[Entry], place: &BTreeMap<&FeatureId, usize>, at: usize) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use silico_core::command::{Rebuild, RebuildState, Transaction};
+
+    #[test]
+    fn features_to_check_are_put_in_timeline_order_and_one_it_doesnt_list_goes_last() {
+        let ids = |ids: &[&str]| -> Vec<FeatureId> {
+            ids.iter().map(|id| FeatureId::new(id).unwrap()).collect()
+        };
+        let entries = [
+            entry("p0000001", 0, 0),
+            entry("f0000001", 0, 0),
+            entry("f0000002", 0, 0),
+        ];
+        // Two the timeline doesn't list (yet), each after those it does, in the order they
+        // came; the rest in the timeline's order.
+        let mut features = ids(&["c0000002", "f0000002", "c0000001", "f0000001"]);
+        in_timeline_order(&mut features, &entries);
+        assert_eq!(
+            features,
+            ids(&["f0000001", "f0000002", "c0000002", "c0000001"])
+        );
+        // No timeline yet: as they came.
+        let mut features = ids(&["f0000002", "f0000001"]);
+        in_timeline_order(&mut features, &[]);
+        assert_eq!(features, ids(&["f0000002", "f0000001"]));
+    }
+
+    #[test]
+    fn a_sketch_edits_words_name_each_feature_listed_and_what_was_done_to_which_curve() {
+        let name = |id: &FeatureId| {
+            match id.as_str() {
+                "f0000001" => "Near round",
+                "f0000002" => "Far round",
+                _ => "Chamfer",
+            }
+            .to_owned()
+        };
+        let reshaped = |edit, kind| Reshaped {
+            edit,
+            kind,
+            hushed: 0,
+        };
+        // Each answer in turn, of `edit` on curves of `kinds`, listing `listed`.
+        let said = |edit, kinds: &[Option<ElementKind>], listed: &[&[&str]]| {
+            let mut all = Listed::of(&reshaped(edit, kinds[0]));
+            for (kind, ids) in kinds.iter().zip(listed) {
+                let ids: Vec<FeatureId> =
+                    ids.iter().map(|id| FeatureId::new(id).unwrap()).collect();
+                all.add(&reshaped(edit, *kind), &ids);
+            }
+            all.words(name)
+        };
+        let line = Some(ElementKind::Line);
+        let arc = Some(ElementKind::Arc);
+        assert_eq!(said(Reshape::Split, &[line], &[&[]]), None);
+        assert_eq!(
+            said(
+                Reshape::Split,
+                &[Some(ElementKind::Circle)],
+                &[&["f0000002"]]
+            )
+            .as_deref(),
+            Some("Far round uses the circle you split: check it")
+        );
+        assert_eq!(
+            said(Reshape::Trim, &[arc], &[&["f0000001", "f0000002"]]).as_deref(),
+            Some("Near round and Far round use the arc you trimmed: check them")
+        );
+        assert_eq!(
+            said(
+                Reshape::Trim,
+                &[None],
+                &[&["f0000001", "f0000002", "c0000001"]]
+            )
+            .as_deref(),
+            Some("Near round, Far round, and Chamfer use the curve you trimmed: check them")
+        );
+        assert_eq!(
+            said(Reshape::Join, &[arc], &[&["c0000001"]]).as_deref(),
+            Some("Chamfer uses the arcs you joined: check it")
+        );
+        assert_eq!(
+            said(Reshape::Join, &[None], &[&["c0000001"]]).as_deref(),
+            Some("Chamfer uses the curves you joined: check it")
+        );
+        // A power trim's answers add up, each feature once: two lines, the same kind.
+        assert_eq!(
+            said(
+                Reshape::Trim,
+                &[line, line],
+                &[&["f0000002", "f0000001"], &["f0000001"]]
+            )
+            .as_deref(),
+            Some("Far round and Near round use the lines you trimmed: check them")
+        );
+        // A line and an arc: curves.
+        assert_eq!(
+            said(Reshape::Trim, &[line, arc], &[&["f0000001"], &["c0000001"]]).as_deref(),
+            Some("Near round and Chamfer use the curves you trimmed: check them")
+        );
+    }
 
     fn status(revision: Revision, changed: bool) -> Status {
         counted(revision, changed, 1, 0)
@@ -10910,6 +11271,7 @@ mod tests {
                     sketch: sketch.clone(),
                     curve: curve.clone(),
                     pick: [0.0, 0.0],
+                    hushed: 0,
                 },
                 Some("Edit Triangle"),
             ),
@@ -12611,7 +12973,7 @@ mod tests {
         );
         assert_eq!(tab.sent, sent, "{case}: sent");
         assert_eq!(tab.message.as_deref(), Some(crate::repair::STALE), "{case}");
-        assert_eq!(tab.told, None, "{case}");
+        assert_eq!(tab.edit_words.told, None, "{case}");
         assert!(
             !tab.remove_reference(sessions, card),
             "{case}: Remove started"
@@ -12644,10 +13006,10 @@ mod tests {
         tab.sketch = Some(crate::sketch::SketchMode::new(1, None));
         let sent = tab.sent.clone();
         let why = Some("Finish or cancel the sketch first");
-        tab.told = Some("Round now rounds the edge you picked.".to_owned());
+        tab.edit_words.told = Some("Round now rounds the edge you picked.".to_owned());
         assert!(!tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
         assert_eq!(tab.message.as_deref(), why);
-        assert_eq!(tab.told, None);
+        assert_eq!(tab.edit_words.told, None);
         tab.message = None;
         assert!(!tab.remove_reference(&sessions, &card));
         assert_eq!(tab.message.as_deref(), why);
@@ -12755,7 +13117,7 @@ mod tests {
         assert!(tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
         assert_eq!(tab.sent.last(), Some(&Sent::Edit("edges.1".to_owned())));
         assert_eq!(
-            tab.told.as_deref(),
+            tab.edit_words.told.as_deref(),
             Some("Round now rounds the edge you picked. Undo puts the broken reference back.")
         );
     }
