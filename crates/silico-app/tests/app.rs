@@ -26976,6 +26976,43 @@ fn cancel_of_the_sketch_lets_go_of_what_its_split_said() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// [`BOXED_ROUNDED`] with a construction arc of its own, apart from the box: ab000001
+/// about pb000001 (100, 100), from pb000002 (105, 100) to pb000003 (95, 100), touching none
+/// of the box's lines and no part of its profile.
+fn boxed_rounded_with_an_arc() -> String {
+    let arc_points = r#"{"id": "pa000004", "x": 10, "y": 30, "construction": false}, {"id": "pb000001", "x": 100, "y": 100, "construction": true}, {"id": "pb000002", "x": 105, "y": 100, "construction": true}, {"id": "pb000003", "x": 95, "y": 100, "construction": true}]"#;
+    let arc = r#""arcs": [{"id": "ab000001", "center": "pb000001", "start": "pb000002", "end": "pb000003", "construction": true}]"#;
+    let text = BOXED_ROUNDED
+        .replacen(
+            r#"{"id": "pa000004", "x": 10, "y": 30, "construction": false}]"#,
+            arc_points,
+            1,
+        )
+        .replacen(r#""arcs": []"#, arc, 1);
+    assert!(text.contains(arc) && text.contains(r#""id": "pb000003""#));
+    text
+}
+
+#[test]
+fn a_join_of_two_lines_says_lines_though_the_sketch_holds_an_arc_elsewhere() {
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", &boxed_rounded_with_an_arc());
+    // na000002 split at (50, 20), and its split point deleted: the two lines it shares
+    // joined. Only they end there: the arc, which neither starts nor ends at the point,
+    // has no say in what was joined.
+    let split = rounded_split(&f, &mut h);
+    select_member(&mut h, &split, silico_core::document::ElementKind::Point);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!((sketch.lines.len(), sketch.arcs.len()), (4, 1));
+    step_until(&mut h, "the join's words", |h| {
+        said_to_check(h).as_deref() == Some("Near round uses the lines you joined: check it")
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn finish_of_the_sketch_keeps_what_its_split_said() {
     let f = fixture();
