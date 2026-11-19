@@ -54618,10 +54618,14 @@ fn a_face_clicked_before_its_type_is_read_is_sketched_on_once_it_is() {
 }
 
 #[test]
-fn a_pick_begun_before_the_boxes_are_made_finds_xy_once_they_are() {
-    // #565's review: the pick holds the canvas, so it keeps Select Other's boxes up with the
-    // view's meshes itself. Begun before the box's boxes are made (held), the pointer on XY
-    // off the box finds XY once they are, and a click there starts its sketch.
+fn a_click_before_the_boxes_are_made_makes_nothing_and_says_so_and_one_after_works() {
+    // #565's round 4: the pick keeps Select Other's boxes up itself, and never holds a click.
+    // Begun before the box's boxes are made (held), the pointer on XY off the box lights XY
+    // (no face known nearer), but a click there makes nothing and says "Still preparing the
+    // model: click again"; nothing comes of it once the boxes are made. A click then starts
+    // XY's sketch.
+    use silico_app::plane_pick::{PICK_NOT_READY, Under};
+    use silico_core::document::OriginPlane;
     let f = fixture();
     let making = Arc::new(Making::default());
     making.hold();
@@ -54629,30 +54633,30 @@ fn a_pick_begun_before_the_boxes_are_made_finds_xy_once_they_are() {
     begin_pick(&mut h);
     let at = xy_off_the_box(&h);
     h.hover_at(at);
-    for _ in 0..5 {
+    step_until(&mut h, "XY lit while the boxes are made", |h| {
+        pick_under(h) == Some(Under::Plane(OriginPlane::Xy))
+    });
+    pick_at(&mut h, at);
+    toasted(&mut h, PICK_NOT_READY);
+    making.release();
+    boxes_made(&mut h);
+    for _ in 0..6 {
         step(&mut h);
     }
-    making.release();
-    step_until(&mut h, "XY under the pointer", |h| {
-        pick_under(h)
-            == Some(silico_app::plane_pick::Under::Plane(
-                silico_core::document::OriginPlane::Xy,
-            ))
-    });
+    assert!(sketch_mode(&h).is_none(), "the click was held");
+    assert!(picking(&h));
     pick_at(&mut h, at);
     let (_, features) = sketch_added(&f, &mut h);
     assert_eq!(features[1], Some(empty_sketch("Sketch1", r#""xy""#)));
     assert_eq!(never_waits::waits(), 0);
 }
-
 #[test]
-fn a_click_while_new_meshes_boxes_are_made_waits_for_them_and_takes_the_face_under_it() {
-    // #565's review: a model published during the pick (the block's length set through the
-    // core) gives the view a new mesh, whose boxes are made again (held here). While they're
-    // held, XY off the box is still lit, met by no face there; a click on the box's top waits
-    // for them, as the selection keeps a click, rather than taking XY under the top or
-    // nothing; once they're made it's cast again and takes the top, a plane, so a sketch on
-    // it is added.
+fn a_click_while_a_new_meshs_boxes_are_made_makes_nothing_and_one_after_takes_the_face() {
+    // A model published during the pick gives the view a new mesh, whose boxes are made
+    // again (held). A click on the box's top meanwhile makes nothing and says so, rather
+    // than taking XY under the top; once the boxes are made, a click there takes the top, a
+    // plane, and a sketch on it is added.
+    use silico_app::plane_pick::PICK_NOT_READY;
     let f = fixture();
     describes_a_real_box(&f);
     let making = Arc::new(Making::default());
@@ -54661,22 +54665,17 @@ fn a_click_while_new_meshes_boxes_are_made_waits_for_them_and_takes_the_face_und
     begin_pick(&mut h);
     making.hold();
     set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "41");
-    let off = xy_off_the_box(&h);
-    h.hover_at(off);
-    step_until(&mut h, "XY lit while the boxes wait", |h| {
-        pick_under(h)
-            == Some(silico_app::plane_pick::Under::Plane(
-                silico_core::document::OriginPlane::Xy,
-            ))
-    });
     let top = the_boxs_top(&h);
     pick_at(&mut h, top);
-    for _ in 0..4 {
+    toasted(&mut h, PICK_NOT_READY);
+    assert!(!h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
+    making.release();
+    boxes_made(&mut h);
+    for _ in 0..6 {
         step(&mut h);
     }
-    assert!(sketch_mode(&h).is_none(), "nothing taken before the boxes");
-    assert!(h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
-    making.release();
+    assert!(sketch_mode(&h).is_none(), "the click was held");
+    pick_at(&mut h, top);
     let (_, features) = sketch_added(&f, &mut h);
     assert_eq!(
         features[1],
@@ -54688,6 +54687,32 @@ fn a_click_while_new_meshes_boxes_are_made_waits_for_them_and_takes_the_face_und
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn a_click_made_while_the_boxes_wait_comes_to_nothing_when_the_body_is_hidden_after() {
+    // #565's round 4's reviewer case, moot without holding: a click on the top while its
+    // boxes are made says so and makes nothing; the body hidden in the browser after it, and
+    // its boxes then made, XY behind where the top was gets no sketch.
+    use silico_app::plane_pick::PICK_NOT_READY;
+    let f = fixture();
+    describes_a_real_box(&f);
+    let making = Arc::new(Making::default());
+    let (mut h, _record) = box_from_above_made(&f, Some(making.build()));
+    boxes_made(&mut h);
+    begin_pick(&mut h);
+    making.hold();
+    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "41");
+    let top = the_boxs_top(&h);
+    pick_at(&mut h, top);
+    toasted(&mut h, PICK_NOT_READY);
+    click_browser_eye(&mut h, "Hide Block");
+    making.release();
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).is_none(), "{:?}", text_of(&f.sessions, &h));
+    assert!(picking(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
 #[test]
 fn a_dialog_opened_during_the_pick_ends_it() {
     // #565's review: sketch mode can't open under a dialog, so the pick ends as Pad's opens.
@@ -54988,6 +55013,17 @@ fn a_face_of_meshes_not_of_the_published_model_is_never_picked_and_hides_the_pla
     step_until(&mut h, "XY off the box", |h| {
         pick_under(h) == Some(Under::Plane(OriginPlane::Xy))
     });
+    // Clicked on XY off the box (below it here, y = −3, inside XY's square from −4), on
+    // meshes that aren't the published model's (their boxes made), it makes nothing and says
+    // so, as before the boxes are made.
+    let below = above_at(&h, 20.0, -3.0, [0.0, 0.0]);
+    h.hover_at(below);
+    step_until(&mut h, "XY below the box", |h| {
+        pick_under(h) == Some(Under::Plane(OriginPlane::Xy))
+    });
+    pick_at(&mut h, below);
+    toasted(&mut h, silico_app::plane_pick::PICK_NOT_READY);
+    assert!(sketch_mode(&h).is_none());
     hold.release();
     meshes_settled(&mut h);
     boxes_made(&mut h);
@@ -55001,73 +55037,11 @@ fn a_face_of_meshes_not_of_the_published_model_is_never_picked_and_hides_the_pla
 }
 
 #[test]
-fn a_click_held_for_the_boxes_is_let_go_when_another_model_comes() {
-    // #565's round 2: a click on the top while a new mesh's boxes are made is held for them;
-    // another model then published (the block 10 long, its mesh with it) would cast that
-    // place on meshes it wasn't aimed at (XY, past the shrunk box). It's let go and said, as
-    // the selection lets a click go, and nothing is added once the boxes are made.
-    let f = fixture();
-    describes_a_real_box(&f);
-    let small = Arc::new(AtomicBool::new(false));
-    let shrunk = Arc::clone(&small);
-    f.kernel.answer_instead(move |op| match op {
-        Op::Tessellate {
-            deflection,
-            at_least_the_floor,
-            ..
-        } => {
-            let length = if shrunk.load(Ordering::SeqCst) {
-                10.0
-            } else {
-                40.0
-            };
-            let mesh = silico_render::bench::box_mesh([0.0; 3], [length, 20.0, 10.0]);
-            Some(if *at_least_the_floor {
-                silico_protocol::Reply::MeshAt(silico_protocol::MeshAt {
-                    mesh,
-                    deflection: *deflection,
-                })
-            } else {
-                silico_protocol::Reply::Mesh(mesh)
-            })
-        }
-        _ => None,
-    });
-    let making = Arc::new(Making::default());
-    let (mut h, _record) = drawn_from_above(&f, "box.silico", A_BOX, Some(making.build()), 1.0);
-    boxes_made(&mut h);
-    begin_pick(&mut h);
-    making.hold();
-    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "41");
-    let top = the_boxs_top(&h);
-    pick_at(&mut h, top);
-    for _ in 0..4 {
-        step(&mut h);
-    }
-    assert!(sketch_mode(&h).is_none());
-    assert!(h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
-    let camera = view(&h).camera().clone();
-    small.store(true, Ordering::SeqCst);
-    set_through_the_core(&f, &mut h, "k7f2qx3m", "length", "10");
-    assert_eq!(view(&h).camera(), &camera);
-    toasted(&mut h, silico_app::plane_pick::PICK_CLICK_LET_GO);
-    assert!(!h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
-    making.release();
-    boxes_made(&mut h);
-    for _ in 0..10 {
-        step(&mut h);
-    }
-    assert!(sketch_mode(&h).is_none(), "{:?}", text_of(&f.sessions, &h));
-    assert!(picking(&h));
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn a_click_held_on_an_old_models_meshes_is_never_cast_on_the_new_ones() {
-    // #565's round 3: a new model's mesh being boxed (held), then another model published
-    // whose meshes are held too, so the view still draws the 41's: a click on the top then is
-    // never held, and once the 10's meshes come and are boxed nothing is added (XY, past the
-    // shrunk box, was never under the click).
+fn a_click_on_an_older_models_meshes_makes_nothing_says_so_and_is_never_cast_on_the_new_ones() {
+    // #565's rounds 3 and 4: a new model's mesh being boxed (held), then another model
+    // published whose meshes are held too, so the view still draws the 41's: a click on the
+    // top then makes nothing and says so, and once the 10's meshes come and are boxed nothing
+    // is added (XY, past the shrunk box, was never under the click).
     let f = fixture();
     describes_a_real_box(&f);
     let small = Arc::new(AtomicBool::new(false));
@@ -55126,9 +55100,7 @@ fn a_click_held_on_an_old_models_meshes_is_never_cast_on_the_new_ones() {
     assert!(!meshes_current(&h), "the view still draws the 41's mesh");
     let top = the_boxs_top(&h);
     pick_at(&mut h, top);
-    for _ in 0..4 {
-        step(&mut h);
-    }
+    toasted(&mut h, silico_app::plane_pick::PICK_NOT_READY);
     assert!(sketch_mode(&h).is_none());
     assert!(!h.state().tabs()[0].plane_pick.as_ref().unwrap().waiting());
     meshes.release();
