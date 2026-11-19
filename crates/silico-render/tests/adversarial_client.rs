@@ -124,10 +124,12 @@ fn a_worker_killed_while_idle_is_replaced_and_the_next_render_draws() {
 
 #[test]
 fn a_worker_stopped_with_sigstop_while_idle_times_out_and_is_killed() {
+    // The render on the stopped worker has a short time; the client's, for the renders
+    // before and after it, which must draw, is one only a hang reaches.
     let c = client(
         WORKER,
         RenderSettings {
-            timeout: Duration::from_secs(2),
+            timeout: WAIT,
             ..RenderSettings::default()
         },
     );
@@ -138,8 +140,8 @@ fn a_worker_stopped_with_sigstop_while_idle_times_out_and_is_killed() {
     // late as this machine runs them.
     let lateness = Lateness::start();
     let start = Instant::now();
-    let outcome =
-        wait_within(c.render(small()), WAIT).expect("a render on a stopped worker never answered");
+    let outcome = wait_within(c.render_within(small(), Duration::from_secs(2)), WAIT)
+        .expect("a render on a stopped worker never answered");
     let took = start.elapsed();
     let e = failed(outcome);
     assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e:?}");
@@ -218,9 +220,9 @@ fn many_threads_render_crash_hang_and_cancel_at_once_and_every_ticket_answers() 
     let c = Arc::new(client(
         TEST_WORKER,
         RenderSettings {
-            // Four of the hangs aren't cancelled, and run their time, one after another: long
-            // enough that a small render on a new worker, loaded, never runs out of it.
-            timeout: Duration::from_secs(5),
+            // The renders that crash or draw: a time only a hang reaches. The hangs have 2 s
+            // of their own (four aren't cancelled, and run it, one after another).
+            timeout: WAIT,
             ..RenderSettings::default()
         },
     ));
@@ -230,17 +232,16 @@ fn many_threads_render_crash_hang_and_cancel_at_once_and_every_ticket_answers() 
             std::thread::spawn(move || {
                 for i in 0..5u64 {
                     let which = (t * 7 + i * 3) % 5;
-                    let scene = match which {
-                        0 => hanging(),
-                        1 => crashing(),
-                        _ => small(),
+                    let ticket = match which {
+                        0 => c.render_within(hanging(), Duration::from_secs(2)),
+                        1 => c.render(crashing()),
+                        _ => c.render(small()),
                     };
-                    let ticket = c.render(scene);
                     if (t + i) % 3 == 0 {
                         std::thread::sleep(Duration::from_millis(10 * i));
                         ticket.cancel();
                     }
-                    let outcome = wait_within(ticket, Duration::from_secs(60))
+                    let outcome = wait_within(ticket, WAIT)
                         .unwrap_or_else(|| panic!("thread {t} render {i} never answered"));
                     if let RenderOutcome::Done(Err(e)) = &outcome {
                         assert!(

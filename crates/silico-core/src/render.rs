@@ -64,7 +64,8 @@ pub const LARGE_RENDER_TRIANGLES: usize = 200_000;
 #[derive(Debug, Clone)]
 pub struct RenderSettings {
     pub adapter: RenderAdapter,
-    /// Each render's own time, from when its scene is sent.
+    /// Each render's own time, from when its scene is sent, unless it's given its own
+    /// ([`RenderClient::render_within`]).
     pub timeout: Duration,
     /// How long the worker is kept idle.
     pub idle: Duration,
@@ -249,6 +250,8 @@ impl JobState {
 struct Job {
     /// Taken for its turn.
     scene: Option<RenderScene>,
+    /// Its own time, from when its scene is sent.
+    timeout: Duration,
     state: Arc<JobState>,
 }
 
@@ -261,6 +264,8 @@ impl Drop for Job {
 /// The render worker's client: renders in turn, on a worker of its own.
 pub struct RenderClient {
     jobs: Mutex<Option<Sender<Job>>>,
+    /// Each render's time, unless it's given its own ([`RenderClient::render_within`]).
+    timeout: Duration,
     thread: Option<JoinHandle<()>>,
     shared: Arc<Shared>,
 }
@@ -284,6 +289,7 @@ impl RenderClient {
     pub fn start(exe: &Path, settings: RenderSettings) -> Result<Self, Error> {
         let args: Vec<OsString> = settings.adapter.args().iter().map(OsString::from).collect();
         let exe = Executable::with_args(exe, WorkerKind::Render, args)?;
+        let timeout = settings.timeout;
         let (jobs, queue) = mpsc::channel();
         let shared = Arc::new(Shared::default());
         let theirs = Arc::clone(&shared);
@@ -298,6 +304,7 @@ impl RenderClient {
             })?;
         Ok(RenderClient {
             jobs: Mutex::new(Some(jobs)),
+            timeout,
             thread: Some(thread),
             shared,
         })
@@ -305,8 +312,16 @@ impl RenderClient {
 
     /// Queues `scene`. It's checked first ([`RenderScene::check`]): the command builds
     /// scenes from values it has checked, so one that fails is Silico's bug, answered
-    /// `internal` at once and never sent.
+    /// `internal` at once and never sent. It has the client's time ([`RenderSettings`]).
     pub fn render(&self, scene: RenderScene) -> RenderTicket {
+        self.render_within(scene, self.timeout)
+    }
+
+    /// [`render`](Self::render), with a time of its own instead of the client's, from when
+    /// its scene is sent: for a caller that knows how long this render may take. (The
+    /// render client's tests give a render meant to hang a short time, and those meant to
+    /// draw the client's, which only a hang reaches.)
+    pub fn render_within(&self, scene: RenderScene, timeout: Duration) -> RenderTicket {
         let (outcome, reply) = mpsc::channel();
         let state = Arc::new(JobState {
             stage: Mutex::new(Stage::default()),
@@ -328,6 +343,7 @@ impl RenderClient {
         }
         let job = Job {
             scene: Some(scene),
+            timeout,
             state,
         };
         if let Some(jobs) = lock(&self.jobs).as_ref() {
@@ -417,7 +433,7 @@ fn serve(exe: &Arc<Executable>, settings: &RenderSettings, queue: &Receiver<Job>
             lock(&shared.current).take();
             continue;
         };
-        let outcome = server.turn(scene, &job.state);
+        let outcome = server.turn(scene, job.timeout, &job.state);
         lock(&shared.current).take();
         job.state.answer(outcome);
     }
@@ -443,7 +459,7 @@ impl Server<'_> {
 
     /// One render's turn: the worker started if there's none, the scene sent, and the
     /// worker stopped after if it should be.
-    fn turn(&mut self, scene: RenderScene, state: &JobState) -> RenderOutcome {
+    fn turn(&mut self, scene: RenderScene, timeout: Duration, state: &JobState) -> RenderOutcome {
         if self
             .worker
             .as_mut()
@@ -484,7 +500,7 @@ impl Server<'_> {
         let (width, height, ids) = (scene.width, scene.height, scene.ids);
         // The render worker has no generations: nothing it draws is superseded, only
         // cancelled, by killing it. Every render is the first generation's.
-        let reply = running.call(Generation(1), Op::Render(Box::new(scene)), settings.timeout);
+        let reply = running.call(Generation(1), Op::Render(Box::new(scene)), timeout);
         let cancelled = {
             let mut stage = lock(&state.stage);
             stage.killer = None;

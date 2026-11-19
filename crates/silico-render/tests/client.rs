@@ -6,7 +6,7 @@
 use std::time::{Duration, Instant};
 
 use silico_core::ErrorCode;
-use silico_core::render::{RenderAdapter, RenderOutcome, RenderSettings};
+use silico_core::render::{RENDER_TIMEOUT, RenderAdapter, RenderOutcome, RenderSettings};
 use silico_render::bench::front_of_a_box;
 use silico_render::test_scenes;
 
@@ -225,10 +225,12 @@ fn renders_drawn_keep_the_worker_from_idling() {
 
 #[test]
 fn a_render_past_its_time_is_a_timeout_and_the_next_render_works() {
+    // The hung render's time is short; the client's, for the render after it, which must
+    // draw, is one only a hang reaches, however loaded the machine.
     let c = client(
         TEST_WORKER,
         RenderSettings {
-            timeout: Duration::from_secs(2),
+            timeout: WAIT,
             ..RenderSettings::default()
         },
     );
@@ -236,7 +238,7 @@ fn a_render_past_its_time_is_a_timeout_and_the_next_render_works() {
     // wakes on the way as late as this machine runs them.
     let lateness = Lateness::start();
     let start = Instant::now();
-    let e = failed(c.render(hanging()).wait());
+    let e = failed(c.render_within(hanging(), Duration::from_secs(2)).wait());
     let took = start.elapsed();
     assert_eq!(e.code(), ErrorCode::WorkerTimeout, "{e:?}");
     let bound = allowance(Duration::from_secs(10), lateness.most());
@@ -256,17 +258,18 @@ fn a_worker_that_crashes_is_a_crash_and_the_next_render_works() {
 
 #[test]
 fn renders_queued_each_have_their_own_time_from_when_theyre_sent() {
-    // The first hangs for its 5 s; the second, queued behind it, waits those 5 s but still
-    // has its own 5 s once it's sent, and draws: timed from when it was queued, it would have
-    // none left. 5 s, not less: a small render on a fresh worker takes that, loaded.
+    // The second render has the core's own time (30 s), which only a hang reaches; the
+    // first, ahead of it, hangs for a second longer than that. The second, queued behind
+    // it, waits those 31 s but still has its own 30 s once it's sent, and draws: timed from
+    // when it was queued, it would have none left, and fail at once.
     let c = client(
         TEST_WORKER,
         RenderSettings {
-            timeout: Duration::from_secs(5),
+            timeout: RENDER_TIMEOUT,
             ..RenderSettings::default()
         },
     );
-    let first = c.render(hanging());
+    let first = c.render_within(hanging(), RENDER_TIMEOUT + Duration::from_secs(1));
     let second = c.render(front_of_a_box(8, 8));
     assert_eq!(failed(first.wait()).code(), ErrorCode::WorkerTimeout);
     drawn(second.wait());
