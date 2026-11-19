@@ -26,7 +26,7 @@
         "type": "string"
       },
       "suppressed": {
-        "description": "True to suppress it: it isn't built, and a feature that consumes it builds on the\nnearest unsuppressed feature up its chain; its dependents go with it (a feature whose\nsketch it is, one naming its elements, and one left with an input it needs and nothing\nunsuppressed up its chain). False to unsuppress it, with its sketch, the makers of the\nnames it stores, and, for an input it needs with nothing unsuppressed up its chain,\nthat chain's first feature; what depends on it stays suppressed.",
+        "description": "True to suppress it: it isn't built, and a feature that consumes it builds on the\nnearest unsuppressed feature up its chain; its dependents go with it (a feature whose\nsketch it is, one naming its elements, a pattern copying it, and one left with an\ninput it needs and nothing unsuppressed up its chain). False to unsuppress it, with\nits sketch, the makers of the names it stores, a pattern's originals, and, for an\ninput it needs with nothing unsuppressed up its chain, that chain's first feature;\nwhat depends on it stays suppressed.",
         "type": "boolean"
       }
     },

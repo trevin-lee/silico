@@ -3222,6 +3222,27 @@ impl Plan {
                     (own, uses) = plan.dress(feature, base_of(&stands), dressing);
                     Some(Naming::Operation(OpCode::Chamfer))
                 }
+                // Built from M6.3 (docs/roadmap/m6-features.md): until then refused, naming
+                // the feature, as a type the gate reads but no step builds yet.
+                Made::Pattern(kind) => {
+                    uses = stands.iter().filter_map(|(_, stand)| *stand).collect();
+                    refused = Some(
+                        Error::new(
+                            ErrorCode::InvalidInput,
+                            format!(
+                                "{} {} isn't built yet: this Silico reads and checks a {}, and builds none",
+                                kind.word(),
+                                feature.id,
+                                kind.word()
+                            ),
+                        )
+                        .with_feature(feature.id.as_str())
+                        .with_suggestion(
+                            "a later Silico builds patterns and mirrors; suppress it to build the rest",
+                        ),
+                    );
+                    None
+                }
                 Made::Sweep(kind) => {
                     // A pad's or revolve's base whose whole chain is suppressed stands for
                     // nothing: it builds alone, as one with no base does.

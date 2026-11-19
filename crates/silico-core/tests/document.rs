@@ -9,9 +9,10 @@ use example::EXAMPLE;
 use proptest::prelude::*;
 use silico_core::ErrorCode;
 use silico_core::document::{
-    Angle, Axis, ChamferSize, Document, ElementId, ElementName, Feature, FeatureId, FeatureVersion,
-    FormatVersion, ID_ALPHABET, Length, Name, NamingScheme, Operation, PadExtent, PocketExtent,
-    TurnExtent, Units, read, schema, write,
+    Angle, Axis, ChamferSize, Copies, Document, ElementId, ElementName, Feature, FeatureId,
+    FeatureVersion, FormatVersion, ID_ALPHABET, Length, LinearDirection, LinearDistribution, Name,
+    NamingScheme, Operation, OriginAxis, OriginOrName, PadExtent, PocketExtent, PolarDistribution,
+    Skipped, TurnExtent, Units, read, schema, write,
 };
 
 fn mm(nm: i64) -> Length {
@@ -672,6 +673,47 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
                 reversed: false,
             },
         },
+        Operation::LinearPattern {
+            base: id("00000000"),
+            copies: Copies::Features {
+                features: vec![id("00000000")],
+            },
+            directions: vec![
+                LinearDirection {
+                    along: OriginOrName::Origin(OriginAxis::X),
+                    reversed: false,
+                    distribution: LinearDistribution::Extent { length: one },
+                    count: 3,
+                },
+                LinearDirection {
+                    along: OriginOrName::Name(
+                        ElementName::new("11111111.pad.Face(G 33333333.sketch.Face1)").unwrap(),
+                    ),
+                    reversed: true,
+                    distribution: LinearDistribution::Spacing { length: one },
+                    count: 2,
+                },
+            ],
+            skip: vec![Skipped(vec![2, 1])],
+        },
+        Operation::PolarPattern {
+            base: id("00000000"),
+            copies: Copies::Solid,
+            axis: OriginOrName::Origin(OriginAxis::Z),
+            reversed: false,
+            distribution: PolarDistribution::Extent {
+                angle: Angle::from_ndeg(360_000_000_000),
+            },
+            count: 4,
+            skip: Vec::new(),
+        },
+        Operation::Mirror {
+            base: id("00000000"),
+            copies: Copies::Features {
+                features: vec![id("00000000")],
+            },
+            plane: OriginOrName::Origin(silico_core::document::OriginPlane::Yz),
+        },
     ];
     let names: Vec<&str> = samples.iter().map(Operation::type_name).collect();
     assert_eq!(names, FEATURE_TYPES);
@@ -696,17 +738,7 @@ fn every_feature_type_is_read_written_and_in_the_schema() {
         assert_eq!(made.word(), operation.type_name());
         words += 1;
     }
-    // A pattern's and a mirror's words (scheme 6, N10) come before their types do (M6.2).
-    let copying = silico_core::naming::TypeWord::all()
-        .filter(|w| {
-            matches!(w, silico_core::naming::TypeWord::Operation(op) if op.directions().is_some())
-        })
-        .count();
-    assert_eq!(copying, 3);
-    assert_eq!(
-        words + copying,
-        silico_core::naming::TypeWord::all().count()
-    );
+    assert_eq!(words, silico_core::naming::TypeWord::all().count());
     let validator = &*VALIDATOR;
     for operation in samples {
         let document = Document {

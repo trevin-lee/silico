@@ -15,6 +15,9 @@ use super::model::{
     Axis, Document, ElementName, Extent, ExtentValue, Feature, FeatureId, FeatureVersion,
     FormatVersion, NamingScheme, Operation, Position, Units,
 };
+use super::pattern::{
+    Copies, LinearDirection, PolarDistribution, Skipped, sorted_features, sorted_skip,
+};
 use super::quantity::{Angle, Length};
 use super::sketch::{
     Coordinate, ElementId, ElementKind, Form, Plane, Reference, Sketch, SketchConstraint,
@@ -378,7 +381,113 @@ fn fields(operation: &Operation) -> Vec<(&'static str, Out<'_>)> {
             axis,
             extent,
         } => sweep(Some(base), sketch, Some(axis), Extent::Turn(*extent)),
+        Operation::LinearPattern {
+            base,
+            copies,
+            directions,
+            skip,
+        } => vec![
+            ("base", reference(base)),
+            ("copies", self::copies(copies)),
+            (
+                "directions",
+                Out::Array(directions.iter().map(direction).collect()),
+            ),
+            skipped(skip),
+        ],
+        Operation::PolarPattern {
+            base,
+            copies,
+            axis,
+            reversed,
+            distribution,
+            count,
+            skip,
+        } => vec![
+            ("base", reference(base)),
+            ("copies", self::copies(copies)),
+            ("axis", Out::Str(axis.as_str())),
+            ("reversed", boolean(*reversed)),
+            ("distribution", polar_distribution(*distribution)),
+            ("count", Out::Raw(count.to_string())),
+            skipped(skip),
+        ],
+        Operation::Mirror {
+            base,
+            copies,
+            plane,
+        } => vec![
+            ("base", reference(base)),
+            ("copies", self::copies(copies)),
+            ("plane", Out::Str(plane.as_str())),
+        ],
     }
+}
+
+/// A pattern's or mirror's `copies`: its form, and for `features` its originals sorted by
+/// ID, a set (docs/design/m6.0-patterns.md, section 2.1), on one line.
+fn copies(copies: &Copies) -> Out<'_> {
+    let mut members = vec![("type", Out::Str(copies.type_name()))];
+    if let Copies::Features { features } = copies {
+        members.push((
+            "features",
+            Out::Array(
+                sorted_features(features)
+                    .into_iter()
+                    .map(reference)
+                    .collect(),
+            ),
+        ));
+    }
+    Out::Object(members)
+}
+
+/// One of a linear pattern's directions: a member to a line, as it holds its distribution.
+fn direction(direction: &LinearDirection) -> Out<'_> {
+    let LinearDirection {
+        along,
+        reversed,
+        distribution,
+        count,
+    } = direction;
+    Out::Object(vec![
+        ("along", Out::Str(along.as_str())),
+        ("reversed", boolean(*reversed)),
+        (
+            "distribution",
+            Out::Object(vec![
+                ("type", Out::Str(distribution.type_name())),
+                ("length", number(distribution.length())),
+            ]),
+        ),
+        ("count", Out::Raw(count.to_string())),
+    ])
+}
+
+/// A polar pattern's `distribution`, on one line.
+fn polar_distribution(distribution: PolarDistribution) -> Out<'static> {
+    Out::Object(vec![
+        ("type", Out::Str(distribution.type_name())),
+        ("angle", angle(distribution.angle())),
+    ])
+}
+
+/// A pattern's `skip`, its instances sorted (section 3's order), a set, an instance to a
+/// line ([`ITEM_LISTS`]), each on one line.
+fn skipped(skip: &[Skipped]) -> (&'static str, Out<'_>) {
+    let items = sorted_skip(skip)
+        .into_iter()
+        .map(|instance| {
+            Out::Array(
+                instance
+                    .offsets()
+                    .iter()
+                    .map(|offset| Out::Raw(offset.to_string()))
+                    .collect(),
+            )
+        })
+        .collect();
+    ("skip", field_list("skip", items))
 }
 
 /// A pad's, pocket's, revolve's, or groove's fields, in schema order: its base, if it has
@@ -722,17 +831,17 @@ pub(crate) fn point(position: &Position) -> Out<'static> {
     Out::Array(position.iter().map(|&l| number(l)).collect())
 }
 
-/// The fields of a feature that list element names (a fillet's and a chamfer's `edges`),
-/// which the canonical form writes a name to a line, so an edit to one name is a line of
-/// the diff ([`field_list`]).
-pub(crate) const NAME_LISTS: &[&str] = &["edges"];
+/// The lists a person adds to and removes from one item at a time, which the canonical form
+/// writes an item to a line, so an edit to one is a line of the diff ([`field_list`]): a
+/// fillet's and a chamfer's `edges`, and a pattern's `skip` (Fable, 2026-11-10).
+pub(crate) const ITEM_LISTS: &[&str] = &["edges", "skip"];
 
 /// The list `items`, the value of a feature's field `field`, laid out as the canonical form
-/// lays that field out: an item to a line for one of [`NAME_LISTS`], otherwise on one line
+/// lays that field out: an item to a line for one of [`ITEM_LISTS`], otherwise on one line
 /// where it holds no object. The one place that decides it, for the document's writer
 /// ([`names`]) and for what `set_field` gives back of a field (`command::wire::Json::field`).
 pub(crate) fn field_list<'a>(field: &str, items: Vec<Out<'a>>) -> Out<'a> {
-    if NAME_LISTS.contains(&field) {
+    if ITEM_LISTS.contains(&field) {
         Out::Lines(items)
     } else {
         Out::Array(items)
