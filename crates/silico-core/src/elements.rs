@@ -576,6 +576,7 @@ mod tests {
                     surface: Surface::Other,
                     area: i as f64,
                     centroid: [0.0; 3],
+                    orientation: silico_protocol::FaceOrientation::Forward,
                 })
                 .collect(),
             edges: (1..=edges)

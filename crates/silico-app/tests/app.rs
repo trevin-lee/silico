@@ -35882,6 +35882,7 @@ fn real_box_description() -> silico_core::kernel::Description {
         },
         area,
         centroid,
+        orientation: silico_protocol::FaceOrientation::Forward,
     };
     let line = |start: [f64; 3], end: [f64; 3]| EdgeDescription {
         curve: EdgeCurve::Line,
@@ -36129,6 +36130,7 @@ fn describes_a_pin(f: &Fixture) {
         },
         area: PI * 6.25,
         centroid: [0.0, 0.0, z],
+        orientation: silico_protocol::FaceOrientation::Forward,
     };
     let rim = |z: f64| EdgeDescription {
         curve: EdgeCurve::Circle {
@@ -36149,6 +36151,7 @@ fn describes_a_pin(f: &Fixture) {
                 },
                 area: 60.0 * PI,
                 centroid: [0.0, 0.0, 6.0],
+                orientation: silico_protocol::FaceOrientation::Forward,
             },
             cap(12.0, 1.0),
             cap(0.0, -1.0),

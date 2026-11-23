@@ -16,6 +16,7 @@ fn cone(radius: f64, half_angle: f64) -> Description {
             },
             area: 1.0,
             centroid: [0.0; 3],
+            orientation: silico_protocol::FaceOrientation::Forward,
         }],
         edges: Vec::new(),
         vertices: Vec::new(),
