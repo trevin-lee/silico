@@ -569,6 +569,15 @@ pub fn body(model: &Model, id: &FeatureId) -> Result<Value, String> {
             "features": features::part_design_model(features, id)?,
         }}),
         Operation::Sketch(_) => return Err(format!("{id} is a sketch, which makes no solid")),
+        // The oracle's translation of a pattern or mirror to PartDesign's is M6.4's.
+        Operation::LinearPattern { .. }
+        | Operation::PolarPattern { .. }
+        | Operation::Mirror { .. } => {
+            return Err(format!(
+                "{id} is a {}, which the oracle doesn't translate yet",
+                feature.operation.type_name()
+            ));
+        }
     })
 }
 

@@ -10,6 +10,8 @@ mod fingerprint;
 mod index;
 pub mod json;
 mod model;
+mod pattern;
+mod pattern_gate;
 mod quantity;
 mod reach;
 mod sketch;
@@ -37,6 +39,12 @@ pub use model::{
 };
 #[cfg(test)]
 pub(crate) use model::{cloned, compared};
+pub use pattern::{
+    AxisReference, Copies, DirectionReference, LinearDirection, LinearDistribution, MOST_INSTANCES,
+    MirrorPlane, OriginAxis, OriginOrName, PatternFeature, PolarDistribution, Skipped,
+    skipped_in_range,
+};
+pub(crate) use pattern::{sorted_features, sorted_skip};
 pub use quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 pub(crate) use reach::changed as changed_features;
 pub use reach::{Before, QuotedIds, net_reach, net_reach_but, with_users};
@@ -217,6 +225,9 @@ fn smaller(feature: &Feature) -> &'static str {
         Operation::Fillet { .. } | Operation::Chamfer { .. } => {
             "name fewer edges, or shorten this feature's name or note"
         }
+        Operation::LinearPattern { .. } | Operation::PolarPattern { .. } => {
+            "skip fewer instances, or shorten this feature's name or note"
+        }
         Operation::Box { .. }
         | Operation::Cylinder { .. }
         | Operation::Sphere { .. }
@@ -228,7 +239,8 @@ fn smaller(feature: &Feature) -> &'static str {
         | Operation::Pad { .. }
         | Operation::Pocket { .. }
         | Operation::Revolve { .. }
-        | Operation::Groove { .. } => "make this feature's name or note shorter",
+        | Operation::Groove { .. }
+        | Operation::Mirror { .. } => "make this feature's name or note shorter",
     }
 }
 

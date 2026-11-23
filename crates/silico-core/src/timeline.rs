@@ -67,7 +67,8 @@ pub struct Entry {
     pub name: String,
     pub suppressed: bool,
     /// The features it names: its `base` and `tool`, then the sketch it sweeps, then, for a
-    /// sketch on a face, the face's own feature (`k7f2qx3m` of `k7f2qx3m.box.Face6`).
+    /// sketch on a face, the face's own feature (`k7f2qx3m` of `k7f2qx3m.box.Face6`), then a
+    /// pattern's originals in timeline order, each feature once.
     pub inputs: Vec<FeatureId>,
     pub health: Health,
     /// How many problems the model has on it, and warnings, whose text `check` gives.
@@ -91,6 +92,29 @@ pub struct Timeline {
 pub struct Excepted {
     pub spared: BTreeSet<FeatureId>,
     pub drift: BTreeSet<FeatureId>,
+}
+
+/// The features `feature` names, as [`Entry::inputs`] lists them: what it uses, then a
+/// pattern's originals in timeline order (the file writes them by ID), each original once
+/// and none that's named already (its base).
+fn inputs(document: &Document, feature: &crate::document::Feature) -> Vec<FeatureId> {
+    let originals = feature.operation.originals();
+    // What it uses but its originals: its base first, even where it's an original too.
+    let mut inputs: Vec<FeatureId> = feature.operation.uses_but_originals().collect();
+    let mut placed: Vec<(usize, &FeatureId)> = originals
+        .iter()
+        .filter_map(|original| {
+            let at = document.features.iter().position(|f| &f.id == original)?;
+            Some((at, original))
+        })
+        .collect();
+    placed.sort();
+    for (_, original) in placed {
+        if !inputs.contains(original) {
+            inputs.push(original.clone());
+        }
+    }
+    inputs
 }
 
 /// `document`'s features, each with the health `model` gave it, if there's a model, and
@@ -138,7 +162,7 @@ pub fn timeline(document: &Document, model: Option<&Model>, excepted: &Excepted)
                 kind: feature.operation.type_name(),
                 name: feature.name.as_str().to_owned(),
                 suppressed: feature.suppressed,
-                inputs: feature.operation.uses().collect(),
+                inputs: inputs(document, feature),
                 health: mark.health,
                 problems: mark.problems,
                 warnings: mark.warnings,
