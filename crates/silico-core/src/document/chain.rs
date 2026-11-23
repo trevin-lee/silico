@@ -168,45 +168,44 @@ pub fn insert_place(document: &Document, before: Option<&FeatureId>) -> Result<u
 /// which then begins the body. Refused, naming both features, where nothing can stand in:
 /// a chain's root under a feature that needs a base (or as a boolean's tool), a feature
 /// whose sketch it is, a feature that stores names of its elements (checked directly, since
-/// a removed maker's name no longer parses), and a feature whose stored names' makers its
-/// base would no longer be built from (the lineage rule, open item 2b).
+/// a removed maker's name no longer parses), a pattern that copies it, and a feature whose
+/// stored names' makers its base would no longer be built from (the lineage rule, open item
+/// 2b). Refused with the first refusal; [`remove_all`] gives more.
 pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
+    remove_all(checked, id, 1).map_err(|refused| {
+        refused.errors.into_iter().next().unwrap_or_else(|| {
+            Error::new(
+                ErrorCode::Internal,
+                format!("removing {id} was refused with no reason given"),
+            )
+            .with_suggestion(crate::worker::SILICO_BUG)
+        })
+    })
+}
+
+/// As [`remove`], refused with every feature that can't do without `id`, at once
+/// (`remove_feature`: a pattern copying it and a fillet naming its edges alike,
+/// docs/design/m6.0-patterns.md, section 6), the children found in one pass, the first
+/// `listed` built and every one counted.
+pub fn remove_all(checked: &Checked, id: &FeatureId, listed: usize) -> Result<Removed, Refusals> {
     let document = checked.document();
     let index = Index::of(document);
-    let at = index.place(id).ok_or_else(|| no_feature(id, "feature"))?;
+    let at = index
+        .place(id)
+        .ok_or_else(|| Refusals::one(no_feature(id, "feature")))?;
     let removed = &document.features[at];
-    if let Some((child, why)) = children(document, &index, id).next() {
-        return Err(Error::new(
-            ErrorCode::InvalidInput,
-            format!(
-                "{} {}, so {} can't be removed",
-                child.id,
-                why.why(id),
-                removed.id
-            ),
-        )
-        .with_feature(removed.id.as_str())
-        .with_parameter("feature")
-        .with_suggestion(match why {
-            Child::Sketch => format!("remove {} first", child.id),
-            // A sketch's stored name is its face's; a fillet's or chamfer's, its edges'.
-            Child::Names if matches!(child.operation, Operation::Sketch(_)) => format!(
-                "remove {} first, or set its plane.face to another feature's face",
-                child.id
-            ),
-            Child::Names => format!(
-                "remove {} first, or set its edges to names of other features' elements",
-                child.id
-            ),
-        }));
+    let refusals = removal_refusals(checked, id, listed);
+    if refusals.total > 0 {
+        return Err(refusals);
     }
     let mut edited = document.clone();
     if let Some((c, field)) = index.consumer(id) {
-        stand_in(document, &index, &mut edited, removed, c, field, "remove")?;
+        stand_in(document, &index, &mut edited, removed, c, field, "remove")
+            .map_err(Refusals::one)?;
     }
     edited.features.remove(at);
     if let Some((feature, maker)) = lineage_broken(document, &edited) {
-        return Err(Error::new(
+        return Err(Refusals::one(Error::new(
             ErrorCode::InvalidInput,
             format!(
                 "{feature} names elements of {maker}, which its base would no longer be built from without {}",
@@ -215,7 +214,7 @@ pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
         )
         .with_feature(removed.id.as_str())
         .with_parameter("feature")
-        .with_suggestion(format!("remove {feature} first")));
+        .with_suggestion(format!("remove {feature} first"))));
     }
     let rewired = rewired(document, &edited);
     Ok(Removed {
@@ -224,6 +223,75 @@ pub fn remove(checked: &Checked, id: &FeatureId) -> Result<Removed, Error> {
         index: at,
         rewired,
     })
+}
+
+/// The refusals of a removal: the first of them built, and how many there are in all.
+#[derive(Debug)]
+pub struct Refusals {
+    /// The refusals built, in timeline order: at most as many as were asked for.
+    pub errors: Vec<Error>,
+    /// How many there are, built or not.
+    pub total: usize,
+}
+
+impl Refusals {
+    fn one(error: Error) -> Self {
+        Refusals {
+            errors: vec![error],
+            total: 1,
+        }
+    }
+}
+
+/// Every refusal of removing `id` for a feature that can't do without it, one a child, in
+/// timeline order, naming both (the design's `remove_feature`, and a pattern's originals,
+/// docs/design/m6.0-patterns.md, section 6): its sketch's users, the features naming its
+/// elements, and the patterns copying it. Each counted, and the first `listed` built, so a
+/// sketch a hundred thousand features use costs a count past those. [`remove`] refuses with
+/// the first; `remove_feature` gives as many as it lists. None for a feature the document
+/// hasn't.
+pub fn removal_refusals(checked: &Checked, id: &FeatureId, listed: usize) -> Refusals {
+    let document = checked.document();
+    let index = Index::of(document);
+    let mut refusals = Refusals {
+        errors: Vec::new(),
+        total: 0,
+    };
+    let Some(removed) = index.place(id).and_then(|at| document.features.get(at)) else {
+        return refusals;
+    };
+    for (child, why) in children(document, &index, id) {
+        refusals.total += 1;
+        if refusals.errors.len() >= listed {
+            continue;
+        }
+        refusals.errors.push(
+            Error::new(
+                ErrorCode::InvalidInput,
+                format!(
+                    "{} {}, so {} can't be removed",
+                    child.id,
+                    why.why(id),
+                    removed.id
+                ),
+            )
+            .with_feature(removed.id.as_str())
+            .with_parameter("feature")
+            .with_suggestion(match why {
+                Child::Sketch => format!("remove {} first", child.id),
+                Child::Names => format!(
+                    "remove {} first, or set its {}",
+                    child.id,
+                    names_instead(&child.operation)
+                ),
+                Child::Copies => format!(
+                    "remove {} first, or take {} out of its copies.features",
+                    child.id, removed.id
+                ),
+            }),
+        );
+    }
+    refusals
 }
 
 /// The feature `id` moved before the feature `before`, or to the end for none (the design's
@@ -306,31 +374,48 @@ pub fn move_feature(
     {
         return Err(come_before(moving, tool, "which it uses as its tool"));
     }
+    // A pattern before an original it copies (docs/design/m6.0-patterns.md, section 6).
+    if let Some(original) = moving
+        .operation
+        .originals()
+        .iter()
+        .find(|original| others(original).is_some_and(|p| p >= place_to))
+    {
+        return Err(come_before(moving, original, "which it copies"));
+    }
     // A feature whose elements it names, or that names its elements, is the lineage
     // rule's to refuse (open item 2b), below: a stored name whose makers its base was built
     // from must keep them.
     if let Some((child, why)) = children(document, &index, id)
-        .filter(|(_, why)| *why == Child::Sketch)
+        .filter(|(_, why)| matches!(why, Child::Sketch | Child::Copies))
         .find(|(child, _)| others(&child.id).is_some_and(|p| p < place_to))
     {
+        let (which, suggestion) = match why {
+            Child::Copies => (
+                "copies it".to_owned(),
+                format!(
+                    "move {} after it too, or take {} out of {}'s copies.features",
+                    child.id, moving.id, child.id
+                ),
+            ),
+            _ => (
+                why.why(id),
+                format!(
+                    "move {} after {} first, or move {} before it",
+                    child.id, moving.id, moving.id
+                ),
+            ),
+        };
         return Err(Error::new(
             ErrorCode::InvalidInput,
-            format!(
-                "{} would come after {}, which {}",
-                moving.id,
-                child.id,
-                why.why(id)
-            ),
+            format!("{} would come after {}, which {which}", moving.id, child.id),
         )
         .with_feature(moving.id.as_str())
         .with_parameter("before")
-        .with_suggestion(format!(
-            "move {} after {} first, or move {} before it",
-            child.id, moving.id, moving.id
-        )));
+        .with_suggestion(suggestion));
     }
 
-    let base = base_of(&moving.operation);
+    let base = moving.operation.base();
     let consumer = index.consumer(id);
     // Left between its base and its consumer: only its place changes.
     let after_base = base.and_then(others).is_none_or(|p| p < place_to);
@@ -363,7 +448,8 @@ pub fn move_feature(
         .with_parameter("before")
         .with_suggestion(if feature == moving.id {
             format!(
-                "keep {feature} after {maker}, whose elements it names, or set its edges to names of other features' elements"
+                "keep {feature} after {maker}, whose elements it names, or set its {}",
+                names_instead(&moving.operation)
             )
         } else {
             format!("move {} elsewhere, or remove {feature} first", moving.id)
@@ -402,7 +488,7 @@ fn join(
             up = edited
                 .features
                 .get(i)
-                .and_then(|f| base_of(&f.operation))
+                .and_then(|f| f.operation.base())
                 .and_then(|b| index.place(b));
         }
         // Down the chain from its old consumer, where it named it as its base: each next
@@ -539,7 +625,7 @@ fn stand_in(
     let Some(target) = edited.features.get_mut(at) else {
         return Ok(());
     };
-    match base_of(&removed.operation) {
+    match removed.operation.base() {
         Some(base) => {
             set_input(&mut target.operation, field, Some(base.clone()));
             Ok(())
@@ -606,11 +692,11 @@ fn stand_in(
 fn lineage_broken(before: &Document, edited: &Document) -> Option<(FeatureId, FeatureId)> {
     let (old, new) = (Lineage::of(before), Lineage::of(edited));
     edited.features.iter().find_map(|feature| {
-        let base = base_of(&feature.operation)?;
+        let base = feature.operation.base()?;
         let was = old
             .index
             .feature(&feature.id)
-            .and_then(|f| base_of(&f.operation))?;
+            .and_then(|f| f.operation.base())?;
         feature.operation.stored_names().find_map(|(_, stored)| {
             let makers: Vec<&FeatureId> = name_makers(&new.index, stored.as_str())
                 .into_iter()
@@ -710,12 +796,14 @@ impl<'a> Lineage<'a> {
     }
 }
 
-/// Why a feature can't do without another: it's its sketch, or it stores names of its
-/// elements.
+/// Why a feature can't do without another: it's its sketch, it stores names of its
+/// elements, or it's an original it copies (a pattern is a child of each original,
+/// docs/design/m6.0-patterns.md, section 6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Child {
     Sketch,
     Names,
+    Copies,
 }
 
 impl Child {
@@ -724,12 +812,14 @@ impl Child {
         match self {
             Child::Sketch => format!("uses {parent} as its sketch"),
             Child::Names => format!("names {parent}'s elements"),
+            Child::Copies => format!("copies {parent}"),
         }
     }
 }
 
-/// The features that can't do without `id` where they are: those whose sketch it is, and
-/// those storing a name one of whose makers it is, in timeline order, each with why.
+/// The features that can't do without `id` where they are: those whose sketch it is, those
+/// storing a name one of whose makers it is, and the patterns copying it, in timeline order,
+/// each with why.
 fn children<'a>(
     document: &'a Document,
     index: &'a Index,
@@ -742,12 +832,28 @@ fn children<'a>(
         .filter_map(move |f| {
             if f.operation.sketch() == Some(id) {
                 Some((f, Child::Sketch))
+            } else if f.operation.originals().contains(id) {
+                Some((f, Child::Copies))
             } else if makers_named(index, f).contains(&id) {
                 Some((f, Child::Names))
             } else {
                 None
             }
         })
+}
+
+/// The field of `operation` that stores element names, and what to set it to, as a
+/// suggestion gives them: a sketch's `plane.face` to another feature's face; a fillet's or
+/// chamfer's `edges`, a linear pattern's directions' `along`, a polar pattern's `axis`, or a
+/// mirror's `plane`, to names of other features' elements.
+fn names_instead(operation: &Operation) -> &'static str {
+    match operation {
+        Operation::Sketch(_) => "plane.face to another feature's face",
+        Operation::LinearPattern { .. } => "directions' along to names of other features' elements",
+        Operation::PolarPattern { .. } => "axis to names of other features' elements",
+        Operation::Mirror { .. } => "plane to names of other features' elements",
+        _ => "edges to names of other features' elements",
+    }
 }
 
 /// The refusal of a move that puts `moving` before `parent`.
@@ -852,14 +958,6 @@ impl<'a> Index<'a> {
     }
 }
 
-fn base_of(operation: &Operation) -> Option<&FeatureId> {
-    operation
-        .inputs()
-        .into_iter()
-        .find(|(field, _)| *field == "base")
-        .map(|(_, base)| base)
-}
-
 /// Whether a feature of this type has a `base` at all (a primitive and a sketch haven't).
 fn has_base_field(operation: &Operation) -> bool {
     !input_fields(operation).is_empty()
@@ -879,7 +977,10 @@ fn input_fields(operation: &Operation) -> Vec<(&'static str, Option<&FeatureId>)
         Operation::Fillet { base, .. }
         | Operation::Chamfer { base, .. }
         | Operation::Pocket { base, .. }
-        | Operation::Groove { base, .. } => vec![("base", Some(base))],
+        | Operation::Groove { base, .. }
+        | Operation::LinearPattern { base, .. }
+        | Operation::PolarPattern { base, .. }
+        | Operation::Mirror { base, .. } => vec![("base", Some(base))],
         Operation::Pad { base, .. } | Operation::Revolve { base, .. } => {
             vec![("base", base.as_ref())]
         }
@@ -903,7 +1004,10 @@ fn set_input(operation: &mut Operation, field: &str, to: Option<FeatureId>) {
             | Operation::Fillet { base, .. }
             | Operation::Chamfer { base, .. }
             | Operation::Pocket { base, .. }
-            | Operation::Groove { base, .. },
+            | Operation::Groove { base, .. }
+            | Operation::LinearPattern { base, .. }
+            | Operation::PolarPattern { base, .. }
+            | Operation::Mirror { base, .. },
             "base",
         ) => {
             if let Some(to) = to {

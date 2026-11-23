@@ -12,11 +12,15 @@ use super::model::{
     FeatureVersion, FormatVersion, ID_LENGTH, Name, NamingScheme, Operation, PadExtent,
     PocketExtent, Position, SweepFeature, TurnExtent, Units,
 };
+use super::pattern::{
+    Copies, LinearDirection, LinearDistribution, MOST_INSTANCES, OriginAxis, OriginOrName,
+    PolarDistribution, Skipped, origin_plane,
+};
 use super::quantity::{ANGLE_DECIMALS, Angle, LENGTH_DECIMALS, Length, NumberError};
 use super::sketch::{
     AxisToken, CONSTRAINT_TYPES, Coordinate, Direction, ElementId, ElementKind, FacePlane, Form,
-    LineSide, MemberPaths, OriginPlane, Plane, Reference, Sketch, SketchArc, SketchCircle,
-    SketchConstraint, SketchLine, SketchPoint, TangentSide, member_id,
+    LineSide, MemberPaths, Plane, Reference, Sketch, SketchArc, SketchCircle, SketchConstraint,
+    SketchLine, SketchPoint, TangentSide, member_id,
 };
 use crate::naming::{NAMING_SCHEME_NUMBER, NAMING_SCHEMES_READ, UNRECORDED_NAMING_SCHEME};
 use crate::{Error, ErrorCode};
@@ -651,6 +655,26 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
             axis: axis(fields, SweepFeature::Groove)?,
             extent: turn_extent(fields, SweepFeature::Groove)?,
         },
+        "linear_pattern" => Operation::LinearPattern {
+            base: reference(fields, "base")?,
+            copies: copies(fields)?,
+            directions: directions(fields)?,
+            skip: skip(fields)?,
+        },
+        "polar_pattern" => Operation::PolarPattern {
+            base: reference(fields, "base")?,
+            copies: copies(fields)?,
+            axis: origin_or_name(fields, "axis", OriginAxis::new)?,
+            reversed: boolean(fields, "reversed")?,
+            distribution: polar_distribution(fields)?,
+            count: pattern_count(fields, "count")?,
+            skip: skip(fields)?,
+        },
+        "mirror" => Operation::Mirror {
+            base: reference(fields, "base")?,
+            copies: copies(fields)?,
+            plane: origin_or_name(fields, "plane", origin_plane)?,
+        },
         // A type in FEATURE_TYPES with no arm here: Silico's bug, not the document's.
         other => {
             return Err(Error::new(
@@ -659,6 +683,213 @@ fn operation(type_name: &str, fields: &mut Fields) -> Result<Operation, Error> {
             )
             .with_suggestion(crate::worker::SILICO_BUG));
         }
+    })
+}
+
+/// What a pattern or mirror copies, `copies`: `{"type": "features", "features": [...]}`, its
+/// originals by ID, in any order (whether each is one the pattern may copy, and whether any
+/// is repeated, is the gate's to say), or `{"type": "solid"}`.
+fn copies(fields: &mut Fields) -> Result<Copies, Error> {
+    let node = fields.take("copies")?;
+    let mut copies = Fields::of(node, fields.feature(), Some("copies"), "copies")?.under("copies");
+    let form = form(&mut copies, &["features", "solid"])?;
+    let read = if form == "features" {
+        let node = copies.take("features")?;
+        let feature = copies.feature();
+        let Value::Array(items) = node.value else {
+            return Err(wrong_kind(
+                feature,
+                "copies.features",
+                &node,
+                "an array of feature IDs",
+            ));
+        };
+        let features = items
+            .into_iter()
+            .enumerate()
+            .map(|(i, item)| id(item, feature, &format!("copies.features.{i}")))
+            .collect::<Result<_, _>>()?;
+        Copies::Features { features }
+    } else {
+        Copies::Solid
+    };
+    copies.finish()?;
+    Ok(read)
+}
+
+/// A tagged object's form (`type`), one of `forms`: a pattern's `copies`, or a
+/// `distribution`.
+fn form(fields: &mut Fields, forms: &[&str]) -> Result<String, Error> {
+    let type_node = fields.take("type")?;
+    let at = type_node.at;
+    let name = fields.name("type");
+    let form = string(type_node, fields.feature(), &name)?;
+    if forms.contains(&form.as_str()) {
+        return Ok(form);
+    }
+    Err(refuse(
+        fields.feature(),
+        &name,
+        at,
+        format!("{name} {} isn't one of {}", shown(&form), forms.join(", ")),
+        format!("write {name} as one of {}", forms.join(", ")),
+    ))
+}
+
+/// A linear pattern's `directions`: an array of directions, each `along`, `reversed`,
+/// `distribution`, and `count`. How many there are is the gate's to say (one or two).
+fn directions(fields: &mut Fields) -> Result<Vec<LinearDirection>, Error> {
+    let node = fields.take("directions")?;
+    let feature = fields.feature().map(str::to_owned);
+    let feature = feature.as_deref();
+    let Value::Array(items) = node.value else {
+        return Err(wrong_kind(
+            feature,
+            "directions",
+            &node,
+            "an array of one or two directions",
+        ));
+    };
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let path = format!("directions.{i}");
+            let mut direction = Fields::of(item, feature, Some(&path), &path)?.under(&path);
+            let read = LinearDirection {
+                along: origin_or_name(&mut direction, "along", OriginAxis::new)?,
+                reversed: boolean(&mut direction, "reversed")?,
+                distribution: linear_distribution(&mut direction)?,
+                count: pattern_count(&mut direction, "count")?,
+            };
+            direction.finish()?;
+            Ok(read)
+        })
+        .collect()
+}
+
+/// A linear direction's `distribution`: `{"type": "extent", "length": L}` or
+/// `{"type": "spacing", "length": S}`. Whether its length is above 0 is the gate's to say.
+fn linear_distribution(fields: &mut Fields) -> Result<LinearDistribution, Error> {
+    let (mut distribution, form) = distribution_form(fields)?;
+    let length = length(&mut distribution, "length")?;
+    distribution.finish()?;
+    Ok(if form == "extent" {
+        LinearDistribution::Extent { length }
+    } else {
+        LinearDistribution::Spacing { length }
+    })
+}
+
+/// A polar pattern's `distribution`: `{"type": "extent", "angle": A}` or
+/// `{"type": "spacing", "angle": A}`. Whether its angle is in range is the gate's to say.
+fn polar_distribution(fields: &mut Fields) -> Result<PolarDistribution, Error> {
+    let (mut distribution, form) = distribution_form(fields)?;
+    let angle = angle(&mut distribution, "angle")?;
+    distribution.finish()?;
+    Ok(if form == "extent" {
+        PolarDistribution::Extent { angle }
+    } else {
+        PolarDistribution::Spacing { angle }
+    })
+}
+
+/// A `distribution`'s members, and its form, `extent` or `spacing`.
+fn distribution_form(fields: &mut Fields) -> Result<(Fields, String), Error> {
+    let node = fields.take("distribution")?;
+    let path = fields.name("distribution");
+    let mut distribution = Fields::of(node, fields.feature(), Some(&path), &path)?.under(&path);
+    let form = form(&mut distribution, &["extent", "spacing"])?;
+    Ok((distribution, form))
+}
+
+/// A pattern's count, a whole number that fits in 32 bits: whether it's at least 1, and
+/// the counts' product at most 1,000, is the gate's to say.
+fn pattern_count(fields: &mut Fields, key: &str) -> Result<u32, Error> {
+    let node = fields.take(key)?;
+    let name = fields.name(key);
+    let feature = fields.feature();
+    let digits = whole_number(&node, feature, &name, 3)?;
+    digits.parse::<u32>().map_err(|_| {
+        refuse(
+            feature,
+            &name,
+            node.at,
+            format!("{name} {} is too large", shown_number(&digits)),
+            format!("a pattern has at most {MOST_INSTANCES} instances, the original included"),
+        )
+    })
+}
+
+/// A pattern's `skip`: an array of instances, each an array of whole numbers (offsets) that
+/// fit in 32 bits. Whether each is an instance of the pattern, in its one spelling, is the
+/// gate's to say.
+fn skip(fields: &mut Fields) -> Result<Vec<Skipped>, Error> {
+    let node = fields.take("skip")?;
+    let feature = fields.feature();
+    let want = "an array of instances, each an array of whole numbers, such as [[2], [2, 1]]";
+    let Value::Array(items) = node.value else {
+        return Err(wrong_kind(feature, "skip", &node, want));
+    };
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(i, item)| {
+            let path = format!("skip.{i}");
+            let Value::Array(offsets) = item.value else {
+                return Err(wrong_kind(
+                    feature,
+                    &path,
+                    &item,
+                    "an instance, an array of whole numbers, such as [2, 1]",
+                ));
+            };
+            offsets
+                .into_iter()
+                .enumerate()
+                .map(|(j, offset)| {
+                    let name = format!("{path}.{j}");
+                    let digits = whole_number(&offset, feature, &name, 2)?;
+                    digits.parse::<u32>().map_err(|_| {
+                        refuse(
+                            feature,
+                            &name,
+                            offset.at,
+                            format!("{name} {} is too large", shown_number(&digits)),
+                            format!("an instance's offset is at most {}", u32::MAX),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<u32>, Error>>()
+                .map(Skipped)
+        })
+        .collect()
+}
+
+/// A pattern's reference, `key`: an origin word `origin` reads (`x`, `y`, `z`; or `xy`,
+/// `xz`, `yz`), or any other text, not empty, as an element's name. Whether a name is one,
+/// of what, and stable, is the gate's to say: it knows the features before this one.
+fn origin_or_name<O>(
+    fields: &mut Fields,
+    key: &str,
+    origin: impl Fn(&str) -> Option<O>,
+) -> Result<OriginOrName<O>, Error> {
+    let node = fields.take(key)?;
+    let at = node.at;
+    let name = fields.name(key);
+    let feature = fields.feature();
+    let text = string(node, feature, &name)?;
+    if let Some(word) = origin(&text) {
+        return Ok(OriginOrName::Origin(word));
+    }
+    ElementName::new(&text).map(OriginOrName::Name).ok_or_else(|| {
+        refuse(
+            feature,
+            &name,
+            at,
+            format!("{name} is empty"),
+            "write an origin word or an element's name, as Silico names it (feature.type.Kind(...))",
+        )
     })
 }
 
@@ -1083,9 +1314,7 @@ fn plane(fields: &mut Fields) -> Result<Plane, Error> {
             ));
         }
     };
-    OriginPlane::ALL
-        .into_iter()
-        .find(|p| p.as_str() == text)
+    origin_plane(text)
         .map(Plane::Origin)
         .ok_or_else(|| {
             refuse(
@@ -1492,7 +1721,7 @@ mod tests {
     use super::*;
 
     /// One feature of each type, written by hand, with every member it may have.
-    const FEATURES: [&str; 15] = [
+    const FEATURES: [&str; 18] = [
         r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "suppressed": true, "position": [0, 0, 0], "length": 1, "width": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
         r#"{"id": "b0000002", "type": "cylinder", "v": 1, "name": "C", "suppressed": true, "position": [0, 0, 0], "radius": 1, "height": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 3, "edges": 3, "vertices": 2}}"#,
         r#"{"id": "b0000003", "type": "sphere", "v": 1, "name": "S", "suppressed": true, "position": [0, 0, 0], "radius": 1, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 1, "edges": 3, "vertices": 2}}"#,
@@ -1508,6 +1737,9 @@ mod tests {
         r#"{"id": "b000000d", "type": "pocket", "v": 1, "name": "P", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "extent": {"type": "through_all", "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
         r#"{"id": "b000000e", "type": "revolve", "v": 1, "name": "R", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
         r#"{"id": "b000000f", "type": "groove", "v": 1, "name": "G", "suppressed": true, "base": "b0000001", "sketch": "b0000009", "axis": "x_axis", "extent": {"type": "one_side", "angle": 90, "reversed": false}, "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000g", "type": "linear_pattern", "v": 1, "name": "L", "suppressed": true, "base": "b000000c", "copies": {"type": "features", "features": ["b000000c"]}, "directions": [{"along": "x", "reversed": false, "distribution": {"type": "extent", "length": 80}, "count": 3}], "skip": [[2]], "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000h", "type": "polar_pattern", "v": 1, "name": "P", "suppressed": true, "base": "b000000c", "copies": {"type": "solid"}, "axis": "z", "reversed": false, "distribution": {"type": "spacing", "angle": 30}, "count": 4, "skip": [], "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
+        r#"{"id": "b000000j", "type": "mirror", "v": 1, "name": "M", "suppressed": true, "base": "b000000c", "copies": {"type": "features", "features": ["b000000c"]}, "plane": "yz", "note": "N", "fingerprint": {"volume": 1, "area": 6, "faces": 6, "edges": 12, "vertices": 8}}"#,
     ];
 
     #[test]

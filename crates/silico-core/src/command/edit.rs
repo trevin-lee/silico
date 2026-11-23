@@ -153,6 +153,9 @@ pub(super) fn set_field(
         repeated_ids(sketch, sketched, field, id)?;
     }
     let (set_text, set_tree) = feature_tree(&set)?;
+    // An item of a set, `skip` or `copies.features`, is written where it sorts, so it's named
+    // by the place it lands (docs/design/m6.0-patterns.md, section 2.1).
+    let after_field = landed(&set, &after_field);
     // Found again by the path that names it now: a field removed (a note, a base) is
     // there to give, as `null`, so any other miss is Silico's.
     let after = resolve(&set, &set_tree, &after_field)
@@ -181,6 +184,49 @@ pub(super) fn set_field(
         *slot = set;
     }
     Ok((values, Some(candidate(&edited, "value")?)))
+}
+
+/// `path` into `feature`, renamed where it names an item of a pattern's set (`skip.N`, and
+/// what's under it, or `copies.features.N`) by the place that item has once the set is
+/// written sorted; any other path as it is.
+fn landed(feature: &document::Feature, path: &str) -> String {
+    for list in ["skip", "copies.features"] {
+        let Some(rest) = path
+            .strip_prefix(list)
+            .and_then(|rest| rest.strip_prefix('.'))
+        else {
+            continue;
+        };
+        let (place, under) = rest
+            .split_once('.')
+            .map_or((rest, ""), |(n, under)| (n, under));
+        let Ok(place) = place.parse::<usize>() else {
+            continue;
+        };
+        let sorted_place = if list == "skip" {
+            let skip = feature.operation.skip();
+            skip.get(place).and_then(|item| {
+                document::sorted_skip(skip)
+                    .iter()
+                    .position(|sorted| *sorted == item)
+            })
+        } else {
+            let originals = feature.operation.originals();
+            originals.get(place).and_then(|item| {
+                document::sorted_features(originals)
+                    .iter()
+                    .position(|sorted| *sorted == item)
+            })
+        };
+        if let Some(sorted_place) = sorted_place {
+            return if under.is_empty() {
+                format!("{list}.{sorted_place}")
+            } else {
+                format!("{list}.{sorted_place}.{under}")
+            };
+        }
+    }
+    path.to_owned()
 }
 
 /// The value of `field` of the feature `id` as `document` holds it, as `set_field` finds a
@@ -1130,7 +1176,12 @@ pub(super) fn remove_feature(
     id: &FeatureId,
 ) -> Result<(chain::Removed, Candidate), Problems> {
     place_of(checked.document(), id)?;
-    let removed = chain::remove(checked, id)?;
+    // Every feature that can't do without it, all at once (a pattern copying it and a
+    // fillet naming its edges alike: docs/design/m6.0-patterns.md, section 6).
+    let removed = chain::remove_all(checked, id, PROBLEMS_LISTED).map_err(|refused| {
+        let unlisted = refused.total.saturating_sub(refused.errors.len());
+        Problems::with_unlisted(refused.errors, u64::try_from(unlisted).unwrap_or(u64::MAX))
+    })?;
     let candidate = candidate(&removed.document, "feature")?;
     Ok((removed, candidate))
 }

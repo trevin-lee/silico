@@ -24,7 +24,7 @@
       },
       "feature": {
         "$ref": "#/$defs/FeatureId",
-        "description": "The feature to move, by ID. Its consumer takes its base; it takes as its base the\nlast feature of its chain before the new place, and the chain's next feature after\nthat place takes it as its base. Refused, naming both, where a child would come\nbefore its parent: before its sketch or its tool, after a feature using it as its\nsketch, or where a feature's base would no longer be built from a feature whose\nelements it names."
+        "description": "The feature to move, by ID. Its consumer takes its base; it takes as its base the\nlast feature of its chain before the new place, and the chain's next feature after\nthat place takes it as its base. Refused, naming both, where a child would come\nbefore its parent: before its sketch, its tool, or an original it copies, after a\nfeature using it as its sketch or copying it, or where a feature's base would no\nlonger be built from a feature whose elements it names or an original it copies."
       },
       "revision": {
         "description": "The session's revision the edit was made against: an edit against another is\nrefused as a `conflict`.",
