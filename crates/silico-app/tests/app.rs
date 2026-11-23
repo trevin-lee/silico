@@ -45889,6 +45889,16 @@ fn over_an_unstable_planar_face_sketch_on_this_face_is_off_with_the_stores_refus
         .find(|shown| shown.label == "Sketch on this face")
         .cloned()
         .expect("Sketch on this face, over a plane");
+    // A fuse of two boxes is built from no sketch, though it has inputs: no Edit Sketch.
+    assert!(
+        select_other(&h)
+            .context()
+            .unwrap()
+            .items
+            .iter()
+            .all(|shown| shown.label != "Edit Sketch"),
+        "a fuse of two boxes is built from no sketch"
+    );
     let why = shown.off.expect("off for an unstable face");
     assert!(
         why.contains(
