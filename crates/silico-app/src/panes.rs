@@ -5870,4 +5870,60 @@ mod property_panel_drawn {
         h.step();
         assert_eq!(copied(&h).as_deref(), Some("b0000001"));
     }
+
+    #[test]
+    fn the_panels_suppress_asks_the_next_frame_to_poll_what_it_sent() {
+        // The menu's Suppress asks the next frame, to poll the `suppress_feature` it sent
+        // (the browser's test above); the panel's, the same item through the same `act`,
+        // asks it too, from a frame that asked nothing before it.
+        let mut tab = part();
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let mut h = drawn(tab);
+        assert!(!h.state().next_frame, "nothing sent yet");
+        h.get_by_role_and_label(Role::Button, "Suppress").click();
+        h.run_steps(2);
+        assert!(h.state().next_frame, "the suppression sent, never polled");
+    }
+
+    /// `part()` with a sketch, Profile, listed before its features, selected, its read not
+    /// held (as a suppressed sketch's, never read), after a sketch's PARAMETERS last showed
+    /// four rows.
+    fn unread_sketch() -> Tab {
+        let mut tab = part();
+        if let Some(features) = tab
+            .timeline
+            .as_mut()
+            .and_then(|timeline| timeline.features.as_mut())
+        {
+            features.insert(0, entry("s0000001", "sketch", "Profile", Health::Healthy));
+        }
+        tab.parameters.showed("sketch", 4);
+        tab.selection_mut().select_feature(fid("s0000001"));
+        tab
+    }
+
+    #[test]
+    fn a_sketch_never_read_has_no_parameters_however_many_rows_a_sketch_last_showed() {
+        // A sketch's rows are from its read, never from a text read off the UI thread: with
+        // none held there's nothing to wait for, so no PARAMETERS, not an empty one kept the
+        // height of the last sketch's four rows. HEALTH straight under the Name row.
+        let h = drawn(unread_sketch());
+        assert!(h.query_by_label("PARAMETERS").is_none(), "an empty header");
+        // The Name row's top, its field centred in it (`.field`, 22 high in a 24 row).
+        let name = h.get_by_role_and_label(Role::TextInput, "Name").rect();
+        let row = name.top() - (css::ROW_H - css::FIELD_H) / 2.0;
+        section_at(&h, "HEALTH", row + css::ROW_H);
+    }
+
+    #[test]
+    fn a_feature_read_while_its_kind_last_showed_no_rows_keeps_no_room() {
+        // The cut's text not read yet, and a cut last shown with no rows: no room to keep,
+        // so no PARAMETERS header over nothing.
+        let mut tab = part();
+        tab.parameters.showed("cut", 0);
+        tab.selection_mut().select_feature(fid("c0000001"));
+        let h = drawn(tab);
+        assert!(h.query_by_label("PARAMETERS").is_none(), "an empty header");
+        assert!(h.query_by_label("HEALTH").is_some());
+    }
 }

@@ -1091,5 +1091,17 @@ mod tests {
             direction_words(SweepFeature::Pad, one_side(true), Some(oblique)).unwrap(),
             "Reversed (\u{2212}0.6, 0, \u{2212}0.8)"
         );
+        // A face's normal along Z but a hair short of a unit (the kernel's, unit to about
+        // 1e-16: 1 − 2⁻⁵³, which JavaScript writes 0.9999999999999999): not exactly an axis,
+        // so written whole, never rounded to +Z; reversed, its minus a true minus.
+        let short = [0.0, 0.0, 1.0 - f64::EPSILON / 2.0];
+        assert_eq!(
+            direction_words(SweepFeature::Pad, one_side(false), Some(short)).unwrap(),
+            "Normal (0, 0, 0.9999999999999999)"
+        );
+        assert_eq!(
+            direction_words(SweepFeature::Pad, one_side(true), Some(short)).unwrap(),
+            "Reversed (0, 0, \u{2212}0.9999999999999999)"
+        );
     }
 }
