@@ -2614,6 +2614,17 @@ struct PatternStep {
     instances: Arc<[Instance]>,
 }
 
+/// What a pattern's step runs with ([`Engine::copied`]): its plan's entry, its step, its
+/// inputs' results (its base, then its tool, if it has one), its base feature's solid, whose
+/// elements its references name, and what that feature's element map is named from.
+struct CopiesJob<'a> {
+    pattern: &'a PatternStep,
+    step: &'a Step,
+    inputs: &'a [Arc<Built>],
+    base: &'a Arc<Built>,
+    sources: &'a BTreeMap<usize, MapSource>,
+}
+
 /// What a fillet or chamfer does to each edge.
 #[derive(Debug, Clone, Copy)]
 enum Dressing {
@@ -4323,8 +4334,27 @@ fn kept(error: &Error) -> bool {
 
 /// Why a pattern's step whose copies hung is kept for the session (section 4.2, *A hang
 /// kept*): the advice its error says, as a description's that hung says [`HUNG_KEPT`].
-const COPIES_HUNG: &str = "making this pattern's copies hung, which a busy machine can cause \
-     as well as the copies; the session keeps that rather than wait on it at every rebuild";
+const COPIES_HUNG: &str = "making this pattern's copies, or describing what it references, hung, \
+     which a busy machine can cause as well as the shapes; the session keeps that rather than \
+     wait on it at every rebuild";
+
+/// `error`, a pattern's step's request's, kept for the session if it's a hang ([`hung`]):
+/// a copies request's or a reference's description's (section 4.2, *A hang kept*), so an
+/// edit downstream of it doesn't hold a worker for the kernel's timeout at every rebuild. Its
+/// advice says so, and to check with fresh to ask again.
+fn kept_if_hung(error: Error) -> Error {
+    if !hung(&error) {
+        return error;
+    }
+    error
+        .with_advice(crate::worker::Advice::TryAgain {
+            once_more: false,
+            why: COPIES_HUNG.to_owned(),
+        })
+        .reworded(
+            "check with fresh (silico check --fresh) to make the copies again; if they hang again, lower a count",
+        )
+}
 
 /// Whether `error` is a pattern's step's hang, kept for the session as a description's is
 /// ([`hung`]): never on disk, since a hang isn't a fact about the shape (`cache::lasting`).
@@ -5217,9 +5247,16 @@ impl<K: Kernel + 'static> Engine<K> {
                     Job::Make(key) if let Some(pattern) = plan.patterns.get(&key) => {
                         let sources = sources.unwrap_or_default();
                         match (plan.steps.get(&key), named_on.as_ref()) {
-                            (Some(step), Some(base)) => self.copied(
-                                plan, pattern, step, &inputs, base, &sources, known, generation,
-                            ),
+                            (Some(step), Some(base)) => {
+                                let job = CopiesJob {
+                                    pattern,
+                                    step,
+                                    inputs: &inputs,
+                                    base,
+                                    sources: &sources,
+                                };
+                                self.copied(plan, &job, known, generation)
+                            }
                             _ => Ran::Made(Outcome::Done(Err(silico_bug(
                                 "a pattern's step ran before its base was built",
                             )))),
@@ -5486,32 +5523,27 @@ impl<K: Kernel + 'static> Engine<K> {
         crate::references::resolve(feature, &dress.edges, &map, &|f| plan.maker(f))
     }
 
-    /// Runs a pattern's step, `pattern`'s (docs/design/m6.0-patterns.md, section 2.4): its
-    /// references found in its base feature's element map, named from `sources`
-    /// (`Plan::sources`), each broken one `reference_broken` with candidates; each named
-    /// element described on `base`, its base feature's solid, and the references resolved
-    /// from those descriptions and checked; then each instance placed, the placements
-    /// checked, and the copies of `inputs`' tool made on `inputs`' base in one request, for
-    /// `generation`. The identity places nothing: it passes its base through. A request that
-    /// hangs is kept for the session ([`COPIES_HUNG`]).
-    #[allow(clippy::too_many_arguments)]
+    /// Runs a pattern's step, `job`'s (docs/design/m6.0-patterns.md, section 2.4): its
+    /// references found in its base feature's element map (`references::find`, each broken
+    /// one `reference_broken` with candidates, as a fillet's edges are); each named element
+    /// described on the base feature's solid, and the references resolved from those
+    /// descriptions and checked; then each instance placed, the placements checked, and the
+    /// copies of the tool made on the step's base in one request, for `generation`. The
+    /// identity places nothing: it passes its base through. A request that hangs is kept for
+    /// the session ([`COPIES_HUNG`]), whether it's the copies' or a reference's description.
     fn copied(
         &self,
         plan: &Plan,
-        pattern: &PatternStep,
-        step: &Step,
-        inputs: &[Arc<Built>],
-        base: &Arc<Built>,
-        sources: &BTreeMap<usize, MapSource>,
+        job: &CopiesJob<'_>,
         known: &NamedMaps,
         generation: Generation,
     ) -> Ran {
         let bug = |message: &str| Ran::Made(Outcome::Done(Err(silico_bug(message))));
-        let Step::Copies { op, .. } = *step else {
+        let Step::Copies { op, .. } = *job.step else {
             return bug("a pattern's step isn't a copies step");
         };
         let Some(feature) = plan
-            .feature_id(pattern.feature)
+            .feature_id(job.pattern.feature)
             .and_then(|id| plan.document.feature(id).ok())
         else {
             return bug("a pattern's feature wasn't planned");
@@ -5519,61 +5551,34 @@ impl<K: Kernel + 'static> Engine<K> {
         let id = &feature.id;
         let operation = &feature.operation;
         let makers = |f: &FeatureId| plan.maker(f);
-        // Each named reference's element in the base feature's map, or why not.
-        let named = crate::pattern::named_references(operation);
+        // Each name it stores, with its field's path and the kind its own word says (the
+        // gate has checked the word is one the field takes), found in its base's map.
+        let wanted: Vec<(String, &ElementName, ElementKind)> = operation
+            .stored_names()
+            .map(|(field, name)| {
+                let kind = crate::naming::Name::parse(name.as_str(), &makers)
+                    .map_or(ElementKind::Edge, |parsed| parsed.kind());
+                (field.to_string(), name, kind)
+            })
+            .collect();
         let mut found: Vec<(&ElementName, crate::kernel::ElementRef)> = Vec::new();
-        if !named.is_empty() {
-            let _span = tracing::debug_span!("resolve", references = named.len()).entered();
-            let Some(map) = plan.map_of(pattern.base, sources, known) else {
+        if !wanted.is_empty() {
+            let _span = tracing::debug_span!("resolve", references = wanted.len()).entered();
+            let Some(map) = plan.map_of(job.pattern.base, job.sources, known) else {
                 return bug("a pattern's base was built, but its elements couldn't be named");
             };
-            let mut broken = Vec::new();
-            let mut candidates: BTreeMap<ElementKind, crate::references::Candidates> =
-                BTreeMap::new();
-            for (field, name) in named {
-                let kind = crate::naming::Name::parse(name.as_str(), &makers)
-                    .map_or(ElementKind::Edge, |name| name.kind());
-                let (why, parsed) =
-                    match crate::references::look_up(name.as_str(), kind, &[&map], &makers) {
-                        crate::references::Lookup::Found { element, .. } => {
-                            found.push((name, element));
-                            continue;
-                        }
-                        crate::references::Lookup::Refused { why, name } => (why, name),
-                        crate::references::Lookup::Missing { name, retyped } => (
-                            retyped.unwrap_or_else(|| {
-                                format!(
-                                    "names no element of {}'s solid: it isn't one of the elements \
-                                 that solid is made from, or an edit before this feature \
-                                 removed or remade it",
-                                    map.feature()
-                                )
-                            }),
-                            Some(name),
-                        ),
-                    };
-                let ranked = match &parsed {
-                    Some(parsed) => candidates
-                        .entry(kind)
-                        .or_insert_with(|| crate::references::Candidates::of(&[&map], kind))
-                        .of_name(parsed),
-                    None => Vec::new(),
-                };
-                broken.push(
-                    crate::references::refused(&field, name.as_str(), &why, kind)
-                        .with_ranked(ranked)
-                        .with_feature(id.as_str()),
-                );
-            }
-            if !broken.is_empty() {
-                let total = broken.len() as u64;
-                return Ran::Unresolved(crate::references::Broken {
-                    errors: broken,
-                    total,
-                });
+            match crate::references::find(id, &wanted, &map, &makers) {
+                Ok(elements) => {
+                    found = wanted
+                        .iter()
+                        .map(|(_, name, _)| *name)
+                        .zip(elements)
+                        .collect();
+                }
+                Err(broken) => return Ran::Unresolved(broken),
             }
         }
-        // Each found element described on the base feature's solid.
+        // Each found element described alone on the base feature's solid.
         let mut superseded = false;
         let mut geometry = |name: &ElementName| -> Result<crate::pattern::Geometry, Error> {
             let Some(&(_, element)) = found.iter().find(|(n, _)| *n == name) else {
@@ -5581,7 +5586,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     "a pattern's reference wasn't found before it was described",
                 ));
             };
-            let request = KernelRequest::describe(&base.shape, element.kind, element.index, 1)?;
+            let request = KernelRequest::describe(&job.base.shape, element.kind, element.index, 1)?;
             match self.kernel.submit(generation, request).wait() {
                 Outcome::Done(Ok(batch)) => match element.kind {
                     ElementKind::Face => batch
@@ -5601,7 +5606,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 .ok_or_else(|| {
                     silico_bug("the kernel described no element of a pattern's reference")
                 }),
-                Outcome::Done(Err(error)) => Err(error.with_feature(id.as_str())),
+                Outcome::Done(Err(error)) => Err(kept_if_hung(error).with_feature(id.as_str())),
                 Outcome::Superseded => {
                     superseded = true;
                     Err(stopped())
@@ -5616,19 +5621,19 @@ impl<K: Kernel + 'static> Engine<K> {
             Ok(resolved) => resolved,
             Err(error) => return Ran::Made(Outcome::Done(Err(error))),
         };
-        let Some(on) = inputs.first() else {
+        let Some(on) = job.inputs.first() else {
             return bug("a pattern's step ran before its base was built");
         };
         // The identity: nothing placed, its base passed through.
-        if pattern.instances.is_empty() {
+        if job.pattern.instances.is_empty() {
             return Ran::Made(Outcome::Done(Ok((**on).clone())));
         }
         let placements =
-            match crate::pattern::placements(id, operation, &resolved, &pattern.instances) {
+            match crate::pattern::placements(id, operation, &resolved, &job.pattern.instances) {
                 Ok(placements) => placements,
                 Err(error) => return Ran::Made(Outcome::Done(Err(error))),
             };
-        let Some(tool) = inputs.get(1) else {
+        let Some(tool) = job.inputs.get(1) else {
             return bug("a pattern's step ran before its tool was built");
         };
         let request = match KernelRequest::copies(op, &on.shape, &tool.shape, &placements) {
@@ -5642,17 +5647,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 Some(data.history),
                 None,
             )))),
-            // A hang is kept, as a description's is, but may be a busy machine's: the
-            // feature says so, and to check with fresh to ask again (section 4.2).
-            Outcome::Done(Err(error)) if hung(&error) => Ran::Made(Outcome::Done(Err(error
-                .with_advice(crate::worker::Advice::TryAgain {
-                    once_more: false,
-                    why: COPIES_HUNG.to_owned(),
-                })
-                .reworded(
-                    "check with fresh (silico check --fresh) to make the copies again; if they hang again, lower a count",
-                )))),
-            Outcome::Done(Err(error)) => Ran::Made(Outcome::Done(Err(error))),
+            Outcome::Done(Err(error)) => Ran::Made(Outcome::Done(Err(kept_if_hung(error)))),
             Outcome::Superseded => Ran::Made(Outcome::Superseded),
         }
     }
@@ -6438,12 +6433,7 @@ fn model(
                 .zip(&planned.steps)
                 .map_while(|((original, op, instances), key)| match done.get(key) {
                     Some(Ok(built)) => built.history.as_ref().map(|history| {
-                        crate::pattern::verdict(
-                            history,
-                            instances,
-                            original.clone(),
-                            *op == CopiesOp::Fuse,
-                        )
+                        crate::pattern::verdict(history, instances, original.clone(), *op)
                     }),
                     _ => None,
                 })
@@ -6859,31 +6849,26 @@ fn pattern_checked(
             _ => None,
         })
         .ok_or_else(unbuilt)?;
-    let measured = |key: &Key| -> Result<(Arc<Built>, crate::sweep::Measured), Error> {
+    let measured = |key: &Key| -> Result<crate::sweep::Measured, Error> {
         let Some(Ok(built)) = done.get(key) else {
             return Err(unbuilt());
         };
         match measured_of(built) {
-            Some(measured) => Ok((Arc::clone(built), measured)),
+            Some(measured) => Ok(measured),
             None => Err(match unmeasured.get(key) {
                 Some(why) => why.clone().with_feature(id.as_str()),
                 None => unbuilt(),
             }),
         }
     };
-    let (_, mut before) = measured(&base)?;
+    let mut before = measured(&base)?;
     let several = check.steps.len() > 1;
     for ((original, op, instances), key) in check.steps.iter().zip(&planned.steps) {
         let Some(Ok(built)) = done.get(key) else {
             return Err(unbuilt());
         };
         if let Some(history) = &built.history {
-            let verdict = crate::pattern::verdict(
-                history,
-                instances,
-                original.clone(),
-                *op == CopiesOp::Fuse,
-            );
+            let verdict = crate::pattern::verdict(history, instances, original.clone(), *op);
             let bounds = built.summary().and_then(|summary| summary.bounds);
             if let Some(error) = crate::pattern::solids_refused(
                 id,
@@ -6896,7 +6881,7 @@ fn pattern_checked(
                 return Err(error);
             }
         }
-        let (_, after) = measured(key)?;
+        let after = measured(key)?;
         crate::sweep::check_pattern_change(id, check.kind, *op, &check.base, &before, &after)?;
         before = after;
     }

@@ -13,6 +13,7 @@ use super::elements::summarized;
 use super::lookup::{Kinds, Lookup};
 use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
 use crate::document::{Angle, ElementName, FeatureId, Fingerprint, Length, Measure};
+use crate::error::article;
 use crate::kernel::{
     Clients, EdgeCurve, EdgeDescription, ElementKind, ElementRef, FaceDescription, Kernel,
     KernelRequest, ShapeData, Surface,
@@ -828,13 +829,6 @@ fn not_angled(found: &Found<'_>) -> Error {
 }
 
 /// `word` with its article: `a circle`, `an ellipse`.
-fn article(word: &str) -> String {
-    match word.chars().next() {
-        Some('a' | 'e' | 'i' | 'o' | 'u') => format!("an {word}"),
-        _ => format!("a {word}"),
-    }
-}
-
 fn norm(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
 }

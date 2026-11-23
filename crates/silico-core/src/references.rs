@@ -5,7 +5,7 @@
 //! `reference_broken` error with the edges it most likely meant as candidates (N4), and
 //! the feature fails (N6). Nothing is ever taken in a broken name's place.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use crate::document::{ElementName, FeatureId, PROBLEMS_LISTED};
@@ -144,32 +144,56 @@ pub(crate) fn look_up(
 
 /// The edge numbers `edges` (feature `feature`'s, in order) name in `map`, each once, with
 /// the names that find them (for the kernel's errors to name them as the document does); or
-/// the broken ones' errors, the first [`PROBLEMS_LISTED`], each with its candidates, and
-/// how many are broken, listed or not (as the gate lists its problems and counts them). `makers` says
-/// how each feature makes its elements, to read the names. An edge two names find is
-/// filleted once, as FreeCAD's PartDesign takes it (each name still finds it: nothing
-/// re-points).
+/// the broken ones' errors, as [`find`] gives them. `makers` says how each feature makes its
+/// elements, to read the names. An edge two names find is filleted once, as FreeCAD's
+/// PartDesign takes it (each name still finds it: nothing re-points).
 pub(crate) fn resolve(
     feature: &FeatureId,
     edges: &[ElementName],
     map: &ElementMap,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Result<(Vec<u32>, EdgeNames), Broken> {
+    let wanted: Vec<(String, &ElementName, ElementKind)> = edges
+        .iter()
+        .enumerate()
+        .map(|(i, edge)| (format!("edges.{i}"), edge, ElementKind::Edge))
+        .collect();
+    let elements = find(feature, &wanted, map, makers)?;
     let mut found = Vec::with_capacity(edges.len());
-    // The base's edges by the elements their names are made from, built once, the first
-    // time a broken name needs candidates.
-    let mut index: Option<Candidates> = None;
     let mut seen = BTreeSet::new();
     let mut names = EdgeNames::default();
+    for (i, (edge, element)) in edges.iter().zip(elements).enumerate() {
+        if seen.insert(element.index) {
+            found.push(element.index);
+        }
+        names.insert(element.index, i, edge.as_str());
+    }
+    Ok((found, names))
+}
+
+/// The element each of `wanted` (feature `feature`'s stored names, each with its field's
+/// path and the kind it must name) finds in `map`, in order; or the broken ones' errors, the
+/// first [`PROBLEMS_LISTED`], each `reference_broken` at its field with its candidates, and
+/// how many are broken, listed or not (as the gate lists its problems and counts them). The
+/// one step every stored name a feature's step reads takes (a fillet's or chamfer's edges, a
+/// pattern's direction, axis, or plane), so they refuse alike, in one set of words. `makers`
+/// says how each feature makes its elements, to read the names.
+pub(crate) fn find(
+    feature: &FeatureId,
+    wanted: &[(String, &ElementName, ElementKind)],
+    map: &ElementMap,
+    makers: &dyn Fn(&FeatureId) -> Option<Maker>,
+) -> Result<Vec<ElementRef>, Broken> {
+    let mut found = Vec::with_capacity(wanted.len());
+    // The base's elements of each kind by the elements their names are made from, built
+    // once, the first time a broken name of that kind needs candidates.
+    let mut indexes: BTreeMap<ElementKind, Candidates> = BTreeMap::new();
     let mut broken = Vec::new();
     let mut more = 0u64;
-    for (i, edge) in edges.iter().enumerate() {
-        let (why, name) = match look_up(edge.as_str(), ElementKind::Edge, &[map], makers) {
+    for (field, text, kind) in wanted {
+        let (why, name) = match look_up(text.as_str(), *kind, &[map], makers) {
             Lookup::Found { element, .. } => {
-                if seen.insert(element.index) {
-                    found.push(element.index);
-                }
-                names.insert(element.index, i, edge.as_str());
+                found.push(element);
                 continue;
             }
             Lookup::Refused { why, name } => (why, name),
@@ -189,24 +213,20 @@ pub(crate) fn resolve(
             continue;
         }
         let candidates = match &name {
-            Some(name) => index
-                .get_or_insert_with(|| Candidates::of(&[map], ElementKind::Edge))
+            Some(name) => indexes
+                .entry(*kind)
+                .or_insert_with(|| Candidates::of(&[map], *kind))
                 .of_name(name),
             None => Vec::new(),
         };
         broken.push(
-            refused(
-                &format!("edges.{i}"),
-                edge.as_str(),
-                &why,
-                ElementKind::Edge,
-            )
-            .with_ranked(candidates)
-            .with_feature(feature.as_str()),
+            refused(field, text.as_str(), &why, *kind)
+                .with_ranked(candidates)
+                .with_feature(feature.as_str()),
         );
     }
     if broken.is_empty() {
-        Ok((found, names))
+        Ok(found)
     } else {
         let total = broken.len() as u64 + more;
         Err(Broken {

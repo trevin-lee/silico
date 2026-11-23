@@ -418,6 +418,14 @@ pub(crate) fn listed_first(first: &[String], total: usize) -> String {
     }
 }
 
+/// `word` with its article: `a circle`, `an ellipse`, `an offset`.
+pub(crate) fn article(word: &str) -> String {
+    match word.chars().next() {
+        Some('a' | 'e' | 'i' | 'o' | 'u') => format!("an {word}"),
+        _ => format!("a {word}"),
+    }
+}
+
 /// Items as a message offers a choice of them: "a", "a or b", "a, b, or c".
 pub(crate) fn either(items: &[String]) -> String {
     joined(items, "or")

@@ -9,23 +9,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
 use silico_protocol::{
-    ANGULAR_TOLERANCE, Axis, EdgeCurve, EdgeDescription, FaceDescription, History, MAX_LENGTH,
-    Placement, SketchPlane, Surface, vec3,
+    ANGULAR_TOLERANCE, Axis, CopiesOp, EdgeCurve, EdgeDescription, FaceDescription, History,
+    MAX_LENGTH, Placement, SketchPlane, Surface, vec3,
 };
 
 use crate::document::json::shown;
 use crate::document::{
-    ElementName, FeatureId, Length, LinearDistribution, Operation, OriginAxis, OriginOrName,
-    PROBLEMS_LISTED, PolarDistribution, skipped_in_range,
+    ElementName, FeatureId, Length, LinearDistribution, Made, NameField, Operation, OriginAxis,
+    OriginOrName, PROBLEMS_LISTED, PolarDistribution, skipped_in_range,
 };
+use crate::error::{article, listed_first};
 use crate::kernel::ElementKind;
 use crate::naming::Instance;
 use crate::references::cut_short;
 use crate::{Error, ErrorCode};
-
-/// A whole turn, in nanodegrees: an extent of exactly this spreads a polar pattern's
-/// instances over the turn (decision 5).
-const WHOLE_TURN: i64 = 360_000_000_000;
 
 /// Nanometres in a millimetre.
 const NM_PER_MM: f64 = 1e6;
@@ -33,12 +30,13 @@ const NM_PER_MM: f64 = 1e6;
 /// Nanodegrees in a degree.
 const NDEG_PER_DEGREE: f64 = 1e9;
 
-/// The pattern's type word, or none for a feature that isn't a pattern.
+/// The pattern's type word (`linear_pattern`, `polar_pattern`, `mirror`), as its type's
+/// own (`PatternFeature::word`); empty for a feature that isn't a pattern, which nothing
+/// here is given.
 fn word(operation: &Operation) -> &'static str {
-    match operation {
-        Operation::LinearPattern { .. } => "linear_pattern",
-        Operation::PolarPattern { .. } => "polar_pattern",
-        _ => "mirror",
+    match operation.made() {
+        Made::Pattern(kind) => kind.word(),
+        _ => "",
     }
 }
 
@@ -50,7 +48,8 @@ pub(crate) fn counts(operation: &Operation) -> Vec<u32> {
             directions.iter().map(|direction| direction.count).collect()
         }
         Operation::PolarPattern { count, .. } => vec![*count],
-        _ => vec![2],
+        Operation::Mirror { .. } => vec![2],
+        _ => Vec::new(),
     }
 }
 
@@ -64,13 +63,24 @@ pub(crate) fn placed(operation: &Operation) -> Vec<Instance> {
         .into_iter()
         .map(|instance| instance.offsets())
         .collect();
-    let first = counts.first().copied().unwrap_or(1);
-    let second = counts.get(1).copied().unwrap_or(1);
-    // Direction 1 outer: (i) and (i, 0) are one instance, written `i`, before (i, 1), so
-    // the order is the one `skip` is written in.
-    (0..first)
-        .flat_map(|i| (0..second).map(move |j| [i, j]))
-        .filter_map(|offsets| Instance::new(&offsets[..counts.len().max(1)]))
+    // Every instance by its offsets, a direction at a time, direction 1 outer: (i) and
+    // (i, 0) are one instance, written `i`, before (i, 1), so the order is the one `skip`
+    // is written in. Built for as many directions as the pattern has (the gate allows two).
+    let mut all: Vec<Vec<u32>> = vec![Vec::new()];
+    for &count in &counts {
+        all = all
+            .into_iter()
+            .flat_map(|before| {
+                (0..count).map(move |offset| {
+                    let mut offsets = before.clone();
+                    offsets.push(offset);
+                    offsets
+                })
+            })
+            .collect();
+    }
+    all.iter()
+        .filter_map(|offsets| Instance::new(offsets))
         .filter(|instance| !skipped.contains(instance.offsets()))
         .collect()
 }
@@ -127,43 +137,17 @@ pub(crate) fn values(operation: &Operation) -> String {
 
 /// A pattern's references, each its field's path and its text as written, a word or a name
 /// alike: a linear pattern's `directions.N.along`, a polar pattern's `axis`, a mirror's
-/// `plane`.
+/// `plane`, each path as [`NameField`] writes it, where a name stored there is read
+/// (`Operation::stored_names`).
 pub(crate) fn references(operation: &Operation) -> Vec<(String, &str)> {
     match operation {
         Operation::LinearPattern { directions, .. } => directions
             .iter()
             .enumerate()
-            .map(|(i, direction)| (format!("directions.{i}.along"), direction.along.as_str()))
+            .map(|(i, direction)| (NameField::Along(i).to_string(), direction.along.as_str()))
             .collect(),
-        Operation::PolarPattern { axis, .. } => vec![("axis".to_owned(), axis.as_str())],
-        Operation::Mirror { plane, .. } => vec![("plane".to_owned(), plane.as_str())],
-        _ => Vec::new(),
-    }
-}
-
-/// A pattern's references that are names, each its field's path and its name.
-pub(crate) fn named_references(operation: &Operation) -> Vec<(String, &ElementName)> {
-    match operation {
-        Operation::LinearPattern { directions, .. } => directions
-            .iter()
-            .enumerate()
-            .filter_map(|(i, direction)| {
-                direction
-                    .along
-                    .name()
-                    .map(|name| (format!("directions.{i}.along"), name))
-            })
-            .collect(),
-        Operation::PolarPattern { axis, .. } => axis
-            .name()
-            .map(|name| ("axis".to_owned(), name))
-            .into_iter()
-            .collect(),
-        Operation::Mirror { plane, .. } => plane
-            .name()
-            .map(|name| ("plane".to_owned(), name))
-            .into_iter()
-            .collect(),
+        Operation::PolarPattern { axis, .. } => vec![(NameField::Axis.to_string(), axis.as_str())],
+        Operation::Mirror { plane, .. } => vec![(NameField::Plane.to_string(), plane.as_str())],
         _ => Vec::new(),
     }
 }
@@ -199,15 +183,6 @@ fn negated(v: [f64; 3]) -> [f64; 3] {
     v.map(|c| -c + 0.0)
 }
 
-/// `a word`, with its article: `a circle`, `an ellipse`.
-fn a(word: &str) -> String {
-    let article = match word.chars().next() {
-        Some('a' | 'e' | 'i' | 'o' | 'u') => "an",
-        _ => "a",
-    };
-    format!("{article} {word}")
-}
-
 /// A reference refused for what it is: `invalid_input`, naming the feature, the field, and
 /// the element (decision 3, section 4.2).
 fn wrong(id: &FeatureId, field: &str, name: &ElementName, is: &str, suggestion: &str) -> Error {
@@ -232,10 +207,10 @@ fn what(geometry: &Geometry) -> String {
             surface: Surface::Other,
             ..
         }) => "a face of a surface OCCT doesn't type".to_owned(),
-        Geometry::Edge(edge) => a(crate::elements::curve_type(&edge.curve).word()),
+        Geometry::Edge(edge) => article(crate::elements::curve_type(&edge.curve).word()),
         Geometry::Face(face) => format!(
             "{} face",
-            a(crate::elements::surface_type(&face.surface).word())
+            article(crate::elements::surface_type(&face.surface).word())
         ),
     }
 }
@@ -470,7 +445,7 @@ fn linear_step(distribution: LinearDistribution, count: u32, i: u32) -> f64 {
 /// exact in nanodegrees and divided once (section 2.4, decision 5).
 pub(crate) fn polar_degrees(distribution: PolarDistribution, count: u32, k: u32) -> f64 {
     let (angle, divisor) = match distribution {
-        PolarDistribution::Extent { angle } if angle.ndeg() == WHOLE_TURN => {
+        PolarDistribution::Extent { angle } if angle.ndeg() == crate::document::TURN_NDEG => {
             (angle, i128::from(count))
         }
         PolarDistribution::Extent { angle } => (angle, i128::from(count.saturating_sub(1))),
@@ -584,7 +559,8 @@ fn unplaceable(
             Error::new(
                 ErrorCode::InvalidInput,
                 format!(
-                    "{kind} {id} would move instance {instance} {distance} mm along {along}, past the 1000000 mm (a kilometre) a copy may move"
+                    "{kind} {id} would move instance {instance} {distance} mm along {along}, past the {} mm (a kilometre) a copy may move",
+                    silico_protocol::format_number(MAX_LENGTH)
                 ),
             )
             .with_suggestion(
@@ -606,16 +582,16 @@ fn unplaceable(
 /// What one step's history says of its copies (section 4.2, *Every verdict kept*; 4.3):
 /// which instances' copies lie off the base, and which changed nothing; and how many of the
 /// result's solids the base's faces lie in.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StepVerdict {
     /// The original the step copies, none for a whole solid's copies.
     pub original: Option<FeatureId>,
-    /// Whether the step fuses its copies (else it cuts them).
-    pub fuses: bool,
+    /// Whether the step fuses its copies or cuts them.
+    pub op: CopiesOp,
     /// How many solids the result has.
     pub solids: u32,
     /// How many of them the base's faces lie in.
-    pub base_solids: usize,
+    pub base_solids: u32,
     /// The instances any of whose copy's faces lies in a solid other than the one holding
     /// the base's faces, in `skip`'s order: none where the base's faces lie in more than one.
     pub off_base: Vec<Instance>,
@@ -650,7 +626,7 @@ pub(crate) fn verdict(
     history: &History,
     instances: &[Instance],
     original: Option<FeatureId>,
-    fuses: bool,
+    op: CopiesOp,
 ) -> StepVerdict {
     let mut solid_of: BTreeMap<u32, usize> = BTreeMap::new();
     for (s, faces) in history.topology.solid_faces.iter().enumerate() {
@@ -685,30 +661,17 @@ pub(crate) fn verdict(
     }
     StepVerdict {
         original,
-        fuses,
+        op,
         solids: history.result.solids,
-        base_solids: base.len(),
+        base_solids: u32::try_from(base.len()).unwrap_or(u32::MAX),
         off_base,
         changed_nothing,
     }
 }
 
-/// `items` as a list in words: `3`, `3 and 4`, `3, 4, and 5`, at most ten named, the rest
-/// counted (`…, and 989 more`).
-fn listed(items: &[String]) -> String {
-    const SAID: usize = 10;
-    let more = items.len().saturating_sub(SAID);
-    let shown: Vec<&str> = items.iter().take(SAID).map(String::as_str).collect();
-    if more > 0 {
-        return format!("{}, and {more} more", shown.join(", "));
-    }
-    match shown.as_slice() {
-        [] => String::new(),
-        [one] => (*one).to_owned(),
-        [a, b] => format!("{a} and {b}"),
-        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
-    }
-}
+/// The most instances a message names, the rest counted (`…, and 989 more`); `elements`
+/// holds the first [`PROBLEMS_LISTED`].
+const SAID: usize = 10;
 
 /// `the copy of instance 3` or `the copies of instances 3 and 4`, of `original`'s where a
 /// pattern copies several, and whether it's plural.
@@ -718,7 +681,10 @@ fn copies_of(instances: &[Instance], original: Option<&FeatureId>) -> (String, b
     match texts.as_slice() {
         [one] => (format!("the copy of {whose}instance {one}"), false),
         _ => (
-            format!("the copies of {whose}instances {}", listed(&texts)),
+            format!(
+                "the copies of {whose}instances {}",
+                listed_first(texts.get(..SAID).unwrap_or(&texts), texts.len())
+            ),
             true,
         ),
     }
@@ -763,7 +729,7 @@ pub(crate) fn solids_refused(
     }
     let failed =
         |message: String| Error::new(ErrorCode::KernelFailed, message).with_feature(id.as_str());
-    if !verdict.fuses {
+    if verdict.op == CopiesOp::Cut {
         return Some(
             failed(format!(
                 "{kind} {id} cuts its base {base} in {}: the result is {n} solids",

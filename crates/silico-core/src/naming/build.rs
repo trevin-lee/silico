@@ -345,11 +345,12 @@ impl Builder {
         name
     }
 
-    /// Whether `map` is a copy's this step made ([`ElementMap::copy`]): of this feature and
-    /// type, as only a copy of the step's own feature is (its base is an earlier feature's,
-    /// or, a pattern's later step, the step before's, every element of which is named).
-    fn is_copy(&self, map: &ElementMap) -> bool {
-        map.feature() == &self.map.feature && map.made() == self.map.made
+    /// Whether input `input`, of map `map`, is a copy this step places ([`ElementMap::copy`]):
+    /// a pattern's or mirror's step's every input after its base (input 0, its base's map or
+    /// the step before's), each of this feature's own. A sweep feature's sweep, of its own
+    /// feature and type too, is no copy: its step copies nothing.
+    fn is_copy(&self, map: &ElementMap, input: usize) -> bool {
+        input > 0 && self.operation.directions().is_some() && map.feature() == &self.map.feature
     }
 
     /// An input element's own name; if its map has none (a history that lists more of an
@@ -472,7 +473,7 @@ impl Builder {
                         // A copy's element its map leaves unnamed, its every name past the
                         // bounds: by its number in this result, never the tool's, which
                         // every copy of it shares (N10).
-                        None if self.is_copy(map) => {
+                        None if self.is_copy(map, i) => {
                             vec![self.numbered(&self.map.feature.clone(), self.map.made, kept)]
                         }
                         None => vec![self.numbered(map.feature(), map.made(), source)],
@@ -533,7 +534,7 @@ impl Builder {
                         continue;
                     }
                     let source = element(kind, n);
-                    if self.is_copy(map) && map.name(source).is_none() {
+                    if self.is_copy(map, i) && map.name(source).is_none() {
                         past.extend(
                             fate.modified
                                 .iter()
