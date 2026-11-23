@@ -318,9 +318,8 @@ impl RenderClient {
     }
 
     /// [`render`](Self::render), with a time of its own instead of the client's, from when
-    /// its scene is sent: for a caller that knows how long this render may take. (The
-    /// render client's tests give a render meant to hang a short time, and those meant to
-    /// draw the client's, which only a hang reaches.)
+    /// its scene is sent: for a caller that knows how long this render may take, shorter or
+    /// longer than the client's time for the renders around it.
     pub fn render_within(&self, scene: RenderScene, timeout: Duration) -> RenderTicket {
         let (outcome, reply) = mpsc::channel();
         let state = Arc::new(JobState {

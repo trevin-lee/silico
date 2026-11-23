@@ -269,9 +269,13 @@ fn renders_queued_each_have_their_own_time_from_when_theyre_sent() {
             ..RenderSettings::default()
         },
     );
+    let start = Instant::now();
     let first = c.render_within(hanging(), RENDER_TIMEOUT + Duration::from_secs(1));
     let second = c.render(front_of_a_box(8, 8));
     assert_eq!(failed(first.wait()).code(), ErrorCode::WorkerTimeout);
+    // Its own time, longer than the client's, kept: not cut to the client's 30 s.
+    let took = start.elapsed();
+    assert!(took >= RENDER_TIMEOUT + Duration::from_secs(1), "{took:?}");
     drawn(second.wait());
 }
 

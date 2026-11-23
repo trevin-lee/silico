@@ -1,5 +1,6 @@
-//! What the render client's tests share (`client.rs`, `adversarial_client.rs`): the workers,
-//! a client of one, outcomes taken apart, the test worker's scenes, and watching processes.
+//! What silico-render's tests share (every module of `all_render.rs`; the render client's,
+//! `client.rs` and `adversarial_client.rs`, most of it): the workers, a client of one,
+//! outcomes taken apart, the test worker's scenes, and watching processes.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -12,7 +13,9 @@ use silico_render::test_scenes;
 /// The one wait these tests allow for something they expect to happen (a worker to start or
 /// end, a render to answer): long enough for a loaded machine, so only a real hang fails,
 /// and it costs nothing when the event comes. A fifth of the five minutes nextest gives each
-/// of these tests (.config/nextest.toml), so a hang is said here, not killed by nextest.
+/// of the render client's tests (`client::` and `adversarial_client::`, .config/nextest.toml),
+/// and half the two minutes it gives the others, so a hang is said here, not killed by
+/// nextest with nothing said (unless the test had already used most of its time).
 pub const WAIT: Duration = Duration::from_secs(60);
 
 /// A render's time no test reaches: set where a test checks that something comes promptly

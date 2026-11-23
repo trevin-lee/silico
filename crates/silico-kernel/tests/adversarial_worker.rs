@@ -457,6 +457,44 @@ fn a_worker_that_closes_its_socket_and_lingers_fails_within_its_timeout() {
 }
 
 #[test]
+fn a_socket_closed_once_the_request_is_sent_leaves_the_worker_what_is_left_of_its_time() {
+    // As above, but the socket closes once the request has reached the worker, so the call
+    // sees it on the reply's side, not the send's: the grace it gives the worker to exit is
+    // what's left of its time there too, not the fixed 2 s. Only a reader the script started
+    // in the background holds the socket (the script's own copy closed, then its marker
+    // made); it ends once it has read the request's first byte. The call's 1.9 s, under the
+    // 2 s it must be told from, are for that reader's wake and exit alone, no process
+    // started: the test before this one raced a shell's three steps against 300 ms.
+    let closed = scratch_dir("takes-then-closes").join("closed");
+    let exe = script(
+        "takes-then-closes",
+        &format!(
+            "printf '\\0\\0\\0\\0' >&3\ndd bs=1 count=1 <&3 >/dev/null 2>&1 &\nexec 3>&-\n\
+             touch '{}'\nexec sleep 600",
+            closed.display()
+        ),
+    );
+    let graces = Graces::record();
+    let err = within(WAIT, move || {
+        let mut w = Worker::spawn(&exe).unwrap();
+        wait_for(&closed);
+        call_echo(&mut w, &[1], Duration::from_millis(1900)).unwrap_err()
+    });
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    // Seen on the reply's side: no send failed.
+    assert!(
+        err.cause()
+            .is_some_and(|c| c == "it stopped responding and was killed"),
+        "{err}"
+    );
+    let graces = graces.all();
+    assert!(
+        matches!(graces[..], [grace] if (100..=1900).contains(&grace)),
+        "a call allowed 1.9 s gave its worker {graces:?} ms to exit: {err}"
+    );
+}
+
+#[test]
 fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
     // The worker closes its socket and exits, but a process it started holds its log open:
     // waiting to read it to its end stops at the call's deadline too. (One that held the
