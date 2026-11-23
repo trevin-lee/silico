@@ -22,10 +22,12 @@
 //! store writes for it (`Tab::create_sketch_on_face`, as Sketch on this face does), the
 //! pick ended. A click on a face whose type isn't read yet waits for its read, and then does
 //! the same, unless another model is published first (let go, said in
-//! [`PICK_CLICK_LET_GO`]'s words). A click is never held for anything else: one made while a
-//! body drawn has its boxes still to come (made off the UI thread as the view takes a mesh,
-//! tens of milliseconds), or while the view draws an older model's meshes than the one
-//! published, makes nothing and says so ([`PICK_NOT_READY`]: click again); the pointer goes
+//! [`PICK_CLICK_LET_GO`]'s words). A click is never held for anything else: one let go in
+//! the frame the view takes a new table of bodies (made on the table the frame before drew),
+//! one made while a body drawn has its boxes still to come (made off the UI thread as the
+//! view takes a mesh, tens of milliseconds), or while the view draws an older model's meshes
+//! than the one published, makes nothing and says so ([`PICK_NOT_READY`]: click again); the
+//! pointer goes
 //! on lighting what it meets among what's known meanwhile. A newer click supersedes one
 //! waiting, and a frame's own click says nothing of one let go. A click on a face that isn't
 //! flat, or one no store can name, is refused, said in a toast in the prototype's words'
@@ -219,7 +221,8 @@ impl PlanePick {
             }
         }
         let cast = |at_px| under_at(inputs, at_px);
-        acts.extend(self.clicks(&clicks, inputs.current, lost, &cast));
+        let taken = inputs.view.table_taken();
+        acts.extend(self.clicks(&clicks, taken, inputs.current, lost, &cast));
         self.under = frame.pointer_px.and_then(|at_px| cast(at_px).seen());
         self.read_type(sessions, session, inputs.selection);
         acts.extend(self.answered());
@@ -243,13 +246,16 @@ impl PlanePick {
     /// The frame's clicks, at `clicks` (in physical pixels from the canvas's top left), each
     /// cast by `cast`, `current` whether the view draws the selection's model's meshes. The
     /// newest is the one that counts: with any, a click waiting for its face's type is let go
-    /// and the last of them taken. One cast while a body's boxes are still to come, or on
-    /// meshes that aren't current, makes nothing and says so, never held for later. `lost`: a
-    /// click waiting for its face's type was let go as another model came this frame, said
-    /// unless the frame has a click of its own.
+    /// and the last of them taken. One made on another table of bodies than the one it'd be
+    /// cast on (`taken`: the frame took a new table, so the frame before drew another), cast
+    /// while a body's boxes are still to come, or cast on meshes that aren't current, makes
+    /// nothing and says so, never held for later. `lost`: a click waiting for its face's type
+    /// was let go as another model came this frame, said unless the frame has a click of its
+    /// own.
     fn clicks(
         &mut self,
         clicks: &[[f32; 2]],
+        taken: bool,
         current: bool,
         lost: bool,
         cast: &dyn Fn([f32; 2]) -> Found,
@@ -258,6 +264,9 @@ impl PlanePick {
             return lost.then(|| Act::Say(PICK_CLICK_LET_GO.to_owned()));
         };
         self.clicked = None;
+        if taken {
+            return Some(Act::Say(PICK_NOT_READY.to_owned()));
+        }
         match cast(*at_px) {
             Found::Known(under) if current => self.click(under?),
             Found::Known(_) | Found::Waiting(_) => Some(Act::Say(PICK_NOT_READY.to_owned())),
@@ -402,8 +411,9 @@ fn decided(face: &Face, typed: &Typed) -> Option<Act> {
 pub const PICK_CLICK_LET_GO: &str = "The click was let go: the model changed before what was \
                                      under it could be found; click again";
 
-/// What a toast says of a click made while what's under it can't be known yet: a body's boxes
-/// still to come, or the view still drawing an older model's meshes than the one published.
+/// What a toast says of a click made while what's under it can't be known yet: made on a
+/// table of bodies the view has since let go of, a body's boxes still to come, or the view
+/// still drawing an older model's meshes than the one published.
 pub const PICK_NOT_READY: &str = "Still preparing the model: click again";
 
 /// What a cast of the pick finds under a pixel: what's there, known; or, while a body the
@@ -556,22 +566,47 @@ mod tests {
         // so, and is held for nothing: the frames after it, the boxes made, ask nothing. A
         // click then, the meshes current and known, is taken.
         let mut pick = PlanePick::default();
-        assert_eq!(pick.clicks(&[[20.0, 5.0]], true, false, &cast), not_ready());
+        assert_eq!(
+            pick.clicks(&[[20.0, 5.0]], false, true, false, &cast),
+            not_ready()
+        );
         assert!(!pick.waiting());
         let made = |_: [f32; 2]| Found::Known(Some(Under::Plane(OriginPlane::Xy)));
-        assert_eq!(pick.clicks(&[], true, false, &made), None);
+        assert_eq!(pick.clicks(&[], false, true, false, &made), None);
         assert_eq!(
-            pick.clicks(&[[30.0, 5.0]], false, false, &cast),
+            pick.clicks(&[[30.0, 5.0]], false, false, false, &cast),
             not_ready()
         );
         assert_eq!(
-            pick.clicks(&[[10.0, 5.0]], false, false, &cast),
+            pick.clicks(&[[10.0, 5.0]], false, false, false, &cast),
             not_ready()
         );
         assert!(!pick.waiting());
-        assert_eq!(pick.clicks(&[], true, false, &made), None);
+        assert_eq!(pick.clicks(&[], false, true, false, &made), None);
         assert_eq!(
-            pick.clicks(&[[30.0, 5.0]], true, false, &cast),
+            pick.clicks(&[[30.0, 5.0]], false, true, false, &cast),
+            Some(Act::Plane(OriginPlane::Xy))
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_frame_a_new_table_is_taken_makes_nothing_and_says_so() {
+        // #565's round 5: a click let go in the frame the view took a new table of bodies
+        // was made on the table the frame before drew; cast on this one, it'd be of what the
+        // person never saw. It makes nothing and says so, even over a plane known there, and
+        // lets a click waiting for its face's type go; such a frame with no click says
+        // nothing. The next frame's click there is taken.
+        let mut pick = PlanePick::default();
+        assert_eq!(pick.clicks(&[], true, true, false, &cast), None);
+        assert_eq!(pick.clicks(&[[10.0, 5.0]], false, true, false, &cast), None);
+        assert!(pick.waiting());
+        assert_eq!(
+            pick.clicks(&[[30.0, 5.0]], true, true, false, &cast),
+            not_ready()
+        );
+        assert!(!pick.waiting());
+        assert_eq!(
+            pick.clicks(&[[30.0, 5.0]], false, true, false, &cast),
             Some(Act::Plane(OriginPlane::Xy))
         );
     }
@@ -582,9 +617,12 @@ mod tests {
         // nothing (its cast still waiting), lets it go, so Face5's read answering asks
         // nothing. Of two clicks in one frame, the last is taken.
         let mut pick = PlanePick::default();
-        assert_eq!(pick.clicks(&[[10.0, 5.0]], true, false, &cast), None);
+        assert_eq!(pick.clicks(&[[10.0, 5.0]], false, true, false, &cast), None);
         assert!(pick.waiting());
-        assert_eq!(pick.clicks(&[[20.0, 5.0]], true, false, &cast), not_ready());
+        assert_eq!(
+            pick.clicks(&[[20.0, 5.0]], false, true, false, &cast),
+            not_ready()
+        );
         assert!(!pick.waiting());
         pick.typed.insert(
             face(5).name.to_string(),
@@ -595,7 +633,7 @@ mod tests {
         );
         assert_eq!(pick.answered(), None, "Face5's click let go");
         assert_eq!(
-            pick.clicks(&[[30.0, 5.0], [40.0, 5.0]], true, false, &cast),
+            pick.clicks(&[[30.0, 5.0], [40.0, 5.0]], false, true, false, &cast),
             Some(Act::Plane(OriginPlane::Xz))
         );
     }
@@ -607,17 +645,17 @@ mod tests {
         // nothing; and a frame with a click of its own takes it, saying nothing of the other.
         let mut pick = PlanePick::default();
         assert!(!pick.model_is(Some((1, Revision::from_number(1).unwrap()))));
-        assert_eq!(pick.clicks(&[[10.0, 5.0]], true, false, &cast), None);
+        assert_eq!(pick.clicks(&[[10.0, 5.0]], false, true, false, &cast), None);
         assert!(!pick.model_is(Some((1, Revision::from_number(1).unwrap()))));
         assert!(pick.waiting());
         assert!(pick.model_is(Some((2, Revision::from_number(2).unwrap()))));
         assert!(!pick.waiting());
         assert_eq!(
-            pick.clicks(&[], true, true, &cast),
+            pick.clicks(&[], false, true, true, &cast),
             Some(Act::Say(PICK_CLICK_LET_GO.to_owned()))
         );
         assert_eq!(
-            pick.clicks(&[[40.0, 5.0]], true, true, &cast),
+            pick.clicks(&[[40.0, 5.0]], false, true, true, &cast),
             Some(Act::Plane(OriginPlane::Xz))
         );
     }

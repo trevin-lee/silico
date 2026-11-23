@@ -55119,6 +55119,74 @@ fn a_click_on_an_older_models_meshes_makes_nothing_says_so_and_is_never_cast_on_
 }
 
 #[test]
+fn a_click_let_go_in_the_frame_a_new_table_is_taken_makes_nothing_and_says_so() {
+    // #565's round 5: the release of a click on the block's top comes in the very frame the
+    // view takes a new table of bodies (the block suppressed through the core during the
+    // pick, as an agent would, and the read of the new model's meshes answered between
+    // frames, so the release's frame takes it). The person clicked the top the frame before
+    // drew; cast on the new table, which has no body, XY would be under it. It makes nothing
+    // and says "Still preparing the model: click again". A click on the same spot after it,
+    // of the table drawn, starts XY's sketch.
+    use eframe::egui::{Modifiers, PointerButton};
+    use silico_app::plane_pick::{PICK_NOT_READY, Under};
+    use silico_core::document::{FeatureId, OriginPlane};
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    begin_pick(&mut h);
+    let top = the_boxs_top(&h);
+    h.hover_at(top);
+    step_until(
+        &mut h,
+        "the top under the pointer",
+        |h| matches!(pick_under(h), Some(Under::Face(face)) if face.name.to_string() == "k7f2qx3m.box.Face6"),
+    );
+    button_event(&h, top, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    let session = h.state().tabs()[0].id;
+    let revision = f.sessions.status(&session).session.unwrap().revision;
+    let models = h.state().tabs()[0].published_models;
+    f.sessions
+        .suppress_feature(
+            &session,
+            revision,
+            FeatureId::new("k7f2qx3m").unwrap(),
+            true,
+        )
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "the new model's meshes read", |h| {
+        h.state().tabs()[0].published_models != models && view(h).reading()
+    });
+    let table = view(&h).table();
+    assert!(
+        view_mut(&mut h).read_answered_within(WAIT),
+        "the new model's meshes never read"
+    );
+    button_event(&h, top, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_ne!(
+        view(&h).table(),
+        table,
+        "the release's frame took no new table"
+    );
+    assert!(view(&h).bodies().is_empty());
+    toasted(&mut h, PICK_NOT_READY);
+    assert!(
+        sketch_mode(&h).is_none(),
+        "the click cast on the new table: {:?}",
+        text_of(&f.sessions, &h)
+    );
+    assert!(picking(&h));
+    // Of the table drawn now, XY is under the spot, and a click there starts its sketch.
+    assert_eq!(pick_under(&h), Some(Under::Plane(OriginPlane::Xy)));
+    pick_at(&mut h, top);
+    let (_, features) = sketch_added(&f, &mut h);
+    assert_eq!(features[1], Some(empty_sketch("Sketch1", r#""xy""#)));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_face_that_isnt_flat_is_refused_in_the_pick_and_the_pick_goes_on() {
     // The prototype lights and takes only a face whose `kind` is 'plane'. The box's top
     // described as a cylinder's side (as the context menu's test describes it): under the

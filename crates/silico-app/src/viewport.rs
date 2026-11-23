@@ -460,7 +460,13 @@ pub struct View {
     model: Option<Revision>,
     answered: Option<Asked>,
     generation: u64,
+    /// The table the frame before this one drew: [`table`](Self::table) as this frame
+    /// began, before its poll.
+    table_before: u64,
     reading: Option<Reading>,
+    /// The read out's answer, waited for between frames by a test
+    /// ([`read_answered_within`](Self::read_answered_within)): taken by the next poll.
+    came: Option<(Asked, bool, Response<MeshesRead>)>,
     /// The last read refused for what it asked: not asked again until something differs.
     refused: Option<Asked>,
     /// A read refused for the moment, to ask again after a delay.
@@ -608,7 +614,9 @@ impl Default for View {
             model: None,
             answered: None,
             generation: 0,
+            table_before: 0,
             reading: None,
+            came: None,
             refused: None,
             retry: None,
             said: None,
@@ -910,6 +918,13 @@ impl View {
         self.generation
     }
 
+    /// Whether this frame took a new table of bodies: the frame before drew another, so
+    /// the clicks this frame hands on were made on that one, not on the table they'd be cast
+    /// on now.
+    pub fn table_taken(&self) -> bool {
+        self.generation != self.table_before
+    }
+
     /// As if bodies read from `of` had come, and the answer to the pick of frame `picking`
     /// had: a selection's unit tests' view.
     #[cfg(test)]
@@ -943,8 +958,33 @@ impl View {
         self.picking.take()
     }
 
+    /// Waits up to `timeout` for the read out to answer, its answer kept for the next
+    /// frame's poll to take: a test's, so a new table is taken in the frame it chooses, as
+    /// any frame may take one. Whether a read was out and has answered. For the crate's tests
+    /// only.
+    #[doc(hidden)]
+    pub fn read_answered_within(&mut self, timeout: Duration) -> bool {
+        let Some(reading) = self.reading.take() else {
+            return false;
+        };
+        match reading.running.wait_timeout(timeout) {
+            Ok(response) => {
+                self.came = Some((reading.asked, reading.named, response));
+                true
+            }
+            Err(running) => {
+                self.reading = Some(Reading { running, ..reading });
+                false
+            }
+        }
+    }
+
     /// The read in flight polled: its answer taken if it has come.
     fn poll(&mut self, now: Instant) {
+        if let Some((asked, named, response)) = self.came.take() {
+            self.took(asked, named, response, now);
+            return;
+        }
         let Some(reading) = self.reading.take() else {
             return;
         };
@@ -2026,6 +2066,7 @@ pub fn show<P: Clients + 'static>(
         view.rows = size_px[1].max(1);
         view.camera = navigate::clamped(view.camera.clone(), view.rows, view.drawn_boxes());
     }
+    view.table_before = view.generation;
     view.poll(now);
     match view.notice.take() {
         Some(Notice::Refused(said)) => tab.message = Some(said),
