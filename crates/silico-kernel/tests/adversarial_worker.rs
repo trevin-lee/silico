@@ -462,14 +462,18 @@ fn a_socket_closed_once_the_request_is_sent_leaves_the_worker_what_is_left_of_it
     // sees it on the reply's side, not the send's: the grace it gives the worker to exit is
     // what's left of its time there too, not the fixed 2 s. Only a reader the script started
     // in the background holds the socket (the script's own copy closed, then its marker
-    // made); it ends once it has read the request's first byte. The call's 1.9 s, under the
-    // 2 s it must be told from, are for that reader's wake and exit alone, no process
-    // started: the test before this one raced a shell's three steps against 300 ms.
+    // made); it ends once it has read the request's length (4 bytes) and the first byte of
+    // its message, so the message's write (one, after the length's: silico-protocol's
+    // `write_message`) has been taken whole before the socket closes. (Ending after the
+    // first byte, it closed between the two writes in a few runs of a hundred, and the
+    // message's failed.) The call's 1.9 s, under the 2 s it must be told from, leave room
+    // for that reader, already started, to wake and exit; a time like the 300 ms above
+    // would race it.
     let closed = scratch_dir("takes-then-closes").join("closed");
     let exe = script(
         "takes-then-closes",
         &format!(
-            "printf '\\0\\0\\0\\0' >&3\ndd bs=1 count=1 <&3 >/dev/null 2>&1 &\nexec 3>&-\n\
+            "printf '\\0\\0\\0\\0' >&3\ndd bs=1 count=5 <&3 >/dev/null 2>&1 &\nexec 3>&-\n\
              touch '{}'\nexec sleep 600",
             closed.display()
         ),
