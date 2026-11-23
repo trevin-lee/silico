@@ -41784,10 +41784,7 @@ fn a_pads_menus_have_edit_sketch_after_edit_feature_and_it_opens_the_sketch_it_i
     let text = text_of(&f.sessions, &h);
     menu_on(&mut h, "Timeline", "Pad");
     menu_click(&mut h, "PAD", "Edit Sketch");
-    step_until(&mut h, "sketch mode on Box", |h| {
-        sketch_mode(h)
-            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
-    });
+    sketch_mode_on(&mut h, "s0000001");
     sketch_read(&mut h);
     assert!(sketch_mode(&h).unwrap().created.is_none());
     assert_eq!(selected_features(&h), ["s0000001"]);
@@ -41863,13 +41860,79 @@ fn a_pockets_edit_sketch_opens_its_own_sketch_and_a_box_or_a_sketch_on_a_face_ha
         ["Edit feature double-click", "Edit Sketch"]
     );
     menu_click(&mut h, "CUT", "Edit Sketch");
-    step_until(&mut h, "sketch mode on Loose", |h| {
-        sketch_mode(h)
-            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000009"))
-    });
+    sketch_mode_on(&mut h, "s0000009");
     sketch_read(&mut h);
     assert_eq!(selected_features(&h), ["s0000009"]);
     leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Frames stepped until sketch mode is open on the sketch `id`.
+fn sketch_mode_on(h: &mut AppHarness, id: &str) {
+    let want = sketch_id(id);
+    step_until(h, "sketch mode on the sketch", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.as_ref() == Some(&want))
+    });
+}
+
+#[test]
+fn edit_sketch_opens_the_sweeps_own_sketch_not_the_documents_first() {
+    // POCKETED_MID with Cut built from Sketch2, the later of its two sketches (on the
+    // Block's top), in place of Loose, the first: Cut's Edit Sketch opens Sketch2.
+    let text = POCKETED_MID.replace(r#""sketch": "s0000009""#, r#""sketch": "s0000002""#);
+    assert_ne!(text, POCKETED_MID);
+    let f = fixture();
+    let (mut h, _) = f.opened("pocketed.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    settled(&mut h);
+    menu_on(&mut h, "Timeline", "Cut");
+    menu_click(&mut h, "CUT", "Edit Sketch");
+    sketch_mode_on(&mut h, "s0000002");
+    sketch_read(&mut h);
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_on_another_sketchs_face_has_one_edit_sketch_its_own() {
+    // A file may put a sketch on a face named from a sketch (`s0000001.sketch.Face1`): the
+    // gate takes the name, and the rebuild finds no such face. The timeline lists Box as
+    // Sketch2's input, but a sketch is built from no sketch: its menu has its own Edit
+    // Sketch alone.
+    let text = BOXED_PADDED.replace(
+        r#""reversed": false}}
+  ]"#,
+        r#""reversed": false}},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Sketch2", "plane": {"face": "s0000001.sketch.Face1", "x": "+x", "reversed": false}, "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]"#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    let f = fixture();
+    let (mut h, _) = f.opened("on_a_sketch.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Sketch2"));
+    settled(&mut h);
+    assert_eq!(
+        h.state().tabs()[0]
+            .entry("s0000002")
+            .map(|entry| entry.inputs.clone()),
+        Some(vec![sketch_id("s0000001")]),
+        "Box listed as its input"
+    );
+    menu_on(&mut h, "Timeline", "Sketch2");
+    let labels: Vec<String> = menu_items(&h, "SKETCH2")
+        .into_iter()
+        .map(|(label, _, _)| label)
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "Edit Sketch double-click",
+            "Rename",
+            "Suppress",
+            "Find in browser",
+            "Delete"
+        ]
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -41907,10 +41970,7 @@ fn edit_sketch_from_a_pad_blocked_by_its_sketchs_conflict_opens_that_sketch_to_m
         "{items:?}"
     );
     menu_click(&mut h, "PAD", "Edit Sketch");
-    step_until(&mut h, "sketch mode on Box", |h| {
-        sketch_mode(h)
-            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
-    });
+    sketch_mode_on(&mut h, "s0000001");
     sketch_read(&mut h);
     leave_sketch(&mut h, false);
     assert_eq!(never_waits::waits(), 0);
@@ -41938,10 +41998,7 @@ fn edit_sketch_from_a_suppressed_pad_opens_its_sketch_which_suppressing_the_pad_
     );
     assert_eq!(items[3].0, "Unsuppress", "{items:?}");
     menu_click(&mut h, "PAD", "Edit Sketch");
-    step_until(&mut h, "sketch mode on Box", |h| {
-        sketch_mode(h)
-            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
-    });
+    sketch_mode_on(&mut h, "s0000001");
     sketch_read(&mut h);
     leave_sketch(&mut h, false);
     assert_eq!(never_waits::waits(), 0);
@@ -42025,19 +42082,22 @@ fn edit_sketch_asked_of_a_sketch_an_unknown_id_or_twice_at_once_opens_one_sketch
         }
         assert!(sketch_mode(&h).is_none(), "{asked}");
     }
-    for _ in 0..2 {
-        act(
-            &mut h.state_mut().tabs_mut()[0],
-            &sessions,
-            Act::EditSketch(id("p0000001")),
-        );
-    }
-    step_until(&mut h, "sketch mode on Box", |h| {
-        sketch_mode(h)
-            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
-    });
+    // Edit Sketch opens sketch mode at once, its read to come: its serial is the first
+    // ask's, which the second leaves as it is.
+    act(
+        &mut h.state_mut().tabs_mut()[0],
+        &sessions,
+        Act::EditSketch(id("p0000001")),
+    );
+    let serial = sketch_mode(&h).expect("sketch mode opened at once").serial;
+    act(
+        &mut h.state_mut().tabs_mut()[0],
+        &sessions,
+        Act::EditSketch(id("p0000001")),
+    );
+    assert_eq!(sketch_mode(&h).unwrap().serial, serial);
+    sketch_mode_on(&mut h, "s0000001");
     sketch_read(&mut h);
-    let serial = sketch_mode(&h).unwrap().serial;
     for _ in 0..4 {
         step(&mut h);
     }
@@ -45083,8 +45143,8 @@ fn over_a_pads_face_the_context_menus_edit_sketch_opens_the_sketch_the_pad_is_bu
     assert_eq!(items[2].icon, Some(silico_app::icons::Icon::Sketch));
     assert_eq!(
         items[2].item,
-        CanvasItem::Act(CanvasAct::Edit(
-            silico_core::document::FeatureId::new("s0000001").unwrap()
+        CanvasItem::Act(CanvasAct::EditSketch(
+            silico_core::document::FeatureId::new("p0000001").unwrap()
         ))
     );
     assert_eq!(items[2].off, None);
@@ -45099,10 +45159,7 @@ fn over_a_pads_face_the_context_menus_edit_sketch_opens_the_sketch_the_pad_is_bu
     h.get_by_role_and_label(Role::Menu, "Canvas")
         .get_by_label("Edit Sketch")
         .click();
-    step_until(&mut h, "sketch mode on Box", |h| {
-        sketch_mode(h)
-            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
-    });
+    sketch_mode_on(&mut h, "s0000001");
     assert!(!select_other(&h).is_open());
     sketch_read(&mut h);
     assert!(sketch_mode(&h).unwrap().created.is_none());
@@ -45126,6 +45183,87 @@ fn over_a_pads_face_the_context_menus_edit_sketch_opens_the_sketch_the_pad_is_bu
             .accesskit_node()
             .is_disabled()
     );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The Block, and Box (BOXED_PADDED's sketch) padded onto it: one body, ending in the pad.
+fn pad_on_a_block() -> String {
+    let sketch = BOXED_PADDED
+        .lines()
+        .find(|line| line.contains(r#""id": "s0000001""#))
+        .unwrap();
+    format!(
+        r#"{{
+  "silico": 1,
+  "units": {{"length": "mm", "resolution": "1nm"}},
+  "naming": 6,
+  "features": [
+    {{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+{sketch}
+    {{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "base": "k7f2qx3m", "sketch": "s0000001", "extent": {{"type": "one_side", "length": 10, "reversed": false}}}}
+  ]
+}}
+"#
+    )
+}
+
+#[test]
+fn over_a_face_the_context_menus_edit_sketch_follows_the_feature_that_made_it_not_the_body() {
+    // The pad onto the Block, its fuse answered as the numbering fuse (the Block's Face2 to
+    // Face6 kept, Face1 the pad's own): one body, ending in the pad, built from Box. Over a
+    // face the Block made (a box, built from no sketch) the menu has no Edit Sketch, though
+    // the body's last feature is built from one; over the pad's own face, it has the pad's.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: FakeKernel::resized(base, 1.0)?,
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = from_above_made(&f, "on_a_block.silico", &pad_on_a_block(), None);
+    boxes_made(&mut h);
+    let body = body_of(&h, "p0000001");
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    // A face hovered, until its name, which says the feature that made it, comes.
+    let over = |h: &mut AppHarness, face: u32, maker: &str| {
+        // Off the canvas first, so the hover at the same place is asked again.
+        pointer_away(h);
+        step(h);
+        answering(&record, Some((body, Face(face), pixel_at(h, at))), None);
+        h.hover_at(at);
+        step_until(h, "the face hovered", |h| {
+            hover_name(h).is_some_and(|name| name.starts_with(&format!("{maker}.")))
+        });
+        context_at(h, at);
+        select_other(h).context().unwrap().items.clone()
+    };
+    let blocks = over(&mut h, 2, "k7f2qx3m");
+    assert_eq!(blocks[1].label, "Edit Block");
+    assert!(
+        blocks.iter().all(|shown| shown.label != "Edit Sketch"),
+        "{blocks:?}"
+    );
+    assert_eq!(blocks.last().unwrap().label, "Hide Pad");
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    let pads = over(&mut h, 1, "p0000001");
+    assert_eq!(pads[1].label, "Edit Pad");
+    assert_eq!(pads[2].label, "Edit Sketch");
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Edit Sketch")
+        .click();
+    sketch_mode_on(&mut h, "s0000001");
+    sketch_read(&mut h);
+    leave_sketch(&mut h, false);
     assert_eq!(never_waits::waits(), 0);
 }
 

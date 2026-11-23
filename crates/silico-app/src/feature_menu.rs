@@ -185,10 +185,6 @@ fn keys(item: Item, ctx: &egui::Context) -> (Option<&'static str>, Vec<String>) 
 /// Edit Sketch's words: a sketch's Edit, and the Edit Sketch of a feature built from one.
 pub const EDIT_SKETCH: &str = "Edit Sketch";
 
-/// Why a feature's Edit Sketch is off when it's built from no sketch (it's never in that
-/// feature's menu).
-pub const NO_SKETCH: &str = "It isn't built from a sketch";
-
 /// The words of `item` for `entry`, shown at `place` (the prototype's: "Edit Sketch" for a
 /// sketch, else "Edit feature"; "Unsuppress" for a suppressed feature; "Find in browser"
 /// from the timeline, "Find in timeline" from the browser).
@@ -263,11 +259,9 @@ pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String>
                 Some(unchangeable(tab).unwrap_or_else(|| "Its dialog can't open now".to_owned()))
             }
         }
-        // Sketch mode on the sketch it's built from, as that sketch's own Edit Sketch.
-        Item::EditSketch => match tab.sketch_of(&entry.id) {
-            Some(_) => sketch_off(tab),
-            None => Some(NO_SKETCH.to_owned()),
-        },
+        // Sketch mode on the sketch it's built from, as that sketch's own Edit Sketch: in a
+        // menu only for a feature built from one (`items`).
+        Item::EditSketch => sketch_off(tab),
         Item::Rename | Item::Suppress | Item::Delete => unchangeable(tab),
         Item::Find => match place {
             Place::Browser => None,

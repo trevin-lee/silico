@@ -81,9 +81,11 @@ pub enum CanvasItem {
 /// What a chosen item asks the tab to do, the menu closed.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CanvasAct {
-    /// Edit feature, of the feature that made the element under the pointer; or Edit Sketch,
-    /// of the sketch that feature is built from (a sketch's Edit is its Edit Sketch).
+    /// Edit feature, of the feature that made the element under the pointer.
     Edit(FeatureId),
+    /// Edit Sketch of the feature that made the element under the pointer, one built from a
+    /// sketch: the feature menus' Edit Sketch (`crate::feature_menu::Act::EditSketch`).
+    EditSketch(FeatureId),
     /// Sketch on this face: a sketch created on the face under the pointer, by the name a
     /// store writes for it.
     SketchOnFace(Arc<Name>),
@@ -154,18 +156,19 @@ impl Shown {
 
 /// What's under the pointer at the right click, as the menu says it: the element a click
 /// there would select, by its words ("Face6") and its kind ("Face"); the feature that made
-/// it, by its ID and its name, and the sketch that feature is built from, if it is; its body, by the feature that ends its chain and its name;
-/// and, for a face `elements` has said is a plane, what Sketch on this face and Look At need
-/// of it (none for another face, an edge, a vertex, or a face not read yet). None over
-/// nothing.
+/// it, by its ID and its name, and whether it's built from a sketch; its body, by the
+/// feature that ends its chain and its name; and, for a face `elements` has said is a plane,
+/// what Sketch on this face and Look At need of it (none for another face, an edge, a
+/// vertex, or a face not read yet). None over nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Under {
     pub label: String,
     pub kind: &'static str,
     pub maker: FeatureId,
     pub maker_name: String,
-    /// The sketch the maker is built from, if it is (`Tab::sketch_of`): Edit Sketch's.
-    pub sketch: Option<FeatureId>,
+    /// Whether the maker is built from a sketch (`Tab::sketch_of`): Edit Sketch is there
+    /// only then.
+    pub sketched: bool,
     pub body: FeatureId,
     pub body_name: String,
     pub plane: Option<Planar>,
@@ -232,10 +235,10 @@ impl CanvasMenu {
                     format!("Edit {}", under.maker_name),
                 );
                 edit.off = context.edit_off.clone();
-                // The maker's sketch, opened as its own Edit Sketch opens it.
-                let edit_sketch = under.sketch.as_ref().map(|sketch| {
+                // The maker's sketch, opened as the maker's menus' Edit Sketch opens it.
+                let edit_sketch = under.sketched.then(|| {
                     let mut shown = Shown::of(
-                        CanvasItem::Act(CanvasAct::Edit(sketch.clone())),
+                        CanvasItem::Act(CanvasAct::EditSketch(under.maker.clone())),
                         Some(Icon::Sketch),
                         crate::feature_menu::EDIT_SKETCH,
                     );
@@ -440,7 +443,7 @@ mod tests {
             kind: "Face",
             maker: fid("k7f2qx3m"),
             maker_name: "Block".to_owned(),
-            sketch: None,
+            sketched: false,
             body: fid("p0000001"),
             body_name: "Plate".to_owned(),
             plane: None,
@@ -655,6 +658,58 @@ mod tests {
             (blue[0].min - want.min).length() < 1e-3 && (blue[0].max - want.max).length() < 1e-3,
             "{blue:?}, {want:?}"
         );
+    }
+
+    #[test]
+    fn edit_sketch_comes_right_after_edit_before_the_faces_items_and_is_off_as_sketch_mode_is() {
+        // Over a planar face of a feature built from a sketch: Select Other…, Edit and the
+        // feature, Edit Sketch (the sketch's icon, no keys, the maker's), then Sketch on this
+        // face and Look At, then the separator and Hide. Off, with sketch mode's reason, while
+        // sketch mode can't open, Edit as it was; and none over a feature built from none.
+        let ctx = egui::Context::default();
+        ctx.set_os(egui::os::OperatingSystem::Nix);
+        let planar = || Under {
+            sketched: true,
+            plane: Some(Planar {
+                stored: Err("unstable".to_owned()),
+                normal: [0.0, 0.0, 1.0],
+            }),
+            ..under()
+        };
+        let over = CanvasMenu::new(Some(&planar()), &context(true, false), &ctx);
+        assert_eq!(
+            said(&over, &ctx),
+            [
+                item("Select Other… 4 under the pointer", None, true),
+                item("Edit Block", None, true),
+                item("Edit Sketch", None, true),
+                item("Sketch on this face", None, false),
+                item("Look At", Some("Ctrl+8"), true),
+                item("Hide Plate", None, true),
+            ]
+        );
+        assert_eq!(
+            over.items[2].item,
+            CanvasItem::Act(CanvasAct::EditSketch(fid("k7f2qx3m")))
+        );
+        assert_eq!(over.items[2].icon, Some(Icon::Sketch));
+        assert!(!over.separated(2) && over.separated(5));
+        let off = CanvasMenu::new(Some(&planar()), &unsketchable(context(true, false)), &ctx);
+        assert_eq!(off.items[1].off, None);
+        assert_eq!(
+            off.items[2].off,
+            unsketchable(context(true, false)).sketch_off
+        );
+        assert!(off.items[2].off.is_some());
+        let none = CanvasMenu::new(
+            Some(&Under {
+                sketched: false,
+                ..planar()
+            }),
+            &context(true, false),
+            &ctx,
+        );
+        assert!(none.items.iter().all(|shown| shown.label != "Edit Sketch"));
     }
 
     #[test]
