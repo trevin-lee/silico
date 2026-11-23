@@ -60,6 +60,8 @@ mod naming;
 mod naming_header;
 #[path = "naming_scheme.rs"]
 mod naming_scheme;
+#[path = "pattern_rebuild.rs"]
+mod pattern_rebuild;
 #[path = "recompute_naming_cost.rs"]
 mod recompute_naming_cost;
 #[path = "recompute_steps.rs"]

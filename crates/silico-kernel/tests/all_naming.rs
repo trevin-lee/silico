@@ -43,6 +43,8 @@ mod history_fixtures;
 mod name_collisions;
 #[path = "naming.rs"]
 mod naming;
+#[path = "patterns.rs"]
+mod patterns;
 #[path = "references.rs"]
 mod references;
 #[path = "sketch_edit_references.rs"]

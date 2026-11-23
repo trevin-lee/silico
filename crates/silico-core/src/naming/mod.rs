@@ -238,11 +238,12 @@ impl OpCode {
     /// writes `FUS` or `CUT` for those: one word names every step of the feature (S4), so
     /// FreeCAD's form, held for comparison and FreeCAD's orders, says the feature's.
     ///
-    /// A pattern's or mirror's is `FUS`, though FreeCAD 1.1's `Transformed` cuts a
-    /// subtractive tool's copies (`FeatureTransformed.cpp:392`, `:399` at the 1.1 branch
-    /// point, `af2d42a4aa`), so its form of a cut
-    /// step's elements writes `CUT`: no step names a copy yet, and M6.3 settles the cut
-    /// step's form, pinned by a test, before any does (docs/design/m2.7-naming.md, N10).
+    /// A pattern's or mirror's is `FUS` for every step, a cut step's too, though FreeCAD
+    /// 1.1's `Transformed` cuts a subtractive tool's copies (`FeatureTransformed.cpp:392`,
+    /// `:399` at the 1.1 branch point, `af2d42a4aa`), so its form of a cut step's elements
+    /// writes `CUT`: one word names every step of the feature, as a sweep's `XTR` names its
+    /// fuse or cut (S4), and an `OpCode` carries no boolean (M6.3's settling of N10's open
+    /// item, docs/design/m2.7-naming.md).
     pub fn code(self) -> &'static str {
         match self {
             OpCode::Fuse => "FUS",

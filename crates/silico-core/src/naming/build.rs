@@ -212,7 +212,7 @@ impl ElementMap {
     /// sketch's. A copied name past the bounds ([`MOST_DEPTH`], [`MOST_WEIGHT`]) is left
     /// out too, never numbered here: by the tool's number every copy of the element would
     /// share one name. An element left with none is the step's to name by its number in
-    /// its result (N10's open item for M6.3).
+    /// its result, and so is every element made from it (N10, settled by M6.3).
     pub fn copy(
         of: &ElementMap,
         feature: FeatureId,
@@ -345,6 +345,13 @@ impl Builder {
         name
     }
 
+    /// Whether `map` is a copy's this step made ([`ElementMap::copy`]): of this feature and
+    /// type, as only a copy of the step's own feature is (its base is an earlier feature's,
+    /// or, a pattern's later step, the step before's, every element of which is named).
+    fn is_copy(&self, map: &ElementMap) -> bool {
+        map.feature() == &self.map.feature && map.made() == self.map.made
+    }
+
     /// An input element's own name; if its map has none (a history that lists more of an
     /// input's elements than it has; every map Silico builds names every element), one by
     /// its number, unstable.
@@ -462,6 +469,12 @@ impl Builder {
                     self.inputs.entry(kept).or_insert(i);
                     let names: Vec<Arc<Name>> = match map.names.get(&source) {
                         Some(names) => names.clone(),
+                        // A copy's element its map leaves unnamed, its every name past the
+                        // bounds: by its number in this result, never the tool's, which
+                        // every copy of it shares (N10).
+                        None if self.is_copy(map) => {
+                            vec![self.numbered(&self.map.feature.clone(), self.map.made, kept)]
+                        }
                         None => vec![self.numbered(map.feature(), map.made(), source)],
                     };
                     for name in names {
@@ -509,6 +522,10 @@ impl Builder {
         // element modified, none generated of its kind).
         let mut sources: BTreeMap<ElementRef, BTreeMap<SourceKey, (Relation, NonZeroU32, bool)>> =
             BTreeMap::new();
+        // The elements made from a copy's element its map leaves unnamed (every name of it
+        // past the bounds): each named by its number in this result, never from that
+        // element by the tool's number, which every copy of it shares (N10).
+        let mut past: BTreeSet<ElementRef> = BTreeSet::new();
         for kind in KINDS {
             for (i, (input, map)) in history.inputs.iter().zip(inputs).enumerate() {
                 for (n, fate) in fates(input, kind).iter().enumerate() {
@@ -516,6 +533,16 @@ impl Builder {
                         continue;
                     }
                     let source = element(kind, n);
+                    if self.is_copy(map) && map.name(source).is_none() {
+                        past.extend(
+                            fate.modified
+                                .iter()
+                                .chain(&fate.generated)
+                                .map(|r| r.element)
+                                .filter(|e| e.kind != ElementKind::Solid && !self.is_named(*e)),
+                        );
+                        continue;
+                    }
                     let name = self.source_name(map, source);
                     let key: SourceKey = (rank(kind), i, freecad::text(&name).into(), name);
                     let sole = fate.modified.len() == 1
@@ -543,6 +570,11 @@ impl Builder {
                     }
                 }
             }
+        }
+        for element in past {
+            sources.remove(&element);
+            let name = self.numbered(&self.map.feature.clone(), self.map.made, element);
+            self.set(element, name);
         }
         // Each element's name without places, and the input it came from.
         let mut named: Vec<(ElementRef, usize, Name)> = Vec::new();

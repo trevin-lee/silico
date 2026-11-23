@@ -985,11 +985,163 @@ fn a_copy_counts_a_level_on_top_of_its_names_duplicates_and_under_its_own() {
 }
 
 #[test]
-fn a_pattern_steps_freecad_op_code_is_fus_until_m6_3_settles_a_cuts() {
-    // N10's open item: an `OpCode` carries no boolean, so the three write `FUS`; M6.3
-    // changes this with a test of the cut case.
+fn a_pattern_steps_freecad_op_code_is_fus_a_cut_steps_too() {
+    // N10's open item, settled by M6.3: a pattern's or mirror's every step writes `FUS` in
+    // FreeCAD's form, its cut step's too, as a sweep feature writes `XTR` for its fuse or cut
+    // (S4: one word names every step of the feature), where FreeCAD 1.1 writes `CUT` for a
+    // subtractive tool's copies (`FeatureTransformed.cpp:399` at `af2d42a4aa`). A pocket's
+    // copy cut into a base, its face split in two by the base: each piece's name, a source
+    // of the copy's face, writes `FUS`, never `CUT`.
     for op in [OpCode::LinearPattern, OpCode::PolarPattern, OpCode::Mirror] {
         assert_eq!(op.code(), "FUS", "{op:?}");
+    }
+    let base = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let wall = ElementMap::by_number(
+        id("q0000002"),
+        OpCode::Pocket,
+        ElementCounts {
+            faces: 1,
+            ..ElementCounts::default()
+        },
+    );
+    let copy = ElementMap::copy(
+        &wall,
+        id("t0000001"),
+        OpCode::LinearPattern,
+        Copied::Tool,
+        &Instance::new(&[2]).unwrap(),
+    )
+    .unwrap();
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    let piece = |n: u32, position: u32| silico_core::kernel::Reported {
+        element: face(n),
+        position,
+    };
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+            InputHistory {
+                faces: vec![ElementFate {
+                    kept: None,
+                    modified: vec![piece(7, 1), piece(8, 2)],
+                    generated: Vec::new(),
+                }],
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+        ],
+        result: ElementCounts {
+            faces: 8,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let map = ElementMap::operation(
+        id("t0000001"),
+        OpCode::LinearPattern,
+        &[&base, &copy],
+        &history,
+    );
+    for n in [7, 8] {
+        let name = map.name(face(n)).unwrap();
+        assert!(
+            name.to_string()
+                .starts_with("t0000001.linear_pattern.Face(M"),
+            "{name}"
+        );
+        let text = freecad::text(&name);
+        assert!(text.contains(";FUS") && !text.contains("CUT"), "{text}");
+    }
+}
+
+#[test]
+fn a_copys_element_past_the_bound_is_numbered_by_its_place_in_the_steps_result() {
+    // N10's open item, settled by M6.3: a copy's map leaves out an element whose every name
+    // is past the bound (above); the step's map numbers it, and what's made from it, by its
+    // place in the step's result, never by the tool's number, which every copy of it shares.
+    // A box copied 255 times as a mirror's whole solid is at the bound; its next copy has no
+    // names. The step keeps that copy's faces 1 to 5 as 7 to 11 and splits its face 6 into
+    // 12 and 13: each is named by its result's number, unstable.
+    let mut map = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let one = Instance::new(&[1]).unwrap();
+    for _ in 0..255 {
+        map = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    }
+    let past = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    assert_eq!(past.count(ElementKind::Face), 0);
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    let piece = |n: u32, position: u32| silico_core::kernel::Reported {
+        element: face(n),
+        position,
+    };
+    let mut copied: Vec<ElementFate> = (7..=11).map(kept).collect();
+    copied.push(ElementFate {
+        kept: None,
+        modified: vec![piece(12, 1), piece(13, 2)],
+        generated: Vec::new(),
+    });
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+            InputHistory {
+                faces: copied,
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+        ],
+        result: ElementCounts {
+            faces: 13,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let step = ElementMap::operation(id("m0000001"), OpCode::Mirror, &[&map, &past], &history);
+    // The base's faces keep their names.
+    for n in 1..=6 {
+        assert_eq!(step.name(face(n)), map.name(face(n)), "Face{n}");
+    }
+    // The copy's, each its own number in the result.
+    for n in 7..=13 {
+        let name = step.name(face(n)).unwrap();
+        assert_eq!(name.to_string(), format!("m0000001.mirror.Face{n}"));
+        assert!(step.is_unstable(&name), "Face{n}");
+        assert_eq!(step.names(face(n)).len(), 1, "Face{n}");
+    }
+    // None is a tool's number, as each copy of a face would share: Face1 to Face6 name the
+    // base's faces only, as the base's deep names, never a copy's.
+    for n in 1..=6 {
+        let tool = parse(&format!("m0000001.mirror.Face{n}")).unwrap();
+        assert_eq!(step.element(&tool), None, "Face{n}");
     }
 }
 

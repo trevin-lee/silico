@@ -51,6 +51,10 @@ harness = false
 name = "warm"
 harness = false
 
+[[bench]]
+name = "patterns"
+harness = false
+
 [dev-dependencies]
 command-fds.workspace = true
 cpu-time.workspace = true
