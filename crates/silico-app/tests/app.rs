@@ -55013,17 +55013,14 @@ fn a_face_of_meshes_not_of_the_published_model_is_never_picked_and_hides_the_pla
     step_until(&mut h, "XY off the box", |h| {
         pick_under(h) == Some(Under::Plane(OriginPlane::Xy))
     });
-    // Clicked on XY off the box (below it here, y = −3, inside XY's square from −4), on
-    // meshes that aren't the published model's (their boxes made), it makes nothing and says
-    // so, as before the boxes are made.
-    let below = above_at(&h, 20.0, -3.0, [0.0, 0.0]);
-    h.hover_at(below);
-    step_until(&mut h, "XY below the box", |h| {
-        pick_under(h) == Some(Under::Plane(OriginPlane::Xy))
-    });
-    pick_at(&mut h, below);
+    // Clicked on the top, a face of meshes that aren't the published model's (their boxes
+    // made), it makes nothing and says so, as before the boxes are made. (A click on XY off
+    // the box is taken meanwhile: #565's round 5,
+    // `an_origin_plane_clicked_is_taken_while_the_published_models_meshes_are_read_or_refused`.)
+    pick_at(&mut h, top);
     toasted(&mut h, silico_app::plane_pick::PICK_NOT_READY);
     assert!(sketch_mode(&h).is_none());
+    assert!(picking(&h));
     hold.release();
     meshes_settled(&mut h);
     boxes_made(&mut h);
@@ -55184,6 +55181,81 @@ fn a_click_let_go_in_the_frame_a_new_table_is_taken_makes_nothing_and_says_so() 
     let (_, features) = sketch_added(&f, &mut h);
     assert_eq!(features[1], Some(empty_sketch("Sketch1", r#""xy""#)));
     assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_origin_plane_clicked_is_taken_while_the_published_models_meshes_are_read_or_refused() {
+    // #565's round 5 (round 4's regression): an origin plane the pointer's ray meets first is
+    // what the person sees, whatever meshes the view draws, so a click on it starts its
+    // sketch while the published model's meshes are still being read (held), and while
+    // their read is refused (the kernel failing to mesh, `kernel_failed`), the view drawing
+    // the model before's all the while. A face of those meshes still makes nothing and says
+    // so: its number may be another element in the published model.
+    use silico_app::plane_pick::{PICK_NOT_READY, Under};
+    use silico_core::document::{FeatureId, OriginPlane};
+    for refused in [false, true] {
+        let f = fixture();
+        let failing = Arc::new(AtomicBool::new(false));
+        let fails = Arc::clone(&failing);
+        f.kernel.refuse(move |op| {
+            (matches!(op, Op::Tessellate { .. }) && fails.load(Ordering::SeqCst))
+                .then(|| Error::new(ErrorCode::KernelFailed, "the mesh came apart"))
+        });
+        let (mut h, _record) = box_from_above(&f);
+        begin_pick(&mut h);
+        let hold = (!refused).then(|| f.kernel.hold(|op| matches!(op, Op::Tessellate { .. })));
+        failing.store(refused, Ordering::SeqCst);
+        let session = h.state().tabs()[0].id;
+        let revision = f.sessions.status(&session).session.unwrap().revision;
+        let models = h.state().tabs()[0].published_models;
+        f.sessions
+            .set_field(
+                &session,
+                revision,
+                FeatureId::new("k7f2qx3m").unwrap(),
+                "length".to_owned(),
+                json::read(b"41").unwrap(),
+            )
+            .wait()
+            .result
+            .unwrap();
+        step_until(&mut h, "the new model", |h| {
+            h.state().tabs()[0].published_models != models
+        });
+        if refused {
+            step_until(&mut h, "the meshes' read refused", |h| {
+                h.state().tabs()[0].message.as_deref().is_some_and(|said| {
+                    said.starts_with("The view's meshes couldn't be read")
+                        && said.contains("the mesh came apart")
+                })
+            });
+        }
+        assert!(!meshes_current(&h), "refused: {refused}");
+        let top = the_boxs_top(&h);
+        pick_at(&mut h, top);
+        toasted(&mut h, PICK_NOT_READY);
+        assert!(sketch_mode(&h).is_none(), "refused: {refused}");
+        assert!(picking(&h), "refused: {refused}");
+        // XY below the box (y = −3, inside XY's square from −4), where no face is.
+        let below = above_at(&h, 20.0, -3.0, [0.0, 0.0]);
+        h.hover_at(below);
+        step_until(&mut h, "XY below the box", |h| {
+            pick_under(h) == Some(Under::Plane(OriginPlane::Xy))
+        });
+        pick_at(&mut h, below);
+        assert!(!picking(&h), "XY not taken (refused: {refused})");
+        assert!(!meshes_current(&h), "refused: {refused}");
+        if let Some(hold) = hold {
+            hold.release();
+        }
+        let (_, features) = sketch_added(&f, &mut h);
+        assert_eq!(
+            features[1],
+            Some(empty_sketch("Sketch1", r#""xy""#)),
+            "refused: {refused}"
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
 }
 
 #[test]
