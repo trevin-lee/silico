@@ -816,8 +816,18 @@ fn two_originals_along_a_named_edge_each_resolve_it_in_their_own_step() {
         ),
     ];
     let model = built(&features);
-    let want = 30_000.0 - 2.0 * PI * 2.75 * 2.75 * 5.0 - 2.0 * PI * 1.5 * 1.5 * 4.0;
-    assert_close("volume", summary(&model, "t0000001").volume, want, 1e-9);
+    let (hole, pocket_) = (PI * 2.75 * 2.75 * 5.0, PI * 1.5 * 1.5 * 4.0);
+    let want = 30_000.0 - 2.0 * hole - 2.0 * pocket_;
+    let s = summary(&model, "t0000001");
+    assert_close("volume", s.volume, want, 1e-9);
+    // Both copies +20 along x, so the centre's x is −20 · (hole + pocket) / V by hand; one
+    // copy the other way would put it at −20 · (hole − pocket) / V.
+    let x = -20.0 * (hole + pocket_) / want;
+    assert!(
+        (s.center[0] - x).abs() < 1e-9,
+        "{} against {x}",
+        s.center[0]
+    );
     let verdicts = model.pattern_verdicts(&id("t0000001")).unwrap();
     assert_eq!(verdicts.len(), 2);
 }

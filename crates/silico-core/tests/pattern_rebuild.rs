@@ -926,4 +926,12 @@ fn a_broken_mirror_plane_and_two_broken_directions_are_each_refused_for_their_ki
             .unwrap()
             .starts_with("name the face ")
     );
+    // Each offered candidates of its own kind, though both are broken in one feature.
+    for (error, kind) in errors.iter().zip([".Edge(", ".Face("]) {
+        assert!(!error.candidates().is_empty(), "{errors:?}");
+        assert!(
+            error.candidates().iter().all(|c| c.contains(kind)),
+            "{errors:?}"
+        );
+    }
 }
