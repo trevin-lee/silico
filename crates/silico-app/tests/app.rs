@@ -45890,6 +45890,17 @@ fn over_an_unstable_planar_face_sketch_on_this_face_is_off_with_the_stores_refus
         .cloned()
         .expect("Sketch on this face, over a plane");
     // A fuse of two boxes is built from no sketch, though it has inputs: no Edit Sketch.
+    // The timeline was read as the menu opened (its Edit names the fuse), so whether the
+    // fuse is built from a sketch was worked out.
+    assert!(
+        select_other(&h)
+            .context()
+            .unwrap()
+            .items
+            .iter()
+            .any(|shown| shown.label == "Edit Fused"),
+        "the timeline read as the menu opened"
+    );
     assert!(
         select_other(&h)
             .context()
