@@ -20308,11 +20308,16 @@ fn plate_raised(h: &mut AppHarness, f: &Fixture) {
 }
 
 /// LADDER opened, its pocket refused, and its plate raised with the pad's fuse held: the
-/// rebuild runs the pad's step, and holds it.
-fn ladder_rebuilding(f: &Fixture, h: &mut AppHarness) -> Hold {
+/// rebuild runs the pad's step, and holds it. With the hold, the timeline the tab read
+/// before the plate was raised.
+fn ladder_rebuilding(
+    f: &Fixture,
+    h: &mut AppHarness,
+) -> (Hold, silico_core::command::TimelineAnswer) {
     step_until(h, "the pocket's failure", |h| {
         item_state(h, "Cut").as_deref() == Some("Pocket · Error")
     });
+    let listed = h.state().tabs()[0].timeline.clone().unwrap();
     let hold = f.kernel.hold(|op| {
         matches!(
             op,
@@ -20326,7 +20331,7 @@ fn ladder_rebuilding(f: &Fixture, h: &mut AppHarness) -> Hold {
     step_until(h, "the pad's step running", |h| {
         item_state(h, "Raised").as_deref() == Some("Pad · Rebuilding")
     });
-    hold
+    (hold, listed)
 }
 
 #[test]
@@ -20334,16 +20339,34 @@ fn the_timeline_lists_each_feature_in_order_and_shows_the_rebuild_running_along_
     let f = fixture();
     refuses_the_cut(&f);
     let (mut h, _) = f.opened("ladder.silico", LADDER);
-    let hold = ladder_rebuilding(&f, &mut h);
+    let (hold, listed) = ladder_rebuilding(&f, &mut h);
     assert_eq!(items(&h), ["Plate", "Triangle", "Raised", "Cut"]);
-    // The pad's step runs: the plate and the triangle are its inputs, so built before it
-    // started; the pocket, built from the pad, waits. No mark while it runs.
-    assert_eq!(item_state(&h, "Plate").as_deref(), Some("Box · Built"));
-    assert_eq!(
-        item_state(&h, "Triangle").as_deref(),
-        Some("Sketch · Built")
-    );
-    assert_eq!(item_state(&h, "Cut").as_deref(), Some("Pocket · Queued"));
+    // The pad's step runs: `status` says the plate and the triangle built (the step held
+    // is the pad's fuse, which starts only once the plate is built); the pocket, built from
+    // the pad, waits. No mark while it runs.
+    let built_but_the_pocket = |h: &AppHarness| {
+        assert_eq!(item_state(h, "Plate").as_deref(), Some("Box · Built"));
+        assert_eq!(item_state(h, "Triangle").as_deref(), Some("Sketch · Built"));
+        assert_eq!(item_state(h, "Raised").as_deref(), Some("Pad · Rebuilding"));
+        assert_eq!(item_state(h, "Cut").as_deref(), Some("Pocket · Queued"));
+    };
+    built_but_the_pocket(&h);
+    // And in the frames between the edit's answer and its timeline's read, the tab still
+    // listing the revision before the plate was raised while `status` says the raised
+    // one's rebuild runs the pad (#562: the frame a loaded machine showed): each item as
+    // that status says it, the two reads never put together.
+    let rebuilding = h.state().tabs()[0]
+        .status
+        .as_ref()
+        .unwrap()
+        .rebuild
+        .revision;
+    assert_ne!(listed.revision, rebuilding);
+    let read = h.state_mut().tabs_mut()[0].timeline.replace(listed);
+    step(&mut h);
+    built_but_the_pocket(&h);
+    h.state_mut().tabs_mut()[0].timeline = read;
+    step(&mut h);
     assert!(timeline(&h).query_by_label("error").is_none());
     // A frame at once, for the spinner, while a step runs.
     step(&mut h);
@@ -20681,7 +20704,7 @@ fn the_timeline_draws_a_selected_item_blue_and_a_failed_one_red_on_lavapipe() {
             assert!(found, "no {red:x?} in the icon at {icon:?}");
             // A rebuild running: the pad's step spins, a ring in Gray.1000 (`.building`'s
             // `border-top-color: var(--g1000)`), which its icon (Gray.750) never is.
-            let hold = ladder_rebuilding(&f, &mut h);
+            let (hold, _) = ladder_rebuilding(&f, &mut h);
             for _ in 0..5 {
                 step(&mut h);
             }
@@ -20748,7 +20771,9 @@ fn after_a_move_nothing_is_shown_built_that_the_rebuild_running_may_not_have_bui
     assert_eq!(item_state(&h, "Raised").as_deref(), Some("Pad · Queued"));
     // The frames between the move's answer and its timeline's read: the tab still lists the
     // revision before the move, where the pocket's inputs were the pad and the triangle.
-    // The rebuild is another revision's, so nothing is shown built, the pad least of all.
+    // Each item is as the status of the move's rebuild says it, never inferred from the
+    // inputs listed (issue #562): the plate and the triangle built, the pad, after the
+    // pocket now, not built.
     let rebuilding = h.state().tabs()[0]
         .status
         .as_ref()
@@ -20763,10 +20788,12 @@ fn after_a_move_nothing_is_shown_built_that_the_rebuild_running_may_not_have_bui
         item_state(&h, "Cut").as_deref(),
         Some("Pocket · Rebuilding")
     );
-    for name in ["Plate", "Triangle", "Raised"] {
-        let state = item_state(&h, name).unwrap();
-        assert!(state.ends_with("Queued"), "{name}: {state}");
-    }
+    assert_eq!(item_state(&h, "Plate").as_deref(), Some("Box · Built"));
+    assert_eq!(
+        item_state(&h, "Triangle").as_deref(),
+        Some("Sketch · Built")
+    );
+    assert_eq!(item_state(&h, "Raised").as_deref(), Some("Pad · Queued"));
     hold.release();
     assert_eq!(never_waits::waits(), 0);
 }
