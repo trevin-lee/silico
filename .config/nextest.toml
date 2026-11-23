@@ -11,6 +11,17 @@ slow-timeout = { period = "30s", terminate-after = 4 }
 filter = 'package(silico-app) & test(=the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_reads_back)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
+# silico-app's tests that draw every frame on lavapipe (the named two, and every test whose
+# name says `lavapipe`; a new one is named so): 3 to 24 s unloaded, but lavapipe draws on
+# the CPU, and a loaded runner stretches them past 2 minutes with nothing hung (#563 measured
+# the hover test at about 60 s under 80 busy loops on its two CPUs). Each has five minutes:
+# every wait in them is a minute at most (`RENDER_WAIT`, `FAKE_WAIT`, tests/common/ui.rs),
+# there only for a hang, so a hang is said by the test, naming the wait, not killed by
+# nextest with nothing said. After the slice's override, which its name matches first.
+[[profile.default.overrides]]
+filter = 'package(silico-app) & test(/lavapipe|^the_port_draws_byte_for_byte_as_egui_kittests_renderer$|^the_reload_banner_lists_two_changes_over_the_viewport_with_their_marks$/)'
+slow-timeout = { period = "60s", terminate-after = 5 }
+
 # The stress and oracle suites legitimately run for minutes.
 [[profile.default.overrides]]
 filter = 'test(/stress|oracle/)'
