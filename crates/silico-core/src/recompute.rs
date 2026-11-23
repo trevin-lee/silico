@@ -4352,7 +4352,7 @@ fn kept_if_hung(error: Error) -> Error {
             why: COPIES_HUNG.to_owned(),
         })
         .reworded(
-            "check with fresh (silico check --fresh) to make the copies again; if they hang again, lower a count",
+            "check with fresh (silico check --fresh) to ask the kernel again; if the copies hang again, lower a count",
         )
 }
 
@@ -5553,12 +5553,12 @@ impl<K: Kernel + 'static> Engine<K> {
         let makers = |f: &FeatureId| plan.maker(f);
         // Each name it stores, with its field's path and the kind its own word says (the
         // gate has checked the word is one the field takes), found in its base's map.
-        let wanted: Vec<(String, &ElementName, ElementKind)> = operation
+        let wanted: Vec<(crate::document::NameField, &ElementName, ElementKind)> = operation
             .stored_names()
             .map(|(field, name)| {
                 let kind = crate::naming::Name::parse(name.as_str(), &makers)
                     .map_or(ElementKind::Edge, |parsed| parsed.kind());
-                (field.to_string(), name, kind)
+                (field, name, kind)
             })
             .collect();
         let mut found: Vec<(&ElementName, crate::kernel::ElementRef)> = Vec::new();

@@ -783,3 +783,41 @@ fn a_quarter_turn_about_a_cubes_edge_turns_right_handed_about_it_from_its_start_
         assert_close("high x", high[0], 20.0, 1e-12);
     }
 }
+
+#[test]
+fn two_originals_along_a_named_edge_each_resolve_it_in_their_own_step() {
+    // Section 2.4: each of a pattern's steps resolves its references itself. Two originals,
+    // a hole r 2.75 through the plate and a pocket r 1.5 4 deep, copied 20 along the plate's
+    // front bottom edge (x, from its start at (−50, −30) to its end at (50, −30)): the second
+    // step resolves the edge too, and both copies are cut, by hand.
+    let features = vec![
+        rectangle("s0000001", "xy", [-50.0, -30.0], 100.0, 60.0),
+        pad("p0000001", None, "s0000001", &up("5")),
+        circles("s0000003", "xy", &[([0.0, -20.0], 2.75)]),
+        pocket("z0000001", "p0000001", "s0000003", THROUGH),
+        circles("s0000004", "xy", &[([0.0, 0.0], 1.5)]),
+        pocket(
+            "a0000002",
+            "z0000001",
+            "s0000004",
+            r#"{"type": "one_side", "length": 4, "reversed": true}"#,
+        ),
+        linear_as(
+            "t0000001",
+            "a0000002",
+            r#"{"type": "features", "features": ["z0000001", "a0000002"]}"#,
+            &[direction(
+                "p0000001.pad.Edge(M s0000001.sketch.Edge.na000001)",
+                "spacing",
+                "20",
+                2,
+            )],
+            "[]",
+        ),
+    ];
+    let model = built(&features);
+    let want = 30_000.0 - 2.0 * PI * 2.75 * 2.75 * 5.0 - 2.0 * PI * 1.5 * 1.5 * 4.0;
+    assert_close("volume", summary(&model, "t0000001").volume, want, 1e-9);
+    let verdicts = model.pattern_verdicts(&id("t0000001")).unwrap();
+    assert_eq!(verdicts.len(), 2);
+}

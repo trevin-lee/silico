@@ -828,7 +828,6 @@ fn not_angled(found: &Found<'_>) -> Error {
     .with_suggestion(suggestion)
 }
 
-/// `word` with its article: `a circle`, `an ellipse`.
 fn norm(a: [f64; 3]) -> f64 {
     dot(a, a).sqrt()
 }

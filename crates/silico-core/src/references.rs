@@ -8,7 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::document::{ElementName, FeatureId, PROBLEMS_LISTED};
+use crate::document::{ElementName, FeatureId, NameField, PROBLEMS_LISTED};
 use crate::kernel::{ElementKind, ElementRef};
 use crate::naming::{ElementMap, Maker, Name};
 use crate::{Error, ErrorCode, Nearest, Rank};
@@ -153,10 +153,10 @@ pub(crate) fn resolve(
     map: &ElementMap,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Result<(Vec<u32>, EdgeNames), Broken> {
-    let wanted: Vec<(String, &ElementName, ElementKind)> = edges
+    let wanted: Vec<(NameField, &ElementName, ElementKind)> = edges
         .iter()
         .enumerate()
-        .map(|(i, edge)| (format!("edges.{i}"), edge, ElementKind::Edge))
+        .map(|(i, edge)| (NameField::Edge(i), edge, ElementKind::Edge))
         .collect();
     let elements = find(feature, &wanted, map, makers)?;
     let mut found = Vec::with_capacity(edges.len());
@@ -171,16 +171,17 @@ pub(crate) fn resolve(
     Ok((found, names))
 }
 
-/// The element each of `wanted` (feature `feature`'s stored names, each with its field's
-/// path and the kind it must name) finds in `map`, in order; or the broken ones' errors, the
-/// first [`PROBLEMS_LISTED`], each `reference_broken` at its field with its candidates, and
-/// how many are broken, listed or not (as the gate lists its problems and counts them). The
-/// one step every stored name a feature's step reads takes (a fillet's or chamfer's edges, a
-/// pattern's direction, axis, or plane), so they refuse alike, in one set of words. `makers`
-/// says how each feature makes its elements, to read the names.
+/// The element each of `wanted` (feature `feature`'s stored names, each with its field and
+/// the kind it must name) finds in `map`, in order; or the broken ones' errors, the first
+/// [`PROBLEMS_LISTED`], each `reference_broken` at its field's path with its candidates, and
+/// how many are broken, listed or not (as the gate lists its problems and counts them). What
+/// a fillet's or chamfer's edges and a pattern's direction, axis, or plane are found by, in
+/// their base feature's one map, so they refuse alike, in one set of words (a face sketch's
+/// face is found among the solids live at its place, `face_plane`, by `look_up` too).
+/// `makers` says how each feature makes its elements, to read the names.
 pub(crate) fn find(
     feature: &FeatureId,
-    wanted: &[(String, &ElementName, ElementKind)],
+    wanted: &[(NameField, &ElementName, ElementKind)],
     map: &ElementMap,
     makers: &dyn Fn(&FeatureId) -> Option<Maker>,
 ) -> Result<Vec<ElementRef>, Broken> {
@@ -220,7 +221,7 @@ pub(crate) fn find(
             None => Vec::new(),
         };
         broken.push(
-            refused(field, text.as_str(), &why, *kind)
+            refused(&field.to_string(), text.as_str(), &why, *kind)
                 .with_ranked(candidates)
                 .with_feature(feature.as_str()),
         );

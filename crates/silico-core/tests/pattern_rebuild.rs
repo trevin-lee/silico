@@ -857,3 +857,73 @@ fn a_references_description_that_hangs_is_kept_for_the_session_too() {
     engine_fresh(&kernel_engine, &features);
     assert_eq!(describes(&kernel_engine), 2);
 }
+
+#[test]
+fn a_broken_mirror_plane_and_two_broken_directions_are_each_refused_for_their_kinds() {
+    // `references::find` refuses each broken name at its field, with candidates of its kind
+    // and the suggestion to name that kind: a mirror's plane, a face; and both of a linear
+    // pattern's directions at once, each at its own path.
+    let plane = "p0000001.pad.Face(M1/2 s0000001.sketch.Face1)";
+    let model = published(
+        &engine(),
+        &with(
+            plate(),
+            &[format!(
+                r#"{{"id": "m0000001", "type": "mirror", "v": 1, "name": "Mirror", "base": "q0000002", "copies": {HOLE}, "plane": "{plane}"}}"#
+            )],
+        ),
+    );
+    let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("m0000001")) else {
+        panic!("{:?}", model.outcome(&id("m0000001")));
+    };
+    assert_eq!(errors[0].parameter(), Some("plane"));
+    assert!(
+        errors[0]
+            .suggestion()
+            .unwrap()
+            .starts_with("name the face "),
+        "{errors:?}"
+    );
+    assert!(!errors[0].candidates().is_empty(), "{errors:?}");
+    assert!(
+        errors[0].candidates().iter().all(|c| c.contains(".Face(")),
+        "{errors:?}"
+    );
+    let edge = "p0000001.pad.Edge(M1/2 s0000001.sketch.Edge.na000001)";
+    let model = published(
+        &engine(),
+        &with(
+            plate(),
+            &[linear(
+                "q0000002",
+                HOLE,
+                &[
+                    direction(edge, "spacing", "10", 2),
+                    direction(plane, "spacing", "10", 2),
+                ],
+                "[]",
+            )],
+        ),
+    );
+    let Some(FeatureOutcome::Broken { errors, total }) = model.outcome(&id("t0000001")) else {
+        panic!("{:?}", model.outcome(&id("t0000001")));
+    };
+    assert_eq!(*total, 2);
+    let fields: Vec<Option<&str>> = errors.iter().map(silico_core::Error::parameter).collect();
+    assert_eq!(
+        fields,
+        [Some("directions.0.along"), Some("directions.1.along")]
+    );
+    assert!(
+        errors[0]
+            .suggestion()
+            .unwrap()
+            .starts_with("name the edge ")
+    );
+    assert!(
+        errors[1]
+            .suggestion()
+            .unwrap()
+            .starts_with("name the face ")
+    );
+}
