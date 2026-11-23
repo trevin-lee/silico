@@ -55259,6 +55259,85 @@ fn an_origin_plane_clicked_is_taken_while_the_published_models_meshes_are_read_o
 }
 
 #[test]
+fn an_origin_plane_in_front_of_a_face_of_older_meshes_is_lit_and_taken() {
+    // #565's round 5's review: an origin plane the ray meets before a face of the meshes the
+    // view draws is what the person sees, even while those meshes aren't the published
+    // model's (its meshes held, or their read refused, `kernel_failed`). The box meshed with
+    // its foot at z = 5, seen from below through (30, 10): XY, at z = 0, is met 5 mm before the
+    // foot. It's lit, and a click starts its sketch.
+    use silico_app::plane_pick::Under;
+    use silico_core::document::{FeatureId, OriginPlane};
+    for refused in [false, true] {
+        let f = fixture();
+        let failing = Arc::new(AtomicBool::new(false));
+        let fails = Arc::clone(&failing);
+        f.kernel.refuse(move |op| {
+            (matches!(op, Op::Tessellate { .. }) && fails.load(Ordering::SeqCst))
+                .then(|| Error::new(ErrorCode::KernelFailed, "the mesh came apart"))
+        });
+        meshes_a_box_from(&f, [0.0, 0.0, 5.0]);
+        let (mut h, _record) = drawn_from_above(&f, "box.silico", A_BOX, None, 1.0);
+        boxes_made(&mut h);
+        begin_pick(&mut h);
+        view_mut(&mut h).set_camera(silico_protocol::Camera {
+            projection: silico_protocol::Projection::Orthographic { view_height: 60.0 },
+            eye: [30.0, 10.0, -100.0],
+            target: [30.0, 10.0, 0.0],
+            up: [0.0, 1.0, 0.0],
+        });
+        meshes_settled(&mut h);
+        boxes_made(&mut h);
+        let hold = (!refused).then(|| f.kernel.hold(|op| matches!(op, Op::Tessellate { .. })));
+        failing.store(refused, Ordering::SeqCst);
+        let session = h.state().tabs()[0].id;
+        let revision = f.sessions.status(&session).session.unwrap().revision;
+        let models = h.state().tabs()[0].published_models;
+        f.sessions
+            .set_field(
+                &session,
+                revision,
+                FeatureId::new("k7f2qx3m").unwrap(),
+                "length".to_owned(),
+                json::read(b"41").unwrap(),
+            )
+            .wait()
+            .result
+            .unwrap();
+        step_until(&mut h, "the new model", |h| {
+            h.state().tabs()[0].published_models != models
+        });
+        if refused {
+            step_until(&mut h, "the meshes' read refused", |h| {
+                h.state().tabs()[0]
+                    .message
+                    .as_deref()
+                    .is_some_and(|said| said.contains("the mesh came apart"))
+            });
+        }
+        assert!(!meshes_current(&h), "refused: {refused}");
+        assert!(!view(&h).bodies().is_empty(), "refused: {refused}");
+        let centre = image_centre(&h);
+        h.hover_at(centre);
+        step_until(&mut h, "XY in front of the old foot", |h| {
+            pick_under(h) == Some(Under::Plane(OriginPlane::Xy))
+        });
+        pick_at(&mut h, centre);
+        assert!(!picking(&h), "XY not taken (refused: {refused})");
+        assert!(!meshes_current(&h), "refused: {refused}");
+        if let Some(hold) = hold {
+            hold.release();
+        }
+        let (_, features) = sketch_added(&f, &mut h);
+        assert_eq!(
+            features[1],
+            Some(empty_sketch("Sketch1", r#""xy""#)),
+            "refused: {refused}"
+        );
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
 fn a_face_that_isnt_flat_is_refused_in_the_pick_and_the_pick_goes_on() {
     // The prototype lights and takes only a face whose `kind` is 'plane'. The box's top
     // described as a cylinder's side (as the context menu's test describes it): under the
