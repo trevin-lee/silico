@@ -41873,6 +41873,180 @@ fn a_pockets_edit_sketch_opens_its_own_sketch_and_a_box_or_a_sketch_on_a_face_ha
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- Hostile input for Edit Sketch from a feature built on the sketch (break-it) ----
+
+/// BOXED_PADDED's Box with a second `horizontal` on its vertical side, na000002, which
+/// already has `vertical`: the sketch conflicts, so the pad built from it is blocked.
+fn boxed_padded_conflicting() -> String {
+    let text = BOXED_PADDED.replace(
+        r#"{"id": "ka000004", "type": "vertical", "line": "na000004"}"#,
+        r#"{"id": "ka000004", "type": "vertical", "line": "na000004"}, {"id": "ka000005", "type": "horizontal", "line": "na000002"}"#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    text
+}
+
+#[test]
+fn edit_sketch_from_a_pad_blocked_by_its_sketchs_conflict_opens_that_sketch_to_mend_it() {
+    // The pad can't build while Box conflicts, which is what Edit Sketch is for: on, as
+    // SolidWorks' is on a feature in error, and it opens Box, read with its conflict.
+    let f = fixture();
+    let (mut h, _) = f.opened("conflicting.silico", &boxed_padded_conflicting());
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pad"));
+    step_until(&mut h, "the pad unbuilt", |h| {
+        h.state().tabs()[0]
+            .entry("p0000001")
+            .is_some_and(|entry| entry.health != silico_core::timeline::Health::Healthy)
+    });
+    settled(&mut h);
+    menu_on(&mut h, "Timeline", "Pad");
+    let items = menu_items(&h, "PAD");
+    assert_eq!(
+        items[1],
+        ("Edit Sketch".to_owned(), None, None),
+        "{items:?}"
+    );
+    menu_click(&mut h, "PAD", "Edit Sketch");
+    step_until(&mut h, "sketch mode on Box", |h| {
+        sketch_mode(h)
+            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
+    });
+    sketch_read(&mut h);
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_from_a_suppressed_pad_opens_its_sketch_which_suppressing_the_pad_left_alone() {
+    // Suppressing a feature suppresses what's built on it, never what it's built from: Box
+    // stays unsuppressed, so the suppressed pad's Edit Sketch is on and opens it.
+    let text = BOXED_PADDED.replace(
+        r#""name": "Pad", "sketch""#,
+        r#""name": "Pad", "suppressed": true, "sketch""#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    let f = fixture();
+    let (mut h, _) = f.opened("suppressed.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pad"));
+    settled(&mut h);
+    menu_on(&mut h, "Timeline", "Pad");
+    let items = menu_items(&h, "PAD");
+    assert_eq!(
+        items[1],
+        ("Edit Sketch".to_owned(), None, None),
+        "{items:?}"
+    );
+    assert_eq!(items[3].0, "Unsuppress", "{items:?}");
+    menu_click(&mut h, "PAD", "Edit Sketch");
+    step_until(&mut h, "sketch mode on Box", |h| {
+        sketch_mode(h)
+            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
+    });
+    sketch_read(&mut h);
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_from_a_pad_in_a_document_the_gate_refuses_is_off_saying_why() {
+    // A cut after the pad whose tool names no feature: the gate refuses the document, so no
+    // feature changes until it's mended, the sketch the pad is built from among them. Its
+    // Edit Sketch is off with the feature menus' reason, as its Edit feature is, and asked
+    // anyway (as a stale menu's click would ask it) opens nothing.
+    let text = BOXED_PADDED.replace(
+        r#""reversed": false}}
+  ]"#,
+        r#""reversed": false}},
+    {"id": "c0000001", "type": "cut", "v": 1, "name": "Cut", "base": "p0000001", "tool": "zzzzzzzz"}
+  ]"#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    let f = fixture();
+    let (mut h, _) = f.opened("refused.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pad"));
+    step_until(&mut h, "the gate's problems", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0)
+    });
+    let why = "The document has problems of its own: no feature changes until they're mended";
+    menu_on(&mut h, "Timeline", "Pad");
+    let items = menu_items(&h, "PAD");
+    assert_eq!(
+        items[..2],
+        [
+            (
+                "Edit feature double-click".to_owned(),
+                None,
+                Some(why.to_owned())
+            ),
+            ("Edit Sketch".to_owned(), None, Some(why.to_owned())),
+        ]
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    let pad = silico_core::document::FeatureId::new("p0000001").unwrap();
+    let sessions = Arc::clone(&f.sessions);
+    silico_app::feature_menu::act(
+        &mut h.state_mut().tabs_mut()[0],
+        &sessions,
+        silico_app::feature_menu::Act::EditSketch(pad),
+    );
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_asked_of_a_sketch_an_unknown_id_or_twice_at_once_opens_one_sketch_mode_or_none() {
+    // A sketch is built from no sketch, an ID the timeline doesn't list has none: Edit
+    // Sketch of either asks nothing. Of the pad twice in one frame (two clicks a frame
+    // apart could land so): the second finds sketch mode already opening, so one opens, on
+    // Box.
+    use silico_app::feature_menu::{Act, act};
+    let f = fixture();
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pad"));
+    settled(&mut h);
+    let sessions = Arc::clone(&f.sessions);
+    let id = |id: &str| silico_core::document::FeatureId::new(id).unwrap();
+    for asked in [id("s0000001"), id("zzzzzzzz")] {
+        let started = act(
+            &mut h.state_mut().tabs_mut()[0],
+            &sessions,
+            Act::EditSketch(asked.clone()),
+        );
+        assert!(!started, "{asked}");
+        for _ in 0..4 {
+            step(&mut h);
+        }
+        assert!(sketch_mode(&h).is_none(), "{asked}");
+    }
+    for _ in 0..2 {
+        act(
+            &mut h.state_mut().tabs_mut()[0],
+            &sessions,
+            Act::EditSketch(id("p0000001")),
+        );
+    }
+    step_until(&mut h, "sketch mode on Box", |h| {
+        sketch_mode(h)
+            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
+    });
+    sketch_read(&mut h);
+    let serial = sketch_mode(&h).unwrap().serial;
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(sketch_mode(&h).unwrap().serial, serial);
+    leave_sketch(&mut h, false);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// EXAMPLE with its pin suppressed, and the hole that cuts with it: `"suppressed": true`
 /// right after each one's name (docs/design/m5.0-app.md, `suppress_feature`), written by
 /// hand.
