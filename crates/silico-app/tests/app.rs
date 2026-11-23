@@ -19950,8 +19950,9 @@ fn the_timeline_lists_each_feature_in_order_and_shows_the_rebuild_running_along_
     let (mut h, _) = f.opened("ladder.silico", LADDER);
     let (hold, listed) = ladder_rebuilding(&f, &mut h);
     assert_eq!(items(&h), ["Plate", "Triangle", "Raised", "Cut"]);
-    // The pad's step runs: the plate and the triangle are its inputs, so built before it
-    // started; the pocket, built from the pad, waits. No mark while it runs.
+    // The pad's step runs: `status` says the plate and the triangle built (the step held
+    // is the pad's fuse, which starts only once the plate is built); the pocket, built from
+    // the pad, waits. No mark while it runs.
     let built_but_the_pocket = |h: &AppHarness| {
         assert_eq!(item_state(h, "Plate").as_deref(), Some("Box · Built"));
         assert_eq!(item_state(h, "Triangle").as_deref(), Some("Sketch · Built"));

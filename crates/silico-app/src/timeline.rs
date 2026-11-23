@@ -101,19 +101,22 @@ pub fn kind_words(kind: &str) -> &str {
 
 /// What each of `entries`, the document's features at revision `listed` (the timeline's
 /// `revision`), shows of `rebuild`, the session's, as `status` gives it. Nothing is shown
-/// built unless it certainly is.
+/// built unless `status` says it is (a check still to come may fail it yet, and the item
+/// turns to its health when the rebuild ends).
 ///
 /// While it runs, each item's step is its feature's state in `status` alone
-/// (`Progress::features`, by the feature's ID): running if a step of it runs (every one
-/// running spins, the parallel branches' too), built once its solid is made (or kept from
-/// before), and queued otherwise, till the rebuild ends and its health shows. One snapshot
-/// says them all, so no item's step is put together from two reads: the timeline's
-/// listing can be another revision's than the rebuild's (a move or an edit answered, its
-/// timeline not read yet, or the other way), and an input it lists may not be one the
-/// rebuild has, nor a feature running have its inputs built (a pad's prism runs beside its
-/// base's step). A feature `status` doesn't list (one the rebuild's revision hasn't, or
-/// suppressed there) is queued. SEAM: a failure (failed, blocked, faulted) shows queued
-/// until the rebuild ends, as before `status` said them.
+/// (`Progress::features`, joined to the listing by the feature's ID): running if a step of
+/// it runs (every one running spins, the parallel branches' too), built once its solid is
+/// made (or kept from before), and queued otherwise, till the rebuild ends and its health
+/// shows. One snapshot says every item's step, so none is inferred from another's: the
+/// timeline's listing can be another revision's than the rebuild's (a move or an edit
+/// answered, its timeline not read yet, or the other way), and an input it lists may not
+/// be one the rebuild has, nor a feature running have its inputs built (a pad's prism runs
+/// beside its base's step). Across revisions an ID removed and given to a new feature shows
+/// the new one's state until the timeline is read. A feature `status` doesn't list (one the
+/// rebuild's revision hasn't, or suppressed there) is queued. SEAM: a feature `status` says
+/// failed, blocked, or faulted shows queued until the rebuild ends; the timeline could mark
+/// it at once.
 ///
 /// A suppressed feature is never rebuilt: it stays suppressed throughout, if `entries` are
 /// the revision rebuilt.
@@ -871,20 +874,16 @@ mod tests {
         }
     }
 
-    /// A rebuild of the listed revision in `state`, `status` saying each of `states`: its
-    /// running label the first feature running, as the core words it.
+    /// A rebuild of the listed revision in `state`, `status` saying each of `states`, with
+    /// no running label (`step_of_each` reads only the states; `label_alone` sets one).
     fn rebuild(state: RebuildState, states: &[(&str, StepState)]) -> Rebuild {
-        let running = states
-            .iter()
-            .find(|(_, state)| *state == StepState::Running)
-            .map(|(id, _)| format!("{id} step"));
         Rebuild {
             revision: Revision::OPENED,
             state,
             progress: Some(Progress {
                 done: 0,
                 steps: 0,
-                running,
+                running: None,
                 features: states
                     .iter()
                     .map(|(id, state)| (FeatureId::new(id).unwrap(), *state))
@@ -1041,8 +1040,8 @@ mod tests {
             revision: LISTED.next().unwrap(),
             ..rebuild(RebuildState::Running, &states)
         };
-        // The fillet too follows `status`: revision 2 may have unsuppressed it, and its
-        // rebuild doesn't list it (suppressed there, or not built yet): queued.
+        // The fillet too follows `status`, which doesn't list it (suppressed in revision 2
+        // too, or removed there): queued.
         assert_eq!(
             steps(Some(&newer)),
             [Built, Built, Queued, Running, Queued, Queued]
@@ -1061,6 +1060,26 @@ mod tests {
         assert_eq!(
             steps(Some(&removed)),
             [Built, Built, Queued, Running, Queued, Queued]
+        );
+        // `status` in an order of its own (the cut before the pad, as after a move), with a
+        // feature the listing hasn't: each item is still its own feature's state, by ID.
+        let moved = Rebuild {
+            revision: LISTED.next().unwrap(),
+            ..rebuild(
+                RebuildState::Running,
+                &[
+                    ("n0000001", StepState::Running),
+                    ("m0000001", StepState::Built),
+                    ("c0000001", StepState::Running),
+                    ("p0000001", StepState::Queued),
+                    ("s0000001", StepState::Built),
+                    ("b0000001", StepState::Queued),
+                ],
+            )
+        };
+        assert_eq!(
+            steps(Some(&moved)),
+            [Queued, Built, Running, Queued, Built, Queued]
         );
         // Ended, each item is its health whichever revision it was.
         let done = Rebuild {
