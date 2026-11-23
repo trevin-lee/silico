@@ -134,6 +134,9 @@ pub struct Bar {
     /// What the tab's last suppression or deletion did (the prototype's toast): what went
     /// with the feature, or what was rewired in its place.
     pub told: Option<String>,
+    /// The features every split, trim, or join of the tab's last action listed, each once,
+    /// to be checked: a warning.
+    pub to_check: Option<String>,
     /// What the selection says (M5.7): what the pointer is over in the canvas, or how many
     /// elements are selected; and what the last change to it dropped, and why.
     pub selection: Vec<String>,
@@ -209,7 +212,8 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
         said,
         buttons: Some((tab.stoppable(), tab.can_rebuild())),
         messages: message.into_iter().chain(tab.message.clone()).collect(),
-        told: tab.told.clone(),
+        told: tab.edit_words.told.clone(),
+        to_check: tab.edit_words.to_check.clone(),
         selection: selection_words(tab.selection()),
         disk: status.and_then(|status| status.disk),
         saved: Some(saved),
@@ -231,6 +235,7 @@ pub fn unopened(warming: Option<Warming>, message: Option<String>) -> Bar {
         buttons: None,
         messages: message.into_iter().collect(),
         told: None,
+        to_check: None,
         selection: Vec::new(),
         disk: None,
         saved: None,
@@ -381,8 +386,10 @@ fn left_parts(ui: &mut Ui, bar: &Bar, asked: &mut Asked) {
     middle(ui, bar);
 }
 
-/// The middle: in sketch mode, the sketch's line; then the refusals said, and what the last
-/// suppression, deletion, or repair did.
+/// The middle: in sketch mode, the sketch's line; then the refusals said, what the last
+/// suppression, deletion, or repair did, and the features the last split, trim, or join
+/// listed, as a warning (`.st-item.warn-text`, the warning icon and its words orange, as the
+/// Changed on disk chip is).
 ///
 /// Outside sketch mode, the selection's words ([`selection_words`]) after them: a sketch's
 /// line says what's being edited in their place.
@@ -395,6 +402,9 @@ fn middle(ui: &mut Ui, bar: &Bar) {
     }
     if let Some(told) = &bar.told {
         item(ui, None, told, theme::STATUS_TEXT);
+    }
+    if let Some(to_check) = &bar.to_check {
+        item(ui, Some(Mark::Icon(Icon::Warn)), to_check, theme::WARNING);
     }
     if bar.sketch.is_none() {
         for words in &bar.selection {
@@ -1151,6 +1161,7 @@ mod tests {
             buttons: Some(buttons),
             messages: Vec::new(),
             told: None,
+            to_check: None,
             selection: Vec::new(),
             disk,
             saved: Some(saved),
@@ -1309,6 +1320,41 @@ mod tests {
             "2 selected",
             refusal + css::ITEM_PADDING + css::GAP + css::ITEM_PADDING,
             css::G550,
+        );
+    }
+
+    #[test]
+    fn the_features_a_sketch_edit_listed_are_said_after_what_was_told_as_a_warning() {
+        // `.st-item.warn-text` with the warning icon, as the Changed on disk chip is: the
+        // icon and the words orange, after what a deletion told in `.st-item`'s Gray.550.
+        let mut shown = bar_of(
+            Said::Rebuilt {
+                revision: 3,
+                errors: 0,
+                ms: None,
+            },
+            (false, false),
+            Saved::Unsaved(1),
+            None,
+        );
+        shown.told = Some("Deleted Pin".to_owned());
+        shown.to_check = Some("Near round uses the line you split: check it".to_owned());
+        let h = drawn(shown);
+        let rebuild = widget(&h, Role::Button, "Rebuild");
+        let left =
+            rebuild.right() + css::GAP + css::SEP_MARGIN + css::BORDER + css::SEP_MARGIN + css::GAP;
+        let told = said_at(&h, "Deleted Pin", left + css::ITEM_PADDING, css::G550);
+        let warn = centred(
+            told + css::ITEM_PADDING + css::GAP + css::ITEM_PADDING,
+            css::ICON,
+            css::ICON,
+        );
+        assert_eq!(icon_at(&h, warn), Some(css::ORANGE));
+        said_at(
+            &h,
+            "Near round uses the line you split: check it",
+            warn.right() + css::ITEM_GAP,
+            css::ORANGE,
         );
     }
 

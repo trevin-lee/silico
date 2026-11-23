@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use eframe::egui::{self, Key, Modifiers, Ui};
-use silico_core::command::{Opened, Response, Running, SessionId, Sessions};
+use silico_core::command::{Closed, Opened, Response, Running, SessionId, Sessions};
 use silico_core::disk::{DISK_CHECK_INTERVAL, Disk};
 use silico_core::kernel::Clients;
 
@@ -577,6 +577,9 @@ pub struct App<P: Clients + 'static> {
     /// Opens asked of documents whose sessions the thumbnails are still closing (their tabs
     /// gone), each path with `create`: sent once that close has answered.
     held_opens: Vec<(String, bool)>,
+    /// The closes of sessions whose opens answered while a quit closed the tabs (`take_open`),
+    /// never tabs: the window closes once they've answered too.
+    late_closes: Vec<Running<Closed>>,
     /// The side panes' widths, as dragged, and where they're kept, if anywhere.
     columns: crate::columns::Columns,
     /// The warm start's state, if the app warms its workers.
@@ -595,6 +598,9 @@ pub struct App<P: Clients + 'static> {
     /// when it was shown, by egui's clock: F5's word on where the filters are, a box's, an
     /// undo's, a save's, a stop's.
     toasts: Toasts,
+    /// egui's clock at the start of the frame being drawn: when a toast said by a call
+    /// given no context (an open refused while quitting, [`open`](Self::open)) is shown.
+    frame_time: f64,
 }
 
 /// A row of Show changes' "Their change (on disk)": the changed feature's name in the key
@@ -696,12 +702,14 @@ impl<P: Clients + 'static> App<P> {
             wall: Arc::new(system_time),
             thumbs: None,
             held_opens: Vec::new(),
+            late_closes: Vec::new(),
             columns: crate::columns::Columns::new(),
             warm: None,
             silico: "silico".to_owned(),
             documents: directories::UserDirs::new()
                 .and_then(|dirs| dirs.document_dir().map(std::path::Path::to_path_buf)),
             toasts: Toasts::default(),
+            frame_time: 0.0,
             boxing: None,
         }
     }
@@ -944,8 +952,17 @@ impl<P: Clients + 'static> App<P> {
     /// Opens the document at `path`, as the Open dialog does: a tab once it has opened. Of a
     /// document whose tab just closed while its session is still closing (its picture
     /// drawn first, `crate::thumbs`), once that close has answered, since the core refuses
-    /// an open of a file another session holds.
+    /// an open of a file another session holds. Every open goes through here (Open's panel
+    /// and typed path, a recent document, a drop, an open held for a close): none while a
+    /// quit closes the tabs ([`refused_quitting`](Self::refused_quitting)), which catches
+    /// a panel or question open before the quit began, as Open itself is refused once it
+    /// has (`ask_open`).
     pub fn open(&mut self, path: &str, create: bool) {
+        if self.refused_quitting(|| {
+            start::not_opened_quitting(&[crate::recent::name_of(path).to_owned()])
+        }) {
+            return;
+        }
         if self
             .thumbs
             .as_ref()
@@ -958,11 +975,15 @@ impl<P: Clients + 'static> App<P> {
         self.opening(Part::File(path.to_owned()), running);
     }
 
-    /// A new, untitled part (File > New, Command+N, the start page's New part): opened at
-    /// once, asking nothing, with no file until its first save (`open` with no path). Named
-    /// "Untitled", then "Untitled 2", "Untitled 3", and so on, one more each time, never a
-    /// name given before in this run.
+    /// A new, untitled part (File > New, Command+N, the start page's New part, the app bar's
+    /// New part): opened at once, asking nothing, with no file until its first save (`open`
+    /// with no path). Named "Untitled", then "Untitled 2", "Untitled 3", and so on, one more
+    /// each time, never a name given before in this run. Not while a quit closes the tabs
+    /// ([`refused_quitting`](Self::refused_quitting)).
     pub fn new_part(&mut self) {
+        if self.refused_quitting(|| start::NEW_PART_QUITTING.to_owned()) {
+            return;
+        }
         self.untitled += 1;
         let name = match self.untitled {
             1 => "Untitled".to_owned(),
@@ -970,6 +991,19 @@ impl<P: Clients + 'static> App<P> {
         };
         let running = self.sessions.open_untitled();
         self.opening(Part::Untitled(name), running);
+    }
+
+    /// Whether a quit is closing the tabs, so nothing opens (New, Open, a recent document, a
+    /// drop, an open held for a close): if so, `said` is shown in a toast, from the start of
+    /// this frame ([`frame_time`](Self::frame_time)). A part or document
+    /// opened then would be a tab the quit never closes, so the window would never close,
+    /// and the quit, never ended, would refuse every later open. Every route that opens
+    /// asks for the frame after, which shows the toast.
+    fn refused_quitting(&mut self, said: impl FnOnce() -> String) -> bool {
+        if self.quitting {
+            self.toasts.push(Toast::info(said()), self.frame_time);
+        }
+        self.quitting
     }
 
     /// The open of `part`, `running`, numbered in the order asked: a tab once it opens.
@@ -1008,7 +1042,8 @@ impl<P: Clients + 'static> App<P> {
             }
             self.waker_set = true;
         }
-        self.poll(ui.input(|input| input.time));
+        self.frame_time = ui.input(|input| input.time);
+        self.poll(self.frame_time);
         let start_shown = self.start_shown();
         if let Some(thumbs) = &mut self.thumbs {
             thumbs.frame(
@@ -1338,10 +1373,9 @@ impl<P: Clients + 'static> App<P> {
     /// shown or none: each `.silico` one ([`start::names_a_document`]) opened as Open's pick
     /// is, its refusals the same, or its tab shown if it's open already, as a recent
     /// document's click does; the rest named in a toast, none of them opened. None is opened
-    /// while a quit closes the tabs, or while a question is asked over the window (New,
-    /// Open, and Recent can't be reached then either, and an open answering mid-quit would
-    /// leave a tab the quit never closes): each is named in a toast, unopened. Whether an
-    /// open was started.
+    /// while a quit closes the tabs (as no open is then, [`open`](Self::open)), or while a
+    /// question is asked over the window (New, Open, and Recent can't be reached then
+    /// either): each is named in a toast, unopened. Whether an open was started.
     fn take_drops(&mut self, ui: &Ui) -> bool {
         let dropped: Vec<PathBuf> = ui.input(|input| {
             input
@@ -1488,7 +1522,7 @@ impl<P: Clients + 'static> App<P> {
         }
         self.ask(ui, &mut next_frame);
         next_frame |= self.next_quit_save(ui.ctx());
-        if self.quitting && self.tabs.is_empty() {
+        if self.quitting && self.tabs.is_empty() && self.late_closes.is_empty() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
         }
         // The window never closes while a tab holds edits: the person is asked, unless a
@@ -1559,6 +1593,11 @@ impl<P: Clients + 'static> App<P> {
         let (answered, pending) =
             split_answered(std::mem::take(&mut self.opening), Running::try_take);
         self.opening = pending;
+        // A late open's close, answered or refused, waited for no more.
+        self.late_closes = std::mem::take(&mut self.late_closes)
+            .into_iter()
+            .filter_map(|close| close.try_take().err())
+            .collect();
         self.take_opens(answered);
         let mut refused = Vec::new();
         for tab in &mut self.tabs {
@@ -1708,6 +1747,21 @@ impl<P: Clients + 'static> App<P> {
                 return;
             }
         };
+        // Asked before a quit began and answering during it: its session closed at once,
+        // never a tab nor listed in Recent, as no open asked during the quit is (`open`); the
+        // window closes once that close has answered too.
+        if self.quitting {
+            let name = match &part {
+                Part::File(path) => crate::recent::name_of(path).to_owned(),
+                Part::Untitled(name) => name.clone(),
+            };
+            self.late_closes.push(self.sessions.close(&opened.session));
+            self.toasts.push(
+                Toast::info(start::not_opened_quitting(&[name])),
+                self.frame_time,
+            );
+            return;
+        }
         // An untitled part isn't listed until its first save gives it a file.
         if let Some(recents) = &self.recents
             && let Some(path) = part.path()
@@ -2315,6 +2369,15 @@ impl<P: Clients + 'static> App<P> {
             label: command.label(),
             can,
         };
+        // As New and Open refuse while a quit closes the tabs (`refused_quitting`), in their
+        // toasts' words.
+        if self.quitting {
+            match command {
+                Command::New => return row(Can::Off(Some(start::NEW_PART_QUITTING.to_owned()))),
+                Command::Open => return row(Can::Off(Some(start::OPEN_QUITTING.to_owned()))),
+                _ => {}
+            }
+        }
         let tab = self
             .active_place()
             .filter(|_| !self.start_shown())
@@ -2728,6 +2791,12 @@ impl<P: Clients + 'static> App<P> {
     /// another native dialog is open (a Browse…'s), the typed-path Open asked instead; while
     /// Open's own panel is open, nothing.
     fn ask_open(&mut self, ctx: &egui::Context) {
+        // Nothing asked while a quit closes the tabs, whose pick would only be refused: a
+        // panel or question open holds up the quit's Save panels (`next_quit_save`).
+        if self.refused_quitting(|| start::OPEN_QUITTING.to_owned()) {
+            ctx.request_repaint();
+            return;
+        }
         let typed = Asking::Open;
         match &self.browsing {
             Some(browsing) if browsing.what == Browsed::Open => return,

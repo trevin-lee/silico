@@ -144,6 +144,7 @@ impl Maker {
             Made::Chamfer { .. } => Maker::By(OpCode::Chamfer),
             Made::Sketch => Maker::By(OpCode::Sketch),
             Made::Sweep(kind) => Maker::By(kind.into()),
+            Made::Pattern(kind) => Maker::By(kind.into()),
         }
     }
 }

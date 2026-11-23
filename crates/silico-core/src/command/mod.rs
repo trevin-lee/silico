@@ -559,11 +559,47 @@ pub fn outline(document: &Document) -> String {
         if let Some(note) = note {
             let _ = writeln!(out, "  note {}", quoted(note));
         }
-        // The names it stores, a fillet's or chamfer's edges and a sketch's face, a line
-        // each, quoted (a name can be long, and in a document the gate hasn't passed,
-        // anything), so an edit to one changes its line.
+        // The names it stores, a fillet's or chamfer's edges, a sketch's face, a pattern's
+        // directions, axis, or plane, a line each, quoted (a name can be long, and in a
+        // document the gate hasn't passed, anything), so an edit to one changes its line:
+        // after its kind's word, or a pattern's after its field's path, since a pattern's
+        // names differ by field (docs/design/m6.0-patterns.md, section 2.5).
         for (field, stored) in operation.stored_names() {
-            let _ = writeln!(out, "  {} {}", field.kind().word(), quoted(stored.as_str()));
+            let label = match field {
+                document::NameField::Edge(_) => "edge".to_owned(),
+                document::NameField::Face => "face".to_owned(),
+                document::NameField::Along(_)
+                | document::NameField::Axis
+                | document::NameField::Plane => field.to_string(),
+            };
+            let _ = writeln!(out, "  {label} {}", quoted(stored.as_str()));
+        }
+        // A pattern's originals, directions, and instances skipped, a line each, in the
+        // order held.
+        for original in operation.originals() {
+            let _ = writeln!(out, "  copies {original}");
+        }
+        if let Operation::LinearPattern { directions, .. } = operation {
+            for (i, direction) in directions.iter().enumerate() {
+                let mut values = Vec::new();
+                if let Some(axis) = direction.along.origin() {
+                    values.push(format!("along {}", axis.as_str()));
+                }
+                values.push(format!("reversed {}", direction.reversed));
+                values.push(format!(
+                    "distribution {}",
+                    direction.distribution.type_name()
+                ));
+                values.push(format!(
+                    "distribution.length {}",
+                    direction.distribution.length()
+                ));
+                values.push(format!("count {}", direction.count));
+                let _ = writeln!(out, "  directions.{i} {}", values.join(", "));
+            }
+        }
+        for skipped in operation.skip() {
+            let _ = writeln!(out, "  skip {skipped}");
         }
         // A sketch's points, curves, and constraints, a line each, as the file writes them,
         // so an edit to one changes its line alone.
@@ -660,6 +696,46 @@ fn values(operation: &Operation) -> String {
                         }
                     });
                 }
+            }
+            values.join(", ")
+        }
+        // Its stored names, originals, directions, and skips follow, a line each.
+        Operation::LinearPattern { base, copies, .. } => {
+            format!("base {base}, copies {}", copies.type_name())
+        }
+        Operation::PolarPattern {
+            base,
+            copies,
+            axis,
+            reversed,
+            distribution,
+            count,
+            ..
+        } => {
+            let mut values = vec![
+                format!("base {base}"),
+                format!("copies {}", copies.type_name()),
+            ];
+            if let Some(axis) = axis.origin() {
+                values.push(format!("axis {}", axis.as_str()));
+            }
+            values.push(format!("reversed {reversed}"));
+            values.push(format!("distribution {}", distribution.type_name()));
+            values.push(format!("distribution.angle {}", distribution.angle()));
+            values.push(format!("count {count}"));
+            values.join(", ")
+        }
+        Operation::Mirror {
+            base,
+            copies,
+            plane,
+        } => {
+            let mut values = vec![
+                format!("base {base}"),
+                format!("copies {}", copies.type_name()),
+            ];
+            if let Some(plane) = plane.origin() {
+                values.push(format!("plane {}", plane.as_str()));
             }
             values.join(", ")
         }
