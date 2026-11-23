@@ -11,7 +11,8 @@ use silico_render::test_scenes;
 
 /// The one wait these tests allow for something they expect to happen (a worker to start or
 /// end, a render to answer): long enough for a loaded machine, so only a real hang fails,
-/// and it costs nothing when the event comes. Half nextest's 120 s, so a hang is said here.
+/// and it costs nothing when the event comes. A fifth of the five minutes nextest gives each
+/// of these tests (.config/nextest.toml), so a hang is said here, not killed by nextest.
 pub const WAIT: Duration = Duration::from_secs(60);
 
 /// A render's time no test reaches: set where a test checks that something comes promptly
