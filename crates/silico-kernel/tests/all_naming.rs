@@ -27,6 +27,8 @@ mod wait;
 mod adversarial_face_plane_rounds;
 #[path = "adversarial_naming.rs"]
 mod adversarial_naming;
+#[path = "adversarial_patterns.rs"]
+mod adversarial_patterns;
 #[path = "adversarial_references.rs"]
 mod adversarial_references;
 #[path = "adversarial_sweep_faces.rs"]

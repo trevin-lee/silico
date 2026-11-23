@@ -158,6 +158,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Real parts' cones (NIST CTC 01, FTC 06): OCCT meshes them with two nodes at exactly the same point inside one face, so a weld through B-rep edges and vertices alone leaves triangles of no area that FreeCAD's coordinate merge drops; export the corpus at the default tolerance
 - Fine mesh tolerances where an angular rule takes over (FreeCAD's min(0.1, 5t + 0.005) rad is 0.01 at 1e-3 mm whatever the size): a 1 mm sphere is 805,418 triangles and three minutes of OCCT, past a worker's time limit; time each primitive across the tolerance range
 - An OCCT warning someone proposes refusing (`BOPAlgo_AlertIntersectionOfPairOfShapesFailed` was): hunt right results that raise it, contacts at singular points most of all. A rod resting on a pointed cone's tip (`radius2` 0) raises it, OCCT taking the cone-cylinder pair as not meeting, rightly. Give FreeCAD Silico's exact B-reps, binary, not text: text rounds coordinates, and a result can depend on the last bit (the cone-side crash of patch 0005 does)
+- A pattern's reference by name taken through a reflection (a face of a mirrored copy as a direction): its outward normal must survive the negative-determinant transform; check the copies' side by the bounding box, not the volume.
 
 ## Feature tree and naming
 
@@ -189,6 +190,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Timeline edits that rewire a chain committed one at a time, then the saved file reopened in a fresh session and rebuilt: a feature whose `base` field didn't change but whose base was rebuilt otherwise (a fillet after a reordered pocket) must have its fingerprint written too, or the file drifts
 - Edits that change nothing (a move to where a feature is, a move before the next feature) made against a stale revision, and on a document the gate refused: the empty-edit shortcut mustn't skip the revision check or the refused-document refusal
 - Inserts, moves, and removals near the top of a long document inside a transaction (more features than one undo chunk holds): every later feature shifts across the chunks' bounds; undo and redo each state and compare the text byte for byte
+- Patterns of patterns, whole solid each level: every name in the deepest map parses back to the one element it's held for, none held twice, and a dress by the deepest nested name resolves.
 
 ## Files
 
@@ -358,6 +360,7 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Hand-written topology tables (each face's edges, each edge's vertices) for primitives: compare with the real kernel's move history, cones whose cap OCCT drops included
 - A fake's refusal built by hand where the worker client words the real one (`failure_error` adds a suggestion to every refusal): send the same bad request to both and compare every field of the error, not only code, parameter, and message
 - A fake's measure that's exact only for frames whose axes each lie along one model axis (a box of a sketch's box's corners placed): a circle on a frame tilted about X matches the kernel, one tilted about (1, 1, 0) doesn't; test fakes on frames tilted about a diagonal
+- A step's transient failure (worker timeout of the step or of a reference's describe) in one session must not reach the disk cache: a second session on the same cache asks again.
 
 ## Caches and files the core writes
 
