@@ -165,11 +165,13 @@ impl Row {
 
 /// What the tab knows that the canvas's menus say ([`SelectOther::overlay`]): a feature's
 /// name by its ID; why Edit can't open a feature's dialog now, if it can't (the feature
-/// menus' reason, `crate::feature_menu::off`); and why sketch mode can't open now, if it
-/// can't (`crate::feature_menu::sketch_off`).
+/// menus' reason, `crate::feature_menu::off`); the sketch a feature is built from, if it is
+/// (`Tab::sketch_of`, its Edit Sketch's); and why sketch mode can't open now, if it can't
+/// (`crate::feature_menu::sketch_off`).
 pub(crate) struct Facts<'a> {
     pub(crate) names: &'a dyn Fn(&FeatureId) -> Option<String>,
     pub(crate) edit_off: &'a dyn Fn(&FeatureId) -> Option<String>,
+    pub(crate) sketch_of: &'a dyn Fn(&FeatureId) -> Option<FeatureId>,
     pub(crate) sketch_off: Option<String>,
 }
 
@@ -1203,6 +1205,7 @@ fn under_of(
         label: format!("{kind}{number}"),
         kind,
         maker_name: named(facts.names, &maker),
+        sketch: (facts.sketch_of)(&maker),
         maker,
         body_name: named(facts.names, &body.feature),
         body: body.feature.clone(),
@@ -1638,6 +1641,7 @@ mod tests {
             kind: "Face",
             maker: block.clone(),
             maker_name: "Block".to_owned(),
+            sketch: None,
             body: block.clone(),
             body_name: "Block".to_owned(),
             plane: None,
@@ -2749,6 +2753,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            sketch_of: &|_| None,
             sketch_off: None,
         };
         let (mut selection, mut view) = (Selection::default(), View::default());
@@ -2803,6 +2808,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            sketch_of: &|_| None,
             sketch_off: None,
         };
         let kept = |swallowing: bool, kinds: &[LeftKind]| -> (Vec<LeftKind>, bool) {
@@ -2859,6 +2865,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            sketch_of: &|_| None,
             sketch_off: None,
         };
         let at = |at_px: [f32; 2]| {
@@ -2894,6 +2901,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            sketch_of: &|_| None,
             sketch_off: None,
         };
         let (mut selection, mut view) = (Selection::default(), View::default());
@@ -2956,6 +2964,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            sketch_of: &|_| None,
             sketch_off: None,
         };
         let (mut selection, mut view) = (Selection::default(), View::default());

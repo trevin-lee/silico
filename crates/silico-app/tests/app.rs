@@ -41728,6 +41728,151 @@ fn said_done(h: &AppHarness, start: &str) -> Option<String> {
     status_said(h, start)
 }
 
+#[test]
+fn a_pads_menus_have_edit_sketch_after_edit_feature_and_it_opens_the_sketch_it_is_built_from() {
+    // SolidWorks' Edit Sketch opens "from the sketch, from a feature built on it, or from one
+    // of its entities" (docs/ux/solidworks.md, §5, *Editing upstream*; m5.0-app.md, *Editing
+    // a sketch*). The pad is built from Box: its timeline item's menu and its body's row's
+    // each have Edit Sketch right after Edit feature, on, with no keys; Box's own menu has its
+    // one Edit Sketch, as its Edit, and no second.
+    let f = fixture();
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Pad") && shows(h, "Browser", "Pad") && shows(h, "Browser", "Box")
+    });
+    settled(&mut h);
+    let on = |label: &str| (label.to_owned(), feature_menu_keys(label), None);
+    let closed = |h: &mut AppHarness| {
+        h.key_press(Key::Escape);
+        step(h);
+        step(h);
+    };
+    for (pane, find) in [
+        ("Timeline", "Find in browser"),
+        ("Browser", "Find in timeline"),
+    ] {
+        menu_on(&mut h, pane, "Pad");
+        assert_eq!(
+            menu_items(&h, "PAD"),
+            [
+                on("Edit feature double-click"),
+                on("Edit Sketch"),
+                on("Rename"),
+                on("Suppress"),
+                on(find),
+                on("Delete"),
+            ],
+            "{pane}"
+        );
+        closed(&mut h);
+    }
+    menu_on(&mut h, "Timeline", "Box");
+    assert_eq!(
+        menu_items(&h, "BOX"),
+        [
+            on("Edit Sketch double-click"),
+            on("Rename"),
+            on("Suppress"),
+            on("Find in browser"),
+            on("Delete"),
+        ]
+    );
+    closed(&mut h);
+    // Chosen from the pad's item: sketch mode on Box, Edit Sketch's (not Create Sketch's),
+    // Box selected as itself, as its own Edit Sketch selects it, and nothing sent to the
+    // document.
+    let text = text_of(&f.sessions, &h);
+    menu_on(&mut h, "Timeline", "Pad");
+    menu_click(&mut h, "PAD", "Edit Sketch");
+    step_until(&mut h, "sketch mode on Box", |h| {
+        sketch_mode(h)
+            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
+    });
+    sketch_read(&mut h);
+    assert!(sketch_mode(&h).unwrap().created.is_none());
+    assert_eq!(selected_features(&h), ["s0000001"]);
+    assert_eq!(
+        sketch_mode(&h)
+            .unwrap()
+            .drawable()
+            .unwrap()
+            .members
+            .lines
+            .len(),
+        4
+    );
+    // In sketch mode the pad's Edit Sketch is off as its Edit feature is, saying why.
+    let why = "Finish or cancel the sketch first";
+    let off = |label: &str| {
+        (
+            label.to_owned(),
+            feature_menu_keys(label),
+            Some(why.to_owned()),
+        )
+    };
+    menu_on(&mut h, "Timeline", "Pad");
+    assert_eq!(
+        menu_items(&h, "PAD")[..2],
+        [off("Edit feature double-click"), off("Edit Sketch")]
+    );
+    closed(&mut h);
+    leave_sketch(&mut h, false);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(text_of(&f.sessions, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pockets_edit_sketch_opens_its_own_sketch_and_a_box_or_a_sketch_on_a_face_has_none_of_its_own()
+{
+    // POCKETED_MID: Cut, a pocket of the Pin built from Loose; Sketch2, on the Block's top,
+    // whose one input is the Block, a box (not a sketch); Block and Pin, built from no
+    // sketch. Only Cut's menu has Edit Sketch beside Edit feature, and it opens Loose, not
+    // Sketch2 or another sketch of the part.
+    let f = fixture();
+    let (mut h, _) = f.opened("pocketed.silico", POCKETED_MID);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Later"));
+    settled(&mut h);
+    let labels = |h: &AppHarness, head: &str| -> Vec<String> {
+        menu_items(h, head)
+            .into_iter()
+            .map(|(label, _, _)| label)
+            .collect()
+    };
+    for (name, head, first) in [
+        ("Block", "BLOCK", "Edit feature double-click"),
+        ("Pin", "PIN", "Edit feature double-click"),
+        ("Sketch2", "SKETCH2", "Edit Sketch double-click"),
+        ("Later", "LATER", "Edit feature double-click"),
+    ] {
+        menu_on(&mut h, "Timeline", name);
+        let shown = labels(&h, head);
+        assert_eq!(shown.len(), 5, "{name}: {shown:?}");
+        assert_eq!(shown[0], first, "{name}");
+        assert!(
+            shown[1..].iter().all(|label| label != "Edit Sketch"),
+            "{name}: {shown:?}"
+        );
+        h.key_press(Key::Escape);
+        step(&mut h);
+        step(&mut h);
+    }
+    menu_on(&mut h, "Timeline", "Cut");
+    assert_eq!(
+        labels(&h, "CUT")[..2],
+        ["Edit feature double-click", "Edit Sketch"]
+    );
+    menu_click(&mut h, "CUT", "Edit Sketch");
+    step_until(&mut h, "sketch mode on Loose", |h| {
+        sketch_mode(h)
+            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000009"))
+    });
+    sketch_read(&mut h);
+    assert_eq!(selected_features(&h), ["s0000009"]);
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// EXAMPLE with its pin suppressed, and the hole that cuts with it: `"suppressed": true`
 /// right after each one's name (docs/design/m5.0-app.md, `suppress_feature`), written by
 /// hand.
@@ -44734,6 +44879,79 @@ fn over_an_element_the_context_menus_edit_opens_its_makers_dialog() {
     assert_eq!(edit.label, "Edit Block");
     assert_eq!(edit.off.as_deref(), Some("Close the open dialog first"));
     assert!(h.get_by_label("Edit Block").accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_a_pads_face_the_context_menus_edit_sketch_opens_the_sketch_the_pad_is_built_from() {
+    // SolidWorks' Edit Sketch opens from a feature built on the sketch in the graphics area
+    // too (docs/ux/solidworks.md, §5, *Editing upstream*): over a face the pad made, the menu
+    // has Edit Pad, then Edit Sketch, with the sketch's icon, which opens sketch mode on Box,
+    // and Hide Pad last. With a dialog open it's off, saying why, as Edit is.
+    use silico_app::canvas_menu::{CanvasAct, CanvasItem};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = from_above_made(&f, "padded.silico", BOXED_PADDED, None);
+    boxes_made(&mut h);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    let over = |h: &mut AppHarness| {
+        answering(&record, Some((1, Face(1), pixel_at(h, at))), None);
+        h.hover_at(at);
+        step_until(h, "a face of the pad hovered", |h| {
+            hover_name(h).is_some_and(|name| name.starts_with("p0000001."))
+        });
+        context_at(h, at);
+    };
+    over(&mut h);
+    let items = select_other(&h).context().unwrap().items.clone();
+    assert_eq!(items[1].label, "Edit Pad");
+    assert_eq!(items[2].label, "Edit Sketch");
+    assert_eq!(items[2].icon, Some(silico_app::icons::Icon::Sketch));
+    assert_eq!(
+        items[2].item,
+        CanvasItem::Act(CanvasAct::Edit(
+            silico_core::document::FeatureId::new("s0000001").unwrap()
+        ))
+    );
+    assert_eq!(items[2].off, None);
+    assert_eq!(items.last().unwrap().label, "Hide Pad");
+    assert_eq!(
+        items
+            .iter()
+            .filter(|shown| shown.label == "Edit Sketch")
+            .count(),
+        1
+    );
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Edit Sketch")
+        .click();
+    step_until(&mut h, "sketch mode on Box", |h| {
+        sketch_mode(h)
+            .is_some_and(|mode| mode.sketch.as_ref().map(|id| id.as_str()) == Some("s0000001"))
+    });
+    assert!(!select_other(&h).is_open());
+    sketch_read(&mut h);
+    assert!(sketch_mode(&h).unwrap().created.is_none());
+    leave_sketch(&mut h, false);
+    // The pad's own dialog open (Edit Pad): Edit Sketch off, with the feature menus' reason.
+    over(&mut h);
+    h.get_by_label("Edit Pad").click();
+    step_until(&mut h, "the pad's dialog", |h| {
+        h.state().tabs()[0].in_dialog()
+    });
+    over(&mut h);
+    let edit_sketch = select_other(&h).context().unwrap().items[2].clone();
+    assert_eq!(edit_sketch.label, "Edit Sketch");
+    assert_eq!(
+        edit_sketch.off.as_deref(),
+        Some("Close the open dialog first")
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Edit Sketch")
+            .accesskit_node()
+            .is_disabled()
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 

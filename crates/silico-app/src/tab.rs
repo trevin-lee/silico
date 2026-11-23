@@ -2026,18 +2026,20 @@ impl Tab {
         // the selection nor the box. Sketch mode claims the canvas before this, so Select
         // Other, the selection's, never opens in a sketch (one open, or waiting, as a sketch
         // opens is closed there).
-        // Why Edit can't open each feature's dialog, as the feature menus say it: worked out
-        // only in a frame a right click may open the menu in.
-        let edit_off: BTreeMap<silico_core::document::FeatureId, Option<String>> =
+        // Why Edit can't open each feature's dialog, as the feature menus say it, and the
+        // sketch each is built from, its Edit Sketch's: worked out only in a frame a right
+        // click may open the menu in.
+        type ByFeature<T> = BTreeMap<silico_core::document::FeatureId, T>;
+        let (edit_off, sketches): (ByFeature<Option<String>>, ByFeature<FeatureId>) =
             if frame.secondary.is_empty() {
-                BTreeMap::new()
+                (BTreeMap::new(), BTreeMap::new())
             } else {
                 let entries = self
                     .timeline
                     .as_ref()
                     .and_then(|timeline| timeline.features.as_deref())
                     .unwrap_or_default();
-                entries
+                let edit_off = entries
                     .iter()
                     .map(|entry| {
                         let off = crate::feature_menu::off(
@@ -2048,7 +2050,15 @@ impl Tab {
                         );
                         (entry.id.clone(), off)
                     })
-                    .collect()
+                    .collect();
+                let sketches = entries
+                    .iter()
+                    .filter_map(|entry| {
+                        let sketch = self.sketch_of(&entry.id)?;
+                        Some((entry.id.clone(), sketch.id.clone()))
+                    })
+                    .collect();
+                (edit_off, sketches)
             };
         let entries = self
             .timeline
@@ -2067,9 +2077,11 @@ impl Tab {
                 .cloned()
                 .unwrap_or_else(|| Some("Its feature isn't in the timeline yet".to_owned()))
         };
+        let sketch_of = |id: &silico_core::document::FeatureId| sketches.get(id).cloned();
         let facts = crate::select_other::Facts {
             names: &names,
             edit_off: &edit,
+            sketch_of: &sketch_of,
             sketch_off: crate::feature_menu::sketch_off(self),
         };
         let (left, asked) = self.select_other.overlay(
@@ -7176,6 +7188,19 @@ impl Tab {
             .as_ref()?
             .iter()
             .find(|entry| entry.id.as_str() == id)
+    }
+
+    /// The sketch the feature `id` is built from, as the timeline lists its inputs: the one
+    /// that's a sketch, a pad's, a pocket's, a revolve's, or a groove's; none for a sketch
+    /// (a sketch on a face names the face's feature, a solid's) or a feature built from
+    /// solids alone. What its menus' Edit Sketch opens (docs/ux/solidworks.md, §5, *Editing
+    /// upstream*: "from a feature built on it").
+    pub fn sketch_of(&self, id: &FeatureId) -> Option<&Entry> {
+        self.entry(id.as_str())?
+            .inputs
+            .iter()
+            .filter_map(|input| self.entry(input.as_str()))
+            .find(|input| input.kind == "sketch")
     }
 
     /// Whether an error card's Edit would open the feature `id` now: for a sketch, Edit
