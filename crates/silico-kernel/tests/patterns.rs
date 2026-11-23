@@ -7,6 +7,9 @@
 //! sketch solver.
 
 use super::close::assert_close;
+use super::pattern_docs::{
+    self, SOLID, THROUGH, direction, down, failure, linear_as, mirror, of, polar, summary, up, with,
+};
 use super::sweeps::{circles, id, pad, pocket, polygon, rectangle};
 
 use std::f64::consts::PI;
@@ -21,7 +24,7 @@ use silico_core::kernel::{KernelRequest, KernelWorker};
 use silico_core::pool::KernelPool;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{Error, ErrorCode};
-use silico_protocol::{EdgeCurve, PointPlace, ShapeSummary};
+use silico_protocol::{EdgeCurve, PointPlace};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 
@@ -33,86 +36,13 @@ fn engine() -> Recompute<KernelPool> {
     Recompute::new(pool).with_sketches(FakeSketches::new())
 }
 
-fn checked(features: &[String]) -> Checked {
-    let text = format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"naming\": 6, \"features\": [{}]}}",
-        features.join(", ")
-    );
-    Checked::new(read(text.as_bytes()).unwrap()).unwrap()
-}
-
 fn published(engine: &Recompute<KernelPool>, features: &[String]) -> Arc<Model> {
-    match engine.start(checked(features)).wait_timeout(HANG) {
-        Ok(Ok(RunOutcome::Published(model))) => model,
-        Ok(other) => panic!("not published: {other:?}"),
-        Err(_) => panic!("the rebuild didn't finish"),
-    }
+    pattern_docs::published(engine, features, HANG)
 }
 
 fn built(features: &[String]) -> Arc<Model> {
     published(&engine(), features)
 }
-
-/// A built feature's solid's summary.
-fn summary(model: &Model, feature: &str) -> ShapeSummary {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Built { built, .. }) => built.summary().unwrap().clone(),
-        other => panic!("{feature}: {other:?}"),
-    }
-}
-
-/// A feature's failure.
-fn failure(model: &Model, feature: &str) -> Error {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Failed(error)) => error.clone(),
-        other => panic!("{feature}: {other:?}"),
-    }
-}
-
-/// `n` mm high: a pad's extent.
-fn up(n: &str) -> String {
-    format!(r#"{{"type": "one_side", "length": {n}, "reversed": false}}"#)
-}
-
-/// `n` mm down: a pad's extent, reversed.
-fn down(n: &str) -> String {
-    format!(r#"{{"type": "one_side", "length": {n}, "reversed": true}}"#)
-}
-
-/// Through all, up from the sketch's plane under the part: a pocket's extent.
-const THROUGH: &str = r#"{"type": "through_all", "reversed": true}"#;
-
-fn direction(along: &str, kind: &str, length: &str, count: u32) -> String {
-    format!(
-        r#"{{"along": "{along}", "reversed": false, "distribution": {{"type": "{kind}", "length": {length}}}, "count": {count}}}"#
-    )
-}
-
-/// Linear pattern `id` on `base`, copying `copies` (its JSON) along `directions`.
-fn linear(id: &str, base: &str, copies: &str, directions: &[String], skip: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "linear_pattern", "v": 1, "name": "Pattern", "base": "{base}", "copies": {copies}, "directions": [{}], "skip": {skip}}}"#,
-        directions.join(", ")
-    )
-}
-
-fn polar(id: &str, base: &str, copies: &str, axis: &str, angle: &str, count: u32) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "polar_pattern", "v": 1, "name": "Pattern", "base": "{base}", "copies": {copies}, "axis": "{axis}", "reversed": false, "distribution": {{"type": "extent", "angle": {angle}}}, "count": {count}, "skip": []}}"#
-    )
-}
-
-fn mirror(id: &str, base: &str, copies: &str, plane: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "mirror", "v": 1, "name": "Mirror", "base": "{base}", "copies": {copies}, "plane": "{plane}"}}"#
-    )
-}
-
-fn of(feature: &str) -> String {
-    format!(r#"{{"type": "features", "features": ["{feature}"]}}"#)
-}
-
-const SOLID: &str = r#"{"type": "solid"}"#;
 
 /// A `side` mm cube from the origin: a square sketched on xy, padded `side`.
 fn cube(side: f64) -> Vec<String> {
@@ -120,11 +50,6 @@ fn cube(side: f64) -> Vec<String> {
         rectangle("s0000001", "xy", [0.0, 0.0], side, side),
         pad("p0000001", None, "s0000001", &up(&format!("{side}"))),
     ]
-}
-
-fn with(mut features: Vec<String>, more: &[String]) -> Vec<String> {
-    features.extend(more.iter().cloned());
-    features
 }
 
 /// Section 4.2's examples, in order.
@@ -157,7 +82,7 @@ fn freecads_linear_pattern_ten_cubes_along_each_axis_make_one_solid_of_10000() {
     for axis in ["x", "y", "z"] {
         let model = built(&with(
             cube(10.0),
-            &[linear(
+            &[linear_as(
                 "t0000001",
                 "p0000001",
                 &of("p0000001"),
@@ -175,7 +100,7 @@ fn freecads_linear_pattern_ten_cubes_along_each_axis_make_one_solid_of_10000() {
 fn freecads_polar_pattern_four_cubes_turned_about_an_axis_make_one_solid_of_4000() {
     // TestPolarPattern.py: a 10 mm cube from the origin turned 4 times over 360° about an
     // origin axis: the four meet at it, 4,000, one solid, unrefined 16, 32, 18 (1.1.3).
-    for axis in ["z", "x"] {
+    for axis in ["z", "x", "y"] {
         let model = built(&with(
             cube(10.0),
             &[polar(
@@ -235,7 +160,7 @@ fn mains_suppression_grid_keeps_a_skip_past_a_count_and_skips_it_again_once_reac
     let grid = |first: u32, second: u32| {
         with(
             cube(10.0),
-            &[linear(
+            &[linear_as(
                 "t0000001",
                 "p0000001",
                 &of("p0000001"),
@@ -304,7 +229,7 @@ fn three_cylinders_over_40_on_a_box_add_135_pi() {
         pad("p0000001", None, "s0000001", &up("10")),
         circles("s0000002", "xy", &[([10.0, 10.0], 3.0)]),
         pad("p0000002", Some("p0000001"), "s0000002", &up("15")),
-        linear(
+        linear_as(
             "t0000001",
             "p0000002",
             &of("p0000002"),
@@ -328,7 +253,7 @@ fn three_overlapping_holes_remove_the_union_of_their_circles() {
         pad("p0000001", None, "s0000001", &up("10")),
         circles("s0000002", "xy", &[([20.0, 10.0], 3.0)]),
         pocket("q0000001", "p0000001", "s0000002", THROUGH),
-        linear(
+        linear_as(
             "t0000001",
             "q0000001",
             &of("q0000001"),
@@ -369,7 +294,7 @@ fn a_boxs_bottom_face_as_a_direction_patterns_down_as_its_outward_normal_points(
             rectangle("s0000001", "xy", [0.0, 0.0], 40.0, 20.0),
             pad("p0000001", None, "s0000001", &up("10")),
         ],
-        &[linear(
+        &[linear_as(
             "t0000001",
             "p0000001",
             SOLID,
@@ -398,7 +323,7 @@ fn copies_of_a_pad_off_a_block_are_refused_naming_exactly_their_instances() {
         pad("p0000001", None, "s0000001", &up("10")),
         circles("s0000002", "xy", &[([5.0, 10.0], 3.0)]),
         pad("p0000002", Some("p0000001"), "s0000002", &up("15")),
-        linear(
+        linear_as(
             "t0000005",
             "p0000002",
             &of("p0000002"),
@@ -441,7 +366,7 @@ fn a_far_copy_that_leaves_its_base_in_pieces_is_refused_with_the_fuzzy_value_its
         pad("p0000011", None, "s0000001", &down("1")),
         circles("s0000002", "xy", &[([0.0, 0.0], 2.0)]),
         pad("p0000012", Some("p0000011"), "s0000002", &up("4")),
-        linear(
+        linear_as(
             "t0000007",
             "p0000012",
             &of("p0000012"),
@@ -482,7 +407,7 @@ fn twenty_holes_on_a_175_plate_cut_17_and_keep_the_three_that_miss_as_changed_no
         pad("p0000001", None, "s0000001", &up("5")),
         circles("s0000002", "xy", &[([10.0, 10.0], 2.75)]),
         pocket("q0000009", "p0000001", "s0000002", THROUGH),
-        linear(
+        linear_as(
             "t0000009",
             "q0000009",
             &of("q0000009"),
@@ -516,7 +441,7 @@ fn more_than_100_copies_that_change_nothing_are_each_kept() {
         pad("p0000001", None, "s0000001", &up("5")),
         circles("s0000002", "xy", &[([5.0, 5.0], 2.75)]),
         pocket("q0000001", "p0000001", "s0000002", THROUGH),
-        linear(
+        linear_as(
             "t0000001",
             "q0000001",
             &of("q0000001"),
@@ -542,7 +467,7 @@ fn plate(directions: &[String], edges: &[String]) -> Vec<String> {
         pad("p0000001", None, "s0000001", &up("5")),
         circles("s0000003", "xy", &[([-40.0, -20.0], 2.75)]),
         pocket("q0000002", "p0000001", "s0000003", THROUGH),
-        linear("t0000001", "q0000002", &of("q0000002"), directions, "[]"),
+        linear_as("t0000001", "q0000002", &of("q0000002"), directions, "[]"),
     ];
     for (i, edge) in edges.iter().enumerate() {
         let base = if i == 0 {
@@ -820,4 +745,41 @@ fn a_rim_as_an_axis_turns_about_its_circles_axis_and_breaks_loudly_once_it_moves
     let got: serde_json::Value = serde_json::from_str(&written(&errors[0])).unwrap();
     let want: serde_json::Value = serde_json::from_str(&rebuild_examples()[0]).unwrap();
     assert_eq!(got, want);
+}
+
+#[test]
+fn a_quarter_turn_about_a_cubes_edge_turns_right_handed_about_it_from_its_start_to_its_end() {
+    // Decision 3: a straight edge as a polar axis runs from its start to its end, as
+    // describe gives them, and the turn is right-handed about it. The 10 mm cube's side edge
+    // at (10, 0), turned 90°: about +z, the copy lies over y = −10 to 0; about −z, over x =
+    // 10 to 20. Each fuses with the cube on a face: 2,000.
+    let edge = "p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000002)";
+    let model = built(&with(
+        cube(10.0),
+        &[polar("t0000001", "p0000001", SOLID, edge, "90", 2)],
+    ));
+    let map = model.element_map(&id("p0000001")).unwrap();
+    let parsed = silico_core::naming::Name::parse(edge, &|f| {
+        model
+            .document()
+            .features
+            .iter()
+            .find(|x| &x.id == f)
+            .map(|x| silico_core::naming::Maker::of(&x.operation))
+    })
+    .unwrap();
+    let element = map.element(&parsed).unwrap();
+    let described = &model.description(&id("p0000001")).unwrap().edges[element.index as usize - 1];
+    assert!(matches!(described.curve, EdgeCurve::Line));
+    let up = described.end[2] > described.start[2];
+    let s = summary(&model, "t0000001");
+    assert_close("volume", s.volume, 2000.0, 1e-9);
+    let [low, high] = s.bounds.unwrap();
+    if up {
+        assert_close("low y", low[1], -10.0, 1e-12);
+        assert_close("high x", high[0], 10.0, 1e-12);
+    } else {
+        assert!(low[1].abs() < 1e-12, "{low:?}");
+        assert_close("high x", high[0], 20.0, 1e-12);
+    }
 }

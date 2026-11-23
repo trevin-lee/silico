@@ -21,6 +21,8 @@ mod lateness;
 mod listing;
 #[path = "common/model.rs"]
 mod model;
+#[path = "common/patterns.rs"]
+mod pattern_docs;
 #[path = "common/recompute.rs"]
 mod recompute;
 #[path = "common/refusals.rs"]

@@ -572,7 +572,7 @@ fn a_steps_history_names_the_copies_off_the_base_and_those_that_changed_nothing(
         &[all.clone(), vec![false; 3], all.clone(), all.clone()],
         vec![(1..=9).collect(), vec![10, 11, 12], vec![13, 14, 15]],
     );
-    let verdict = verdict(&h, &instances, None, true);
+    let verdict = verdict(&h, &instances, None, CopiesOp::Fuse);
     assert_eq!(texts(&verdict.off_base), ["3", "4"]);
     assert_eq!(texts(&verdict.changed_nothing), ["2"]);
     assert_eq!(verdict.base_solids, 1);
@@ -593,7 +593,7 @@ fn a_steps_history_names_the_copies_off_the_base_and_those_that_changed_nothing(
         std::slice::from_ref(&all),
         vec![vec![1, 2, 3, 7], vec![4, 5, 6, 8, 9]],
     );
-    let verdict = super::verdict(&split, &instances[..1], None, true);
+    let verdict = super::verdict(&split, &instances[..1], None, CopiesOp::Fuse);
     assert!(verdict.off_base.is_empty());
     assert_eq!(verdict.base_solids, 2);
     // A copy that generates a face is in the result, though none of its faces is kept.
@@ -608,7 +608,7 @@ fn a_steps_history_names_the_copies_off_the_base_and_those_that_changed_nothing(
             position: 1,
         });
     assert!(
-        super::verdict(&generating, &instances[..1], None, true)
+        super::verdict(&generating, &instances[..1], None, CopiesOp::Fuse)
             .changed_nothing
             .is_empty()
     );
@@ -623,7 +623,7 @@ fn a_base_cut_in_pieces_or_left_in_pieces_is_refused_naming_no_instance() {
         &[all.clone(), all.clone()],
         vec![vec![1, 2, 7], vec![3, 4, 8, 9], vec![5, 6, 10, 11, 12]],
     );
-    let cut = verdict(&h, &instances, None, false);
+    let cut = verdict(&h, &instances, None, CopiesOp::Cut);
     let error = solids_refused(
         &id("t0000006"),
         "polar_pattern",
@@ -641,7 +641,7 @@ fn a_base_cut_in_pieces_or_left_in_pieces_is_refused_naming_no_instance() {
         &[all.clone(), all],
         vec![vec![1, 2, 3, 7], vec![4, 5, 6, 8, 9], vec![10, 11, 12]],
     );
-    let fused = verdict(&h, &instances, None, true);
+    let fused = verdict(&h, &instances, None, CopiesOp::Fuse);
     let error = solids_refused(
         &id("t0000007"),
         "linear_pattern",
@@ -667,7 +667,7 @@ fn a_base_cut_in_pieces_or_left_in_pieces_is_refused_naming_no_instance() {
         &history(6, &[vec![true; 3]], vec![(1..=9).collect()]),
         &instances[..1],
         None,
-        true,
+        CopiesOp::Fuse,
     );
     assert!(
         solids_refused(
@@ -716,5 +716,101 @@ fn the_values_line_holds_each_integer_and_skip_as_written() {
             ("directions.0.along".to_owned(), "x"),
             ("directions.1.along".to_owned(), "y")
         ]
+    );
+}
+
+#[test]
+fn a_polar_axis_on_a_named_edge_runs_from_its_start_to_its_end_and_a_circle_along_its_axis() {
+    // Decision 3: a straight edge's axis is its line from its start to its end, as describe
+    // gives them, so the same edge described the other way turns the other way; a circle's,
+    // its circle's axis through its centre. `reversed` turns either round.
+    let edge = name("p0000001.pad.Edge(G s0000001.sketch.Vertex.pa000002)");
+    let about = |reversed: bool| Operation::PolarPattern {
+        base: id("p0000001"),
+        copies: Copies::Solid,
+        axis: OriginOrName::Name(edge.clone()),
+        reversed,
+        distribution: PolarDistribution::Extent { angle: degrees(90) },
+        count: 2,
+        skip: Vec::new(),
+    };
+    let up = line([10.0, 0.0, 0.0], [10.0, 0.0, 10.0]);
+    let down = line([10.0, 0.0, 10.0], [10.0, 0.0, 0.0]);
+    for (geometry, reversed, origin, direction) in [
+        (&up, false, [10.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+        (&down, false, [10.0, 0.0, 10.0], [0.0, 0.0, -1.0]),
+        (&up, true, [10.0, 0.0, 0.0], [0.0, 0.0, -1.0]),
+    ] {
+        let resolved = resolve(&id("t0000002"), &about(reversed), &mut |_| {
+            Ok(geometry.clone())
+        });
+        assert_eq!(
+            resolved,
+            Ok(Resolved::Polar(Axis { origin, direction })),
+            "{geometry:?} {reversed}"
+        );
+    }
+    let rim = Geometry::Edge(EdgeDescription {
+        curve: EdgeCurve::Circle {
+            axis: Axis {
+                origin: [3.0, 4.0, 5.0],
+                direction: [0.0, -1.0, 0.0],
+            },
+            radius: 2.0,
+        },
+        length: 4.0 * PI,
+        start: [5.0, 4.0, 5.0],
+        end: [5.0, 4.0, 5.0],
+        middle: [1.0, 4.0, 5.0],
+    });
+    assert_eq!(
+        resolve(&id("t0000002"), &about(false), &mut |_| Ok(rim.clone())),
+        Ok(Resolved::Polar(Axis {
+            origin: [3.0, 4.0, 5.0],
+            direction: [0.0, -1.0, 0.0]
+        }))
+    );
+}
+
+#[test]
+fn copies_off_the_base_of_several_originals_are_named_with_their_originals() {
+    // Decision 4 of section 12: with several originals, the message says whose copies.
+    let instances: Vec<Instance> = (1..=2).map(|k| Instance::new(&[k]).unwrap()).collect();
+    let all = vec![true; 3];
+    let h = history(
+        6,
+        &[all.clone(), all],
+        vec![(1..=9).collect(), vec![10, 11, 12]],
+    );
+    let verdict = verdict(&h, &instances, Some(id("z0000001")), CopiesOp::Fuse);
+    let several = solids_refused(
+        &id("t0000005"),
+        "linear_pattern",
+        &id("p0000005"),
+        &verdict,
+        true,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        several.message(),
+        "linear_pattern t0000005 makes 2 solids: the copy of z0000001's instance 2 doesn't touch the base, or meets it only along an edge or at a point"
+    );
+    assert_eq!(several.elements(), ["2"]);
+    // One original: whose isn't said.
+    let one = solids_refused(
+        &id("t0000005"),
+        "linear_pattern",
+        &id("p0000005"),
+        &verdict,
+        false,
+        None,
+    )
+    .unwrap();
+    assert!(
+        one.message()
+            .contains(": the copy of instance 2 doesn't touch"),
+        "{}",
+        one.message()
     );
 }

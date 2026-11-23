@@ -9,21 +9,20 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use silico_core::document::{Checked, read};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{ElementKind, Op, Placement};
 use silico_core::naming::ElementMap;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{ErrorCode, document::FeatureId};
 
+use super::pattern_docs::{
+    FIVE, HOLE, THROUGH, checked, direction, linear_as, map, names, plate_with_hole_at, with,
+};
 use super::sweeps::{circles, pad, pocket, rectangle};
 
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
 }
-
-const THROUGH: &str = r#"{"type": "through_all", "reversed": true}"#;
-const FIVE: &str = r#"{"type": "one_side", "length": 5, "reversed": false}"#;
 
 /// The plate's first features (section 2.2): a 100 × 60 rectangle from (−50, −30) padded
 /// 5, and a hole r 2.75 at (−40, −20) pocketed up through it.
@@ -31,58 +30,18 @@ fn plate() -> Vec<String> {
     plate_with_hole_at([-40.0, -20.0])
 }
 
-/// The plate, its hole at `at`.
-fn plate_with_hole_at(at: [f64; 2]) -> Vec<String> {
-    vec![
-        rectangle("s0000001", "xy", [-50.0, -30.0], 100.0, 60.0),
-        pad("p0000001", None, "s0000001", FIVE),
-        circles("s0000003", "xy", &[(at, 2.75)]),
-        pocket("q0000002", "p0000001", "s0000003", THROUGH),
-    ]
-}
-
 /// A linear pattern `t0000001` on `base` copying `copies` (its JSON), with `directions`
 /// (their JSON) and `skip`.
 fn linear(base: &str, copies: &str, directions: &[String], skip: &str) -> String {
-    format!(
-        r#"{{"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "Holes", "base": "{base}", "copies": {copies}, "directions": [{}], "skip": {skip}}}"#,
-        directions.join(", ")
-    )
+    linear_as("t0000001", base, copies, directions, skip)
 }
-
-fn along(axis: &str, kind: &str, length: &str, count: u32) -> String {
-    format!(
-        r#"{{"along": "{axis}", "reversed": false, "distribution": {{"type": "{kind}", "length": {length}}}, "count": {count}}}"#
-    )
-}
-
-const HOLE: &str = r#"{"type": "features", "features": ["q0000002"]}"#;
 
 fn engine() -> Recompute<FakeKernel> {
     Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new())
 }
 
-fn checked(features: &[String]) -> Checked {
-    let text = format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"naming\": 6, \"features\": [{}]}}",
-        features.join(", ")
-    );
-    Checked::new(read(text.as_bytes()).unwrap()).unwrap()
-}
-
 fn published(engine: &Recompute<FakeKernel>, features: &[String]) -> Arc<Model> {
-    match engine
-        .start(checked(features))
-        .wait_timeout(Duration::from_secs(60))
-    {
-        Ok(Ok(RunOutcome::Published(model))) => model,
-        _ => panic!("not published"),
-    }
-}
-
-fn with(mut features: Vec<String>, more: &[String]) -> Vec<String> {
-    features.extend(more.iter().cloned());
-    features
+    super::pattern_docs::published(engine, features, Duration::from_secs(60))
 }
 
 /// Every copies request the kernel was sent, in order: its op and its placements.
@@ -94,20 +53,6 @@ fn copies(kernel: &FakeKernel) -> Vec<(silico_protocol::CopiesOp, Vec<Placement>
             Op::Copies { op, placements, .. } => Some((op, placements)),
             _ => None,
         })
-        .collect()
-}
-
-fn map(model: &Model, feature: &str) -> ElementMap {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Built { .. }) => model.element_map(&id(feature)).unwrap().clone(),
-        other => panic!("{feature}: {other:?}"),
-    }
-}
-
-/// Every name `map` holds, written out, with its element's kind.
-fn names(map: &ElementMap) -> Vec<(ElementKind, String)> {
-    map.iter()
-        .flat_map(|(element, names)| names.iter().map(move |n| (element.kind, n.to_string())))
         .collect()
 }
 
@@ -154,7 +99,10 @@ fn a_grids_copies_are_its_originals_names_wrapped_once_and_the_original_keeps_it
         &[linear(
             "q0000002",
             HOLE,
-            &[along("x", "extent", "80", 3), along("y", "extent", "40", 2)],
+            &[
+                direction("x", "extent", "80", 3),
+                direction("y", "extent", "40", 2),
+            ],
             "[]",
         )],
     );
@@ -263,8 +211,8 @@ fn a_polar_patterns_copies_turn_about_its_axis_and_a_mirrors_reflect_in_its_plan
 #[test]
 fn a_count_of_1_or_every_copy_skipped_passes_its_base_through_asking_the_kernel_nothing() {
     for directions in [
-        vec![along("x", "spacing", "10", 1)],
-        vec![along("x", "spacing", "10", 2)],
+        vec![direction("x", "spacing", "10", 1)],
+        vec![direction("x", "spacing", "10", 2)],
     ] {
         let skip = if directions[0].contains("\"count\": 2") {
             "[[1]]"
@@ -309,7 +257,7 @@ fn a_skipped_instance_and_a_shorter_count_placing_one_copy_alike_have_two_keys_a
             &[linear(
                 "q0000002",
                 HOLE,
-                &[along("x", "extent", "80", 3)],
+                &[direction("x", "extent", "80", 3)],
                 "[[1]]",
             )],
         ),
@@ -321,7 +269,7 @@ fn a_skipped_instance_and_a_shorter_count_placing_one_copy_alike_have_two_keys_a
             &[linear(
                 "q0000002",
                 HOLE,
-                &[along("x", "extent", "80", 2)],
+                &[direction("x", "extent", "80", 2)],
                 "[]",
             )],
         ),
@@ -367,7 +315,7 @@ fn originals_are_copied_one_step_each_in_timeline_order_whatever_the_list_says()
         linear(
             "a0000002",
             r#"{"type": "features", "features": ["a0000002", "z0000001"]}"#,
-            &[along("x", "spacing", "20", 2)],
+            &[direction("x", "spacing", "20", 2)],
             "[]",
         ),
     ];
@@ -423,7 +371,7 @@ fn a_copy_of_a_pad_on_a_pad_wraps_only_the_upper_pads_own_names() {
         linear(
             "p0000002",
             r#"{"type": "features", "features": ["p0000002"]}"#,
-            &[along("x", "spacing", "10", 2)],
+            &[direction("x", "spacing", "10", 2)],
             "[]",
         ),
     ];
@@ -452,7 +400,7 @@ fn a_copies_step_that_hangs_is_kept_for_the_session_until_check_with_fresh() {
         &[linear(
             "q0000002",
             HOLE,
-            &[along("x", "spacing", "20", 2)],
+            &[direction("x", "spacing", "20", 2)],
             "[]",
         )],
     );
@@ -524,7 +472,7 @@ fn every_edit_of_patterns_table_keeps_or_breaks_a_stored_copys_name_as_the_table
             &[linear("q0000002", copies, directions, skip), chamfer(&c2)],
         )
     };
-    let x3 = along("x", "extent", "40", 3);
+    let x3 = direction("x", "extent", "40", 3);
     // As written: found.
     assert_eq!(
         chamfered(&pattern(std::slice::from_ref(&x3), "[]", HOLE)),
@@ -534,16 +482,19 @@ fn every_edit_of_patterns_table_keeps_or_breaks_a_stored_copys_name_as_the_table
     // directions swapped (a count of 1 first, so (2) is two steps along the new direction
     // 1), an instance skipped and taken back.
     for (directions, skip) in [
-        (vec![along("x", "extent", "40", 5)], "[]"),
-        (vec![along("x", "spacing", "7", 3)], "[]"),
+        (vec![direction("x", "extent", "40", 5)], "[]"),
+        (vec![direction("x", "spacing", "7", 3)], "[]"),
         (
             vec![x3.replace("\"reversed\": false", "\"reversed\": true")],
             "[]",
         ),
-        (vec![along("y", "extent", "20", 3)], "[]"),
-        (vec![x3.clone(), along("y", "extent", "20", 2)], "[]"),
+        (vec![direction("y", "extent", "20", 3)], "[]"),
+        (vec![x3.clone(), direction("y", "extent", "20", 2)], "[]"),
         (
-            vec![along("y", "extent", "20", 3), along("x", "extent", "40", 1)],
+            vec![
+                direction("y", "extent", "20", 3),
+                direction("x", "extent", "40", 1),
+            ],
             "[]",
         ),
         (vec![x3.clone()], "[[1]]"),
@@ -557,7 +508,7 @@ fn every_edit_of_patterns_table_keeps_or_breaks_a_stored_copys_name_as_the_table
     // Broken, loudly, with candidates: a count lowered past it, the instance skipped, the
     // copies switched to the whole solid.
     for (directions, skip, copies) in [
-        (vec![along("x", "extent", "40", 2)], "[]", HOLE),
+        (vec![direction("x", "extent", "40", 2)], "[]", HOLE),
         (vec![x3.clone()], "[[2]]", HOLE),
         (vec![x3.clone()], "[]", r#"{"type": "solid"}"#),
     ] {
@@ -581,7 +532,7 @@ fn every_edit_of_patterns_table_keeps_or_breaks_a_stored_copys_name_as_the_table
             linear(
                 "q0000002",
                 HOLE,
-                &[x3.clone(), along("y", "extent", "20", 2)],
+                &[x3.clone(), direction("y", "extent", "20", 2)],
                 "[]",
             ),
             chamfer(&c01),
@@ -591,7 +542,7 @@ fn every_edit_of_patterns_table_keeps_or_breaks_a_stored_copys_name_as_the_table
     let dropped = with(
         plate(),
         &[
-            linear("q0000002", HOLE, &[along("y", "extent", "20", 2)], "[]"),
+            linear("q0000002", HOLE, &[direction("y", "extent", "20", 2)], "[]"),
             chamfer(&c01),
         ],
     );
@@ -627,7 +578,7 @@ fn a_broken_reference_is_refused_naming_its_field_with_candidates_and_a_name_fou
             &[linear(
                 "q0000002",
                 HOLE,
-                &[along(&missing, "spacing", "10", 2)],
+                &[direction(&missing, "spacing", "10", 2)],
                 "[]",
             )],
         ),
@@ -639,7 +590,7 @@ fn a_broken_reference_is_refused_naming_its_field_with_candidates_and_a_name_fou
     assert_eq!(errors[0].code(), ErrorCode::ReferenceBroken);
     assert_eq!(errors[0].parameter(), Some("directions.0.along"));
     assert!(errors[0].candidates().contains(&found), "{errors:?}");
-    let named = along(&found, "spacing", "10", 2);
+    let named = direction(&found, "spacing", "10", 2);
     let model = published(
         &engine(),
         &with(plate(), &[linear("q0000002", HOLE, &[named], "[]")]),
@@ -654,4 +605,255 @@ fn a_broken_reference_is_refused_naming_its_field_with_candidates_and_a_name_fou
             .ends_with(", is an edge of a curve OCCT doesn't type: a direction is a straight edge or a planar face"),
         "{error}"
     );
+}
+
+/// Each copies request's placements, in order.
+fn placements(kernel: &FakeKernel) -> Vec<Vec<Placement>> {
+    copies(kernel).into_iter().map(|(_, p)| p).collect()
+}
+
+#[test]
+fn a_changed_reference_is_another_step_on_one_engine_and_through_the_cache() {
+    // A step's key holds its references as written (section 2.4): the same pattern along
+    // x, then along y; a mirror in xy, then xz; a polar about z, then x. Each second is
+    // another step, asked of the kernel, its copies placed as its reference says, never
+    // the first's result taken for it, on one engine or through a cache on disk.
+    let turn = |axis: &str| {
+        format!(
+            r#"{{"id": "t0000002", "type": "polar_pattern", "v": 1, "name": "Holes", "base": "q0000002", "copies": {HOLE}, "axis": "{axis}", "reversed": false, "distribution": {{"type": "extent", "angle": 360}}, "count": 2, "skip": []}}"#
+        )
+    };
+    let mirrored = |plane: &str| {
+        format!(
+            r#"{{"id": "m0000001", "type": "mirror", "v": 1, "name": "Doubled", "base": "q0000002", "copies": {{"type": "solid"}}, "plane": "{plane}"}}"#
+        )
+    };
+    let pairs: [(String, String, Placement, Placement); 3] = [
+        (
+            linear(
+                "q0000002",
+                HOLE,
+                &[direction("x", "spacing", "20", 2)],
+                "[]",
+            ),
+            linear(
+                "q0000002",
+                HOLE,
+                &[direction("y", "spacing", "20", 2)],
+                "[]",
+            ),
+            Placement::Translation {
+                offset: [20.0, 0.0, 0.0],
+            },
+            Placement::Translation {
+                offset: [0.0, 20.0, 0.0],
+            },
+        ),
+        (
+            mirrored("xy"),
+            mirrored("xz"),
+            Placement::Mirror {
+                origin: [0.0; 3],
+                normal: [0.0, 0.0, 1.0],
+            },
+            Placement::Mirror {
+                origin: [0.0; 3],
+                normal: [0.0, -1.0, 0.0],
+            },
+        ),
+        (
+            turn("z"),
+            turn("x"),
+            Placement::Rotation {
+                axis: silico_protocol::Axis {
+                    origin: [0.0; 3],
+                    direction: [0.0, 0.0, 1.0],
+                },
+                angle: silico_protocol::radians(180.0),
+            },
+            Placement::Rotation {
+                axis: silico_protocol::Axis {
+                    origin: [0.0; 3],
+                    direction: [1.0, 0.0, 0.0],
+                },
+                angle: silico_protocol::radians(180.0),
+            },
+        ),
+    ];
+    for (first, second, at_first, at_second) in pairs {
+        let kernel_engine = engine();
+        published(&kernel_engine, &with(plate(), std::slice::from_ref(&first)));
+        published(
+            &kernel_engine,
+            &with(plate(), std::slice::from_ref(&second)),
+        );
+        assert_eq!(
+            placements(kernel_engine.kernel()),
+            [vec![at_first], vec![at_second]],
+            "{second}"
+        );
+        // Through the cache: a session that built the first, then another, on the same
+        // cache, given the second.
+        let dir = tempfile::tempdir().unwrap();
+        let cached = || {
+            Recompute::with_cache(
+                FakeKernel::new(2).unwrap(),
+                silico_core::cache::Cache::with_secret(
+                    dir.path().join("cache"),
+                    &dir.path().join("secret"),
+                ),
+            )
+            .with_sketches(FakeSketches::new())
+        };
+        published(&cached(), &with(plate(), &[first]));
+        let later = cached();
+        published(&later, &with(plate(), std::slice::from_ref(&second)));
+        assert_eq!(placements(later.kernel()), [vec![at_second]], "{second}");
+    }
+}
+
+#[test]
+fn a_feature_on_a_refused_pattern_is_never_sent_to_the_kernel() {
+    // A pattern whose copies all miss its base removes nothing, and is refused by S7's rule
+    // (section 4.2), its verdict settled by the first rebuild: a pad then fused onto it is
+    // blocked on it, its fuse never asked of the kernel, as a refused sweep's users aren't.
+    let kernel_engine = engine();
+    let mut features = with(
+        plate(),
+        &[linear(
+            "q0000002",
+            HOLE,
+            &[direction("x", "spacing", "200", 3)],
+            "[]",
+        )],
+    );
+    let first = published(&kernel_engine, &features);
+    assert!(matches!(
+        first.outcome(&id("t0000001")),
+        Some(FeatureOutcome::Failed(_))
+    ));
+    features.push(pad("p0000009", Some("t0000001"), "s0000001", FIVE));
+    let model = published(&kernel_engine, &features);
+    assert!(matches!(
+        model.outcome(&id("p0000009")),
+        Some(FeatureOutcome::Blocked { .. })
+    ));
+    let on_pattern = kernel_engine
+        .kernel()
+        .calls()
+        .into_iter()
+        .filter(|call| match &call.op {
+            Op::Boolean { base, .. } => {
+                FakeKernel::describe(base).is_some_and(|d| d.contains("copies"))
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(on_pattern, 0, "the pad's fuse onto the refused pattern ran");
+}
+
+#[test]
+fn an_identity_still_finds_its_references_and_refuses_parallel_directions() {
+    // Section 2.4: a count of 1 places nothing, but still resolves and checks its
+    // references. A direction naming no element of the base is `reference_broken`; two
+    // directions along x and its reverse are parallel (decision 11), refused though no
+    // copy is placed.
+    let found = map(&published(&engine(), &plate()), "q0000002")
+        .iter()
+        .find(|(element, names)| {
+            element.kind == ElementKind::Edge
+                && names[0].to_string().starts_with("p0000001.pad.Edge(G ")
+        })
+        .map(|(_, names)| names[0].to_string())
+        .unwrap();
+    let missing = found.replacen("(G ", "(M1/2 ", 1);
+    let kernel_engine = engine();
+    let model = published(
+        &kernel_engine,
+        &with(
+            plate(),
+            &[linear(
+                "q0000002",
+                HOLE,
+                &[direction(&missing, "spacing", "10", 1)],
+                "[]",
+            )],
+        ),
+    );
+    let Some(FeatureOutcome::Broken { errors, .. }) = model.outcome(&id("t0000001")) else {
+        panic!("{:?}", model.outcome(&id("t0000001")));
+    };
+    assert_eq!(errors[0].parameter(), Some("directions.0.along"));
+    let reverse =
+        direction("x", "spacing", "10", 1).replace("\"reversed\": false", "\"reversed\": true");
+    let model = published(
+        &kernel_engine,
+        &with(
+            plate(),
+            &[linear(
+                "q0000002",
+                HOLE,
+                &[direction("x", "spacing", "10", 1), reverse],
+                "[]",
+            )],
+        ),
+    );
+    let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("t0000001")) else {
+        panic!("{:?}", model.outcome(&id("t0000001")));
+    };
+    assert_eq!(error.parameter(), Some("directions.1.along"));
+    assert!(
+        error.message().contains("directions are parallel"),
+        "{error}"
+    );
+    assert!(copies(kernel_engine.kernel()).is_empty());
+}
+
+#[test]
+fn a_references_description_that_hangs_is_kept_for_the_session_too() {
+    // Section 4.2, *A hang kept*: a reference's one-element description that hangs, as the
+    // copies' request does, is kept for the session, so the next rebuild doesn't ask again;
+    // `check` with `fresh` does.
+    let found = map(&published(&engine(), &plate()), "q0000002")
+        .iter()
+        .find(|(element, names)| {
+            element.kind == ElementKind::Edge
+                && names[0].to_string().starts_with("p0000001.pad.Edge(G ")
+        })
+        .map(|(_, names)| names[0].to_string())
+        .unwrap();
+    let kernel_engine = engine();
+    kernel_engine.kernel().refuse(|op| {
+        matches!(op, Op::Describe { .. }).then(|| {
+            silico_core::Error::new(ErrorCode::WorkerTimeout, "the kernel worker timed out")
+        })
+    });
+    let features = with(
+        plate(),
+        &[linear(
+            "q0000002",
+            HOLE,
+            &[direction(&found, "spacing", "10", 2)],
+            "[]",
+        )],
+    );
+    let describes = |engine: &Recompute<FakeKernel>| {
+        engine
+            .kernel()
+            .calls()
+            .into_iter()
+            .filter(|call| matches!(call.op, Op::Describe { .. }))
+            .count()
+    };
+    for _ in 0..2 {
+        let model = published(&kernel_engine, &features);
+        let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("t0000001")) else {
+            panic!("{:?}", model.outcome(&id("t0000001")));
+        };
+        assert_eq!(error.code(), ErrorCode::WorkerTimeout);
+        assert!(error.suggestion().unwrap().contains("check with fresh"));
+    }
+    assert_eq!(describes(&kernel_engine), 1);
+    engine_fresh(&kernel_engine, &features);
+    assert_eq!(describes(&kernel_engine), 2);
 }

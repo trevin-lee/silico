@@ -14,6 +14,8 @@ mod imports;
 mod numbers;
 #[path = "common/oracle.rs"]
 mod oracle;
+#[path = "../../silico-core/tests/common/patterns.rs"]
+mod pattern_docs;
 #[path = "common/planes.rs"]
 mod planes;
 #[path = "../../silico-core/tests/common/share.rs"]

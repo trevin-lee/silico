@@ -6,6 +6,9 @@
 //! Volumes and boxes worked by hand.
 
 use super::close::assert_close;
+use super::pattern_docs::{
+    self, SOLID, THROUGH, direction, failure, linear_as, mirror, of, polar, summary, up, with,
+};
 use super::sweeps::{circles, id, pad, pocket, polygon, rectangle};
 
 use std::f64::consts::{PI, SQRT_2};
@@ -13,13 +16,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use silico_core::document::{Checked, read};
+use silico_core::ErrorCode;
 use silico_core::fake::FakeSketches;
 use silico_core::kernel::ElementKind;
 use silico_core::pool::KernelPool;
-use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
-use silico_core::{Error, ErrorCode};
-use silico_protocol::{EdgeCurve, EdgeDescription, FaceDescription, ShapeSummary, Surface};
+use silico_core::recompute::{FeatureOutcome, Model, Recompute};
+use silico_protocol::{EdgeCurve, EdgeDescription, FaceDescription, Surface};
 
 const WORKER: &str = env!("CARGO_BIN_EXE_silico-kernel-worker");
 
@@ -28,66 +30,11 @@ const HANG: Duration = Duration::from_secs(300);
 fn built(features: &[String]) -> Arc<Model> {
     let pool = KernelPool::start_workers(Path::new(WORKER), 2).unwrap();
     let engine = Recompute::new(pool).with_sketches(FakeSketches::new());
-    let text = format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"naming\": 6, \"features\": [{}]}}",
-        features.join(", ")
-    );
-    let checked = Checked::new(read(text.as_bytes()).unwrap()).unwrap();
-    match engine.start(checked).wait_timeout(HANG) {
-        Ok(Ok(RunOutcome::Published(model))) => model,
-        Ok(other) => panic!("not published: {other:?}"),
-        Err(_) => panic!("the rebuild didn't finish"),
-    }
-}
-
-fn summary(model: &Model, feature: &str) -> ShapeSummary {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Built { built, .. }) => built.summary().unwrap().clone(),
-        other => panic!("{feature}: {other:?}"),
-    }
-}
-
-fn failure(model: &Model, feature: &str) -> Error {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Failed(error)) => error.clone(),
-        other => panic!("{feature}: {other:?}"),
-    }
-}
-
-fn up(n: &str) -> String {
-    format!(r#"{{"type": "one_side", "length": {n}, "reversed": false}}"#)
-}
-
-const THROUGH: &str = r#"{"type": "through_all", "reversed": true}"#;
-const SOLID: &str = r#"{"type": "solid"}"#;
-
-fn direction(along: &str, kind: &str, length: &str, count: u32) -> String {
-    format!(
-        r#"{{"along": "{along}", "reversed": false, "distribution": {{"type": "{kind}", "length": {length}}}, "count": {count}}}"#
-    )
+    pattern_docs::published(&engine, features, HANG)
 }
 
 fn linear(id: &str, base: &str, copies: &str, directions: &[String]) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "linear_pattern", "v": 1, "name": "Pattern", "base": "{base}", "copies": {copies}, "directions": [{}], "skip": []}}"#,
-        directions.join(", ")
-    )
-}
-
-fn polar(id: &str, base: &str, copies: &str, axis: &str, angle: &str, count: u32) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "polar_pattern", "v": 1, "name": "Pattern", "base": "{base}", "copies": {copies}, "axis": "{axis}", "reversed": false, "distribution": {{"type": "extent", "angle": {angle}}}, "count": {count}, "skip": []}}"#
-    )
-}
-
-fn mirror(id: &str, base: &str, copies: &str, plane: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "mirror", "v": 1, "name": "Mirror", "base": "{base}", "copies": {copies}, "plane": "{plane}"}}"#
-    )
-}
-
-fn of(feature: &str) -> String {
-    format!(r#"{{"type": "features", "features": ["{feature}"]}}"#)
+    linear_as(id, base, copies, directions, "[]")
 }
 
 fn near(a: [f64; 3], b: [f64; 3]) -> bool {
@@ -132,11 +79,6 @@ fn wedge() -> Vec<String> {
         polygon("s0000001", "xy", &[[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]]),
         pad("p0000001", None, "s0000001", &up("5")),
     ]
-}
-
-fn with(mut features: Vec<String>, more: &[String]) -> Vec<String> {
-    features.extend(more.iter().cloned());
-    features
 }
 
 #[test]

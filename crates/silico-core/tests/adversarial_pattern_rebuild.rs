@@ -12,52 +12,28 @@ use std::time::{Duration, Instant};
 use silico_core::document::{Checked, read};
 use silico_core::fake::{FakeKernel, FakeSketches};
 use silico_core::kernel::{ElementKind, Op, Placement};
-use silico_core::naming::{ElementMap, Maker, Name};
+use silico_core::naming::{Maker, Name};
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::{ErrorCode, document::FeatureId};
 use silico_protocol::CopiesOp;
 
 use super::cache::{Scratch, session};
+use super::pattern_docs::{
+    FIVE, HOLE, SOLID, THROUGH, checked, direction, document, failure, linear_as, map, mirror,
+    names, plate_with_hole_at, with,
+};
 use super::sweeps::{circles, pad, pocket, rectangle};
 
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
 }
 
-const THROUGH: &str = r#"{"type": "through_all", "reversed": true}"#;
-const FIVE: &str = r#"{"type": "one_side", "length": 5, "reversed": false}"#;
-const HOLE: &str = r#"{"type": "features", "features": ["q0000002"]}"#;
-const SOLID: &str = r#"{"type": "solid"}"#;
-
-/// A 100 × 60 plate from (−50, −30) padded 5, a hole r 2.75 at `at` pocketed through it.
-fn plate_with_hole_at(at: [f64; 2]) -> Vec<String> {
-    vec![
-        rectangle("s0000001", "xy", [-50.0, -30.0], 100.0, 60.0),
-        pad("p0000001", None, "s0000001", FIVE),
-        circles("s0000003", "xy", &[(at, 2.75)]),
-        pocket("q0000002", "p0000001", "s0000003", THROUGH),
-    ]
-}
-
 fn plate() -> Vec<String> {
     plate_with_hole_at([-40.0, -20.0])
 }
 
-fn linear_as(id: &str, base: &str, copies: &str, directions: &[String], skip: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "linear_pattern", "v": 1, "name": "Holes", "base": "{base}", "copies": {copies}, "directions": [{}], "skip": {skip}}}"#,
-        directions.join(", ")
-    )
-}
-
 fn linear(base: &str, copies: &str, directions: &[String], skip: &str) -> String {
     linear_as("t0000001", base, copies, directions, skip)
-}
-
-fn along(axis: &str, kind: &str, length: &str, count: u32) -> String {
-    format!(
-        r#"{{"along": "{axis}", "reversed": false, "distribution": {{"type": "{kind}", "length": {length}}}, "count": {count}}}"#
-    )
 }
 
 fn polar(axis: &str, kind: &str, angle: &str, count: u32, skip: &str) -> String {
@@ -66,41 +42,12 @@ fn polar(axis: &str, kind: &str, angle: &str, count: u32, skip: &str) -> String 
     )
 }
 
-fn mirror_as(id: &str, base: &str, copies: &str, plane: &str) -> String {
-    format!(
-        r#"{{"id": "{id}", "type": "mirror", "v": 1, "name": "Mirror", "base": "{base}", "copies": {copies}, "plane": "{plane}"}}"#
-    )
-}
-
 fn engine() -> Recompute<FakeKernel> {
     Recompute::new(FakeKernel::new(2).unwrap()).with_sketches(FakeSketches::new())
 }
 
-fn document(features: &[String]) -> String {
-    format!(
-        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"naming\": 6, \"features\": [{}]}}",
-        features.join(", ")
-    )
-}
-
-fn checked(features: &[String]) -> Checked {
-    Checked::new(read(document(features).as_bytes()).unwrap()).unwrap()
-}
-
 fn published(engine: &Recompute<FakeKernel>, features: &[String]) -> Arc<Model> {
-    match engine
-        .start(checked(features))
-        .wait_timeout(Duration::from_secs(120))
-    {
-        Ok(Ok(RunOutcome::Published(model))) => model,
-        Ok(other) => panic!("not published: {other:?}"),
-        Err(_) => panic!("the rebuild didn't finish in two minutes"),
-    }
-}
-
-fn with(mut features: Vec<String>, more: &[String]) -> Vec<String> {
-    features.extend(more.iter().cloned());
-    features
+    super::pattern_docs::published(engine, features, Duration::from_secs(120))
 }
 
 fn copies(kernel: &FakeKernel) -> Vec<(CopiesOp, Vec<Placement>)> {
@@ -116,26 +63,6 @@ fn copies(kernel: &FakeKernel) -> Vec<(CopiesOp, Vec<Placement>)> {
 
 fn outcome(model: &Model, feature: &str) -> FeatureOutcome {
     model.outcome(&id(feature)).cloned().unwrap()
-}
-
-fn map(model: &Model, feature: &str) -> ElementMap {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Built { .. }) => model.element_map(&id(feature)).unwrap().clone(),
-        other => panic!("{feature}: {other:?}"),
-    }
-}
-
-fn names(map: &ElementMap) -> Vec<(ElementKind, String)> {
-    map.iter()
-        .flat_map(|(element, names)| names.iter().map(move |n| (element.kind, n.to_string())))
-        .collect()
-}
-
-fn failure(model: &Model, feature: &str) -> silico_core::Error {
-    match model.outcome(&id(feature)) {
-        Some(FeatureOutcome::Failed(error)) => error.clone(),
-        other => panic!("{feature}: {other:?}"),
-    }
 }
 
 /// Every name in `feature`'s map parses (with the document's makers) and finds the element
@@ -180,7 +107,7 @@ fn a_linear_pattern_of_exactly_1000_instances_sends_999_copies_each_at_its_exact
             &[linear(
                 "q0000002",
                 HOLE,
-                &[along("x", "spacing", "0.5", 1000)],
+                &[direction("x", "spacing", "0.5", 1000)],
                 "[]",
             )],
         ),
@@ -229,8 +156,8 @@ fn a_grid_of_8_by_125_sends_its_999_copies_direction_1_outer_each_by_hand() {
                 "q0000002",
                 HOLE,
                 &[
-                    along("x", "spacing", "10", 8),
-                    along("y", "spacing", "0.1", 125),
+                    direction("x", "spacing", "10", 8),
+                    direction("y", "spacing", "0.1", 125),
                 ],
                 "[]",
             )],
@@ -268,7 +195,7 @@ fn every_one_of_999_copies_skipped_is_the_identity_asking_the_kernel_nothing() {
             &[linear(
                 "q0000002",
                 HOLE,
-                &[along("x", "spacing", "0.5", 1000)],
+                &[direction("x", "spacing", "0.5", 1000)],
                 &format!("[{}]", skip.join(", ")),
             )],
         ),
@@ -286,8 +213,8 @@ fn every_one_of_999_copies_skipped_is_the_identity_asking_the_kernel_nothing() {
 fn a_skip_past_every_count_takes_nothing_away_and_names_as_with_no_skip() {
     // [5] and [0, 3] past counts of 3 and 2: ignored, so five copies, named as with none.
     let directions = [
-        along("x", "spacing", "10", 3),
-        along("y", "spacing", "10", 2),
+        direction("x", "spacing", "10", 3),
+        direction("y", "spacing", "10", 2),
     ];
     let kernel_engine = engine();
     let skipped = published(
@@ -381,8 +308,8 @@ fn two_directions_each_a_kilometre_place_the_far_corner_at_a_kilometre_on_each_a
                 "q0000002",
                 HOLE,
                 &[
-                    along("x", "spacing", "1000000", 2),
-                    along("y", "spacing", "1000000", 2),
+                    direction("x", "spacing", "1000000", 2),
+                    direction("y", "spacing", "1000000", 2),
                 ],
                 "[]",
             )],
@@ -402,7 +329,7 @@ fn two_directions_each_a_kilometre_place_the_far_corner_at_a_kilometre_on_each_a
 #[test]
 fn a_reversed_direction_sends_negative_offsets_and_no_negative_zero() {
     let kernel_engine = engine();
-    let mut x = along("x", "spacing", "10", 3);
+    let mut x = direction("x", "spacing", "10", 3);
     x = x.replace("\"reversed\": false", "\"reversed\": true");
     published(
         &kernel_engine,
@@ -424,8 +351,8 @@ fn a_reversed_direction_sends_negative_offsets_and_no_negative_zero() {
 #[test]
 fn two_directions_along_one_axis_either_way_are_refused_naming_direction_1() {
     for second in [
-        along("x", "spacing", "10", 2),
-        along("x", "spacing", "10", 2).replace("\"reversed\": false", "\"reversed\": true"),
+        direction("x", "spacing", "10", 2),
+        direction("x", "spacing", "10", 2).replace("\"reversed\": false", "\"reversed\": true"),
     ] {
         let kernel_engine = engine();
         let model = published(
@@ -435,7 +362,7 @@ fn two_directions_along_one_axis_either_way_are_refused_naming_direction_1() {
                 &[linear(
                     "q0000002",
                     HOLE,
-                    &[along("x", "spacing", "20", 2), second.clone()],
+                    &[direction("x", "spacing", "20", 2), second.clone()],
                     "[]",
                 )],
             ),
@@ -481,7 +408,7 @@ fn a_direction_naming_the_patterns_own_copy_or_a_later_feature_is_refused_never_
             &[linear(
                 "q0000002",
                 HOLE,
-                &[along(&name, "spacing", "10", 2)],
+                &[direction(&name, "spacing", "10", 2)],
                 "[]",
             )],
         );
@@ -510,7 +437,7 @@ fn a_direction_naming_another_bodys_edge_is_refused_never_a_bug() {
     features.push(linear(
         "q0000002",
         HOLE,
-        &[along(
+        &[direction(
             "p0000008.pad.Edge(G s0000008.sketch.Edge.na000001)",
             "spacing",
             "10",
@@ -535,7 +462,7 @@ fn a_mirror_plane_naming_a_face_the_fake_doesnt_type_is_refused_for_its_kind_not
     let plane = "p0000001.pad.Face(M s0000001.sketch.Face1)";
     let model = published(
         &engine(),
-        &with(plate(), &[mirror_as("m0000001", "q0000002", HOLE, plane)]),
+        &with(plate(), &[mirror("m0000001", "q0000002", HOLE, plane)]),
     );
     let error = failure(&model, "m0000001");
     assert_eq!(error.code(), ErrorCode::InvalidInput, "{error}");
@@ -555,13 +482,18 @@ fn nested() -> Vec<String> {
     with(
         plate(),
         &[
-            linear("q0000002", HOLE, &[along("x", "spacing", "20", 2)], "[]"),
-            mirror_as("m0000001", "t0000001", SOLID, "yz"),
+            linear(
+                "q0000002",
+                HOLE,
+                &[direction("x", "spacing", "20", 2)],
+                "[]",
+            ),
+            mirror("m0000001", "t0000001", SOLID, "yz"),
             linear_as(
                 "t0000003",
                 "m0000001",
                 SOLID,
-                &[along("z", "spacing", "5", 2)],
+                &[direction("z", "spacing", "5", 2)],
                 "[]",
             ),
         ],
@@ -621,7 +553,7 @@ fn six_whole_solid_patterns_deep_every_name_is_unique_and_parses() {
             &feature,
             &base,
             SOLID,
-            &[along("z", "spacing", &format!("{}", 5u32 << level), 2)],
+            &[direction("z", "spacing", &format!("{}", 5u32 << level), 2)],
             "[]",
         ));
         base = feature;
@@ -669,7 +601,7 @@ fn originals_listed_in_either_order_build_one_step_and_one_set_of_names() {
             linear(
                 "a0000002",
                 &format!(r#"{{"type": "features", "features": [{list}]}}"#),
-                &[along("x", "spacing", "20", 2)],
+                &[direction("x", "spacing", "20", 2)],
                 "[]",
             ),
         ]
@@ -695,7 +627,7 @@ fn a_cache_round_trip_rebuilds_the_patterns_steps_and_names_without_asking_the_k
             "t0000009",
             "t0000003",
             SOLID,
-            &[along("y", "spacing", "1", 1)],
+            &[direction("y", "spacing", "1", 1)],
             "[]",
         )],
     );
@@ -734,7 +666,7 @@ fn a_rebuild_superseded_mid_pattern_leaves_the_next_one_whole() {
         &[linear(
             "q0000002",
             HOLE,
-            &[along("x", "spacing", "0.5", 1000)],
+            &[direction("x", "spacing", "0.5", 1000)],
             "[]",
         )],
     );
@@ -743,7 +675,7 @@ fn a_rebuild_superseded_mid_pattern_leaves_the_next_one_whole() {
         &[linear(
             "q0000002",
             HOLE,
-            &[along("x", "spacing", "20", 3)],
+            &[direction("x", "spacing", "20", 3)],
             "[]",
         )],
     );
@@ -770,7 +702,7 @@ fn a_pattern_of_an_original_that_changes_nothing_is_blocked_not_failed() {
             &[linear(
                 "q0000002",
                 HOLE,
-                &[along("x", "spacing", "20", 2)],
+                &[direction("x", "spacing", "20", 2)],
                 "[]",
             )],
         ),
@@ -796,7 +728,7 @@ fn copies_that_all_miss_the_base_are_refused_as_changing_nothing_naming_the_patt
             &[linear(
                 "q0000002",
                 HOLE,
-                &[along("x", "spacing", "200", 3)],
+                &[direction("x", "spacing", "200", 3)],
                 "[]",
             )],
         ),
@@ -822,7 +754,7 @@ fn a_second_originals_step_that_changes_nothing_fails_the_pattern_keeping_both_v
         linear(
             "a0000002",
             r#"{"type": "features", "features": ["z0000001", "a0000002"]}"#,
-            &[along("x", "spacing", "20", 2)],
+            &[direction("x", "spacing", "20", 2)],
             "[]",
         ),
     ];
@@ -847,7 +779,7 @@ fn a_pattern_whose_base_is_suppressed_builds_on_the_base_up_its_chain() {
     features.push(linear(
         "q0000005",
         HOLE,
-        &[along("x", "spacing", "20", 2)],
+        &[direction("x", "spacing", "20", 2)],
         "[]",
     ));
     let kernel_engine = engine();
@@ -886,7 +818,12 @@ fn an_identity_pattern_passes_a_chamfers_names_through_and_a_copys_name_then_bre
             r#"{{"id": "c0000001", "type": "chamfer", "v": 1, "name": "Rim", "base": "t0000001", "edges": ["{edge}"], "size": {{"distance": 0.5}}}}"#
         )
     };
-    let identity = linear("q0000002", HOLE, &[along("x", "spacing", "20", 1)], "[]");
+    let identity = linear(
+        "q0000002",
+        HOLE,
+        &[direction("x", "spacing", "20", 1)],
+        "[]",
+    );
     let model = published(
         &engine(),
         &with(plate(), &[identity.clone(), chamfer(&edge)]),
@@ -916,7 +853,7 @@ fn a_copies_hang_is_kept_for_the_session_only_never_on_disk_for_the_next() {
         &[linear(
             "q0000002",
             HOLE,
-            &[along("x", "spacing", "20", 2)],
+            &[direction("x", "spacing", "20", 2)],
             "[]",
         )],
     );
@@ -945,7 +882,7 @@ fn a_reference_whose_description_hangs_is_asked_again_by_the_next_session_not_ke
     // faces are of no surface OCCT types), never the first's timeout.
     let scratch = Scratch::new("adversarial-pattern-describe-hang");
     let plane = "p0000001.pad.Face(M s0000001.sketch.Face1)";
-    let features = with(plate(), &[mirror_as("m0000001", "q0000002", HOLE, plane)]);
+    let features = with(plate(), &[mirror("m0000001", "q0000002", HOLE, plane)]);
     let hung = session(&scratch.0).with_sketches(FakeSketches::new());
     hung.kernel().refuse(|op| {
         matches!(
