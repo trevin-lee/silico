@@ -58127,8 +58127,11 @@ fn a_right_click_in_the_frame_a_new_table_is_taken_opens_nothing_and_says_so() {
     let (hold, top) = zoomed_out_its_read_held(&f, &mut h);
     h.hover_at(top);
     step(&mut h);
-    let table = its_read_answered(&mut h, hold);
+    // Each event queued is a frame of its own: the press, then the release that makes the
+    // click, in the frame that takes the table.
     button_event(&h, top, PointerButton::Secondary, true, Modifiers::NONE);
+    step(&mut h);
+    let table = its_read_answered(&mut h, hold);
     button_event(&h, top, PointerButton::Secondary, false, Modifiers::NONE);
     step(&mut h);
     assert_ne!(
