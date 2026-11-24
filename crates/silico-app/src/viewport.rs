@@ -755,12 +755,6 @@ impl View {
         self.placed
     }
 
-    /// The camera chosen by nobody again: the next read asks for Home's view of the bodies,
-    /// and its answer places the view there, as a new tab's first read does.
-    pub fn unplace(&mut self) {
-        self.placed = false;
-    }
-
     /// What sketch mode adds to a fit from now on ([`navigate::Framing`]): the tab's, each
     /// frame.
     pub fn frame_with(&mut self, framing: navigate::Framing) {

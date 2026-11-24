@@ -2448,9 +2448,10 @@ impl Tab {
     /// normal to sketch plane on sketch creation and sketch edit*, docs/ux/solidworks.md):
     /// Look At's view of the sketch ([`look_at_target`](Self::look_at_target): its x across,
     /// its y up, fitted with the sketch clear of the bar and the palette), as Ctrl+8 asks it.
-    /// Not if the view has been moved since sketch mode opened, which the person's view keeps
-    /// (a view no camera had been chosen for yet counts as unmoved); nor for a read whose
-    /// plane is an error (a face not found), which places the sketch nowhere: either way it's
+    /// Not if the view has been moved since sketch mode opened, which the person's view keeps;
+    /// nor if no camera had been chosen for it yet (its first meshes not read: that read
+    /// places it at Home, as ever, which a turn would take the place of); nor for a read whose
+    /// plane is an error (a face not found), which places the sketch nowhere: any way it's
     /// passed over for good.
     fn turn_to_sketch(&mut self) {
         if self
@@ -2465,7 +2466,7 @@ impl Tab {
             Some(kept) if !kept.settled => kept
                 .before
                 .as_ref()
-                .is_none_or(|before| self.view.heading() == before),
+                .is_some_and(|before| self.view.heading() == before),
             _ => return,
         };
         let target = self.look_at_target();
@@ -2482,18 +2483,12 @@ impl Tab {
     /// found it gone back to, eased to as the prototype's `exit` animates back to its camera,
     /// in the projection the view has now. SolidWorks reverts the view only when the changes
     /// are discarded; the prototype, which the view's UI follows, on either. A view no camera
-    /// had been chosen for as sketch mode opened goes where its first read would have put it:
-    /// Home's view of the bodies, now if they're read, else as they're read.
+    /// had been chosen for as sketch mode opened was never turned, and has nothing to go back
+    /// to: its first read places it.
     fn leave_sketch_mode(&mut self) -> Option<SketchMode> {
         let left = self.sketch.take();
-        if let Some(kept) = self.sketch_view.take() {
-            match kept.before {
-                Some(before) => self.view.return_to(before),
-                None if self.view.model().is_some() => self
-                    .view
-                    .ask(crate::viewport::ViewAsk::Named(crate::navigate::HOME)),
-                None => self.view.unplace(),
-            }
+        if let Some(before) = self.sketch_view.take().and_then(|kept| kept.before) {
+            self.view.return_to(before);
         }
         left
     }

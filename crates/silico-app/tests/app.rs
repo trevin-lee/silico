@@ -48565,21 +48565,21 @@ fn sketch_mode_opened_while_a_view_eases_keeps_the_view_eased_to_turns_and_goes_
     assert_eq!(never_waits::waits(), 0);
 }
 
-#[test]
-fn leaving_a_sketch_opened_before_the_parts_first_meshes_goes_to_the_parts_home() {
-    // Edit Sketch while the first meshes are refused (a slow first read): no camera has been
-    // chosen yet, so the view sketch mode found is none, and leaving goes where the first
-    // read would have put it, Home's view of the part, not the stand-in camera.
-    let home = {
-        let f = fixture();
-        meshes_a_real_box(&f);
-        let (mut h, _) = f.opened("sketched.silico", SKETCHED);
-        step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
-        meshes_settled(&mut h);
-        view(&h).camera().clone()
-    };
-    let stand_in = silico_app::viewport::View::default().camera().clone();
-    assert_ne!(home, stand_in);
+/// SKETCHED's Home, as the core's first read of its meshes places the view (every body
+/// meshed as the box is).
+fn sketched_home() -> silico_protocol::Camera {
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    view(&h).camera().clone()
+}
+
+/// SKETCHED opened with its first meshes refused (a slow or failed first read), and Edit
+/// Sketch on Triangle, read: no camera chosen yet, so sketch mode turns nothing, the
+/// stand-in camera left as it is. The fixture, the flag that refuses the meshes, and the app.
+fn sketch_opened_before_the_first_meshes() -> (Fixture, Arc<AtomicBool>, AppHarness) {
     let f = fixture();
     meshes_a_real_box(&f);
     let failing = failing_kernel(&f.kernel);
@@ -48588,13 +48588,64 @@ fn leaving_a_sketch_opened_before_the_parts_first_meshes_goes_to_the_parts_home(
     step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
     assert!(view(&h).model().is_none(), "no meshes read yet");
     assert!(!view(&h).placed());
+    let stand_in = view(&h).camera().clone();
+    assert_eq!(&stand_in, silico_app::viewport::View::default().camera());
     double_click(&mut h, "Browser", "Triangle");
     sketch_read(&mut h);
-    step(&mut h);
-    assert!(looks(&h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), "turned");
-    failing.store(false, Ordering::SeqCst);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &stand_in, "turned an unplaced view");
+    assert!(!view(&h).placed());
+    (f, failing, h)
+}
+
+#[test]
+fn a_sketch_opened_before_the_parts_first_meshes_leaves_the_view_for_them_to_place_at_home() {
+    // The first meshes read only once sketch mode has left: their Home places the view, as
+    // a part's first read always does, sketch mode or not.
+    let home = sketched_home();
+    assert_ne!(&home, silico_app::viewport::View::default().camera());
+    let (_f, failing, mut h) = sketch_opened_before_the_first_meshes();
     leave_sketch(&mut h, true);
+    failing.store(false, Ordering::SeqCst);
     meshes_settled(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &home);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_parts_first_meshes_read_while_its_sketch_is_open_place_the_view_and_leaving_keeps_it() {
+    // The first meshes answer while sketch mode is open: their Home places the view there
+    // and then, and leaving has nothing of its own to go back to, so Home stays.
+    let home = sketched_home();
+    let (_f, failing, mut h) = sketch_opened_before_the_first_meshes();
+    failing.store(false, Ordering::SeqCst);
+    meshes_settled(&mut h);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_some());
+    assert_eq!(view(&h).camera(), &home);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &home);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_first_meshes_read_out_as_sketch_mode_leaves_still_places_the_view_at_home() {
+    // The first read's retry is out (held) as sketch mode leaves: it was asked for Home's
+    // view, the view unplaced, and its answer places the view there.
+    let home = sketched_home();
+    let (f, failing, mut h) = sketch_opened_before_the_first_meshes();
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    failing.store(false, Ordering::SeqCst);
+    step_until(&mut h, "the retry's read out", |h| view(h).reading());
+    assert!(view(&h).model().is_none());
+    leave_sketch_unsettled(&mut h, false);
+    hold.release();
+    meshes_settled(&mut h);
+    settled(&mut h);
     step(&mut h);
     assert_eq!(view(&h).camera(), &home);
     assert_eq!(never_waits::waits(), 0);
