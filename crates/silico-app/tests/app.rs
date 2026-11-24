@@ -36360,9 +36360,11 @@ fn two_faces_show_their_distance_normal_distance_and_angle_and_a_pair_angle_refu
     };
     assert!(top(&h, "MEASURE") < top(&h, "SELECTION"));
     // The x = 0 face and the bottom: they meet, at 90°, so no normal distance.
+    // Each waited for: the distance is the kernel's, answered apart from the angle (which
+    // asks none), so either may show first. The normal distance comes with the distance.
     select_in_box(&mut h, &["Face1", "Face5"]);
+    row_until(&mut h, "Distance", "0.00 mm");
     row_until(&mut h, "Angle", "90.00°");
-    assert_eq!(row_value(&h, "Distance").as_deref(), Some("0.00 mm"));
     assert_eq!(row_value(&h, "Normal distance"), None);
     // The top and Vertex1: `angle` refuses a vertex, so there's no Angle row and nothing said
     // of it; the vertex is its own centre, 10 from the face.
