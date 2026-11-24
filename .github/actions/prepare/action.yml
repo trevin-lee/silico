@@ -10,8 +10,8 @@
 #   - pixi's environments in the worktree (.pixi), keyed by pixi.lock, the environments, and
 #     their path (prefix-dev/setup-pixi);
 #   - OCCT's build cache (~/.cache/silico/occt, third_party/occt/build.sh), keyed by the
-#     commit's recipe (third_party/occt, pixi.lock, rust-toolchain.toml: the inputs of
-#     build.sh's own stamp) and the runner's image. Saved by any run that missed it, since it
+#     commit's recipe (third_party/occt, pixi.toml, pixi.lock, rust-toolchain.toml: the inputs
+#     of build.sh's own stamp, and the task that runs it) and the runner's image. Saved by any run that missed it, since it
 #     changes only when the recipe or the toolchain does, and a pull request that changes them
 #     would otherwise build OCCT on every push;
 #   - Cargo's registry and the worktree's target directory with the dependencies' builds only
@@ -83,11 +83,24 @@ runs:
       shell: bash
       run: bash .github/tools.sh
 
+    # Only the toolchains the worktree's rust-toolchain.toml (and the checkout's) pin, which
+    # rustup installs as they're first used: the dependencies' cache key hashes every
+    # installed toolchain's version (Swatinem/rust-cache), so the image's own, which changes
+    # as GitHub updates it, would change the key with nothing Silico builds.
+    - name: The image's Rust toolchains
+      shell: bash
+      run: |
+        keep=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml "$SILICO_GATE_TREE/rust-toolchain.toml" | sort -u)
+        rustup toolchain list | awk '{ print $1 }' | while read -r toolchain; do
+          case " $(echo $keep) " in *" ${toolchain%%-*} "*) continue ;; esac
+          rustup toolchain uninstall "$toolchain"
+        done
+
     - name: OCCT's cache key
       id: occt
       shell: bash
       run: |
-        recipe=$(git -C "$SILICO_GATE_TREE" rev-parse HEAD:third_party/occt HEAD:pixi.lock HEAD:rust-toolchain.toml | sha256sum | cut -c1-16)
+        recipe=$(git -C "$SILICO_GATE_TREE" rev-parse HEAD:third_party/occt HEAD:pixi.toml HEAD:pixi.lock HEAD:rust-toolchain.toml | sha256sum | cut -c1-16)
         echo "key=occt-v1-$ImageOS-$recipe" >>"$GITHUB_OUTPUT"
     - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       id: occt-cache

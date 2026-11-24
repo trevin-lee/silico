@@ -36,11 +36,12 @@ jobs:
     # This isn't the guard: a pull request runs the workflow files of its own merge commit, so
     # a fork can change this line or add a workflow of its own. The guard is the repository's
     # Actions setting that requires approval for every outside contributor's run; never
-    # approve one. On GitHub's hosted runners a fork's run would get a fresh machine, a
-    # read-only token, and no secrets, so running forks' gates is now safe enough to choose;
-    # whether to is the maintainer's decision, and until he makes it this stays. Every other
-    # workflow starts only from a schedule, a dispatch (write access), a push, or a
-    # workflow_run of those, on this repository's own refs.
+    # approve one: a fork's run on a hosted runner gets a fresh machine, a read-only token, and
+    # no secrets, but its workflow files can ask for a self-hosted runner instead, and the
+    # bench's is registered to this repository. Gating forks directly is the maintainer's
+    # decision; until he makes it, this stays. Every other workflow starts only from a
+    # schedule, a dispatch (write access), a push, or a workflow_run of those, on this
+    # repository's own refs.
     #
     # A job skipped by its `if` counts as passed for a required check, so this job's check
     # ("gate") isn't what main's branch protection requires: `verdict`'s status, below, is.

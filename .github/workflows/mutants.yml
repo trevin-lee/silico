@@ -23,7 +23,7 @@
 name: mutants
 # The ref, base, packages, files, and regex, so concurrent runs can be told apart
 # (review-tests finds its run by this title). A filler run's starts "filler a" or "filler
-# b<k>": the filler reads its own last runs back from these titles.
+# b<k>".
 run-name: "${{ inputs.filler && format('filler {0} ', inputs.filler) || '' }}mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}${{ inputs.tests && format(' tested by {0}', inputs.tests) || '' }}${{ inputs.long && ' (long)' || '' }}"
 
 on:
@@ -195,6 +195,10 @@ jobs:
           # asked for.
           if [ -z "$FILLER" ] && [ -z "$LONG" ] && [ "${needed:-0}" -gt 6 ]; then
             echo "::error::$mutants mutants need $needed shards, more than a run that gates a merge may hold (6): dispatch it with long=true, or narrow it (base, files, re, tests)"
+            exit 1
+          fi
+          if [ -z "$FILLER" ] && [ -z "$LONG" ] && [ "$SHARDS" -gt 6 ]; then
+            echo "::error::$SHARDS shards asked for, more than a run that gates a merge may hold (6): dispatch it with long=true, or ask for fewer"
             exit 1
           fi
           echo "count=$shards" >>"$GITHUB_OUTPUT"
