@@ -62,7 +62,7 @@ libc.workspace = true
 libm.workspace = true
 proptest.workspace = true
 sha2.workspace = true
-rustix = { workspace = true, features = ["process"] }
+rustix = { workspace = true, features = ["process", "thread"] }
 serde_json.workspace = true
 silico-protocol.workspace = true
 silico-core = { workspace = true, features = ["fake"] }

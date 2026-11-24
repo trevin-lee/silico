@@ -14,8 +14,9 @@
 //! commands keep their places, drawn off, their tooltips saying they aren't built yet. What
 //! the toolbar shows comes in a [`Shown`], and what was clicked goes back as an [`Act`], so a
 //! test drives it with a stub, and sketch mode's state (whether a sketch is open, whether
-//! Create Sketch can open, the tool on, Construction) and its actions (Create Sketch on a
-//! plane, a tool, Construction, a relation, Finish Sketch) are the caller's to wire.
+//! Create Sketch can open, whether its pick is on, the tool on, Construction) and its actions
+//! (Create Sketch's pick begun, a tool, Construction, a relation, Finish Sketch) are the
+//! caller's to wire.
 //! A button the registry (`crate::shortcuts`) gives keys names them in its tooltip.
 
 use std::sync::Arc;
@@ -24,7 +25,6 @@ use eframe::egui::{
     self, Align, Color32, FontId, Galley, Layout, Pos2, Rect, Response, RichText, Sense, Stroke,
     StrokeKind, Ui, UiBuilder, Vec2, WidgetInfo, WidgetType, accesskit::Role, text::LayoutJob,
 };
-use silico_core::document::OriginPlane;
 use silico_core::sketch_tools::{RelationTool, ToolKind};
 
 use crate::bar;
@@ -42,6 +42,9 @@ pub struct Shown<'a> {
     /// Whether Create Sketch can open now, or `None` while the app has no sketch mode: the
     /// button is then off, its tooltip saying so.
     pub create_sketch: Option<bool>,
+    /// Whether Create Sketch's pick of a plane or a flat face is on (`crate::plane_pick`):
+    /// its button drawn on.
+    pub picking: bool,
     /// Whether a feature's dialog of each kind can open now.
     pub can_open: &'a dyn Fn(Kind) -> bool,
     /// Why a feature's dialog of each kind can't open, if the part lacks what it needs
@@ -91,8 +94,8 @@ impl FilterKind {
 pub enum Act {
     /// A feature's dialog, to open.
     Dialog(Kind),
-    /// Create Sketch, on an origin plane.
-    CreateSketch(OriginPlane),
+    /// Create Sketch: its pick of a plane or a flat face begun (`crate::plane_pick`).
+    CreateSketch,
     /// Finish Sketch.
     FinishSketch,
     /// A sketch tool's button: the tool chosen, or left if it's on.
@@ -146,7 +149,7 @@ const HEIGHT: f32 = theme::TOOLBAR_TABS_HEIGHT + theme::TOOLBAR_PANELS_HEIGHT + 
 enum Does {
     /// Opens a feature's dialog.
     Dialog(Kind),
-    /// Opens Create Sketch's planes.
+    /// Begins Create Sketch's pick of a plane or a flat face, shown pressed while it's on.
     CreateSketch,
     /// Chooses a sketch tool, or leaves it if it's on.
     Tool(Choice),
@@ -200,15 +203,14 @@ const fn keyed(command: Command, key: shortcuts::Command) -> Command {
 const NOT_BUILT: &str = "Not built yet";
 
 /// Create Sketch's words: its button's, and its item's in the canvas's context menu
-/// (`crate::canvas_menu`), which opens the same planes ([`planes`]).
+/// (`crate::canvas_menu`), which begins the same pick (`crate::plane_pick`).
 pub(crate) const CREATE_SKETCH_WORDS: &str = "Create Sketch";
 
 const CREATE_SKETCH: Command = command(
     CREATE_SKETCH_WORDS,
     Icon::Sketch,
-    // The prototype's "Pick an origin plane or a flat face, then sketch on it", once faces
-    // are picked (M5.7).
-    Some("Sketches on an origin plane"),
+    // The prototype's (app.js's `CMD.createSketch`).
+    Some("Pick an origin plane or a flat face, then sketch on it"),
     Does::CreateSketch,
 );
 const PAD: Command = command(
@@ -322,6 +324,30 @@ const ARC: Command = keyed(
     ),
     shortcuts::Command::Arc,
 );
+/// A drawing tool as CREATE's drop-down offers it in a sketch, under the palette's name for
+/// it, with its family's icon. The corner rectangle and the 3-point arc are the row's
+/// Rectangle and Arc, keyed as they are; the variants the row doesn't choose (Fusion's
+/// Center Rectangle, Center Point Arc, and Tangent Arc) are reached here alone, as Fusion
+/// reaches them from its drop-down, with no key, as Fusion gives them none.
+const fn variant(tool: ToolKind, icon: Icon) -> Command {
+    command(
+        crate::sketch::bar::tool_name(tool),
+        icon,
+        None,
+        Does::Tool(Choice::Draw(tool)),
+    )
+}
+const CORNER_RECTANGLE: Command = keyed(
+    variant(ToolKind::CornerRectangle, Icon::Rect),
+    shortcuts::Command::Rectangle,
+);
+const CENTER_RECTANGLE: Command = variant(ToolKind::CenterRectangle, Icon::Rect);
+const THREE_POINT_ARC: Command = keyed(
+    variant(ToolKind::ThreePointArc, Icon::Arc),
+    shortcuts::Command::Arc,
+);
+const CENTERPOINT_ARC: Command = variant(ToolKind::CenterpointArc, Icon::Arc);
+const TANGENT_ARC: Command = variant(ToolKind::TangentArc, Icon::Arc);
 const POINT: Command = keyed(
     command(
         "Point",
@@ -453,7 +479,22 @@ const SKETCH: &[Panel] = &[
     Panel {
         label: "CREATE",
         row: &[LINE, RECTANGLE, CIRCLE, ARC, POINT, CONSTRUCTION],
-        menu: None,
+        // Fusion's sketch CREATE drop-down, in its order: Line, the rectangles, Circle, the
+        // arcs, Point; each family's variants listed flat, as the prototype's menus have no
+        // flyouts (`.menu`'s items, interact.js), each under the palette's name for it.
+        // Then Construction, the row's last.
+        menu: Some(&[
+            Entry::Command(LINE),
+            Entry::Command(CORNER_RECTANGLE),
+            Entry::Command(CENTER_RECTANGLE),
+            Entry::Command(CIRCLE),
+            Entry::Command(THREE_POINT_ARC),
+            Entry::Command(CENTERPOINT_ARC),
+            Entry::Command(TANGENT_ARC),
+            Entry::Command(POINT),
+            Entry::Separator,
+            Entry::Command(CONSTRUCTION),
+        ]),
     },
     Panel {
         label: "MODIFY",
@@ -492,13 +533,6 @@ const CONSTRAINTS: [Command; 11] = [
     constraint("Fix", Icon::CFix, RelationTool::Fix),
 ];
 
-/// Create Sketch's planes, as sketch mode names them.
-const PLANES: [(OriginPlane, &str); 3] = [
-    (OriginPlane::Xy, "XY plane"),
-    (OriginPlane::Xz, "XZ plane"),
-    (OriginPlane::Yz, "YZ plane"),
-];
-
 impl Command {
     /// Whether it's on, as `shown` has the app.
     fn enabled(&self, shown: &Shown<'_>) -> bool {
@@ -517,7 +551,9 @@ impl Command {
             Does::Tool(choice) => Some((Pressed::Tool, shown.tool == Some(choice))),
             Does::Construction => Some((Pressed::Toggle, shown.construction)),
             Does::Filter(kind) => Some((Pressed::Toggle, kind.on(shown.filter))),
-            Does::Dialog(_) | Does::CreateSketch | Does::Constraint(_) | Does::NotBuilt => None,
+            // On while its pick is (the prototype's `tbBtn('createSketch', { on: !!S.pickPlane })`).
+            Does::CreateSketch => Some((Pressed::Tool, shown.picking)),
+            Does::Dialog(_) | Does::Constraint(_) | Does::NotBuilt => None,
         }
     }
 
@@ -529,7 +565,8 @@ impl Command {
             Does::Construction => Some(Act::Construction),
             Does::Filter(kind) => Some(Act::Filter(kind)),
             Does::Constraint(relation) => Some(Act::Relate(relation)),
-            Does::CreateSketch | Does::NotBuilt => None,
+            Does::CreateSketch => Some(Act::CreateSketch),
+            Does::NotBuilt => None,
         }
     }
 
@@ -796,8 +833,8 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
 }
 
 /// A command's button in a panel's row, with its tooltip, its keys named if the registry
-/// gives it any; a click opens its dialog, or, for Create Sketch, its planes; or chooses its
-/// tool, or turns Construction on or off.
+/// gives it any; a click opens its dialog, or, for Create Sketch, begins its pick; or chooses
+/// its tool, or turns Construction on or off.
 fn row_button(ui: &mut Ui, command: &Command, shown: &Shown<'_>, act: &mut Option<Act>) {
     let response = tool_button(
         ui,
@@ -813,13 +850,7 @@ fn row_button(ui: &mut Ui, command: &Command, shown: &Shown<'_>, act: &mut Optio
     }
     .and_then(|key| key.shown(ui.ctx()));
     let response = bar::tooltip(response, command.label, keys, said.as_deref());
-    if command.does == Does::CreateSketch {
-        bar::menu(&response, |ui| {
-            if let Some(plane) = planes(ui) {
-                *act = Some(Act::CreateSketch(plane));
-            }
-        });
-    } else if response.clicked()
+    if response.clicked()
         && let Some(asked) = command.act()
     {
         *act = Some(asked);
@@ -996,17 +1027,14 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                     }
                 }
                 Does::CreateSketch => {
-                    let (button, _) = ui
-                        .add_enabled_ui(enabled, |ui| {
-                            egui::containers::menu::SubMenuButton::from_button(item).ui(ui, |ui| {
-                                if let Some(plane) = planes(ui) {
-                                    *act = Some(Act::CreateSketch(plane));
-                                }
-                            })
-                        })
-                        .inner;
-                    if let (false, Some(said)) = (command.built(shown), command.said(shown)) {
-                        button.on_disabled_hover_text(said);
+                    let item = ui.add_enabled(enabled, item);
+                    let item = match (command.built(shown), command.said(shown)) {
+                        (false, Some(said)) => item.on_disabled_hover_text(said),
+                        _ => item,
+                    };
+                    if item.clicked() {
+                        *act = command.act();
+                        ui.close();
                     }
                 }
                 Does::Dialog(_) | Does::Constraint(_) => {
@@ -1047,57 +1075,6 @@ fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
         FilterKind::Edges => crate::shortcuts::Command::FilterEdge,
         FilterKind::Vertices => crate::shortcuts::Command::FilterVertex,
     }
-}
-
-/// Create Sketch's planes, a menu of their own for a screen reader, labelled Create Sketch:
-/// a click on one closes the menu, and is the plane a sketch is started on. The one menu of
-/// them, which Create Sketch's button opens, and its item in CREATE's drop-down, the
-/// canvas's context menu over nothing (`crate::canvas_menu`), and the empty part's hint
-/// (`crate::canvas_hint`), marking the pass it's drawn in ([`planes_drawn_this_pass`]).
-///
-/// While they're drawn, the viewport draws all three origin planes, the one whose item the
-/// pointer is on (or has the keys' focus) lit (`crate::planes`, the prototype's
-/// `startPickPlane`).
-pub(crate) fn planes(ui: &mut Ui) -> Option<OriginPlane> {
-    let pass = ui.ctx().cumulative_pass_nr();
-    ui.ctx()
-        .data_mut(|data| data.insert_temp(planes_drawn(), pass));
-    let mut chosen = None;
-    let mut lit = None;
-    crate::menu::node(ui, CREATE_SKETCH.label, |ui| {
-        for (plane, word) in PLANES {
-            let item = ui.button(word);
-            if item.hovered() || item.has_focus() {
-                lit = Some(plane);
-            }
-            if item.clicked() {
-                chosen = Some(plane);
-                ui.close();
-            }
-        }
-    });
-    crate::planes::menu_drawn(ui.ctx(), lit);
-    chosen
-}
-
-/// Where egui's memory keeps the pass in which Create Sketch's planes ([`planes`]) were last
-/// drawn.
-fn planes_drawn() -> egui::Id {
-    egui::Id::new("create-sketch-planes-drawn")
-}
-
-/// Whether Create Sketch's planes were drawn in this pass so far (the prototype's plane
-/// pick, `S.pickPlane`): the toolbar's and the canvas's menu's, each drawn before the
-/// canvas's hint reads it.
-pub(crate) fn planes_drawn_this_pass(ctx: &egui::Context) -> bool {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data(|data| data.get_temp::<u64>(planes_drawn()))
-        .is_some_and(|drawn| drawn == pass)
-}
-
-/// The planes' drawing forgotten: the hint's own menu of them, which it doesn't hide from.
-pub(crate) fn forget_planes_drawn(ctx: &egui::Context) {
-    ctx.data_mut(|data| data.remove::<u64>(planes_drawn()));
 }
 
 // ---- Finish Sketch (`.tb-finish`) ----
@@ -1384,6 +1361,7 @@ mod tests {
     struct Sketching {
         tool: Rc<Cell<Option<Choice>>>,
         construction: Rc<Cell<bool>>,
+        picking: Rc<Cell<bool>>,
         asked: Rc<Cell<Option<Act>>>,
     }
 
@@ -1398,6 +1376,7 @@ mod tests {
         let mut shown = Shown {
             in_sketch: false,
             create_sketch: Some(true),
+            picking: false,
             can_open: &on,
             why_closed: &why,
             selected: false,
@@ -1411,9 +1390,10 @@ mod tests {
     }
 
     fn drawn_with(in_sketch: bool, sketching: &Sketching) -> Harness<'static, bool> {
-        let (tool, construction, asked) = (
+        let (tool, construction, picking, asked) = (
             sketching.tool.clone(),
             sketching.construction.clone(),
+            sketching.picking.clone(),
             sketching.asked.clone(),
         );
         let mut h = Harness::builder()
@@ -1424,6 +1404,7 @@ mod tests {
                     let shown = Shown {
                         in_sketch: *in_sketch,
                         create_sketch: Some(true),
+                        picking: picking.get(),
                         can_open: &can_open,
                         why_closed: &|_| None,
                         selected: false,
@@ -2100,6 +2081,31 @@ mod tests {
     }
 
     #[test]
+    fn create_sketch_is_drawn_on_while_its_pick_is() {
+        // app.js's `tbBtn('createSketch', { on: !!S.pickPlane })`: `.tb-btn.on` while the pick
+        // is on (`--blue` behind `--blue-text`, its corners `--r-sm`), at rest otherwise.
+        let sketching = Sketching::default();
+        let mut h = drawn_with(false, &sketching);
+        let laid = laid(&h, &SOLID_PANELS, false);
+        let button = laid
+            .iter()
+            .flat_map(|panel| panel.buttons.iter())
+            .find(|(name, _)| *name == "Create Sketch")
+            .map(|(_, rect)| *rect)
+            .unwrap();
+        let icon = Rect::from_center_size(button.center(), Vec2::splat(css::ICON_LG));
+        assert_eq!(fill_at(&h, button), None);
+        assert_eq!(icon_at(&h, icon), Some(css::G750));
+        sketching.picking.set(true);
+        h.run();
+        assert_eq!(
+            fill_at(&h, button),
+            Some((css::BLUE, CornerRadius::same(css::R_SM)))
+        );
+        assert_eq!(icon_at(&h, icon), Some(css::BLUE_TEXT));
+    }
+
+    #[test]
     fn the_tool_on_is_drawn_as_tb_btn_on_and_construction_on_as_toggle_on_hover_over_both() {
         let sketching = Sketching::default();
         sketching
@@ -2203,6 +2209,46 @@ mod tests {
     /// A button the registry gives keys is the registry's command, under its name and its
     /// line, so its tooltip and the sheet say the same: the keys that reach it do what it
     /// does.
+    /// SKETCH CREATE's drop-down: each drawing tool under its family's icon and its row
+    /// button's key, if the row has it; Construction after the one separator, as its own.
+    #[test]
+    fn sketch_creates_drop_down_gives_each_tool_its_familys_icon_and_key_then_construction() {
+        let menu = SKETCH[0].menu.unwrap_or_default();
+        let seen: Vec<Option<(Does, Icon, Option<shortcuts::Command>)>> = menu
+            .iter()
+            .map(|entry| match entry {
+                Entry::Command(command) => Some((command.does, command.icon, command.key)),
+                _ => None,
+            })
+            .collect();
+        let draw = |tool| Does::Tool(Choice::Draw(tool));
+        use shortcuts::Command as Keys;
+        assert_eq!(
+            seen,
+            [
+                Some((draw(ToolKind::Line), Icon::Line, Some(Keys::Line))),
+                Some((
+                    draw(ToolKind::CornerRectangle),
+                    Icon::Rect,
+                    Some(Keys::Rectangle)
+                )),
+                Some((draw(ToolKind::CenterRectangle), Icon::Rect, None)),
+                Some((draw(ToolKind::Circle), Icon::Circle, Some(Keys::Circle))),
+                Some((draw(ToolKind::ThreePointArc), Icon::Arc, Some(Keys::Arc))),
+                Some((draw(ToolKind::CenterpointArc), Icon::Arc, None)),
+                Some((draw(ToolKind::TangentArc), Icon::Arc, None)),
+                Some((draw(ToolKind::Point), Icon::Point, Some(Keys::Point))),
+                None,
+                Some((
+                    Does::Construction,
+                    Icon::Construction,
+                    Some(Keys::Construction)
+                )),
+            ]
+        );
+        assert!(matches!(menu[8], Entry::Separator));
+    }
+
     #[test]
     fn each_keyed_sketch_button_is_its_registry_commands_under_its_name() {
         let commands: Vec<&Command> = SKETCH.iter().flat_map(|panel| panel.row.iter()).collect();
@@ -2261,6 +2307,7 @@ mod tests {
                 let shown = Shown {
                     in_sketch: false,
                     create_sketch: Some(true),
+                    picking: false,
                     can_open: &can_open,
                     why_closed: &|_| None,
                     selected: false,

@@ -564,7 +564,7 @@ fn a_superseded_recompute_returns_without_waiting_behind_the_newer_ones_solve() 
     // sketches. Superseded before its sketch thread got the solver, by a newer recompute
     // whose sketch thread got there first, it blocked on the Mutex behind the newer one's
     // solve, and its `Run` didn't say Superseded until that solve ended: up to
-    // SKETCH_TIMEOUT (300 s) for a real worker. Now the solver is lent under the engine's
+    // SKETCH_TIMEOUT (300 s then) for a real worker. Now the solver is lent under the engine's
     // state lock, and a newer start wakes a thread waiting for it. Here b, a document whose
     // plan takes a moment, is superseded by c at once; c's solve is held, and b's Run must
     // not wait on it.

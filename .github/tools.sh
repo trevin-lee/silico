@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Installs what CI needs that pixi doesn't provide, into the runner's home, once: rustup
-# (rust-toolchain.toml picks the toolchain), pixi, cargo-nextest, and cargo-mutants. Puts
-# them on the job's PATH.
+# Installs what CI needs that pixi doesn't provide, into the runner's home, unless it's there
+# already: rustup (rust-toolchain.toml picks the toolchain; GitHub's hosted image has it),
+# pixi (.github/actions/prepare puts this version in place first), cargo-nextest, and
+# cargo-mutants. Puts them on the job's PATH.
 set -euo pipefail
 
 PIXI_VERSION=v0.81.0

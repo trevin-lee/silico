@@ -409,18 +409,19 @@ impl Graces {
 }
 
 #[test]
-fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_timeout() {
-    // The worker takes the request, closes its socket, and stays alive. The call's timeout
+fn a_worker_that_closes_its_socket_and_lingers_fails_within_its_timeout() {
+    // The worker says it has started, closes its socket, and stays alive. The call's timeout
     // (300 ms) covers the whole call: waiting for the worker to exit, before it's killed,
     // stops at the call's deadline, not after a fixed grace of 2 s: the grace it decides is
-    // what's left of the 300 ms (at least 100 ms), not 2000.
-    let started = scratch_dir("closes-and-lingers").join("started");
+    // what's left of the 300 ms (at least 100 ms), not 2000. The call is made once the
+    // socket is closed (the script's marker, made after it closes it), so the 300 ms never
+    // race the script, which a loaded machine runs late.
+    let closed = scratch_dir("closes-and-lingers").join("closed");
     let exe = script(
         "closes-and-lingers",
         &format!(
-            "printf '\\0\\0\\0\\0' >&3\ntouch '{}'\ndd bs=1 count=1 <&3 >/dev/null 2>&1\n\
-             exec 3>&-\nexec sleep 600",
-            started.display()
+            "printf '\\0\\0\\0\\0' >&3\nexec 3>&-\ntouch '{}'\nexec sleep 600",
+            closed.display()
         ),
     );
     let graces = Graces::record();
@@ -429,7 +430,7 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
     let lateness = Lateness::start();
     let (err, took) = within(WAIT, move || {
         let mut w = Worker::spawn(&exe).unwrap();
-        wait_for(&started);
+        wait_for(&closed);
         let start = Instant::now();
         let err = call_echo(&mut w, &[1], Duration::from_millis(300)).unwrap_err();
         (err, start.elapsed())
@@ -456,20 +457,64 @@ fn a_worker_that_closes_its_socket_mid_request_and_lingers_fails_within_its_time
 }
 
 #[test]
+fn a_socket_closed_once_the_request_is_sent_leaves_the_worker_what_is_left_of_its_time() {
+    // As above, but the socket closes once the request has reached the worker, so the call
+    // sees it on the reply's side, not the send's: the grace it gives the worker to exit is
+    // what's left of its time there too, not the fixed 2 s. Only a reader the script started
+    // in the background holds the socket (the script's own copy closed, then its marker
+    // made); it ends once it has read the request's length (4 bytes) and the first byte of
+    // its message, so the message's write (one, after the length's: silico-protocol's
+    // `write_message`) has been taken whole before the socket closes. (Ending after the
+    // first byte, it closed between the two writes in a few runs of a hundred, and the
+    // message's failed.) The call's 1.9 s, under the 2 s it must be told from, leave room
+    // for that reader, already started, to wake and exit; a time like the 300 ms above
+    // would race it.
+    let closed = scratch_dir("takes-then-closes").join("closed");
+    let exe = script(
+        "takes-then-closes",
+        &format!(
+            "printf '\\0\\0\\0\\0' >&3\ndd bs=1 count=5 <&3 >/dev/null 2>&1 &\nexec 3>&-\n\
+             touch '{}'\nexec sleep 600",
+            closed.display()
+        ),
+    );
+    let graces = Graces::record();
+    let err = within(WAIT, move || {
+        let mut w = Worker::spawn(&exe).unwrap();
+        wait_for(&closed);
+        call_echo(&mut w, &[1], Duration::from_millis(1900)).unwrap_err()
+    });
+    assert_eq!(err.code(), ErrorCode::WorkerCrashed, "{err}");
+    // Seen on the reply's side: no send failed.
+    assert!(
+        err.cause()
+            .is_some_and(|c| c == "it stopped responding and was killed"),
+        "{err}"
+    );
+    let graces = graces.all();
+    assert!(
+        matches!(graces[..], [grace] if (100..=1900).contains(&grace)),
+        "a call allowed 1.9 s gave its worker {graces:?} ms to exit: {err}"
+    );
+}
+
+#[test]
 fn a_worker_whose_child_holds_its_pipes_fails_within_its_timeout() {
-    // The worker takes the request and exits, but a process it started holds its log open:
+    // The worker closes its socket and exits, but a process it started holds its log open:
     // waiting to read it to its end stops at the call's deadline too. (One that held the
-    // socket too would keep the call waiting for a reply, until its timeout.)
+    // socket too would keep the call waiting for a reply, until its timeout.) The call is
+    // made once the socket is closed and the child started (the script's marker, made
+    // after both), so the 300 ms never race the script.
     let dir = scratch_dir("child-holds-pipes");
     let pidfile = dir.join("pid");
     let started = dir.join("started");
     let exe = script(
         "child-holds-pipes",
         &format!(
-            "printf '\\0\\0\\0\\0' >&3\ntouch '{}'\ndd bs=1 count=1 <&3 >/dev/null 2>&1\n\
-             exec 3>&-\nsleep 600 &\necho $! > '{}'\nexit 0",
-            started.display(),
-            pidfile.display()
+            "printf '\\0\\0\\0\\0' >&3\nexec 3>&-\nsleep 600 &\necho $! > '{}'\n\
+             touch '{}'\nexit 0",
+            pidfile.display(),
+            started.display()
         ),
     );
     let graces = Graces::record();
@@ -1216,6 +1261,22 @@ fn a_worker_named_by_a_bare_name_runs_the_one_in_the_working_directory() {
     );
 }
 
+/// This thread, and every thread it starts from now on (they take its CPUs), and the
+/// processes they start, kept to at most four of the CPUs it may run on.
+#[cfg(target_os = "linux")]
+fn on_four_cpus() {
+    use rustix::thread::{CpuSet, sched_getaffinity, sched_setaffinity};
+    let allowed = sched_getaffinity(None).unwrap();
+    let mut four = CpuSet::new();
+    for cpu in (0..CpuSet::MAX_CPU)
+        .filter(|&cpu| allowed.is_set(cpu))
+        .take(4)
+    {
+        four.set(cpu);
+    }
+    sched_setaffinity(None, &four).unwrap();
+}
+
 #[test]
 fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
     // MAX_WORKERS slots of a stand-in worker that never starts: 1024 processes and three
@@ -1228,12 +1289,24 @@ fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
     // forks this whole process (the socket's descriptor is passed in the child before exec),
     // growing by three threads a worker, so it costs far more: 32 s on the CI runner with
     // six mutants shards running. The bounds are about four times what was measured, per
-    // platform. The wall clock bounds
-    // only a hang, at 9 minutes (nextest allows this test 10: .config/nextest.toml): so a
-    // start or drop that waits on each worker is caught once the wait is about half a
-    // second (a handshake's timeout, say), not a brief sleep, which the CPU time doesn't see.
+    // platform.
+    //
+    // On Linux the pool runs on four CPUs at most. Spread over a large machine's, its 3,072
+    // threads made the kernel's share of the CPU time the machine's too: each fork, and each
+    // thread's end, waits on every CPU the process has run on, and on the CI VM's 30 busy
+    // vCPUs the drop took 7.8 s of CPU on CI's gate (run 45385197973) and 2–3 s on the VM at
+    // a load of 100, and the start 134 s and 142 s at a load of 150 (2026-11-24), past the
+    // bounds, though the pool's own code took at most 0.15 s and 1.8 s of them. On four, at
+    // loads of 100 to 240, the start took 23–33 s and the drop 0.45–1.3 s.
+    //
+    // The wall clock bounds only a hang, at 9 minutes (nextest allows this test 10:
+    // .config/nextest.toml): so a start or drop that waits on each worker is caught once the
+    // wait is about half a second (a handshake's timeout, say), not a brief sleep, which the
+    // CPU time doesn't see.
     let exe = script("most-workers", "exec sleep 600");
     let (started, pids, dropped) = within(Duration::from_secs(540), move || {
+        #[cfg(target_os = "linux")]
+        on_four_cpus();
         let start = cpu_time::ProcessTime::now();
         let pool = KernelPool::start_workers(&exe, silico_core::pool::MAX_WORKERS);
         let started = start.elapsed();

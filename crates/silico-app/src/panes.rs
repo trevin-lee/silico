@@ -302,6 +302,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
         if let Some(shown) = asked.planes_shown {
             tab.show_origin_planes(shown);
         }
+        if let Some(plane) = asked.plane_picked {
+            tab.pick_origin_plane(self.sessions, plane);
+            *self.next_frame = true;
+        }
         if tab.view.plane_hovered != asked.plane_hovered {
             tab.view.plane_hovered = asked.plane_hovered;
             // The canvas, drawn before the browser or after it, draws it from the next frame,
@@ -606,13 +610,12 @@ fn preview_of(tab: &Tab) -> Option<properties::Preview> {
 /// The selected feature's properties (`featureProps`): its head (its type's icon, its name,
 /// its type and ID), the document's problems and its own (its error card, with Edit, as
 /// `featureProps` offers it, `noShow`), its name, editable, which is an edit of the
-/// document, and its health and ID, with the ID's copy button (`prop('ID', …, { copy })`);
-/// and, if another program changed it, what changed (the info Changed on disk card, with
-/// Mark as seen). What an error card's button asked, if one was.
-///
-/// SEAM: its parameters (`featureProps`' PARAMETERS: a pad's profile, extent, and
-/// direction), which need its fields read, as its dialog reads them; and its Edit feature
-/// and Suppress buttons (the timeline's double-click and menu edit it already).
+/// document; its PARAMETERS ([`parameters`]); its health and ID, with the ID's copy button
+/// (`prop('ID', …, { copy })`); its Edit feature (Edit Sketch for a sketch) and Suppress
+/// (Unsuppress for one suppressed), each its feature menu's item, done as the menu does it,
+/// off with the menu's reason; and, if another program changed it, what changed (the info
+/// Changed on disk card, with Mark as seen). What an error card's button asked, if one
+/// was.
 fn feature<P: Clients + 'static>(
     ui: &mut Ui,
     tab: &mut Tab,
@@ -696,6 +699,10 @@ fn feature<P: Clients + 'static>(
     }
     field.text = text;
     *name = Some(field);
+    if let Some(id) = parameters(ui, tab, entry, sessions) {
+        tab.selection_mut().select_feature(id);
+        *next_frame = true;
+    }
     properties::section(ui, "Health");
     let (state, colour) = match entry.health {
         Health::Healthy => ("Healthy", theme::SUCCESS),
@@ -706,6 +713,33 @@ fn feature<P: Clients + 'static>(
     };
     properties::text_row(ui, "State", properties::body(state, colour));
     properties::copy_row(ui, "ID", entry.id.as_str());
+    // `featureProps`' buttons: Edit (`btn-secondary`, the pencil) and Suppress
+    // (`btn-ghost`), the feature menu's own items, words, and reasons, done through its
+    // `act`, so each does what its menu item does.
+    use crate::feature_menu::{self, Item};
+    let place = tab.selected_in;
+    let items = [Item::Edit, Item::Suppress];
+    let offs = items.map(|item| feature_menu::off(tab, entry, item, place));
+    let buttons = [
+        crate::modal::Button::new(
+            feature_menu::label(Item::Edit, entry, place),
+            crate::modal::Kind::Secondary,
+        )
+        .icon(Icon::Edit)
+        .enabled(offs[0].is_none()),
+        crate::modal::Button::new(
+            feature_menu::label(Item::Suppress, entry, place),
+            crate::modal::Kind::Ghost,
+        )
+        .enabled(offs[1].is_none()),
+    ];
+    let reasons = offs.each_ref().map(Option::as_deref);
+    if let Some(item) =
+        properties::buttons_off(ui, &buttons, &reasons).and_then(|at| items.get(at).copied())
+    {
+        let act = feature_menu::act_of(item, entry, place);
+        *next_frame |= feature_menu::act(tab, sessions, act);
+    }
     properties::hint(
         ui,
         &[(
@@ -713,6 +747,89 @@ fn feature<P: Clients + 'static>(
             false,
         )],
     );
+    asked
+}
+
+/// The selected feature's PARAMETERS (`featureProps`' `section('Parameters')` and its
+/// rows, [`crate::parameters`]): a sketch's from its read, any other's from its text at the
+/// tab's revision, read here off the UI thread, the rows as last read shown meanwhile; no
+/// section while there are none. The feature a Profile link asked selected, if one was
+/// clicked.
+fn parameters<P: Clients + 'static>(
+    ui: &mut Ui,
+    tab: &mut Tab,
+    entry: &Entry,
+    sessions: &Arc<Sessions<P>>,
+) -> Option<FeatureId> {
+    use crate::parameters::{Context, Shown, feature_rows, has_parameters, sketch_rows};
+    if !has_parameters(entry.kind) {
+        return None;
+    }
+    let rows = if entry.kind == "sketch" {
+        sketch_rows(tab.sketch_reads.held(&entry.id).map(|held| &*held.read))
+    } else {
+        let (session, revision) = (tab.id, tab.revision);
+        tab.parameters.poll(sessions, &session, &entry.id, revision);
+        let tab = &*tab;
+        let name = |id: &FeatureId| tab.entry(id.as_str()).map(|entry| entry.name.clone());
+        let sketch = |id: &FeatureId| tab.sketch_reads.held(id).map(|held| &*held.read);
+        let context = Context {
+            name: &name,
+            sketch: &sketch,
+        };
+        tab.parameters
+            .node(&entry.id)
+            .map(|node| feature_rows(entry.kind, node, &context))
+            .unwrap_or_default()
+    };
+    // No section with no rows (a suppressed sketch, never read); but while a feature's text
+    // is read, the room its kind's rows last took, so HEALTH and the buttons under it stay
+    // where they'll be once it answers.
+    if rows.is_empty() {
+        let reading = entry.kind != "sketch" && tab.parameters.node(&entry.id).is_none();
+        if let Some(kept) = tab
+            .parameters
+            .last_shown(entry.kind)
+            .filter(|kept| reading && *kept > 0)
+        {
+            properties::section(ui, "Parameters");
+            ui.allocate_exact_size(
+                Vec2::new(
+                    ui.available_width(),
+                    kept as f32 * theme::PROPERTY_ROW_HEIGHT,
+                ),
+                Sense::hover(),
+            );
+        }
+        return None;
+    }
+    tab.parameters.showed(entry.kind, rows.len());
+    properties::section(ui, "Parameters");
+    let mut asked = None;
+    for row in rows {
+        match row.value {
+            Shown::Text(words, colour) => {
+                properties::text_row(ui, row.key, properties::body(&words, colour));
+            }
+            Shown::Id(id) => properties::text_row(
+                ui,
+                row.key,
+                egui::text::LayoutJob::single_section(
+                    id,
+                    properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
+                ),
+            ),
+            Shown::Link {
+                feature,
+                name,
+                after,
+            } => {
+                if properties::link_row_then(ui, row.key, &name, after.as_deref()) {
+                    asked = Some(feature);
+                }
+            }
+        }
+    }
     asked
 }
 
@@ -1296,6 +1413,8 @@ struct Asked {
     planes_shown: Option<bool>,
     /// The origin plane whose row the pointer is on, if one is.
     plane_hovered: Option<silico_core::document::OriginPlane>,
+    /// The origin plane whose row was clicked while Create Sketch's pick is on: picked.
+    plane_picked: Option<silico_core::document::OriginPlane>,
     /// A row clicked: its feature, and how its row selects it.
     selected: Option<(FeatureId, SelectedAs)>,
     /// A selected row Ctrl-clicked (Cmd on macOS): its feature taken out of the selection.
@@ -1335,7 +1454,7 @@ fn sketch_prefix(tab: &Tab, id: &FeatureId) -> Option<&'static str> {
 /// plane by its name, as the prototype's `XY`, `XZ`, and `YZ`; a planar face as `Face`, the
 /// prototype's sketch on a face before it names one (sketch.js's `plane: opts.plane ||
 /// 'Face'`), since the name it stores (`k7f2qx3m.box.Face6`) is no word for a row's right.
-fn plane_meta(plane: &silico_core::document::Plane) -> &'static str {
+pub(crate) fn plane_meta(plane: &silico_core::document::Plane) -> &'static str {
     use silico_core::document::{OriginPlane, Plane};
     match plane {
         Plane::Origin(OriginPlane::Xy) => "XY",
@@ -1476,12 +1595,21 @@ fn tree(
                 if answer.eye.as_ref().is_some_and(egui::Response::clicked) {
                     asked.toggled.push(what);
                 }
-                // A plane's row under the pointer lights its plane in the canvas.
-                if let Some(plane) = crate::planes::of_row(name)
-                    && (answer.row.hovered()
-                        || answer.eye.as_ref().is_some_and(egui::Response::hovered))
-                {
-                    asked.plane_hovered = Some(plane);
+                // A plane's row under the pointer lights its plane in the canvas, and, while
+                // Create Sketch's pick is on, one with the keys' focus too; clicked then (or
+                // Enter on it), it's picked (`crate::plane_pick`), as Fusion's browser and
+                // SolidWorks' tree give a plane a sketch is asked for.
+                if let Some(plane) = crate::planes::of_row(name) {
+                    let picking = tab.plane_pick.is_some();
+                    if answer.row.hovered()
+                        || answer.eye.as_ref().is_some_and(egui::Response::hovered)
+                        || (picking && answer.row.has_focus())
+                    {
+                        asked.plane_hovered = Some(plane);
+                    }
+                    if answer.row.clicked() && picking {
+                        asked.plane_picked = Some(plane);
+                    }
                 }
                 answer
                     .row
@@ -4030,6 +4158,13 @@ mod property_panel_drawn {
     fn a_features_properties_are_drawn_as_feature_props_with_its_error_card_and_name_field() {
         let mut tab = part();
         tab.selection_mut().select_feature(fid("c0000001"));
+        // The cut's text as a read gives it: its target the block, its tool one the timeline
+        // doesn't list, named by its ID.
+        let cut = r#"{"id": "c0000001", "type": "cut", "v": 1, "name": "Hole", "base": "b0000001", "tool": "t0000001"}"#;
+        tab.parameters.hold(
+            fid("c0000001"),
+            silico_core::document::json::read(cut.as_bytes()).unwrap(),
+        );
         let h = drawn(tab);
         let mut y = title_and_head(&h, "Hole", "Subtract · c0000001", body(css::FS_SMALL));
         // The line under the title: the type, then the ID in monospace.
@@ -4107,13 +4242,40 @@ mod property_panel_drawn {
             body(css::FS),
             css::G550,
         );
-        y = section_at(&h, "HEALTH", y + css::ROW_H);
+        // PARAMETERS after the Name row (`section('Parameters')`), its rows the feature's text
+        // as read, each a `.prop` in the value's own type and Gray.800; then HEALTH.
+        y = section_at(&h, "PARAMETERS", y + css::ROW_H);
+        y = row_at(&h, "Target Body", "Block", y, body(css::FS), css::G800);
+        // Its tool, which the timeline doesn't list, by its ID, in the monospace type.
+        y = row_at(&h, "Tool Body", "t0000001", y, mono(), css::G800);
+        y = section_at(&h, "HEALTH", y);
         y = row_at(&h, "State", "Error", y, body(css::FS), css::RED);
         y = row_at(&h, "ID", "c0000001", y, mono(), css::G800);
+        // `featureProps`' buttons, 10 under the rows: Edit feature (`.btn-secondary`,
+        // Gray.300) first, then Suppress (`.btn-ghost`, no fill), 6 after it.
+        let edit = h.get_by_role_and_label(Role::Button, "Edit feature").rect();
+        at(
+            edit.min,
+            Pos2::new(PANE.x + css::PAD, y + css::BUTTONS_PADDING),
+            "Edit feature",
+        );
+        assert!(near(edit.height(), css::BTN_H));
+        assert_eq!(
+            fills_at(&h, edit),
+            [(css::G300, CornerRadius::same(css::R_SM), Stroke::NONE)]
+        );
+        let suppress = h.get_by_role_and_label(Role::Button, "Suppress").rect();
+        at(
+            suppress.min,
+            Pos2::new(edit.right() + css::BUTTONS_GAP, edit.top()),
+            "Suppress",
+        );
+        assert!(near(suppress.height(), css::BTN_H));
+        assert!(fills_at(&h, suppress).is_empty(), "a ghost has no fill");
         hint_at(
             &h,
             "Hovering a feature in the timeline lights up the faces it made.",
-            y,
+            edit.bottom() + css::BUTTONS_PADDING,
         );
     }
 
@@ -5722,5 +5884,61 @@ mod property_panel_drawn {
         h.get_by_role_and_label(Role::Button, "Copy").click();
         h.step();
         assert_eq!(copied(&h).as_deref(), Some("b0000001"));
+    }
+
+    #[test]
+    fn the_panels_suppress_asks_the_next_frame_to_poll_what_it_sent() {
+        // The menu's Suppress asks the next frame, to poll the `suppress_feature` it sent
+        // (the browser's test above); the panel's, the same item through the same `act`,
+        // asks it too, from a frame that asked nothing before it.
+        let mut tab = part();
+        tab.selection_mut().select_feature(fid("b0000001"));
+        let mut h = drawn(tab);
+        assert!(!h.state().next_frame, "nothing sent yet");
+        h.get_by_role_and_label(Role::Button, "Suppress").click();
+        h.run_steps(2);
+        assert!(h.state().next_frame, "the suppression sent, never polled");
+    }
+
+    /// `part()` with a sketch, Profile, listed before its features, selected, its read not
+    /// held (as a suppressed sketch's, never read), after a sketch's PARAMETERS last showed
+    /// four rows.
+    fn unread_sketch() -> Tab {
+        let mut tab = part();
+        if let Some(features) = tab
+            .timeline
+            .as_mut()
+            .and_then(|timeline| timeline.features.as_mut())
+        {
+            features.insert(0, entry("s0000001", "sketch", "Profile", Health::Healthy));
+        }
+        tab.parameters.showed("sketch", 4);
+        tab.selection_mut().select_feature(fid("s0000001"));
+        tab
+    }
+
+    #[test]
+    fn a_sketch_never_read_has_no_parameters_however_many_rows_a_sketch_last_showed() {
+        // A sketch's rows are from its read, never from a text read off the UI thread: with
+        // none held there's nothing to wait for, so no PARAMETERS, not an empty one kept the
+        // height of the last sketch's four rows. HEALTH straight under the Name row.
+        let h = drawn(unread_sketch());
+        assert!(h.query_by_label("PARAMETERS").is_none(), "an empty header");
+        // The Name row's top, its field centred in it (`.field`, 22 high in a 24 row).
+        let name = h.get_by_role_and_label(Role::TextInput, "Name").rect();
+        let row = name.top() - (css::ROW_H - css::FIELD_H) / 2.0;
+        section_at(&h, "HEALTH", row + css::ROW_H);
+    }
+
+    #[test]
+    fn a_feature_read_while_its_kind_last_showed_no_rows_keeps_no_room() {
+        // The cut's text not read yet, and a cut last shown with no rows: no room to keep,
+        // so no PARAMETERS header over nothing.
+        let mut tab = part();
+        tab.parameters.showed("cut", 0);
+        tab.selection_mut().select_feature(fid("c0000001"));
+        let h = drawn(tab);
+        assert!(h.query_by_label("PARAMETERS").is_none(), "an empty header");
+        assert!(h.query_by_label("HEALTH").is_some());
     }
 }

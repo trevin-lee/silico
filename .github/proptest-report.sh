@@ -14,7 +14,7 @@
 # Run by the workflow's last job, on scheduled runs, with the job's token (GH_TOKEN, GH_REPO,
 # OWNER), the exploration's RESULT (success or failure), RUN_URL, and DIR, the exploration's
 # output (its failures/, if any test failed, and its outcome, tests/proptest-explore.sh),
-# as the VM keeps it or, failing that, its artifact (missing if it wrote none).
+# as its artifact holds it (missing if it wrote none).
 set -euo pipefail
 
 # gh, verified.

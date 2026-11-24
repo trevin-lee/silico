@@ -395,6 +395,20 @@ pub const SKETCH_INVALID: Color32 = hex(0xf2c94c);
 pub const SKETCH_DANGLING: Color32 = hex(0xb5b84a);
 /// A driven dimension (Gray.500).
 pub const SKETCH_DRIVEN: Color32 = GRAY_500;
+
+/// The colour a sketch in `state` is drawn and worded in, wherever it shows (sketch mode's
+/// status, a shown sketch's lines): DESIGN.md's *Sketch definition states*, under defined
+/// [`SKETCH_UNDER_DEFINED`], fully defined [`SKETCH_FULLY_DEFINED`], over defined and
+/// unsolvable [`SKETCH_OVER_DEFINED`], invalid [`SKETCH_INVALID`].
+pub fn sketch_state_colour(state: silico_core::sketch_states::SketchState) -> Color32 {
+    use silico_core::sketch_states::SketchState;
+    match state {
+        SketchState::UnderDefined => SKETCH_UNDER_DEFINED,
+        SketchState::FullyDefined => SKETCH_FULLY_DEFINED,
+        SketchState::OverDefined | SketchState::NoSolution => SKETCH_OVER_DEFINED,
+        SketchState::Invalid => SKETCH_INVALID,
+    }
+}
 /// A curve's stroke.
 pub const SKETCH_STROKE_WIDTH: f32 = 1.8;
 /// Construction geometry: dashed in its state's colour (DESIGN.md, *Tokens*), this long a
@@ -944,6 +958,9 @@ pub const CANVAS_HINT_PADDING: Margin = Margin {
 pub const CANVAS_HINT_GAP: f32 = 10.0;
 pub const CANVAS_HINT_TEXT: Color32 = TEXT_DEFAULT;
 pub const CANVAS_HINT_STRONG: Color32 = TEXT_STRONG;
+/// Where a hint stands, centred across the canvas: its top 18 below the canvas's
+/// (`.canvas-hint`'s `top: 18px`), as Create Sketch's pick's does.
+pub const CANVAS_HINT_TOP: f32 = 18.0;
 /// Where the empty part's hint stands, centred across the canvas: its bottom 64 above the
 /// canvas's (app.js's `top:auto;bottom:64px`, over `.canvas-hint`'s `top: 18px`), clear of
 /// the navigation bar under it.
@@ -1412,8 +1429,11 @@ pub const PROPERTY_KEY_WIDTH: f32 = 96.0;
 pub const PROPERTY_ROW_GAP: f32 = 8.0;
 pub const PROPERTY_KEY: Color32 = TEXT_SUBDUED;
 pub const PROPERTY_VALUE: Color32 = GRAY_800;
-/// The gap between a row's value and its copy button (`.prop .v { gap: 6px }`).
-pub const PROPERTY_COPY_GAP: f32 = 6.0;
+/// The gap between the parts of a row's value (`.prop .v { display: flex; gap: 6px }`): a
+/// link and the words after it.
+pub const PROPERTY_VALUE_GAP: f32 = 6.0;
+/// The gap between a row's value and its copy button (`.prop .v`'s gap).
+pub const PROPERTY_COPY_GAP: f32 = PROPERTY_VALUE_GAP;
 /// A view's row of buttons under its rows (`selectionProps`' `padding: 10px var(--pad);
 /// gap: 6px`): 10 above and below it, its buttons 6 apart.
 pub const PROPERTY_BUTTONS_PADDING: f32 = 10.0;
@@ -3159,6 +3179,7 @@ mod tests {
         // border: 1px solid var(--g250); border-radius: var(--r); box-shadow: 0 4px 14px
         // rgba(0,0,0,.5)`; the page's text `var(--g750)`, `.strong`'s `var(--g1000)`.
         assert_eq!(CANVAS_HINT_BOTTOM, 64.0);
+        assert_eq!(CANVAS_HINT_TOP, 18.0);
         assert_eq!(CANVAS_HINT_GAP, 10.0);
         assert_eq!(
             CANVAS_HINT_PADDING,

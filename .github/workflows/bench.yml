@@ -1,6 +1,15 @@
-# The drag latency benchmark (crates/silico-sketch/benches/drag.rs, M3.7) on the
-# self-hosted Linux runner, on request: its table in the run's summary, and the table and
-# its JSON lines as an artifact. It records times; it fails on none.
+# The drag latency benchmark (crates/silico-sketch/benches/drag.rs, M3.7) and the others below,
+# on request: its table in the run's summary, and the table and its JSON lines as an
+# artifact. It records times; it fails on none.
+#
+# The one workflow left on the maintainer's self-hosted runner (the CI VM's silico-18,
+# labelled sweep), while every other moved to GitHub's hosted runners: drag, render, views,
+# and picking record absolute times and memory, which are read against earlier runs' and the
+# design notes' figures, so they run on the same machine every time, which a hosted runner
+# isn't (its CPU model and its neighbours vary). Only warm compares within one run (a first
+# rebuild with and without the warm start); it stays beside the others. The views and
+# picking benches read the B-rep of NIST's CTC 02 that the corpus left on that runner (pixi
+# run corpus).
 #
 #   gh workflow run bench.yml --ref main -f ref=<branch>
 name: bench
@@ -22,27 +31,8 @@ permissions:
   contents: read
 
 jobs:
-  # A bench is real work, and filler shards beside it would skew its times: filler runs
-  # yield to it.
-  yield:
-    runs-on: [self-hosted, linux, x64, control]
-    timeout-minutes: 5
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          sparse-checkout: .github
-      - env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: bash .github/cancel-filler.sh
-
   drag:
-    needs: yield
-    # Even if the yield failed: the bench is the point.
-    if: ${{ !cancelled() && (inputs.bench == 'drag' || inputs.bench == '') }}
+    if: ${{ inputs.bench == 'drag' || inputs.bench == '' }}
     runs-on: [self-hosted, linux, x64, sweep]
     # A full solve a frame at the largest sizes takes seconds: each mode stops after a
     # minute, so the whole run is some minutes, after the build.
@@ -76,9 +66,7 @@ jobs:
           path: ${{ runner.temp }}/bench
 
   render:
-    needs: yield
-    # Even if the yield failed: the bench is the point.
-    if: ${{ !cancelled() && inputs.bench == 'render' }}
+    if: ${{ inputs.bench == 'render' }}
     runs-on: [self-hosted, linux, x64, sweep]
     timeout-minutes: 60
     steps:
@@ -112,9 +100,7 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
 
   warm:
-    needs: yield
-    # Even if the yield failed: the bench is the point.
-    if: ${{ !cancelled() && inputs.bench == 'warm' }}
+    if: ${{ inputs.bench == 'warm' }}
     runs-on: [self-hosted, linux, x64, sweep]
     timeout-minutes: 60
     steps:
@@ -140,9 +126,7 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
 
   views:
-    needs: yield
-    # Even if the yield failed: the bench is the point.
-    if: ${{ !cancelled() && inputs.bench == 'views' }}
+    if: ${{ inputs.bench == 'views' }}
     runs-on: [self-hosted, linux, x64, sweep]
     timeout-minutes: 60
     steps:
@@ -154,8 +138,8 @@ jobs:
       - name: View change bench
         run: |
           echo "Measuring $(git log -1 --format='%h %s')"
-          # CTC 02 as the corpus's nightly run (oracle-sweep.yml) left FreeCAD's B-rep of it
-          # on this runner.
+          # CTC 02 as the corpus (pixi run corpus, the nightly's before it moved to hosted
+          # runners) left FreeCAD's B-rep of it on this runner.
           part="${XDG_CACHE_HOME:-$HOME/.cache}/silico/corpus/nist/brep/nist_ctc_02_asme1_rc.stp.brep"
           if [ ! -f "$part" ]; then
             echo "no B-rep of CTC 02 at $part: run the corpus (pixi run corpus) on this runner first" >&2
@@ -181,9 +165,7 @@ jobs:
           } >>"$GITHUB_STEP_SUMMARY"
 
   picking:
-    needs: yield
-    # Even if the yield failed: the bench is the point.
-    if: ${{ !cancelled() && inputs.bench == 'picking' }}
+    if: ${{ inputs.bench == 'picking' }}
     runs-on: [self-hosted, linux, x64, sweep]
     timeout-minutes: 60
     steps:
@@ -195,8 +177,8 @@ jobs:
       - name: Picking bench
         run: |
           echo "Measuring $(git log -1 --format='%h %s')"
-          # CTC 02 as the corpus's nightly run (oracle-sweep.yml) left FreeCAD's B-rep of it
-          # on this runner.
+          # CTC 02 as the corpus (pixi run corpus, the nightly's before it moved to hosted
+          # runners) left FreeCAD's B-rep of it on this runner.
           part="${XDG_CACHE_HOME:-$HOME/.cache}/silico/corpus/nist/brep/nist_ctc_02_asme1_rc.stp.brep"
           if [ ! -f "$part" ]; then
             echo "no B-rep of CTC 02 at $part: run the corpus (pixi run corpus) on this runner first" >&2

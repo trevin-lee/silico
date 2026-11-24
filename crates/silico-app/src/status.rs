@@ -146,7 +146,21 @@ pub struct Bar {
     pub saved: Option<Saved>,
     /// In sketch mode, what the bar says of the sketch.
     pub sketch: Option<StatusLine>,
+    /// While Create Sketch's pick is on, what the bar says of it ([`Pick`]).
+    pub pick: Option<Pick>,
 }
+
+/// What the bar says while Create Sketch's pick is on (`crate::plane_pick`), as the
+/// prototype's `renderStatus` does: the flat face the pointer is over, by its name as the
+/// selection's hover says one; or else, strong, what to pick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pick {
+    Face(String),
+    Asking,
+}
+
+/// The pick's words, as the prototype's status bar has them.
+pub const PICK_WORDS: &str = "Pick a plane or a flat face to sketch on";
 
 /// What the person asked of the bar this frame.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -207,6 +221,10 @@ pub fn of(tab: &Tab, message: Option<String>) -> Bar {
             .sketch
             .as_ref()
             .map(|mode| mode.status(&tab.sketch_name())),
+        pick: tab.plane_pick.as_ref().map(|pick| match pick.lit_face() {
+            Some(face) => Pick::Face(face.name.to_string()),
+            None => Pick::Asking,
+        }),
     }
 }
 
@@ -222,6 +240,7 @@ pub fn unopened(warming: Option<Warming>, message: Option<String>) -> Bar {
         disk: None,
         saved: None,
         sketch: None,
+        pick: None,
     }
 }
 
@@ -391,6 +410,17 @@ fn middle(ui: &mut Ui, bar: &Bar) {
         for words in &bar.selection {
             item(ui, None, words, theme::STATUS_TEXT);
         }
+    }
+    // The prototype's `renderStatus`: what's hovered before the pick's words, which are
+    // strong (`.st-item.strong`).
+    match &bar.pick {
+        Some(Pick::Face(name)) => {
+            item(ui, None, name, theme::STATUS_TEXT);
+        }
+        Some(Pick::Asking) => {
+            item(ui, None, PICK_WORDS, theme::TEXT_STRONG);
+        }
+        None => {}
     }
 }
 
@@ -1136,6 +1166,7 @@ mod tests {
             disk,
             saved: Some(saved),
             sketch: None,
+            pick: None,
         }
     }
 
