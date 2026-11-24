@@ -31,6 +31,11 @@
 //!   sketch by (`super::bounds::model_box`), exact and the same at every scale, given with
 //!   its lines ([`FrameLines::fit`]). The camera's clamp takes the strips' own boxes, the
 //!   reach the renderer measures.
+//! - SEAM: the view a part opens at is the core's Home of its bodies alone (the first
+//!   `meshes` read's), so a shown sketch reaching past them is fitted only once Home, Fit, or
+//!   a named view is asked; fitting it at the opening needs the core's named views to take
+//!   the sketches, or the app to fit again once they're all drawn without a race against
+//!   later edits (#592's review).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

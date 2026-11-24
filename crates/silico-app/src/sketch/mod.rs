@@ -1474,24 +1474,6 @@ impl SketchReads {
         }
     }
 
-    /// Whether every sketch of `rows` that's `shown` has been read of the model `published`
-    /// (answered, kept or refused), none in flight: what's drawn of them is all there is to
-    /// draw of it.
-    pub fn shown_read(
-        &self,
-        rows: &[Row],
-        published: Option<Revision>,
-        shown: &dyn Fn(&FeatureId) -> bool,
-    ) -> bool {
-        let Some(published) = published else {
-            return false;
-        };
-        let in_flight = self.reading.as_ref().map(|(id, _, _)| id);
-        rows.iter()
-            .filter(|row| shown(&row.id))
-            .all(|row| self.asked.get(&row.id) == Some(&published) && in_flight != Some(&row.id))
-    }
-
     /// The sketch `id`'s prefix, if its state is read and has one.
     pub fn prefix(&self, id: &FeatureId) -> Option<&'static str> {
         self.state(id).and_then(prefix)

@@ -49184,22 +49184,6 @@ fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is
     under_defined_sketches(&f);
     let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
     step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
-    // Loose reaches past Legs, so the view the part opened at fits Home again with it, and
-    // its lines are made again at that view's scale, once: waited for till a frame makes
-    // none.
-    meshes_settled(&mut h);
-    let mut made = Arc::clone(&last_lines(&record)[0].strips);
-    let mut settled = false;
-    for _ in 0..60 {
-        step(&mut h);
-        let now = Arc::clone(&last_lines(&record)[0].strips);
-        if Arc::ptr_eq(&now, &made) {
-            settled = true;
-            break;
-        }
-        made = now;
-    }
-    assert!(settled, "Loose's lines made again frame after frame");
     let lines = last_lines(&record);
     assert_eq!(lines[0].colour, [0x7a, 0x95, 0xff, 0xff]);
     let sides: Vec<Vec<[f64; 3]>> = (0..lines[0].strips.len())
@@ -49378,46 +49362,8 @@ fn fit_and_home_take_a_shown_sketchs_lines_with_the_bodies() {
 }
 
 #[test]
-fn a_part_opens_at_the_view_home_gives_with_its_shown_sketches() {
-    // Legs and Loose shown 300 mm off ([`loose_far`]): the part opens at Home's view of
-    // both, the one Home gives, onto (170, 10, 10) by hand, not the core's Home of Legs
-    // alone, (15, 10, 5). A sketch alone, in a part with no body: it opens onto it, Loose's
-    // middle (320, 0, 10).
-    let f = fixture();
-    let (mut h, record) = f.drawn("far.silico", &loose_far());
-    meshes_settled(&mut h);
-    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
-    step(&mut h);
-    let opened = view(&h).camera().clone();
-    near(opened.target, [170.0, 10.0, 10.0], 1e-9);
-    h.key_press(eframe::egui::Key::Home);
-    step(&mut h);
-    assert_eq!(view(&h).camera(), &opened);
-    assert_eq!(never_waits::waits(), 0);
-    // Loose alone: Profile and Legs removed.
-    let far = loose_far();
-    let alone = {
-        let lines: Vec<&str> = far
-            .lines()
-            .filter(|line| !line.contains("\"Profile\"") && !line.contains("\"Legs\""))
-            .collect();
-        lines.join("\n")
-    };
-    assert!(alone.contains("\"Loose\"") && !alone.contains("\"pad\""));
-    let f = fixture();
-    let (mut h, record) = f.drawn("alone.silico", &alone);
-    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
-    step_until(&mut h, "the view onto Loose", |h| {
-        let target = view(h).camera().target;
-        (target[0] - 320.0).abs() < 1e-9
-    });
-    near(view(&h).camera().target, [320.0, 0.0, 10.0], 1e-9);
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
 fn edit_sketch_turns_square_to_a_shown_sketch_reaching_past_the_bodies_in_a_view_never_moved() {
-    // Loose, on XZ, 300 mm off Legs: the part opens at Home's view of both. Edit Sketch on
+    // Loose, on XZ, 300 mm off Legs and shown, the view as the part opened. Edit Sketch on
     // Loose turns square to it (its normal X × Z = −Y: the eye out along −Y, +Z up, as Front
     // looks), as it does in a part whose sketches lie within its bodies; Finish goes back.
     let (front, z) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
@@ -49435,55 +49381,6 @@ fn edit_sketch_turns_square_to_a_shown_sketch_reaching_past_the_bodies_in_a_view
     leave_sketch(&mut h, true);
     step(&mut h);
     assert_eq!(view(&h).camera(), &before);
-    assert_eq!(never_waits::waits(), 0);
-}
-
-#[test]
-fn once_a_part_has_opened_with_its_shown_sketches_an_eye_or_another_clients_move_never_moves_the_view()
- {
-    // Loose 300 mm off Legs: opened at Home of both. Loose hidden by its eye, then shown
-    // again: the view stays where it opened. Another client moves Loose to x 400 to 440 (a
-    // later revision): the view stays, whichever of its reads comes first.
-    let f = fixture();
-    let far = loose_far();
-    let (mut h, record) = f.drawn("far.silico", &far);
-    meshes_settled(&mut h);
-    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
-    step(&mut h);
-    let opened = view(&h).camera().clone();
-    near(opened.target, [170.0, 10.0, 10.0], 1e-9);
-    click_eye(&mut h, "Hide", "Loose");
-    step_until(&mut h, "Loose's lines gone", |_| {
-        last_lines(&record).is_empty()
-    });
-    step(&mut h);
-    assert_eq!(view(&h).camera(), &opened, "hidden");
-    click_eye(&mut h, "Show", "Loose");
-    step_until(&mut h, "Loose's lines back", |_| {
-        last_lines(&record).len() == 1
-    });
-    step(&mut h);
-    assert_eq!(view(&h).camera(), &opened, "shown again");
-    let farther = far
-        .replace("\"x\": 300,", "\"x\": 400,")
-        .replace("\"x\": 340,", "\"x\": 440,");
-    assert_eq!(farther.matches(": 440,").count(), 2);
-    let id = h.state().tabs()[0].id;
-    let revision = h.state().tabs()[0].revision;
-    f.sessions
-        .replace_text(&id, revision, farther)
-        .wait()
-        .result
-        .unwrap();
-    step_until(&mut h, "Loose's lines at 400", |_| {
-        last_lines(&record)
-            .first()
-            .and_then(|lines| lines.strips.bounds())
-            .is_some_and(|(low, _)| (low[0] - 400.0).abs() < 1e-9)
-    });
-    meshes_settled(&mut h);
-    step(&mut h);
-    assert_eq!(view(&h).camera(), &opened, "another client's move");
     assert_eq!(never_waits::waits(), 0);
 }
 

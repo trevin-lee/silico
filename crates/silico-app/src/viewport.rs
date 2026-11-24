@@ -496,14 +496,6 @@ pub struct View {
     /// The boxes of what the last frame drew besides the bodies: the shown sketches' and the
     /// origin planes' ([`DrawnBoxes`]).
     drawn: DrawnBoxes,
-    /// The camera the tab opened at, Home's (the first read's, or, with no body to fit, the
-    /// cube's), until the shown sketches it opened with are all drawn, while the view is
-    /// still there, sketch mode hasn't opened, and no later revision has been read: a shown
-    /// sketch's box coming then fits Home again with it, so the view a part opens at is the
-    /// one Home gives.
-    opening: Option<Camera>,
-    /// The revision the tab opened at: a read of any other ends the opening.
-    opening_revision: Option<Revision>,
     notice: Option<Notice>,
     /// A held mesh an answer gave none of wasn't found: the next read holds none.
     hold_none: bool,
@@ -655,8 +647,6 @@ impl Default for View {
             said_for: None,
             hidden: BTreeSet::new(),
             drawn: DrawnBoxes::default(),
-            opening: None,
-            opening_revision: None,
             notice: None,
             hold_none: false,
             reads: 0,
@@ -1066,8 +1056,7 @@ impl View {
     fn took(&mut self, asked: Asked, named: bool, response: Response<MeshesRead>, now: Instant) {
         match response.result {
             Ok(read) => {
-                let opening = named && !self.placed;
-                if opening {
+                if named && !self.placed {
                     self.camera = read.camera.camera();
                 }
                 self.placed = true;
@@ -1083,17 +1072,8 @@ impl View {
                         .map_or(asked.revision, |model| model.revision),
                 );
                 self.read_published = asked.model;
-                let size = asked.size;
                 self.answered = Some(asked);
                 self.take_bodies(read.bodies);
-                if opening {
-                    self.opening_revision = self.model;
-                    self.opened(size);
-                } else if self.model != self.opening_revision {
-                    // Another revision (an edit, another client's, a reload): the view is no
-                    // longer the one the part opened at, whatever its camera.
-                    self.opening = None;
-                }
             }
             // Home fits the bodies by their boxes: with none to fit (no body, or one that
             // couldn't be measured), the tab keeps its camera and reads with it. Never said,
@@ -1106,12 +1086,7 @@ impl View {
                         .iter()
                         .any(|error| error.parameter() == Some("view")) =>
             {
-                let opening = !self.placed;
                 self.placed = true;
-                if opening {
-                    self.opening_revision = Some(asked.revision);
-                    self.opened(asked.size);
-                }
             }
             Err(problems) => {
                 let said = format!(
@@ -1202,41 +1177,14 @@ impl View {
         self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
     }
 
-    /// The boxes of what the frame draws besides the bodies, in a pane `size_px` pixels in
-    /// size: if the shown sketches' changed what a fit takes while the view is still the one
-    /// the tab opened at, Home fitted again with them; else, if any changed, the view raised
-    /// to the least they allow with the bodies, if it's under it, as the renderer takes
-    /// their reach too (an orthographic view under it would have every frame refused).
-    fn take_drawn_boxes(&mut self, drawn: DrawnBoxes, size_px: [u32; 2]) {
-        if drawn == self.drawn {
-            return;
-        }
-        let before = self.fit_bounds();
-        let opening = self.at_opening();
-        self.drawn = drawn;
-        if opening && self.fit_bounds() != before {
-            self.look_from(HOME, size_px, Motion::JUMP);
-            self.opening = Some(self.camera.clone());
-        } else {
+    /// The boxes of what the frame draws besides the bodies: if they changed, the view raised
+    /// to the least they allow with the bodies, if it's under it, as the renderer takes their
+    /// reach too (an orthographic view under it would have every frame refused).
+    fn take_drawn_boxes(&mut self, drawn: DrawnBoxes) {
+        if drawn != self.drawn {
+            self.drawn = drawn;
             self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
         }
-    }
-
-    /// Whether the view is still the one the tab opened at, unmoved and moving nowhere.
-    fn at_opening(&self) -> bool {
-        self.transition.is_none() && self.opening.as_ref() == Some(&self.camera)
-    }
-
-    /// The tab's opening view placed, in a pane `size_px` pixels in size: Home fitted again
-    /// if the shown sketches reach past what the core's Home fitted (the bodies) and the open
-    /// sketch, whose view sketch mode gives itself, and kept as the opening view.
-    fn opened(&mut self, size_px: [u32; 2]) {
-        let fitted =
-            silico_core::views::joined(self.bounds().into_iter().chain(self.framing.sketch_box));
-        if self.fit_bounds() != fitted {
-            self.look_from(HOME, size_px, Motion::JUMP);
-        }
-        self.opening = Some(self.camera.clone());
     }
 
     /// Every body's box.
@@ -2177,27 +2125,8 @@ pub fn show<P: Clients + 'static>(
             .filter_map(|drawn| plane_box(&drawn.plane))
             .collect(),
     };
-    let sketch_open = tab.sketch.is_some();
-    // Every shown sketch read of the published model and its lines made: what they add to
-    // the fit is all there.
-    let all_drawn = !tab.sketch_lines.pending()
-        && tab
-            .sketch_reads
-            .shown_read(tab.browser.sketches(), tab.published, &|id| {
-                tab.shown(&crate::tab::Hideable::Feature(id.clone()))
-            });
     let view = &mut tab.view;
-    if sketch_open {
-        // Sketch mode turns the view to its sketch, and draws no shown sketch: the opening's
-        // fit of them is over.
-        view.opening = None;
-    }
-    view.take_drawn_boxes(drawn, size_px);
-    if all_drawn && view.opening.is_some() {
-        // The shown sketches the part opened with are all in the view Home gave it: the
-        // opening is over, so nothing after it (an eye, another client's edit) moves the view.
-        view.opening = None;
-    }
+    view.take_drawn_boxes(drawn);
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
@@ -4149,10 +4078,7 @@ mod tests {
             ..View::default()
         };
         view.set_camera(front(0.01));
-        view.take_drawn_boxes(
-            lines_only(&[[[320.0, 10.0, 5.0], [320.0, 10.0, 5.0]]]),
-            [800, 1600],
-        );
+        view.take_drawn_boxes(lines_only(&[[[320.0, 10.0, 5.0], [320.0, 10.0, 5.0]]]));
         let least = 1600.0 * 300.0 / 524_288.0 * 1.01;
         let Projection::Orthographic { view_height } = view.camera.projection else {
             panic!("orthographic")
@@ -4163,7 +4089,7 @@ mod tests {
             view.camera.projection,
             Projection::Orthographic { view_height }
         );
-        view.take_drawn_boxes(DrawnBoxes::default(), [800, 1600]);
+        view.take_drawn_boxes(DrawnBoxes::default());
         view.zoom(200.0, [0.0, 0.0], 800.0);
         assert_eq!(
             view.camera.projection,
@@ -4214,7 +4140,7 @@ mod tests {
         view.set_camera(front(100.0));
         let mut drawn = lines_only(&[FAR]);
         drawn.planes = vec![PLANE];
-        view.take_drawn_boxes(drawn, [800, 800]);
+        view.take_drawn_boxes(drawn);
         view.give(ViewAsk::Fit, [800, 800], Motion::JUMP);
         assert!(
             near(view.camera.target, [320.0, 0.0, 10.0]),
@@ -4245,25 +4171,19 @@ mod tests {
         assert!((view_height(&view.camera) - 44.0).abs() < 1e-9);
         // A fit takes a sketch by its whole, not its lines as drawn (a circle's chords fall
         // inside it, and move with the scale): lines inside FAR, FAR whole, centre FAR's.
-        view.take_drawn_boxes(
-            DrawnBoxes {
-                sketch_lines: vec![[[301.0, 0.0, 1.0], [339.0, 0.0, 19.0]]],
-                sketch_fits: vec![FAR],
-                planes: Vec::new(),
-            },
-            [800, 800],
-        );
+        view.take_drawn_boxes(DrawnBoxes {
+            sketch_lines: vec![[[301.0, 0.0, 1.0], [339.0, 0.0, 19.0]]],
+            sketch_fits: vec![FAR],
+            planes: Vec::new(),
+        });
         view.set_camera(front(100.0));
         view.give(ViewAsk::Fit, [800, 800], Motion::JUMP);
         assert!((view_height(&view.camera) - 44.0).abs() < 1e-9);
         // With no sketch shown, nothing to fit: the view stays.
-        view.take_drawn_boxes(
-            DrawnBoxes {
-                planes: vec![PLANE],
-                ..DrawnBoxes::default()
-            },
-            [800, 800],
-        );
+        view.take_drawn_boxes(DrawnBoxes {
+            planes: vec![PLANE],
+            ..DrawnBoxes::default()
+        });
         view.set_camera(front(100.0));
         view.give(ViewAsk::Fit, [800, 800], Motion::JUMP);
         assert_eq!(view.camera, front(100.0));
@@ -4282,10 +4202,7 @@ mod tests {
             ..View::default()
         };
         view.set_camera(front(100.0));
-        view.take_drawn_boxes(
-            lines_only(&[[[5.0, 5.0, 5.0], [5.0, 5.0, 5.0]]]),
-            [800, 800],
-        );
+        view.take_drawn_boxes(lines_only(&[[[5.0, 5.0, 5.0], [5.0, 5.0, 5.0]]]));
         view.give(ViewAsk::Fit, [800, 800], Motion::JUMP);
         assert_eq!(view.camera, front(100.0));
         view.give(ViewAsk::Named(HOME), [800, 800], Motion::JUMP);
@@ -4302,173 +4219,13 @@ mod tests {
         assert!(near(view_direction(&view.camera), [0.0, -1.0, 0.0]));
         assert!(near(view.camera.up, [0.0, 0.0, 1.0]));
         assert!((view_height(&view.camera) - 110.0).abs() < 1e-9);
-        view.take_drawn_boxes(
-            lines_only(&[[[20.0, 0.0, 5.0], [20.0, 40.0, 5.0]]]),
-            [800, 800],
-        );
+        view.take_drawn_boxes(lines_only(&[[[20.0, 0.0, 5.0], [20.0, 40.0, 5.0]]]));
         view.give(ViewAsk::Fit, [800, 800], Motion::JUMP);
         assert_eq!(view.camera.target, [20.0, 20.0, 5.0]);
         let least = 800.0 * 20.0 / 524_288.0 * 1.01;
         let height = view_height(&view.camera);
         assert!((height - least).abs() < 1e-12, "{height} for {least}");
         assert!(view.camera.check(800, 800).is_ok());
-    }
-
-    #[test]
-    fn the_opening_view_fits_home_again_as_shown_sketches_come_till_it_is_moved() {
-        // Opened at Home's view of the cube (no body to fit), [`FAR`] then drawn: Home again
-        // with it, onto (320, 0, 10). It drawn whole a frame on, (300, 0, 0) to (360, 0, 20):
-        // Home again, onto (330, 0, 10). Moved, then another change: kept where it was moved.
-        let mut view = View {
-            rows: 800,
-            ..View::default()
-        };
-        view.opened([800, 800]);
-        let opened = view.camera.clone();
-        view.take_drawn_boxes(lines_only(&[FAR]), [800, 800]);
-        assert!(
-            near(view.camera.target, [320.0, 0.0, 10.0]),
-            "{:?}",
-            view.camera
-        );
-        assert!(
-            near(view_direction(&view.camera), view_direction(&opened)),
-            "Home's direction"
-        );
-        let wider = [[300.0, 0.0, 0.0], [360.0, 0.0, 20.0]];
-        view.take_drawn_boxes(lines_only(&[wider]), [800, 800]);
-        assert!(
-            near(view.camera.target, [330.0, 0.0, 10.0]),
-            "{:?}",
-            view.camera
-        );
-        // The lines alone changing (a new scale's chords), the whole the same: no fit again.
-        let at = view.camera.clone();
-        view.take_drawn_boxes(
-            DrawnBoxes {
-                sketch_lines: vec![[[301.0, 0.0, 1.0], [359.0, 0.0, 19.0]]],
-                sketch_fits: vec![wider],
-                planes: Vec::new(),
-            },
-            [800, 800],
-        );
-        assert_eq!(view.camera, at);
-        view.set_camera(front(100.0));
-        view.take_drawn_boxes(lines_only(&[FAR]), [800, 800]);
-        assert_eq!(view.camera, front(100.0));
-    }
-
-    #[test]
-    fn a_first_read_answering_after_a_shown_sketch_came_opens_at_home_of_both() {
-        // FAR drawn before the first read, the view not yet placed: only clamped. The first
-        // read answers Home of the cut alone (its camera the core's, taken as asked) and the
-        // cut's body: the tab opens at Home of the cut and FAR, (0, 0, −1) to (340, 20, 20),
-        // onto its middle (170, 10, 9.5) by hand. A read of revision 3 again keeps the
-        // opening; one of revision 4 ends it, and a sketch changing then fits nothing.
-        let mut view = View {
-            rows: 1000,
-            ..View::default()
-        };
-        view.take_drawn_boxes(lines_only(&[FAR]), [1000, 1000]);
-        assert!(!view.placed());
-        let mesh = Arc::clone(&body(0.03125, [0.03125, 0.0625], CUT).mesh);
-        let answer = |camera: &Camera| Response {
-            session: None,
-            model: None,
-            result: Ok(MeshesRead {
-                camera: AnsweredCamera::of(camera).unwrap(),
-                bodies: vec![meshed(1, 1, 0.03125, Some(Arc::clone(&mesh)))],
-                coarser: "height",
-            }),
-        };
-        let core_home =
-            navigate::named_in(HOME, CUT.unwrap(), 1000, 1000, navigate::Inset::default()).unwrap();
-        view.took(asked(&view, 3), true, answer(&core_home), now());
-        assert!(
-            near(view.camera.target, [170.0, 10.0, 9.5]),
-            "{:?}",
-            view.camera
-        );
-        let opened = view.camera.clone();
-        view.set_camera(front(100.0));
-        view.give(ViewAsk::Named(HOME), [1000, 1000], Motion::JUMP);
-        assert_eq!(view.camera, opened, "the view Home gives");
-        view.set_camera(opened.clone());
-        view.took(asked(&view, 3), false, answer(&opened), now());
-        let wider = [[300.0, 0.0, 0.0], [360.0, 0.0, 20.0]];
-        view.take_drawn_boxes(lines_only(&[wider]), [1000, 1000]);
-        assert!(
-            near(view.camera.target, [180.0, 10.0, 9.5]),
-            "{:?}",
-            view.camera
-        );
-        let at = view.camera.clone();
-        view.took(asked(&view, 4), false, answer(&at), now());
-        view.take_drawn_boxes(lines_only(&[FAR]), [1000, 1000]);
-        assert_eq!(view.camera, at, "another revision's read ended the opening");
-    }
-
-    #[test]
-    fn a_shown_sketch_drawn_before_the_first_read_fits_the_view_a_part_with_no_body_opens_at() {
-        // FAR drawn while the view is unplaced: no opening yet, so no fit. The first read
-        // refused for its view (no body): Home of FAR, onto its middle (320, 0, 10) by hand.
-        let mut view = View {
-            rows: 800,
-            ..View::default()
-        };
-        view.take_drawn_boxes(lines_only(&[FAR]), [800, 800]);
-        let refused = refusal(ErrorCode::InvalidInput, Some("view"));
-        let mut request = asked(&view, 3);
-        request.size = [800, 800];
-        view.took(request, true, refused, now());
-        assert!(
-            near(view.camera.target, [320.0, 0.0, 10.0]),
-            "{:?}",
-            view.camera
-        );
-        let opened = view.camera.clone();
-        view.set_camera(front(100.0));
-        view.give(ViewAsk::Named(HOME), [800, 800], Motion::JUMP);
-        assert_eq!(view.camera, opened);
-    }
-
-    #[test]
-    fn a_part_with_no_body_keeps_its_opening_through_a_read_of_the_revision_it_opened_at() {
-        // Refused for its view (no body): opened at the cube's Home. The read with its camera
-        // that follows, of the same revision 3, answers no body. FAR drawn only then: Home of
-        // FAR, onto its middle (320, 0, 10) by hand.
-        let mut view = View {
-            rows: 800,
-            ..View::default()
-        };
-        let mut first = asked(&view, 3);
-        first.size = [800, 800];
-        view.took(
-            first,
-            true,
-            refusal(ErrorCode::InvalidInput, Some("view")),
-            now(),
-        );
-        let opened = view.camera.clone();
-        let empty = Response {
-            session: None,
-            model: None,
-            result: Ok(MeshesRead {
-                camera: AnsweredCamera::of(&opened).unwrap(),
-                bodies: Vec::new(),
-                coarser: "height",
-            }),
-        };
-        let mut again = asked(&view, 3);
-        again.size = [800, 800];
-        view.took(again, false, empty, now());
-        assert_eq!(view.camera, opened);
-        view.take_drawn_boxes(lines_only(&[FAR]), [800, 800]);
-        assert!(
-            near(view.camera.target, [320.0, 0.0, 10.0]),
-            "{:?}",
-            view.camera
-        );
     }
 
     /// The unit vector from `camera`'s target to its eye.
