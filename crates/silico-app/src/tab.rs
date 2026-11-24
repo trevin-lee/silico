@@ -2869,25 +2869,25 @@ impl Tab {
             && !self.stepping()
             && (self.change_under_way()
                 || !self.synced()
-                || (self.synced()
-                    && self
-                        .transaction()
-                        .is_some_and(|transaction| transaction.undo > 0)))
+                || self
+                    .transaction()
+                    .is_some_and(|transaction| transaction.undo > 0))
     }
 
-    /// Whether the tab's own redo branch holds a state after the one the session stands
-    /// at: what its changes made in this transaction, past the state its undos came back
-    /// to, none dropped by an edit since ([`steps`](Self::steps), as Redo's tooltip reads
-    /// it). Known from the tab's own answers, so with no status of its revision yet.
-    fn redo_branch(&self) -> bool {
+    /// The next state on the tab's own redo branch ([`steps`](Self::steps)), by its first
+    /// revision, with the step that made it: past the state the session stands at (its
+    /// undos came back to), none dropped by an edit since. What Redo's tooltip names, and
+    /// what Redo has to give back ahead of a status of the tab's revision, known from the
+    /// tab's own answers.
+    fn next_redo(&self) -> Option<(&Revision, &Step)> {
         let at = self.state_of(self.revision);
-        self.steps.range(at..).any(|(state, _)| *state != at)
+        self.steps.range(at..).find(|(state, _)| **state != at)
     }
 
     /// Whether Redo can step: an edit undone, and none made since, as the status of the
     /// tab's newest revision counts them; or, with the tab ahead of its status (a step's
     /// answer taken after the frame's status read), its own redo branch holding a state
-    /// after the one it's at ([`redo_branch`](Self::redo_branch)): queued, and judged once
+    /// after the one it's at ([`next_redo`](Self::next_redo)): queued, and judged once
     /// the status has caught up, as Undo's is. Never while a step is under way, nor while a
     /// dialog is open or a drag is under way. In sketch mode, only what it undid itself;
     /// never at a state Redo is fenced off at (a sketch mode's Finish or Cancel, or an
@@ -2904,7 +2904,7 @@ impl Tab {
                 .is_none_or(|fence| fence != self.state_of(self.revision))
             && self.edits.idle()
             && !self.stepping()
-            && ((!self.synced() && self.redo_branch())
+            && ((!self.synced() && self.next_redo().is_some())
                 || (self.synced()
                     && self
                         .transaction()
@@ -2956,7 +2956,7 @@ impl Tab {
                 self.step_text(&step.words, step.from, at)
             }
             (None, false) => {
-                let (made, step) = self.steps.range(at..).find(|(state, _)| **state != at)?;
+                let (made, step) = self.next_redo()?;
                 self.step_text(&step.words, step.from, *made)
             }
         }
@@ -9780,6 +9780,13 @@ mod tests {
         assert!(tab.undoable() && !tab.redoable());
         stood_at(&mut tab, rev(8), 0, 0);
         assert!(!tab.undoable() && !tab.redoable());
+        // Synced, the counts decide where the tab's branch says otherwise: at its end with
+        // one counted to redo, and holding more (9 restores 2's state) with none counted.
+        stood_at(&mut tab, rev(8), 3, 1);
+        assert!(tab.redoable(), "the status's count, not the branch");
+        tab.restored.insert(rev(9), rev(2));
+        stood_at(&mut tab, rev(9), 1, 0);
+        assert!(!tab.redoable(), "the status's count, not the branch");
     }
 
     #[test]
