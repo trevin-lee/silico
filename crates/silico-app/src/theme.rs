@@ -1415,8 +1415,11 @@ pub const PROPERTY_KEY_WIDTH: f32 = 96.0;
 pub const PROPERTY_ROW_GAP: f32 = 8.0;
 pub const PROPERTY_KEY: Color32 = TEXT_SUBDUED;
 pub const PROPERTY_VALUE: Color32 = GRAY_800;
-/// The gap between a row's value and its copy button (`.prop .v { gap: 6px }`).
-pub const PROPERTY_COPY_GAP: f32 = 6.0;
+/// The gap between the parts of a row's value (`.prop .v { display: flex; gap: 6px }`): a
+/// link and the words after it.
+pub const PROPERTY_VALUE_GAP: f32 = 6.0;
+/// The gap between a row's value and its copy button (`.prop .v`'s gap).
+pub const PROPERTY_COPY_GAP: f32 = PROPERTY_VALUE_GAP;
 /// A view's row of buttons under its rows (`selectionProps`' `padding: 10px var(--pad);
 /// gap: 6px`): 10 above and below it, its buttons 6 apart.
 pub const PROPERTY_BUTTONS_PADDING: f32 = 10.0;

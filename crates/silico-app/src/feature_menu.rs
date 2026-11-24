@@ -6,6 +6,15 @@
 //! own place (the prototype's `renameSelected`); and what the status bar says a suppression
 //! or a deletion did (the prototype's toast).
 //!
+//! A feature built from a sketch (a pad, a pocket, a revolve, or a groove) has Edit Sketch
+//! after Edit feature, which opens sketch mode on that sketch as the sketch's own Edit Sketch
+//! does: SolidWorks' *Edit Sketch* "opens from the sketch, from a feature built on it, or
+//! from one of its entities" (docs/ux/solidworks.md, §5, *Editing upstream*; m5.0-app.md,
+//! *Editing a sketch*). The prototype's menu has no such item: its words and place are
+//! Silico's, the words its sketch's own Edit Sketch has, after Edit feature, with the sketch's
+//! icon. SEAM: "from one of its entities" waits for a shown sketch's curves to be picked
+//! outside sketch mode (`crate::sketch::lines`: picked by nothing).
+//!
 //! Every item goes through the core's commands (invariant 3): Edit feature opens the
 //! feature's dialog as a double-click does, Rename is `set_field` of `name`, Suppress and
 //! Unsuppress are `suppress_feature`, and Delete is `remove_feature`, each an edit in the
@@ -100,6 +109,8 @@ pub fn clicked_away(ctx: &egui::Context, renaming: &Renaming) -> bool {
 pub enum Act {
     /// Edit feature: the feature's dialog, as a double-click opens it.
     Edit(FeatureId),
+    /// Edit Sketch of a feature built from a sketch (its ID): sketch mode on that sketch.
+    EditSketch(FeatureId),
     /// Rename: the feature's own field, where the menu was.
     Rename(FeatureId, Place),
     /// Suppress (true) or Unsuppress (false).
@@ -115,6 +126,9 @@ pub enum Act {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Item {
     Edit,
+    /// Edit Sketch, of a feature built from a sketch ([`Tab::sketch_of`]): in its menu only
+    /// for one, after Edit, and in none of [`ITEMS`].
+    EditSketch,
     Rename,
     Suppress,
     Find,
@@ -152,6 +166,7 @@ const DOUBLE_CLICK: &str = "double-click";
 fn icon(item: Item) -> Option<Icon> {
     match item {
         Item::Edit => Some(Icon::Edit),
+        Item::EditSketch => Some(Icon::Sketch),
         Item::Suppress => Some(Icon::Suppress),
         Item::Rename | Item::Find | Item::Delete => None,
     }
@@ -163,17 +178,21 @@ fn keys(item: Item, ctx: &egui::Context) -> (Option<&'static str>, Vec<String>) 
         Item::Edit => (Some(DOUBLE_CLICK), Vec::new()),
         Item::Rename => (None, Command::Rename.caps(ctx)),
         Item::Delete => (None, Command::Delete.caps(ctx)),
-        Item::Suppress | Item::Find => (None, Vec::new()),
+        Item::EditSketch | Item::Suppress | Item::Find => (None, Vec::new()),
     }
 }
+
+/// Edit Sketch's words: a sketch's Edit, and the Edit Sketch of a feature built from one.
+pub const EDIT_SKETCH: &str = "Edit Sketch";
 
 /// The words of `item` for `entry`, shown at `place` (the prototype's: "Edit Sketch" for a
 /// sketch, else "Edit feature"; "Unsuppress" for a suppressed feature; "Find in browser"
 /// from the timeline, "Find in timeline" from the browser).
 pub fn label(item: Item, entry: &Entry, place: Place) -> &'static str {
     match item {
-        Item::Edit if entry.kind == "sketch" => "Edit Sketch",
+        Item::Edit if entry.kind == "sketch" => EDIT_SKETCH,
         Item::Edit => "Edit feature",
+        Item::EditSketch => EDIT_SKETCH,
         Item::Rename => Command::Rename.label(),
         Item::Suppress if entry.suppressed => "Unsuppress",
         Item::Suppress => Command::Suppress.label(),
@@ -240,6 +259,9 @@ pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String>
                 Some(unchangeable(tab).unwrap_or_else(|| "Its dialog can't open now".to_owned()))
             }
         }
+        // Sketch mode on the sketch it's built from, as that sketch's own Edit Sketch: in a
+        // menu only for a feature built from one (`items`).
+        Item::EditSketch => sketch_off(tab),
         Item::Rename | Item::Suppress | Item::Delete => unchangeable(tab),
         Item::Find => match place {
             Place::Browser => None,
@@ -268,11 +290,17 @@ fn no_row(tab: &Tab, entry: &Entry) -> String {
     }
 }
 
-/// The menu's items for `entry` in `tab`, at `place`, in order.
+/// The menu's items for `entry` in `tab`, at `place`, in order: [`ITEMS`], with Edit Sketch
+/// after Edit for a feature built from a sketch.
 pub fn items(tab: &Tab, entry: &Entry, place: Place, ctx: &egui::Context) -> Vec<Shown> {
+    let sketched = tab.sketch_of(&entry.id).is_some();
     ITEMS
         .iter()
-        .map(|&item| {
+        .flat_map(|&item| {
+            let sketch = (item == Item::Edit && sketched).then_some(Item::EditSketch);
+            std::iter::once(item).chain(sketch)
+        })
+        .map(|item| {
             let (sub, caps) = keys(item, ctx);
             Shown {
                 item,
@@ -320,8 +348,9 @@ fn draw(ui: &mut Ui, name: &str, shown: Vec<Shown>) -> Option<Item> {
 }
 
 /// The right-click menu of the feature `entry`, at `place` (the prototype's, in its order:
-/// the name, Edit feature, Rename, Suppress or Unsuppress, Find in…, a separator, Delete):
-/// what was clicked, the menu closed.
+/// the name, Edit feature, Rename, Suppress or Unsuppress, Find in…, a separator, Delete;
+/// with Edit Sketch after Edit feature for a feature built from a sketch): what was clicked,
+/// the menu closed.
 pub fn menu(ui: &mut Ui, tab: &Tab, entry: &Entry, place: Place) -> Option<Act> {
     let shown = items(tab, entry, place, ui.ctx());
     Some(act_of(draw(ui, &entry.name, shown)?, entry, place))
@@ -334,6 +363,7 @@ pub fn act_of(item: Item, entry: &Entry, place: Place) -> Act {
     let id = entry.id.clone();
     match item {
         Item::Edit => Act::Edit(id),
+        Item::EditSketch => Act::EditSketch(id),
         Item::Rename => Act::Rename(id, place),
         Item::Suppress => Act::Suppress(id, !entry.suppressed),
         Item::Find => match place {
@@ -357,6 +387,7 @@ pub fn origin_menu(ui: &mut Ui, name: &str) {
                 item,
                 label: match item {
                     Item::Edit => "Edit feature",
+                    Item::EditSketch => EDIT_SKETCH,
                     Item::Rename => Command::Rename.label(),
                     Item::Suppress => Command::Suppress.label(),
                     Item::Find => Command::FindInTimeline.label(),
@@ -384,6 +415,13 @@ pub fn act<P: silico_core::kernel::Clients + 'static>(
             tab.edit_sketch_or_feature(sessions, &id);
             true
         }
+        Act::EditSketch(id) => match tab.sketch_of(&id).map(|sketch| sketch.id.clone()) {
+            Some(sketch) => {
+                tab.edit_sketch(sessions, &sketch);
+                true
+            }
+            None => false,
+        },
         Act::Rename(id, place) => {
             tab.start_rename(id, place);
             false
