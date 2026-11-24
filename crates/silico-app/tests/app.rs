@@ -48195,15 +48195,17 @@ fn toast_said(h: &AppHarness) -> Option<(String, f64)> {
 #[test]
 fn look_at_in_sketch_mode_turns_square_to_its_plane_its_x_across_and_its_y_up() {
     // A sketch on XZ: its x along +X, its y along +Z, its normal x × y = −Y. Square to it
-    // from that side: the eye out along −Y, +Z up, as Front looks. A new part opens at Home,
-    // a corner's view, so the view turns.
+    // from that side: the eye out along −Y, +Z up, as Front looks. From Home, a corner's
+    // view, the view turns.
     let (front, z) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
     let f = fixture();
     let mut h = f.app();
     step(&mut h);
     new_part(&mut h);
     begin_sketch_on(&mut h, "Untitled", "XZ plane");
-    assert!(!looks(&h, front, z));
+    // Sketch mode turned square to it as it opened (its own test): Home turns it away.
+    h.key_press(Key::Home);
+    step_until(&mut h, "home", |h| !looks(h, front, z));
     h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
     step_until(&mut h, "square to the sketch", |h| looks(h, front, z));
     let keyed = view(&h).camera().clone();
@@ -48215,6 +48217,186 @@ fn look_at_in_sketch_mode_turns_square_to_its_plane_its_x_across_and_its_y_up() 
         .click();
     step_until(&mut h, "square again", |h| view(h).camera() == &keyed);
     assert!(toast_said(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_mode_turns_square_to_a_new_sketch_as_it_opens_and_back_to_the_view_it_found_on_cancel() {
+    // The approved prototype's `enter` looks at the sketch plane, and its `exit` animates back
+    // to the camera it found (docs/design/m5-ui/js/sketch.js); SolidWorks' *Auto-rotate view
+    // normal to sketch plane on sketch creation and sketch edit*. A new part opens at Home, a
+    // corner's view. A sketch on XZ has its normal x × y = X × Z = −Y: square to it, the eye
+    // out along −Y, +Z up, as Front looks; the same camera Look At (Ctrl+8) gives. Cancel goes
+    // back to Home's camera.
+    let (front, z) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step(&mut h);
+    let before = view(&h).camera().clone();
+    assert!(!looks(&h, front, z));
+    begin_sketch_on(&mut h, "Untitled", "XZ plane");
+    step(&mut h);
+    assert!(looks(&h, front, z), "{:?}", view(&h).camera());
+    let turned = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &turned, "Look At's own view");
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_turns_square_to_its_sketch_and_finish_goes_back_to_the_view_it_found() {
+    // Triangle is on XY: its normal x × y = +Z, the eye above, +Y up the image, as Top
+    // looks. Edit Sketch turns there from the view the part opened at; Finish goes back.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    let (top, y) = ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
+    assert!(!looks(&h, top, y));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert!(looks(&h, top, y), "{:?}", view(&h).camera());
+    leave_sketch(&mut h, true);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_view_moved_before_the_sketchs_first_read_is_left_as_moved_and_leaving_goes_back_to_the_view_found()
+ {
+    // Create Sketch with every solve held: sketch mode is open, its read waits. The view
+    // panned meanwhile is the person's, so the read, when it comes, turns nothing; Cancel
+    // still goes back to the view sketch mode found, as the prototype's `exit` does.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step_until(&mut h, "Create Sketch on", |h| {
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    let before = view(&h).camera().clone();
+    f.sketches.hold();
+    create_sketch(&mut h, "XY plane");
+    assert!(f.sketches.wait_held(WAIT), "the sketch's solve never held");
+    assert!(sketch_mode(&h).unwrap().drawable().is_none());
+    panned(&mut h);
+    let moved = view(&h).camera().clone();
+    assert_ne!(moved, before);
+    f.sketches.release();
+    sketch_read(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &moved, "turned after it was moved");
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_whose_face_broke_turns_nothing_and_leaving_leaves_the_view_as_it_was() {
+    // ON_A_FACE's face isn't one the fake describes as a plane: the read places the sketch
+    // nowhere, so there's nothing to look at, and the view stays, open and closed.
+    let f = fixture();
+    let (mut h, _) = f.opened("face.silico", ON_A_FACE);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Top"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Top");
+    sketch_read(&mut h);
+    assert!(sketch_mode(&h).unwrap().drawable().unwrap().plane.is_err());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &before);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn perspective_chosen_in_sketch_mode_is_kept_as_the_view_goes_back() {
+    // The view is orthographic as Edit Sketch opens; Perspective chosen in sketch mode (the
+    // ViewCube's menu) is the person's: Cancel goes back to the view found, its target and
+    // its direction, seen in perspective at the cube's 30°.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    assert!(matches!(
+        before.projection,
+        silico_protocol::Projection::Orthographic { .. }
+    ));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    h.get_by_label("Orbit the view").click_secondary();
+    step(&mut h);
+    h.get_by_label("Perspective").click_accesskit();
+    step(&mut h);
+    assert!(view(&h).perspective());
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    let back = view(&h).camera();
+    assert_eq!(
+        back.projection,
+        silico_protocol::Projection::Perspective {
+            field_of_view: 30.0
+        }
+    );
+    assert_eq!(back.target, before.target);
+    assert_eq!(back.up, before.up);
+    assert!(
+        looks_from(back, view_direction(&before)),
+        "{back:?} from {before:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_revert_or_a_refused_add_leaving_sketch_mode_goes_back_to_the_view_it_found() {
+    // Sketch mode left otherwise than by its bar: the part reverted under it (its edits gone,
+    // as Cancel's are), and Create Sketch on a face the core refuses (no such face): each
+    // goes back to the view sketch mode found, the second though the view was panned while
+    // the add was out.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert_ne!(view(&h).camera(), &before);
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].revert(&sessions, false);
+    step(&mut h);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(view(&h).camera(), &before);
+    settled(&mut h);
+    h.state_mut().tabs_mut()[0].create_sketch_on_face(&sessions, "b0000001.box.Face99");
+    assert!(sketch_mode(&h).is_some());
+    panned(&mut h);
+    step_until(&mut h, "sketch mode left", |h| sketch_mode(h).is_none());
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -49762,6 +49944,11 @@ fn sketch_mode_keeps_the_triad_and_the_view_label_and_its_look_at_names_the_top(
     sketch_read(&mut h);
     step(&mut h);
     assert!(h.state().tabs()[0].in_sketch());
+    // Sketch mode turned square to the sketch as it opened (its own test): Home, a corner's
+    // view, shows all three axes.
+    h.key_press(Key::Home);
+    step(&mut h);
+    step(&mut h);
     let (strokes, dot) = triad_painted(&h);
     assert_eq!(strokes.len(), 3, "{strokes:?}");
     assert!(dot.is_some());

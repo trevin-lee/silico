@@ -545,9 +545,10 @@ pub struct View {
     /// is the renderer's at that height (`views::least_view_height`). 1 before the first
     /// frame, so a camera clamped then takes the 1-row floor until that frame re-clamps it.
     rows: u32,
-    /// A view a shortcut asked for (F6, Home, Ctrl+1 to Ctrl+7: `crate::shortcuts`), given
-    /// at the pane's next navigation, which knows the canvas's size.
-    asked: Option<ViewAsk>,
+    /// A view a shortcut asked for (F6, Home, Ctrl+1 to Ctrl+7: `crate::shortcuts`), or a
+    /// camera to go back to, given at the pane's next navigation, which knows the canvas's
+    /// size.
+    asked: Option<Wanted>,
     /// The tab's count of published models, as the tab last told it, and as it was when the
     /// bodies held were asked for: a model published again at the same revision (a fresh
     /// check's, Ctrl+Shift+B) makes them stale, as a new revision does.
@@ -579,6 +580,14 @@ pub const VIEW_COMMANDS: [(Command, ViewAsk); 9] = [
     (Command::Bottom, ViewAsk::Named(NamedView::Bottom)),
     (Command::Isometric, ViewAsk::Named(navigate::ISOMETRIC)),
 ];
+
+/// What the view is asked to go to at its next navigation: a view a shortcut asks
+/// ([`View::ask`]), or a camera it had before ([`View::return_to`]).
+#[derive(Debug, Clone, PartialEq)]
+enum Wanted {
+    Ask(ViewAsk),
+    Camera(Camera),
+}
 
 /// A view a shortcut asks of the tab's viewport. Each fits the bodies with what the view's
 /// [`navigate::Framing`] adds in sketch mode.
@@ -720,7 +729,24 @@ impl View {
     /// `ask`ed of the view by a shortcut: given at the pane's next navigation, in place of
     /// any asked before it that hasn't been.
     pub fn ask(&mut self, ask: ViewAsk) {
-        self.asked = Some(ask);
+        self.asked = Some(Wanted::Ask(ask));
+    }
+
+    /// Back to `camera`, a camera the view had (the one before sketch mode turned it to its
+    /// sketch): given at the pane's next navigation as a view worked out whole is, eased to
+    /// and raised to the least the bodies allow, in the projection the view has then, in
+    /// place of any view asked before it that hasn't been given.
+    pub fn return_to(&mut self, camera: Camera) {
+        self.asked = Some(Wanted::Camera(camera));
+    }
+
+    /// The camera the view is heading for: the view a transition under way eases to, or the
+    /// camera, with none under way. What a control asked last, whatever the frame has drawn
+    /// of it so far.
+    pub fn heading(&self) -> &Camera {
+        self.transition
+            .as_ref()
+            .map_or(&self.camera, Transition::to)
     }
 
     /// What sketch mode adds to a fit from now on ([`navigate::Framing`]): the tab's, each
@@ -1656,7 +1682,10 @@ impl View {
         let middle_double = crate::clicks::double_clicked_by(response, PointerButton::Middle);
         let motion = Motion::of(ui.ctx());
         match self.asked.take() {
-            Some(ask) => self.give(ask, size_px, motion),
+            Some(Wanted::Ask(ask)) => self.give(ask, size_px, motion),
+            Some(Wanted::Camera(camera)) => {
+                self.go_to(navigate::projected(&camera, self.perspective), motion);
+            }
             None if middle_double => self.fit(size_px, motion),
             None => {}
         }
