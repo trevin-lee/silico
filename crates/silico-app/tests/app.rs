@@ -47041,6 +47041,8 @@ fn a_right_click_waiting_for_its_boxes_is_let_go_by_esc_or_a_press_and_never_ope
     h.key_press(Key::Escape);
     step(&mut h);
     assert!(!select_other(&h).is_waiting());
+    // The person's own let go: nothing said of it.
+    assert_eq!(newest_toast(&h), None);
     // A press on the canvas while it waits: let go, and the press is its own, so it selects
     // nothing, as a press closing an open menu doesn't: whether the boxes were made in time
     // changes nothing a press does.
@@ -47075,10 +47077,12 @@ fn a_right_click_waiting_for_its_boxes_is_let_go_as_the_model_changes_and_the_ke
     right_click(&mut h, at, at, Modifiers::NONE);
     assert!(select_other(&h).is_waiting());
     // Another model published (the box made taller by another client), its meshes read: the
-    // click let go, as an open menu is closed, for what it would cast on is gone.
+    // click let go, as an open menu is closed, for what it would cast on is gone; and said,
+    // as nothing opens (#568).
     set_through_the_core(&f, &mut h, "k7f2qx3m", "height", "12");
     assert!(!select_other(&h).is_waiting());
     assert!(!select_other(&h).holds_keys());
+    toasted(&mut h, silico_app::select_other::OTHER_REDRAWN);
     // The boxes made after, the new mesh's: no menu opens.
     making.release();
     boxes_made(&mut h);
@@ -57992,6 +57996,43 @@ fn a_selections_click_let_go_in_the_frame_a_new_table_is_taken_is_let_go_and_sai
 }
 
 #[test]
+fn a_selections_click_whose_pick_is_out_as_a_new_table_is_taken_is_let_go_and_said() {
+    // #568: the click on the box's top is let go a frame before the view takes a new table
+    // of the model's bodies (the view zoomed out, its read answered between the two frames),
+    // so its pick, asked of the table it was made on, is answered no sooner than the frame
+    // that takes the new one, and that answer is dropped as of the table before. The click
+    // isn't asked again of the new table: it's let go, said, nothing selected.
+    use eframe::egui::{Modifiers, PointerButton};
+    use silico_app::renderer::Element::Face;
+    use silico_app::selection::CLICK_REDRAWN;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let (hold, top) = zoomed_out_its_read_held(&f, &mut h);
+    answering(&record, Some((1, Face(6), pixel_at(&h, top))), None);
+    h.hover_at(top);
+    step_until(&mut h, "the top hovered", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    button_event(&h, top, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    button_event(&h, top, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert!(selected_names(&h).is_empty(), "picked in its own frame");
+    let table = its_read_answered(&mut h, hold);
+    step(&mut h);
+    assert_ne!(view(&h).table(), table, "the frame after took no new table");
+    assert_eq!(selection_said(&h).as_deref(), Some(CLICK_REDRAWN));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(
+        selected_names(&h).is_empty(),
+        "the click was picked on the table it wasn't made on"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_box_let_go_in_the_frame_a_new_table_is_taken_selects_nothing_and_says_so() {
     // #568: a window dragged round the whole box from empty space, the view zoomed out and
     // reading the model's meshes again; let go in the very frame the view takes the new
@@ -58021,6 +58062,54 @@ fn a_box_let_go_in_the_frame_a_new_table_is_taken_selects_nothing_and_says_so() 
     box_drag(&mut h, from, to, Modifiers::NONE);
     toasted(&mut h, "Window selection: 12 edges");
     assert_eq!(selected_names(&h).len(), 12);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_box_let_go_as_its_tab_is_hidden_the_frame_after_a_new_table_is_cast_on_that_table() {
+    // #568's /break-it: a window dragged round the box, the view taking a new table of its
+    // bodies while it's held, and drawing it a frame; then another file's open answered and
+    // the button let go in one frame, so the box's tab is hidden as the release lands (the
+    // viewport's `end_unshown`). The release was made on the table that frame drew, so the
+    // box takes the box's 12 edges: the frame before's new table isn't read as this one's.
+    use eframe::egui::{Event, Modifiers, PointerButton, vec2};
+    use silico_app::box_select::BOX_REDRAWN;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let (hold, centre) = zoomed_out_its_read_held(&f, &mut h);
+    answering(&record, None, None);
+    let (from, to) = (centre - vec2(60.0, 40.0), centre + vec2(60.0, 40.0));
+    box_press(&mut h, from, to, Modifiers::NONE);
+    let table = its_read_answered(&mut h, hold);
+    step(&mut h);
+    assert_ne!(view(&h).table(), table, "no new table taken");
+    let woken = h.state().wakes();
+    let other = f.file("other.silico", EXAMPLE);
+    h.state_mut().open(other.to_str().unwrap(), false);
+    let deadline = Instant::now() + WAIT;
+    while h.state().wakes() == woken {
+        assert!(Instant::now() < deadline, "the open never answered");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    h.input_mut().events.push(Event::PointerButton {
+        pos: to,
+        button: PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs().len(),
+        2,
+        "the open wasn't taken in that frame"
+    );
+    let names = h.state().tabs()[0].selection().names().len();
+    assert_eq!(
+        names,
+        12,
+        "said {:?}, not {BOX_REDRAWN:?}",
+        newest_toast(&h)
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 

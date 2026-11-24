@@ -2486,6 +2486,9 @@ pub fn end_unshown<P: Clients + 'static>(
     }];
     let mut painter = egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::NOTHING);
     painter.set_invisible();
+    // This frame, unshown, takes no table: the release was made on the one its last frame
+    // drew, which is the one it holds (`View::table_taken`).
+    tab.view.begin_frame();
     overlaid(tab, sessions, &painter, &frame);
 }
 
