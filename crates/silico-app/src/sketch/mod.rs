@@ -11,7 +11,8 @@
 //! then sends what the tool asked) with its left button's events, a projection to the
 //! screen, and the pointer's way back onto the sketch's plane; nothing here knows of a
 //! camera. A drag under way takes the left button first; then a tool on; then, with none,
-//! a press on an under-defined point or curve that moves begins a drag ([`drag`]), and
+//! a press on an under-defined point or curve that moves begins a drag ([`drag`]), a press
+//! on empty space that moves draws a box that selects what it takes ([`boxing`]), and
 //! anything else is the selection's, a double-click on a dimension opening its Modify box
 //! ([`dimension`]).
 
@@ -41,6 +42,7 @@ use silico_core::kernel::{Clients, SketchPlane};
 use silico_core::sketch_states::{MemberState, SketchState};
 use silico_core::sketch_tools::{Axes, DimensionEvent, Event, Modifiers, Offer, OfferChoice};
 
+use crate::selection::How;
 use crate::tab::{Row, said};
 use bar::{DimensionShown, PaletteView, Settings, StateShown, StatusLine};
 use boxing::SketchBox;
@@ -534,7 +536,9 @@ impl SketchMode {
     /// One frame of the viewport's: the pointer's place on the plane kept for the status
     /// bar; each press noted with what's under it (within the pick tolerance at the view's
     /// scale there), and taken as a click when it's released, or let go if it's cancelled;
-    /// and the sketch, and the tool's preview, drawn with `painter`, the grid over the part
+    /// one on empty space moved past the drag threshold a box instead ([`boxing`]), drawn
+    /// while it's held and let go as what it takes; and the sketch, and the tool's preview,
+    /// drawn with `painter`, the grid over the part
     /// of the plane the painter's rectangle shows. The glyphs' and dimensions' sizes are
     /// worked out at the rectangle's centre, so they don't move with the pointer. What's
     /// drawn of the sketch is worked out again only when the read, the selection, what's
@@ -608,7 +612,7 @@ impl SketchMode {
                         boxing.moved(event.at);
                         if boxing.open {
                             self.pressed = None;
-                            self.box_released(&boxing, event, clip);
+                            self.box_released(&boxing, event);
                         }
                     }
                     // A press that never moved is a click: no drag.
@@ -685,15 +689,17 @@ impl SketchMode {
     }
 
     /// A box let go at `event`: the selection changed by what it takes of the frame
-    /// before's drawing, what the person saw, as the modifiers held at its release say
-    /// (`boxing`). Nothing with no read or no drawing.
-    fn box_released(&mut self, boxing: &SketchBox, event: &PointerEvent, clip: Rect) {
+    /// before's drawing, what the person saw, on the canvas that drawing was made on (so a
+    /// release in a frame the tab isn't shown in, with nothing to clip to, is judged as it
+    /// was seen), as the modifiers held at its release say (`boxing`). Nothing with no read
+    /// or no drawing.
+    fn box_released(&mut self, boxing: &SketchBox, event: &PointerEvent) {
         let taken = match (self.drawable(), self.drawn.as_ref()) {
-            (Some(read), Some((_, drawn))) => boxing.taken(drawn, read, clip),
+            (Some(read), Some((of, drawn))) => boxing.taken(drawn, read, of.clip),
             _ => return,
         };
         self.selection
-            .boxed(taken, boxing::how(event.shift, event.ctrl));
+            .boxed(taken, How::of_box(event.shift, event.ctrl));
     }
 
     /// What's under `at` on the screen, within the pick tolerance at the view's scale there:

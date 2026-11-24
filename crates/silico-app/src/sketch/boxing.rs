@@ -9,24 +9,25 @@
 //! drag begun) may become a box: once the pointer moves farther from the press than a drag
 //! of the sketch's geometry must ([`SKETCH_DRAG_THRESHOLD`]), it's a box, drawn as the
 //! canvas's box is (`crate::box_select::draw_rect`: solid dragged left to right, a window;
-//! dashed right to left, a crossing), and its release selects nothing as a click would. A
-//! press that never moves that far is the click it was (on empty space, it clears the
-//! selection). A Cancel lets the box go and changes nothing.
+//! dashed right to left, a crossing), and its release no longer clicks: it selects what the
+//! box takes. A press that never moves that far is the click it was (on empty space, it
+//! clears the selection). A Cancel lets the box go and changes nothing.
 //!
 //! **What it takes** is decided against what the frame before drew ([`Drawn`]), what the
 //! person saw when they let go: each member's strokes, points, arrowheads, and labels, in
-//! screen points, the box clamped to the canvas. A member is inside when every point of
-//! everything drawn of it is; it crosses when one is inside, or one of its strokes'
-//! segments meets the box. What isn't drawn (hidden by the palette's *Show*, or off the
-//! part of the plane drawn) is never taken. The members taken are the sketch's points,
-//! lines, circles, and arcs, and its dimensions (a constraint drawn with a value), never a
-//! relation's glyph, the origin, or an axis: SolidWorks' "sketch entities and
-//! dimensions". A dimension's value is taken at its label's anchor, not its text's extent.
+//! screen points, the box clamped to the canvas that drawing was made on. A member is
+//! inside when every point of everything drawn of it is; it crosses when one is inside, or
+//! one of its strokes' segments meets the box (`crate::box_select::ScreenBox::takes`, the
+//! canvas's rule). What isn't drawn (hidden by the palette's *Show*, or off the part of the
+//! plane drawn) is never taken. The members taken are the sketch's points, lines, circles,
+//! and arcs, and its dimensions, never a relation, the origin, or an axis: SolidWorks'
+//! "sketch entities and dimensions". A dimension's value is taken at its label's anchor,
+//! not its text's extent.
 //!
 //! Let go, the box replaces the selection; with Shift it adds what's inside; with Ctrl it
-//! inverts what's inside, selections outside it staying either way
-//! ([`SketchSelection::boxed`]). What joins the selection joins in ID order, after what's
-//! already selected (the constraint tools' C9).
+//! inverts what's inside, selections outside it staying either way; with both, Shift's
+//! (`How::of_box`, the canvas's; [`SketchSelection::boxed`]). What joins the selection
+//! joins in ID order, after what's already selected (the constraint tools' C9).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -34,11 +35,10 @@ use eframe::egui::{Painter, Pos2, Rect};
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind};
 
-use super::draw::{Drawn, LabelKind};
+use super::draw::Drawn;
 use super::hit::{Hit, SketchPick};
 use super::style::SKETCH_DRAG_THRESHOLD;
-use crate::box_select::{PxBox, draw_rect};
-use crate::selection::How;
+use crate::box_select::{Piece, ScreenBox, draw_rect};
 
 /// A left press on empty space, which a move past the threshold makes a box.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -81,63 +81,58 @@ impl SketchBox {
         }
     }
 
-    /// What it takes of `drawn`, the drawing of `read`, on a canvas `clip`.
+    /// What it takes of `drawn`, the drawing of `read`, made on a canvas `clip`.
     pub fn taken(&self, drawn: &[Drawn], read: &SketchRead, clip: Rect) -> BTreeSet<SketchPick> {
-        let area = PxBox::in_rect(self.from, self.to, clip);
+        let area = ScreenBox::in_rect(self.from, self.to, clip);
         taken(drawn, read, &area, self.crossing())
     }
 }
 
-/// How a box let go with `shift` and `ctrl` held changes the selection: Shift adds, Ctrl
-/// inverts inside it (Ctrl first, as the canvas's box takes them), and a plain box replaces.
-pub(crate) fn how(shift: bool, ctrl: bool) -> How {
-    if ctrl {
-        How::Toggle
-    } else if shift {
-        How::Add
-    } else {
-        How::Replace
-    }
-}
-
 /// The members of `read` a box `area` takes of `drawn`: wholly inside, or also crossing it
-/// if `crossing`. Its points, lines, circles, and arcs, and its constraints drawn with a
-/// value (dimensions); by ID.
+/// if `crossing`. Its points, lines, circles, and arcs, and its dimensions; by ID.
 pub(crate) fn taken(
     drawn: &[Drawn],
     read: &SketchRead,
-    area: &PxBox,
+    area: &ScreenBox,
     crossing: bool,
 ) -> BTreeSet<SketchPick> {
     let kinds: BTreeMap<&ElementId, ElementKind> = read.members.elements().collect();
-    // Each member's pieces: its strokes' polylines, and its single places.
+    let dimensions: BTreeSet<&ElementId> = read
+        .members
+        .constraints
+        .iter()
+        .filter(|constraint| constraint.form.is_dimension())
+        .map(|constraint| &constraint.id)
+        .collect();
+    // Each member's pieces; a profile's fill is its region's, never its first curve's own.
     let mut pieces: BTreeMap<&ElementId, Vec<&Drawn>> = BTreeMap::new();
-    let mut dimensions: BTreeSet<&ElementId> = BTreeSet::new();
     for d in drawn {
-        let Some(of) = d.of() else { continue };
-        match d {
-            // A profile's fill is its region's, never its first curve's own.
-            Drawn::Fill { .. } => continue,
-            Drawn::Label {
-                kind: LabelKind::Dimension,
-                ..
-            } => {
-                dimensions.insert(of);
-            }
-            _ => {}
+        if let Some(of) = d.of()
+            && !matches!(d, Drawn::Fill { .. })
+        {
+            pieces.entry(of).or_default().push(d);
         }
-        pieces.entry(of).or_default().push(d);
     }
     pieces
         .into_iter()
         .filter_map(|(id, pieces)| {
             let kind = *kinds.get(id)?;
-            let entity = matches!(
-                kind,
-                ElementKind::Point | ElementKind::Line | ElementKind::Circle | ElementKind::Arc
-            );
-            let wanted = entity || (kind == ElementKind::Constraint && dimensions.contains(id));
-            (wanted && decide(&pieces, area, crossing)).then(|| {
+            let wanted = match kind {
+                ElementKind::Point | ElementKind::Line | ElementKind::Circle | ElementKind::Arc => {
+                    true
+                }
+                ElementKind::Constraint => dimensions.contains(id),
+            };
+            let drawn = pieces.into_iter().map(|piece| Piece {
+                points: piece
+                    .positions()
+                    .into_iter()
+                    .map(|p| [f64::from(p.x), f64::from(p.y)])
+                    .collect(),
+                read: true,
+                path: matches!(piece, Drawn::Stroke { .. }),
+            });
+            (wanted && area.takes(drawn, crossing)).then(|| {
                 SketchPick::Member(Hit {
                     id: id.clone(),
                     kind,
@@ -145,35 +140,4 @@ pub(crate) fn taken(
             })
         })
         .collect()
-}
-
-/// Whether a member drawn as `pieces` is wholly inside `area` (something of it drawn, every
-/// point inside), or, for a crossing, meets it (a point inside, or a stroke's segment
-/// meeting it).
-fn decide(pieces: &[&Drawn], area: &PxBox, crossing: bool) -> bool {
-    let point = |p: Pos2| [f64::from(p.x), f64::from(p.y)];
-    let mut any = false;
-    for piece in pieces {
-        let points: Vec<[f64; 2]> = piece.positions().into_iter().map(point).collect();
-        if points.is_empty() {
-            continue;
-        }
-        if crossing {
-            let meets = match piece {
-                Drawn::Stroke { .. } if points.len() > 1 => points
-                    .windows(2)
-                    .any(|pair| area.meets_segment(pair[0], pair[1])),
-                _ => points.iter().any(|p| area.holds(*p)),
-            };
-            if meets {
-                return true;
-            }
-        } else {
-            if !points.iter().all(|p| area.holds(*p)) {
-                return false;
-            }
-            any = true;
-        }
-    }
-    !crossing && any
 }

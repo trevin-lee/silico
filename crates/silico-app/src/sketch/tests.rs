@@ -1845,11 +1845,15 @@ fn shift_with_a_box_adds_and_ctrl_inverts_inside_it_what_is_outside_staying() {
         true,
     );
     assert_eq!(picked(&mode), ["pa000004", "pa000002", "na000004"]);
-    // Ctrl and Shift both: Ctrl's inverting wins, as the canvas's box takes them.
+    // Shift and Ctrl both: Shift's adding, as the canvas's box takes them (the prototype's
+    // `onBox`, its `add` before its `invert`): the left side kept, the rest of the box
+    // joining.
     box_drag(&mut mode, pos2(110.0, 510.0), pos2(90.0, 490.0), true, true);
     assert_eq!(
         picked(&mode),
-        ["pa000004", "pa000002", "ka000001", "na000001", "pa000001"]
+        [
+            "pa000004", "pa000002", "na000004", "ka000001", "na000001", "pa000001"
+        ]
     );
 }
 
@@ -1993,6 +1997,170 @@ fn a_box_with_a_corner_that_isnt_finite_takes_nothing_and_a_move_to_nan_is_no_mo
         false,
         false,
     );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
+fn a_crossing_over_a_sides_middle_takes_the_side_though_neither_end_is_in_it() {
+    // (310, 490) to (290, 510), right to left: across the bottom side, (100, 500) to (500,
+    // 500), at its middle, its press 10 points from it (the pick is 7); no end, no piece of
+    // the dimension (from y 504 at x 100 and 500, its line at y 526), and no glyph inside.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(310.0, 490.0),
+        pos2(290.0, 510.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+    // The same box left to right, a window: nothing is wholly in it.
+    box_drag(
+        &mut mode,
+        pos2(290.0, 490.0),
+        pos2(310.0, 510.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+}
+
+#[test]
+fn a_box_takes_circles_and_arcs_as_it_takes_lines() {
+    // A circle ca000001 about pa000005 (70, 10), radius 5: on the screen about (800, 400),
+    // 50 points across each way. An arc aa000001 about pb000001 (100, 10), counter-clockwise
+    // from pb000002 (105, 10) to pb000003 (100, 15): on the screen from (1150, 400) up to
+    // (1100, 350) about (1100, 400).
+    let sketch = Sketch {
+        plane: OriginPlane::Xy.into(),
+        points: vec![
+            point("pa000005", 70.0, 10.0),
+            point("pb000001", 100.0, 10.0),
+            point("pb000002", 105.0, 10.0),
+            point("pb000003", 100.0, 15.0),
+        ],
+        lines: Vec::new(),
+        circles: vec![SketchCircle {
+            id: id("ca000001"),
+            center: id("pa000005"),
+            radius: Coordinate::new(5.0).unwrap(),
+            construction: false,
+        }],
+        arcs: vec![SketchArc {
+            id: id("aa000001"),
+            center: id("pb000001"),
+            start: id("pb000002"),
+            end: id("pb000003"),
+            construction: false,
+        }],
+        constraints: Vec::new(),
+    };
+    let mut mode = mode_on(read(
+        sketch,
+        SketchState::FullyDefined,
+        MemberState::FullyDefined,
+        &[],
+    ));
+    pointer_frame(&mut mode, &[]);
+    // Windows about each: the circle and its centre; the arc, its centre, and its ends.
+    box_drag(
+        &mut mode,
+        pos2(740.0, 340.0),
+        pos2(860.0, 460.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["ca000001", "pa000005"]);
+    box_drag(
+        &mut mode,
+        pos2(1090.0, 340.0),
+        pos2(1160.0, 410.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["aa000001", "pb000001", "pb000002", "pb000003"]
+    );
+    // A window holding the circle's left half only: nothing of it but its centre.
+    box_drag(
+        &mut mode,
+        pos2(740.0, 340.0),
+        pos2(810.0, 460.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["pa000005"]);
+    // The same box right to left: the circle too, which crosses it.
+    box_drag(
+        &mut mode,
+        pos2(810.0, 340.0),
+        pos2(740.0, 460.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["ca000001", "pa000005"]);
+    // A crossing about the arc's middle, (1135.4, 364.6), only: the arc alone.
+    box_drag(
+        &mut mode,
+        pos2(1140.0, 360.0),
+        pos2(1130.0, 370.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["aa000001"]);
+}
+
+#[test]
+fn a_box_is_clamped_to_the_canvas_its_drawing_was_made_on() {
+    // The canvas ends at x 300; the bottom side and its dimension run on to x 500, off it.
+    // A window dragged to (510, 540) is clamped to (90..300, 490..540): the corner pa000001
+    // alone is in it, though the side's far end is in the box as dragged.
+    let mode = boxed_rectangle();
+    let (_, drawn) = mode.drawn.as_ref().unwrap();
+    let read = mode.drawable().unwrap();
+    let clip = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(300.0, 1000.0));
+    let window = boxing::SketchBox {
+        from: pos2(90.0, 490.0),
+        to: pos2(510.0, 540.0),
+        open: true,
+    };
+    let taken = window.taken(drawn, read, clip);
+    let taken: Vec<&str> = taken
+        .iter()
+        .filter_map(SketchPick::member)
+        .map(|hit| hit.id.as_str())
+        .collect();
+    assert_eq!(taken, ["pa000001"]);
+}
+
+#[test]
+fn a_box_let_go_in_a_frame_its_tab_isnt_shown_in_takes_what_was_drawn() {
+    // The viewport gives a release in a frame the tab is left in through a painter clipped
+    // to nothing (`viewport::end_unshown`): the box is judged on the canvas the drawing the
+    // person saw was made on.
+    let mut mode = boxed_rectangle();
+    let (from, to) = (pos2(90.0, 490.0), pos2(510.0, 540.0));
+    pointer_frame(&mut mode, &[event(PointerAction::Press, from, false)]);
+    pointer_frame(&mut mode, &[event(PointerAction::Move, to, false)]);
+    with_painter(|painter| {
+        let unshown = egui::Painter::new(
+            painter.ctx().clone(),
+            egui::LayerId::background(),
+            egui::Rect::NOTHING,
+        );
+        let events = [event(PointerAction::Release, to, false)];
+        let input = FrameInput {
+            events: &events,
+            pointer: None,
+            project: &hand,
+            to_plane: &unhand,
+        };
+        mode.frame(&unshown, &input, &mut None);
+    });
     assert_eq!(
         picked(&mode),
         ["ka000001", "na000001", "pa000001", "pa000002"]

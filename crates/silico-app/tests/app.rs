@@ -27841,17 +27841,25 @@ fn in_sketch_mode_a_drag_from_empty_space_is_a_box_of_the_sketchs_members() {
     sketch_read(&mut h);
     hand_camera(&mut h);
     step(&mut h);
-    let picked = |h: &AppHarness| -> Vec<String> {
-        sketch_mode(h)
-            .unwrap()
-            .selection
-            .references()
+    let picked = |ids: &[&str]| -> Vec<silico_core::document::Reference> {
+        ids.iter().map(|id| element_ref(id)).collect()
+    };
+    // The box's outline, as painted: the solid outline's one closed path, and how many
+    // dashes the crossing's dashed one is drawn in.
+    let stroke = silico_app::theme::color32(silico_app::theme::BOX_SELECT_STROKE);
+    let outline = |h: &AppHarness| -> (usize, usize) {
+        let shapes = shapes_painted(h);
+        let solid = shapes
             .iter()
-            .map(|r| match r {
-                silico_core::document::Reference::Element(id) => id.as_str().to_owned(),
-                other => format!("{other:?}"),
-            })
-            .collect()
+            .filter(|shape| matches!(shape, Shape::Path(p) if p.stroke.color == eframe::epaint::ColorMode::Solid(stroke)))
+            .count();
+        let dashes = shapes
+            .iter()
+            .filter(
+                |shape| matches!(shape, Shape::LineSegment { stroke: s, .. } if s.color == stroke),
+            )
+            .count();
+        (solid, dashes)
     };
     // From (39, 19) to (61, 25): (490, 310) to (710, 250), on the canvas, nothing within the
     // pick of its first corner.
@@ -27879,12 +27887,17 @@ fn in_sketch_mode_a_drag_from_empty_space_is_a_box_of_the_sketchs_members() {
         })
         .collect();
     assert_eq!(boxes, [Rect::from_two_pos(low, high)]);
-    assert!(picked(&h).is_empty());
+    // Left to right, a window: drawn solid, one closed outline and no dashes.
+    assert_eq!(outline(&h), (1, 0));
+    assert!(sketch_picks(&h).is_empty());
     // Let go: left to right, a window, which takes the bottom side and its two ends, wholly
     // inside; the other two sides reach up to pc000000 (40, 30), out of it.
     button_event(&h, high, PointerButton::Primary, false, Modifiers::NONE);
     step(&mut h);
-    assert_eq!(picked(&h), ["na000000", "pa000000", "pb000000"]);
+    assert_eq!(
+        sketch_picks(&h),
+        picked(&["na000000", "pa000000", "pb000000"])
+    );
     // Drawn no more.
     step(&mut h);
     assert!(
@@ -27892,12 +27905,24 @@ fn in_sketch_mode_a_drag_from_empty_space_is_a_box_of_the_sketchs_members() {
             .into_iter()
             .any(|shape| matches!(shape, Shape::Rect(r) if r.fill == fill))
     );
-    // The same box dragged right to left: a crossing, which takes the two sides that
-    // cross it too.
-    drag(&mut h, PointerButton::Primary, high, low, 4);
+    // The same box dragged right to left: a crossing, drawn dashed (its 220 by 60 outline
+    // in dashes of 4 and gaps of 3, many of them, and no solid path), which takes the two
+    // sides that cross it too.
+    h.hover_at(high);
+    button_event(&h, high, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    for at in [high + (low - high) / 2.0, low] {
+        h.hover_at(at);
+        step(&mut h);
+    }
+    let (solid, dashes) = outline(&h);
+    assert_eq!(solid, 0);
+    assert!(dashes > 60, "{dashes} dashes");
+    button_event(&h, low, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
     assert_eq!(
-        picked(&h),
-        ["na000000", "nb000000", "nc000000", "pa000000", "pb000000"]
+        sketch_picks(&h),
+        picked(&["na000000", "nb000000", "nc000000", "pa000000", "pb000000"])
     );
     // Nothing sent: a box changes sketch mode's selection alone.
     assert_eq!(text_of(&f.sessions, &h), text);
