@@ -676,4 +676,247 @@ mod tests {
             Some(Act::Plane(OriginPlane::Xz))
         );
     }
+
+    // ---- #565's mutants: the frame's casts, by hand ----
+
+    use std::time::Instant;
+
+    use eframe::egui;
+    use silico_core::fake::FakeKernel;
+    use silico_protocol::{Camera, Projection};
+    use silico_render::render::Hit;
+
+    use crate::viewport::LeftEvent;
+
+    /// A left event at `at_px`.
+    fn left(kind: LeftKind, at_px: [f32; 2]) -> LeftEvent {
+        LeftEvent {
+            kind,
+            at_px,
+            shift: false,
+            ctrl: false,
+            frame: 0,
+            time: 0.0,
+            seq: 0,
+        }
+    }
+
+    /// A frame of `left`'s events, `pixels_per_point`, 100 pixels square, orthographic from
+    /// above onto (21, 21, 0), 100 mm high: a millimetre a pixel, x right and y up, the
+    /// image's centre (50, 50) on (21, 21, 0), as planes.rs' tests have it. No body drawn.
+    fn from_above(left: Vec<LeftEvent>, pixels_per_point: f32) -> ViewFrame {
+        ViewFrame {
+            session: SessionId::parse("s1").unwrap(),
+            rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0)),
+            camera: Camera {
+                projection: Projection::Orthographic { view_height: 100.0 },
+                eye: [21.0, 21.0, 100.0],
+                target: [21.0, 21.0, 0.0],
+                up: [0.0, 1.0, 0.0],
+            },
+            size_px: [100, 100],
+            pixels_per_point,
+            pointer_px: None,
+            left,
+            secondary: Vec::new(),
+            drawn: Vec::new(),
+            now: Instant::now(),
+        }
+    }
+
+    /// A view whose last frame drew XY alone.
+    fn drawing_xy() -> View {
+        let mut view = View::default();
+        view.drew_planes(&[OriginPlane::Xy]);
+        view
+    }
+
+    fn inputs<'a>(
+        view: &'a View,
+        frame: &'a ViewFrame,
+        select_other: &'a SelectOther,
+        selection: &'a Selection,
+        current: bool,
+    ) -> Inputs<'a> {
+        Inputs {
+            view,
+            frame,
+            select_other,
+            selection,
+            current,
+            click_distance: 6.0,
+        }
+    }
+
+    fn sessions() -> Arc<Sessions<Arc<FakeKernel>>> {
+        Arc::new(Sessions::new(Arc::new(FakeKernel::new(1).unwrap())))
+    }
+
+    #[test]
+    fn a_pointer_is_cast_through_its_pixels_centre_half_a_pixel_in() {
+        // `square` takes a pointer to the pixel it's in, clamped into the image; the ray goes
+        // through that pixel's centre, half a pixel in. Anywhere in pixel 75 it's cast at
+        // 75.5, x 46.5 mm in this view, past XY's side at 46: nothing; anywhere in pixel 74,
+        // at 74.5, x 45.5: XY. By hand.
+        let view = drawing_xy();
+        let frame = from_above(Vec::new(), 1.0);
+        let (select_other, selection) = (SelectOther::default(), Selection::default());
+        let inputs = inputs(&view, &frame, &select_other, &selection, true);
+        assert_eq!(pixel_of(&inputs, [75.2, 50.7]), [75.5, 50.5]);
+        assert_eq!(pixel_of(&inputs, [74.0, 50.0]), [74.5, 50.5]);
+        assert_eq!(pixel_of(&inputs, [-3.0, 250.0]), [0.5, 99.5]);
+        assert_eq!(under_at(&inputs, [75.2, 50.7]), Found::Known(None));
+        assert_eq!(under_at(&inputs, [75.9, 50.0]), Found::Known(None));
+        assert_eq!(
+            under_at(&inputs, [74.9, 50.0]),
+            Found::Known(Some(Under::Plane(OriginPlane::Xy)))
+        );
+        assert_eq!(
+            under_at(&inputs, [74.0, 50.0]),
+            Found::Known(Some(Under::Plane(OriginPlane::Xy)))
+        );
+    }
+
+    #[test]
+    fn a_face_met_a_hundredth_of_a_millimetre_behind_a_plane_is_met_before_it() {
+        // The prototype's `fhAny.distance <= ph.distance + 0.01` (TIE_MM): looking straight
+        // down at pixel (50, 50), whose centre's ray meets XY 0 along it, a face met at
+        // (21, 21, −0.01) is 0.01 along it, within the tie, so it's the face that's met
+        // (here of meshes not of the selection's model: Stale), not XY; one at −0.02 is
+        // behind XY by more: XY. By hand: −0.01 − 0 is −0.01 in f64, so the tie is exact.
+        let view = drawing_xy();
+        let frame = from_above(Vec::new(), 1.0);
+        let (select_other, selection) = (SelectOther::default(), Selection::default());
+        let inputs = inputs(&view, &frame, &select_other, &selection, false);
+        let hit = |z: f64| Hit {
+            body: 1,
+            element: Element::Face(6),
+            point: [21.0, 21.0, z],
+            depth: 0.0,
+            hidden: false,
+        };
+        assert!(nearest(&inputs, [50.0, 50.0], Some(hit(-0.01))).is_err());
+        assert!(nearest(&inputs, [50.0, 50.0], Some(hit(5.0))).is_err());
+        assert_eq!(
+            nearest(&inputs, [50.0, 50.0], Some(hit(-0.02))).ok(),
+            Some(Some(Under::Plane(OriginPlane::Xy)))
+        );
+    }
+
+    #[test]
+    fn a_click_is_a_press_and_release_within_eguis_click_distance_in_points_taken_to_pixels() {
+        // egui's click distance, 6 points, is 12 pixels at 2 pixels a point (as the
+        // selection's clicks take it): over XY, a press at (40, 50) and its release 10 or 12
+        // pixels right is a click, which starts a sketch on XY; 13 right is none.
+        let ctx = egui::Context::default();
+        assert_eq!(
+            ctx.options(|options| options.input_options.max_click_dist),
+            6.0
+        );
+        let sessions = sessions();
+        let session = SessionId::parse("s1").unwrap();
+        let view = drawing_xy();
+        let (select_other, selection) = (SelectOther::default(), Selection::default());
+        let clicked = |apart: f32| {
+            let frame = from_above(
+                vec![
+                    left(LeftKind::Press, [40.0, 50.0]),
+                    left(LeftKind::Release, [40.0 + apart, 50.0]),
+                ],
+                2.0,
+            );
+            let mut pick = PlanePick::default();
+            pick.frame(
+                &sessions,
+                &session,
+                &inputs(&view, &frame, &select_other, &selection, true),
+            )
+            .0
+        };
+        assert_eq!(clicked(10.0), [Act::Plane(OriginPlane::Xy)]);
+        assert_eq!(clicked(12.0), [Act::Plane(OriginPlane::Xy)]);
+        assert_eq!(clicked(13.0), []);
+    }
+
+    #[test]
+    fn a_click_waiting_for_its_faces_type_asks_what_the_type_says_once_its_read() {
+        // A click on Face5 before its type is read waits, asking nothing; once read as a
+        // plane a store names, it asks for a sketch on that name, once, and waits no more.
+        // Face6's, read as not flat, is refused in the pick's words.
+        let mut pick = PlanePick::default();
+        pick.clicked_on(face(5));
+        assert_eq!(pick.answered(), None, "not read yet");
+        assert!(pick.waiting());
+        pick.typed.insert(
+            face(5).name.to_string(),
+            Typed {
+                planar: Ok(true),
+                stored: Ok(Arc::clone(&face(5).name)),
+            },
+        );
+        assert_eq!(pick.answered(), Some(Act::Face(Arc::clone(&face(5).name))));
+        assert!(!pick.waiting());
+        assert_eq!(pick.answered(), None, "asked once");
+        pick.clicked_on(face(6));
+        pick.typed.insert(
+            face(6).name.to_string(),
+            Typed {
+                planar: Ok(false),
+                stored: Ok(Arc::clone(&face(6).name)),
+            },
+        );
+        assert_eq!(
+            pick.answered(),
+            Some(Act::Say(
+                "Face6 isn't flat. Pick an origin plane or a flat face to sketch on.".to_owned()
+            ))
+        );
+        assert!(!pick.waiting());
+    }
+
+    #[test]
+    fn a_faces_read_out_isnt_asked_again_and_another_face_wanted_is_asked_in_its_place() {
+        // A face's type read, while it's out, isn't asked again (asking again lets its answer
+        // go, so a face the pointer rests on would never be read); another face wanted is
+        // asked for at once. The selection here holds no model, so a face asked for isn't
+        // found in it and is typed at once as not in the model: what tells an ask from none.
+        let sessions = sessions();
+        let session = SessionId::parse("s1").unwrap();
+        let selection = Selection::default();
+        let mut pick = PlanePick::default();
+        let model = (1, Revision::from_number(1).unwrap());
+        pick.model = Some(model);
+        let of = Of { version: 1, model };
+        pick.reading = Some(Reading {
+            name: face(5).name.to_string(),
+            of,
+            stored: Ok(Arc::clone(&face(5).name)),
+        });
+        let out = |pick: &PlanePick| {
+            pick.reading
+                .as_ref()
+                .map(|reading| (reading.name.clone(), reading.of))
+        };
+        // Face5 under the pointer, its read out: not asked again.
+        pick.under = Some(Under::Face(face(5)));
+        pick.read_type(&sessions, &session, &selection);
+        assert!(pick.typed.is_empty(), "Face5 asked again");
+        assert_eq!(out(&pick), Some((face(5).name.to_string(), of)));
+        // A click on it waiting: still not.
+        pick.clicked_on(face(5));
+        pick.read_type(&sessions, &session, &selection);
+        assert!(pick.typed.is_empty(), "Face5 asked again for its click");
+        // Face6 clicked: asked for at once, in Face5's place.
+        pick.clicked_on(face(6));
+        pick.read_type(&sessions, &session, &selection);
+        let why = "Face6 isn't in the model as it's built now".to_owned();
+        assert_eq!(
+            pick.typed.get(face(6).name.to_string().as_str()),
+            Some(&Typed {
+                planar: Err(why.clone()),
+                stored: Err(why),
+            })
+        );
+        assert_eq!(pick.typed.len(), 1);
+    }
 }

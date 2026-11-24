@@ -370,6 +370,55 @@ mod tests {
     }
 
     #[test]
+    fn in_perspective_a_plane_met_exactly_the_least_distance_from_the_eye_is_met() {
+        // #565's mutants: the drawing cuts what's nearer the eye along the view than
+        // MIN_EYE_DISTANCE (1e-6 mm), and draws what's that far: so a plane met exactly that
+        // far is met. From (20, 20, 1e-6) looking down −z onto (20, 20, −10), the image's
+        // centre looks straight down and meets XY at (20, 20, 0), 1e-6 along the view and
+        // along the ray; from (20, 20, 5e-7), half that, it isn't met. By hand (every value
+        // here is exact in f64: 1e-6 · 2500 / 2500 is 1e-6, and 1e-6 − 1e-6 is 0).
+        let down_from = |height: f64| {
+            camera(
+                Projection::Perspective {
+                    field_of_view: 45.0,
+                },
+                [20.0, 20.0, height],
+                [20.0, 20.0, -10.0],
+            )
+        };
+        let centre = [50.0, 50.0];
+        met(
+            under(&down_from(MIN_EYE_DISTANCE), [100, 100], centre, &ALL),
+            OriginPlane::Xy,
+            1e-6,
+        );
+        assert_eq!(
+            under(&down_from(MIN_EYE_DISTANCE / 2.0), [100, 100], centre, &ALL),
+            None
+        );
+    }
+
+    #[test]
+    fn two_planes_met_at_the_same_place_go_by_the_browsers_order() {
+        // #565's mutants: orthographic from (10, −10, 10) onto (0, 0, 10), the image's centre
+        // is the ray from (0, 0, 10) along (−1, 1, 0)/√2, through the Z axis where XZ and YZ
+        // cross: both are met there, 0 along it (XY, seen edge on, isn't). XZ comes before
+        // YZ in ORIGIN_PLANES, the browser's order, so XZ is the one met; either drawn alone
+        // is met there. By hand.
+        use OriginPlane::{Xz, Yz};
+        let across = camera(
+            Projection::Orthographic { view_height: 100.0 },
+            [10.0, -10.0, 10.0],
+            [0.0, 0.0, 10.0],
+        );
+        let centre = [50.0, 50.0];
+        met(under(&across, [100, 100], centre, &ALL), Xz, 0.0);
+        met(under(&across, [100, 100], centre, &[Yz, Xz]), Xz, 0.0);
+        met(under(&across, [100, 100], centre, &[Yz]), Yz, 0.0);
+        met(under(&across, [100, 100], centre, &[Xz]), Xz, 0.0);
+    }
+
+    #[test]
     fn rows_and_planes_name_each_other() {
         for (plane, row) in ORIGIN_PLANES {
             assert_eq!(of_row(row), Some(plane));

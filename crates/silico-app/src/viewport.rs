@@ -951,6 +951,13 @@ impl View {
         }
     }
 
+    /// As if the last frame drew the origin planes `planes`: a unit test's, of what Create
+    /// Sketch's pick casts on (`crate::plane_pick`).
+    #[cfg(test)]
+    pub(crate) fn drew_planes(&mut self, planes: &[silico_core::document::OriginPlane]) {
+        self.planes_drawn = planes.to_vec();
+    }
+
     /// The pick asked of the renderer and not yet given it, taken (as a frame takes it): a
     /// unit test's, to see whether another is asked after.
     #[cfg(test)]
@@ -5248,5 +5255,24 @@ mod tests {
         let shapes = format!("{:?}", output.shapes);
         output.drop_without_applying_deltas();
         assert_eq!(meshes, 1, "{shapes}");
+    }
+
+    #[test]
+    fn a_read_answered_within_is_taken_for_the_next_poll_and_none_out_is_none_answered() {
+        // #565's mutants: with no read out there's nothing to answer, whatever the wait.
+        // A read of a session that isn't open answers at once (refused): it has answered,
+        // and is out no more, so a second wait finds none.
+        let mut view = View::default();
+        assert!(!view.read_answered_within(Duration::ZERO));
+        assert!(!view.read_answered_within(Duration::from_millis(10)));
+        let sessions = Arc::new(Sessions::new(Arc::new(
+            silico_core::fake::FakeKernel::new(1).unwrap(),
+        )));
+        let request = asked(&view, 4);
+        view.start(&sessions, &SessionId::parse("s1").unwrap(), request);
+        assert!(view.reading());
+        assert!(view.read_answered_within(Duration::from_secs(60)));
+        assert!(!view.reading());
+        assert!(!view.read_answered_within(Duration::ZERO));
     }
 }

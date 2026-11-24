@@ -19188,6 +19188,49 @@ fn create_sketch_waits_for_sketch_mode_then_begins_its_pick_from_its_button_and_
 }
 
 #[test]
+fn create_sketchs_item_in_creates_drop_down_says_it_isnt_built_while_the_app_has_no_sketch_mode() {
+    // #565's mutants: CREATE's drop-down's Create Sketch item (`createMenu`'s `cmdItem`, its
+    // title the command's words), off with no sketch mode, says on hover that it isn't
+    // built, as its button does; off with sketch mode (it can't open now), it says nothing
+    // of that.
+    let words = "Pick an origin plane or a flat face, then sketch on it";
+    let open_and_hover = |h: &mut ToolbarHarness| {
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_role_and_label(Role::Button, "CREATE")
+            .click();
+        toolbar_until(h, "CREATE's drop-down", |h| {
+            h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
+        });
+        let item = h
+            .get_by_role_and_label(Role::Menu, "CREATE")
+            .query_all_by_role(Role::Button)
+            .find(|node| {
+                node.accesskit_node()
+                    .label()
+                    .is_some_and(|label| label.starts_with("Create Sketch"))
+            })
+            .unwrap();
+        assert!(item.accesskit_node().is_disabled());
+        item.hover();
+    };
+    let mut h = toolbar(ToolbarStub::new());
+    open_and_hover(&mut h);
+    toolbar_until(&mut h, "the item's tooltip", |h| {
+        h.query_by_role_and_label(Role::Label, &format!("{words}. Not built yet"))
+            .is_some()
+    });
+    let mut stub = ToolbarStub::new();
+    stub.create_sketch = Some(false);
+    let mut h = toolbar(stub);
+    open_and_hover(&mut h);
+    for _ in 0..30 {
+        h.step();
+    }
+    assert!(h.query_by_role(Role::Menu).is_some(), "the drop-down open");
+    assert!(h.query_by_label_contains("Not built").is_none());
+}
+
+#[test]
 fn a_dialog_that_cant_open_is_off_in_creates_row_and_drop_down_and_one_that_can_says_so_once() {
     use silico_app::dialog::Kind;
     use silico_app::toolbar::Act;
