@@ -13003,7 +13003,10 @@ mod tests {
             if tab.quiet() && published == Some(tab.revision) && named {
                 return;
             }
-            assert!(std::time::Instant::now() < deadline, "never published");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never published, or the block's elements never named"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
