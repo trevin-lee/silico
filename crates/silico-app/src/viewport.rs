@@ -497,9 +497,10 @@ pub struct View {
     /// origin planes' ([`DrawnBoxes`]).
     drawn: DrawnBoxes,
     /// The camera the tab opened at, Home's (the first read's, or, with no body to fit, the
-    /// cube's), while the view is still there, sketch mode hasn't opened, and no later
-    /// revision has been read: a shown sketch's box coming or changing then fits Home again
-    /// with it, so the view a part opens at is the one Home gives.
+    /// cube's), until the shown sketches it opened with are all drawn, while the view is
+    /// still there, sketch mode hasn't opened, and no later revision has been read: a shown
+    /// sketch's box coming then fits Home again with it, so the view a part opens at is the
+    /// one Home gives.
     opening: Option<Camera>,
     /// The revision the tab opened at: a read of any other ends the opening.
     opening_revision: Option<Revision>,
@@ -2177,6 +2178,14 @@ pub fn show<P: Clients + 'static>(
             .collect(),
     };
     let sketch_open = tab.sketch.is_some();
+    // Every shown sketch read of the published model and its lines made: what they add to
+    // the fit is all there.
+    let all_drawn = !tab.sketch_lines.pending()
+        && tab
+            .sketch_reads
+            .shown_read(tab.browser.sketches(), tab.published, &|id| {
+                tab.shown(&crate::tab::Hideable::Feature(id.clone()))
+            });
     let view = &mut tab.view;
     if sketch_open {
         // Sketch mode turns the view to its sketch, and draws no shown sketch: the opening's
@@ -2184,6 +2193,11 @@ pub fn show<P: Clients + 'static>(
         view.opening = None;
     }
     view.take_drawn_boxes(drawn, size_px);
+    if all_drawn && view.opening.is_some() {
+        // The shown sketches the part opened with are all in the view Home gave it: the
+        // opening is over, so nothing after it (an eye, another client's edit) moves the view.
+        view.opening = None;
+    }
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
@@ -4416,6 +4430,45 @@ mod tests {
         view.set_camera(front(100.0));
         view.give(ViewAsk::Named(HOME), [800, 800], Motion::JUMP);
         assert_eq!(view.camera, opened);
+    }
+
+    #[test]
+    fn a_part_with_no_body_keeps_its_opening_through_a_read_of_the_revision_it_opened_at() {
+        // Refused for its view (no body): opened at the cube's Home. The read with its camera
+        // that follows, of the same revision 3, answers no body. FAR drawn only then: Home of
+        // FAR, onto its middle (320, 0, 10) by hand.
+        let mut view = View {
+            rows: 800,
+            ..View::default()
+        };
+        let mut first = asked(&view, 3);
+        first.size = [800, 800];
+        view.took(
+            first,
+            true,
+            refusal(ErrorCode::InvalidInput, Some("view")),
+            now(),
+        );
+        let opened = view.camera.clone();
+        let empty = Response {
+            session: None,
+            model: None,
+            result: Ok(MeshesRead {
+                camera: AnsweredCamera::of(&opened).unwrap(),
+                bodies: Vec::new(),
+                coarser: "height",
+            }),
+        };
+        let mut again = asked(&view, 3);
+        again.size = [800, 800];
+        view.took(again, false, empty, now());
+        assert_eq!(view.camera, opened);
+        view.take_drawn_boxes(lines_only(&[FAR]), [800, 800]);
+        assert!(
+            near(view.camera.target, [320.0, 0.0, 10.0]),
+            "{:?}",
+            view.camera
+        );
     }
 
     /// The unit vector from `camera`'s target to its eye.

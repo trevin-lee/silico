@@ -49439,6 +49439,55 @@ fn edit_sketch_turns_square_to_a_shown_sketch_reaching_past_the_bodies_in_a_view
 }
 
 #[test]
+fn once_a_part_has_opened_with_its_shown_sketches_an_eye_or_another_clients_move_never_moves_the_view()
+ {
+    // Loose 300 mm off Legs: opened at Home of both. Loose hidden by its eye, then shown
+    // again: the view stays where it opened. Another client moves Loose to x 400 to 440 (a
+    // later revision): the view stays, whichever of its reads comes first.
+    let f = fixture();
+    let far = loose_far();
+    let (mut h, record) = f.drawn("far.silico", &far);
+    meshes_settled(&mut h);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    step(&mut h);
+    let opened = view(&h).camera().clone();
+    near(opened.target, [170.0, 10.0, 10.0], 1e-9);
+    click_eye(&mut h, "Hide", "Loose");
+    step_until(&mut h, "Loose's lines gone", |_| {
+        last_lines(&record).is_empty()
+    });
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &opened, "hidden");
+    click_eye(&mut h, "Show", "Loose");
+    step_until(&mut h, "Loose's lines back", |_| {
+        last_lines(&record).len() == 1
+    });
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &opened, "shown again");
+    let farther = far
+        .replace("\"x\": 300,", "\"x\": 400,")
+        .replace("\"x\": 340,", "\"x\": 440,");
+    assert_eq!(farther.matches(": 440,").count(), 2);
+    let id = h.state().tabs()[0].id;
+    let revision = h.state().tabs()[0].revision;
+    f.sessions
+        .replace_text(&id, revision, farther)
+        .wait()
+        .result
+        .unwrap();
+    step_until(&mut h, "Loose's lines at 400", |_| {
+        last_lines(&record)
+            .first()
+            .and_then(|lines| lines.strips.bounds())
+            .is_some_and(|(low, _)| (low[0] - 400.0).abs() < 1e-9)
+    });
+    meshes_settled(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &opened, "another client's move");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_shown_sketch_with_no_solution_is_drawn_red_and_one_solved_invalid_yellow() {
     // DESIGN.md's *Sketch definition states*: unsolvable #ff3865, invalid #f2c94c, as sketch
     // mode's status colours them, never fully defined's #eeeeed. Loose alone (its corner at
