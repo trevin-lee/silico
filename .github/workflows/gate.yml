@@ -37,8 +37,10 @@ jobs:
   # needs from the cache's dependencies (about 3.5 minutes for the tests) rather than taking
   # one build's archive (cargo nextest archive): that build alone would take as long, before
   # an upload and a download of its binaries, so the partitions would start no sooner. Four
-  # jobs a gate leave room for three or four gates beside a mutants run among the account's 20
-  # (mutants.yml).
+  # jobs a gate (and verdict's few seconds) leave room among the account's 20 for three gates
+  # beside a mutants run that gates a merge (six shards), or two beside a long one (twelve,
+  # mutants.yml). A fourth partition would save little: the slowest tests (.config/nextest.toml's
+  # ci priorities) and each part's setup and build, about 5 minutes, set the floor.
   lint:
     name: lint and stress
     # A fork's pull request is skipped here: its gate is run by pushing its head to a branch of
@@ -62,6 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/prepare
+        id: prepare
         with:
           rust-key: gate-lint
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -71,9 +74,10 @@ jobs:
       # the job's: Cargo and CMake take them all by default, and nextest's ci profile too.
       - name: Lint
         run: bash tests/gate.sh lint
-      # Even after a lint failure, so one run reports both.
+      # Even after a lint failure, so one run reports both; not after the prepare failed,
+      # whose OCCT the stress run would only build again.
       - name: Stress
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
         run: bash tests/gate.sh stress
 
   test:
