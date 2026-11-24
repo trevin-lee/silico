@@ -49373,6 +49373,9 @@ fn edit_sketch_turns_square_to_a_shown_sketch_reaching_past_the_bodies_in_a_view
     step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
     step(&mut h);
     let before = view(&h).camera().clone();
+    // The seam (`sketch::lines`): the core's Home of Legs alone (x 0 to 30, y 0 to 20, z 0
+    // to 10), onto its middle (15, 10, 5) by hand, Loose's lines coming moving nothing.
+    near(before.target, [15.0, 10.0, 5.0], 1e-9);
     assert!(!looks(&h, front, z));
     double_click(&mut h, "Browser", "Loose");
     sketch_read(&mut h);
