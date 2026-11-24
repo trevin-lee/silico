@@ -325,8 +325,9 @@ const ARC: Command = keyed(
     shortcuts::Command::Arc,
 );
 /// A drawing tool as CREATE's drop-down offers it in a sketch, under the palette's name for
-/// it, with its family's icon: the variants the row's Rectangle and Arc don't choose
-/// (Fusion's Center Rectangle, Center Point Arc, and Tangent Arc) reached here, as Fusion
+/// it, with its family's icon. The corner rectangle and the 3-point arc are the row's
+/// Rectangle and Arc, keyed as they are; the variants the row doesn't choose (Fusion's
+/// Center Rectangle, Center Point Arc, and Tangent Arc) are reached here alone, as Fusion
 /// reaches them from its drop-down, with no key, as Fusion gives them none.
 const fn variant(tool: ToolKind, icon: Icon) -> Command {
     command(
@@ -336,9 +337,15 @@ const fn variant(tool: ToolKind, icon: Icon) -> Command {
         Does::Tool(Choice::Draw(tool)),
     )
 }
-const CORNER_RECTANGLE: Command = variant(ToolKind::CornerRectangle, Icon::Rect);
+const CORNER_RECTANGLE: Command = keyed(
+    variant(ToolKind::CornerRectangle, Icon::Rect),
+    shortcuts::Command::Rectangle,
+);
 const CENTER_RECTANGLE: Command = variant(ToolKind::CenterRectangle, Icon::Rect);
-const THREE_POINT_ARC: Command = variant(ToolKind::ThreePointArc, Icon::Arc);
+const THREE_POINT_ARC: Command = keyed(
+    variant(ToolKind::ThreePointArc, Icon::Arc),
+    shortcuts::Command::Arc,
+);
 const CENTERPOINT_ARC: Command = variant(ToolKind::CenterpointArc, Icon::Arc);
 const TANGENT_ARC: Command = variant(ToolKind::TangentArc, Icon::Arc);
 const POINT: Command = keyed(
@@ -2202,6 +2209,46 @@ mod tests {
     /// A button the registry gives keys is the registry's command, under its name and its
     /// line, so its tooltip and the sheet say the same: the keys that reach it do what it
     /// does.
+    /// SKETCH CREATE's drop-down: each drawing tool under its family's icon and its row
+    /// button's key, if the row has it; Construction after the one separator, as its own.
+    #[test]
+    fn sketch_creates_drop_down_gives_each_tool_its_familys_icon_and_key_then_construction() {
+        let menu = SKETCH[0].menu.unwrap_or_default();
+        let seen: Vec<Option<(Does, Icon, Option<shortcuts::Command>)>> = menu
+            .iter()
+            .map(|entry| match entry {
+                Entry::Command(command) => Some((command.does, command.icon, command.key)),
+                _ => None,
+            })
+            .collect();
+        let draw = |tool| Does::Tool(Choice::Draw(tool));
+        use shortcuts::Command as Keys;
+        assert_eq!(
+            seen,
+            [
+                Some((draw(ToolKind::Line), Icon::Line, Some(Keys::Line))),
+                Some((
+                    draw(ToolKind::CornerRectangle),
+                    Icon::Rect,
+                    Some(Keys::Rectangle)
+                )),
+                Some((draw(ToolKind::CenterRectangle), Icon::Rect, None)),
+                Some((draw(ToolKind::Circle), Icon::Circle, Some(Keys::Circle))),
+                Some((draw(ToolKind::ThreePointArc), Icon::Arc, Some(Keys::Arc))),
+                Some((draw(ToolKind::CenterpointArc), Icon::Arc, None)),
+                Some((draw(ToolKind::TangentArc), Icon::Arc, None)),
+                Some((draw(ToolKind::Point), Icon::Point, Some(Keys::Point))),
+                None,
+                Some((
+                    Does::Construction,
+                    Icon::Construction,
+                    Some(Keys::Construction)
+                )),
+            ]
+        );
+        assert!(matches!(menu[8], Entry::Separator));
+    }
+
     #[test]
     fn each_keyed_sketch_button_is_its_registry_commands_under_its_name() {
         let commands: Vec<&Command> = SKETCH.iter().flat_map(|panel| panel.row.iter()).collect();

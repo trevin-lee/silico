@@ -27457,8 +27457,12 @@ fn a_corner_rectangle_dragged_and_one_by_two_clicks_each_add_four_lines_on_four_
     assert_eq!(never_waits::waits(), 0);
 }
 
-/// The tool `item` chosen from SKETCH's CREATE drop-down, the palette naming it.
-fn chosen_from_create_menu(h: &mut AppHarness, item: &str) {
+/// `tool` chosen from SKETCH's CREATE drop-down by its item, `item`, the palette naming it.
+fn chosen_from_create_menu(
+    h: &mut AppHarness,
+    item: &str,
+    tool: silico_core::sketch_tools::ToolKind,
+) {
     use silico_app::sketch::tools::Choice;
     open_create_menu(h);
     h.get_by_role_and_label(Role::Menu, "CREATE")
@@ -27467,13 +27471,10 @@ fn chosen_from_create_menu(h: &mut AppHarness, item: &str) {
     step(h);
     step(h);
     assert!(h.query_by_role(Role::Menu).is_none(), "{item}: closed");
-    let choice = sketch_mode(h).unwrap().tools.choice();
     assert_eq!(
-        choice.map(|choice| match choice {
-            Choice::Draw(tool) => silico_app::sketch::bar::tool_name(tool),
-            _ => "",
-        }),
-        Some(item)
+        sketch_mode(h).unwrap().tools.choice(),
+        Some(Choice::Draw(tool)),
+        "{item}"
     );
     assert!(
         h.get_by_role_and_label(Role::Group, "Sketch Palette")
@@ -27534,7 +27535,11 @@ fn the_center_rectangle_and_the_centre_point_and_tangent_arcs_are_drawn_from_cre
     // corners (20, 15), (40, 15), (40, 25), and (20, 25), sides level and plumb; its centre a
     // construction point at (30, 20), two opposite corners `symmetric` about it (m5.0's
     // centre rectangle, FreeCAD's): five relations in all.
-    chosen_from_create_menu(&mut h, "Center Rectangle");
+    chosen_from_create_menu(
+        &mut h,
+        "Center Rectangle",
+        silico_core::sketch_tools::ToolKind::CenterRectangle,
+    );
     sketch_events(&f, &mut h, &clicked(30.0, 20.0));
     sketch_events(&f, &mut h, &clicked(40.0, 25.0));
     settled(&mut h);
@@ -27584,7 +27589,11 @@ fn the_center_rectangle_and_the_centre_point_and_tangent_arcs_are_drawn_from_cre
     read_with_lines(&mut h, 4);
     // A centrepoint arc, its centre (70, 20), its start (80, 20), its end (70, 30): a quarter
     // of radius 10, counter-clockwise from its start.
-    chosen_from_create_menu(&mut h, "Center Point Arc");
+    chosen_from_create_menu(
+        &mut h,
+        "Center Point Arc",
+        silico_core::sketch_tools::ToolKind::CenterpointArc,
+    );
     for [x, y] in [[70.0, 20.0], [80.0, 20.0], [70.0, 30.0]] {
         sketch_events(&f, &mut h, &clicked(x, y));
     }
@@ -27608,7 +27617,11 @@ fn the_center_rectangle_and_the_centre_point_and_tangent_arcs_are_drawn_from_cre
     let sketch = sketch_of_text(&f, &h, id.as_str());
     let end = point_at(&sketch, 110.0, 10.0);
     let line = line_between(&sketch, &point_at(&sketch, 100.0, 10.0), &end).unwrap();
-    chosen_from_create_menu(&mut h, "Tangent Arc");
+    chosen_from_create_menu(
+        &mut h,
+        "Tangent Arc",
+        silico_core::sketch_tools::ToolKind::TangentArc,
+    );
     sketch_events(&f, &mut h, &dragged([110.0, 10.0], [120.0, 20.0]));
     settled(&mut h);
     let sketch = sketch_of_text(&f, &h, id.as_str());
@@ -27653,10 +27666,18 @@ fn a_variant_chosen_from_the_drop_down_mid_gesture_drops_it_and_a_tangent_arc_on
     create_sketch(&mut h, "XY plane");
     sketch_read(&mut h);
     let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
-    chosen_from_create_menu(&mut h, "Center Rectangle");
+    chosen_from_create_menu(
+        &mut h,
+        "Center Rectangle",
+        silico_core::sketch_tools::ToolKind::CenterRectangle,
+    );
     sketch_events(&f, &mut h, &clicked(30.0, 20.0));
     assert!(sketch_mode(&h).unwrap().tools.busy(), "its centre clicked");
-    chosen_from_create_menu(&mut h, "Tangent Arc");
+    chosen_from_create_menu(
+        &mut h,
+        "Tangent Arc",
+        silico_core::sketch_tools::ToolKind::TangentArc,
+    );
     assert!(!sketch_mode(&h).unwrap().tools.busy());
     sketch_events(&f, &mut h, &dragged([50.0, 50.0], [60.0, 60.0]));
     for _ in 0..5 {
@@ -27672,7 +27693,11 @@ fn a_variant_chosen_from_the_drop_down_mid_gesture_drops_it_and_a_tangent_arc_on
     assert_eq!(adds_sent(&h), 0);
     let sketch = sketch_of_text(&f, &h, id.as_str());
     assert_eq!((sketch.points.len(), sketch.arcs.len()), (0, 0));
-    chosen_from_create_menu(&mut h, "Center Rectangle");
+    chosen_from_create_menu(
+        &mut h,
+        "Center Rectangle",
+        silico_core::sketch_tools::ToolKind::CenterRectangle,
+    );
     sketch_events(&f, &mut h, &clicked(30.0, 20.0));
     sketch_events(&f, &mut h, &clicked(40.0, 25.0));
     settled(&mut h);
