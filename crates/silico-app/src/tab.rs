@@ -12986,17 +12986,27 @@ mod tests {
     /// Edge13 broken, at `edges.1`.
     const BROKEN_ROUND: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}, {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge13"], "radius": 0.1}]}"#;
 
-    /// Polled until nothing of the tab's is under way and the session's revision's model is
-    /// published, as the selection holds it.
+    /// Polled until nothing of the tab's is under way, the session's revision's model is
+    /// published, as the selection holds it, and its block's elements are named, which the
+    /// model's background does after it's published: a repair reads its candidate in the
+    /// block's solid, and is refused as not answered yet until they are (#580).
     fn published_quietly(tab: &mut Tab, sessions: &FakeSessions) {
+        let block = FeatureId::new("k7f2qx3m").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
             tab.poll(sessions);
             let published = tab.selection.model().map(|(_, revision)| revision);
-            if tab.quiet() && published == Some(tab.revision) {
+            let named = matches!(
+                tab.selection.read_on("k7f2qx3m.box.Edge12", &block),
+                crate::selection::OnBase::Found(Ok(_))
+            );
+            if tab.quiet() && published == Some(tab.revision) && named {
                 return;
             }
-            assert!(std::time::Instant::now() < deadline, "never published");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never published, or the block's elements never named"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
