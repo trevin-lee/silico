@@ -12864,59 +12864,25 @@ impl Fixture {
     }
 }
 
-/// A presenter that keeps each frame's dim, as the pane gives it.
-struct Dims(Arc<Mutex<Vec<f32>>>);
-
-impl silico_app::renderer::Present for Dims {
-    fn present(
-        &mut self,
-        _: &eframe::egui::Painter,
-        _: eframe::egui::Rect,
-        _: Vec<silico_app::renderer::Change>,
-        frame: Option<silico_app::renderer::FrameData>,
-    ) {
-        if let Some(frame) = frame {
-            self.0.lock().unwrap().push(frame.dim);
-        }
-    }
-    fn picked(&mut self) -> Option<silico_app::renderer::Picking> {
-        None
-    }
-    fn refused(&mut self) -> std::collections::BTreeSet<u32> {
-        std::collections::BTreeSet::new()
-    }
-}
-
 #[test]
 fn the_model_is_dimmed_while_a_sketch_is_open_and_drawn_as_it_is_after() {
     // The approved prototype dims the model while a sketch is open (sketch.js's
     // `VP.setDim(0.45)` on entering, `VP.setDim(1)` on leaving): to 0.18 in linear light,
     // the 0.45 of its sRGB colour worked by hand (`theme::SKETCH_MODEL_DIM`).
     let f = fixture();
-    let path = f.file("example.silico", EXAMPLE);
-    let dims = Arc::new(Mutex::new(Vec::new()));
-    let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(Dims(Arc::clone(&dims))));
-    let mut h = {
-        let _marked = never_waits::marked();
-        Harness::builder()
-            .with_size((1280.0, 800.0))
-            .with_step_dt(1.0 / 60.0)
-            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
-    };
-    apply_look(&h);
-    h.state_mut().open(path.to_str().unwrap(), false);
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
     meshes_settled(&mut h);
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
-    let last = |dims: &Arc<Mutex<Vec<f32>>>| dims.lock().unwrap().last().copied();
-    assert_eq!(last(&dims), Some(1.0));
+    let last = |record: &Record| record.lock().unwrap().frames.last().map(|frame| frame.dim);
+    assert_eq!(last(&record), Some(1.0));
     create_sketch(&mut h, "XY plane");
     sketch_read(&mut h);
     step(&mut h);
-    assert_eq!(last(&dims), Some(0.18));
+    assert_eq!(last(&record), Some(0.18));
     assert_eq!(silico_app::theme::SKETCH_MODEL_DIM, 0.18);
     leave_sketch(&mut h, false);
     step(&mut h);
-    assert_eq!(last(&dims), Some(1.0));
+    assert_eq!(last(&record), Some(1.0));
     assert_eq!(never_waits::waits(), 0);
 }
 

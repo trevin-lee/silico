@@ -686,6 +686,17 @@ mod tests {
     }
 
     #[test]
+    fn a_frames_dim_is_its_datas() {
+        for dim in [0.0, crate::theme::SKETCH_MODEL_DIM, 1.0] {
+            let frame = FrameData {
+                dim,
+                ..data(&[1], &[])
+            };
+            assert_eq!(frame.frame().dim, dim);
+        }
+    }
+
+    #[test]
     fn a_frame_leaves_out_the_tint_of_a_body_refused_now() {
         // Body 2's mesh is refused as it's uploaded: the frame draws body 1 alone, and tints
         // only body 1's face, not body 2's, which would have the renderer refuse it whole.
