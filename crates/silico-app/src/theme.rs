@@ -383,6 +383,16 @@ pub const AXIS_Z: Rgba8 = rgba8(0x7a95ff);
 
 // ---- Sketches: definition states as SolidWorks means them, in the dark theme's colours ----
 
+/// How much of their colour the bodies keep while a sketch is open, in linear light
+/// (`silico_render::render::Frame::dim`): the approved prototype dims the model to 0.45 of
+/// its sRGB colour (sketch.js's `VP.setDim(0.45)`, viewport.js's `mix(vec3(0.0), c, uDim)`
+/// on its output, three.js r149 writing sRGB values as they are), and the renderer works in
+/// linear light. 0.18 is that dim worked by hand for the body's own colour, lit straight on:
+/// `BODY` (170, 175, 182) in linear light (0.4020, 0.4287, 0.4678), 0.45 of it in sRGB,
+/// (76.5, 78.75, 81.9), in linear light (0.0732, 0.0777, 0.0842), 0.182, 0.181, and 0.180
+/// of it; 0.18 draws it (76.0, 78.5, 81.9). Edges and shaded faces take the same factor.
+pub const SKETCH_MODEL_DIM: f32 = 0.18;
+
 /// Under defined (Blue.600, [`AXIS_Z`]'s blue).
 pub const SKETCH_UNDER_DEFINED: Color32 = color32(AXIS_Z);
 /// Fully defined (Gray.900: SolidWorks' black on a dark canvas).
