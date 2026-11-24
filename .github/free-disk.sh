@@ -10,6 +10,8 @@
 # Usage: bash .github/free-disk.sh   (a step before anything that fills the disk)
 set -euo pipefail
 
+# The machine, for reading its times: hosted runners' CPUs differ from job to job.
+echo "$(nproc) CPUs: $(lscpu | sed -n 's/^Model name: *//p'); $(free -g | awk '/^Mem:/ { print $2 }') GiB of memory"
 df -h / /mnt 2>/dev/null || df -h /
 free_gib=$(( $(df -Pk / | awk 'NR == 2 { print $4 }') / 1024 / 1024 ))
 if [ "$free_gib" -ge 40 ]; then
