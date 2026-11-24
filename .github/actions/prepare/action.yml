@@ -52,6 +52,14 @@ runs:
       shell: bash
       run: bash .github/free-disk.sh
 
+    # User namespaces for an unprivileged user, as Debian (the CI VM) and most Linux allow:
+    # silico-core's file tests make one (`unshare -Urm`) to mount a bind or a tmpfs, and
+    # Ubuntu 24.04's AppArmor forbids it by default ("unshare: write failed
+    # /proc/self/uid_map: Operation not permitted").
+    - name: Unprivileged user namespaces
+      shell: bash
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
     # Outside the checkout (Cargo would take the checkout's workspace for the tree's), and the
     # same path in every job, so their caches match.
     - name: The gate's worktree
