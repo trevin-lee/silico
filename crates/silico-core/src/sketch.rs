@@ -88,12 +88,17 @@ pub const MAX_LOAD_RESOLVES: usize = 3;
 /// solve is tried by every algorithm in turn, and at the most unknowns the worker takes
 /// (1,024, a chain of 512 points held too far apart), break-it measured DogLeg 11.5 s,
 /// Levenberg–Marquardt 28.9 s, BFGS 0.2 s, and anchored SQP 33.2 s on a loaded machine:
-/// 74 s, past the kernel's 60. The time grows with the equations the diagnosis keeps
-/// too: the same chain with one line given `horizontal` 2,000 times took DogLeg 8.7× as
-/// long, and passes 300 s with all four (`MAX_SKETCH_UNKNOWNS`'s doc). Every solve that
-/// reaches a solution is checked by at least one load ([`Translation::solve`]): at least
-/// two solves, and 1 + [`MAX_LOAD_RESOLVES`] at most, each with this limit.
-pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(300);
+/// 74 s, past the kernel's 60. The whole solve of that chain took 74 s on a quiet-ish
+/// M4 Pro and 206 s at a load of 80, and on a GitHub-hosted runner (Intel Xeon 6975P-C)
+/// 199 to 204 s of the worker's CPU, about its wall time: 68% of the 300 s this limit was
+/// set to from the M4 Pro's figures, too close for silico-sketch's test that the limit is at
+/// least twice it. Hosted machines are where agents run `silico serve` too, so the limit is
+/// 600 s; FreeCAD has none. The time grows with the equations the diagnosis keeps too: the
+/// same chain with one line given `horizontal` 2,000 times took DogLeg 8.7× as long, and
+/// passed 300 s with all four (`MAX_SKETCH_UNKNOWNS`'s doc). Every solve that reaches a
+/// solution is checked by at least one load ([`Translation::solve`]): at least two solves,
+/// and 1 + [`MAX_LOAD_RESOLVES`] at most, each with this limit.
+pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// The environment variable that names the sketch worker executable.
 pub const SKETCH_WORKER_ENV: &str = "SILICO_SKETCH_WORKER";
