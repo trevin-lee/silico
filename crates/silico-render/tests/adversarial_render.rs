@@ -73,8 +73,14 @@ type Drawn = (Image, Option<Vec<PixelId>>);
 
 /// `scene` drawn by `w`, or its refusal, allowed `WAIT`: no caller claims a time by it.
 fn call(w: &mut Worker, scene: &RenderScene) -> Result<Drawn, Error> {
-    match w.call(Generation(1), Op::Render(Box::new(scene.clone())), WAIT)? {
-        Reply::Rendered { png, ids } => Ok((decode(&png), ids)),
+    w.call(Generation(1), Op::Render(Box::new(scene.clone())), WAIT)
+        .map(drawn)
+}
+
+/// A render's reply as its image, decoded, and its IDs.
+fn drawn(reply: Reply) -> Drawn {
+    match reply {
+        Reply::Rendered { png, ids } => (decode(&png), ids),
         other => panic!("Render replied {other:?}"),
     }
 }
@@ -612,14 +618,16 @@ impl std::fmt::Display for Cost {
     }
 }
 
-/// Draws `scene` once to make the context, then draws it again: what the second draw cost
+/// Draws the bench's box first, to make the context, then `scene`: what that draw cost
 /// ([`Cost`]), for a bound load doesn't move, and its result. The draw may take up to
-/// `WAIT` of wall time: the bound is on its cost, which a loaded machine stretches.
+/// `WAIT` of wall time: the bound is on its cost, which a loaded machine stretches. The
+/// clock stops when the worker's reply is in, as the core's `RENDER_TIMEOUT` does: the
+/// test's own decode of the PNG, after it, is no part of the render.
 fn timed(w: &mut Worker, scene: &RenderScene) -> (Cost, Result<Drawn, Error>) {
     still_draws(w);
     let share = Share::start();
     let start = Instant::now();
-    let result = call(w, scene);
+    let reply = w.call(Generation(1), Op::Render(Box::new(scene.clone())), WAIT);
     let wall = start.elapsed();
     let slowdown = share.finish().slowdown;
     let cost = Cost {
@@ -627,7 +635,7 @@ fn timed(w: &mut Worker, scene: &RenderScene) -> (Cost, Result<Drawn, Error>) {
         wall,
         slowdown,
     };
-    (cost, result)
+    (cost, reply.map(drawn))
 }
 
 #[test]
@@ -790,15 +798,25 @@ fn a_part_of_ctc_size_at_4096_square_with_highlights_draws_within_the_limit() {
         },
         width: 4096,
         height: 4096,
-        ids: true,
+        ids: false,
     };
+    // Timed with the product's scene: `render` never asks for the ID buffer
+    // (silico_core::command::render's scene has `ids: false`).
     let (cost, result) = timed(&mut w, &scene);
-    let (image, ids) = result.unwrap_or_else(|e| panic!("{cost}: {e:?}"));
+    let (timed_image, ids) = result.unwrap_or_else(|e| panic!("{cost}: {e:?}"));
     assert!(cost.cost < LIMIT, "{cost}");
+    assert_eq!((timed_image.width, timed_image.height), (4096, 4096));
+    assert_eq!(ids, None);
+    // The same scene with its IDs, allowed `WAIT` and timed by nothing: what's drawn there.
+    let (image, ids) = call(&mut w, &RenderScene { ids: true, ..scene }).unwrap();
     assert_eq!((image.width, image.height), (4096, 4096));
-    // The centre, by hand: x 0 is Face1001's left side, and the face 0.34 mm (3.1 pixels)
-    // wide; column 2049's centre is 0.165 mm right of it.
     let ids = ids.unwrap();
+    assert_eq!(ids.len(), 4096 * 4096);
+    // The centre, by hand: x 0 is Face1001's left side, and the face 0.34 mm (3.1 pixels)
+    // wide; column 2049's centre is 0.165 mm right of it. The timed draw drew it too, the
+    // part and not the background, the same as the draw with its IDs.
+    assert_ne!(timed_image.at(2049, 2048), BACKGROUND);
+    assert_eq!(timed_image.at(2049, 2048), image.at(2049, 2048));
     let id = ids[2048 * 4096 + 2049];
     assert!(id == [1, 1001] || id == [1, EDGE_BIT | 1001], "{id:?}");
 }
