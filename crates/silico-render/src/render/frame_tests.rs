@@ -2976,9 +2976,17 @@ fn a_dimmed_frame_darkens_every_face_and_edge_by_its_dim_and_uploads_nothing() {
                 composited(r, Some(commands))
             };
             let plain = image(r, 1.0);
+            assert!(
+                r.dimmed.made.is_none(),
+                "a plain frame made a dim's material"
+            );
             let uploaded = r.uploads();
             let dimmed = image(r, SKETCH_DIM);
             assert_eq!(r.uploads(), uploaded, "a dim uploaded a mesh");
+            // One material for the dim, kept: the same dim again makes none.
+            assert_eq!(r.dimmed.makes, 1);
+            assert_eq!(image(r, SKETCH_DIM), dimmed);
+            assert_eq!(r.dimmed.makes, 1);
             let dim = f64::from(SKETCH_DIM);
             let face: [f64; 3] = std::array::from_fn(|k| srgb_of(dim * linear(BODY[k])));
             for (k, hand) in [76.0, 78.5, 81.9].into_iter().enumerate() {
@@ -3089,6 +3097,34 @@ fn a_dim_of_0_draws_the_bodies_black_and_dims_changing_each_frame_each_draw_thei
             };
             assert_colour(half[centre], mixed(0.5), 1.0, "at 0.5");
             assert_colour(first[centre], mixed(f64::from(SKETCH_DIM)), 1.0, "at 0.18");
+        },
+    );
+}
+
+#[test]
+fn a_failed_frame_lets_the_dims_material_go_and_the_next_dimmed_frame_makes_it_again() {
+    // Nothing made on the GPU before a failed frame is trusted after it (`Renderer::failed`):
+    // the dim's material, as the faces' meshes and the planes', is made again.
+    on_lavapipe(
+        "render::frame_tests::a_failed_frame_lets_the_dims_material_go_and_the_next_dimmed_frame_makes_it_again",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let dimmed = Frame {
+                dim: SKETCH_DIM,
+                ..frame(&camera, &[1], &[], None)
+            };
+            assert_eq!(outcome(r, &dimmed), Outcome::Drawn);
+            assert_eq!(r.dimmed.makes, 1);
+            r.fail_frames = 1;
+            assert_eq!(outcome(r, &dimmed), Outcome::Failed);
+            assert!(
+                r.dimmed.made.is_none(),
+                "the dim's material outlived a failed frame"
+            );
+            assert_eq!(outcome(r, &dimmed), Outcome::Refused(1));
+            assert_eq!(outcome(r, &dimmed), Outcome::Drawn);
+            assert_eq!(r.dimmed.makes, 2);
         },
     );
 }
