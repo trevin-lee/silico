@@ -15,18 +15,22 @@
 //!   its bucket moves, never each frame ([`ShownLines`]).
 //! - **Construction** curves are dashed in millimetres at the bucket, sketch mode's dash and
 //!   gap (`SKETCH_CONSTRUCTION_DASH`, points), one strip a dash ([`dashes`]).
-//! - **The colour** is its state's, as DESIGN.md's *Sketch definition states* gives them and
-//!   sketch mode draws them ([`colour`]): under defined `#7a95ff`, fully defined `#eeeeed`,
-//!   over defined and unsolvable `#ff3865`, invalid `#f2c94c`. The prototype's
-//!   `syncSketchLines` (app.js:978) draws only its demo's two, under and fully defined.
+//! - **The colour** is its state's, the one map sketch mode's status takes too
+//!   (`theme::sketch_state_colour`, DESIGN.md's *Sketch definition states*): under defined
+//!   `#7a95ff`, fully defined `#eeeeed`, over defined and unsolvable `#ff3865`, invalid
+//!   `#f2c94c`. The prototype's `syncSketchLines` (app.js:978) draws only its demo's two,
+//!   under and fully defined.
 //! - **None** is drawn for a read whose plane is an error (a face gone, not planar, found by
 //!   an unstable name, or its feature unbuilt: nothing guesses a placement), and none for a
 //!   sketch past [`MAX_LINE_POINTS`], which a warning names. Nor for a sketch whose lines
 //!   would take a frame's past the renderer's most (`MAX_FRAME_LINE_POINTS`, over every
 //!   shown sketch, in the order they're given), which a warning names once: the rest are
 //!   drawn, so a frame is never refused for its lines' count.
-//! - **Fit, Home, the named views, and Look At** take the lines' boxes with the bodies', as
-//!   Fusion's Fit takes every object shown, and so does the camera's clamp.
+//! - **Fit, Home, the named views, and Look At** take each drawn sketch's box with the
+//!   bodies', as Fusion's Fit takes every object shown: the box sketch mode fits its own
+//!   sketch by (`super::bounds::model_box`), exact and the same at every scale, given with
+//!   its lines ([`FrameLines::fit`]). The camera's clamp takes the strips' own boxes, the
+//!   reach the renderer measures.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -49,18 +53,10 @@ pub const MAX_LINE_POINTS: usize = 200_000;
 // A sketch within its own cap always fits a frame's lines alone.
 const _: () = assert!(MAX_LINE_POINTS <= MAX_FRAME_LINE_POINTS);
 
-/// The colour a sketch in `state` is drawn in, sRGB and opaque, as DESIGN.md's *Sketch
-/// definition states* gives it and sketch mode's status says it (`super::state_shown`):
-/// under defined `#7a95ff`, fully defined `#eeeeed`, over defined and unsolvable `#ff3865`,
-/// invalid `#f2c94c`.
+/// The colour a sketch in `state` is drawn in, sRGB and opaque: its state's
+/// (`theme::sketch_state_colour`).
 pub fn colour(state: SketchState) -> [u8; 4] {
-    let colour = match state {
-        SketchState::UnderDefined => theme::SKETCH_UNDER_DEFINED,
-        SketchState::FullyDefined => theme::SKETCH_FULLY_DEFINED,
-        SketchState::OverDefined | SketchState::NoSolution => theme::SKETCH_OVER_DEFINED,
-        SketchState::Invalid => theme::SKETCH_INVALID,
-    };
-    colour.to_array()
+    theme::sketch_state_colour(state).to_array()
 }
 
 /// How near the eye a perspective view's scale is taken at most, as a part of the eye's
@@ -225,20 +221,23 @@ struct Budget {
 }
 
 /// A shown sketch's lines as the frame gives them the renderer: its strips, shared with
-/// the cache that made them, and its colour; its width is the theme's.
+/// the cache that made them, and its colour; its width is the theme's. And the box a fit
+/// takes it by, its read's whole (`super::bounds::model_box`), the same at every scale.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameLines {
     pub strips: Arc<Strips>,
     pub colour: [u8; 4],
+    pub fit: Option<[[f64; 3]; 2]>,
 }
 
 /// What was made of a sketch's read: the read (so a replaced one is seen by its `Arc`), its
-/// box ([`box_of`], none for one its plane doesn't place), how many points it takes at a
-/// bucket ([`count_points`]), and, at the bucket they were made at, the strips or why there
-/// are none.
+/// box ([`box_of`], none for one its plane doesn't place), the box a fit takes
+/// (`super::bounds::model_box`), how many points it takes at a bucket ([`count_points`]),
+/// and, at the bucket they were made at, the strips or why there are none.
 struct Made {
     read: Arc<SketchRead>,
     bounds: Option<([f64; 3], [f64; 3])>,
+    fit: Option<[[f64; 3]; 2]>,
     count: Option<(i32, Option<usize>)>,
     strips: Option<(i32, Result<Arc<Strips>, NotDrawn>)>,
 }
@@ -351,6 +350,7 @@ impl ShownLines {
                 _ => Made {
                     read: Arc::clone(read),
                     bounds: box_of(read),
+                    fit: super::bounds::model_box(read),
                     count: None,
                     strips: None,
                 },
@@ -415,6 +415,7 @@ impl ShownLines {
                         lines.push(FrameLines {
                             strips: Arc::clone(strips),
                             colour: colour(read.states.state),
+                            fit: made.fit,
                         });
                         true
                     } else {

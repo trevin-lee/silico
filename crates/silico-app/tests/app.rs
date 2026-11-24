@@ -49184,6 +49184,11 @@ fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is
     under_defined_sketches(&f);
     let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
     step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    // Loose reaches past Legs, so the view the part opened at fits Home again with it, and
+    // its lines are made again at that view's scale, once.
+    for _ in 0..3 {
+        step(&mut h);
+    }
     let lines = last_lines(&record);
     assert_eq!(lines[0].colour, [0x7a, 0x95, 0xff, 0xff]);
     let sides: Vec<Vec<[f64; 3]>> = (0..lines[0].strips.len())
@@ -49362,6 +49367,44 @@ fn fit_and_home_take_a_shown_sketchs_lines_with_the_bodies() {
 }
 
 #[test]
+fn a_part_opens_at_the_view_home_gives_with_its_shown_sketches() {
+    // Legs and Loose shown 300 mm off ([`loose_far`]): the part opens at Home's view of
+    // both, the one Home gives, onto (170, 10, 10) by hand, not the core's Home of Legs
+    // alone, (15, 10, 5). A sketch alone, in a part with no body: it opens onto it, Loose's
+    // middle (320, 0, 10).
+    let f = fixture();
+    let (mut h, record) = f.drawn("far.silico", &loose_far());
+    meshes_settled(&mut h);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    step(&mut h);
+    let opened = view(&h).camera().clone();
+    near(opened.target, [170.0, 10.0, 10.0], 1e-9);
+    h.key_press(eframe::egui::Key::Home);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &opened);
+    assert_eq!(never_waits::waits(), 0);
+    // Loose alone: Profile and Legs removed.
+    let far = loose_far();
+    let alone = {
+        let lines: Vec<&str> = far
+            .lines()
+            .filter(|line| !line.contains("\"Profile\"") && !line.contains("\"Legs\""))
+            .collect();
+        lines.join("\n")
+    };
+    assert!(alone.contains("\"Loose\"") && !alone.contains("\"pad\""));
+    let f = fixture();
+    let (mut h, record) = f.drawn("alone.silico", &alone);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    step_until(&mut h, "the view onto Loose", |h| {
+        let target = view(h).camera().target;
+        (target[0] - 320.0).abs() < 1e-9
+    });
+    near(view(&h).camera().target, [320.0, 0.0, 10.0], 1e-9);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_shown_sketch_with_no_solution_is_drawn_red_and_one_solved_invalid_yellow() {
     // DESIGN.md's *Sketch definition states*: unsolvable #ff3865, invalid #f2c94c, as sketch
     // mode's status colours them, never fully defined's #eeeeed. Loose alone (its corner at
@@ -49381,12 +49424,13 @@ fn a_shown_sketch_with_no_solution_is_drawn_red_and_one_solved_invalid_yellow() 
         values[9] = values[7];
         Solved { values, ..sent }
     };
+    use silico_core::sketch_states::SketchState;
     type Answer = fn(Solved) -> Solved;
-    let cases: [(Answer, [u8; 4], &str); 2] = [
-        (failed, [0xff, 0x38, 0x65, 0xff], "no solution"),
-        (collapsed, [0xf2, 0xc9, 0x4c, 0xff], "invalid"),
+    let cases: [(Answer, [u8; 4], SketchState); 2] = [
+        (failed, [0xff, 0x38, 0x65, 0xff], SketchState::NoSolution),
+        (collapsed, [0xf2, 0xc9, 0x4c, 0xff], SketchState::Invalid),
     ];
-    for (answer, colour, what) in cases {
+    for (answer, colour, want) in cases {
         let f = fixture();
         f.sketches.answer(move |system| {
             let sent = FakeSketches::as_sent(system);
@@ -49398,16 +49442,11 @@ fn a_shown_sketch_with_no_solution_is_drawn_red_and_one_solved_invalid_yellow() 
         });
         let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
         step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
-        assert_eq!(last_lines(&record)[0].colour, colour, "{what}");
+        assert_eq!(last_lines(&record)[0].colour, colour, "{want:?}");
         let state = h.state().tabs()[0]
             .sketch_reads
             .state(&sketch_id("s0000002"));
-        let want = if what == "invalid" {
-            silico_core::sketch_states::SketchState::Invalid
-        } else {
-            silico_core::sketch_states::SketchState::NoSolution
-        };
-        assert_eq!(state, Some(want), "{what}");
+        assert_eq!(state, Some(want));
         assert_eq!(never_waits::waits(), 0);
     }
 }
