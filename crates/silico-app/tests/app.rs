@@ -27657,6 +27657,10 @@ fn a_delete_whose_sketch_mode_a_revert_closed_is_let_go_and_said() {
     assert!(sketch_mode(&h).is_none());
     assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_join")));
     assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
+    // The Save ran, committing the split, and the Revert after it, back to the file it wrote.
+    assert!(tab.sent.contains(&Sent::Commit));
+    assert!(!tab.transaction);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
     assert_eq!(never_waits::waits(), 0);
 }
 
