@@ -1261,6 +1261,22 @@ fn a_worker_named_by_a_bare_name_runs_the_one_in_the_working_directory() {
     );
 }
 
+/// This thread, and every thread it starts from now on (they take its CPUs), and the
+/// processes they start, kept to at most four of the CPUs it may run on.
+#[cfg(target_os = "linux")]
+fn on_four_cpus() {
+    use rustix::thread::{CpuSet, sched_getaffinity, sched_setaffinity};
+    let allowed = sched_getaffinity(None).unwrap();
+    let mut four = CpuSet::new();
+    for cpu in (0..CpuSet::MAX_CPU)
+        .filter(|&cpu| allowed.is_set(cpu))
+        .take(4)
+    {
+        four.set(cpu);
+    }
+    sched_setaffinity(None, &four).unwrap();
+}
+
 #[test]
 fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
     // MAX_WORKERS slots of a stand-in worker that never starts: 1024 processes and three
@@ -1273,12 +1289,24 @@ fn a_pool_of_the_most_workers_starts_and_stops_cleanly() {
     // forks this whole process (the socket's descriptor is passed in the child before exec),
     // growing by three threads a worker, so it costs far more: 32 s on the CI runner with
     // six mutants shards running. The bounds are about four times what was measured, per
-    // platform. The wall clock bounds
-    // only a hang, at 9 minutes (nextest allows this test 10: .config/nextest.toml): so a
-    // start or drop that waits on each worker is caught once the wait is about half a
-    // second (a handshake's timeout, say), not a brief sleep, which the CPU time doesn't see.
+    // platform.
+    //
+    // On Linux the pool runs on four CPUs at most. Spread over a large machine's, its 3,072
+    // threads made the kernel's share of the CPU time the machine's too: each fork, and each
+    // thread's end, waits on every CPU the process has run on, and on the CI VM's 30 busy
+    // vCPUs the drop took 7.8 s of CPU on CI's gate (run 45385197973) and 2–3 s on the VM at
+    // a load of 100, and the start 134 s and 142 s at a load of 150 (2026-11-24), past the
+    // bounds, though the pool's own code took at most 0.15 s and 1.8 s of them. On four, at
+    // loads of 100 to 240, the start took 23–33 s and the drop 0.45–1.3 s.
+    //
+    // The wall clock bounds only a hang, at 9 minutes (nextest allows this test 10:
+    // .config/nextest.toml): so a start or drop that waits on each worker is caught once the
+    // wait is about half a second (a handshake's timeout, say), not a brief sleep, which the
+    // CPU time doesn't see.
     let exe = script("most-workers", "exec sleep 600");
     let (started, pids, dropped) = within(Duration::from_secs(540), move || {
+        #[cfg(target_os = "linux")]
+        on_four_cpus();
         let start = cpu_time::ProcessTime::now();
         let pool = KernelPool::start_workers(&exe, silico_core::pool::MAX_WORKERS);
         let started = start.elapsed();
