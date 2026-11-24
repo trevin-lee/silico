@@ -22692,7 +22692,8 @@ fn press_chord(h: &mut AppHarness, chord: Chord) {
         Chord::Key(shortcut) | Chord::Exact(shortcut) => {
             h.key_press_modifiers(shortcut.modifiers, shortcut.logical_key);
         }
-        Chord::Pointer(..) | Chord::Held(..) => panic!("{chord:?} is the pointer's"),
+        Chord::Pointer(..) => panic!("{chord:?} is the pointer's"),
+        Chord::Held(..) => panic!("{chord:?} is held as the pointer acts, never pressed"),
     }
 }
 
@@ -22946,8 +22947,9 @@ fn under_the_sheet_no_shortcut_acts() {
 #[test]
 fn every_command_the_search_lists_runs_from_it_as_its_keys_and_its_button_do() {
     // Each command the search lists (the registry's but OK, Cancel, the pointer's three, and
-    // Sketch without relations: 43, the three past its first 40 among them, found by name), run from the search in a
-    // state where it can run: what its keys and its button do, by the same checks.
+    // Sketch without relations: 43, the three past its first 40 among them, found by name),
+    // run from the search in a state where it can run: what its keys and its button do, by
+    // the same checks.
     let listed: Vec<&silico_app::shortcuts::Entry> = REGISTRY
         .iter()
         .filter(|entry| !silico_app::search::LEFT_OUT.contains(&entry.command))

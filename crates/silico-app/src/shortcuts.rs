@@ -16,8 +16,8 @@
 //! D Smart Dimension, X construction, and Ctrl+Enter Finish Sketch, each its SKETCH tab's
 //! button's (`crate::toolbar`); the app takes them only while a sketch is open. Among them,
 //! before Finish Sketch, *Sketch without relations*: Ctrl (⌘ on macOS) held as the pointer
-//! acts, which the sketch tools read from the pointer's events (`Chord::Held`), descriptive
-//! only, as Orbit's is.
+//! acts (`Chord::Held`), descriptive only, as Orbit's is: the sketch tools read it from the
+//! pointer's events themselves.
 //!
 //! Only what the app does today is here. Left out, each a seam:
 //! - SEAM(M5.7): Select Other (right-click), picking's part 3.
@@ -153,7 +153,9 @@ pub enum Chord {
     Pointer(Modifiers, &'static str),
     /// Modifiers held as the pointer acts, whatever its gesture: descriptive only, for the
     /// sheet, its caps the modifiers' and then `hold` (the prototype's `['Mod', 'hold']`).
-    /// The sketch tools read it from the pointer's events; [`take`] never matches it.
+    /// It only describes what the sketch tools read themselves, Ctrl as each pointer event
+    /// carries it (`modifiers.command`); [`take`] never matches it. Not a [`Chord::Pointer`]:
+    /// a modifier held is no gesture of the pointer's.
     Held(Modifiers),
 }
 

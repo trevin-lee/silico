@@ -665,9 +665,8 @@ mod tests {
         // without relations among them), Help 1 (47). The least height that takes three
         // columns, filled in order, is 460: below it View can't take Selection (311 + 14 +
         // 135 = 460), and Selection to Help (135 + 14 + 69 + 14 + 245 + 14 + 47 = 538) take
-        // two more. At 460, File, Edit, and Rebuild (135
-        // + 14 + 135 + 14 + 113 = 411); View and Selection (460); Dialogs, Sketch, and Help
-        // (69 + 14 + 245 + 14 + 47 = 389).
+        // two more. At 460, File, Edit, and Rebuild (135 + 14 + 135 + 14 + 113 = 411); View
+        // and Selection (460); Dialogs, Sketch, and Help (69 + 14 + 245 + 14 + 47 = 389).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
