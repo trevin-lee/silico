@@ -324,6 +324,23 @@ const ARC: Command = keyed(
     ),
     shortcuts::Command::Arc,
 );
+/// A drawing tool as CREATE's drop-down offers it in a sketch, under the palette's name for
+/// it, with its family's icon: the variants the row's Rectangle and Arc don't choose
+/// (Fusion's Center Rectangle, Center Point Arc, and Tangent Arc) reached here, as Fusion
+/// reaches them from its drop-down, with no key, as Fusion gives them none.
+const fn variant(tool: ToolKind, icon: Icon) -> Command {
+    command(
+        crate::sketch::bar::tool_name(tool),
+        icon,
+        None,
+        Does::Tool(Choice::Draw(tool)),
+    )
+}
+const CORNER_RECTANGLE: Command = variant(ToolKind::CornerRectangle, Icon::Rect);
+const CENTER_RECTANGLE: Command = variant(ToolKind::CenterRectangle, Icon::Rect);
+const THREE_POINT_ARC: Command = variant(ToolKind::ThreePointArc, Icon::Arc);
+const CENTERPOINT_ARC: Command = variant(ToolKind::CenterpointArc, Icon::Arc);
+const TANGENT_ARC: Command = variant(ToolKind::TangentArc, Icon::Arc);
 const POINT: Command = keyed(
     command(
         "Point",
@@ -455,7 +472,22 @@ const SKETCH: &[Panel] = &[
     Panel {
         label: "CREATE",
         row: &[LINE, RECTANGLE, CIRCLE, ARC, POINT, CONSTRUCTION],
-        menu: None,
+        // Fusion's sketch CREATE drop-down, in its order: Line, the rectangles, Circle, the
+        // arcs, Point; each family's variants listed flat, as the prototype's menus have no
+        // flyouts (`.menu`'s items, interact.js), each under the palette's name for it.
+        // Then Construction, the row's last.
+        menu: Some(&[
+            Entry::Command(LINE),
+            Entry::Command(CORNER_RECTANGLE),
+            Entry::Command(CENTER_RECTANGLE),
+            Entry::Command(CIRCLE),
+            Entry::Command(THREE_POINT_ARC),
+            Entry::Command(CENTERPOINT_ARC),
+            Entry::Command(TANGENT_ARC),
+            Entry::Command(POINT),
+            Entry::Separator,
+            Entry::Command(CONSTRUCTION),
+        ]),
     },
     Panel {
         label: "MODIFY",

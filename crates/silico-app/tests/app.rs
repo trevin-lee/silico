@@ -19105,6 +19105,98 @@ fn the_sketch_tab_and_a_blue_finish_sketch_show_while_a_sketch_is_open() {
     assert_eq!(h.state().acts, [Act::FinishSketch]);
 }
 
+/// SKETCH's CREATE drop-down: Fusion's sketch CREATE menu in its order, Line, the
+/// rectangles, Circle, the arcs, Point, each family's variants flat under the palette's
+/// names, then Construction.
+const SKETCH_CREATE_MENU: [&str; 9] = [
+    "Line",
+    "Corner Rectangle",
+    "Center Rectangle",
+    "Circle",
+    "3-Point Arc",
+    "Center Point Arc",
+    "Tangent Arc",
+    "Point",
+    "Construction",
+];
+
+#[test]
+fn sketch_creates_drop_down_offers_every_drawing_tool_the_one_on_checked_each_item_choosing_its_own()
+ {
+    use silico_app::sketch::tools::Choice;
+    use silico_app::toolbar::Act;
+    use silico_core::sketch_tools::ToolKind;
+    let mut h = toolbar(ToolbarStub::new());
+    h.state_mut().in_sketch = true;
+    h.state_mut().tool = Some(Choice::Draw(ToolKind::CenterpointArc));
+    h.step();
+    h.step();
+    let open = |h: &mut ToolbarHarness| {
+        toolbar_pointer_away(h);
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_role_and_label(Role::Button, "CREATE")
+            .click();
+        toolbar_until(h, "CREATE's drop-down", |h| {
+            h.query_by_role_and_label(Role::Menu, "CREATE").is_some()
+        });
+    };
+    open(&mut h);
+    let menu = h.get_by_role_and_label(Role::Menu, "CREATE");
+    assert_eq!(buttons_of(&menu), SKETCH_CREATE_MENU);
+    assert_eq!(on_of(&menu), SKETCH_CREATE_MENU);
+    // The tool on, the centrepoint arc, checked; no other item is.
+    let checked: Vec<String> = menu
+        .query_all_by_role(Role::Button)
+        .filter(|node| toggled(node) == Some(true))
+        .filter_map(|node| node.accesskit_node().label())
+        .collect();
+    assert_eq!(checked, ["Center Point Arc"]);
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    toolbar_until(&mut h, "CREATE's drop-down closed", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_none()
+    });
+    // Each variant's item chooses its own tool, closing the drop-down; the row's Rectangle
+    // and Arc still choose the corner rectangle and the 3-point arc (R and A's).
+    for (item, tool) in [
+        ("Center Rectangle", ToolKind::CenterRectangle),
+        ("Tangent Arc", ToolKind::TangentArc),
+        ("Center Point Arc", ToolKind::CenterpointArc),
+        ("Corner Rectangle", ToolKind::CornerRectangle),
+        ("3-Point Arc", ToolKind::ThreePointArc),
+    ] {
+        h.state_mut().acts.clear();
+        open(&mut h);
+        h.get_by_role_and_label(Role::Menu, "CREATE")
+            .get_by_role_and_label(Role::Button, item)
+            .click();
+        h.step();
+        h.step();
+        assert_eq!(
+            h.state().acts,
+            [Act::SketchTool(Choice::Draw(tool))],
+            "{item}"
+        );
+        assert!(h.query_by_role(Role::Menu).is_none(), "{item}: closed");
+    }
+    for (button, tool) in [
+        ("Rectangle", ToolKind::CornerRectangle),
+        ("Arc", ToolKind::ThreePointArc),
+    ] {
+        h.state_mut().acts.clear();
+        h.get_by_role_and_label(Role::Toolbar, "CREATE")
+            .get_by_role_and_label(Role::Button, button)
+            .click();
+        h.step();
+        assert_eq!(
+            h.state().acts,
+            [Act::SketchTool(Choice::Draw(tool))],
+            "{button}"
+        );
+    }
+}
+
 #[test]
 fn create_sketch_waits_for_sketch_mode_then_begins_its_pick_from_its_button_and_creates_drop_down()
 {
@@ -27362,6 +27454,232 @@ fn a_corner_rectangle_dragged_and_one_by_two_clicks_each_add_four_lines_on_four_
     // Finish keeps them.
     leave_sketch(&mut h, true);
     assert_eq!(sketch_of_text(&f, &h, id.as_str()).lines.len(), 8);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The tool `item` chosen from SKETCH's CREATE drop-down, the palette naming it.
+fn chosen_from_create_menu(h: &mut AppHarness, item: &str) {
+    use silico_app::sketch::tools::Choice;
+    open_create_menu(h);
+    h.get_by_role_and_label(Role::Menu, "CREATE")
+        .get_by_role_and_label(Role::Button, item)
+        .click();
+    step(h);
+    step(h);
+    assert!(h.query_by_role(Role::Menu).is_none(), "{item}: closed");
+    let choice = sketch_mode(h).unwrap().tools.choice();
+    assert_eq!(
+        choice.map(|choice| match choice {
+            Choice::Draw(tool) => silico_app::sketch::bar::tool_name(tool),
+            _ => "",
+        }),
+        Some(item)
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .query_by_label(item)
+            .is_some(),
+        "the palette names {item}"
+    );
+}
+
+/// The arc of `sketch` whose centre, start, and end are at these places, to 1e-9 mm (a
+/// tool's centre is worked out in floating point), if it has one: its ID and its start's.
+fn arc_at(
+    sketch: &silico_core::document::Sketch,
+    center: [f64; 2],
+    start: [f64; 2],
+    end: [f64; 2],
+) -> Option<(String, String)> {
+    let place = |id: &silico_core::document::ElementId| {
+        sketch
+            .points
+            .iter()
+            .find(|p| &p.id == id)
+            .map(|p| [p.x.mm(), p.y.mm()])
+    };
+    let at = |id: &silico_core::document::ElementId, want: [f64; 2]| {
+        place(id)
+            .is_some_and(|got| (got[0] - want[0]).abs() < 1e-9 && (got[1] - want[1]).abs() < 1e-9)
+    };
+    sketch
+        .arcs
+        .iter()
+        .find(|arc| at(&arc.center, center) && at(&arc.start, start) && at(&arc.end, end))
+        .map(|arc| (arc.id.as_str().to_owned(), arc.start.as_str().to_owned()))
+}
+
+#[test]
+fn the_center_rectangle_and_the_centre_point_and_tangent_arcs_are_drawn_from_creates_drop_down() {
+    use silico_core::document::{Form, Reference};
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    // The drop-down holds every drawing tool (Fusion's sketch CREATE menu).
+    open_create_menu(&mut h);
+    assert_eq!(
+        buttons_of(&h.get_by_role_and_label(Role::Menu, "CREATE")),
+        SKETCH_CREATE_MENU
+    );
+    h.get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_role_and_label(Role::Button, "CREATE")
+        .click();
+    step_until(&mut h, "CREATE's drop-down closed", |h| {
+        h.query_by_role_and_label(Role::Menu, "CREATE").is_none()
+    });
+    // A centre rectangle, its centre clicked at (30, 20), a corner at (40, 25): by hand, the
+    // corners (20, 15), (40, 15), (40, 25), and (20, 25), sides level and plumb; its centre a
+    // construction point at (30, 20), two opposite corners `symmetric` about it (m5.0's
+    // centre rectangle, FreeCAD's): five relations in all.
+    chosen_from_create_menu(&mut h, "Center Rectangle");
+    sketch_events(&f, &mut h, &clicked(30.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 25.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.points.len(), sketch.lines.len()), (5, 4));
+    assert_rectangle_in(&sketch, [20.0, 15.0], [40.0, 25.0]);
+    let centre = point_at(&sketch, 30.0, 20.0);
+    let constructed: Vec<&str> = sketch
+        .points
+        .iter()
+        .filter(|p| p.construction)
+        .map(|p| p.id.as_str())
+        .collect();
+    assert_eq!(constructed, [centre.as_str()]);
+    let corners =
+        |a: [f64; 2], b: [f64; 2]| [point_at(&sketch, a[0], a[1]), point_at(&sketch, b[0], b[1])];
+    let diagonals = [
+        corners([20.0, 15.0], [40.0, 25.0]),
+        corners([40.0, 15.0], [20.0, 25.0]),
+    ];
+    let symmetric: Vec<[String; 2]> = sketch
+        .constraints
+        .iter()
+        .filter_map(|c| match &c.form {
+            Form::Symmetric {
+                a: Reference::Element(a),
+                b: Reference::Element(b),
+                about: Reference::Element(about),
+            } if about.as_str() == centre => {
+                let mut pair = [a.as_str().to_owned(), b.as_str().to_owned()];
+                pair.sort();
+                Some(pair)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(symmetric.len(), 1, "{:?}", sketch.constraints);
+    assert!(
+        diagonals.iter().any(|d| {
+            let mut d = d.clone();
+            d.sort();
+            d == symmetric[0]
+        }),
+        "{symmetric:?}"
+    );
+    assert_eq!(sketch.constraints.len(), 5);
+    read_with_lines(&mut h, 4);
+    // A centrepoint arc, its centre (70, 20), its start (80, 20), its end (70, 30): a quarter
+    // of radius 10, counter-clockwise from its start.
+    chosen_from_create_menu(&mut h, "Center Point Arc");
+    for [x, y] in [[70.0, 20.0], [80.0, 20.0], [70.0, 30.0]] {
+        sketch_events(&f, &mut h, &clicked(x, y));
+    }
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!(sketch.arcs.len(), 1);
+    assert!(
+        arc_at(&sketch, [70.0, 20.0], [80.0, 20.0], [70.0, 30.0]).is_some(),
+        "{:?}",
+        sketch.arcs
+    );
+    // A tangent arc, pressed on the line's end (110, 10), the line drawn from (100, 10), and
+    // dragged to (120, 20): it leaves along +x, so by hand its centre is (110, 20), on the
+    // normal at the start, as far from (120, 20) as from the start: radius 10, counter-
+    // clockwise; its start the line's end, shared, and `tangent_at` there.
+    h.key_press(eframe::egui::Key::L);
+    step(&mut h);
+    sketch_events(&f, &mut h, &dragged([100.0, 10.0], [110.0, 10.0]));
+    settled(&mut h);
+    read_with_lines(&mut h, 5);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    let end = point_at(&sketch, 110.0, 10.0);
+    let line = line_between(&sketch, &point_at(&sketch, 100.0, 10.0), &end).unwrap();
+    chosen_from_create_menu(&mut h, "Tangent Arc");
+    sketch_events(&f, &mut h, &dragged([110.0, 10.0], [120.0, 20.0]));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!(sketch.arcs.len(), 2);
+    let (arc, start) = arc_at(&sketch, [110.0, 20.0], [110.0, 10.0], [120.0, 20.0])
+        .unwrap_or_else(|| panic!("{:?}", sketch.arcs));
+    assert_eq!(start, end);
+    let tangent = sketch.constraints.iter().any(|c| match &c.form {
+        Form::TangentAt {
+            a: Reference::Element(a),
+            b: Reference::Element(b),
+            at: Reference::Element(at),
+            ..
+        } => {
+            let mut pair = [a.as_str(), b.as_str()];
+            pair.sort();
+            let mut want = [line.as_str(), arc.as_str()];
+            want.sort();
+            pair == want && at.as_str() == end
+        }
+        _ => false,
+    });
+    assert!(tangent, "{:?}", sketch.constraints);
+    // Finish keeps them.
+    leave_sketch(&mut h, true);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.lines.len(), sketch.arcs.len()), (5, 2));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_variant_chosen_from_the_drop_down_mid_gesture_drops_it_and_a_tangent_arc_on_nothing_adds_nothing()
+ {
+    // Break-it: a centre rectangle's centre clicked, then the tangent arc chosen from the
+    // drop-down before its corner: the half-drawn rectangle dropped, nothing sent. The
+    // tangent arc pressed and dragged where no line or arc ends: refused, said, nothing
+    // sent. Then the centre rectangle chosen again draws whole from two clicks, so neither
+    // left the tools stuck.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    chosen_from_create_menu(&mut h, "Center Rectangle");
+    sketch_events(&f, &mut h, &clicked(30.0, 20.0));
+    assert!(sketch_mode(&h).unwrap().tools.busy(), "its centre clicked");
+    chosen_from_create_menu(&mut h, "Tangent Arc");
+    assert!(!sketch_mode(&h).unwrap().tools.busy());
+    sketch_events(&f, &mut h, &dragged([50.0, 50.0], [60.0, 60.0]));
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    let said = sketch_mode(&h)
+        .unwrap()
+        .tools
+        .said()
+        .map(str::to_owned)
+        .unwrap_or_default();
+    assert!(said.contains("tangent arc starts at the end"), "{said:?}");
+    assert_eq!(adds_sent(&h), 0);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.points.len(), sketch.arcs.len()), (0, 0));
+    chosen_from_create_menu(&mut h, "Center Rectangle");
+    sketch_events(&f, &mut h, &clicked(30.0, 20.0));
+    sketch_events(&f, &mut h, &clicked(40.0, 25.0));
+    settled(&mut h);
+    let sketch = sketch_of_text(&f, &h, id.as_str());
+    assert_eq!((sketch.points.len(), sketch.lines.len()), (5, 4));
+    assert_rectangle_in(&sketch, [20.0, 15.0], [40.0, 25.0]);
+    assert_eq!(adds_sent(&h), 1);
     assert_eq!(never_waits::waits(), 0);
 }
 
