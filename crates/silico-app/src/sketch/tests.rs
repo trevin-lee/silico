@@ -2135,6 +2135,16 @@ fn a_box_is_clamped_to_the_canvas_its_drawing_was_made_on() {
         .map(|hit| hit.id.as_str())
         .collect();
     assert_eq!(taken, ["pa000001"]);
+    // And down: a canvas ending at y 510 cuts the window to y 490..510, which holds the
+    // bottom side and its ends, not its dimension, drawn from y 504 to 531.
+    let clip = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 510.0));
+    let taken = window.taken(drawn, read, clip);
+    let taken: Vec<&str> = taken
+        .iter()
+        .filter_map(SketchPick::member)
+        .map(|hit| hit.id.as_str())
+        .collect();
+    assert_eq!(taken, ["na000001", "pa000001", "pa000002"]);
 }
 
 #[test]
