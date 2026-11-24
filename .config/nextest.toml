@@ -85,10 +85,14 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 
 # The render worker's random close looks at long slabs (silico-render
 # adversarial_face_anchors): a thousand cases of two views each, every view drawn and every
-# pixel cast against by hand, some three to six minutes unloaded in a debug build.
+# pixel cast against by hand, some three to six minutes unloaded in a debug build. On
+# GitHub's hosted runners lavapipe's speed follows the CPU (2026-11-24): about 330 s on an
+# Intel Xeon 6975P-C, 495 s on an AMD EPYC 9V45, and killed at 600 s on an AMD EPYC 7763 (an
+# estimated 600 to 1,000 s there). So half an hour: this bounds the whole run only, and
+# weakens nothing, since each draw keeps its own minute (WAIT, adversarial_face_anchors.rs).
 [[profile.default.overrides]]
 filter = 'package(silico-render) & test(/adversarial_face_anchors::random_close/)'
-slow-timeout = { period = "60s", terminate-after = 10 }
+slow-timeout = { period = "60s", terminate-after = 30 }
 
 # The fake kernel compared with the real one over 2,000 generated primitives: a minute
 # alone, longer on a loaded machine.
