@@ -59,16 +59,19 @@ use tools::{Input, Tools};
 /// in the canvas's state colours, as the prototype has them.
 pub fn state_shown(read: &SketchRead) -> StateShown {
     let empty = read.members.elements().next().is_none();
-    let (words, colour) = match read.states.state {
-        _ if empty => ("Empty".to_owned(), TEXT_SUBDUED),
-        SketchState::UnderDefined => (
-            format!("Under defined · {} DOF", read.states.dofs),
-            SKETCH_UNDER_DEFINED,
-        ),
-        SketchState::FullyDefined => ("Fully defined".to_owned(), SKETCH_FULLY_DEFINED),
-        SketchState::OverDefined => ("Over defined".to_owned(), SKETCH_OVER_DEFINED),
-        SketchState::NoSolution => ("No solution found".to_owned(), SKETCH_OVER_DEFINED),
-        SketchState::Invalid => ("Invalid solution found".to_owned(), SKETCH_INVALID),
+    let state = read.states.state;
+    let words = match state {
+        _ if empty => "Empty".to_owned(),
+        SketchState::UnderDefined => format!("Under defined · {} DOF", read.states.dofs),
+        SketchState::FullyDefined => "Fully defined".to_owned(),
+        SketchState::OverDefined => "Over defined".to_owned(),
+        SketchState::NoSolution => "No solution found".to_owned(),
+        SketchState::Invalid => "Invalid solution found".to_owned(),
+    };
+    let colour = if empty {
+        TEXT_SUBDUED
+    } else {
+        crate::theme::sketch_state_colour(state)
     };
     StateShown { words, colour }
 }

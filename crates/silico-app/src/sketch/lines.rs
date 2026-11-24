@@ -15,18 +15,27 @@
 //!   its bucket moves, never each frame ([`ShownLines`]).
 //! - **Construction** curves are dashed in millimetres at the bucket, sketch mode's dash and
 //!   gap (`SKETCH_CONSTRUCTION_DASH`, points), one strip a dash ([`dashes`]).
-//! - **The colour** is the prototype's two ([`colour`]): under defined `#7a95ff`, any other
-//!   state `#eeeeed`. SEAM: over defined, no solution, and invalid are `#eeeeed` too, as the
-//!   prototype draws them (app.js:978), though DESIGN.md gives over defined red and invalid
-//!   yellow; the port of the sketch colours decides.
+//! - **The colour** is its state's, the one map sketch mode's status takes too
+//!   (`theme::sketch_state_colour`, DESIGN.md's *Sketch definition states*): under defined
+//!   `#7a95ff`, fully defined `#eeeeed`, over defined and unsolvable `#ff3865`, invalid
+//!   `#f2c94c`. The prototype's `syncSketchLines` (app.js:978) draws only its demo's two,
+//!   under and fully defined.
 //! - **None** is drawn for a read whose plane is an error (a face gone, not planar, found by
 //!   an unstable name, or its feature unbuilt: nothing guesses a placement), and none for a
 //!   sketch past [`MAX_LINE_POINTS`], which a warning names. Nor for a sketch whose lines
 //!   would take a frame's past the renderer's most (`MAX_FRAME_LINE_POINTS`, over every
 //!   shown sketch, in the order they're given), which a warning names once: the rest are
 //!   drawn, so a frame is never refused for its lines' count.
-//! - SEAM: Fit and Home fit the bodies alone (the core's named views, a core change); the
-//!   camera's clamp takes the lines' boxes.
+//! - **Fit, Home, the named views, and Look At** take each drawn sketch's box with the
+//!   bodies', as Fusion's Fit takes every object shown: the box sketch mode fits its own
+//!   sketch by (`super::bounds::model_box`), exact and the same at every scale, given with
+//!   its lines ([`FrameLines::fit`]). The camera's clamp takes the strips' own boxes, the
+//!   reach the renderer measures.
+//! - SEAM: the view a part opens at is the core's Home of its bodies alone (the first
+//!   `meshes` read's), so a shown sketch reaching past them is fitted only once Home, Fit, or
+//!   a named view is asked; fitting it at the opening needs the core's named views to take
+//!   the sketches, or the app to fit again once they're all drawn without a race against
+//!   later edits (#592's review).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -49,17 +58,10 @@ pub const MAX_LINE_POINTS: usize = 200_000;
 // A sketch within its own cap always fits a frame's lines alone.
 const _: () = assert!(MAX_LINE_POINTS <= MAX_FRAME_LINE_POINTS);
 
-/// The colour a sketch in `state` is drawn in, sRGB and opaque, as the prototype draws it
-/// (app.js:978): under defined `#7a95ff`, any other state `#eeeeed` (the module's SEAM).
+/// The colour a sketch in `state` is drawn in, sRGB and opaque: its state's
+/// (`theme::sketch_state_colour`).
 pub fn colour(state: SketchState) -> [u8; 4] {
-    let colour = match state {
-        SketchState::UnderDefined => theme::SKETCH_UNDER_DEFINED,
-        SketchState::FullyDefined
-        | SketchState::OverDefined
-        | SketchState::NoSolution
-        | SketchState::Invalid => theme::SKETCH_FULLY_DEFINED,
-    };
-    colour.to_array()
+    theme::sketch_state_colour(state).to_array()
 }
 
 /// How near the eye a perspective view's scale is taken at most, as a part of the eye's
@@ -224,20 +226,23 @@ struct Budget {
 }
 
 /// A shown sketch's lines as the frame gives them the renderer: its strips, shared with
-/// the cache that made them, and its colour; its width is the theme's.
+/// the cache that made them, and its colour; its width is the theme's. And the box a fit
+/// takes it by, its read's whole (`super::bounds::model_box`), the same at every scale.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameLines {
     pub strips: Arc<Strips>,
     pub colour: [u8; 4],
+    pub fit: Option<[[f64; 3]; 2]>,
 }
 
 /// What was made of a sketch's read: the read (so a replaced one is seen by its `Arc`), its
-/// box ([`box_of`], none for one its plane doesn't place), how many points it takes at a
-/// bucket ([`count_points`]), and, at the bucket they were made at, the strips or why there
-/// are none.
+/// box ([`box_of`], none for one its plane doesn't place), the box a fit takes
+/// (`super::bounds::model_box`), how many points it takes at a bucket ([`count_points`]),
+/// and, at the bucket they were made at, the strips or why there are none.
 struct Made {
     read: Arc<SketchRead>,
     bounds: Option<([f64; 3], [f64; 3])>,
+    fit: Option<[[f64; 3]; 2]>,
     count: Option<(i32, Option<usize>)>,
     strips: Option<(i32, Result<Arc<Strips>, NotDrawn>)>,
 }
@@ -350,6 +355,7 @@ impl ShownLines {
                 _ => Made {
                     read: Arc::clone(read),
                     bounds: box_of(read),
+                    fit: super::bounds::model_box(read),
                     count: None,
                     strips: None,
                 },
@@ -414,6 +420,7 @@ impl ShownLines {
                         lines.push(FrameLines {
                             strips: Arc::clone(strips),
                             colour: colour(read.states.state),
+                            fit: made.fit,
                         });
                         true
                     } else {
@@ -525,7 +532,7 @@ pub fn dashes(polyline: &[[f64; 2]], on: f64, off: f64) -> Vec<Vec<[f64; 2]>> {
 
 #[cfg(test)]
 mod tests {
-    use silico_core::document::{Coordinate, OriginPlane, SketchCircle};
+    use silico_core::document::{Coordinate, OriginPlane, SketchArc, SketchCircle};
 
     use super::super::tests::{id, line, point, rectangle, under};
     use super::*;
@@ -792,6 +799,71 @@ mod tests {
         under(round)
     }
 
+    /// A quarter arc of radius 2.75 about (40, 12) on XY, counter-clockwise from (42.75, 12)
+    /// to (40, 14.75).
+    fn quarter() -> SketchRead {
+        let mut quarter = rectangle(Vec::new());
+        quarter.lines.clear();
+        quarter.points = vec![
+            point("pa000006", 40.0, 12.0),
+            point("pa000007", 42.75, 12.0),
+            point("pa000008", 40.0, 14.75),
+        ];
+        quarter.arcs.push(SketchArc {
+            id: id("aa000001"),
+            center: id("pa000006"),
+            start: id("pa000007"),
+            end: id("pa000008"),
+            construction: false,
+        });
+        under(quarter)
+    }
+
+    #[test]
+    fn a_shown_curves_fit_is_its_exact_box_at_every_scale_not_its_chords() {
+        // The circle's square by hand: (37.25, 9.25) to (42.75, 14.75); the quarter arc's:
+        // its centre to its ends, (40, 12) to (42.75, 14.75), not the circle's square about
+        // it. Each the same at 120 mm, 7.5 mm, and 10 m over the pane, where the chords'
+        // box falls inside the circle's (a circle's chords miss axis points at some scale).
+        let fid = FeatureId::new("s0000002").unwrap();
+        for (read, want) in [
+            (round(), [[37.25, 9.25, 0.0], [42.75, 14.75, 0.0]]),
+            (quarter(), [[40.0, 12.0, 0.0], [42.75, 14.75, 0.0]]),
+        ] {
+            let read = Arc::new(read);
+            let mut shown = ShownLines::default();
+            let mut chords_inside = false;
+            for view_height in [120.0, 7.5, 1.0e4] {
+                let camera = Camera {
+                    projection: Projection::Orthographic { view_height },
+                    ..at_120()
+                };
+                let drawn = shown.frame([(&fid, &read)], &camera, 800.0);
+                assert_eq!(drawn.len(), 1);
+                let fit = drawn[0].fit.unwrap();
+                for k in 0..3 {
+                    for end in 0..2 {
+                        assert!(
+                            (fit[end][k] - want[end][k]).abs() < 1e-12,
+                            "{fit:?} at {view_height}"
+                        );
+                    }
+                }
+                let (low, high) = drawn[0].strips.bounds().unwrap();
+                chords_inside |= (low[0] - want[0][0]).abs() > 1e-9
+                    || (low[1] - want[0][1]).abs() > 1e-9
+                    || (high[0] - want[1][0]).abs() > 1e-9
+                    || (high[1] - want[1][1]).abs() > 1e-9;
+            }
+            if want[0][0] == 37.25 {
+                assert!(
+                    chords_inside,
+                    "the circle's chords fall inside its square somewhere"
+                );
+            }
+        }
+    }
+
     /// Loose's rectangle's first side alone: one strip of 2 points.
     fn side() -> SketchRead {
         let mut side = rectangle(Vec::new());
@@ -907,14 +979,15 @@ mod tests {
     }
 
     #[test]
-    fn each_state_has_the_prototypes_colour() {
-        // The prototype's two (app.js:978): under defined #7a95ff, every other #eeeeed.
+    fn each_state_has_design_mds_colour() {
+        // DESIGN.md's *Sketch definition states*: under defined #7a95ff, fully defined
+        // #eeeeed, over defined and unsolvable #ff3865, invalid #f2c94c.
         for (state, rgb) in [
             (SketchState::UnderDefined, 0x7a95ff),
             (SketchState::FullyDefined, 0xeeeeed),
-            (SketchState::OverDefined, 0xeeeeed),
-            (SketchState::NoSolution, 0xeeeeed),
-            (SketchState::Invalid, 0xeeeeed),
+            (SketchState::OverDefined, 0xff3865),
+            (SketchState::NoSolution, 0xff3865),
+            (SketchState::Invalid, 0xf2c94c),
         ] {
             let [r, g, b, a] = colour(state);
             assert_eq!(

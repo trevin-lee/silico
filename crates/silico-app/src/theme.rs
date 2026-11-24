@@ -395,6 +395,20 @@ pub const SKETCH_INVALID: Color32 = hex(0xf2c94c);
 pub const SKETCH_DANGLING: Color32 = hex(0xb5b84a);
 /// A driven dimension (Gray.500).
 pub const SKETCH_DRIVEN: Color32 = GRAY_500;
+
+/// The colour a sketch in `state` is drawn and worded in, wherever it shows (sketch mode's
+/// status, a shown sketch's lines): DESIGN.md's *Sketch definition states*, under defined
+/// [`SKETCH_UNDER_DEFINED`], fully defined [`SKETCH_FULLY_DEFINED`], over defined and
+/// unsolvable [`SKETCH_OVER_DEFINED`], invalid [`SKETCH_INVALID`].
+pub fn sketch_state_colour(state: silico_core::sketch_states::SketchState) -> Color32 {
+    use silico_core::sketch_states::SketchState;
+    match state {
+        SketchState::UnderDefined => SKETCH_UNDER_DEFINED,
+        SketchState::FullyDefined => SKETCH_FULLY_DEFINED,
+        SketchState::OverDefined | SketchState::NoSolution => SKETCH_OVER_DEFINED,
+        SketchState::Invalid => SKETCH_INVALID,
+    }
+}
 /// A curve's stroke.
 pub const SKETCH_STROKE_WIDTH: f32 = 1.8;
 /// Construction geometry: dashed in its state's colour (DESIGN.md, *Tokens*), this long a
