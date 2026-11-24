@@ -1588,10 +1588,6 @@ pub struct Tab {
     /// Cancel undid to: Redo is off there till the next edit, so what it undid isn't redone
     /// past its Finish, nor the dimension Cancel refused.
     redo_fence: Option<Revision>,
-    /// The revision the tab's last undo came to, once it has answered: with the tab ahead
-    /// of its status there (that answer taken after the frame's status read), Redo is on,
-    /// as the undo it gives back is there to redo ([`redoable`](Self::redoable)).
-    undone_at: Option<Revision>,
     /// Whether an edit of the tab's was applied since the last dialog or sketch mode
     /// opened: whether a sketch mode's Finish or Cancel has anything of its own to fence.
     sketch_edited: bool,
@@ -1975,7 +1971,6 @@ impl Tab {
             names: BTreeMap::new(),
             held_count: 0,
             redo_fence: None,
-            undone_at: None,
             sketch_edited: false,
             restored: BTreeMap::new(),
             refused: std::collections::BTreeSet::new(),
@@ -2860,11 +2855,11 @@ impl Tab {
     /// In sketch mode, as SolidWorks allows, but never past the state it opened at.
     /// Never while a dialog's or sketch mode's close is still to be taken (Create Sketch's
     /// Finish being judged among them), whose undo or rollback, if it's a Cancel's, a step
-    /// queued now would go past. And with the tab ahead of its status
-    /// ([`status_behind`](Self::status_behind): an answer of its own taken in the frame
-    /// after that frame's status was read), whose counts are of the state before: the step
-    /// is queued and judged by the counts once the status has caught up, never let go
-    /// unsaid, as SolidWorks' Undo always takes back the edit that has just answered.
+    /// queued now would go past. And with the tab ahead of its status (not
+    /// [`synced`](Self::synced): an answer taken in the frame after that frame's status was
+    /// read), whose counts are of the state before: the step is queued and judged by the
+    /// counts once the status has caught up, never let go unsaid, as SolidWorks' Undo always
+    /// takes back the edit that has just answered.
     pub fn undoable(&self) -> bool {
         (self.transaction || self.beginning)
             && !self.in_dialog()
@@ -2873,24 +2868,27 @@ impl Tab {
             && self.sketch_lets_undo()
             && !self.stepping()
             && (self.change_under_way()
-                || self.status_behind()
+                || !self.synced()
                 || (self.synced()
                     && self
                         .transaction()
                         .is_some_and(|transaction| transaction.undo > 0)))
     }
 
-    /// Whether the tab is ahead of its status: an answer of its own (an edit's, a step's)
-    /// moved its revision past the one this frame's status read gave, whose counts are of
-    /// the state before. The next frame's status catches up.
-    fn status_behind(&self) -> bool {
-        self.revision > self.status_revision
+    /// Whether the tab's own redo branch holds a state after the one the session stands
+    /// at: what its changes made in this transaction, past the state its undos came back
+    /// to, none dropped by an edit since ([`steps`](Self::steps), as Redo's tooltip reads
+    /// it). Known from the tab's own answers, so with no status of its revision yet.
+    fn redo_branch(&self) -> bool {
+        let at = self.state_of(self.revision);
+        self.steps.range(at..).any(|(state, _)| *state != at)
     }
 
     /// Whether Redo can step: an edit undone, and none made since, as the status of the
-    /// tab's newest revision counts them, or the tab ahead of its status at the revision its
-    /// own undo came to (that undo's answer taken after the frame's status read: queued, and
-    /// judged once the status has caught up, as Undo's is); never while a step is under way, nor while a
+    /// tab's newest revision counts them; or, with the tab ahead of its status (a step's
+    /// answer taken after the frame's status read), its own redo branch holding a state
+    /// after the one it's at ([`redo_branch`](Self::redo_branch)): queued, and judged once
+    /// the status has caught up, as Undo's is. Never while a step is under way, nor while a
     /// dialog is open or a drag is under way. In sketch mode, only what it undid itself;
     /// never at a state Redo is fenced off at (a sketch mode's Finish or Cancel, or an
     /// over-defining dimension's Cancel, which leave nothing to redo), nor while a close is
@@ -2906,7 +2904,7 @@ impl Tab {
                 .is_none_or(|fence| fence != self.state_of(self.revision))
             && self.edits.idle()
             && !self.stepping()
-            && ((self.status_behind() && self.undone_at == Some(self.revision))
+            && ((!self.synced() && self.redo_branch())
                 || (self.synced()
                     && self
                         .transaction()
@@ -3914,9 +3912,6 @@ impl Tab {
                     if let (Ok(stepped), Some(session)) = (&response.result, &response.session) {
                         let state = self.state_of(stepped.restored);
                         self.restored.insert(session.revision, state);
-                        if undo {
-                            self.undone_at = Some(session.revision);
-                        }
                         // An over-defining dimension's Cancel (SD7) leaves nothing to redo,
                         // as SolidWorks' does: Redo is off at the state it undid to till the
                         // next edit, so the conflicting dimension never comes back unasked.
@@ -4673,7 +4668,7 @@ impl Tab {
             // since, is judged by the session's counts at that revision: it waits for the next
             // frame's status. One asked behind a change goes when the change has answered,
             // judged as it always was.
-            if self.status_behind()
+            if !self.synced()
                 && matches!(
                     self.edits.queue.front(),
                     Some(Queued::Step { asked_at, .. }) if *asked_at == self.revision
@@ -9745,32 +9740,46 @@ mod tests {
     }
 
     #[test]
-    fn undo_is_on_while_an_answer_is_newer_than_the_status_and_redo_only_for_its_own_undo() {
-        // A status of revision 2 counts one edit to undo and one to redo; an answer of the
-        // tab's own since brought it to revision 3, its counts not yet read. That answer
-        // changed the document, so there's something to undo: Undo is on (its step waits for
-        // the status). Redo is on only if it was the tab's own undo that came to 3, whose
-        // edit is there to redo; an edit's answer leaves nothing to redo. Once a status of 3
-        // is read, its counts decide: none to undo or redo is none.
-        let two = Revision::from_number(2).unwrap();
-        let three = Revision::from_number(3).unwrap();
+    fn undo_is_on_while_an_answer_is_newer_than_the_status_and_redo_while_its_branch_holds_more() {
+        // Worked by hand. Pin renamed (2), renamed again (3), suppressed (4), each a state of
+        // the tab's own; a status of 3 counts two to undo, none to redo. The suppression's
+        // answer brought the tab to 4 ahead of its status: that edit is there to undo, so
+        // Undo is on (its step waits for the status), and nothing past 4 is there to redo.
+        let one = Revision::OPENED;
         let mut tab = tab();
-        tab.status = Some(counted(two, true, 1, 1));
-        tab.status_revision = two;
-        tab.revision = two;
-        assert!(tab.undoable() && tab.redoable());
-        tab.revision = three;
+        apply(&mut tab, one, one, "Rename Pin", rev(2));
+        apply(&mut tab, rev(2), rev(2), "Rename PinA", rev(3));
+        stood_at(&mut tab, rev(3), 2, 0);
+        assert!(tab.undoable() && !tab.redoable());
+        apply(&mut tab, rev(3), rev(3), "Suppress Pin", rev(4));
+        // Its answer's session, taken as `took_session` takes it.
+        tab.revision = rev(4);
         assert!(tab.undoable());
-        assert!(!tab.redoable(), "an edit came to 3");
-        tab.undone_at = Some(two);
-        assert!(!tab.redoable(), "an older undo's revision");
-        tab.undone_at = Some(three);
-        assert!(tab.redoable(), "its own undo came to 3");
-        tab.status = Some(counted(three, true, 0, 0));
-        tab.status_revision = three;
+        assert!(!tab.redoable(), "an edit's answer: nothing to redo");
+        // Two undos (5 restores 3's state, 6 restores 2's), the status read at 5: 6 is ahead
+        // of it, and its redo branch holds 3 and 4.
+        stood_at(&mut tab, rev(4), 3, 0);
+        tab.restored.insert(rev(5), rev(3));
+        stood_at(&mut tab, rev(5), 2, 1);
+        tab.restored.insert(rev(6), rev(2));
+        tab.revision = rev(6);
+        assert!(tab.undoable() && tab.redoable(), "an undo's answer");
+        // A redo (7 gives 3's state back) ahead of a status of 6: 4 is still there to redo.
+        stood_at(&mut tab, rev(6), 1, 2);
+        tab.restored.insert(rev(7), rev(3));
+        tab.revision = rev(7);
+        assert!(tab.redoable(), "a redo's answer, one more to redo");
+        // Another (8 gives 4's back) ahead of a status of 7: the branch's end, nothing more.
+        stood_at(&mut tab, rev(7), 2, 1);
+        tab.restored.insert(rev(8), rev(4));
+        tab.revision = rev(8);
+        assert!(tab.undoable());
+        assert!(!tab.redoable(), "the branch's end");
+        // Once a status of 8 is read, its counts decide either way.
+        stood_at(&mut tab, rev(8), 3, 0);
+        assert!(tab.undoable() && !tab.redoable());
+        stood_at(&mut tab, rev(8), 0, 0);
         assert!(!tab.undoable() && !tab.redoable());
-        tab.status = Some(counted(three, true, 1, 1));
-        assert!(tab.undoable() && tab.redoable());
     }
 
     #[test]

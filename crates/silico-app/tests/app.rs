@@ -55492,6 +55492,56 @@ fn undo_in_the_frame_the_last_undo_answers_waits_for_the_status_then_says_nothin
 }
 
 #[test]
+fn redo_in_the_frame_a_redo_answers_before_its_status_gives_the_next_line_back_too() {
+    // Two lines drawn and both undone; ⌘⇧Z sent with the session busy, and ⌘⇧Z again in
+    // the frame that takes the first redo's answer before its status: the tab is ahead of
+    // its status, and its own redo branch still holds the second line. Both redos are sent,
+    // in turn, and both lines are back; nothing is let go unsaid.
+    use silico_app::tab::NOTHING_TO_REDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let from = h.state().tabs()[0].sent.len();
+    for (start, end) in [([10.0, 50.0], [30.0, 60.0]), ([60.0, 40.0], [80.0, 50.0])] {
+        pane_press(&mut h, start);
+        pane_move(
+            &mut h,
+            [(start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0],
+        );
+        pane_move(&mut h, end);
+        pane_release(&mut h, end);
+        settled(&mut h);
+    }
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
+    let command = command_modifiers(&h);
+    for _ in 0..2 {
+        h.input_mut().events.push(key_event(Key::Z, command));
+        step(&mut h);
+        settled(&mut h);
+    }
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    let held = session_held(&f, &h);
+    let redo = key_event(Key::Z, command | Modifiers::SHIFT);
+    h.input_mut().events.push(redo.clone());
+    step(&mut h);
+    answers_after_the_status_read(&f, &mut h, held, vec![redo]);
+    let said = said_while_settling(&mut h, NOTHING_TO_REDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let redos = tab.sent[from..]
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Redo(_)))
+        .count();
+    assert_eq!(redos, 2, "{:?}", &tab.sent[from..]);
+    assert!(!said, "said there was nothing to redo");
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert!(line_near(&sketch, [60.0, 40.0], [80.0, 50.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn undo_right_after_the_first_line_is_let_go_takes_the_line_back() {
     // #544: sketch mode with no edit since it opened; a line let go, then ⌘Z in the same
     // frame or the next, its add (and the `begin` sent for it) still to answer. Undo waits
