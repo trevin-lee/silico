@@ -5161,6 +5161,10 @@ fn a_sketch_bar_with_a_usual_long_name_keeps_clear_of_the_viewcube_and_home_view
         })
         .collect::<Vec<_>>();
     assert_eq!(rows, [(false, 1)]);
+    // Sketch mode turned square to the triangle, from the top, as it opened (its own test):
+    // Home first, so the cube shows its front.
+    h.key_press(Key::Home);
+    step(&mut h);
     h.get_by_role_and_label(Role::Group, "ViewCube")
         .get_by_label("Front")
         .click();
@@ -44499,9 +44503,12 @@ fn a_sketch_opened_under_select_other_closes_it_and_the_wheel_zooms_in_sketch_mo
     assert!(!h.state().tabs()[0].selection().hover_held());
     // So the wheel zooms in sketch mode, as it does with no menu open (held, it wouldn't):
     // over the canvas's centre, clear of the sketch bar and the palette.
+    // Its read waited for too, so sketch mode's turn to the sketch is done before the zoom.
     step_until(&mut h, "its sketch added", |h| {
         sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
     });
+    sketch_read(&mut h);
+    step(&mut h);
     let camera = view(&h).camera().clone();
     let centre = above_at(&h, 20.0, 10.0, [0.0, 0.0]);
     wheel(&mut h, centre, MouseWheelUnit::Line, 1.0);
@@ -47935,8 +47942,14 @@ fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is
     for _ in 0..40 {
         step(&mut h);
     }
-    // Sketch mode on Loose: no lines at all, while it's open.
-    double_click(&mut h, "Browser", "Loose");
+    // Sketch mode on Loose: no lines at all, while it's open. The view panned as it opens,
+    // before its read, so sketch mode leaves it unturned (its own test) and its scale, which
+    // the strips are made for, is the same throughout: the way back only undoes the pan.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &sketch_id("s0000002"));
+    }
+    panned(&mut h);
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     for _ in 0..10 {
         step(&mut h);
