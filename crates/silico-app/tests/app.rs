@@ -48321,6 +48321,34 @@ fn a_view_moved_before_the_sketchs_first_read_is_left_as_moved_and_leaving_goes_
 }
 
 #[test]
+fn sketch_mode_turns_once_and_a_later_read_never_turns_the_view_again() {
+    // Edit Sketch turns square to Triangle on its first read. The person then puts the view
+    // back where sketch mode found it and adds a point: the read that follows the point's
+    // add turns nothing, the person's view kept.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert!(looks(&h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), "turned");
+    view_mut(&mut h).set_camera(before.clone());
+    step(&mut h);
+    let reads = sketch_mode(&h).unwrap().reads;
+    let part = h.state().tabs()[0].name().to_owned();
+    place_point_in(&mut h, &part, 30.0, 30.0);
+    assert!(sketch_mode(&h).unwrap().reads > reads, "read again");
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &before, "turned again");
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_sketch_whose_face_broke_turns_nothing_and_leaving_leaves_the_view_as_it_was() {
     // ON_A_FACE's face isn't one the fake describes as a plane: the read places the sketch
     // nowhere, so there's nothing to look at, and the view stays, open and closed.
