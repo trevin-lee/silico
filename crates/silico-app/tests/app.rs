@@ -32764,11 +32764,11 @@ fn sketch_modes_property_panel_is_the_sketchs_own_its_rows_its_over_defined_card
             .next()
             .is_none()
     );
-    let finish = showing(&h, "Properties", "keeps your changes and rebuilds").unwrap();
-    assert!(finish.starts_with("Finish Sketch "), "{finish}");
-    assert!(
-        finish.ends_with(" keeps your changes and rebuilds. Cancel drops them."),
-        "{finish}"
+    // Finish Sketch's keys as the platform names them: off macOS, where these tests run,
+    // Ctrl and the prototype's ↵ for Enter, joined by `+`.
+    assert_eq!(
+        showing(&h, "Properties", "keeps your changes and rebuilds").as_deref(),
+        Some("Finish Sketch Ctrl+↵ keeps your changes and rebuilds. Cancel drops them.")
     );
     // Finish: the selected feature's view again, the sketch's head and hints gone.
     h.get_by_role_and_label(Role::Toolbar, "Sketch bar")

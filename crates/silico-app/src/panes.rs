@@ -393,7 +393,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
     }
 
     /// The property panel (DESIGN.md, *Layout*: one right panel, four jobs): the feature
-    /// dialog, if one is open; else the selection's faces, edges, and vertices, if it has
+    /// dialog, if one is open; else, while a sketch is open, sketch mode's own
+    /// ([`sketch_mode`]); else the selection's faces, edges, and vertices, if it has
     /// any, with their measures (`selectionProps`, [`selected_elements`]), and what its link
     /// and buttons ask done; else the selected feature's properties; else the document's,
     /// never an empty state.
@@ -628,7 +629,8 @@ fn sketch_mode(ui: &mut Ui, tab: &Tab) {
     if let Some(read) = read {
         properties::section(ui, "Sketch");
         for row in crate::parameters::sketch_mode_rows(read) {
-            draw_row(ui, row);
+            // No row of a sketch's is a link.
+            let _ = draw_row(ui, row);
         }
     }
     if let Some(said) = read.and_then(|read| crate::sketch::problem_card(read, &name)) {
@@ -660,14 +662,14 @@ fn sketch_mode(ui: &mut Ui, tab: &Tab) {
 }
 
 /// A row of PARAMETERS, or of sketch mode's SKETCH, drawn: words in their colour, an ID in
-/// the monospace type, or a link to a feature with words after it. Whether its link was
-/// clicked.
-fn draw_row(ui: &mut Ui, row: crate::parameters::Row) -> bool {
+/// the monospace type, or a link to a feature with words after it. The feature its link
+/// asked selected, if it was clicked.
+fn draw_row(ui: &mut Ui, row: crate::parameters::Row) -> Option<FeatureId> {
     use crate::parameters::Shown;
     match row.value {
         Shown::Text(words, colour) => {
             properties::text_row(ui, row.key, properties::body(&words, colour));
-            false
+            None
         }
         Shown::Id(id) => {
             properties::text_row(
@@ -678,11 +680,13 @@ fn draw_row(ui: &mut Ui, row: crate::parameters::Row) -> bool {
                     properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
                 ),
             );
-            false
+            None
         }
-        Shown::Link { name, after, .. } => {
-            properties::link_row_then(ui, row.key, &name, after.as_deref())
-        }
+        Shown::Link {
+            feature,
+            name,
+            after,
+        } => properties::link_row_then(ui, row.key, &name, after.as_deref()).then_some(feature),
     }
 }
 
@@ -869,7 +873,7 @@ fn parameters<P: Clients + 'static>(
     entry: &Entry,
     sessions: &Arc<Sessions<P>>,
 ) -> Option<FeatureId> {
-    use crate::parameters::{Context, Shown, feature_rows, has_parameters, sketch_rows};
+    use crate::parameters::{Context, feature_rows, has_parameters, sketch_rows};
     if !has_parameters(entry.kind) {
         return None;
     }
@@ -915,13 +919,7 @@ fn parameters<P: Clients + 'static>(
     properties::section(ui, "Parameters");
     let mut asked = None;
     for row in rows {
-        let linked = match &row.value {
-            Shown::Link { feature, .. } => Some(feature.clone()),
-            _ => None,
-        };
-        if draw_row(ui, row) {
-            asked = linked;
-        }
+        asked = draw_row(ui, row).or(asked);
     }
     asked
 }

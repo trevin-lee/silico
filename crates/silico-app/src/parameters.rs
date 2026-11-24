@@ -364,6 +364,17 @@ fn dimensions(sketch: &silico_core::document::Sketch) -> String {
     parts.join(" · ")
 }
 
+/// A dimension's value as the property panel writes it, with its unit: a length's
+/// millimetres (`40 mm`, `−12.5 mm`, a true minus), an angle's degrees (`90°`); none for a
+/// relation.
+pub fn dimension_value(form: &silico_core::document::Form) -> Option<String> {
+    use silico_core::document::Form;
+    match form {
+        Form::Angle { value, .. } => Some(degrees(*value)),
+        form => form.length().map(|(value, _)| format!("{} mm", mm(value))),
+    }
+}
+
 /// A length's millimetres, as the prototype's `fmt` writes them: at most two decimals, a
 /// negative one's minus a true minus, as a direction's is.
 fn mm(length: Length) -> String {
@@ -914,6 +925,21 @@ mod tests {
         );
         assert_eq!(shown[4].1, "7");
         assert_eq!(shown[5].1, "2");
+        // A construction point counts among the points, as the prototype counts every point
+        // but the origin; a construction line isn't a curve (DIMENSIONED's na000002).
+        let with_construction_point = DIMENSIONED.replace(
+            r#""points": ["#,
+            r#""points": [{"id": "pa000007", "x": 5, "y": 5, "construction": true}, "#,
+        );
+        let read = sketch_read(
+            &with_construction_point,
+            SketchPlane::Xy,
+            SketchState::UnderDefined,
+            0,
+        );
+        let shown = sketch_mode_shown(&read);
+        assert_eq!(shown[2].1, "1 line, 2 arcs");
+        assert_eq!(shown[3].1, "7");
         // An empty sketch: Empty, subdued; no curves; nothing counted.
         let empty = r#""plane": "yz", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []"#;
         let empty = sketch_read(empty, SketchPlane::Yz, SketchState::FullyDefined, 0);

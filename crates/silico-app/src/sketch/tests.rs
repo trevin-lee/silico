@@ -7991,3 +7991,49 @@ fn sketch_modes_card_names_no_reference_dimension_and_counts_nothing_it_cannot_n
     let said = problem_card(&over, &name).unwrap();
     assert_eq!(said.message, format!("{name} is over defined"));
 }
+
+#[test]
+fn sketch_modes_card_writes_an_angle_in_degrees_and_a_negative_length_with_a_true_minus() {
+    // The card's value as the Dimensions row writes it (the prototype's `fmt`): an angle
+    // `90°`, no space; a distance along x of −12.5 with U+2212, as a direction's minus.
+    let angle = constraint(
+        "ka000003",
+        Form::Angle {
+            a: element("na000001"),
+            b: element("na000002"),
+            reversed: false,
+            value: Angle::parse("90").unwrap(),
+            driving: true,
+        },
+    );
+    let across = constraint(
+        "ka000004",
+        Form::DistanceX {
+            a: element("pa000002"),
+            b: element("pa000001"),
+            value: mm("-12.5"),
+            driving: true,
+        },
+    );
+    for (dimension, words) in [
+        (
+            angle,
+            "The 90° dimension repeats what the others already give.",
+        ),
+        (
+            across,
+            "The \u{2212}12.5 mm dimension repeats what the others already give.",
+        ),
+    ] {
+        let name = dimension.id.as_str().to_owned();
+        let over = read(
+            rectangle(vec![dimension]),
+            SketchState::OverDefined,
+            MemberState::OverDefined,
+            &[(&name, ConstraintState::Redundant)],
+        );
+        let said = problem_card(&over, "Sketch1").unwrap();
+        assert_eq!(said.cause.as_deref(), Some(words));
+        assert_eq!(said.elements, [name]);
+    }
+}

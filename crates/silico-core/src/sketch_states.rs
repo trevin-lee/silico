@@ -171,6 +171,22 @@ pub struct SketchStates {
     pub solve_problem: Option<Error>,
 }
 
+impl SketchStates {
+    /// The constraints of `sketch`, of which these are the states, that over-define it
+    /// ([`over_defines`]: in conflict, or a flagged dimension), in the order it holds them:
+    /// what makes a solved sketch `over_defined`, and what a client offers to make driven.
+    pub fn over_defining<'a>(
+        &'a self,
+        sketch: &'a Sketch,
+    ) -> impl Iterator<Item = &'a SketchConstraint> + 'a {
+        sketch.constraints.iter().filter(|c| {
+            self.constraints
+                .get(&c.id)
+                .is_some_and(|&state| over_defines(state, &c.form))
+        })
+    }
+}
+
 /// An empty sketch's state (no points, so no curves or constraints): `fully_defined`, as
 /// FreeCAD's "Empty sketch" is fully constrained with DoF 0 (1.1.3; M5.0 open item 32, the
 /// empty sketch).

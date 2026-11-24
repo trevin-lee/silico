@@ -110,29 +110,20 @@ pub fn problem_card(read: &SketchRead, name: &str) -> Option<Said> {
     if read.states.state != SketchState::OverDefined {
         return None;
     }
-    // Which over-define it, as the core decides it (`sketch_states::over_defines`): a
-    // flagged driving dimension (on a solved sketch none conflicts; a reference dimension is
-    // never sent to the solver, so never flagged).
+    // What over-defines it, as the core decides it: on a solved sketch, its flagged
+    // dimensions, of which the card names the driving ones (a reference dimension is never
+    // sent to the solver, so never flagged).
     let repeating: Vec<&silico_core::document::SketchConstraint> = read
-        .members
-        .constraints
-        .iter()
-        .filter(|c| c.form.is_dimension() && c.form.driving() == Some(true))
-        .filter(|c| {
-            read.states
-                .constraints
-                .get(&c.id)
-                .is_some_and(|state| state.flagged())
-        })
+        .states
+        .over_defining(&read.members)
+        .filter(|c| c.form.driving() == Some(true))
         .collect();
     let cause = match repeating.as_slice() {
         // Never, as the core states it: a solved sketch is over defined only by a dimension
         // it flags. Said without a count all the same.
         [] => "A dimension repeats what the others already give.".to_owned(),
-        [one] => match value_of(&one.form) {
-            Some((value, unit)) => {
-                format!("The {value} {unit} dimension repeats what the others already give.")
-            }
+        [one] => match crate::parameters::dimension_value(&one.form) {
+            Some(value) => format!("The {value} dimension repeats what the others already give."),
             None => "A dimension repeats what the others already give.".to_owned(),
         },
         many => format!(
