@@ -19,7 +19,11 @@
 //! cast on are made waits for them, its menu opened once they are, a frame or more later, as
 //! it would have opened at the click (the part 3 design's section 2): it never casts without
 //! a body that's drawn. Waiting, it's let go as an open menu is closed, and takes the keys
-//! as one does (Esc lets it go; the rest do nothing).
+//! as one does (Esc lets it go; the rest do nothing). A right click acts on what was on the
+//! screen, as SolidWorks' does (#568): one in the frame the view takes another table of
+//! bodies (it was made on the table the frame before drew) opens nothing, and one waiting
+//! is let go if the model, a body drawn, or its mesh changes first; a toast says so of
+//! each ([`OTHER_REDRAWN`]).
 //!
 //! **The list.** Choosing *Select Other…* opens it beside the click, its first row lit. The
 //! row lit is the selection's hover ([`Selection::hold_hover`]: its face or edge outlined, its
@@ -199,7 +203,16 @@ pub struct SelectOther {
     /// How many context menus have opened: each one's face read ([`FaceRead`]) is keyed by
     /// it, so no answer of another menu's is taken for it.
     opened: u64,
+    /// A right click let go before its menu opened, as the bodies it was made on changed
+    /// ([`OTHER_REDRAWN`]): for the tab to say, once.
+    said: Option<&'static str>,
 }
+
+/// What a right click let go says: its frame took another table of bodies than the one the
+/// frame before drew, which it was made on, or what it was to be cast on (the model, a body
+/// drawn, or its mesh) changed while it waited for their boxes (#568). Nothing opens.
+pub const OTHER_REDRAWN: &str =
+    "The right click was let go: what's drawn changed under it; right-click again";
 
 /// A right click whose menu waits for the boxes of the bodies it casts on: what it's opened
 /// with once they're made, as it would have been at the click. The click; its frame (its
@@ -282,6 +295,11 @@ enum CanvasEvent<'a> {
 }
 
 impl SelectOther {
+    /// What a right click let go says, taken once ([`OTHER_REDRAWN`]).
+    pub(crate) fn take_said(&mut self) -> Option<&'static str> {
+        self.said.take()
+    }
+
     /// Whether a menu is open.
     pub fn is_open(&self) -> bool {
         self.menu.is_some()
@@ -502,6 +520,7 @@ impl SelectOther {
         if waiting_changed {
             tracing::debug!("the model or a mesh changed under Select Other's click: let go");
             self.waiting = None;
+            self.said = Some(OTHER_REDRAWN);
         }
         let given = Given {
             frame,
@@ -669,6 +688,14 @@ impl SelectOther {
         view: &mut View,
         given: &Given<'_>,
     ) {
+        // Made on the table of bodies the frame before drew, which this frame replaced: it's
+        // never cast on these, nor its menu made of what's under it in them.
+        if view.table_taken() {
+            tracing::debug!("a right click in the frame a new table was taken: let go");
+            self.close(selection, view, given.ctx);
+            self.said = Some(OTHER_REDRAWN);
+            return;
+        }
         // The hover a menu held, if one was open, is its row's, not the pointer's.
         let held = selection.hover_held();
         let hovered = selection
@@ -2483,6 +2510,48 @@ mod tests {
         });
         assert_eq!(found, Some(None), "no layer at the press");
         assert!(!so.is_open());
+    }
+
+    #[test]
+    fn a_right_click_in_the_frame_a_new_table_is_taken_opens_nothing_and_says_so_once() {
+        // #568: the right click was made on the table of bodies the frame before drew; in the
+        // frame the view took another, it opens nothing (neither the menu nor a wait for
+        // boxes), closes the menu open, and is said once. The frame after, a right click is
+        // the table's own, and opens the menu.
+        let ctx = egui::Context::default();
+        let names = |_: &FeatureId| None;
+        let edit_off = |_: &FeatureId| None;
+        let facts = Facts {
+            names: &names,
+            edit_off: &edit_off,
+            sketched: &|_| false,
+            sketch_off: None,
+        };
+        let (mut selection, mut view) = (Selection::default(), View::default());
+        let mut so = SelectOther::default();
+        let mut time = 0;
+        let mut frame = |so: &mut SelectOther, view: &mut View, clicks| {
+            time += 1;
+            let given = canvas(Vec::new(), clicks, None);
+            pass(&ctx, time, Vec::new(), |ui| {
+                let painter = ui.painter().clone();
+                so.overlay(&mut selection, view, &given, &painter, false, &facts);
+            });
+        };
+        frame(&mut so, &mut view, vec![right([40.0, 30.0], 1)]);
+        assert!(so.is_open());
+        assert_eq!(so.take_said(), None);
+        view.began_frame();
+        view.tabled_again();
+        frame(&mut so, &mut view, vec![right([40.0, 30.0], 2)]);
+        assert!(!so.is_open());
+        assert!(!so.is_waiting());
+        assert_eq!(so.take_said(), Some(OTHER_REDRAWN));
+        assert_eq!(so.take_said(), None);
+        view.began_frame();
+        frame(&mut so, &mut view, vec![right([40.0, 30.0], 3)]);
+        assert!(so.is_open());
+        assert_eq!(so.take_said(), None);
     }
 
     #[test]

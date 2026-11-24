@@ -2179,6 +2179,9 @@ impl Tab {
             current,
             &facts,
         );
+        if let Some(said) = self.select_other.take_said() {
+            self.toasts.push(Toast::info(said));
+        }
         self.menu_face_read(sessions, painter.ctx());
         // The open dialog's arrows next (`crate::arrow`): a press on one takes its stream,
         // given to neither the selection nor the box; while it's held, the hover stays where

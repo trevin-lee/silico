@@ -57909,6 +57909,159 @@ fn a_click_let_go_in_the_frame_a_new_table_is_taken_makes_nothing_and_says_so() 
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// Seen from above as [`box_from_above`] sees it, zoomed out to 0.6 mm a pixel onto the
+/// box's centre: its half pixel, 0.3 mm, is past what its meshes serve (from the floor to
+/// 0.25 mm), so the view reads the same model's meshes again, and that read's tessellation
+/// is held by the hold returned; meanwhile each frame draws the table before under the new
+/// camera. And the canvas's centre, over the box's top (Face6) 16 pixels or more from its
+/// edges.
+fn zoomed_out_its_read_held(f: &Fixture, h: &mut AppHarness) -> (Hold, eframe::egui::Pos2) {
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    let table = view(h).table();
+    let height = view(h).frame().unwrap().size_px[1];
+    view_mut(h).set_camera(silico_protocol::Camera {
+        projection: silico_protocol::Projection::Orthographic {
+            view_height: 0.6 * f64::from(height),
+        },
+        eye: [20.0, 10.0, 100.0],
+        target: [20.0, 10.0, 5.0],
+        up: [0.0, 1.0, 0.0],
+    });
+    step_until(h, "the zoomed view's read", |h| view(h).reading());
+    for _ in 0..5 {
+        step(h);
+    }
+    assert!(view(h).reading(), "the zoomed view's read wasn't held");
+    assert_eq!(view(h).table(), table);
+    assert!(meshes_current(h));
+    (hold, view(h).frame().unwrap().rect.center())
+}
+
+/// The held read of [`zoomed_out_its_read_held`] let go, and its answer waited for, so the
+/// next frame takes the table it makes, as any frame may.
+fn its_read_answered(h: &mut AppHarness, hold: Hold) -> u64 {
+    let table = view(h).table();
+    hold.release();
+    assert!(
+        view_mut(h).read_answered_within(WAIT),
+        "the zoomed view's meshes never read"
+    );
+    table
+}
+
+#[test]
+fn a_selections_click_let_go_in_the_frame_a_new_table_is_taken_is_let_go_and_said() {
+    // #568: the box's top under the pointer, the view zoomed out and reading the model's
+    // meshes again; the click's release comes in the very frame the view takes the new table
+    // (the read answered between frames), so it was made on the table the frame before drew.
+    // It's let go, said in the status bar, nothing selected, though the renderer finds the top
+    // under it in the new table. A click after it, on the table drawn, selects the top.
+    use eframe::egui::{Modifiers, PointerButton};
+    use silico_app::renderer::Element::Face;
+    use silico_app::selection::CLICK_REDRAWN;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let (hold, top) = zoomed_out_its_read_held(&f, &mut h);
+    answering(&record, Some((1, Face(6), pixel_at(&h, top))), None);
+    h.hover_at(top);
+    step_until(&mut h, "the top hovered", |h| {
+        h.state().tabs()[0].selection().hovered().is_some()
+    });
+    button_event(&h, top, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    let table = its_read_answered(&mut h, hold);
+    button_event(&h, top, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_ne!(
+        view(&h).table(),
+        table,
+        "the release's frame took no new table"
+    );
+    assert!(meshes_current(&h));
+    assert_eq!(selection_said(&h).as_deref(), Some(CLICK_REDRAWN));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(
+        selected_names(&h).is_empty(),
+        "the click was picked on the table it wasn't made on"
+    );
+    click_as_a_person(&mut h, top, Modifiers::NONE);
+    selected_until(&mut h, &["k7f2qx3m.box.Face6"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_box_let_go_in_the_frame_a_new_table_is_taken_selects_nothing_and_says_so() {
+    // #568: a window dragged round the whole box from empty space, the view zoomed out and
+    // reading the model's meshes again; let go in the very frame the view takes the new
+    // table, it was drawn over the table the frame before drew. It selects nothing, and a
+    // toast says so. Dragged again, over the table drawn, it takes the box's 12 edges.
+    use eframe::egui::{Modifiers, PointerButton, vec2};
+    use silico_app::box_select::BOX_REDRAWN;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let (hold, centre) = zoomed_out_its_read_held(&f, &mut h);
+    answering(&record, None, None);
+    let (from, to) = (centre - vec2(60.0, 40.0), centre + vec2(60.0, 40.0));
+    box_press(&mut h, from, to, Modifiers::NONE);
+    let table = its_read_answered(&mut h, hold);
+    button_event(&h, to, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_ne!(
+        view(&h).table(),
+        table,
+        "the release's frame took no new table"
+    );
+    toasted(&mut h, BOX_REDRAWN);
+    assert!(
+        selected_names(&h).is_empty(),
+        "the box was cast on the table it wasn't drawn over"
+    );
+    box_drag(&mut h, from, to, Modifiers::NONE);
+    toasted(&mut h, "Window selection: 12 edges");
+    assert_eq!(selected_names(&h).len(), 12);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_right_click_in_the_frame_a_new_table_is_taken_opens_nothing_and_says_so() {
+    // #568: the right click comes in the very frame the view takes a new table of the
+    // model's bodies (the view zoomed out, its read answered between frames), so it was made
+    // on the table the frame before drew. Select Other opens nothing, neither its menu nor a
+    // wait for the new meshes' boxes, and a toast says so. A right click after it, on the
+    // table drawn, opens the menu over the top.
+    use eframe::egui::{Modifiers, PointerButton};
+    use silico_app::select_other::OTHER_REDRAWN;
+    let f = fixture();
+    let (mut h, _record) = box_from_above(&f);
+    let (hold, top) = zoomed_out_its_read_held(&f, &mut h);
+    h.hover_at(top);
+    step(&mut h);
+    let table = its_read_answered(&mut h, hold);
+    button_event(&h, top, PointerButton::Secondary, true, Modifiers::NONE);
+    button_event(&h, top, PointerButton::Secondary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_ne!(
+        view(&h).table(),
+        table,
+        "the right click's frame took no new table"
+    );
+    assert!(!select_other(&h).is_open() && !select_other(&h).is_waiting());
+    toasted(&mut h, OTHER_REDRAWN);
+    boxes_made(&mut h);
+    for _ in 0..5 {
+        step(&mut h);
+    }
+    assert!(
+        !select_other(&h).is_open(),
+        "the right click was cast on the table it wasn't made on"
+    );
+    right_click_at(&mut h, top, true);
+    step_until(&mut h, "Select Other's menu", |h| select_other(h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn an_origin_plane_clicked_is_taken_while_the_published_models_meshes_are_read_or_refused() {
     // #565's round 5 (round 4's regression): an origin plane the pointer's ray meets first is

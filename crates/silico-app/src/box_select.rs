@@ -35,6 +35,9 @@
 //! its outline. The box is clamped to the canvas, so nothing off the canvas is inside it.
 //! Let go, it replaces the selection; with Shift it adds ([`How::Add`]); with Ctrl it
 //! inverts what's inside ([`How::Toggle`]); through [`Selection::pick_all`], one change.
+//! Let go in the frame the view takes another table of bodies, it selects nothing and a
+//! toast says so ([`BOX_REDRAWN`]): it was drawn over the bodies the frame before drew, and
+//! what's inside it is decided only against what the person saw (#568).
 //! While a dialog's box of names takes the canvas's picks, a box, like a drag on geometry,
 //! toggles what it takes, whatever its modifiers, and the dialog's box hears of each as it
 //! hears of a click ([`Selection::take_toggled`]).
@@ -91,6 +94,11 @@ pub const PRESS_UNREAD: &str = "The drag selected nothing: what's under its pres
 /// What a drag let go after the view changed under its undecided press says.
 pub const PRESS_MOVED: &str =
     "The drag selected nothing: the view changed before what's under its press was read";
+
+/// What a box let go in the frame the view took another table of bodies says: it was drawn
+/// over the bodies the frame before drew, not these, so it selects nothing (#568).
+pub const BOX_REDRAWN: &str =
+    "The box selected nothing: the view's meshes changed as it was let go; drag again";
 
 /// The canvas's box selection: the left press, while one is held (or let go and waiting
 /// for what's under it), what the view was the last frame, and the newest hover answer of
@@ -255,6 +263,14 @@ impl BoxSelect {
                 Effect::Said(said) => toast = Some(said.to_owned()),
                 Effect::Box { .. } if !selection.picks().edges => {
                     toast = Some(EDGE_FILTER_OFF.to_owned());
+                }
+                // Let go in the frame the view took another table: drawn over the bodies the
+                // frame before drew, never cast on these.
+                Effect::Box { .. } if view.table_taken() => {
+                    tracing::debug!(
+                        "a box let go in the frame a new table was taken: nothing taken"
+                    );
+                    toast = Some(BOX_REDRAWN.to_owned());
                 }
                 Effect::Box {
                     from,
@@ -1231,6 +1247,18 @@ mod tests {
         current: bool,
         ppp: f32,
     ) -> Overlaid {
+        overlaid_in(boxes, selection, left, current, ppp, false)
+    }
+
+    /// [`overlaid_at`], the frame `taken` another table of bodies or not.
+    fn overlaid_in(
+        boxes: &mut BoxSelect,
+        selection: &mut Selection,
+        left: Vec<LeftEvent>,
+        current: bool,
+        ppp: f32,
+        taken: bool,
+    ) -> Overlaid {
         let ctx = egui::Context::default();
         // Passes first until egui asks for no frame of its own (its first frames do), so the
         // one measured asks for the overlay's alone.
@@ -1245,6 +1273,10 @@ mod tests {
             }
         }
         let mut view = View::default();
+        if taken {
+            view.began_frame();
+            view.tabled_again();
+        }
         let mut frame = view_frame(None);
         frame.left = left;
         frame.now = start();
@@ -1395,6 +1427,49 @@ mod tests {
         assert_eq!(toast.as_deref(), Some(PRESS_MOVED));
         assert_eq!(selection.said(), None);
         assert!(selection.is_empty());
+    }
+
+    #[test]
+    fn a_box_let_go_in_the_frame_a_new_table_is_taken_selects_nothing_and_says_so() {
+        // #568: a box dragged over the bodies one frame drew, let go in the frame the view
+        // took another table of them: what's inside it is never decided against those it
+        // wasn't drawn over. Let go a frame later, over the bodies it was, it's a window.
+        let boxing = || super::Press {
+            at_px: [50.0, 40.0],
+            corner: [90.0, 70.0],
+            pixel: [50, 40],
+            under: Some(None),
+            phase: Phase::Boxing,
+            released: false,
+            stale: false,
+            asked: 0,
+            let_go: None,
+            ctrl: false,
+            shift: false,
+        };
+        for taken in [true, false] {
+            let mut boxes = BoxSelect::default();
+            let mut selection = Selection::default();
+            overlaid(&mut boxes, &mut selection, Vec::new(), true);
+            boxes.press = Some(boxing());
+            let done = overlaid_in(
+                &mut boxes,
+                &mut selection,
+                vec![event(Release, [90.0, 70.0])],
+                true,
+                1.0,
+                taken,
+            );
+            let said = if taken {
+                BOX_REDRAWN
+            } else {
+                "Window selection: 0 edges"
+            };
+            assert_eq!(done.toast.as_deref(), Some(said), "taken: {taken}");
+            assert_eq!(phase(&boxes), None, "taken: {taken}");
+            assert!(selection.is_empty());
+            assert_eq!(selection.said(), None);
+        }
     }
 
     use LeftKind::{Cancel, Move, Press, Release};
