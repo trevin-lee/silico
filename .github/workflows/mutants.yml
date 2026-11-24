@@ -1,33 +1,29 @@
-# Mutation testing (cargo-mutants, tests/mutants.sh) sharded over the self-hosted runners,
-# on request: round 1 of a review's tests lens (.claude/skills/review-tests). Each shard
-# runs its share of the mutants in its runner's gate worktree, which keeps the gate's
-# build; the summary gathers every shard's caught, missed, timed-out, and unviable mutants
-# into the run's summary, and fails if any mutant was missed, or if a shard tested fewer
-# mutants than it planned (INCOMPLETE), so a run whose shard's baseline failed never reads
-# as clean. A run that finds nothing to mutate (a change to data only) passes, saying so,
-# unless a file given isn't in the tree or a regex given matched nothing
-# (.github/mutants-none.sh). Each shard leaves its outcomes on the VM, which every runner shares
-# (~/.cache/silico/mutants-results/<run>/), and the summary reads them there: GitHub's
-# artifact storage full (2026-11-09) can't fail a run or hide its results. Artifacts are
-# still uploaded, for the per-mutant logs, but an upload that fails fails nothing.
+# Mutation testing (cargo-mutants, tests/mutants.sh) sharded over GitHub's hosted runners
+# (ubuntu-24.04, 4 vCPUs each, free for a public repository), on request: round 1 of a review's
+# tests lens (.claude/skills/review-tests). Each shard runs its share of the mutants in the
+# gate's worktree on a runner of its own (.github/actions/prepare restores its pixi
+# environments, OCCT, and its dependencies' build from the cache); the summary gathers every
+# shard's caught, missed, timed-out, and unviable mutants into the run's summary, and fails if
+# any mutant was missed, or if a shard tested fewer mutants than it planned (INCOMPLETE), so a
+# run whose shard's baseline failed never reads as clean. A run that finds nothing to mutate
+# (a change to data only) passes, saying so, unless a file given isn't in the tree or a regex
+# given matched nothing (.github/mutants-none.sh). Each shard keeps its outcomes as an
+# artifact (mutants-shard-<n>: the outcome lists and the logs worth reading,
+# .github/mutants-keep.sh), which the summary reads, and every per-mutant log as another
+# (mutants-logs-shard-<n>); a public repository's artifacts cost nothing to store.
 #
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f base=main -f packages="silico-core"
 #   gh workflow run mutants.yml --ref main -f files="crates/silico-core/src/cache/*.rs crates/silico-core/src/naming/*.rs"
 #   gh workflow run mutants.yml --ref main -f ref=<branch> -f re='profile\.rs:.* in (meeting|on_arc)$'
 #     (re-checks survivors: only the mutants whose names match, in minutes)
 #
-# Real runs come first. The filler (.github/workflows/filler.yml) starts runs of its own on
-# idle CPU, marked by the `filler` input, whose shards run only on the runners labelled
-# filler, at the idle scheduling class. A real run's plan cancels every filler run of this
-# workflow, queued or running, so its shards take their runners, and every proptest
-# exploration and filler oracle sweep but one overdue, whose once-a-day minimum is owed: that
-# one only if the shards would wait for a runner of their lane otherwise, so on a busy VM it
-# still gets its day (.github/cancel-filler.sh). A cancelled or cut-off filler run keeps what
-# its shards finished: each keeps its harvest, and the summary gathers it.
+# GitHub runs at most 20 of the account's jobs at once. A run's shards take at most 12 of them
+# (max-parallel, below), a run that gates a merge at most 6, so gates always find room beside a
+# long run, or beside two runs that gate merges.
 name: mutants
 # The ref, base, packages, files, and regex, so concurrent runs can be told apart
 # (review-tests finds its run by this title). A filler run's starts "filler a" or "filler
-# b<k>": the filler reads its own last runs back from these titles.
+# b<k>".
 run-name: "${{ inputs.filler && format('filler {0} ', inputs.filler) || '' }}mutants ${{ inputs.ref || github.ref_name }} since ${{ inputs.base || 'nothing' }} in ${{ inputs.packages || 'every package' }}${{ inputs.files && format(' files {0}', inputs.files) || '' }}${{ inputs.re && format(' matching {0}', inputs.re) || '' }}${{ inputs.tests && format(' tested by {0}', inputs.tests) || '' }}${{ inputs.long && ' (long)' || '' }}"
 
 on:
@@ -52,40 +48,29 @@ on:
         description: "Only these packages' tests for each mutant, space-separated, each a --test-package; workspace for every workspace test. Empty: every workspace test for a filler run; for any other, the plan's choice (.github/mutants-tests.py), the mutated packages and every package that depends on them, the only tests that can see a mutant through Cargo; or every workspace test when a mutant is in code linked into the worker binaries, which other packages' tests run from disk. Naming packages is sound only where the mutated code is in them or the libraries they build: a worker binary another package builds isn't rebuilt for their tests, so its mutants would read as missed"
         default: ""
       shards:
-        description: "The fewest shards to share the work (1 to 16; up to nine run at once, one a runner: seven for a long run). The plan adds shards, up to 16, so none holds more than 80 mutants, about 12 hours on a loaded VM; a filler run has exactly these"
+        description: "The fewest shards to share the work (1 to 32; up to six run at once, twelve for a long run). The plan adds shards, up to 32, so none holds more than 40 mutants, about 4.5 hours on a hosted runner; a filler run has exactly these"
         default: "1"
       long:
-        description: "Empty (the default) for a run that gates a merge: its shards take any of the thirteen runners labelled mutants-pr. Set (true) for a long one, a milestone's or a whole crate's, hours long: its shards take only the seven labelled mutants, so a run that gates a merge never waits behind it, on silico-5 to -8, -20, and -21. A run without it whose plan needs more than six shards is refused at the plan, saying so"
+        description: "Empty (the default) for a run that gates a merge: at most six shards, six at once. Set (true) for a long one, a milestone's or a whole crate's, hours long: up to 32 shards, twelve at once. A run without it whose plan needs more than six shards is refused at the plan, saying so"
         default: ""
       filler:
-        description: "Empty for a real run. Set only by the filler (filler.yml): a, the commits main gained since its last such run, or b<k>, the k-th slice of the source; such a run yields to real ones, stops after an hour, tests its mutants in random order, and fails only on misses not in .github/mutants-triaged.txt"
+        description: "Empty for a real run. Set (a, or b and a number, as the CI VM's filler named its runs) for a background sample: it stops after an hour, has exactly the shards asked for, tests its mutants in random order, and fails only on misses not in .github/mutants-triaged.txt"
         default: ""
 
-# Read only, but for the plan's actions: write (below), the one job that cancels runs. That
-# keeps the token out of the shards' own checkouts and environments, but it isn't a boundary
-# between jobs: every runner on the VM runs its jobs as the one runner user, so code a shard
-# builds and runs could reach a token another job on the VM holds at the time. What keeps
-# untrusted code off the VM is that only write-access users start this workflow, on refs
-# they choose.
+# Read only. Only write-access users start this workflow, on refs they choose, and each job
+# runs on a fresh machine of its own.
 permissions:
   contents: read
 
 env:
-  # As the gate builds (gate.yml), in the same worktree, so the two share one build: each
-  # mutant's rebuild loses incremental compilation's speed-up, but its caches grew to about
-  # 19 GB on each runner.
+  # As the gate builds (gate.yml): every mutant rebuilds from a fresh checkout's files, so
+  # incremental compilation's caches would only be written.
   CARGO_INCREMENTAL: "0"
 
 jobs:
   plan:
-    # On a runner labelled control (silico-13, -14), which runs only short jobs like this, so
-    # a real run's plan never waits behind shards to cancel filler.
-    runs-on: [self-hosted, linux, x64, control]
-    timeout-minutes: 10
-    # For a real run's plan to cancel filler runs (.github/cancel-filler.sh).
-    permissions:
-      actions: write
-      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
       count: ${{ steps.plan.outputs.count }}
@@ -109,12 +94,10 @@ jobs:
           FILLER: ${{ inputs.filler }}
           LONG: ${{ inputs.long }}
           TESTS: ${{ inputs.tests }}
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
         run: |
           case $SHARDS in
-          [1-9] | 1[0-6]) ;;
-          *) echo "::error::shards must be 1 to 16, not '$SHARDS'"; exit 1 ;;
+          [1-9] | [12][0-9] | 3[0-2]) ;;
+          *) echo "::error::shards must be 1 to 32, not '$SHARDS'"; exit 1 ;;
           esac
           for package in $PACKAGES $TESTS; do
             case $package in
@@ -145,19 +128,20 @@ jobs:
             echo "::error::filler must be empty, a, or b and a number, not '$FILLER'"
             exit 1
           fi
-          # Its shards' runners ask only whether it's set: so only true sets it.
+          # The workflow asks only whether it's set: so only true sets it.
           case $LONG in
           "" | true) ;;
           *) echo "::error::long must be empty or true, not '$LONG'"; exit 1 ;;
           esac
-          # Enough shards that none runs past about 12 hours, half a job's limit (the shard's
-          # timeout-minutes, 24 hours): 80 mutants each, at 540 seconds a mutant, a margin over
-          # the most a loaded VM took (#242's run 40627599832, 2026-10-28: 450 and 520 seconds
-          # a mutant in silico-core, few unviable, at 2 threads a shard, on its two shards, each
-          # cut off at 24 hours with 134 of its 492 mutants untested). Counted as the shards
-          # will list them, in a tree of the ref; past 16 shards' worth, a shard holds more. A
-          # filler run is cut off after an hour whatever it holds, so has the shards it asks
-          # for.
+          # Enough shards that none runs past about 4.5 hours, three quarters of a hosted job's
+          # 6 (the shard's timeout-minutes, below), the rest for its setup and baseline: 40
+          # mutants each (per, below). On a hosted runner's 4 vCPUs a caught mutant took about
+          # 2 minutes, build and tests, even with every workspace test to run (run 45382472584:
+          # vec3.rs's 51, two shards of 25 and 26 in 50 and 52 minutes after a 6-minute setup),
+          # so 40 take about 80 minutes, leaving room for six that run the whole suite to their
+          # 30-minute limit (tests/mutants.sh). Counted as the shards will list them, in a tree
+          # of the ref; past 32 shards' worth (1,280 mutants), a shard holds more. A filler run
+          # is cut off after an hour whatever it holds, so has the shards it asks for.
           shards=$SHARDS
           if [ -z "$FILLER" ]; then
             resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
@@ -187,9 +171,10 @@ jobs:
             if [ -n "$RE" ]; then args+=("--re=$RE"); fi
             cargo mutants "${args[@]}" >"$RUNNER_TEMP/mutants.txt"
             mutants=$(grep -c . "$RUNNER_TEMP/mutants.txt" || true)
-            needed=$(( (mutants + 79) / 80 ))
+            per=40
+            needed=$(( (mutants + per - 1) / per ))
             shards=$(( needed > shards ? needed : shards ))
-            shards=$(( shards > 16 ? 16 : shards ))
+            shards=$(( shards > 32 ? 32 : shards ))
             echo "$mutants mutants: $shards shards ($SHARDS asked for)" | tee -a "$GITHUB_STEP_SUMMARY"
             # Empty: the mutated packages and those that depend on them, unless a mutant is
             # linked into the worker binaries (#445: a silico-mcp mutant only silico-mcp's
@@ -204,24 +189,19 @@ jobs:
             fi
             echo "Tests: ${TESTS:-every workspace test} ($tests_why)" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-          # A run that gates a merge shares the thirteen mutants-pr runners with every other
-          # such run: one that needs more than six shards would hold most of them for a day
-          # (the oracle's 1,479 mutants held nine for eight hours on 2026-10-30, and every PR's
-          # run queued behind them). It's refused here, in a minute, rather than moved: the long
-          # lane's label is taken off runners while merge-lane runs back up, and two runs there
-          # queue for the same seven. Counted by what it needs, not the shards asked for.
+          # A run that gates a merge holds at most six of the account's 20 hosted jobs at once
+          # (the shard's max-parallel), so two such runs leave gates eight; one that needs more
+          # shards would hold its six for many hours, and every gate and merge-lane run beside
+          # it would wait. It's refused here, in a minute, and dispatched as a long run instead,
+          # which says it means to hold up to twelve. Counted by what it needs, not the shards
+          # asked for.
           if [ -z "$FILLER" ] && [ -z "$LONG" ] && [ "${needed:-0}" -gt 6 ]; then
             echo "::error::$mutants mutants need $needed shards, more than a run that gates a merge may hold (6): dispatch it with long=true, or narrow it (base, files, re, tests)"
             exit 1
           fi
-          # A real run takes precedence over filler: it cancels every filler mutants run, and
-          # every exploration and filler sweep but one overdue (its once-a-day minimum owed)
-          # that its shards don't need the runner of (.github/cancel-filler.sh), so it's called
-          # once the shards are known, with the label they ask for (the shard's runs-on, below).
-          # Its own shards then queue for the runners that frees, like any other run's.
-          if [ -z "$FILLER" ]; then
-            if [ -n "$LONG" ]; then lane=mutants; else lane=mutants-pr; fi
-            bash .github/cancel-filler.sh --lane "$lane" --shards "$shards"
+          if [ -z "$FILLER" ] && [ -z "$LONG" ] && [ "$SHARDS" -gt 6 ]; then
+            echo "::error::$SHARDS shards asked for, more than a run that gates a merge may hold (6): dispatch it with long=true, or ask for fewer"
+            exit 1
           fi
           echo "count=$shards" >>"$GITHUB_OUTPUT"
           echo "shards=[$(seq -s, 0 $((shards - 1)))]" >>"$GITHUB_OUTPUT"
@@ -230,60 +210,54 @@ jobs:
 
   shard:
     needs: plan
-    # A filler run's shards only on the runners labelled filler (silico-5 to -12, -22, and
-    # -23), which take no gates: so filler never holds a runner a gate could use. A long run
-    # (`long`: a milestone's, hours long) asks for `mutants`, which only silico-9 to -12 and
-    # -15 to -17 have; any other run (one that gates a merge) asks for `mutants-pr`, which
-    # those have and silico-5 to -8, -20 and -21 have alone: so a run that gates a merge never
-    # waits for a long one to free the pool, but starts beside it, on those six at least (a
-    # freed runner with both labels goes to whichever shard GitHub queued first).
-    runs-on: ${{ inputs.filler != '' && fromJSON('["self-hosted", "linux", "x64", "filler"]') || inputs.long != '' && fromJSON('["self-hosted", "linux", "x64", "mutants"]') || fromJSON('["self-hosted", "linux", "x64", "mutants-pr"]') }}
-    # The plan gives a shard about 12 hours of mutants, but no more than 16 shards: a run past
-    # 1,280 mutants holds more, and a whole-workspace run (11,547 mutants on 2026-10-29,
-    # silico-core 8,557) is cut off here even at 16, so narrow it by package, file, or base.
-    # A filler run stops after an hour: it fills idle time, and comes back to its work on a
-    # later turn.
-    timeout-minutes: ${{ inputs.filler != '' && 60 || 1440 }}
+    runs-on: ubuntu-24.04
+    # The plan gives a shard about 4.5 hours of mutants, under GitHub's 6 hours a job, but no
+    # more than 32 shards: a run past 1,280 mutants holds more, and a whole-workspace run
+    # (11,547 mutants on 2026-10-29, silico-core 8,557) is cut off here even at 32, so narrow
+    # it by package, file, or base. A filler run stops after an hour.
+    timeout-minutes: ${{ inputs.filler != '' && 60 || 350 }}
     strategy:
       fail-fast: false
-      # As many at once as there are runners a shard may take: for a long run, `mutants`
-      # (silico-9 to -12 and -15 to -17, through /etc/ci-runner/labels on the runner VM); for
-      # any other, `mutants-pr` (those and silico-5 to -8, -20, -21). silico-1 to -4 carry
-      # only `gate`, so gates always have four runners however many shards are queued: four at
-      # once, since past four a quarter of the VM each oversubscribes it (2026-10-28: six
-      # gates held 15-27% of their time stalled; silico-5 to -8 were gates until then, and
-      # took mutants too until 2026-10-26). silico-9 to -12 (also `filler`) and -15 to -17
-      # carry `mutants` (the long lane; taken off while merge-lane runs back up, by the label
-      # files on the VM), silico-5 to -8 (also `filler`), -20, and -21 `mutants-pr`, none
-      # `pve`, so no gate (nor a job from a branch older than these labels, which asks for
-      # pve) runs there and grows a gate's build; mutants ask for theirs, not `pve`. A run's
-      # shards spread over every free mutants runner, so one long run can hold the pool for
-      # hours. The bench and the oracle sweep, which hold work to a clock, have a runner of
-      # their own at a gate's CPU weight (silico-18, labelled `sweep`). The plan and summary
-      # take seconds and run on the runners labelled control (silico-13, -14), so they never
-      # queue behind shards. The runners share one VM, and free runners don't keep its CPU
-      # free: see the shard's share below. A long run's at most seven at once, as many as its
-      # lane has runners: the plan may give it up to 16, and none should wait in the runners'
-      # queue through a sibling's whole run (GitHub cancels a job queued for 24 hours).
-      max-parallel: ${{ inputs.long != '' && 7 || 9 }}
+      # At most twelve shards at once for a long run, six for any other (which the plan holds
+      # to six shards): GitHub runs at most 20 of the account's jobs at once, and gates need
+      # room beside a long run, or beside two runs that gate merges (eight jobs either way).
+      max-parallel: ${{ inputs.long != '' && 12 || 6 }}
       matrix:
         shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    env:
+      # Without debug info (Trevin, 2026-10-22): every mutant rebuilds and relinks the
+      # workspace's test binaries, and DWARF is much of what they write. Gates keep it, and so
+      # does a run off CI. A mutant's backtrace loses file:line, which nobody reads; its
+      # failing test's name and message are what triage uses. It builds in its own target
+      # directory in the gate's tree (target-mutants/, tests/committed-tree.sh), bound at about
+      # 1.5 times one debug-free build (4.2 GiB, measured 2026-10-22). At the job's level, so
+      # the dependencies' cache is keyed by it (.github/actions/prepare).
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      SILICO_TARGET: target-mutants
+      SILICO_TARGET_LIMIT_GIB: "6"
     steps:
-      # Where this shard leaves its outcomes on the VM for the summary, emptied first, so a
-      # re-run of the shard that stops before it keeps any leaves none of the last attempt's.
-      - name: The shard's results on the VM
-        env:
-          SHARD: ${{ matrix.shard }}
-        run: |
-          results=$HOME/.cache/silico/mutants-results/$GITHUB_RUN_ID/mutants-shard-$SHARD
-          rm -rf "$results"
-          mkdir -p "$results"
-          echo "SILICO_MUTANTS_RESULTS=$results" >>"$GITHUB_ENV"
+      # Every commit, to find the ref and the base.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
-      - name: Toolchains
-        run: bash .github/tools.sh
+      # Branch names as they are on GitHub, and commits, abbreviated or not. This checkout's
+      # scripts test the ref's tree, so refs older than them work too.
+      - name: The ref
+        id: ref
+        env:
+          REF: ${{ inputs.ref }}
+        run: |
+          resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
+          commit=$(resolve "${REF:-HEAD}")
+          echo "commit=$commit" >>"$GITHUB_OUTPUT"
+      # The dependencies' build saved by one shard of a run dispatched on main (any ref
+      # tested), so runs that gate merges restore it and no two shards race to save it.
+      - uses: ./.github/actions/prepare
+        with:
+          commit: ${{ steps.ref.outputs.commit }}
+          target: target-mutants
+          rust-key: mutants
+          save: ${{ github.ref == 'refs/heads/main' && inputs.filler == '' && matrix.shard == 0 }}
       - name: Test scratch
         run: bash .github/scratch.sh start
       - name: Mutants
@@ -297,12 +271,9 @@ jobs:
           SHARD: ${{ matrix.shard }}
           SHARDS: ${{ needs.plan.outputs.count }}
           FILLER: ${{ inputs.filler }}
+          SILICO_TREE_COMMIT: ${{ steps.ref.outputs.commit }}
         run: |
-          # Branch names as they are on GitHub, and commits, abbreviated or not.
           resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
-          # This checkout's scripts test the ref's tree, so refs older than them work too.
-          SILICO_TREE_COMMIT=$(resolve "${REF:-HEAD}")
-          export SILICO_TREE_COMMIT
           echo "Testing $(git log -1 --format='%h %s' "$SILICO_TREE_COMMIT")"
           args=(--shard "$SHARD/$SHARDS" --sharding round-robin --output "$RUNNER_TEMP/out")
           if [ -n "$BASE" ]; then
@@ -323,80 +294,13 @@ jobs:
           # A filler run is cut off after an hour: in random order (cargo-mutants shuffles each
           # shard's share after sharding), so each turn at a slice reaches different mutants.
           if [ -n "$FILLER" ]; then args+=(--shuffle); fi
-          # 2 threads each, 3 or 4 for the first while CPUs sit idle, so that 28 in all is never
-          # passed: a long run's seven shards and the merge lane's can run at once (below), all
-          # at the idle weight, and .github/shard-threads.sh keeps their claims within 28. At 2
-          # threads a shard (twelve runners), the VM sat 27% idle over a day (2026-10-25,
-          # ~/.cache/silico-review/ci-ext4/idle-day-after-3.tsv) while shards queued for a
-          # runner: the runners were the limit, not the CPU. A shard takes only CPU nothing else
-          # wants: its runner's cgroup is at the idle weight (CPUWeight=idle on silico-5 to -12,
-          # -15 to -17, -20 to -23, set with systemctl set-property from 2026-10-26), so between
-          # runners a gate always wins. Nice and the idle scheduling class rank threads only
-          # within their own cgroup; between runner services only the cgroups' weights count, so
-          # nice 19 alone let two gates fail tests held to a wall clock beside full shards on
-          # 2026-10-25. Nice 19 (below) still orders a shard's own threads. (On a full machine a
-          # gate can still fail a test held to a wall clock: tests/mutants.sh lists them.) Retry
-          # a failed test here, since one that fails only under load would fail the baseline or
-          # count a mutant as caught; a mutant that breaks a test fails it every time.
-          #
-          # A filler shard runs at the idle scheduling class, for the CPU and for I/O, on a
-          # runner at the idle weight (as a real shard's is), so it can't slow a gate; a real
-          # run's plan cancels the filler going (cancel-filler.sh), and the filler starts
-          # nothing while a real run starts or has a job waiting that a free runner of its lane
-          # could take (filler.yml), but beside a real run's shards already running it can share
-          # the CPU. A quarter of the machine each: up to six run at once (the runners labelled
-          # filler), as many as the idle CPUs feed when the filler starts them. It has a Cargo
-          # home of its own (the toolchains stay on PATH): starved of CPU, it could hold the
-          # package cache's lock, which every other build on the VM shares, for minutes. And so
-          # a target directory of its own (below): dependencies' fingerprints hold their
-          # source's absolute path in the Cargo home, so sharing target-mutants/ with real
-          # shards would make each switch between them rebuild everything. 2 threads a shard, a
-          # long run's or another's, 3 or 4 for the first while CPUs sit idle
-          # (.github/shard-threads.sh: within 28 in all once every mutants runner that could
-          # still start a shard has 2, an exact bound, 2026-10-28). At a fixed 4 threads a long
-          # shard (34 in all), the VM reached a load of 103 on 30 threads beside three gates,
-          # and a shard's baseline missed a wall clock (2026-10-27, run 40486344701); a test
-          # killed at nextest's limit would count its mutant as caught. At a fixed 3, a long
-          # run's backlog left the VM a third idle once the merge lane emptied (2026-10-27,
-          # ~/.cache/silico-review/ci-ext4/idle-after-210.tsv). A gate's own CPU pressure (its
-          # runner's cgroup cpu.pressure) over ~10% avg60 is the sign to cut MOST back.
-          running=10
-          priority=(nice -n 19)
-          # A Cargo home of its own, filler's or a real shard's: at the idle CPU weight a shard
-          # can stall while gates fill the VM, and a stalled shard holding the package cache's
-          # lock (which locks don't lend priority to) would stall every gate's Cargo behind it.
-          export CARGO_HOME=$HOME/.cargo-mutants
-          if [ -n "$FILLER" ]; then
-            running=4
-            priority=(chrt --idle 0 ionice -c 3 nice -n 19)
-            export CARGO_HOME=$HOME/.cargo-filler
-          fi
-          share=$(( $(nproc) / running > 2 ? $(nproc) / running : 2 ))
-          chosen="$share threads, a filler shard's share"
-          if [ -z "$FILLER" ]; then
-            # The fixed share if it can't choose: a fault here shouldn't fail a run.
-            if threads=$(bash .github/shard-threads.sh "$share" $((2 * share))); then
-              share=${threads%%$'\n'*}
-              chosen=${threads#*$'\n'}
-            else
-              chosen="$share threads: .github/shard-threads.sh failed"
-            fi
-          else
-            # A real shard's claim this runner's last job left, if it died before releasing it.
-            bash .github/shard-threads.sh release
-          fi
+          # Every CPU: the runner is this shard's alone. Retry a failed test, since one that
+          # fails only under load would fail the baseline or count a mutant as caught; a mutant
+          # that breaks a test fails it every time.
+          share=$(nproc)
+          chosen="$share threads, the runner's every CPU"
           echo "Shard $SHARD: $chosen" | tee -a "$GITHUB_STEP_SUMMARY"
           export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share NEXTEST_RETRIES=2
-          # Without debug info (Trevin, 2026-10-22): every mutant rebuilds and relinks the
-          # workspace's test binaries, and DWARF is much of what they write. Gates keep it, and
-          # so does a run off CI. A mutant's backtrace loses file:line, which nobody reads; its
-          # failing test's name and message are what triage uses. It builds in its own
-          # target directory in the gate's tree (target-mutants/, tests/committed-tree.sh),
-          # since the gate's target/debug alone reaches 18-33 GiB of its 30: the two builds
-          # would evict each other, and gates would start cold. Its bound is about 1.5 times
-          # one debug-free build (4.2 GiB, measured 2026-10-22).
-          export CARGO_PROFILE_DEV_DEBUG=0 SILICO_TARGET=target-mutants SILICO_TARGET_LIMIT_GIB=6
-          if [ -n "$FILLER" ]; then export SILICO_TARGET=target-filler; fi
           # One seed for every property run through `proptest!` (it overrides the seeds tests
           # fix in their configs; only a TestRunner made directly keeps its own), so each mutant
           # meets the same cases as the baseline. With random seeds, a property that failed now
@@ -406,12 +310,12 @@ jobs:
           # .proptest-regressions files are replayed for each mutant, and a case saved during
           # the run comes from the seed's own cases. The seed, PROPTEST_RNG_SEED=20261021, is
           # pixi.toml's mutants task's, the gate's too (its test task's), and a task's env wins
-          # over a caller's, so it isn't set here. New seeds are explored apart, on idle runners
+          # over a caller's, so it isn't set here. New seeds are explored apart
           # (proptest-explore.yml).
           args+=(--jobserver-tasks "$share")
           # 2: mutants missed; 3: mutants timed out. The summary reports both.
           status=0
-          "${priority[@]}" pixi run mutants -- "${args[@]}" || status=$?
+          pixi run mutants -- "${args[@]}" || status=$?
           # A shard with no mutants to test writes an empty list, or none at all (below); it
           # still reports. (After the run, which moves a mutants.out it finds aside.)
           mkdir -p "$RUNNER_TEMP/out/mutants.out"
@@ -430,53 +334,57 @@ jobs:
             set +f
           fi
       # Even when the run is cancelled or times out: cargo-mutants writes each outcome as it
-      # goes, so a stopped shard's harvest is kept (and the summary says it's incomplete). On
-      # the VM, for the summary: the outcome lists, and the logs of the baseline and of each
-      # mutant missed or timed out (.github/mutants-keep.sh).
-      - name: Keep the shard's outcomes on the VM
+      # goes, so a stopped shard's harvest is kept (and the summary says it's incomplete): the
+      # outcome lists, and the logs of the baseline and of each mutant missed or timed out
+      # (.github/mutants-keep.sh), as the artifact the summary reads.
+      - name: Keep the shard's outcomes
         if: ${{ always() }}
-        run: bash .github/mutants-keep.sh "$RUNNER_TEMP/out/mutants.out" "$SILICO_MUTANTS_RESULTS"
-      # Every per-mutant log, for a look in GitHub's UI, and the summary's fallback for a shard
-      # whose outcomes weren't kept on the VM. An upload that fails (the account's artifact
-      # storage full, as on 2026-11-09) fails nothing. Kept two days, a filler run's one: at GitHub's default of 90 days, the shards filled the
-      # account's artifact storage (3.25 GB on 2026-11-08) and every upload failed.
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: bash .github/mutants-keep.sh "$RUNNER_TEMP/out/mutants.out" "$RUNNER_TEMP/kept/mutants-shard-$SHARD"
+      # The summary reads a shard that uploaded nothing as incomplete, so a failed upload fails
+      # the run there, saying which shard, not here.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() }}
         continue-on-error: true
         with:
           name: mutants-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/kept/mutants-shard-${{ matrix.shard }}
+          if-no-files-found: ignore
+          retention-days: 14
+      # Every per-mutant log, for a look in GitHub's UI.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: ${{ always() }}
+        continue-on-error: true
+        with:
+          name: mutants-logs-shard-${{ matrix.shard }}
           path: ${{ runner.temp }}/out/mutants.out
-          retention-days: ${{ inputs.filler && 1 || 2 }}
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
-      # The threads this shard held, for the shards that start after it.
-      - name: Release the shard's threads
-        if: ${{ always() }}
-        run: bash .github/shard-threads.sh release
 
   summary:
     needs: [plan, shard]
     # Even when the run is cancelled, to gather what the shards finished.
     if: ${{ always() && needs.plan.result == 'success' }}
-    runs-on: [self-hosted, linux, x64, control]
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      # Only the triaged list, from the branch this runs on (also clearing what an earlier
-      # job left in the workspace).
+      # Only the triaged list, from the branch this runs on.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           sparse-checkout: .github/mutants-triaged.txt
           sparse-checkout-cone-mode: false
-      # Only for a shard whose outcomes weren't kept whole on the VM (its keep step failed, or
-      # its runner was lost after uploading): a download that fails, or takes past its few
-      # minutes, fails nothing and leaves the summary its time.
+      # Each shard's outcomes, as its keep step left them. A download that fails, or takes
+      # past its minutes, leaves the shards it didn't fetch reading as incomplete, below.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         continue-on-error: true
-        timeout-minutes: 3
+        timeout-minutes: 5
         with:
           pattern: mutants-shard-*
-          path: artifacts
+          path: ${{ runner.temp }}/results
       - name: Summary
         env:
           SHARDS: ${{ needs.plan.outputs.count }}
@@ -489,20 +397,14 @@ jobs:
           TESTS: ${{ needs.plan.outputs.tests }}
           TESTS_WHY: ${{ needs.plan.outputs.tests_why }}
           FILLER: ${{ inputs.filler }}
+          RESULTS: ${{ runner.temp }}/results
         run: |
-          # Each shard's outcomes: from the VM (~/.cache/silico/mutants-results/<run>/) when
-          # its keep step finished (its `kept` marker), else from its artifact, else whatever
-          # the VM has of it. Other runs' results there older than a week are let go.
-          results=$HOME/.cache/silico/mutants-results
-          find "$results" -mindepth 1 -maxdepth 1 -type d ! -name "$GITHUB_RUN_ID" -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+          # Each shard's outcomes, from its artifact (RESULTS/mutants-shard-<n>/): whole once
+          # its keep step finished (its `kept` marker), and whatever it reached if not.
           mkdir -p shards
           for ((n = 0; n < SHARDS; n++)); do
-            kept=$results/$GITHUB_RUN_ID/mutants-shard-$n
-            if [ -f "$kept/kept" ]; then
-              cp -R "$kept" shards/
-            elif [ -d "artifacts/mutants-shard-$n" ]; then
-              cp -R "artifacts/mutants-shard-$n" shards/
-            elif [ -n "$(ls -A "$kept" 2>/dev/null)" ]; then
+            kept=$RESULTS/mutants-shard-$n
+            if [ -n "$(ls -A "$kept" 2>/dev/null)" ]; then
               cp -R "$kept" shards/
             fi
           done
@@ -518,8 +420,7 @@ jobs:
           # Each shard's outcomes against the mutants it planned (cargo-mutants' mutants.json):
           # a shard whose baseline failed tests none of them and reports no miss, so a run
           # with no misses is complete only if every shard tested all it planned. The
-          # incomplete ones are listed in all/incomplete.txt (kept on the VM, and in the
-          # `mutants` artifact if it uploads).
+          # incomplete ones are listed in all/incomplete.txt (in the `mutants` artifact).
           planned_of() {
             jq length "$1" 2>/dev/null ||
               python3 -I -c 'import json, sys; print(len(json.load(open(sys.argv[1]))))' "$1" 2>/dev/null
@@ -537,7 +438,7 @@ jobs:
           for ((n = 0; n < SHARDS; n++)); do
             dir=shards/mutants-shard-$n
             if [ ! -d "$dir" ]; then
-              echo "shard $n reported nothing (never started, its runner was lost, or its outcomes were let go: a run's are kept on the VM a week, so dispatch a new run)" >>all/incomplete.txt
+              echo "shard $n reported nothing (never started, its runner was lost, or its artifact didn't upload)" >>all/incomplete.txt
               continue
             fi
             # A shard with no mutants to test says so once its cargo-mutants has ended well
@@ -567,7 +468,7 @@ jobs:
             outcomes=$(cat "$dir"/{caught,missed,timeout,unviable}.txt 2>/dev/null | grep -c . || true)
             if [ "$outcomes" -lt "$planned" ]; then
               why=""
-              [ "$outcomes" -eq 0 ] && why=" (its baseline failed, or it stopped before a mutant: see log/baseline.log in ~/.cache/silico/mutants-results/$GITHUB_RUN_ID/mutants-shard-$n on the VM)"
+              [ "$outcomes" -eq 0 ] && why=" (its baseline failed, or it stopped before a mutant: see log/baseline.log in the run's mutants-shard-$n artifact)"
               echo "shard $n tested $outcomes of $planned$why" >>all/incomplete.txt
             fi
           done
@@ -631,7 +532,7 @@ jobs:
               echo "### Files given that match nothing in the tree"
               sort -u all/unmatched.txt | sed 's/^/- /'
             fi
-            # Each shard's threads, as it chose them (.github/shard-threads.sh).
+            # Each shard's threads, as its Mutants step chose them.
             if compgen -G 'shards/*/threads' >/dev/null; then
               echo
               for threads in $(printf '%s\n' shards/*/threads | sort -V); do
@@ -714,19 +615,11 @@ jobs:
             exit 1
           fi
       # The run's outcome lists, as the summary above shows them, for `gh run download -n
-      # mutants`; kept on the VM too. An upload that fails fails nothing.
-      - name: Keep the run's outcomes on the VM
-        if: ${{ always() }}
-        run: |
-          if [ -d all ]; then
-            mkdir -p "$HOME/.cache/silico/mutants-results/$GITHUB_RUN_ID"
-            rm -rf "$HOME/.cache/silico/mutants-results/$GITHUB_RUN_ID/all"
-            cp -R all "$HOME/.cache/silico/mutants-results/$GITHUB_RUN_ID/all"
-          fi
+      # mutants`. An upload that fails fails nothing.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: ${{ always() }}
         continue-on-error: true
         with:
           name: mutants
           path: all
-          retention-days: 7
+          retention-days: 14

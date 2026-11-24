@@ -28,14 +28,23 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 filter = 'test(/stress|oracle/)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
-# CI (NEXTEST_PROFILE=ci): every test runs, so one run reports every failure. One test per
-# physical core: the runner VM's 30 vCPUs are 15 cores' SMT siblings, and 30 tests at once
-# run each thread slower.
+# CI (NEXTEST_PROFILE=ci): every test runs, so one run reports every failure. A test per
+# CPU: a GitHub-hosted runner's 4 vCPUs are the gate's alone (gate.yml).
 [profile.ci]
 fail-fast = false
-test-threads = 15
-# CI's gate overrides it with NEXTEST_TEST_THREADS, a quarter of the runner VM (gate.yml).
+test-threads = "num-cpus"
 # The default profile's timeouts and overrides hold here too: nextest takes them from it.
+
+# CI's slowest tests first (each a minute or more on a hosted runner, 2026-11-24: the render
+# worker's random close looks, 324 to 351 s; the app's slice, 256 s; the largest impossible
+# sketch, 100 to 207 s; ten million triangles exported, 117 s; a sketch chain's hostile moves,
+# 105 s; a million features validated, 69 s; the largest sphere and torus exported, 62 s), so
+# none starts last and holds a gate's partition (gate.yml) minutes past the rest. Only their
+# order: every other setting still comes from the overrides below. Renaming one of them means
+# renaming it here.
+[[profile.ci.overrides]]
+filter = 'test(/adversarial_face_anchors::random_close/) | test(=the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_reads_back) | test(=an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout) | test(=export_command::ten_million_triangles_in_all_are_taken_and_the_first_solid_past_them_refused_naming_the_tolerance) | test(=chain::hostile::every_move_is_the_models_and_the_move_back_undoes_it) | test(=adversarial_validate::a_million_valid_features_validate_promptly) | test(=adversarial_export::the_largest_sphere_and_torus_at_the_finest_tolerance_are_exported_within_it)'
+priority = 100
 
 # The document reader's and the cache's timed tests (named `..._promptly`) measure their
 # own thread's CPU time, so load doesn't fail them; they and the reader's memory-heavy tests
@@ -76,10 +85,14 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 
 # The render worker's random close looks at long slabs (silico-render
 # adversarial_face_anchors): a thousand cases of two views each, every view drawn and every
-# pixel cast against by hand, some three to six minutes unloaded in a debug build.
+# pixel cast against by hand, some three to six minutes unloaded in a debug build. On
+# GitHub's hosted runners lavapipe's speed follows the CPU (2026-11-24): about 330 s on an
+# Intel Xeon 6975P-C, 495 s on an AMD EPYC 9V45, and killed at 600 s on an AMD EPYC 7763 (an
+# estimated 600 to 1,000 s there). So half an hour: this bounds the whole run only, and
+# weakens nothing, since each draw keeps its own minute (WAIT, adversarial_face_anchors.rs).
 [[profile.default.overrides]]
 filter = 'package(silico-render) & test(/adversarial_face_anchors::random_close/)'
-slow-timeout = { period = "60s", terminate-after = 10 }
+slow-timeout = { period = "60s", terminate-after = 30 }
 
 # The fake kernel compared with the real one over 2,000 generated primitives: a minute
 # alone, longer on a loaded machine.
