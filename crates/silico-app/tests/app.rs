@@ -22246,8 +22246,14 @@ fn a_pads_parameters_are_its_profile_its_extent_and_its_direction_from_the_docum
     step_until(&mut h, "the written pad's parameters", |h| {
         parameter_rows(h) == want
     });
-    // The profile's link selects its sketch, whose properties then show.
-    click_in_properties(&mut h, Role::Link, "Plate");
+    // The profile's link selects its sketch, whose properties then show. Clicked by its
+    // accessibility action, which reaches the link wherever the panel lays it out: the panel
+    // moves as the reload's reads answer, and on a loaded runner a pointer aimed where the
+    // link was still for two frames landed on Edit feature, opening the pad's dialog.
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Link, "Plate")
+        .click_accesskit();
+    step(&mut h);
     let plate = silico_core::document::FeatureId::new("s0000001").unwrap();
     step_until(&mut h, "the sketch selected", |h| {
         h.state().tabs()[0].selection().feature() == Some(&plate)
