@@ -1555,6 +1555,8 @@ pub struct Tab {
     /// Sketch mode (section 9, *Sketching*), while a sketch is open; and each sketch's read,
     /// whole, for the browser's prefixes and the viewport's lines.
     pub sketch: Option<SketchMode>,
+    /// Create Sketch's pick of a plane or a flat face, while it's on (`crate::plane_pick`).
+    pub plane_pick: Option<crate::plane_pick::PlanePick>,
     /// The view as sketch mode found it, and whether its turn square to the sketch is settled
     /// ([`turn_to_sketch`](Self::turn_to_sketch)): gone back to as sketch mode leaves
     /// ([`leave_sketch_mode`](Self::leave_sketch_mode)), every way it does.
@@ -1987,6 +1989,7 @@ impl Tab {
             dialog_base: None,
             dialog_began: false,
             sketch: None,
+            plane_pick: None,
             sketch_reads: SketchReads::default(),
             parameters: Default::default(),
             sketch_lines: Default::default(),
@@ -2040,8 +2043,11 @@ impl Tab {
     /// go, and the hover, the wheel, and the window's keys with it), and sketch mode's frame
     /// ([`sketch_frame`](Self::sketch_frame)) is given the frame's events and pointer in
     /// points, and its sketch's plane on the screen and back through the frame's camera
-    /// ([`Screen`]). SEAM: a face pick for Create Sketch, reading
-    /// [`selection`](Self::selection)'s hover and pick.
+    /// ([`Screen`]).
+    ///
+    /// While Create Sketch's pick is on, they're its own
+    /// ([`plane_pick_frame`](Self::plane_pick_frame)): the selection's canvas claimed and its
+    /// box and Select Other's menu let go, as sketch mode's are.
     ///
     /// With no sketch open, the left button and the pointer are the selection's (M5.7):
     /// a click picks what's under it, the hover what the pointer is over, a drag on
@@ -2061,6 +2067,11 @@ impl Tab {
         painter: &eframe::egui::Painter,
         frame: &crate::viewport::ViewFrame,
     ) {
+        // Create Sketch's pick ends once sketch mode can't open: a dialog or a sketch opened
+        // another way (Edit Sketch, a feature's dialog), or the tab closing.
+        if self.plane_pick.is_some() && !self.can_sketch() {
+            self.end_plane_pick();
+        }
         if let Some(mode) = self.sketch.as_ref() {
             self.selection.canvas_claimed();
             self.box_select = Default::default();
@@ -2089,6 +2100,10 @@ impl Tab {
             (self.published, self.view.bodies_of()),
             (Some(revision), Some(of)) if of == (self.published_models, revision)
         );
+        if self.plane_pick.is_some() {
+            self.plane_pick_frame(sessions, painter, frame, current);
+            return;
+        }
         // Select Other first (`crate::select_other`): while its menu is open it holds the
         // hover and the wheel, and a left press that closes it is its own, given to neither
         // the selection nor the box. Sketch mode claims the canvas before this, so Select
@@ -2439,7 +2454,7 @@ impl Tab {
             CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
             CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
             CanvasAct::ClearSelection => self.selection.clear(),
-            CanvasAct::CreateSketch(plane) => self.create_sketch(sessions, plane),
+            CanvasAct::CreateSketch => self.begin_plane_pick(),
         }
     }
 
@@ -2715,8 +2730,11 @@ impl Tab {
 
     /// The tab not shown: its canvas's hover let go, the selection's and the view's (the
     /// outline its last frame drew), unless a menu holds it, so shown again it neither
-    /// outlines, rings, nor says a hover of before.
+    /// outlines, rings, nor says a hover of before; and Create Sketch's pick ended, as the
+    /// prototype's switch of document ends it (`S.pickPlane = null`) and Fusion's ends the
+    /// command under way.
     pub(crate) fn canvas_unshown(&mut self) {
+        self.end_plane_pick();
         if !self.selection.hover_held() {
             self.selection.pointer_gone();
             self.view.hovered.clear();
@@ -6366,7 +6384,8 @@ impl Tab {
     /// Esc with no dialog open (section 3's order, the prototype's `escChain`, the nearest
     /// thing first): what takes it before the chain ([`escape_first`](Self::escape_first));
     /// or else sketch mode's tool left, its chain or gesture ended with it (section 9,
-    /// *Line*); or else sketch mode's selection cleared, if it has one; or else the reload's
+    /// *Line*); or else sketch mode's selection cleared, if it has one; or else Create
+    /// Sketch's pick ended, if it's on (the prototype's `endPickPlane`); or else the reload's
     /// info banner dismissed, if one shows (DESIGN.md, 6c; an amber or red one in its
     /// place has let it go already); or else the feature's selection cleared; or else, with
     /// none of them, a rebuild running stopped quietly
@@ -6386,6 +6405,8 @@ impl Tab {
             .filter(|mode| !mode.selection.is_empty())
         {
             mode.selection.clear();
+        } else if self.plane_pick.is_some() {
+            self.end_plane_pick();
         } else if self.reloaded.is_some() {
             self.reloaded = None;
         } else if !self.selection.is_empty() {
@@ -8099,6 +8120,101 @@ impl Tab {
             .queue
             .push_back(Queued::AddSketch { serial, feature });
         self.advance(sessions);
+    }
+
+    /// Create Sketch's pick of a plane or a flat face begun (`crate::plane_pick`; the
+    /// prototype's `startPickPlane`), the selection cleared, as it clears it; none unless
+    /// sketch mode can open ([`can_sketch`](Self::can_sketch)). One already on begins again,
+    /// as the prototype's command runs `startPickPlane` again: a click it held let go.
+    pub fn begin_plane_pick(&mut self) {
+        if !self.can_sketch() {
+            return;
+        }
+        tracing::debug!("plane_pick_begun");
+        self.selection.clear();
+        self.plane_pick = Some(crate::plane_pick::PlanePick::default());
+    }
+
+    /// Create Sketch's pick ended, if it's on (its Cancel, Esc; the prototype's
+    /// `endPickPlane`): what it lit let go.
+    pub fn end_plane_pick(&mut self) {
+        if self.plane_pick.take().is_some() {
+            tracing::debug!("plane_pick_ended");
+            self.view.hovered.clear();
+        }
+    }
+
+    /// The origin plane `plane` picked while Create Sketch's pick is on (its row in the
+    /// browser): the pick ended and a sketch created on it. Nothing with no pick on.
+    pub fn pick_origin_plane<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        plane: silico_core::document::OriginPlane,
+    ) {
+        if self.plane_pick.is_some() {
+            self.end_plane_pick();
+            self.create_sketch(sessions, plane);
+        }
+    }
+
+    /// Create Sketch's pick's share of the canvas's `frame` ([`overlay`](Self::overlay)),
+    /// `current` whether the view's bodies are of the selection's model: the canvas claimed
+    /// from the selection, its box, and Select Other; what the pointer is over found and
+    /// lit; and a click's sketch created, or its refusal said.
+    fn plane_pick_frame<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        painter: &eframe::egui::Painter,
+        frame: &crate::viewport::ViewFrame,
+        current: bool,
+    ) {
+        let ctx = painter.ctx();
+        self.selection.canvas_claimed();
+        self.box_select = Default::default();
+        self.select_other
+            .close(&mut self.selection, &mut self.view, ctx);
+        // The boxes the pick casts on kept up with the view's meshes, as Select Other's
+        // overlay keeps them (not called while the pick holds the canvas).
+        self.select_other.hold_boxes(&self.view, ctx);
+        let Some(pick) = self.plane_pick.as_mut() else {
+            return;
+        };
+        let inputs = crate::plane_pick::Inputs {
+            view: &self.view,
+            frame,
+            select_other: &self.select_other,
+            selection: &self.selection,
+            current,
+            click_distance: ctx.options(|options| options.input_options.max_click_dist),
+        };
+        let (acts, changed) = pick.frame(sessions, &self.id, &inputs);
+        let lit: std::collections::BTreeSet<(u32, crate::renderer::Element)> = pick
+            .lit_face()
+            .map(|face| (face.body, face.element))
+            .into_iter()
+            .collect();
+        self.view.hovered = lit;
+        if changed {
+            // Drawn lit by the next frame, which an idle egui draws only when asked.
+            ctx.request_repaint();
+        }
+        for act in acts {
+            match act {
+                crate::plane_pick::Act::Plane(plane) => {
+                    self.end_plane_pick();
+                    self.create_sketch(sessions, plane);
+                }
+                crate::plane_pick::Act::Face(stored) => {
+                    self.end_plane_pick();
+                    self.create_sketch_on_face(sessions, &stored.to_string());
+                }
+                crate::plane_pick::Act::Say(words) => self.toasts.push(Toast::info(words)),
+            }
+            ctx.request_repaint();
+            if self.plane_pick.is_none() {
+                break;
+            }
+        }
     }
 
     /// Edit Sketch (section 9; docs/ux/solidworks.md, §5, *Editing upstream*): sketch mode
@@ -15950,6 +16066,39 @@ mod tests {
             [(NOTHING_TO_UNDO.to_owned(), crate::toast::Kind::Info)]
         );
         assert_eq!(tab.sketch.as_ref().map(|mode| mode.undone), Some(0));
+    }
+
+    #[test]
+    fn create_sketch_again_while_its_pick_is_on_begins_it_again_letting_a_waiting_click_go() {
+        // #565's review: the prototype's command runs `startPickPlane` again, a fresh pick.
+        // A click waiting for its face's type is let go by it, so its read answering later
+        // starts nothing.
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        polled_until(&mut tab, &sessions, |tab| {
+            tab.timeline.is_some() && tab.quiet() && tab.status.is_some()
+        });
+        tab.begin_plane_pick();
+        let face = crate::plane_pick::Face {
+            body: 1,
+            element: crate::renderer::Element::Face(6),
+            name: Arc::new(silico_core::naming::Name::Element {
+                feature: FeatureId::new("k7f2qx3m").unwrap(),
+                made: silico_core::naming::TypeWord::Primitive(
+                    silico_core::naming::PrimitiveKind::Box,
+                ),
+                element: silico_protocol::ElementRef {
+                    kind: silico_protocol::ElementKind::Face,
+                    index: 6,
+                },
+            }),
+        };
+        tab.plane_pick.as_mut().unwrap().clicked_on(face);
+        assert!(tab.plane_pick.as_ref().unwrap().waiting());
+        tab.begin_plane_pick();
+        assert!(tab.plane_pick.is_some());
+        assert!(!tab.plane_pick.as_ref().unwrap().waiting());
+        tab.end_plane_pick();
+        assert!(tab.plane_pick.is_none());
     }
 
     #[test]

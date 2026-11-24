@@ -33,12 +33,10 @@
 //!   off;
 //! - Hide is as a body's eye in the browser hides it (with no key's cap: H, the registry's
 //!   Hide, hides the feature selected, not the body under the pointer);
-//! - Create Sketch is the toolbar's: its planes, the one menu of them
-//!   (`crate::toolbar::planes`), open beside it as a submenu, and a plane chosen starts a
-//!   sketch on it as the toolbar's does (`Tab::create_sketch`); on and off as the toolbar's
-//!   is (`Tab::can_sketch`), off with sketch mode's reason. Enter on it opens its planes;
-//!   SEAM: a plane is chosen by the pointer: the keys step this menu's items alone (Tab,
-//!   the arrows, Enter), and Esc closes the menu and its planes with it.
+//! - Create Sketch is the toolbar's: chosen, it closes the menu and begins the pick of a
+//!   plane or a flat face (`crate::plane_pick`, `Tab::begin_plane_pick`), as the
+//!   prototype's item runs its command; on and off as the toolbar's is (`Tab::can_sketch`),
+//!   off with sketch mode's reason.
 //!
 //! Left out of the prototype's items, none a command the app has yet:
 //! - SEAM: Fillet, an edge's, whose dialog opens from MODIFY (`crate::toolbar`, through the
@@ -48,7 +46,7 @@
 use std::sync::Arc;
 
 use eframe::egui::{self, Response, Ui, Vec2};
-use silico_core::document::{FeatureId, OriginPlane};
+use silico_core::document::FeatureId;
 use silico_core::naming::Name;
 
 use crate::icons::Icon;
@@ -68,7 +66,7 @@ pub const UNCAST: &str = "what's under the pointer can't be found";
 
 /// One of the menu's items: *Select Other…*, which the menu does itself; Sketch on this
 /// face, with the name a store writes for its face, if one can be written (none: the item
-/// is off, with the store's refusal); Create Sketch, whose planes it opens; or one the tab
+/// is off, with the store's refusal); Create Sketch, whose pick it begins; or one the tab
 /// does once it's chosen.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CanvasItem {
@@ -97,8 +95,8 @@ pub enum CanvasAct {
     Fit,
     Home,
     ClearSelection,
-    /// Create Sketch, on the plane chosen from its planes.
-    CreateSketch(OriginPlane),
+    /// Create Sketch: its pick of a plane or a flat face begun.
+    CreateSketch,
 }
 
 /// An item as the menu shows it: what it is, its icon, its words, its dim words after them,
@@ -203,9 +201,7 @@ pub struct CanvasMenu {
     pub items: Vec<Shown>,
 }
 
-/// What a frame of the menu drawn did: the item the pointer is over and the one clicked, the
-/// plane chosen from Create Sketch's planes, and the layer those planes are drawn on while
-/// they're open (a press there is the menu's).
+/// What a frame of the menu drawn did: the item the pointer is over and the one clicked.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Drawn {
     pub pointed: Option<usize>,
@@ -214,8 +210,6 @@ pub struct Drawn {
     /// hovered.
     pub hovered: Option<usize>,
     pub clicked: Option<usize>,
-    pub plane: Option<OriginPlane>,
-    pub planes_layer: Option<egui::LayerId>,
 }
 
 impl CanvasMenu {
@@ -365,30 +359,14 @@ impl CanvasMenu {
         menu::width(ui, self.head.as_deref(), &lines, 0.0)
     }
 
-    /// It drawn, its item `lit` lit; Create Sketch's planes open beside it (egui's submenu,
-    /// as CREATE's drop-down opens them), while the pointer is on it or they are, or while
-    /// `planes_open` (the app's Enter on it chose it, held as `crate::select_other`'s `Menu`
-    /// says): then asked open each frame, marked shown first, so egui keeps them open with
-    /// the pointer resting on another item. On its `fresh` frame, its first, any open item a
-    /// menu before it left under the same IDs is let go first, so no planes show that it
-    /// didn't open. What was pointed at, clicked, or chosen.
-    pub fn draw(&self, ui: &mut Ui, lit: Option<usize>, planes_open: bool, fresh: bool) -> Drawn {
+    /// It drawn, its item `lit` lit. What was pointed at or clicked.
+    pub fn draw(&self, ui: &mut Ui, lit: Option<usize>) -> Drawn {
         ui.spacing_mut().item_spacing = Vec2::ZERO;
         let width = self.width(ui);
         if let Some(head) = &self.head {
             menu::head(ui, head, width);
         }
         let mut drawn = Drawn::default();
-        // Shown this frame, as egui's own menus mark themselves, so the submenu it holds
-        // open (Create Sketch's planes) stays open past the frame it opened in.
-        let root = egui::containers::menu::find_menu_root(ui).id;
-        egui::containers::menu::MenuState::mark_shown(ui.ctx(), root);
-        // A menu opened by a right click in the frame the one before it was shown keeps that
-        // one's state (its IDs are the same, and egui 0.36.2's `MenuState::from_id` lets an
-        // open item go only when it wasn't shown the frame before): its planes let go here.
-        if fresh {
-            egui::containers::menu::MenuState::from_ui(ui, |state, _| state.open_item = None);
-        }
         for (at, shown) in self.items.iter().enumerate() {
             if self.separated(at) {
                 menu::separator(ui, width);
@@ -402,27 +380,6 @@ impl CanvasMenu {
             }
             if response.clicked() {
                 drawn.clicked = Some(at);
-            }
-            if shown.item == CanvasItem::CreateSketch && shown.off.is_none() {
-                let submenu = egui::containers::menu::SubMenu::id_from_widget_id(response.id);
-                if planes_open {
-                    // Marked shown first: egui 0.36.2's `MenuState::from_id` lets an open
-                    // item go that wasn't shown the frame before, as a submenu never opened
-                    // wasn't, and Enter is the app's key, not a click egui's submenu sees.
-                    egui::containers::menu::MenuState::mark_shown(ui.ctx(), submenu);
-                    egui::containers::menu::MenuState::from_ui(ui, |state, _| {
-                        state.open_item = Some(submenu);
-                    });
-                }
-                let planes = egui::containers::menu::SubMenu::new().show(
-                    ui,
-                    &response,
-                    crate::toolbar::planes,
-                );
-                if let Some(planes) = planes {
-                    drawn.planes_layer = Some(planes.response.layer_id);
-                    drawn.plane = planes.inner;
-                }
             }
         }
         drawn
@@ -634,7 +591,7 @@ mod tests {
                 let place =
                     egui::Rect::from_min_size(egui::Pos2::new(10.0, 20.0), Vec2::new(900.0, 900.0));
                 ui.scope_builder(egui::UiBuilder::new().max_rect(place), |ui| {
-                    assert_eq!(menu.draw(ui, Some(1), false, false), Drawn::default());
+                    assert_eq!(menu.draw(ui, Some(1)), Drawn::default());
                 });
             });
             output.textures_delta.clear();

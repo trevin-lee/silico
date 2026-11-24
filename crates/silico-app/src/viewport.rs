@@ -460,7 +460,13 @@ pub struct View {
     model: Option<Revision>,
     answered: Option<Asked>,
     generation: u64,
+    /// The table the frame before this one drew: [`table`](Self::table) as this frame
+    /// began, before its poll.
+    table_before: u64,
     reading: Option<Reading>,
+    /// The read out's answer, waited for between frames by a test
+    /// ([`read_answered_within`](Self::read_answered_within)): taken by the next poll.
+    came: Option<(Asked, bool, Response<MeshesRead>)>,
     /// The last read refused for what it asked: not asked again until something differs.
     refused: Option<Asked>,
     /// A read refused for the moment, to ask again after a delay.
@@ -535,6 +541,10 @@ pub struct View {
     /// The origin plane whose browser row the pointer is on, set by the browser each frame
     /// it's drawn: drawn hovered, its eye open or not (`crate::planes`).
     pub plane_hovered: Option<silico_core::document::OriginPlane>,
+    /// The origin planes the last frame drew, in `crate::planes::ORIGIN_PLANES`' order: what
+    /// Create Sketch's pick casts on (`crate::plane_pick`), as the prototype's `VP.pickPlane`
+    /// casts on the planes it shows.
+    planes_drawn: Vec<silico_core::document::OriginPlane>,
     picking: Option<PixelRect>,
     picked: Option<Picking>,
     /// The serial of the newest frame that carried a pick of this view's: an answer to a
@@ -613,7 +623,9 @@ impl Default for View {
             model: None,
             answered: None,
             generation: 0,
+            table_before: 0,
             reading: None,
+            came: None,
             refused: None,
             retry: None,
             said: None,
@@ -636,6 +648,7 @@ impl Default for View {
             linked: None,
             ringed_feature: None,
             plane_hovered: None,
+            planes_drawn: Vec::new(),
             picking: None,
             picked: None,
             last_asked: None,
@@ -850,6 +863,11 @@ impl View {
         self.model.map(|revision| (self.read_published, revision))
     }
 
+    /// The origin planes the last frame drew, in `crate::planes::ORIGIN_PLANES`' order.
+    pub fn planes_drawn(&self) -> &[silico_core::document::OriginPlane] {
+        &self.planes_drawn
+    }
+
     /// How many `meshes` reads the tab has started.
     pub fn reads(&self) -> u64 {
         self.reads
@@ -932,6 +950,13 @@ impl View {
         self.generation
     }
 
+    /// Whether this frame took a new table of bodies: the frame before drew another, so
+    /// the clicks this frame hands on were made on that one, not on the table they'd be cast
+    /// on now.
+    pub fn table_taken(&self) -> bool {
+        self.generation != self.table_before
+    }
+
     /// As if bodies read from `of` had come, and the answer to the pick of frame `picking`
     /// had: a selection's unit tests' view.
     #[cfg(test)]
@@ -958,6 +983,13 @@ impl View {
         }
     }
 
+    /// As if the last frame drew the origin planes `planes`: a unit test's, of what Create
+    /// Sketch's pick casts on (`crate::plane_pick`).
+    #[cfg(test)]
+    pub(crate) fn drew_planes(&mut self, planes: &[silico_core::document::OriginPlane]) {
+        self.planes_drawn = planes.to_vec();
+    }
+
     /// The pick asked of the renderer and not yet given it, taken (as a frame takes it): a
     /// unit test's, to see whether another is asked after.
     #[cfg(test)]
@@ -965,8 +997,33 @@ impl View {
         self.picking.take()
     }
 
+    /// Waits up to `timeout` for the read out to answer, its answer kept for the next
+    /// frame's poll to take: a test's, so a new table is taken in the frame it chooses, as
+    /// any frame may take one. Whether a read was out and has answered. For the crate's tests
+    /// only.
+    #[doc(hidden)]
+    pub fn read_answered_within(&mut self, timeout: Duration) -> bool {
+        let Some(reading) = self.reading.take() else {
+            return false;
+        };
+        match reading.running.wait_timeout(timeout) {
+            Ok(response) => {
+                self.came = Some((reading.asked, reading.named, response));
+                true
+            }
+            Err(running) => {
+                self.reading = Some(Reading { running, ..reading });
+                false
+            }
+        }
+    }
+
     /// The read in flight polled: its answer taken if it has come.
     fn poll(&mut self, now: Instant) {
+        if let Some((asked, named, response)) = self.came.take() {
+            self.took(asked, named, response, now);
+            return;
+        }
         let Some(reading) = self.reading.take() else {
             return;
         };
@@ -2015,13 +2072,14 @@ pub fn show<P: Clients + 'static>(
         }
         lines
     };
-    // The origin planes, by their eyes, the browser row hovered, and Create Sketch's planes
-    // if they're open (`crate::planes`), whatever mode the tab is in.
-    let planes_menu = crate::planes::menu(ui.ctx());
+    // The origin planes, by their eyes, the browser row hovered, and Create Sketch's pick's
+    // if it's on (`crate::planes`), whatever mode the tab is in.
     let planes = crate::planes::drawn(
         |plane| tab.shown(&crate::tab::Hideable::Origin(crate::planes::row_of(plane))),
         tab.view.plane_hovered,
-        planes_menu,
+        tab.plane_pick
+            .as_ref()
+            .map(crate::plane_pick::PlanePick::lit_plane),
     );
     let sketch_boxes: Vec<[[f64; 3]; 2]> = lines
         .iter()
@@ -2046,6 +2104,7 @@ pub fn show<P: Clients + 'static>(
         view.rows = size_px[1].max(1);
         view.camera = navigate::clamped(view.camera.clone(), view.rows, view.drawn_boxes());
     }
+    view.table_before = view.generation;
     view.poll(now);
     match view.notice.take() {
         Some(Notice::Refused(said)) => tab.message = Some(said),
@@ -2175,9 +2234,12 @@ pub fn show<P: Clients + 'static>(
         None => drawing.frames,
     };
     // A plane its eye shows is in the view's reach; one shown for a moment (its row hovered,
-    // Create Sketch's planes open) is drawn only if the view as it is holds it, never
-    // zooming it out.
-    let planes: Vec<silico_render::render::Plane> = planes
+    // Create Sketch's pick on) is drawn only if the view as it is holds it, never zooming it
+    // out.
+    let planes: Vec<(
+        silico_core::document::OriginPlane,
+        silico_render::render::Plane,
+    )> = planes
         .into_iter()
         .filter(|drawn| {
             drawn.shown
@@ -2189,9 +2251,11 @@ pub fn show<P: Clients + 'static>(
                     )
                 })
         })
-        .map(|drawn| drawn.plane)
+        .map(|drawn| (drawn.of, drawn.plane))
         .collect();
-    crate::planes::frame_took(ui.ctx(), planes_menu);
+    view.planes_drawn = planes.iter().map(|(of, _)| *of).collect();
+    let planes: Vec<silico_render::render::Plane> =
+        planes.into_iter().map(|(_, plane)| plane).collect();
     let frame = FrameData {
         serial,
         camera: view.camera.clone(),
@@ -2265,8 +2329,10 @@ pub fn show<P: Clients + 'static>(
     if tab.view.transition.is_some() {
         ui.ctx().request_repaint();
     }
-    // An empty part's hint, above the bar: Create Sketch, as the toolbar's.
-    crate::canvas_hint::empty_part(ui, rect, tab, sessions);
+    // An empty part's hint, above the bar: Create Sketch, as the toolbar's. And Create
+    // Sketch's pick's, at the top, with its Cancel.
+    crate::canvas_hint::empty_part(ui, rect, tab);
+    crate::canvas_hint::plane_pick(ui, rect, tab);
 }
 
 /// The faces `feature` made in `bodies`, as each face's name says ([`Name::feature`]), in
@@ -5220,5 +5286,24 @@ mod tests {
         let shapes = format!("{:?}", output.shapes);
         output.drop_without_applying_deltas();
         assert_eq!(meshes, 1, "{shapes}");
+    }
+
+    #[test]
+    fn a_read_answered_within_is_taken_for_the_next_poll_and_none_out_is_none_answered() {
+        // #565's mutants: with no read out there's nothing to answer, whatever the wait.
+        // A read of a session that isn't open answers at once (refused): it has answered,
+        // and is out no more, so a second wait finds none.
+        let mut view = View::default();
+        assert!(!view.read_answered_within(Duration::ZERO));
+        assert!(!view.read_answered_within(Duration::from_millis(10)));
+        let sessions = Arc::new(Sessions::new(Arc::new(
+            silico_core::fake::FakeKernel::new(1).unwrap(),
+        )));
+        let request = asked(&view, 4);
+        view.start(&sessions, &SessionId::parse("s1").unwrap(), request);
+        assert!(view.reading());
+        assert!(view.read_answered_within(Duration::from_secs(60)));
+        assert!(!view.reading());
+        assert!(!view.read_answered_within(Duration::ZERO));
     }
 }

@@ -9,20 +9,21 @@
 //! (`silico_render::render::Plane`).
 //!
 //! Which are drawn, one rule for every way a plane shows ([`drawn`]):
-//! - while Create Sketch's planes are open (its menu, from the toolbar's button, CREATE's
-//!   drop-down, or the canvas's context menu: [`crate::toolbar::planes`]), all three, the
-//!   one whose item the pointer is on (or that has the keys' focus) hovered: the prototype's
-//!   `startPickPlane` shows all three and lights the one under the pointer, which in the app
-//!   is the menu's item for it;
+//! - while Create Sketch's pick is on (`crate::plane_pick`), all three, the one under the
+//!   pointer hovered: the prototype's `startPickPlane` and `VP.setPlanes({ XY: true, XZ:
+//!   true, YZ: true }, hp)`;
 //! - else each whose browser row's eye is open (each opens hidden, as the prototype's,
 //!   Fusion's, and SolidWorks' origin planes do), and the one whose browser row the pointer
 //!   is on, hovered, its eye open or not (the prototype's `planeRow` shows a plane its row
 //!   selects, hidden or not, lit; the app's origin rows don't select, so the pointer on the
 //!   row is what lights it, as a timeline item hovered lights its faces).
+//!
+//! Where the pointer's ray meets them is [`under`]'s: the pick's, as the prototype's
+//! `VP.pickPlane` casts on the planes it shows.
 
-use eframe::egui;
 use silico_core::document::OriginPlane;
-use silico_render::render::Plane;
+use silico_protocol::{Camera, MIN_EYE_DISTANCE, Projection, vec3};
+use silico_render::render::{Plane, ray};
 
 use crate::theme;
 
@@ -83,24 +84,27 @@ pub fn plane(plane: OriginPlane, hovered: bool) -> Plane {
 
 /// A plane a frame would draw, and whether its eye shows it: one its eye shows is in the
 /// reach the view is clamped by, as a shown sketch's lines are; one shown for a moment
-/// alone (its row hovered, Create Sketch's planes open) isn't, so it never zooms the view
-/// out, and is drawn only where the view as it is holds it (`crate::viewport`).
+/// alone (its row hovered, Create Sketch's pick on) isn't, so it never zooms the view out,
+/// and is drawn only where the view as it is holds it (`crate::viewport`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Drawn {
+    pub of: OriginPlane,
     pub plane: Plane,
     pub shown: bool,
 }
 
 /// The planes a frame draws, in [`ORIGIN_PLANES`]' order: each `shown` (by its eye) or
-/// `hovered`, the hovered one in the hover's colours; or, while Create Sketch's planes are
-/// open (`menu`, the plane its item lit, if any), all three, the one lit hovered.
+/// `hovered` (its browser row under the pointer), the hovered one in the hover's colours;
+/// or, while Create Sketch's pick is on (`pick`, the plane under the pointer in the canvas,
+/// if one is), all three, the one under the pointer hovered, in the canvas or else on its
+/// row (whose click picks it, `crate::plane_pick`).
 pub fn drawn(
     shown: impl Fn(OriginPlane) -> bool,
     hovered: Option<OriginPlane>,
-    menu: Option<Option<OriginPlane>>,
+    pick: Option<Option<OriginPlane>>,
 ) -> Vec<Drawn> {
-    let (hovered, all) = match menu {
-        Some(lit) => (lit, true),
+    let (hovered, all) = match pick {
+        Some(lit) => (lit.or(hovered), true),
         None => (hovered, false),
     };
     ORIGIN_PLANES
@@ -108,85 +112,64 @@ pub fn drawn(
         .map(|(each, _)| (*each, shown(*each)))
         .filter(|(each, shown)| all || *shown || hovered == Some(*each))
         .map(|(each, shown)| Drawn {
+            of: each,
             plane: plane(each, hovered == Some(each)),
             shown,
         })
         .collect()
 }
 
-/// What Create Sketch's planes ([`crate::toolbar::planes`]) said in the pass they were last
-/// drawn: the pass, and the plane whose item was lit. Kept in egui's memory, so the one
-/// menu of them says it wherever it's drawn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MenuSaid {
-    pass: u64,
-    lit: Option<OriginPlane>,
-}
-
-fn menu_id() -> egui::Id {
-    egui::Id::new("create-sketch-planes")
-}
-
-/// Create Sketch's planes drawn this pass, `lit` the plane whose item the pointer is on (or
-/// has the keys' focus): said for the viewport ([`menu`]), and for [`settle`], which asks
-/// for the next pass if the viewport's frame took them otherwise.
-pub(crate) fn menu_drawn(ctx: &egui::Context, lit: Option<OriginPlane>) {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| d.insert_temp(menu_id(), MenuSaid { pass, lit }));
-}
-
-/// Whether Create Sketch's planes are open, as a frame drawn now takes them, and the plane
-/// their item lit: drawn this pass or the one before (a menu drawn after the viewport, as
-/// the canvas's is, is the pass before's). None once they weren't drawn in either.
-pub fn menu(ctx: &egui::Context) -> Option<Option<OriginPlane>> {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data(|d| d.get_temp::<MenuSaid>(menu_id()))
-        .filter(|said| said.pass + 1 >= pass)
-        .map(|said| said.lit)
-}
-
-/// What the viewport's frame took of Create Sketch's planes ([`menu`]'s answer) in the pass
-/// it was built in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct FrameTook {
-    pass: u64,
-    took: Option<Option<OriginPlane>>,
-}
-
-fn frame_id() -> egui::Id {
-    egui::Id::new("create-sketch-planes-framed")
-}
-
-/// The viewport's frame built this pass taking `took` of Create Sketch's planes ([`menu`]'s
-/// answer then): for [`settle`].
-pub fn frame_took(ctx: &egui::Context, took: Option<Option<OriginPlane>>) {
-    let pass = ctx.cumulative_pass_nr();
-    ctx.data_mut(|d| d.insert_temp(frame_id(), FrameTook { pass, took }));
-}
-
-/// At the end of a pass, every menu drawn: whether Create Sketch's planes say now otherwise
-/// than the viewport's frame of this pass took them (opened, closed, or another plane lit
-/// since it was built: the canvas's menu is drawn after the frame, and the toolbar's closes
-/// in a pass of its own), and if so the next pass asked for, so it draws them as they are.
-/// Once they say the same, nothing is asked: an open menu left alone asks for no frame.
-/// Nothing either when no frame was built this pass (no viewport drawn).
-pub fn settle(ctx: &egui::Context) -> bool {
-    let pass = ctx.cumulative_pass_nr();
-    let Some(framed) = ctx
-        .data(|d| d.get_temp::<FrameTook>(frame_id()))
-        .filter(|framed| framed.pass == pass)
-    else {
-        return false;
-    };
-    let now = ctx
-        .data(|d| d.get_temp::<MenuSaid>(menu_id()))
-        .filter(|said| said.pass == pass)
-        .map(|said| said.lit);
-    let changed = now != framed.took;
-    if changed {
-        ctx.request_repaint();
+/// The origin plane among `planes` (those a frame drew) that the ray through `pixel` meets
+/// first, and how far along the ray, in mm, in a view from `camera` `size_px` in pixels
+/// (`pixel` from the image's top left, in pixels, as [`silico_render::render::ray`] takes
+/// it). Each plane is its square ([`plane`]), met where the ray crosses its plane inside it,
+/// its sides included; one seen edge on is a line, and none of it is met. In perspective
+/// nothing nearer the eye than [`MIN_EYE_DISTANCE`] along the view is met, as the drawing
+/// cuts it there; orthographic, the whole line is (drawn in front of the eye too), so the
+/// distance may be below 0. Two met at the same place along the ray (where two planes
+/// cross) go by [`ORIGIN_PLANES`]' order. None where no plane is met, or where `ray` gives
+/// no ray (a camera refused at this size, a pixel that isn't finite).
+pub fn under(
+    camera: &Camera,
+    size_px: [u32; 2],
+    pixel: [f64; 2],
+    planes: &[OriginPlane],
+) -> Option<(OriginPlane, f64)> {
+    let (from, along) = ray(camera, size_px, pixel)?;
+    let perspective = matches!(camera.projection, Projection::Perspective { .. });
+    // `ray` gives a ray only for a camera its check takes, whose eye isn't its target.
+    let view = vec3::normalize(vec3::sub(camera.target, camera.eye));
+    let mut met: Option<(OriginPlane, f64)> = None;
+    for (each, _) in ORIGIN_PLANES {
+        if !planes.contains(&each) {
+            continue;
+        }
+        let square = plane(each, false);
+        let normal = vec3::cross(square.u, square.v);
+        let across = vec3::dot(along, normal);
+        // Seen edge on: drawn as a line, met nowhere.
+        if across == 0.0 {
+            continue;
+        }
+        let distance = vec3::dot(vec3::sub(square.origin, from), normal) / across;
+        if !distance.is_finite() {
+            continue;
+        }
+        let at: [f64; 3] = std::array::from_fn(|k| from[k] + distance * along[k]);
+        if perspective && vec3::dot(vec3::sub(at, camera.eye), view) < MIN_EYE_DISTANCE {
+            continue;
+        }
+        let off = vec3::sub(at, square.origin);
+        let s = vec3::dot(off, square.u) / vec3::dot(square.u, square.u);
+        let t = vec3::dot(off, square.v) / vec3::dot(square.v, square.v);
+        if !((0.0..=1.0).contains(&s) && (0.0..=1.0).contains(&t)) {
+            continue;
+        }
+        if met.is_none_or(|(_, nearest)| distance < nearest) {
+            met = Some((each, distance));
+        }
     }
-    changed
+    met
 }
 
 #[cfg(test)]
@@ -243,11 +226,12 @@ mod tests {
     }
 
     #[test]
-    fn the_planes_drawn_are_those_shown_and_the_one_hovered_or_all_three_for_the_menu() {
+    fn the_planes_drawn_are_those_shown_and_the_one_hovered_or_all_three_for_the_pick() {
         use OriginPlane::{Xy, Xz, Yz};
         let none = |_: OriginPlane| false;
         // Each plane, lit or not, and whether its eye shows it.
         let d = |p, lit, shown| Drawn {
+            of: p,
             plane: plane(p, lit),
             shown,
         };
@@ -261,21 +245,177 @@ mod tests {
         );
         // XZ hovered and shown: once, lit, shown.
         assert_eq!(drawn(|p| p == Xz, Some(Xz), None), [d(Xz, true, true)]);
-        // The menu open, nothing lit: all three plain, whatever the row, each shown only by
-        // its eye.
+        // The pick on, no plane under the pointer: all three, plain but YZ, whose row is
+        // under it, each shown only by its eye.
         assert_eq!(
             drawn(none, Some(Yz), Some(None)),
+            [d(Xy, false, false), d(Xz, false, false), d(Yz, true, false)]
+        );
+        // Nor a row: all three plain.
+        assert_eq!(
+            drawn(none, None, Some(None)),
             [
                 d(Xy, false, false),
                 d(Xz, false, false),
                 d(Yz, false, false)
             ]
         );
-        // The menu's XY lit, YZ's eye open.
+        // One under the pointer in the canvas lit, not the row's.
+        assert_eq!(
+            drawn(none, Some(Yz), Some(Some(Xz))),
+            [d(Xy, false, false), d(Xz, true, false), d(Yz, false, false)]
+        );
+        // The pick's XY under the pointer, YZ's eye open.
         assert_eq!(
             drawn(|p| p == Yz, None, Some(Some(Xy))),
             [d(Xy, true, false), d(Xz, false, false), d(Yz, false, true)]
         );
+    }
+
+    /// A camera from `eye` onto `target`, `projection`, z up (y up looking along z).
+    fn camera(projection: Projection, eye: [f64; 3], target: [f64; 3]) -> Camera {
+        let up = if eye[0] == target[0] && eye[1] == target[1] {
+            [0.0, 1.0, 0.0]
+        } else {
+            [0.0, 0.0, 1.0]
+        };
+        Camera {
+            projection,
+            eye,
+            target,
+            up,
+        }
+    }
+
+    const ALL: [OriginPlane; 3] = [OriginPlane::Xy, OriginPlane::Xz, OriginPlane::Yz];
+
+    #[track_caller]
+    fn met(got: Option<(OriginPlane, f64)>, plane: OriginPlane, distance: f64) {
+        let (at, along) = got.unwrap();
+        assert_eq!(at, plane);
+        assert!(
+            (along - distance).abs() < 1e-9,
+            "{along} against {distance}"
+        );
+    }
+
+    #[test]
+    fn the_pointers_ray_meets_the_nearest_plane_drawn_inside_its_square() {
+        use OriginPlane::{Xy, Xz, Yz};
+        // In perspective from (60, −50, 10) onto (10, 0, 10), 100 pixels square: the
+        // image's centre, (50, 50), looks along (−1, 1, 0)/√2, which meets XZ (y = 0) at
+        // (10, 0, 10), inside its square (x and z −4 to 46), 50√2 from the eye; then YZ
+        // (x = 0) at (0, 10, 10), inside its, 60√2; and XY (z = 0) never: the ray runs
+        // along it. All by hand.
+        let side = camera(
+            Projection::Perspective {
+                field_of_view: 45.0,
+            },
+            [60.0, -50.0, 10.0],
+            [10.0, 0.0, 10.0],
+        );
+        let centre = [50.0, 50.0];
+        met(
+            under(&side, [100, 100], centre, &ALL),
+            Xz,
+            50.0 * 2f64.sqrt(),
+        );
+        // XZ not drawn: YZ, behind where it would be.
+        met(
+            under(&side, [100, 100], centre, &[Xy, Yz]),
+            Yz,
+            60.0 * 2f64.sqrt(),
+        );
+        // Neither: nothing.
+        assert_eq!(under(&side, [100, 100], centre, &[Xy]), None);
+        // Orthographic from above onto (21, 21, 0), 100 mm high on 100 pixels: a millimetre
+        // a pixel, x right and y up. The centre is XY's (21, 21, 0), 0 along the ray from the
+        // view's plane through the target; XZ and YZ are seen edge on, met nowhere.
+        let above = camera(
+            Projection::Orthographic { view_height: 100.0 },
+            [21.0, 21.0, 100.0],
+            [21.0, 21.0, 0.0],
+        );
+        met(under(&above, [100, 100], centre, &ALL), Xy, 0.0);
+        // 24.5 mm right (x 45.5), inside the square; 25.5 (x 46.5), past its side at 46.
+        met(under(&above, [100, 100], [74.5, 50.0], &ALL), Xy, 0.0);
+        assert_eq!(under(&above, [100, 100], [75.5, 50.0], &ALL), None);
+        // Orthographic draws the whole line, in front of the eye too: onto (21, 21, −50)
+        // from below the XY plane's back, it's met 50 behind the view's plane.
+        let under_it = camera(
+            Projection::Orthographic { view_height: 100.0 },
+            [21.0, 21.0, -10.0],
+            [21.0, 21.0, -50.0],
+        );
+        met(under(&under_it, [100, 100], centre, &ALL), Xy, -50.0);
+        // In perspective, nothing behind the eye: from (20, 20, 10) looking up +z, XY at
+        // z = 0 is behind it, and isn't met.
+        let up = camera(
+            Projection::Perspective {
+                field_of_view: 45.0,
+            },
+            [20.0, 20.0, 10.0],
+            [20.0, 20.0, 20.0],
+        );
+        assert_eq!(under(&up, [100, 100], centre, &ALL), None);
+        // A camera `ray` refuses: none.
+        let refused = camera(
+            Projection::Perspective {
+                field_of_view: 45.0,
+            },
+            [1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0],
+        );
+        assert_eq!(under(&refused, [100, 100], centre, &ALL), None);
+    }
+
+    #[test]
+    fn in_perspective_a_plane_met_exactly_the_least_distance_from_the_eye_is_met() {
+        // #565's mutants: the drawing cuts what's nearer the eye along the view than
+        // MIN_EYE_DISTANCE (1e-6 mm), and draws what's that far: so a plane met exactly that
+        // far is met. From (20, 20, 1e-6) looking down −z onto (20, 20, −10), the image's
+        // centre looks straight down and meets XY at (20, 20, 0), 1e-6 along the view and
+        // along the ray; from (20, 20, 5e-7), half that, it isn't met. By hand (every value
+        // here is exact in f64: 1e-6 · 2500 / 2500 is 1e-6, and 1e-6 − 1e-6 is 0).
+        let down_from = |height: f64| {
+            camera(
+                Projection::Perspective {
+                    field_of_view: 45.0,
+                },
+                [20.0, 20.0, height],
+                [20.0, 20.0, -10.0],
+            )
+        };
+        let centre = [50.0, 50.0];
+        met(
+            under(&down_from(MIN_EYE_DISTANCE), [100, 100], centre, &ALL),
+            OriginPlane::Xy,
+            1e-6,
+        );
+        assert_eq!(
+            under(&down_from(MIN_EYE_DISTANCE / 2.0), [100, 100], centre, &ALL),
+            None
+        );
+    }
+
+    #[test]
+    fn two_planes_met_at_the_same_place_go_by_the_browsers_order() {
+        // #565's mutants: orthographic from (10, −10, 10) onto (0, 0, 10), the image's centre
+        // is the ray from (0, 0, 10) along (−1, 1, 0)/√2, through the Z axis where XZ and YZ
+        // cross: both are met there, 0 along it (XY, seen edge on, isn't). XZ comes before
+        // YZ in ORIGIN_PLANES, the browser's order, so XZ is the one met; either drawn alone
+        // is met there. By hand.
+        use OriginPlane::{Xz, Yz};
+        let across = camera(
+            Projection::Orthographic { view_height: 100.0 },
+            [10.0, -10.0, 10.0],
+            [0.0, 0.0, 10.0],
+        );
+        let centre = [50.0, 50.0];
+        met(under(&across, [100, 100], centre, &ALL), Xz, 0.0);
+        met(under(&across, [100, 100], centre, &[Yz, Xz]), Xz, 0.0);
+        met(under(&across, [100, 100], centre, &[Yz]), Yz, 0.0);
+        met(under(&across, [100, 100], centre, &[Xz]), Xz, 0.0);
     }
 
     #[test]
@@ -287,49 +427,5 @@ mod tests {
         for other in ["Origin", "X", "Y", "Z", "xy", ""] {
             assert_eq!(of_row(other), None, "{other}");
         }
-    }
-
-    #[test]
-    fn the_menus_planes_are_open_for_the_pass_they_were_drawn_in_and_the_next() {
-        let ctx = egui::Context::default();
-        let pass = |ctx: &egui::Context, f: &mut dyn FnMut(&egui::Context)| {
-            // Its textures let go, as a painter would (epaint checks they were).
-            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| f(ui.ctx()));
-            output.textures_delta.clear();
-        };
-        // No frame built: nothing to settle.
-        pass(&ctx, &mut |ctx| {
-            menu_drawn(ctx, Some(OriginPlane::Xz));
-            assert!(!settle(ctx));
-        });
-        // A frame built before the menu was drawn (the canvas's), taking it shut: changed.
-        pass(&ctx, &mut |ctx| {
-            assert_eq!(menu(ctx), Some(Some(OriginPlane::Xz)));
-            frame_took(ctx, Some(Some(OriginPlane::Xy)));
-            menu_drawn(ctx, Some(OriginPlane::Xz));
-            assert!(settle(ctx), "another plane lit");
-        });
-        // The frame taking what the menu then says: settled.
-        pass(&ctx, &mut |ctx| {
-            let took = menu(ctx);
-            assert_eq!(took, Some(Some(OriginPlane::Xz)));
-            frame_took(ctx, took);
-            menu_drawn(ctx, Some(OriginPlane::Xz));
-            assert!(!settle(ctx));
-        });
-        // The menu not drawn this pass (closed): the frame took it open, so changed.
-        pass(&ctx, &mut |ctx| {
-            let took = menu(ctx);
-            assert_eq!(took, Some(Some(OriginPlane::Xz)));
-            frame_took(ctx, took);
-            assert!(settle(ctx), "closed");
-        });
-        // The pass after: closed, and settled.
-        pass(&ctx, &mut |ctx| {
-            let took = menu(ctx);
-            assert_eq!(took, None);
-            frame_took(ctx, took);
-            assert!(!settle(ctx));
-        });
     }
 }

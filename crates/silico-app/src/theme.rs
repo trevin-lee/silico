@@ -944,6 +944,9 @@ pub const CANVAS_HINT_PADDING: Margin = Margin {
 pub const CANVAS_HINT_GAP: f32 = 10.0;
 pub const CANVAS_HINT_TEXT: Color32 = TEXT_DEFAULT;
 pub const CANVAS_HINT_STRONG: Color32 = TEXT_STRONG;
+/// Where a hint stands, centred across the canvas: its top 18 below the canvas's
+/// (`.canvas-hint`'s `top: 18px`), as Create Sketch's pick's does.
+pub const CANVAS_HINT_TOP: f32 = 18.0;
 /// Where the empty part's hint stands, centred across the canvas: its bottom 64 above the
 /// canvas's (app.js's `top:auto;bottom:64px`, over `.canvas-hint`'s `top: 18px`), clear of
 /// the navigation bar under it.
@@ -3162,6 +3165,7 @@ mod tests {
         // border: 1px solid var(--g250); border-radius: var(--r); box-shadow: 0 4px 14px
         // rgba(0,0,0,.5)`; the page's text `var(--g750)`, `.strong`'s `var(--g1000)`.
         assert_eq!(CANVAS_HINT_BOTTOM, 64.0);
+        assert_eq!(CANVAS_HINT_TOP, 18.0);
         assert_eq!(CANVAS_HINT_GAP, 10.0);
         assert_eq!(
             CANVAS_HINT_PADDING,
