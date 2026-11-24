@@ -40,7 +40,7 @@ use silico_core::kernel::{Clients, SketchPlane};
 use silico_core::sketch_states::{MemberState, SketchState};
 use silico_core::sketch_tools::{Axes, DimensionEvent, Event, Modifiers, Offer, OfferChoice};
 
-use crate::tab::{Row, said};
+use crate::tab::{Row, Said, said};
 use bar::{DimensionShown, PaletteView, Settings, StateShown, StatusLine};
 use dimension::{Ask, EditBox, Edited, ModifyAction, ModifyView, OfferView, value_of};
 use drag::Drag;
@@ -93,6 +93,67 @@ fn hint(state: SketchState) -> Option<&'static str> {
         }
         SketchState::FullyDefined => None,
     }
+}
+
+/// The error card sketch mode's property panel shows for the sketch open, `name`, from its
+/// read (sketch.js's `renderProps`, its card for an over-defined sketch): the core's error
+/// for a solve it refused (a conflict, `over_constrained`, or no solution, or one that
+/// can't be built), as every error card gives the core's words, its code, and its JSON;
+/// else, for a sketch solved but over defined (a driving dimension repeating others and
+/// agreeing, which the core reports as a state, not an error), the prototype's card:
+/// "`name` is over defined", the dimensions that repeat the others, by value and ID, and its
+/// fix, "Make it driven, or delete it." None for a sketch in any other state.
+pub fn problem_card(read: &SketchRead, name: &str) -> Option<Said> {
+    if let Some(problem) = &read.states.solve_problem {
+        return Some(Said::of(problem));
+    }
+    if read.states.state != SketchState::OverDefined {
+        return None;
+    }
+    // Which over-define it, as the core decides it (`sketch_states::over_defines`): a
+    // flagged driving dimension (on a solved sketch none conflicts; a reference dimension is
+    // never sent to the solver, so never flagged).
+    let repeating: Vec<&silico_core::document::SketchConstraint> = read
+        .members
+        .constraints
+        .iter()
+        .filter(|c| c.form.is_dimension() && c.form.driving() == Some(true))
+        .filter(|c| {
+            read.states
+                .constraints
+                .get(&c.id)
+                .is_some_and(|state| state.flagged())
+        })
+        .collect();
+    let cause = match repeating.as_slice() {
+        // Never, as the core states it: a solved sketch is over defined only by a dimension
+        // it flags. Said without a count all the same.
+        [] => "A dimension repeats what the others already give.".to_owned(),
+        [one] => match value_of(&one.form) {
+            Some((value, unit)) => {
+                format!("The {value} {unit} dimension repeats what the others already give.")
+            }
+            None => "A dimension repeats what the others already give.".to_owned(),
+        },
+        many => format!(
+            "{} dimensions repeat what the others already give.",
+            many.len()
+        ),
+    };
+    let suggestion = if repeating.len() > 1 {
+        "Make one driven, or delete one."
+    } else {
+        "Make it driven, or delete it."
+    };
+    Some(Said {
+        warning: false,
+        message: format!("{name} is over defined"),
+        cause: Some(cause),
+        elements: repeating.iter().map(|c| c.id.as_str().to_owned()).collect(),
+        elements_total: repeating.len() as u64,
+        suggestion: Some(suggestion.to_owned()),
+        source: None,
+    })
 }
 
 /// A plane's name, as the sketch bar says it, and its axes' letters, as the status bar's

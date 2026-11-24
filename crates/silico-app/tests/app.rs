@@ -32696,6 +32696,166 @@ fn over_define_offered(
 }
 
 #[test]
+fn sketch_modes_property_panel_is_the_sketchs_own_its_rows_its_over_defined_card_and_its_hints() {
+    // sketch.js's `renderProps`, which app.js's `renderRight` shows while a sketch is open,
+    // before the selection: the head (the sketch's name, `Sketch · ` its ID), SKETCH's rows,
+    // the card for an over-defined sketch, and two hints. Values worked by hand from
+    // BOXED_LENGTH: four points, four lines, a horizontal and a vertical on each pair of
+    // sides, and a length of 40 on the bottom, which `counting_redundant_40` has repeat
+    // the others and agree: solved, over defined.
+    let f = fixture();
+    counting_redundant_40(&f);
+    let mut h = boxed_length(&f);
+    step_until(&mut h, "the sketch's own properties", |h| {
+        shows(h, "Properties", "Sketch · s0000001")
+    });
+    assert!(shows(&h, "Properties", "Box"));
+    // Not the selected feature's view (Edit Sketch selected the sketch): no Name field, no
+    // HEALTH, no ID row.
+    assert_eq!(property(&h, "ID"), None);
+    assert!(!shows(&h, "Properties", "HEALTH"));
+    assert!(shows(&h, "Properties", "SKETCH"));
+    let rows = |h: &AppHarness| {
+        [
+            "Plane",
+            "Definition",
+            "Curves",
+            "Points",
+            "Dimensions",
+            "Relations",
+        ]
+        .map(|key| property(h, key).unwrap_or_default())
+    };
+    assert_eq!(rows(&h), ["XY", "Over defined", "4 lines", "4", "1", "4"]);
+    // The prototype's card, in the app's words: the core reports this as a state, not an
+    // error, so there's no code and nothing to copy.
+    step_until(&mut h, "the card", |h| {
+        showing(h, "Properties", "is over defined").is_some()
+    });
+    assert_eq!(
+        showing(&h, "Properties", "is over defined").as_deref(),
+        Some("Box is over defined")
+    );
+    assert!(
+        showing(
+            &h,
+            "Properties",
+            "The 40 mm dimension repeats what the others already give."
+        )
+        .is_some()
+    );
+    assert!(showing(&h, "Properties", "Make it driven, or delete it.").is_some());
+    assert_eq!(
+        showing(&h, "Properties", "Elements:").as_deref(),
+        Some("Elements: ka000005")
+    );
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    assert!(
+        pane.query_by_role_and_label(Role::Button, "Copy as JSON")
+            .is_none()
+    );
+    assert!(pane.query_by_label("over_constrained").is_none());
+    // The prototype's hints, the drag's moved here from the palette, which no longer has it.
+    let drag = "Drag a blue point or curve to move it: what's fully defined stays put. Double-click a dimension to change it.";
+    assert!(showing(&h, "Properties", drag).is_some());
+    assert!(
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .query_all_by_label_contains("Drag a blue point")
+            .next()
+            .is_none()
+    );
+    let finish = showing(&h, "Properties", "keeps your changes and rebuilds").unwrap();
+    assert!(finish.starts_with("Finish Sketch "), "{finish}");
+    assert!(
+        finish.ends_with(" keeps your changes and rebuilds. Cancel drops them."),
+        "{finish}"
+    );
+    // Finish: the selected feature's view again, the sketch's head and hints gone.
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+        .get_by_role_and_label(Role::Button, "Finish Sketch")
+        .click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    step_until(&mut h, "the feature's view", |h| {
+        property(h, "ID").as_deref() == Some("s0000001")
+    });
+    assert!(!shows(&h, "Properties", "Sketch · s0000001"));
+    assert_eq!(showing(&h, "Properties", drag), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_new_sketchs_property_panel_counts_nothing_and_its_conflict_is_the_cores_card() {
+    // Create Sketch on XY in the example (no sketch yet: Sketch1), empty: Empty, subdued,
+    // nothing counted. Then a rectangle and its two sides' lengths, fully defined (eight
+    // unknowns, eight equations: `fully_defined`'s count), and a third length of 30 on the
+    // right side, which holds 20: in conflict, the solve refused, and the card the core's
+    // error, its code and Copy as JSON with it.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    step_until(&mut h, "the document's properties", |h| {
+        shows(h, "Properties", "DOCUMENT")
+    });
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    step_until(&mut h, "the sketch's properties", |h| {
+        shows(h, "Properties", &format!("Sketch · {id}"))
+    });
+    assert!(!shows(&h, "Properties", "DOCUMENT"));
+    let rows = |h: &AppHarness| {
+        [
+            "Plane",
+            "Definition",
+            "Curves",
+            "Points",
+            "Dimensions",
+            "Relations",
+        ]
+        .map(|key| property(h, key).unwrap_or_default())
+    };
+    assert_eq!(rows(&h), ["XY", "Empty", "None", "0", "0", "0"]);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    step_until(&mut h, "the document's properties", |h| {
+        shows(h, "Properties", "DOCUMENT")
+    });
+    fully_defined(&f, &mut h);
+    step_until(&mut h, "fully defined", |h| {
+        property(h, "Definition").as_deref() == Some("Fully defined")
+    });
+    assert!(shows(&h, "Properties", "Sketch1"));
+    // Four lines, four corners; two lengths; the rectangle's two horizontals and two
+    // verticals and the origin's corner held level and plumb with it (#278's A).
+    assert_eq!(rows(&h), ["XY", "Fully defined", "4 lines", "4", "2", "6"]);
+    assert_eq!(showing(&h, "Properties", "is over defined"), None);
+    assert_eq!(showing(&h, "Properties", "conflict"), None);
+    over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the core's card", |h| {
+        showing(h, "Properties", "the sketch's constraints conflict").is_some()
+    });
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    assert!(pane.query_by_label("over_constrained").is_some());
+    assert!(
+        pane.query_by_role_and_label(Role::Button, "Copy as JSON")
+            .is_some()
+    );
+    assert!(
+        showing(
+            &h,
+            "Properties",
+            "remove or change one of the constraints named"
+        )
+        .is_some()
+    );
+    assert_eq!(rows(&h)[3..], ["4", "3", "6"]);
+    assert_eq!(rows(&h)[1], "Over defined");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_dimension_edited_to_0_is_sent_and_the_gates_refusal_said_in_its_box() {
     let f = fixture();
     counting(&f);
@@ -34178,9 +34338,9 @@ fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_say
     double_click(&mut h, "Browser", "Box");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     sketch_read(&mut h);
-    // The sketch's properties (main's panel gives its ID, no longer "Type: sketch").
+    // Sketch mode's own properties, its head giving the sketch's ID.
     step_until(&mut h, "the sketch in Properties", |h| {
-        property(h, "ID").as_deref() == Some("s0000001")
+        shows(h, "Properties", "Sketch · s0000001")
     });
     // The block's warning marks the timeline, so a read that marks nothing never clears
     // what was said wholesale.
@@ -34213,7 +34373,7 @@ fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_say
     }
     // The block still marked: the timeline marks something, the sketch nothing.
     assert!(marks(&h, "k7f2qx3m").is_some_and(|(_, warnings)| warnings > 0));
-    assert_eq!(property(&h, "ID").as_deref(), Some("s0000001"));
+    assert!(shows(&h, "Properties", "Sketch · s0000001"));
     assert_eq!(showing(&h, "Properties", "conflict"), None);
     assert!(!h.state().tabs()[0].said.contains_key("s0000001"));
     assert_eq!(never_waits::waits(), 0);

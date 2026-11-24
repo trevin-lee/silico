@@ -7859,3 +7859,135 @@ fn construction_sets_every_selected_curve_one_way_and_leaves_out_what_isnt_a_cur
     // A curve the read doesn't hold is left out.
     assert_eq!(switched(&sketch, &[element("nz000001")]), None);
 }
+
+#[test]
+fn sketch_modes_card_is_the_cores_refusal_or_for_a_solved_sketch_over_defined_the_dimensions_that_repeat()
+ {
+    use silico_core::{Error, ErrorCode};
+    // Solved, over defined: the right side's 20 given twice (ka000001 and ka000002), the
+    // second flagged redundant; and a horizontal flagged redundant too, which, a relation,
+    // over-defines nothing and isn't named (`sketch_states::over_defines`).
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", true),
+        length("ka000002", "na000002", "20", true),
+        horizontal("kb000001", "na000001"),
+    ]);
+    let flagged = [
+        ("ka000002", ConstraintState::Redundant),
+        ("kb000001", ConstraintState::Redundant),
+    ];
+    let over = read(
+        sketch.clone(),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &flagged,
+    );
+    let said = problem_card(&over, "Sketch1").unwrap();
+    // sketch.js's card: "<name> is over defined", the dimension that repeats the others by
+    // its value, and its fix; the app's words, so no code and no JSON to copy.
+    assert_eq!(said.message, "Sketch1 is over defined");
+    assert_eq!(
+        said.cause.as_deref(),
+        Some("The 20 mm dimension repeats what the others already give.")
+    );
+    assert_eq!(said.elements, ["ka000002"]);
+    assert_eq!(said.elements_total, 1);
+    assert_eq!(
+        said.suggestion.as_deref(),
+        Some("Make it driven, or delete it.")
+    );
+    assert!(!said.warning);
+    assert_eq!(said.code(), None);
+    assert_eq!(said.json(), None);
+    // Two dimensions flagged: counted, both named, the fix for one of them.
+    let both = read(
+        sketch.clone(),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::PartiallyRedundant),
+            ("ka000002", ConstraintState::Redundant),
+        ],
+    );
+    let said = problem_card(&both, "Sketch1").unwrap();
+    assert_eq!(
+        said.cause.as_deref(),
+        Some("2 dimensions repeat what the others already give.")
+    );
+    assert_eq!(said.elements, ["ka000001", "ka000002"]);
+    assert_eq!(said.elements_total, 2);
+    assert_eq!(
+        said.suggestion.as_deref(),
+        Some("Make one driven, or delete one.")
+    );
+    // A solve refused: the core's error, whole, whatever the state (its code and JSON kept).
+    let error = Error::new(
+        ErrorCode::OverConstrained,
+        "the sketch's constraints conflict: the ones named can't all hold",
+    )
+    .with_elements(["ka000001", "ka000002"])
+    .with_suggestion("remove or change one of the constraints named");
+    for state in [SketchState::OverDefined, SketchState::NoSolution] {
+        let mut refused = read(sketch.clone(), state, MemberState::OverDefined, &flagged);
+        refused.states.solve_problem = Some(error.clone());
+        let said = problem_card(&refused, "Sketch1").unwrap();
+        assert_eq!(said, crate::tab::Said::of(&error));
+        assert_eq!(said.code(), Some("over_constrained"));
+    }
+    // Any other state solved: no card; nor under defined with a dimension flagged.
+    for state in [
+        SketchState::UnderDefined,
+        SketchState::FullyDefined,
+        SketchState::Invalid,
+    ] {
+        let solved = read(sketch.clone(), state, MemberState::FullyDefined, &flagged);
+        assert_eq!(problem_card(&solved, "Sketch1"), None, "{state:?}");
+    }
+}
+
+#[test]
+fn sketch_modes_card_names_no_reference_dimension_and_counts_nothing_it_cannot_name() {
+    // Break-it: a read whose flags the core would never give. A reference dimension flagged
+    // isn't named (it drives nothing, so making it driven repairs nothing); a sketch over
+    // defined with nothing flagged says so without a count of none, and names nothing.
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", false),
+        length("ka000002", "na000002", "20", true),
+    ]);
+    let over = read(
+        sketch.clone(),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Redundant),
+            ("ka000002", ConstraintState::Redundant),
+        ],
+    );
+    let said = problem_card(&over, "Sketch1").unwrap();
+    assert_eq!(said.elements, ["ka000002"]);
+    assert_eq!(
+        said.cause.as_deref(),
+        Some("The 20 mm dimension repeats what the others already give.")
+    );
+    let unflagged = read(
+        sketch,
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[],
+    );
+    let said = problem_card(&unflagged, "Sketch1").unwrap();
+    assert_eq!(
+        said.cause.as_deref(),
+        Some("A dimension repeats what the others already give.")
+    );
+    assert!(said.elements.is_empty());
+    assert_eq!(said.elements_total, 0);
+    assert_eq!(
+        said.suggestion.as_deref(),
+        Some("Make it driven, or delete it.")
+    );
+    // A name of any length and script, as the head gives it, whole.
+    let name = "Ünïcødé 草图 ".repeat(40);
+    let said = problem_card(&over, &name).unwrap();
+    assert_eq!(said.message, format!("{name} is over defined"));
+}
