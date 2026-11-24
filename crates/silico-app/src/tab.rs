@@ -620,13 +620,14 @@ pub const LOOK_AT_UNMEASURED: &str = "Look At: the face selected isn't measured 
 /// selection view says why.
 pub const LOOK_AT_UNMEASURABLE: &str = "Look At: the face selected couldn't be measured.";
 
-/// The view as sketch mode found it (the camera it was heading for, a transition's end), and
-/// whether sketch mode's turn square to its sketch is done, or has been passed over
+/// The view as sketch mode found it: the camera it was heading for (a transition's end), or
+/// none if no camera had been chosen yet (the view not yet placed by its first read); and
+/// whether sketch mode's turn square to its sketch is settled, made or passed over
 /// ([`Tab::turn_to_sketch`]).
 #[derive(Debug, Clone, PartialEq)]
 struct SketchView {
-    before: silico_protocol::Camera,
-    turned: bool,
+    before: Option<silico_protocol::Camera>,
+    settled: bool,
 }
 
 /// What Look At turns the view square to ([`Tab::look_at_target`]).
@@ -1504,8 +1505,9 @@ pub struct Tab {
     /// Sketch mode (section 9, *Sketching*), while a sketch is open; and each sketch's read,
     /// whole, for the browser's prefixes and the viewport's lines.
     pub sketch: Option<SketchMode>,
-    /// The view as sketch mode found it, and whether its turn square to the sketch is done
-    /// ([`turn_to_sketch`](Self::turn_to_sketch)): gone back to as sketch mode leaves.
+    /// The view as sketch mode found it, and whether its turn square to the sketch is settled
+    /// ([`turn_to_sketch`](Self::turn_to_sketch)): gone back to as sketch mode leaves
+    /// ([`leave_sketch_mode`](Self::leave_sketch_mode)), every way it does.
     sketch_view: Option<SketchView>,
     pub sketch_reads: SketchReads,
     /// The shown sketches' lines the viewport draws, each made again only when its read is
@@ -2432,47 +2434,68 @@ impl Tab {
     }
 
     /// The view as sketch mode opens on it kept, to go back to as sketch mode leaves
-    /// ([`restore_sketch_view`](Self::restore_sketch_view)): the camera it's heading for.
+    /// ([`leave_sketch_mode`](Self::leave_sketch_mode)): the camera it's heading for, if one
+    /// has been chosen.
     fn keep_sketch_view(&mut self) {
         self.sketch_view = Some(SketchView {
-            before: self.view.heading().clone(),
-            turned: false,
+            before: self.view.placed().then(|| self.view.heading().clone()),
+            settled: false,
         });
     }
 
     /// Sketch mode's turn square to its sketch, once, as its first read comes (the approved
     /// prototype's `enter`, docs/design/m5-ui/js/sketch.js; SolidWorks' *Auto-rotate view
     /// normal to sketch plane on sketch creation and sketch edit*, docs/ux/solidworks.md):
-    /// Look At's view of the sketch (its x across, its y up, fitted with the sketch clear of
-    /// the bar and the palette), as Ctrl+8 asks it. Not if the view has been moved since
-    /// sketch mode opened, which the person's view keeps; nor for a read whose plane is an
-    /// error (a face not found), which places the sketch nowhere: either way it's passed over
-    /// for good.
+    /// Look At's view of the sketch ([`look_at_target`](Self::look_at_target): its x across,
+    /// its y up, fitted with the sketch clear of the bar and the palette), as Ctrl+8 asks it.
+    /// Not if the view has been moved since sketch mode opened, which the person's view keeps
+    /// (a view no camera had been chosen for yet counts as unmoved); nor for a read whose
+    /// plane is an error (a face not found), which places the sketch nowhere: either way it's
+    /// passed over for good.
     fn turn_to_sketch(&mut self) {
-        let Some(read) = self.sketch.as_ref().and_then(SketchMode::drawable) else {
+        if self
+            .sketch
+            .as_ref()
+            .and_then(SketchMode::drawable)
+            .is_none()
+        {
             return;
+        }
+        let unmoved = match &self.sketch_view {
+            Some(kept) if !kept.settled => kept
+                .before
+                .as_ref()
+                .is_none_or(|before| self.view.heading() == before),
+            _ => return,
         };
-        let Some(kept) = self.sketch_view.as_mut().filter(|kept| !kept.turned) else {
-            return;
-        };
-        kept.turned = true;
-        let unmoved = self.view.heading() == &kept.before;
-        if let (true, Ok(plane)) = (unmoved, &read.plane) {
-            self.view.ask(crate::viewport::ViewAsk::LookAt {
-                toward: plane.normal(),
-                up: plane.y_axis(),
-            });
+        let target = self.look_at_target();
+        if let Some(kept) = self.sketch_view.as_mut() {
+            kept.settled = true;
+        }
+        if let (true, Ok(LookAtTarget::Sketch { toward, up })) = (unmoved, target) {
+            self.view
+                .ask(crate::viewport::ViewAsk::LookAt { toward, up });
         }
     }
 
-    /// The view as sketch mode found it, gone back to as sketch mode leaves (Finish, Cancel,
-    /// a refused add, a revert), eased to as the prototype's `exit` animates back to its
-    /// camera, in the projection the view has now. SolidWorks reverts the view only when the
-    /// changes are discarded; the prototype, which the view's UI follows, on either.
-    fn restore_sketch_view(&mut self) {
+    /// Sketch mode left (Finish, Cancel, a refused add, a revert): taken, and the view as it
+    /// found it gone back to, eased to as the prototype's `exit` animates back to its camera,
+    /// in the projection the view has now. SolidWorks reverts the view only when the changes
+    /// are discarded; the prototype, which the view's UI follows, on either. A view no camera
+    /// had been chosen for as sketch mode opened goes where its first read would have put it:
+    /// Home's view of the bodies, now if they're read, else as they're read.
+    fn leave_sketch_mode(&mut self) -> Option<SketchMode> {
+        let left = self.sketch.take();
         if let Some(kept) = self.sketch_view.take() {
-            self.view.return_to(kept.before);
+            match kept.before {
+                Some(before) => self.view.return_to(before),
+                None if self.view.model().is_some() => self
+                    .view
+                    .ask(crate::viewport::ViewAsk::Named(crate::navigate::HOME)),
+                None => self.view.unplace(),
+            }
         }
+        left
     }
 
     /// The outward normal of the one element selected, if it's a face the core's answer for
@@ -4007,8 +4030,7 @@ impl Tab {
                             // transaction its add began, if it did, rolled back.
                             if ours {
                                 self.leave_drag();
-                                self.sketch = None;
-                                self.restore_sketch_view();
+                                self.leave_sketch_mode();
                                 self.edits.queue.push_front(Queued::Closed {
                                     ok: false,
                                     sketch: true,
@@ -5755,9 +5777,7 @@ impl Tab {
         self.dropped(dropped.as_ref());
         self.loading = None;
         self.leave_drag();
-        if self.sketch.take().is_some() {
-            self.restore_sketch_view();
-        }
+        self.leave_sketch_mode();
         self.drive_drag(sessions);
         let kept = self
             .edits
@@ -8027,8 +8047,7 @@ impl Tab {
         // plan: its reads go
         // on. Cancel takes back what it adds anyway: a click still waiting to be planned is let
         // go, said, and an edit already planned is sent and taken back with the rest.
-        if let Some(mode) = self.sketch.take() {
-            self.restore_sketch_view();
+        if let Some(mode) = self.leave_sketch_mode() {
             if !ok {
                 // Cancel takes back what sketch mode did: what its edits said goes too.
                 self.edit_words.let_go();

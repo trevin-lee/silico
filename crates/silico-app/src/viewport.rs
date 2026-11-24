@@ -741,12 +741,24 @@ impl View {
     }
 
     /// The camera the view is heading for: the view a transition under way eases to, or the
-    /// camera, with none under way. What a control asked last, whatever the frame has drawn
-    /// of it so far.
+    /// camera, with none under way. A view asked and not yet given (at the pane's next
+    /// navigation) isn't in it.
     pub fn heading(&self) -> &Camera {
         self.transition
             .as_ref()
             .map_or(&self.camera, Transition::to)
+    }
+
+    /// Whether the camera has been chosen: by the person, a view asked, or the first read's
+    /// Home. Until it is, the camera is a stand-in, fitted to nothing.
+    pub fn placed(&self) -> bool {
+        self.placed
+    }
+
+    /// The camera chosen by nobody again: the next read asks for Home's view of the bodies,
+    /// and its answer places the view there, as a new tab's first read does.
+    pub fn unplace(&mut self) {
+        self.placed = false;
     }
 
     /// What sketch mode adds to a fit from now on ([`navigate::Framing`]): the tab's, each
@@ -1356,11 +1368,7 @@ impl View {
     /// The view made perspective, or orthographic: at once, and if a transition is under way,
     /// its view, which it ends, so the view is the one asked for, in the projection asked.
     fn project(&mut self, perspective: bool) {
-        let from = self
-            .transition
-            .as_ref()
-            .map_or(&self.camera, Transition::to);
-        let camera = navigate::projected(from, perspective);
+        let camera = navigate::projected(self.heading(), perspective);
         if self.moved(camera) {
             self.perspective = perspective;
         }

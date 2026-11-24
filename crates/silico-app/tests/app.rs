@@ -48504,6 +48504,148 @@ fn views_chosen_in_sketch_mode_are_its_own_and_finish_goes_back_to_the_view_foun
 }
 
 #[test]
+fn leaving_eases_back_from_the_turned_view_starting_where_it_was_shown() {
+    // With view transitions on (egui's 0.2 s): Edit Sketch's turn done, then Cancel. The frame
+    // after, the way back is under way and still at the turned camera, where it starts; it
+    // ends on the view found.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    animation_time(&h, 0.2);
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step_until(&mut h, "turned", |h| {
+        view(h).transition().is_none() && looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    let turned = view(&h).camera().clone();
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    step(&mut h);
+    assert!(view(&h).transition().is_some(), "eases back");
+    assert_eq!(view(&h).camera(), &turned, "from where it was shown");
+    step_until(&mut h, "still", |h| view(h).transition().is_none());
+    assert_eq!(view(&h).camera(), &before);
+    animation_time(&h, 0.0);
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_mode_opened_while_a_view_eases_keeps_the_view_eased_to_turns_and_goes_back_to_it() {
+    // Ctrl+1 easing to the front (egui's 0.2 s) as Edit Sketch opens: the view sketch mode
+    // found is the front it's heading for, not the camera part way there. The turn comes
+    // once the read does, and Cancel goes back to the front.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(silico_app::viewport::ViewAsk::Named(
+        silico_core::views::NamedView::Front,
+    ));
+    step(&mut h);
+    assert!(view(&h).transition().is_some(), "the front eases");
+    let front = view(&h).heading().clone();
+    assert_ne!(view(&h).camera(), &front, "part way");
+    assert!(looks_from(&front, [0.0, -1.0, 0.0]));
+    {
+        let sessions = Arc::clone(&f.sessions);
+        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &sketch_id("s0000001"));
+    }
+    sketch_read(&mut h);
+    step_until(&mut h, "turned to the top", |h| {
+        view(h).transition().is_none() && looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    animation_time(&h, 0.0);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &front);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn leaving_a_sketch_opened_before_the_parts_first_meshes_goes_to_the_parts_home() {
+    // Edit Sketch while the first meshes are refused (a slow first read): no camera has been
+    // chosen yet, so the view sketch mode found is none, and leaving goes where the first
+    // read would have put it, Home's view of the part, not the stand-in camera.
+    let home = {
+        let f = fixture();
+        meshes_a_real_box(&f);
+        let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+        step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+        meshes_settled(&mut h);
+        view(&h).camera().clone()
+    };
+    let stand_in = silico_app::viewport::View::default().camera().clone();
+    assert_ne!(home, stand_in);
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let failing = failing_kernel(&f.kernel);
+    failing.store(true, Ordering::SeqCst);
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    assert!(view(&h).model().is_none(), "no meshes read yet");
+    assert!(!view(&h).placed());
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert!(looks(&h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), "turned");
+    failing.store(false, Ordering::SeqCst);
+    leave_sketch(&mut h, true);
+    meshes_settled(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &home);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn shown_sketches_lines_come_back_as_they_were_after_a_turned_visit_to_sketch_mode() {
+    // Loose shown, then Edit Sketch on Loose by its row, as a person opens it: the view
+    // turns to it, and back as Finish leaves. Its lines, none while it's open, come back
+    // with the same four sides, made for the view's scale as it's back, and kept from then
+    // on. (They may be made again on the way back: the strips are made for the view's scale,
+    // which the turn changed; the same scale throughout keeps them, the strips test's own.)
+    let f = fixture();
+    under_defined_sketches(&f);
+    let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    let sides = |lines: &[silico_app::sketch::lines::FrameLines]| -> Vec<Vec<[f64; 3]>> {
+        (0..lines[0].strips.len())
+            .filter_map(|k| lines[0].strips.strip(k).map(<[_]>::to_vec))
+            .collect()
+    };
+    let first = sides(&last_lines(&record));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Loose");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert_ne!(view(&h).camera(), &before, "turned");
+    assert!(last_lines(&record).is_empty(), "none while it's open");
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
+    step_until(&mut h, "sketch mode left", |h| sketch_mode(h).is_none());
+    step_until(&mut h, "Loose's lines back", |_| {
+        last_lines(&record).len() == 1
+    });
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before, "back");
+    assert_eq!(sides(&last_lines(&record)), first);
+    let kept = Arc::clone(&last_lines(&record)[0].strips);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(
+            Arc::ptr_eq(&last_lines(&record)[0].strips, &kept),
+            "made again"
+        );
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn look_at_turns_square_to_the_flat_face_selected_and_says_what_it_needs_with_none() {
     // The 40 × 20 × 10 block's faces as the fake describes them, each by its outward normal.
     let f = fixture();
