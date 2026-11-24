@@ -48400,6 +48400,96 @@ fn a_revert_or_a_refused_add_leaving_sketch_mode_goes_back_to_the_view_it_found(
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- Hostile input for sketch mode's turn and its way back (break-it) ----
+
+#[test]
+fn a_sketch_cancelled_before_its_first_read_never_turns_the_view_when_the_read_comes() {
+    // Create Sketch with every solve held, then Cancel before the read: the view stays, and
+    // the read answering after sketch mode left turns nothing.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step_until(&mut h, "Create Sketch on", |h| {
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    let before = view(&h).camera().clone();
+    f.sketches.hold();
+    create_sketch(&mut h, "XY plane");
+    assert!(f.sketches.wait_held(WAIT), "the sketch's solve never held");
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    f.sketches.release();
+    settled(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &before);
+    assert!(!looks(&h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_while_the_turn_eases_goes_back_to_the_view_found_not_where_the_turn_reached() {
+    // With view transitions on (egui's 0.2 s), Edit Sketch's turn starts easing toward the top
+    // in the frame its read comes; Cancel then, mid-turn: the view eases back from wherever
+    // the turn reached and ends on the view found, not on the turn's.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    animation_time(&h, 0.2);
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    assert!(view(&h).transition().is_some(), "the turn eases");
+    assert!(
+        !looks(&h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        "not there yet"
+    );
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    step_until(&mut h, "sketch mode left and the view still", |h| {
+        sketch_mode(h).is_none() && view(h).transition().is_none()
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &before);
+    animation_time(&h, 0.0);
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn views_chosen_in_sketch_mode_are_its_own_and_finish_goes_back_to_the_view_found() {
+    // Home, then Front, in sketch mode: the person's views while sketching, none of which
+    // Finish keeps; it goes back to the view sketch mode found.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    h.key_press(Key::Home);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step_until(&mut h, "from the front", |h| {
+        looks(h, [0.0, -1.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    leave_sketch(&mut h, true);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn look_at_turns_square_to_the_flat_face_selected_and_says_what_it_needs_with_none() {
     // The 40 × 20 × 10 block's faces as the fake describes them, each by its outward normal.
