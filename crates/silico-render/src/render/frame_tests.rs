@@ -3047,6 +3047,53 @@ fn a_dimmed_frame_darkens_every_face_and_edge_by_its_dim_and_uploads_nothing() {
 }
 
 #[test]
+fn a_dim_of_0_draws_the_bodies_black_and_dims_changing_each_frame_each_draw_their_own() {
+    // At 0 every face's colour and its tint are nothing: the front face is black, lit or
+    // not. Dims changing frame to frame (0.18, 0.5, 0, 0.18, a subnormal) each draw their
+    // own colour, the same dim the same image, with no upload: one material is kept, made
+    // again for each new dim.
+    on_lavapipe(
+        "render::frame_tests::a_dim_of_0_draws_the_bodies_black_and_dims_changing_each_frame_each_draw_their_own",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain_frame = frame(&camera, &[1], &[], None);
+            let image = |r: &mut Renderer, dim: f32| {
+                let commands = r
+                    .prepare(&Frame {
+                        dim,
+                        tinted: &[(1, Element::Face(3))],
+                        tint: FEATURE_TINT,
+                        ..plain_frame
+                    })
+                    .unwrap();
+                composited(r, Some(commands))
+            };
+            let first = image(r, SKETCH_DIM);
+            let uploaded = r.uploads();
+            let half = image(r, 0.5);
+            let black = image(r, 0.0);
+            let again = image(r, SKETCH_DIM);
+            let tiny = image(r, f32::MIN_POSITIVE / 2.0);
+            assert_eq!(r.uploads(), uploaded);
+            assert_eq!(again, first);
+            let centre = (0..black.len())
+                .max_by(|a, b| into_the_front(*a).total_cmp(&into_the_front(*b)))
+                .unwrap();
+            assert_eq!(black[centre], [0, 0, 0, 255]);
+            assert_eq!(tiny[centre], [0, 0, 0, 255]);
+            let mixed = |dim: f64| -> [f64; 3] {
+                std::array::from_fn(|k| {
+                    srgb_of(dim * (0.6 * linear(BODY[k]) + 0.4 * linear(FEATURE_TINT.colour[k])))
+                })
+            };
+            assert_colour(half[centre], mixed(0.5), 1.0, "at 0.5");
+            assert_colour(first[centre], mixed(f64::from(SKETCH_DIM)), 1.0, "at 0.18");
+        },
+    );
+}
+
+#[test]
 fn faces_tinted_in_any_order_or_twice_and_of_two_bodies_are_each_tinted() {
     // The box (body 1) and a second one 12 mm below it (body 2, z = -12 to -2), each seen
     // from the front by its front face (Face3): body 1's from row 20.73 to 31.64, body 2's
