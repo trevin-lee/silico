@@ -516,8 +516,8 @@ impl SketchMode {
     /// (C9), judged on the read drawn ([`deletion_of`]): a lone point whose two curves end
     /// there, the pieces a split leaves, joined (whether `sketch_join` takes them is its own
     /// to say); anything else removed, by ID, as `sketch_remove` judges it. None with no
-    /// member selected. A Delete pressed is judged again on the read of the revision it's
-    /// sent against (`Tab::judge_delete`).
+    /// member selected. A Delete pressed is judged again as it comes up (`Tab::judge_delete`):
+    /// a lone point this read doesn't hold, on the read of the revision it's sent against.
     pub fn deletion(&self) -> Option<Deletion> {
         let selected: Vec<Hit> = self.selection.members().cloned().collect();
         deletion_of(&selected, self.drawable())

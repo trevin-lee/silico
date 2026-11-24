@@ -27494,6 +27494,124 @@ fn cancel_of_the_sketch_lets_go_of_a_delete_still_waiting_for_its_read_and_says_
 }
 
 #[test]
+fn finish_of_the_sketch_keeps_a_delete_waiting_for_its_read_and_joins_it() {
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    let (hold, split) = split_unread(&f, &mut h);
+    select_member(&mut h, &split, silico_core::document::ElementKind::Point);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    leave_sketch_unsettled(&mut h, true);
+    assert_eq!(
+        h.state().tabs()[0].leaving(),
+        1,
+        "its mode kept for the Delete's read"
+    );
+    hold.release();
+    settled(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    let tab = &h.state().tabs()[0];
+    assert!(tab.sent.contains(&Sent::SketchEdit("sketch_join")));
+    assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 4);
+    assert_eq!(
+        line_between(&sketch, "pa000002", "pa000003").as_deref(),
+        Some("na000002")
+    );
+    assert_eq!(tab.leaving(), 0);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_delete_waiting_for_the_read_of_a_stopped_rebuild_is_judged_once_the_stop_is_seen() {
+    // Stop ends the split's rebuild, so the read the Delete waits for won't come unasked:
+    // it's judged at once on the read drawn, from before the split, as a removal, which the
+    // core refuses (two lines end at the point), said; nothing waits behind it.
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    let (hold, split) = split_unread(&f, &mut h);
+    select_member(&mut h, &split, silico_core::document::ElementKind::Point);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    assert!(h.state().tabs()[0].unsettled());
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].stop(&sessions);
+    }
+    step_until(&mut h, "the rebuild stopped", |h| {
+        h.state().tabs()[0].rebuild_stopped()
+    });
+    step_until(&mut h, "the Delete judged and answered", |h| {
+        !h.state().tabs()[0].unsettled()
+    });
+    let tab = &h.state().tabs()[0];
+    assert!(tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
+    assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_join")));
+    assert!(tab.message.is_some());
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    drop(hold);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_delete_of_a_point_the_read_of_the_tabs_revision_lacks_is_judged_at_once() {
+    // A lone point no read holds, with the read of the tab's own revision drawn: no newer
+    // read will come, so it's judged at once, a removal the core refuses, said.
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    sketch_read(&mut h);
+    settled_and_read(&mut h);
+    assert_eq!(read_revision(&h), Some(h.state().tabs()[0].revision));
+    select_member(
+        &mut h,
+        "pz000001",
+        silico_core::document::ElementKind::Point,
+    );
+    h.key_press(eframe::egui::Key::Delete);
+    step_until(&mut h, "the Delete judged and answered", |h| {
+        !h.state().tabs()[0].unsettled()
+    });
+    let tab = &h.state().tabs()[0];
+    assert!(tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
+    assert!(tab.message.is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn an_undo_asked_behind_a_delete_waiting_for_its_read_takes_back_the_join() {
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    let (hold, split) = split_unread(&f, &mut h);
+    select_member(&mut h, &split, silico_core::document::ElementKind::Point);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_delete(&sessions);
+        tab.step(&sessions, true);
+    }
+    hold.release();
+    settled_and_read(&mut h);
+    assert!(
+        h.state().tabs()[0]
+            .sent
+            .contains(&Sent::SketchEdit("sketch_join"))
+    );
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(
+        sketch.lines.len(),
+        5,
+        "the Undo took back the join, not the split"
+    );
+    assert!(sketch.points.iter().any(|p| p.id.as_str() == split));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn finish_of_the_sketch_keeps_what_its_split_said() {
     let f = fixture();
     let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);

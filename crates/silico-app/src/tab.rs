@@ -462,13 +462,14 @@ enum Planned {
 }
 
 /// A sketch mode's Delete, judged as it comes up in the queue ([`Tab::judge_delete`]): waits
-/// for the read it's judged on; is a removal or a join, to send now; or selected nothing,
-/// so sends nothing.
+/// for the read it's judged on; is a removal or a join, to send now; selected nothing, so
+/// sends nothing; or is let go, its sketch mode gone, saying so.
 #[derive(Debug, Clone, PartialEq)]
 enum Judged {
     Wait,
     Is(Deletion),
     Nothing,
+    Gone(String),
 }
 
 /// What's said of a sketch mode's Delete let go unsent, and `why`.
@@ -1547,8 +1548,8 @@ pub struct Tab {
     /// its add having answered by then, though the sketch mode may have left first.
     created_sketch: Option<(u64, FeatureId)>,
     /// Each sketch mode closed (Finish, Cancel) while a click of it (a constraint tool's, or
-    /// Construction's) was unsettled: its reads polled still, so the click is planned, and
-    /// let go once none is.
+    /// Construction's) or a Delete was unsettled: its reads polled still, so the click is
+    /// planned, or the Delete judged, and let go once none is.
     leaving: Vec<SketchMode>,
     /// The click (a constraint tool's, or Construction's) being pressed, while its press's
     /// call runs: let go in it, it's toasted as well as said.
@@ -3248,7 +3249,7 @@ impl Tab {
         self.sketch_requests(sessions);
         self.drive_drag(sessions);
         self.read_sketches(sessions);
-        self.relate_waiting(sessions);
+        self.retry_waiting(sessions);
         self.measure(sessions);
         // The unsaved edits, counted while every answer of the tab's is taken: what the bar
         // holds while the next is under way.
@@ -4763,6 +4764,7 @@ impl Tab {
                         });
                     }
                     Judged::Nothing => {}
+                    Judged::Gone(said) => self.message = Some(said),
                 },
                 Queued::SketchRemove { sketch, members } => {
                     self.begin_if_none(sessions);
@@ -5771,7 +5773,9 @@ impl Tab {
                 .queue
                 .range(kept..)
                 .any(|queued| matches!(queued, Queued::Revert { then_close: true }));
-        // A constraint tool's click it drops, or Construction's, unplanned or unsent, said.
+        // A constraint tool's click it drops, or Construction's, unplanned or unsent, said;
+        // or else a Delete still to be judged.
+        let reverted = "the part was reverted first";
         if let Some(applies) = self
             .edits
             .queue
@@ -5781,7 +5785,14 @@ impl Tab {
                 _ => None,
             })
         {
-            self.message = Some(applies.unmade("the part was reverted first"));
+            self.message = Some(applies.unmade(reverted));
+        } else if self
+            .edits
+            .queue
+            .range(kept..)
+            .any(|queued| matches!(queued, Queued::SketchDelete { .. }))
+        {
+            self.message = Some(undeleted(reverted));
         }
         self.edits.queue.truncate(kept);
         self.edits.queue.push_back(Queued::Revert { then_close });
@@ -8021,9 +8032,9 @@ impl Tab {
         // Its close waits for a drag's end (the queue waits while one is under way).
         self.leave_drag();
         // And, for Finish, for a click of it (a constraint tool's, or Construction's) still to
-        // plan: its reads go
-        // on. Cancel takes back what it adds anyway: a click still waiting to be planned is let
-        // go, said, and an edit already planned is sent and taken back with the rest.
+        // plan, or a Delete still to judge: its reads go on. Cancel takes back what it adds
+        // anyway: a click still waiting to be planned, or a Delete to be judged, is let go,
+        // said, and an edit already planned is sent and taken back with the rest.
         if let Some(mode) = self.sketch.take() {
             if !ok {
                 // Cancel takes back what sketch mode did: what its edits said goes too.
@@ -8047,7 +8058,7 @@ impl Tab {
                 } else if undeleted_too {
                     self.message = Some(undeleted(SKETCH_CANCELLED));
                 }
-            } else if self.relating(mode.serial) {
+            } else if self.pending_in(mode.serial) {
                 self.leaving.push(mode);
             }
         }
@@ -8398,12 +8409,15 @@ impl Tab {
     /// that read won't come unasked (its rebuild stopped or failed). Anything else is judged
     /// on the read as it is, at once, as it was pressed.
     fn judge_delete(&self, serial: u64, sketch: &FeatureId, picks: &[Hit]) -> Judged {
-        let read = self
+        let Some(mode) = self
             .sketch
             .iter()
             .chain(self.leaving.iter())
             .find(|mode| mode.serial == serial)
-            .and_then(|mode| mode.read.as_ref());
+        else {
+            return Judged::Gone(undeleted(SKETCH_CLOSED));
+        };
+        let read = mode.read.as_ref();
         let drawn = read
             .and_then(|read| read.result.as_ref().ok())
             .filter(|drawn| &drawn.sketch == sketch);
@@ -8602,16 +8616,16 @@ impl Tab {
         }
     }
 
-    /// How many sketch modes closed with a click (a constraint tool's, or Construction's)
-    /// still unsettled are kept for it: what a test counts.
+    /// How many sketch modes closed with a click (a constraint tool's, or Construction's) or
+    /// a Delete still unsettled are kept for it: what a test counts.
     pub fn leaving(&self) -> usize {
         self.leaving.len()
     }
 
-    /// Whether a click (a constraint tool's, or Construction's) of sketch mode numbered
-    /// `serial` is unsettled: queued to be planned, or an edit of its chain queued or under
-    /// way.
-    fn relating(&self, serial: u64) -> bool {
+    /// Whether a click (a constraint tool's, or Construction's) or a Delete of sketch mode
+    /// numbered `serial` is unsettled: a click queued to be planned, or an edit of its chain
+    /// queued or under way; a Delete queued to be judged.
+    fn pending_in(&self, serial: u64) -> bool {
         self.edits.queue.iter().any(|queued| match queued {
             Queued::Click { click, .. } | Queued::Relate { click, .. } => click.serial == serial,
             Queued::SketchDelete { serial: of, .. } => *of == serial,
@@ -8622,12 +8636,12 @@ impl Tab {
             .any(|under| matches!(under, Under::Relate { click, .. } if click.serial == serial))
     }
 
-    /// A click waiting at the queue's front for its read, given another chance once a read
-    /// may have come; and each sketch mode closed with a click still unsettled, its read
-    /// polled meanwhile, let go once none is.
-    fn relate_waiting<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+    /// A click, or a Delete, waiting at the queue's front for its read, given another chance
+    /// once a read may have come; and each sketch mode closed with a click or a Delete still
+    /// unsettled, its read polled meanwhile, let go once none is.
+    fn retry_waiting<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let mut leaving = std::mem::take(&mut self.leaving);
-        leaving.retain(|mode| self.relating(mode.serial));
+        leaving.retain(|mode| self.pending_in(mode.serial));
         self.leaving = leaving;
         if matches!(
             self.edits.queue.front(),
