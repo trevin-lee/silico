@@ -328,32 +328,23 @@ fn counted(count: usize, one: &str, many: &str) -> String {
 /// The sketch's driving dimensions' values, in the order it holds them, as the prototype
 /// writes its bracket's (`40, 30, 6, 8 mm`): the lengths with their unit after the last, a
 /// radius and a diameter marked as the canvas marks them (`R5`, `Ø11`), then the angles,
-/// each with its degree sign; reference dimensions left out, as they define nothing.
+/// each with its degree sign ([`marked`]); reference dimensions left out, as they define
+/// nothing.
 fn dimensions(sketch: &silico_core::document::Sketch) -> String {
-    use silico_core::document::Form;
-    let driving = || {
-        sketch
-            .constraints
+    let driving: Vec<(String, bool)> = sketch
+        .constraints
+        .iter()
+        .filter(|constraint| constraint.form.driving() == Some(true))
+        .filter_map(|constraint| marked(&constraint.form))
+        .collect();
+    let of = |angle: bool| -> Vec<&str> {
+        driving
             .iter()
-            .filter(|constraint| constraint.form.driving() == Some(true))
-            .map(|constraint| &constraint.form)
+            .filter(|(_, is_angle)| *is_angle == angle)
+            .map(|(value, _)| value.as_str())
+            .collect()
     };
-    let lengths: Vec<String> = driving()
-        .filter_map(|form| {
-            let (value, _) = form.length()?;
-            Some(match form {
-                Form::Radius { .. } => format!("R{}", mm(value)),
-                Form::Diameter { .. } => format!("Ø{}", mm(value)),
-                _ => mm(value),
-            })
-        })
-        .collect();
-    let angles: Vec<String> = driving()
-        .filter_map(|form| match form {
-            Form::Angle { value, .. } => Some(degrees(*value)),
-            _ => None,
-        })
-        .collect();
+    let (lengths, angles) = (of(false), of(true));
     let mut parts = Vec::new();
     if !lengths.is_empty() {
         parts.push(format!("{} mm", lengths.join(", ")));
@@ -364,14 +355,24 @@ fn dimensions(sketch: &silico_core::document::Sketch) -> String {
     parts.join(" · ")
 }
 
-/// A dimension's value as the property panel writes it, with its unit: a length's
-/// millimetres (`40 mm`, `−12.5 mm`, a true minus), an angle's degrees (`90°`); none for a
+/// A dimension's value as the property panel writes it, with its unit, as the Dimensions
+/// row writes it ([`marked`]): a length's millimetres (`40 mm`, `−12.5 mm`), a radius's
+/// and a diameter's marked (`R10 mm`, `Ø11 mm`), an angle's degrees (`90°`); none for a
 /// relation.
 pub fn dimension_value(form: &silico_core::document::Form) -> Option<String> {
+    marked(form).map(|(value, angle)| if angle { value } else { format!("{value} mm") })
+}
+
+/// A dimension's value, marked as the canvas marks it, without a length's unit, and
+/// whether it's an angle: a length's millimetres (`40`, `−12.5`, a true minus), a radius's
+/// `R10`, a diameter's `Ø11`, an angle's degrees with its sign (`90°`); none for a relation.
+fn marked(form: &silico_core::document::Form) -> Option<(String, bool)> {
     use silico_core::document::Form;
     match form {
-        Form::Angle { value, .. } => Some(degrees(*value)),
-        form => form.length().map(|(value, _)| format!("{} mm", mm(value))),
+        Form::Angle { value, .. } => Some((degrees(*value), true)),
+        Form::Radius { value, .. } => Some((format!("R{}", mm(*value)), false)),
+        Form::Diameter { value, .. } => Some((format!("Ø{}", mm(*value)), false)),
+        form => form.length().map(|(value, _)| (mm(value), false)),
     }
 }
 

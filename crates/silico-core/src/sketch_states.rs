@@ -174,7 +174,7 @@ pub struct SketchStates {
 impl SketchStates {
     /// The constraints of `sketch`, of which these are the states, that over-define it
     /// ([`over_defines`]: in conflict, or a flagged dimension), in the order it holds them:
-    /// what makes a solved sketch `over_defined`, and what a client offers to make driven.
+    /// on a solved sketch, what makes it `over_defined`.
     pub fn over_defining<'a>(
         &'a self,
         sketch: &'a Sketch,

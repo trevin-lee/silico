@@ -8037,3 +8037,44 @@ fn sketch_modes_card_writes_an_angle_in_degrees_and_a_negative_length_with_a_tru
         assert_eq!(said.elements, [name]);
     }
 }
+
+#[test]
+fn sketch_modes_card_marks_a_radius_and_a_diameter_as_the_dimensions_row_does() {
+    // A circle about (20, 10), radius 10: a flagged radius reads `R10 mm`, a flagged
+    // diameter `Ø11 mm`, as the Dimensions row and the canvas mark them.
+    for (form, words) in [
+        (
+            Form::Radius {
+                curve: element("ca000001"),
+                value: mm("10"),
+                driving: true,
+            },
+            "The R10 mm dimension repeats what the others already give.",
+        ),
+        (
+            Form::Diameter {
+                curve: element("ca000001"),
+                value: mm("11"),
+                driving: true,
+            },
+            "The \u{d8}11 mm dimension repeats what the others already give.",
+        ),
+    ] {
+        let mut sketch = rectangle(vec![constraint("ka000009", form)]);
+        sketch.points.push(point("pa000006", 20.0, 10.0));
+        sketch.circles.push(SketchCircle {
+            id: id("ca000001"),
+            center: id("pa000006"),
+            radius: Coordinate::new(10.0).unwrap(),
+            construction: false,
+        });
+        let over = read(
+            sketch,
+            SketchState::OverDefined,
+            MemberState::OverDefined,
+            &[("ka000009", ConstraintState::Redundant)],
+        );
+        let said = problem_card(&over, "Sketch1").unwrap();
+        assert_eq!(said.cause.as_deref(), Some(words));
+    }
+}

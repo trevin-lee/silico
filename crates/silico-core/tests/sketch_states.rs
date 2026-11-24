@@ -403,6 +403,16 @@ fn the_over_defining_constraints_are_those_in_conflict_and_the_flagged_dimension
     });
     let over: Vec<&str> = got.over_defining(&sketch).map(|c| c.id.as_str()).collect();
     assert_eq!(over, ["k0000004", "k0000005"]);
+    // The horizontal in conflict, a relation, over-defines; the first length partially
+    // redundant, a dimension, does too; the second length, satisfied, doesn't.
+    let (_, _, _, got) = solved_by(&sketch, |system| Solved {
+        dofs: -1,
+        conflicting: vec![Tag(3)],
+        partially_redundant: vec![Tag(4)],
+        ..FakeSketches::as_sent(system)
+    });
+    let over: Vec<&str> = got.over_defining(&sketch).map(|c| c.id.as_str()).collect();
+    assert_eq!(over, ["k0000003", "k0000004"]);
     // Solved, the second length repeating the first and agreeing (redundant), and the
     // horizontal partially redundant: the length alone, as the state says over defined.
     let sketch = ten_long(

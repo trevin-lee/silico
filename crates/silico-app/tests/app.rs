@@ -32764,8 +32764,8 @@ fn sketch_modes_property_panel_is_the_sketchs_own_its_rows_its_over_defined_card
             .next()
             .is_none()
     );
-    // Finish Sketch's keys as the platform names them: off macOS, where these tests run,
-    // Ctrl and the prototype's ↵ for Enter, joined by `+`.
+    // Finish Sketch's keys as the platform names them: off macOS (egui_kittest's harness
+    // says it's Linux, whatever the host), Ctrl and the prototype's ↵ for Enter, joined by `+`.
     assert_eq!(
         showing(&h, "Properties", "keeps your changes and rebuilds").as_deref(),
         Some("Finish Sketch Ctrl+↵ keeps your changes and rebuilds. Cancel drops them.")
