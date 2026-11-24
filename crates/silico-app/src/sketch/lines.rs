@@ -527,7 +527,7 @@ pub fn dashes(polyline: &[[f64; 2]], on: f64, off: f64) -> Vec<Vec<[f64; 2]>> {
 
 #[cfg(test)]
 mod tests {
-    use silico_core::document::{Coordinate, OriginPlane, SketchCircle};
+    use silico_core::document::{Coordinate, OriginPlane, SketchArc, SketchCircle};
 
     use super::super::tests::{id, line, point, rectangle, under};
     use super::*;
@@ -792,6 +792,71 @@ mod tests {
             construction: false,
         });
         under(round)
+    }
+
+    /// A quarter arc of radius 2.75 about (40, 12) on XY, counter-clockwise from (42.75, 12)
+    /// to (40, 14.75).
+    fn quarter() -> SketchRead {
+        let mut quarter = rectangle(Vec::new());
+        quarter.lines.clear();
+        quarter.points = vec![
+            point("pa000006", 40.0, 12.0),
+            point("pa000007", 42.75, 12.0),
+            point("pa000008", 40.0, 14.75),
+        ];
+        quarter.arcs.push(SketchArc {
+            id: id("aa000001"),
+            center: id("pa000006"),
+            start: id("pa000007"),
+            end: id("pa000008"),
+            construction: false,
+        });
+        under(quarter)
+    }
+
+    #[test]
+    fn a_shown_curves_fit_is_its_exact_box_at_every_scale_not_its_chords() {
+        // The circle's square by hand: (37.25, 9.25) to (42.75, 14.75); the quarter arc's:
+        // its centre to its ends, (40, 12) to (42.75, 14.75), not the circle's square about
+        // it. Each the same at 120 mm, 7.5 mm, and 10 m over the pane, where the chords'
+        // box falls inside the circle's (a circle's chords miss axis points at some scale).
+        let fid = FeatureId::new("s0000002").unwrap();
+        for (read, want) in [
+            (round(), [[37.25, 9.25, 0.0], [42.75, 14.75, 0.0]]),
+            (quarter(), [[40.0, 12.0, 0.0], [42.75, 14.75, 0.0]]),
+        ] {
+            let read = Arc::new(read);
+            let mut shown = ShownLines::default();
+            let mut chords_inside = false;
+            for view_height in [120.0, 7.5, 1.0e4] {
+                let camera = Camera {
+                    projection: Projection::Orthographic { view_height },
+                    ..at_120()
+                };
+                let drawn = shown.frame([(&fid, &read)], &camera, 800.0);
+                assert_eq!(drawn.len(), 1);
+                let fit = drawn[0].fit.unwrap();
+                for k in 0..3 {
+                    for end in 0..2 {
+                        assert!(
+                            (fit[end][k] - want[end][k]).abs() < 1e-12,
+                            "{fit:?} at {view_height}"
+                        );
+                    }
+                }
+                let (low, high) = drawn[0].strips.bounds().unwrap();
+                chords_inside |= (low[0] - want[0][0]).abs() > 1e-9
+                    || (low[1] - want[0][1]).abs() > 1e-9
+                    || (high[0] - want[1][0]).abs() > 1e-9
+                    || (high[1] - want[1][1]).abs() > 1e-9;
+            }
+            if want[0][0] == 37.25 {
+                assert!(
+                    chords_inside,
+                    "the circle's chords fall inside its square somewhere"
+                );
+            }
+        }
     }
 
     /// Loose's rectangle's first side alone: one strip of 2 points.

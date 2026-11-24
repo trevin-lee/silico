@@ -49185,10 +49185,21 @@ fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is
     let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
     step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
     // Loose reaches past Legs, so the view the part opened at fits Home again with it, and
-    // its lines are made again at that view's scale, once.
-    for _ in 0..3 {
+    // its lines are made again at that view's scale, once: waited for till a frame makes
+    // none.
+    meshes_settled(&mut h);
+    let mut made = Arc::clone(&last_lines(&record)[0].strips);
+    let mut settled = false;
+    for _ in 0..60 {
         step(&mut h);
+        let now = Arc::clone(&last_lines(&record)[0].strips);
+        if Arc::ptr_eq(&now, &made) {
+            settled = true;
+            break;
+        }
+        made = now;
     }
+    assert!(settled, "Loose's lines made again frame after frame");
     let lines = last_lines(&record);
     assert_eq!(lines[0].colour, [0x7a, 0x95, 0xff, 0xff]);
     let sides: Vec<Vec<[f64; 3]>> = (0..lines[0].strips.len())
@@ -49401,6 +49412,29 @@ fn a_part_opens_at_the_view_home_gives_with_its_shown_sketches() {
         (target[0] - 320.0).abs() < 1e-9
     });
     near(view(&h).camera().target, [320.0, 0.0, 10.0], 1e-9);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_turns_square_to_a_shown_sketch_reaching_past_the_bodies_in_a_view_never_moved() {
+    // Loose, on XZ, 300 mm off Legs: the part opens at Home's view of both. Edit Sketch on
+    // Loose turns square to it (its normal X × Z = −Y: the eye out along −Y, +Z up, as Front
+    // looks), as it does in a part whose sketches lie within its bodies; Finish goes back.
+    let (front, z) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
+    let f = fixture();
+    let (mut h, record) = f.drawn("far.silico", &loose_far());
+    meshes_settled(&mut h);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    step(&mut h);
+    let before = view(&h).camera().clone();
+    assert!(!looks(&h, front, z));
+    double_click(&mut h, "Browser", "Loose");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert!(looks(&h, front, z), "{:?}", view(&h).camera());
+    leave_sketch(&mut h, true);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
     assert_eq!(never_waits::waits(), 0);
 }
 
