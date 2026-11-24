@@ -1265,17 +1265,16 @@ fn a_worker_named_by_a_bare_name_runs_the_one_in_the_working_directory() {
 /// processes they start, kept to at most four of the CPUs it may run on.
 #[cfg(target_os = "linux")]
 fn on_four_cpus() {
-    use nix::sched::{CpuSet, sched_getaffinity, sched_setaffinity};
-    use nix::unistd::Pid;
-    let allowed = sched_getaffinity(Pid::from_raw(0)).unwrap();
+    use rustix::thread::{CpuSet, sched_getaffinity, sched_setaffinity};
+    let allowed = sched_getaffinity(None).unwrap();
     let mut four = CpuSet::new();
-    for cpu in (0..CpuSet::count())
-        .filter(|&cpu| allowed.is_set(cpu).unwrap())
+    for cpu in (0..CpuSet::MAX_CPU)
+        .filter(|&cpu| allowed.is_set(cpu))
         .take(4)
     {
-        four.set(cpu).unwrap();
+        four.set(cpu);
     }
-    sched_setaffinity(Pid::from_raw(0), &four).unwrap();
+    sched_setaffinity(None, &four).unwrap();
 }
 
 #[test]

@@ -44,9 +44,6 @@ jsonschema = { version = "0.58", default-features = false }
 tempfile = "3.27"
 stats_alloc = "0.1"
 command-fds = "0.3"
-# A test's threads kept to a few CPUs (sched_setaffinity), so the CPU time it bounds isn't
-# a large loaded machine's (dev only; command-fds already depends on it).
-nix = { version = "0.31", default-features = false }
 socket2 = "0.6"
 rustix = { version = "1.1", features = ["event", "net"] }
 crc32fast = "1.4"
