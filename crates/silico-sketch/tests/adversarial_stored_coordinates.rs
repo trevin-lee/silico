@@ -26,7 +26,7 @@ const FEATURE: &str = "k7f2qx3m";
 /// How soon a stopped, superseded, cancelled, or dropped solve of the impossible chain must
 /// end, or a solve queued behind it start: well short of the chain solved to its end (63 s
 /// the fastest seen, on an M4 Pro with a stopper that stopped nothing; nothing but the stop
-/// ends it sooner, the worker's own limit being 300 s), with more than twice that room, so
+/// ends it sooner, the worker's own limit being 600 s), with more than twice that room, so
 /// a solve that ran on fails; and still ample for a loaded machine's stop, a kill, a reap,
 /// and a worker started. The recompute tests answer `Superseded` however the solve ended,
 /// so this bound alone tells a stop there from a solve that ran on.
