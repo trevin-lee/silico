@@ -31,6 +31,7 @@ mod modal;
 pub mod navigate;
 pub mod pane_widths;
 mod panes;
+pub mod parameters;
 pub mod planes;
 mod properties;
 pub mod recent;
