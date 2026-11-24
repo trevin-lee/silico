@@ -22692,7 +22692,7 @@ fn press_chord(h: &mut AppHarness, chord: Chord) {
         Chord::Key(shortcut) | Chord::Exact(shortcut) => {
             h.key_press_modifiers(shortcut.modifiers, shortcut.logical_key);
         }
-        Chord::Pointer(..) => panic!("{chord:?} is the pointer's"),
+        Chord::Pointer(..) | Chord::Held(..) => panic!("{chord:?} is the pointer's"),
     }
 }
 
@@ -22788,6 +22788,7 @@ fn question_mark_opens_the_sheet_its_filter_narrows_it_and_esc_closes_it() {
         ("Orbit", "Shift+Middle-drag"),
         ("Hide or show", "H"),
         ("OK", "↵"),
+        ("Sketch without relations", "Ctrl+hold"),
         ("Keyboard shortcuts", "?"),
     ] {
         assert!(sheet_shows(&h, label), "{label}");
@@ -22944,8 +22945,8 @@ fn under_the_sheet_no_shortcut_acts() {
 
 #[test]
 fn every_command_the_search_lists_runs_from_it_as_its_keys_and_its_button_do() {
-    // Each command the search lists (the registry's but OK, Cancel, and the pointer's three:
-    // 43, the three past its first 40 among them, found by name), run from the search in a
+    // Each command the search lists (the registry's but OK, Cancel, the pointer's three, and
+    // Sketch without relations: 43, the three past its first 40 among them, found by name), run from the search in a
     // state where it can run: what its keys and its button do, by the same checks.
     let listed: Vec<&silico_app::shortcuts::Entry> = REGISTRY
         .iter()
@@ -24343,6 +24344,42 @@ fn same_every_way(entry: &silico_app::shortcuts::Entry, search: bool) {
                 sketch_mode(h).unwrap().settings.construction
             });
             assert_eq!(never_waits::waits(), 0);
+        }
+        Command::NoRelations => {
+            // Ctrl held as the pointer acts (the prototype's `['Mod', 'hold']`): no key to
+            // press, and left out of the search, as the prototype's `paletteItems` leaves
+            // `sNoRel` out. What it says is what the canvas does, through the window's own
+            // events: the Line tool clicked at (30, 30) then (50, 30.3), 0.86° off level,
+            // within the 2° the pointer infers `horizontal` at, is put level, at (50, 30),
+            // and made `horizontal`; the same clicks with Ctrl held add the line as clicked,
+            // with no relation.
+            assert!(!search, "the search leaves {command:?} out");
+            assert_eq!(entry.keys, [Chord::Held(Modifiers::COMMAND)]);
+            for held in [Modifiers::NONE, Modifiers::COMMAND] {
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                hand_camera(&mut h);
+                step(&mut h);
+                h.key_press(Key::L);
+                step(&mut h);
+                for at in [[30.0, 30.0], [50.0, 30.3]] {
+                    click_as_a_person(&mut h, to_screen(at).unwrap(), held);
+                }
+                settled(&mut h);
+                // Each click lands within a ten-thousandth of a millimetre of where it's
+                // made, through the pane's f32 projection.
+                let sketch = sketch_of_text(&f, &h, "s0000001");
+                let start = point_near(&sketch, 30.0, 30.0, THROUGH_THE_PANE);
+                let level = held == Modifiers::NONE;
+                let y = if level { 30.0 } else { 30.3 };
+                let end = point_near(&sketch, 50.0, y, THROUGH_THE_PANE);
+                let line = line_between(&sketch, &start, &end).unwrap();
+                assert_eq!(holds_direction(&sketch, &line, true), level, "{held:?}");
+                // The triangle's three and the one line: nothing else added.
+                assert_eq!(sketch.lines.len(), 4, "{held:?}");
+                assert_eq!(sketch.constraints.len(), usize::from(level), "{held:?}");
+                assert_eq!(never_waits::waits(), 0);
+            }
         }
         Command::FinishSketch => {
             use silico_app::sketch::tools::Choice;

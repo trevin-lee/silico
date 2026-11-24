@@ -661,12 +661,13 @@ mod tests {
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
         // By hand: File 5 rows (135), Edit 5 (135: Undo, Redo, Search commands, Rename,
         // Delete), Rebuild 4 (113: Rebuild, Rebuild everything, Reload, Stop), View 13 (311,
-        // Look At its last key's), Selection 5 (135), Dialogs 2 (69), Sketch 9 (223), Help 1
-        // (47). The least height that takes three columns, filled in order, is 460: below it
-        // View can't take Selection (311 + 14 + 135 = 460), and Selection to Help (135 + 14 +
-        // 69 + 14 + 223 + 14 + 47 = 516) take two more. At 460, File, Edit, and Rebuild (135
+        // Look At its last key's), Selection 5 (135), Dialogs 2 (69), Sketch 10 (245, Sketch
+        // without relations among them), Help 1 (47). The least height that takes three
+        // columns, filled in order, is 460: below it View can't take Selection (311 + 14 +
+        // 135 = 460), and Selection to Help (135 + 14 + 69 + 14 + 245 + 14 + 47 = 538) take
+        // two more. At 460, File, Edit, and Rebuild (135
         // + 14 + 135 + 14 + 113 = 411); View and Selection (460); Dialogs, Sketch, and Help
-        // (69 + 14 + 223 + 14 + 47 = 367).
+        // (69 + 14 + 245 + 14 + 47 = 389).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
@@ -679,7 +680,7 @@ mod tests {
             ("SELECTION", 1, height(13.0) + css::GROUP_GAP),
             ("DIALOGS", 2, 0.0),
             ("SKETCH", 2, height(2.0) + css::GROUP_GAP),
-            ("HELP", 2, height(2.0) + height(9.0) + 2.0 * css::GROUP_GAP),
+            ("HELP", 2, height(2.0) + height(10.0) + 2.0 * css::GROUP_GAP),
         ];
         for (name, at_column, down) in placed {
             let shown = texts(&h, name);
@@ -828,7 +829,7 @@ mod tests {
         let inside = frame_of(&h).shrink(css::BORDER);
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
         // The tallest column: View's and Selection's, their 18 rows and a gap (460, by hand;
-        // File's, Edit's, and Rebuild's are 389, and Dialogs', Sketch's, and Help's 367).
+        // File's, Edit's, and Rebuild's are 411, and Dialogs', Sketch's, and Help's 389).
         let title = css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN;
         let tallest = top + 2.0 * title + 18.0 * css::ROW_H + css::GROUP_GAP;
         assert!(near(tallest - top, 460.0));
@@ -952,7 +953,7 @@ mod tests {
 
     /// A window narrower than the sheet and its margins, tall enough for one column of
     /// every group.
-    const NARROW: Vec2 = Vec2::new(500.0, 1400.0);
+    const NARROW: Vec2 = Vec2::new(500.0, 1500.0);
 
     /// Each group's height, with `rows` commands, by hand: its title's 16 line, 4, its 1
     /// underline, 4, and 22 a row.
@@ -990,7 +991,7 @@ mod tests {
             ("VIEW", 13.0),
             ("SELECTION", 5.0),
             ("DIALOGS", 2.0),
-            ("SKETCH", 9.0),
+            ("SKETCH", 10.0),
             ("HELP", 1.0),
         ] {
             let shown = texts(&h, name);

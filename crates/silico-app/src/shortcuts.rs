@@ -14,11 +14,12 @@
 //! Sketch mode's group, `Sketch` (*while a sketch is open*), comes between Dialogs and Help
 //! as the prototype orders them: L line, R rectangle, C circle, A arc, P point, T trim,
 //! D Smart Dimension, X construction, and Ctrl+Enter Finish Sketch, each its SKETCH tab's
-//! button's (`crate::toolbar`); the app takes them only while a sketch is open.
+//! button's (`crate::toolbar`); the app takes them only while a sketch is open. Among them,
+//! before Finish Sketch, *Sketch without relations*: Ctrl (⌘ on macOS) held as the pointer
+//! acts, which the sketch tools read from the pointer's events (`Chord::Held`), descriptive
+//! only, as Orbit's is.
 //!
 //! Only what the app does today is here. Left out, each a seam:
-//! - SEAM: hold Ctrl for no relations (the prototype's *Sketch without relations*), a held
-//!   modifier the sketch tools read from the pointer's events, no key's press.
 //! - SEAM(M5.7): Select Other (right-click), picking's part 3.
 //! - F5, SolidWorks' key for its filter toolbar, which the app hasn't: the app takes it
 //!   itself and says where the filters are (`App::keys`), as the prototype's F5 is no
@@ -82,6 +83,7 @@ pub enum Command {
     Trim,
     Dimension,
     Construction,
+    NoRelations,
     FinishSketch,
     Shortcuts,
 }
@@ -149,6 +151,10 @@ pub enum Chord {
     /// The pointer's gesture, with its modifiers held: descriptive only, for the sheet. The
     /// viewport takes the gesture itself; [`take`] never matches it.
     Pointer(Modifiers, &'static str),
+    /// Modifiers held as the pointer acts, whatever its gesture: descriptive only, for the
+    /// sheet, its caps the modifiers' and then `hold` (the prototype's `['Mod', 'hold']`).
+    /// The sketch tools read it from the pointer's events; [`take`] never matches it.
+    Held(Modifiers),
 }
 
 /// A command as the registry holds it.
@@ -594,6 +600,16 @@ const CONSTRUCTION: Entry = entry(
     Some(CONSTRUCTION_HELP),
 )
 .with_icon(Icon::Construction);
+/// Sketch without relations (the prototype's `sNoRel`, its words): Ctrl, ⌘ on macOS, held
+/// as a sketch tool's click is made, so the pointer adds no relations it infers; a click on
+/// a point still shares it, and a tool's own relations stay (`silico_core::sketch_tools`).
+const NO_RELATIONS: Entry = entry(
+    Command::NoRelations,
+    "Sketch without relations",
+    Group::Sketch,
+    &[Chord::Held(Modifiers::COMMAND)],
+    Some("Holding it stops the pointer adding relations"),
+);
 const FINISH_SKETCH: Entry = entry(
     Command::FinishSketch,
     "Finish Sketch",
@@ -612,7 +628,7 @@ const SHORTCUTS: Entry = entry(
 .with_icon(Icon::Help);
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 48] = [
+pub const REGISTRY: [Entry; 49] = [
     NEW,
     OPEN,
     SAVE,
@@ -659,6 +675,7 @@ pub const REGISTRY: [Entry; 48] = [
     TRIM,
     DIMENSION,
     CONSTRUCTION,
+    NO_RELATIONS,
     FINISH_SKETCH,
     SHORTCUTS,
 ];
@@ -713,6 +730,7 @@ impl Command {
             Command::Trim => &TRIM,
             Command::Dimension => &DIMENSION,
             Command::Construction => &CONSTRUCTION,
+            Command::NoRelations => &NO_RELATIONS,
             Command::FinishSketch => &FINISH_SKETCH,
             Command::Shortcuts => &SHORTCUTS,
         }
@@ -776,6 +794,9 @@ pub fn key_cap(key: Key) -> String {
     key_name(key).to_owned()
 }
 
+/// The last cap of a [`Chord::Held`]: the prototype's word for a modifier held.
+const HOLD: &str = "hold";
+
 /// A cap for each of `chord`'s modifiers, Command (Ctrl off macOS) first, then Shift, then
 /// its key's or its gesture's, as the platform names them.
 pub fn caps(ctx: &egui::Context, chord: Chord) -> Vec<String> {
@@ -784,6 +805,7 @@ pub fn caps(ctx: &egui::Context, chord: Chord) -> Vec<String> {
             (shortcut.modifiers, key_name(shortcut.logical_key))
         }
         Chord::Pointer(modifiers, gesture) => (modifiers, gesture),
+        Chord::Held(modifiers) => (modifiers, HOLD),
     };
     let mut caps = start::modifier_caps(ctx, modifiers);
     caps.push(last.to_owned());
@@ -869,7 +891,7 @@ fn take_chord(ui: &mut Ui, chord: Chord) -> bool {
     match chord {
         Chord::Key(shortcut) => ui.input_mut(|input| input.consume_shortcut(&shortcut)),
         Chord::Exact(shortcut) => take_exact(ui, shortcut),
-        Chord::Pointer(..) => false,
+        Chord::Pointer(..) | Chord::Held(..) => false,
     }
 }
 
@@ -980,6 +1002,7 @@ mod tests {
             (Command::Trim, Some(Icon::Trim)),
             (Command::Dimension, Some(Icon::Dimension)),
             (Command::Construction, Some(Icon::Construction)),
+            (Command::NoRelations, None),
             (Command::FinishSketch, Some(Icon::Check)),
             (Command::Shortcuts, Some(Icon::Help)),
         ];
@@ -1159,8 +1182,9 @@ mod tests {
     #[test]
     fn the_sketch_group_is_the_prototypes_letters_and_ctrl_enter_between_dialogs_and_help() {
         // js/app.js's `CMD`: sLine L, sRect R, sCircle C, sArc A, sPoint P, sTrim T, sDim D,
-        // sConstruction X, finishSketch Mod Enter, all `group: 'Sketch'`; its sheet's `order`
-        // puts Sketch after Dialogs, before Help, noted "while a sketch is open".
+        // sConstruction X, sNoRel Mod held, finishSketch Mod Enter, all `group: 'Sketch'`
+        // (sExtend and sSplit have no keys, so no row); its sheet's `order` puts Sketch
+        // after Dialogs, before Help, noted "while a sketch is open".
         let sketch: Vec<(Command, &[Chord])> = REGISTRY
             .iter()
             .filter(|entry| entry.group == Group::Sketch)
@@ -1178,6 +1202,7 @@ mod tests {
                 (Command::Trim, &[exact(Key::T)]),
                 (Command::Dimension, &[exact(Key::D)]),
                 (Command::Construction, &[exact(Key::X)]),
+                (Command::NoRelations, &[Chord::Held(Modifiers::COMMAND)]),
                 (
                     Command::FinishSketch,
                     &[Chord::Key(KeyboardShortcut::new(
@@ -1199,6 +1224,15 @@ mod tests {
         assert_eq!(Command::FinishSketch.keys_text(&nix), "Ctrl+↵");
         assert_eq!(Command::Dimension.caps(&nix), ["D"]);
         assert_eq!(Command::Dimension.label(), "Smart Dimension");
+        // sNoRel's `['Mod', 'hold']`, its label and its words.
+        assert_eq!(Command::NoRelations.caps(&mac), ["⌘", "hold"]);
+        assert_eq!(Command::NoRelations.keys_text(&nix), "Ctrl+hold");
+        let held = Command::NoRelations.entry();
+        assert_eq!(held.label, "Sketch without relations");
+        assert_eq!(
+            held.description,
+            Some("Holding it stops the pointer adding relations")
+        );
     }
 
     #[test]
