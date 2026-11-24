@@ -30,11 +30,11 @@ pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
 /// equations) took 74 s on a loaded M4 Pro and 206 s at a load of 80, and at 2,048 unknowns
 /// about 1,660 s; the same chain with one line given `horizontal` 2,000 times (2,514
 /// equations, every one kept, since the diagnosis's trial solve fails and so calls none of
-/// them redundant) took DogLeg alone 135 s at a load of 97 and all four past 300 s, which
-/// ends as `worker_timeout` naming the sketch (M3.3's reviews; decided on the maintainer's
-/// behalf, 2026-10-17). A count of the whole sketch; counting only its largest part
-/// (`SketchSystem::part`'s union-find), which PlaneGCS solves apart, is the next step when
-/// imports bring bigger sketches.
+/// them redundant) took DogLeg alone 135 s at a load of 97 and all four past 300 s, the
+/// limit then; a solve past `SKETCH_TIMEOUT` ends as `worker_timeout` naming the sketch
+/// (M3.3's reviews; decided on the maintainer's behalf, 2026-10-17). A count of the whole
+/// sketch; counting only its largest part (`SketchSystem::part`'s union-find), which
+/// PlaneGCS solves apart, is the next step when imports bring bigger sketches.
 pub const MAX_SKETCH_UNKNOWNS: usize = 1024;
 
 /// At most this many unknowns in the part of a sketch a drag moves (the unknowns its

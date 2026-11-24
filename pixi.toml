@@ -31,7 +31,8 @@ libboost-headers = "==1.86.0"
 # paths in, so nothing here sets a loader variable for other programs.
 mesa-lavapipe = "==26.2.5"
 libvulkan-loader = "1.4.*"
-# The filler's decisions' tests (tests/filler-decisions.sh) answer GitHub's API through jq.
+# A mutants run's verdict (mutants.yml's summary, tests/mutants-summary-test.sh) reads its
+# shards' lists through jq.
 jq = ">=1.8.2,<2"
 
 # mesa-lavapipe's macOS builds (the render worker's rasterizer) need macOS 15 or later. The
@@ -53,7 +54,7 @@ occt = { cmd = "bash third_party/occt/build.sh", description = "Fetch, verify, p
 stress = { cmd = "bash third_party/occt/scripts/stress.sh", depends-on = ["occt"], description = "Run the 605-case stress test 10 times; each run must match the reference byte for byte" }
 test-guards = { cmd = "bash third_party/occt/scripts/test-guards.sh", depends-on = ["occt"], description = "Prove every OCCT build guard rejects bad input" }
 test-cache = { cmd = "bash third_party/occt/scripts/test-cache.sh", description = "Prove the shared OCCT build cache keeps, replaces, and removes entries as documented" }
-test-ci-decisions = { cmd = "bash tests/filler-decisions.sh && bash tests/lane-caches-test.sh && bash tests/mutants-tests-test.sh && bash tests/mutants-keep-test.sh && bash tests/mutants-summary-test.sh", description = "Prove the filler's decisions (filler.yml, proptest-room.sh) against made-up states of the CI, the gate checkouts' stale lane caches let go (tests/lane-caches.sh), a mutants run's default tests (.github/mutants-tests.py), a mutants shard's outcomes kept on the VM (.github/mutants-keep.sh), and a mutants run's verdict (mutants.yml's summary, .github/mutants-none.sh)" }
+test-ci-decisions = { cmd = "bash tests/lane-caches-test.sh && bash tests/mutants-tests-test.sh && bash tests/mutants-keep-test.sh && bash tests/mutants-summary-test.sh", description = "Prove the gate checkouts' stale lane caches let go (tests/lane-caches.sh), a mutants run's default tests (.github/mutants-tests.py), a mutants shard's outcomes kept for its summary (.github/mutants-keep.sh), and a mutants run's verdict (mutants.yml's summary, .github/mutants-none.sh)" }
 # The libm shim is outside the workspace (its own profile), so it gets its own Cargo
 # target dir, target/libm-shim, for tests and lint. The OCCT build compiles it in a
 # temporary directory inside the shared build cache.

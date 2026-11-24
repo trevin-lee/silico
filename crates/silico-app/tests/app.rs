@@ -5161,6 +5161,10 @@ fn a_sketch_bar_with_a_usual_long_name_keeps_clear_of_the_viewcube_and_home_view
         })
         .collect::<Vec<_>>();
     assert_eq!(rows, [(false, 1)]);
+    // Sketch mode turned square to the triangle, from the top, as it opened (its own test):
+    // Home first, so the cube shows its front.
+    h.key_press(Key::Home);
+    step(&mut h);
     h.get_by_role_and_label(Role::Group, "ViewCube")
         .get_by_label("Front")
         .click();
@@ -22115,6 +22119,405 @@ fn shortcuts_opens_the_shortcut_sheet() {
     assert_eq!(never_waits::waits(), 0);
 }
 
+// ---- A selected feature's PARAMETERS, Edit feature, and Suppress (app.js's `featureProps`) ----
+
+/// A plate sketched on XZ (40 by 20, its bottom and right sides dimensioned 40 and 20 and
+/// its right side at 90° to the x axis, its top's 40 a reference dimension), padded 12 mm
+/// along the sketch's normal, −Y; two holes sketched on XZ, two circles of radius 3, cut
+/// through all of the pad; and a block whose two edges are filleted to 1.5 mm.
+const PARAMETERS_PART: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 6,
+  "features": [
+    {"id": "s0000001", "type": "sketch", "v": 1, "name": "Plate", "plane": "xz", "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}, {"id": "pa000004", "x": 0, "y": 20, "construction": false}], "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}], "circles": [], "arcs": [], "constraints": [{"id": "ka000001", "type": "length", "line": "na000001", "value": 40, "driving": true}, {"id": "ka000002", "type": "length", "line": "na000002", "value": 20, "driving": true}, {"id": "ka000003", "type": "length", "line": "na000003", "value": 40, "driving": false}, {"id": "ka000004", "type": "angle", "a": "na000002", "b": "x_axis", "value": 90, "driving": true}]},
+    {"id": "p0000001", "type": "pad", "v": 1, "name": "Plate pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 12, "reversed": false}},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Holes", "plane": "xz", "points": [{"id": "pc000001", "x": 10, "y": 10, "construction": false}, {"id": "pc000002", "x": 30, "y": 10, "construction": false}], "lines": [], "circles": [{"id": "ca000001", "center": "pc000001", "radius": 3, "construction": false}, {"id": "ca000002", "center": "pc000002", "radius": 3, "construction": false}], "arcs": [], "constraints": []},
+    {"id": "q0000001", "type": "pocket", "v": 1, "name": "Bores", "base": "p0000001", "sketch": "s0000002", "extent": {"type": "through_all", "reversed": false}},
+    {"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [100, 0, 0], "length": 40, "width": 20, "height": 10},
+    {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge5"], "radius": 1.5}
+  ]
+}
+"#;
+
+/// The property panel's PARAMETERS rows, in order, each its key and its value's words (a
+/// link's words, then the words after it): from its section's head to HEALTH's.
+fn parameter_rows(h: &AppHarness) -> Vec<(String, String)> {
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    let said = |node: &egui_kittest::Node<'_>| {
+        let node = node.accesskit_node();
+        node.value().or_else(|| node.label()).unwrap_or_default()
+    };
+    let nodes: Vec<_> = pane
+        .query_all_by(|node| matches!(node.role(), Role::Label | Role::Link))
+        .collect();
+    let Some(start) = nodes.iter().position(|node| said(node) == "PARAMETERS") else {
+        return Vec::new();
+    };
+    let end = nodes
+        .iter()
+        .position(|node| said(node) == "HEALTH")
+        .unwrap_or(nodes.len());
+    let rows = &nodes[start + 1..end];
+    let mut out: Vec<(String, String, f32)> = Vec::new();
+    for node in rows {
+        let y = node.rect().center().y;
+        match out.last_mut() {
+            Some((_, value, at)) if (*at - y).abs() < 1.0 => {
+                if !value.is_empty() {
+                    value.push(' ');
+                }
+                value.push_str(&said(node));
+            }
+            _ => out.push((said(node), String::new(), y)),
+        }
+    }
+    out.into_iter()
+        .map(|(key, value, _)| (key, value))
+        .collect()
+}
+
+fn rows_of(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    expected
+        .iter()
+        .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+        .collect()
+}
+
+/// The button labelled `label` in the property panel, if it's there.
+fn property_button<'a>(h: &'a AppHarness, label: &'a str) -> Option<egui_kittest::Node<'a>> {
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .query_by_role_and_label(Role::Button, label)
+}
+
+/// The property panel's node of `role` labelled `label` scrolled into view, as a person
+/// scrolls the panel to it (the feature's cards can push it below the panel's foot), then
+/// clicked.
+fn click_in_properties(h: &mut AppHarness, role: Role, label: &str) {
+    let find = |h: &AppHarness| {
+        h.get_by_role_and_label(Role::Pane, "Properties")
+            .get_by_role_and_label(role, label)
+            .rect()
+    };
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(role, label)
+        .scroll_to_me();
+    // Scrolled smoothly: waited for until it's still, where a click on its middle lands in
+    // the panel.
+    let last = std::cell::Cell::new(None);
+    let what = format!("{label} scrolled into the panel, and stopped");
+    step_until(h, &what, |h| {
+        let pane = h.get_by_role_and_label(Role::Pane, "Properties").rect();
+        let now = find(h);
+        let still = last.replace(Some(now)) == Some(now);
+        still && pane.contains(now.center())
+    });
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(role, label)
+        .click();
+    step(h);
+}
+
+#[test]
+fn a_pads_parameters_are_its_profile_its_extent_and_its_direction_from_the_document() {
+    // app.js's `featureProps` for a pad: Profile, its sketch's name (a link) and its
+    // profile's regions; Extent, `Distance · D mm`; Direction, `Normal (−Y)` for a sketch on
+    // XZ, whose normal is −Y (silico-protocol's `SketchPlane::Xz`), `Reversed (+Y)` reversed.
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, path) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    select(&mut h, "Plate pad");
+    let want = rows_of(&[
+        ("Profile", "Plate · 1 region"),
+        ("Extent", "Distance · 12 mm"),
+        ("Direction", "Normal (\u{2212}Y)"),
+    ]);
+    step_until(&mut h, "its parameters", |h| parameter_rows(h) == want);
+    // Another program writes the pad 7.5 long and reversed: reloaded, its rows are the new
+    // document's.
+    let written = PARAMETERS_PART.replace(
+        r#""length": 12, "reversed": false"#,
+        r#""length": 7.5, "reversed": true"#,
+    );
+    std::fs::write(&path, written).unwrap();
+    let want = rows_of(&[
+        ("Profile", "Plate · 1 region"),
+        ("Extent", "Distance · 7.5 mm"),
+        ("Direction", "Reversed (+Y)"),
+    ]);
+    step_until(&mut h, "the written pad's parameters", |h| {
+        parameter_rows(h) == want
+    });
+    // The profile's link selects its sketch, whose properties then show. Clicked by its
+    // accessibility action, which reaches the link wherever the panel lays it out: the panel
+    // moves as the reload's reads answer, and on a loaded runner a pointer aimed where the
+    // link was still for two frames landed on Edit feature, opening the pad's dialog.
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .get_by_role_and_label(Role::Link, "Plate")
+        .click_accesskit();
+    step(&mut h);
+    let plate = silico_core::document::FeatureId::new("s0000001").unwrap();
+    step_until(&mut h, "the sketch selected", |h| {
+        h.state().tabs()[0].selection().feature() == Some(&plate)
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketchs_a_pockets_and_a_fillets_parameters_are_the_prototypes_rows_and_a_box_has_none() {
+    let f = fixture();
+    let (mut h, _) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Round"));
+    // A sketch's: its plane as the browser names it, its definition (the fake's solve
+    // leaves no degree of freedom: fully defined), its curves by kind, and its driving
+    // dimensions, lengths then angles (the top's reference 40 left out).
+    select(&mut h, "Plate");
+    let want = rows_of(&[
+        ("Plane", "XZ"),
+        ("Definition", "Fully defined"),
+        ("Curves", "4 lines"),
+        ("Dimensions", "40, 20 mm · 90°"),
+    ]);
+    step_until(&mut h, "the plate's parameters", |h| {
+        parameter_rows(h) == want
+    });
+    select(&mut h, "Holes");
+    let want = rows_of(&[
+        ("Plane", "XZ"),
+        ("Definition", "Fully defined"),
+        ("Curves", "2 circles, Ø 6 mm"),
+        ("Dimensions", "None"),
+    ]);
+    step_until(&mut h, "the holes' parameters", |h| {
+        parameter_rows(h) == want
+    });
+    // A pocket's: its profile (two circles, two regions), its extent, its way (its default,
+    // against its sketch's normal, −Y on XZ: +Y), and its base by name.
+    select(&mut h, "Bores");
+    let want = rows_of(&[
+        ("Profile", "Holes · 2 regions"),
+        ("Extent", "Through all"),
+        ("Direction", "Default (+Y)"),
+        ("Base", "Plate pad"),
+    ]);
+    step_until(&mut h, "the pocket's parameters", |h| {
+        parameter_rows(h) == want
+    });
+    // A fillet's: its edges counted, its radius, and its base.
+    select(&mut h, "Round");
+    let want = rows_of(&[("Edges", "2"), ("Radius", "1.5 mm"), ("Base", "Block")]);
+    step_until(&mut h, "the fillet's parameters", |h| {
+        parameter_rows(h) == want
+    });
+    // A box, a primitive the app makes none of: no PARAMETERS.
+    select(&mut h, "Block");
+    step(&mut h);
+    assert!(!shows(&h, "Properties", "PARAMETERS"));
+    assert!(shows(&h, "Properties", "HEALTH"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_panels_edit_feature_and_suppress_do_what_the_feature_menus_items_do() {
+    let f = fixture();
+    let (mut h, _) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    // Edit feature: the pad's dialog, as the menu's Edit feature and a double-click open it.
+    select(&mut h, "Plate pad");
+    let edit = property_button(&h, "Edit feature").unwrap();
+    assert!(!edit.accesskit_node().is_disabled());
+    click_in_properties(&mut h, Role::Button, "Edit feature");
+    step_until(&mut h, "the pad's dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
+            && field(h, In::Dialog, "Length").value().as_deref() == Some("12")
+    });
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    // A sketch's is Edit Sketch, which opens it in sketch mode.
+    select(&mut h, "Holes");
+    assert!(property_button(&h, "Edit feature").is_none());
+    property_button(&h, "Edit Sketch")
+        .unwrap()
+        .click_accesskit();
+    step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
+    leave_sketch(&mut h, false);
+    // Suppress: the pocket suppressed by `suppress_feature`, its health Suppressed, and
+    // the button Unsuppress, which unsuppresses it.
+    select(&mut h, "Bores");
+    click_in_properties(&mut h, Role::Button, "Suppress");
+    step_until(&mut h, "suppressed", |h| {
+        property(h, "State").as_deref() == Some("Suppressed")
+            && property_button(h, "Unsuppress").is_some()
+    });
+    let suppressed = |h: &AppHarness| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .and_then(|timeline| timeline.features.as_ref())
+            .and_then(|features| features.iter().find(|entry| entry.name == "Bores"))
+            .map(|entry| entry.suppressed)
+    };
+    assert_eq!(suppressed(&h), Some(true));
+    click_in_properties(&mut h, Role::Button, "Unsuppress");
+    step_until(&mut h, "unsuppressed", |h| {
+        suppressed(h) == Some(false) && property_button(h, "Suppress").is_some()
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn on_a_document_the_gate_refused_the_panels_buttons_are_off_saying_why_as_the_menus_items() {
+    let f = fixture();
+    // The block's height below 0: the gate refuses the document, which still lists its
+    // features.
+    let refused = PARAMETERS_PART.replace(r#""height": 10"#, r#""height": -10"#);
+    let (mut h, _) = f.opened("refused.silico", &refused);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Bores"));
+    step_until(&mut h, "refused", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0)
+    });
+    let why = "The document has problems of its own: no feature changes until they're mended";
+    for (feature, edit) in [("Bores", "Edit feature"), ("Holes", "Edit Sketch")] {
+        select(&mut h, feature);
+        for label in [edit, "Suppress"] {
+            let button = property_button(&h, label).unwrap();
+            let node = button.accesskit_node();
+            assert!(node.is_disabled(), "{feature}'s {label}");
+            assert_eq!(
+                node.description().as_deref(),
+                Some(why),
+                "{feature}'s {label}"
+            );
+        }
+        // A click does nothing: no dialog, no sketch mode, nothing suppressed.
+        click_in_properties(&mut h, Role::Button, edit);
+        click_in_properties(&mut h, Role::Button, "Suppress");
+        step(&mut h);
+        assert!(!dialog_open(&h));
+        assert!(sketch_mode(&h).is_none());
+        assert!(property_button(&h, "Unsuppress").is_none());
+    }
+    // A refused document's sketch is never read: no PARAMETERS, never an empty header.
+    assert!(!shows(&h, "Properties", "PARAMETERS"));
+    assert!(shows(&h, "Properties", "HEALTH"));
+    // The pointer over the off Suppress: its reason in its tooltip, as an off menu item's.
+    property_button(&h, "Suppress").unwrap().hover();
+    step_until(&mut h, "Suppress's tooltip", |h| {
+        h.query_all_by_role(Role::Label).any(|node| {
+            let node = node.accesskit_node();
+            node.value().or_else(|| node.label()).as_deref() == Some(why)
+        })
+    });
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn health_and_the_buttons_stay_put_while_a_selected_features_parameters_are_read() {
+    let f = fixture();
+    let (mut h, _) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    // The pad's rows read once, and its warning's card shown (its missing fingerprint), where
+    // its buttons then stand.
+    select(&mut h, "Plate pad");
+    step_until(&mut h, "its parameters and its card", |h| {
+        parameter_rows(h).len() == 3 && shows(h, "Properties", "fingerprint_missing")
+    });
+    let edit_at = |h: &AppHarness| property_button(h, "Edit feature").map(|button| button.rect());
+    let settled_at = edit_at(&h).unwrap();
+    // Another feature, then the pad again: its text is read again (the last read was the
+    // pocket's), and every frame from the click until it answers keeps the room its rows
+    // took, so the buttons never move.
+    select(&mut h, "Bores");
+    let reads = h.state().tabs()[0].parameters.reads;
+    h.get_by_role_and_label(Role::Pane, "Timeline")
+        .get_by_label("Plate pad")
+        .click();
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        step(&mut h);
+        // The frame drawn is the pad's (the click's own frame drew the pocket's, then took
+        // the click): its Name field says so.
+        if name_field(&h).value().as_deref() == Some("Plate pad") {
+            assert_eq!(
+                edit_at(&h),
+                Some(settled_at),
+                "Edit feature moved while the pad was read"
+            );
+            if parameter_rows(&h).len() == 3 {
+                break;
+            }
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never the pad's rows again"
+        );
+    }
+    assert!(
+        h.state().tabs()[0].parameters.reads > reads,
+        "the pad's text read again"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_features_text_is_read_once_for_each_revision_its_rows_kept_while_the_next_is_read() {
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, path) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    select(&mut h, "Plate pad");
+    let twelve = rows_of(&[
+        ("Profile", "Plate · 1 region"),
+        ("Extent", "Distance · 12 mm"),
+        ("Direction", "Normal (\u{2212}Y)"),
+    ]);
+    step_until(&mut h, "its parameters", |h| parameter_rows(h) == twelve);
+    let reads = |h: &AppHarness| h.state().tabs()[0].parameters.reads;
+    let before = reads(&h);
+    // Frames drawn with nothing changed read nothing again.
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(reads(&h), before);
+    assert_eq!(parameter_rows(&h), twelve);
+    // Another program writes the pad 7.5 long: reloaded at a new revision, one read is
+    // sent, and the frame that sends it still shows the rows as last read.
+    std::fs::write(
+        &path,
+        PARAMETERS_PART.replace(r#""length": 12,"#, r#""length": 7.5,"#),
+    )
+    .unwrap();
+    step_until(&mut h, "the read of the new revision sent", |h| {
+        reads(h) == before + 1
+    });
+    assert_eq!(parameter_rows(&h), twelve, "the rows as last read, kept");
+    let seven = rows_of(&[
+        ("Profile", "Plate · 1 region"),
+        ("Extent", "Distance · 7.5 mm"),
+        ("Direction", "Normal (\u{2212}Y)"),
+    ]);
+    step_until(&mut h, "the new revision's rows", |h| {
+        parameter_rows(h) == seven
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert_eq!(reads(&h), before + 1, "one read for the revision");
+    assert_eq!(never_waits::waits(), 0);
+}
+
 // ---- The keyboard: one registry for the keys, the sheet, and the tooltips ----
 
 use eframe::egui::{Key, Modifiers};
@@ -36641,9 +37044,11 @@ fn two_faces_show_their_distance_normal_distance_and_angle_and_a_pair_angle_refu
     };
     assert!(top(&h, "MEASURE") < top(&h, "SELECTION"));
     // The x = 0 face and the bottom: they meet, at 90°, so no normal distance.
+    // Each waited for: the distance is the kernel's, answered apart from the angle (which
+    // asks none), so either may show first. The normal distance comes with the distance.
     select_in_box(&mut h, &["Face1", "Face5"]);
+    row_until(&mut h, "Distance", "0.00 mm");
     row_until(&mut h, "Angle", "90.00°");
-    assert_eq!(row_value(&h, "Distance").as_deref(), Some("0.00 mm"));
     assert_eq!(row_value(&h, "Normal distance"), None);
     // The top and Vertex1: `angle` refuses a vertex, so there's no Angle row and nothing said
     // of it; the vertex is its own centre, 10 from the face.
@@ -42009,6 +42414,385 @@ fn said_done(h: &AppHarness, start: &str) -> Option<String> {
     status_said(h, start)
 }
 
+#[test]
+fn a_pads_menus_have_edit_sketch_after_edit_feature_and_it_opens_the_sketch_it_is_built_from() {
+    // SolidWorks' Edit Sketch opens "from the sketch, from a feature built on it, or from one
+    // of its entities" (docs/ux/solidworks.md, §5, *Editing upstream*; m5.0-app.md, *Editing
+    // a sketch*). The pad is built from Box: its timeline item's menu and its body's row's
+    // each have Edit Sketch right after Edit feature, on, with no keys; Box's own menu has its
+    // one Edit Sketch, as its Edit, and no second.
+    let f = fixture();
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Pad") && shows(h, "Browser", "Pad") && shows(h, "Browser", "Box")
+    });
+    settled(&mut h);
+    let on = |label: &str| (label.to_owned(), feature_menu_keys(label), None);
+    let closed = |h: &mut AppHarness| {
+        h.key_press(Key::Escape);
+        step(h);
+        step(h);
+    };
+    for (pane, find) in [
+        ("Timeline", "Find in browser"),
+        ("Browser", "Find in timeline"),
+    ] {
+        menu_on(&mut h, pane, "Pad");
+        assert_eq!(
+            menu_items(&h, "PAD"),
+            [
+                on("Edit feature double-click"),
+                on("Edit Sketch"),
+                on("Rename"),
+                on("Suppress"),
+                on(find),
+                on("Delete"),
+            ],
+            "{pane}"
+        );
+        closed(&mut h);
+    }
+    menu_on(&mut h, "Timeline", "Box");
+    assert_eq!(
+        menu_items(&h, "BOX"),
+        [
+            on("Edit Sketch double-click"),
+            on("Rename"),
+            on("Suppress"),
+            on("Find in browser"),
+            on("Delete"),
+        ]
+    );
+    closed(&mut h);
+    // Chosen from the pad's item: sketch mode on Box, Edit Sketch's (not Create Sketch's),
+    // Box selected as itself, as its own Edit Sketch selects it, and nothing sent to the
+    // document.
+    let text = text_of(&f.sessions, &h);
+    menu_on(&mut h, "Timeline", "Pad");
+    menu_click(&mut h, "PAD", "Edit Sketch");
+    sketch_mode_on(&mut h, "s0000001");
+    sketch_read(&mut h);
+    assert!(sketch_mode(&h).unwrap().created.is_none());
+    assert_eq!(selected_features(&h), ["s0000001"]);
+    assert_eq!(
+        sketch_mode(&h)
+            .unwrap()
+            .drawable()
+            .unwrap()
+            .members
+            .lines
+            .len(),
+        4
+    );
+    // In sketch mode the pad's Edit Sketch is off as its Edit feature is, saying why.
+    let why = "Finish or cancel the sketch first";
+    let off = |label: &str| {
+        (
+            label.to_owned(),
+            feature_menu_keys(label),
+            Some(why.to_owned()),
+        )
+    };
+    menu_on(&mut h, "Timeline", "Pad");
+    assert_eq!(
+        menu_items(&h, "PAD")[..2],
+        [off("Edit feature double-click"), off("Edit Sketch")]
+    );
+    closed(&mut h);
+    leave_sketch(&mut h, false);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(text_of(&f.sessions, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pockets_edit_sketch_opens_its_own_sketch_and_a_box_or_a_sketch_on_a_face_has_none_of_its_own()
+{
+    // POCKETED_MID: Cut, a pocket of the Pin built from Loose; Sketch2, on the Block's top,
+    // whose one input is the Block, a box (not a sketch); Block and Pin, built from no
+    // sketch. Only Cut's menu has Edit Sketch beside Edit feature, and it opens Loose, not
+    // Sketch2 or another sketch of the part.
+    let f = fixture();
+    let (mut h, _) = f.opened("pocketed.silico", POCKETED_MID);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Later"));
+    settled(&mut h);
+    let labels = |h: &AppHarness, head: &str| -> Vec<String> {
+        menu_items(h, head)
+            .into_iter()
+            .map(|(label, _, _)| label)
+            .collect()
+    };
+    for (name, head, first) in [
+        ("Block", "BLOCK", "Edit feature double-click"),
+        ("Pin", "PIN", "Edit feature double-click"),
+        ("Sketch2", "SKETCH2", "Edit Sketch double-click"),
+        ("Later", "LATER", "Edit feature double-click"),
+    ] {
+        menu_on(&mut h, "Timeline", name);
+        let shown = labels(&h, head);
+        assert_eq!(shown.len(), 5, "{name}: {shown:?}");
+        assert_eq!(shown[0], first, "{name}");
+        assert!(
+            shown[1..].iter().all(|label| label != "Edit Sketch"),
+            "{name}: {shown:?}"
+        );
+        h.key_press(Key::Escape);
+        step(&mut h);
+        step(&mut h);
+    }
+    menu_on(&mut h, "Timeline", "Cut");
+    assert_eq!(
+        labels(&h, "CUT")[..2],
+        ["Edit feature double-click", "Edit Sketch"]
+    );
+    menu_click(&mut h, "CUT", "Edit Sketch");
+    sketch_mode_on(&mut h, "s0000009");
+    sketch_read(&mut h);
+    assert_eq!(selected_features(&h), ["s0000009"]);
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Frames stepped until sketch mode is open on the sketch `id`.
+fn sketch_mode_on(h: &mut AppHarness, id: &str) {
+    let want = sketch_id(id);
+    step_until(h, "sketch mode on the sketch", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.as_ref() == Some(&want))
+    });
+}
+
+#[test]
+fn edit_sketch_opens_the_sweeps_own_sketch_not_the_documents_first() {
+    // POCKETED_MID with Cut built from Sketch2, the later of its two sketches (on the
+    // Block's top), in place of Loose, the first: Cut's Edit Sketch opens Sketch2.
+    let text = POCKETED_MID.replace(r#""sketch": "s0000009""#, r#""sketch": "s0000002""#);
+    assert_ne!(text, POCKETED_MID);
+    let f = fixture();
+    let (mut h, _) = f.opened("pocketed.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Cut"));
+    settled(&mut h);
+    menu_on(&mut h, "Timeline", "Cut");
+    menu_click(&mut h, "CUT", "Edit Sketch");
+    sketch_mode_on(&mut h, "s0000002");
+    sketch_read(&mut h);
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_on_another_sketchs_face_has_one_edit_sketch_its_own() {
+    // A file may put a sketch on a face named from a sketch (`s0000001.sketch.Face1`): the
+    // gate takes the name, and the rebuild finds no such face. The timeline lists Box as
+    // Sketch2's input, but a sketch is built from no sketch: its menu has its own Edit
+    // Sketch alone.
+    let text = BOXED_PADDED.replace(
+        r#""reversed": false}}
+  ]"#,
+        r#""reversed": false}},
+    {"id": "s0000002", "type": "sketch", "v": 1, "name": "Sketch2", "plane": {"face": "s0000001.sketch.Face1", "x": "+x", "reversed": false}, "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []}
+  ]"#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    let f = fixture();
+    let (mut h, _) = f.opened("on_a_sketch.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Sketch2"));
+    settled(&mut h);
+    assert_eq!(
+        h.state().tabs()[0]
+            .entry("s0000002")
+            .map(|entry| entry.inputs.clone()),
+        Some(vec![sketch_id("s0000001")]),
+        "Box listed as its input"
+    );
+    menu_on(&mut h, "Timeline", "Sketch2");
+    let labels: Vec<String> = menu_items(&h, "SKETCH2")
+        .into_iter()
+        .map(|(label, _, _)| label)
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "Edit Sketch double-click",
+            "Rename",
+            "Suppress",
+            "Find in browser",
+            "Delete"
+        ]
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Hostile input for Edit Sketch from a feature built on the sketch (break-it) ----
+
+/// BOXED_PADDED's Box with a second `horizontal` on its vertical side, na000002, which
+/// already has `vertical`: the sketch conflicts, so the pad built from it is blocked.
+fn boxed_padded_conflicting() -> String {
+    let text = BOXED_PADDED.replace(
+        r#"{"id": "ka000004", "type": "vertical", "line": "na000004"}"#,
+        r#"{"id": "ka000004", "type": "vertical", "line": "na000004"}, {"id": "ka000005", "type": "horizontal", "line": "na000002"}"#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    text
+}
+
+#[test]
+fn edit_sketch_from_a_pad_blocked_by_its_sketchs_conflict_opens_that_sketch_to_mend_it() {
+    // The pad can't build while Box conflicts, which is what Edit Sketch is for: on, as
+    // SolidWorks' is on a feature in error, and it opens Box, read with its conflict.
+    let f = fixture();
+    let (mut h, _) = f.opened("conflicting.silico", &boxed_padded_conflicting());
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pad"));
+    step_until(&mut h, "the pad unbuilt", |h| {
+        h.state().tabs()[0]
+            .entry("p0000001")
+            .is_some_and(|entry| entry.health != silico_core::timeline::Health::Healthy)
+    });
+    settled(&mut h);
+    menu_on(&mut h, "Timeline", "Pad");
+    let items = menu_items(&h, "PAD");
+    assert_eq!(
+        items[1],
+        ("Edit Sketch".to_owned(), None, None),
+        "{items:?}"
+    );
+    menu_click(&mut h, "PAD", "Edit Sketch");
+    sketch_mode_on(&mut h, "s0000001");
+    sketch_read(&mut h);
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_from_a_suppressed_pad_opens_its_sketch_which_suppressing_the_pad_left_alone() {
+    // Suppressing a feature suppresses what's built on it, never what it's built from: Box
+    // stays unsuppressed, so the suppressed pad's Edit Sketch is on and opens it.
+    let text = BOXED_PADDED.replace(
+        r#""name": "Pad", "sketch""#,
+        r#""name": "Pad", "suppressed": true, "sketch""#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    let f = fixture();
+    let (mut h, _) = f.opened("suppressed.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pad"));
+    settled(&mut h);
+    menu_on(&mut h, "Timeline", "Pad");
+    let items = menu_items(&h, "PAD");
+    assert_eq!(
+        items[1],
+        ("Edit Sketch".to_owned(), None, None),
+        "{items:?}"
+    );
+    assert_eq!(items[3].0, "Unsuppress", "{items:?}");
+    menu_click(&mut h, "PAD", "Edit Sketch");
+    sketch_mode_on(&mut h, "s0000001");
+    sketch_read(&mut h);
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_from_a_pad_in_a_document_the_gate_refuses_is_off_saying_why() {
+    // A cut after the pad whose tool names no feature: the gate refuses the document, so no
+    // feature changes until it's mended, the sketch the pad is built from among them. Its
+    // Edit Sketch is off with the feature menus' reason, as its Edit feature is, and asked
+    // anyway (as a stale menu's click would ask it) opens nothing.
+    let text = BOXED_PADDED.replace(
+        r#""reversed": false}}
+  ]"#,
+        r#""reversed": false}},
+    {"id": "c0000001", "type": "cut", "v": 1, "name": "Cut", "base": "p0000001", "tool": "zzzzzzzz"}
+  ]"#,
+    );
+    assert_ne!(text, BOXED_PADDED);
+    let f = fixture();
+    let (mut h, _) = f.opened("refused.silico", &text);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pad"));
+    step_until(&mut h, "the gate's problems", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0)
+    });
+    let why = "The document has problems of its own: no feature changes until they're mended";
+    menu_on(&mut h, "Timeline", "Pad");
+    let items = menu_items(&h, "PAD");
+    assert_eq!(
+        items[..2],
+        [
+            (
+                "Edit feature double-click".to_owned(),
+                None,
+                Some(why.to_owned())
+            ),
+            ("Edit Sketch".to_owned(), None, Some(why.to_owned())),
+        ]
+    );
+    h.key_press(Key::Escape);
+    step(&mut h);
+    let pad = silico_core::document::FeatureId::new("p0000001").unwrap();
+    let sessions = Arc::clone(&f.sessions);
+    silico_app::feature_menu::act(
+        &mut h.state_mut().tabs_mut()[0],
+        &sessions,
+        silico_app::feature_menu::Act::EditSketch(pad),
+    );
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_asked_of_a_sketch_an_unknown_id_or_twice_at_once_opens_one_sketch_mode_or_none() {
+    // A sketch is built from no sketch, an ID the timeline doesn't list has none: Edit
+    // Sketch of either asks nothing. Of the pad twice in one frame (two clicks a frame
+    // apart could land so): the second finds sketch mode already opening, so one opens, on
+    // Box.
+    use silico_app::feature_menu::{Act, act};
+    let f = fixture();
+    let (mut h, _) = f.opened("padded.silico", BOXED_PADDED);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pad"));
+    settled(&mut h);
+    let sessions = Arc::clone(&f.sessions);
+    let id = |id: &str| silico_core::document::FeatureId::new(id).unwrap();
+    for asked in [id("s0000001"), id("zzzzzzzz")] {
+        let started = act(
+            &mut h.state_mut().tabs_mut()[0],
+            &sessions,
+            Act::EditSketch(asked.clone()),
+        );
+        assert!(!started, "{asked}");
+        for _ in 0..4 {
+            step(&mut h);
+        }
+        assert!(sketch_mode(&h).is_none(), "{asked}");
+    }
+    // Edit Sketch opens sketch mode at once, its read to come: its serial is the first
+    // ask's, which the second leaves as it is.
+    act(
+        &mut h.state_mut().tabs_mut()[0],
+        &sessions,
+        Act::EditSketch(id("p0000001")),
+    );
+    let serial = sketch_mode(&h).expect("sketch mode opened at once").serial;
+    act(
+        &mut h.state_mut().tabs_mut()[0],
+        &sessions,
+        Act::EditSketch(id("p0000001")),
+    );
+    assert_eq!(sketch_mode(&h).unwrap().serial, serial);
+    sketch_mode_on(&mut h, "s0000001");
+    sketch_read(&mut h);
+    for _ in 0..4 {
+        step(&mut h);
+    }
+    assert_eq!(sketch_mode(&h).unwrap().serial, serial);
+    leave_sketch(&mut h, false);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// EXAMPLE with its pin suppressed, and the hole that cuts with it: `"suppressed": true`
 /// right after each one's name (docs/design/m5.0-app.md, `suppress_feature`), written by
 /// hand.
@@ -44780,9 +45564,12 @@ fn a_sketch_opened_under_select_other_closes_it_and_the_wheel_zooms_in_sketch_mo
     assert!(!h.state().tabs()[0].selection().hover_held());
     // So the wheel zooms in sketch mode, as it does with no menu open (held, it wouldn't):
     // over the canvas's centre, clear of the sketch bar and the palette.
+    // Its read waited for too, so sketch mode's turn to the sketch is done before the zoom.
     step_until(&mut h, "its sketch added", |h| {
         sketch_mode(h).is_some_and(|mode| mode.sketch.is_some())
     });
+    sketch_read(&mut h);
+    step(&mut h);
     let camera = view(&h).camera().clone();
     let centre = above_at(&h, 20.0, 10.0, [0.0, 0.0]);
     wheel(&mut h, centre, MouseWheelUnit::Line, 1.0);
@@ -45015,6 +45802,157 @@ fn over_an_element_the_context_menus_edit_opens_its_makers_dialog() {
     assert_eq!(edit.label, "Edit Block");
     assert_eq!(edit.off.as_deref(), Some("Close the open dialog first"));
     assert!(h.get_by_label("Edit Block").accesskit_node().is_disabled());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn over_a_pads_face_the_context_menus_edit_sketch_opens_the_sketch_the_pad_is_built_from() {
+    // SolidWorks' Edit Sketch opens from a feature built on the sketch in the graphics area
+    // too (docs/ux/solidworks.md, §5, *Editing upstream*): over a face the pad made, the menu
+    // has Edit Pad, then Edit Sketch, with the sketch's icon, which opens sketch mode on Box,
+    // and Hide Pad last. With a dialog open it's off, saying why, as Edit is.
+    use silico_app::canvas_menu::{CanvasAct, CanvasItem};
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    let (mut h, record) = from_above_made(&f, "padded.silico", BOXED_PADDED, None);
+    boxes_made(&mut h);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    let over = |h: &mut AppHarness| {
+        answering(&record, Some((1, Face(1), pixel_at(h, at))), None);
+        h.hover_at(at);
+        step_until(h, "a face of the pad hovered", |h| {
+            hover_name(h).is_some_and(|name| name.starts_with("p0000001."))
+        });
+        context_at(h, at);
+    };
+    over(&mut h);
+    let items = select_other(&h).context().unwrap().items.clone();
+    assert_eq!(items[1].label, "Edit Pad");
+    assert_eq!(items[2].label, "Edit Sketch");
+    assert_eq!(items[2].icon, Some(silico_app::icons::Icon::Sketch));
+    assert_eq!(
+        items[2].item,
+        CanvasItem::Act(CanvasAct::EditSketch(
+            silico_core::document::FeatureId::new("p0000001").unwrap()
+        ))
+    );
+    assert_eq!(items[2].off, None);
+    assert_eq!(items.last().unwrap().label, "Hide Pad");
+    assert_eq!(
+        items
+            .iter()
+            .filter(|shown| shown.label == "Edit Sketch")
+            .count(),
+        1
+    );
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Edit Sketch")
+        .click();
+    sketch_mode_on(&mut h, "s0000001");
+    assert!(!select_other(&h).is_open());
+    sketch_read(&mut h);
+    assert!(sketch_mode(&h).unwrap().created.is_none());
+    leave_sketch(&mut h, false);
+    // The pad's own dialog open (Edit Pad): Edit Sketch off, with the feature menus' reason.
+    over(&mut h);
+    h.get_by_label("Edit Pad").click();
+    step_until(&mut h, "the pad's dialog", |h| {
+        h.state().tabs()[0].in_dialog()
+    });
+    over(&mut h);
+    let edit_sketch = select_other(&h).context().unwrap().items[2].clone();
+    assert_eq!(edit_sketch.label, "Edit Sketch");
+    assert_eq!(
+        edit_sketch.off.as_deref(),
+        Some("Close the open dialog first")
+    );
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Edit Sketch")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// The Block, and Box (BOXED_PADDED's sketch) padded onto it: one body, ending in the pad.
+fn pad_on_a_block() -> String {
+    let sketch = BOXED_PADDED
+        .lines()
+        .find(|line| line.contains(r#""id": "s0000001""#))
+        .unwrap();
+    format!(
+        r#"{{
+  "silico": 1,
+  "units": {{"length": "mm", "resolution": "1nm"}},
+  "naming": 6,
+  "features": [
+    {{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10}},
+{sketch}
+    {{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "base": "k7f2qx3m", "sketch": "s0000001", "extent": {{"type": "one_side", "length": 10, "reversed": false}}}}
+  ]
+}}
+"#
+    )
+}
+
+#[test]
+fn over_a_face_the_context_menus_edit_sketch_follows_the_feature_that_made_it_not_the_body() {
+    // The pad onto the Block, its fuse answered as the numbering fuse (the Block's Face2 to
+    // Face6 kept, Face1 the pad's own): one body, ending in the pad, built from Box. Over a
+    // face the Block made (a box, built from no sketch) the menu has no Edit Sketch, though
+    // the body's last feature is built from one; over the pad's own face, it has the pad's.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    f.kernel.answer_instead(|op| match op {
+        Op::Boolean {
+            op: silico_core::kernel::BooleanOp::Fuse,
+            base,
+            ..
+        } => Some(silico_protocol::Reply::Built(
+            silico_core::kernel::BuiltData {
+                shape: FakeKernel::resized(base, 1.0)?,
+                history: numbering_fuse(),
+            },
+        )),
+        _ => None,
+    });
+    let (mut h, record) = from_above_made(&f, "on_a_block.silico", &pad_on_a_block(), None);
+    boxes_made(&mut h);
+    let body = body_of(&h, "p0000001");
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    // A face hovered, until its name, which says the feature that made it, comes.
+    let over = |h: &mut AppHarness, face: u32, maker: &str| {
+        // Off the canvas first, so the hover at the same place is asked again.
+        pointer_away(h);
+        step(h);
+        answering(&record, Some((body, Face(face), pixel_at(h, at))), None);
+        h.hover_at(at);
+        step_until(h, "the face hovered", |h| {
+            hover_name(h).is_some_and(|name| name.starts_with(&format!("{maker}.")))
+        });
+        context_at(h, at);
+        select_other(h).context().unwrap().items.clone()
+    };
+    let blocks = over(&mut h, 2, "k7f2qx3m");
+    assert_eq!(blocks[1].label, "Edit Block");
+    assert!(
+        blocks.iter().all(|shown| shown.label != "Edit Sketch"),
+        "{blocks:?}"
+    );
+    assert_eq!(blocks.last().unwrap().label, "Hide Pad");
+    h.key_press(Key::Escape);
+    step(&mut h);
+    step(&mut h);
+    let pads = over(&mut h, 1, "p0000001");
+    assert_eq!(pads[1].label, "Edit Pad");
+    assert_eq!(pads[2].label, "Edit Sketch");
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Edit Sketch")
+        .click();
+    sketch_mode_on(&mut h, "s0000001");
+    sketch_read(&mut h);
+    leave_sketch(&mut h, false);
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -45640,6 +46578,27 @@ fn over_an_unstable_planar_face_sketch_on_this_face_is_off_with_the_stores_refus
         .find(|shown| shown.label == "Sketch on this face")
         .cloned()
         .expect("Sketch on this face, over a plane");
+    // A fuse of two boxes is built from no sketch, though it has inputs: no Edit Sketch.
+    // The timeline was read as the menu opened (its Edit names the fuse), so whether the
+    // fuse is built from a sketch was worked out.
+    assert!(
+        select_other(&h)
+            .context()
+            .unwrap()
+            .items
+            .iter()
+            .any(|shown| shown.label == "Edit Fused"),
+        "the timeline read as the menu opened"
+    );
+    assert!(
+        select_other(&h)
+            .context()
+            .unwrap()
+            .items
+            .iter()
+            .all(|shown| shown.label != "Edit Sketch"),
+        "a fuse of two boxes is built from no sketch"
+    );
     let why = shown.off.expect("off for an unstable face");
     assert!(
         why.contains(
@@ -48216,8 +49175,14 @@ fn the_frame_holds_each_shown_sketchs_strips_in_its_colour_and_none_while_one_is
     for _ in 0..40 {
         step(&mut h);
     }
-    // Sketch mode on Loose: no lines at all, while it's open.
-    double_click(&mut h, "Browser", "Loose");
+    // Sketch mode on Loose: no lines at all, while it's open. The view panned as it opens,
+    // before its read, so sketch mode leaves it unturned (its own test) and its scale, which
+    // the strips are made for, is the same throughout: the way back only undoes the pan.
+    {
+        let sessions = Arc::clone(&f.sessions);
+        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &sketch_id("s0000002"));
+    }
+    panned(&mut h);
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     for _ in 0..10 {
         step(&mut h);
@@ -48476,15 +49441,17 @@ fn toast_said(h: &AppHarness) -> Option<(String, f64)> {
 #[test]
 fn look_at_in_sketch_mode_turns_square_to_its_plane_its_x_across_and_its_y_up() {
     // A sketch on XZ: its x along +X, its y along +Z, its normal x × y = −Y. Square to it
-    // from that side: the eye out along −Y, +Z up, as Front looks. A new part opens at Home,
-    // a corner's view, so the view turns.
+    // from that side: the eye out along −Y, +Z up, as Front looks. From Home, a corner's
+    // view, the view turns.
     let (front, z) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
     let f = fixture();
     let mut h = f.app();
     step(&mut h);
     new_part(&mut h);
     begin_sketch_on(&mut h, "Untitled", "XZ plane");
-    assert!(!looks(&h, front, z));
+    // Sketch mode turned square to it as it opened (its own test): Home turns it away.
+    h.key_press(Key::Home);
+    step_until(&mut h, "home", |h| !looks(h, front, z));
     h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
     step_until(&mut h, "square to the sketch", |h| looks(h, front, z));
     let keyed = view(&h).camera().clone();
@@ -48496,6 +49463,517 @@ fn look_at_in_sketch_mode_turns_square_to_its_plane_its_x_across_and_its_y_up() 
         .click();
     step_until(&mut h, "square again", |h| view(h).camera() == &keyed);
     assert!(toast_said(&h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_mode_turns_square_to_a_new_sketch_as_it_opens_and_back_to_the_view_it_found_on_cancel() {
+    // The approved prototype's `enter` looks at the sketch plane, and its `exit` animates back
+    // to the camera it found (docs/design/m5-ui/js/sketch.js); SolidWorks' *Auto-rotate view
+    // normal to sketch plane on sketch creation and sketch edit*. A new part opens at Home, a
+    // corner's view. A sketch on XZ has its normal x × y = X × Z = −Y: square to it, the eye
+    // out along −Y, +Z up, as Front looks; the same camera Look At (Ctrl+8) gives. Cancel goes
+    // back to Home's camera.
+    let (front, z) = ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]);
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step(&mut h);
+    let before = view(&h).camera().clone();
+    assert!(!looks(&h, front, z));
+    begin_sketch_on(&mut h, "Untitled", "XZ plane");
+    step(&mut h);
+    assert!(looks(&h, front, z), "{:?}", view(&h).camera());
+    let turned = view(&h).camera().clone();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num8);
+    step(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &turned, "Look At's own view");
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn edit_sketch_turns_square_to_its_sketch_and_finish_goes_back_to_the_view_it_found() {
+    // Triangle is on XY: its normal x × y = +Z, the eye above, +Y up the image, as Top
+    // looks. Edit Sketch turns there from the view the part opened at; Finish goes back.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    let (top, y) = ([0.0, 0.0, 1.0], [0.0, 1.0, 0.0]);
+    assert!(!looks(&h, top, y));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert!(looks(&h, top, y), "{:?}", view(&h).camera());
+    leave_sketch(&mut h, true);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_view_moved_before_the_sketchs_first_read_is_left_as_moved_and_leaving_goes_back_to_the_view_found()
+ {
+    // Create Sketch with every solve held: sketch mode is open, its read waits. The view
+    // panned meanwhile is the person's, so the read, when it comes, turns nothing; Cancel
+    // still goes back to the view sketch mode found, as the prototype's `exit` does.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step_until(&mut h, "Create Sketch on", |h| {
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    let before = view(&h).camera().clone();
+    f.sketches.hold();
+    create_sketch(&mut h, "XY plane");
+    assert!(f.sketches.wait_held(WAIT), "the sketch's solve never held");
+    assert!(sketch_mode(&h).unwrap().drawable().is_none());
+    panned(&mut h);
+    let moved = view(&h).camera().clone();
+    assert_ne!(moved, before);
+    f.sketches.release();
+    sketch_read(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &moved, "turned after it was moved");
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_mode_turns_once_and_a_later_read_never_turns_the_view_again() {
+    // Edit Sketch turns square to Triangle on its first read. The person then puts the view
+    // back where sketch mode found it and adds a point: the read that follows the point's
+    // add turns nothing, the person's view kept.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert!(looks(&h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]), "turned");
+    view_mut(&mut h).set_camera(before.clone());
+    step(&mut h);
+    let reads = sketch_mode(&h).unwrap().reads;
+    let part = h.state().tabs()[0].name().to_owned();
+    place_point_in(&mut h, &part, 30.0, 30.0);
+    assert!(sketch_mode(&h).unwrap().reads > reads, "read again");
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &before, "turned again");
+    leave_sketch(&mut h, false);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_sketch_whose_face_broke_turns_nothing_and_leaving_leaves_the_view_as_it_was() {
+    // ON_A_FACE's face isn't one the fake describes as a plane: the read places the sketch
+    // nowhere, so there's nothing to look at, and the view stays, open and closed.
+    let f = fixture();
+    let (mut h, _) = f.opened("face.silico", ON_A_FACE);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Top"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Top");
+    sketch_read(&mut h);
+    assert!(sketch_mode(&h).unwrap().drawable().unwrap().plane.is_err());
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &before);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn perspective_chosen_in_sketch_mode_is_kept_as_the_view_goes_back() {
+    // The view is orthographic as Edit Sketch opens; Perspective chosen in sketch mode (the
+    // ViewCube's menu) is the person's: Cancel goes back to the view found, its target and
+    // its direction, seen in perspective at the cube's 30°.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    assert!(matches!(
+        before.projection,
+        silico_protocol::Projection::Orthographic { .. }
+    ));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    h.get_by_label("Orbit the view").click_secondary();
+    step(&mut h);
+    h.get_by_label("Perspective").click_accesskit();
+    step(&mut h);
+    assert!(view(&h).perspective());
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    let back = view(&h).camera();
+    assert_eq!(
+        back.projection,
+        silico_protocol::Projection::Perspective {
+            field_of_view: 30.0
+        }
+    );
+    assert_eq!(back.target, before.target);
+    assert_eq!(back.up, before.up);
+    assert!(
+        looks_from(back, view_direction(&before)),
+        "{back:?} from {before:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_revert_or_a_refused_add_leaving_sketch_mode_goes_back_to_the_view_it_found() {
+    // Sketch mode left otherwise than by its bar: the part reverted under it (its edits gone,
+    // as Cancel's are), and Create Sketch on a face the core refuses (no such face): each
+    // goes back to the view sketch mode found, the second though the view was panned while
+    // the add was out.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert_ne!(view(&h).camera(), &before);
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].revert(&sessions, false);
+    step(&mut h);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(view(&h).camera(), &before);
+    settled(&mut h);
+    h.state_mut().tabs_mut()[0].create_sketch_on_face(&sessions, "b0000001.box.Face99");
+    assert!(sketch_mode(&h).is_some());
+    panned(&mut h);
+    step_until(&mut h, "sketch mode left", |h| sketch_mode(h).is_none());
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+// ---- Hostile input for sketch mode's turn and its way back (break-it) ----
+
+#[test]
+fn a_sketch_cancelled_before_its_first_read_never_turns_the_view_when_the_read_comes() {
+    // Create Sketch with every solve held, then Cancel before the read: the view stays, and
+    // the read answering after sketch mode left turns nothing.
+    let f = fixture();
+    let mut h = f.app();
+    step(&mut h);
+    new_part(&mut h);
+    step_until(&mut h, "Create Sketch on", |h| {
+        h.query_by_role_and_label(Role::Toolbar, "CREATE")
+            .and_then(|create| create.query_by_label("Create Sketch"))
+            .is_some_and(|button| !button.accesskit_node().is_disabled())
+    });
+    let before = view(&h).camera().clone();
+    f.sketches.hold();
+    create_sketch(&mut h, "XY plane");
+    assert!(f.sketches.wait_held(WAIT), "the sketch's solve never held");
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_none());
+    f.sketches.release();
+    settled(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &before);
+    assert!(!looks(&h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn cancel_while_the_turn_eases_goes_back_to_the_view_found_not_where_the_turn_reached() {
+    // With view transitions on (egui's 0.2 s), Edit Sketch's turn starts easing toward the top
+    // in the frame its read comes; Cancel then, mid-turn: the view eases back from wherever
+    // the turn reached and ends on the view found, not on the turn's.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    animation_time(&h, 0.2);
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    assert!(view(&h).transition().is_some(), "the turn eases");
+    assert!(
+        !looks(&h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        "not there yet"
+    );
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    step_until(&mut h, "sketch mode left and the view still", |h| {
+        sketch_mode(h).is_none() && view(h).transition().is_none()
+    });
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(view(&h).transition().is_none());
+    assert_eq!(view(&h).camera(), &before);
+    animation_time(&h, 0.0);
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn views_chosen_in_sketch_mode_are_its_own_and_finish_goes_back_to_the_view_found() {
+    // Home, then Front, in sketch mode: the person's views while sketching, none of which
+    // Finish keeps; it goes back to the view sketch mode found.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step(&mut h);
+    h.key_press(Key::Home);
+    step(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::Num1);
+    step_until(&mut h, "from the front", |h| {
+        looks(h, [0.0, -1.0, 0.0], [0.0, 0.0, 1.0])
+    });
+    leave_sketch(&mut h, true);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn leaving_eases_back_from_the_turned_view_starting_where_it_was_shown() {
+    // With view transitions on (egui's 0.2 s): Edit Sketch's turn done, then Cancel. The frame
+    // after, the way back is under way and still at the turned camera, where it starts; it
+    // ends on the view found.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    let before = view(&h).camera().clone();
+    animation_time(&h, 0.2);
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    step_until(&mut h, "turned", |h| {
+        view(h).transition().is_none() && looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    let turned = view(&h).camera().clone();
+    let sessions = Arc::clone(&f.sessions);
+    h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    step(&mut h);
+    assert!(view(&h).transition().is_some(), "eases back");
+    assert_eq!(view(&h).camera(), &turned, "from where it was shown");
+    step_until(&mut h, "still", |h| view(h).transition().is_none());
+    assert_eq!(view(&h).camera(), &before);
+    animation_time(&h, 0.0);
+    settled(&mut h);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn sketch_mode_opened_while_a_view_eases_keeps_the_view_eased_to_turns_and_goes_back_to_it() {
+    // Ctrl+1 easing to the front (egui's 0.2 s) as Edit Sketch opens: the view sketch mode
+    // found is the front it's heading for, not the camera part way there. The turn comes
+    // once the read does, and Cancel goes back to the front.
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    animation_time(&h, 0.2);
+    view_mut(&mut h).ask(silico_app::viewport::ViewAsk::Named(
+        silico_core::views::NamedView::Front,
+    ));
+    step(&mut h);
+    assert!(view(&h).transition().is_some(), "the front eases");
+    let front = view(&h).heading().clone();
+    assert_ne!(view(&h).camera(), &front, "part way");
+    assert!(looks_from(&front, [0.0, -1.0, 0.0]));
+    {
+        let sessions = Arc::clone(&f.sessions);
+        h.state_mut().tabs_mut()[0].edit_sketch(&sessions, &sketch_id("s0000001"));
+    }
+    sketch_read(&mut h);
+    step_until(&mut h, "turned to the top", |h| {
+        view(h).transition().is_none() && looks(h, [0.0, 0.0, 1.0], [0.0, 1.0, 0.0])
+    });
+    animation_time(&h, 0.0);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &front);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// SKETCHED's Home, as the core's first read of its meshes places the view (every body
+/// meshed as the box is).
+fn sketched_home() -> silico_protocol::Camera {
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    meshes_settled(&mut h);
+    view(&h).camera().clone()
+}
+
+/// SKETCHED opened with its first meshes refused (a slow or failed first read), and Edit
+/// Sketch on Triangle, read: no camera chosen yet, so sketch mode turns nothing, the
+/// stand-in camera left as it is. The fixture, the flag that refuses the meshes, and the app.
+fn sketch_opened_before_the_first_meshes() -> (Fixture, Arc<AtomicBool>, AppHarness) {
+    let f = fixture();
+    meshes_a_real_box(&f);
+    let failing = failing_kernel(&f.kernel);
+    failing.store(true, Ordering::SeqCst);
+    let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    assert!(view(&h).model().is_none(), "no meshes read yet");
+    assert!(!view(&h).placed());
+    let stand_in = view(&h).camera().clone();
+    assert_eq!(&stand_in, silico_app::viewport::View::default().camera());
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert_eq!(view(&h).camera(), &stand_in, "turned an unplaced view");
+    assert!(!view(&h).placed());
+    (f, failing, h)
+}
+
+#[test]
+fn a_sketch_opened_before_the_parts_first_meshes_leaves_the_view_for_them_to_place_at_home() {
+    // The first meshes read only once sketch mode has left: their Home places the view, as
+    // a part's first read always does, sketch mode or not.
+    let home = sketched_home();
+    assert_ne!(&home, silico_app::viewport::View::default().camera());
+    let (_f, failing, mut h) = sketch_opened_before_the_first_meshes();
+    leave_sketch(&mut h, true);
+    failing.store(false, Ordering::SeqCst);
+    meshes_settled(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &home);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_parts_first_meshes_read_while_its_sketch_is_open_place_the_view_and_leaving_keeps_it() {
+    // The first meshes answer while sketch mode is open: their Home places the view there
+    // and then, and leaving has nothing of its own to go back to, so Home stays.
+    let home = sketched_home();
+    let (_f, failing, mut h) = sketch_opened_before_the_first_meshes();
+    failing.store(false, Ordering::SeqCst);
+    meshes_settled(&mut h);
+    step(&mut h);
+    assert!(sketch_mode(&h).is_some());
+    assert_eq!(view(&h).camera(), &home);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &home);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_view_moved_after_the_first_meshes_placed_it_in_sketch_mode_is_kept_on_leaving() {
+    // The first meshes place the view at Home while sketch mode is open, then the person
+    // pans: sketch mode found no camera, so it has nothing to go back to, and leaving keeps
+    // the panned view, not Home.
+    let home = sketched_home();
+    let (_f, failing, mut h) = sketch_opened_before_the_first_meshes();
+    failing.store(false, Ordering::SeqCst);
+    meshes_settled(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &home);
+    panned(&mut h);
+    let moved = view(&h).camera().clone();
+    assert_ne!(moved, home);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &moved);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_first_meshes_read_out_as_sketch_mode_leaves_still_places_the_view_at_home() {
+    // The first read's retry is out (held) as sketch mode leaves: it was asked for Home's
+    // view, the view unplaced, and its answer places the view there.
+    let home = sketched_home();
+    let (f, failing, mut h) = sketch_opened_before_the_first_meshes();
+    let hold = f.kernel.hold(|op| matches!(op, Op::Tessellate { .. }));
+    failing.store(false, Ordering::SeqCst);
+    step_until(&mut h, "the retry's read out", |h| view(h).reading());
+    assert!(view(&h).model().is_none());
+    leave_sketch_unsettled(&mut h, false);
+    hold.release();
+    meshes_settled(&mut h);
+    settled(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &home);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn shown_sketches_lines_come_back_as_they_were_after_a_turned_visit_to_sketch_mode() {
+    // Loose shown, then Edit Sketch on Loose by its row, as a person opens it: the view
+    // turns to it, and back as Finish leaves. Its lines, none while it's open, come back
+    // with the same four sides, made for the view's scale as it's back, and kept from then
+    // on. (They may be made again on the way back: the strips are made for the view's scale,
+    // which the turn changed; the same scale throughout keeps them, the strips test's own.)
+    let f = fixture();
+    under_defined_sketches(&f);
+    let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    let sides = |lines: &[silico_app::sketch::lines::FrameLines]| -> Vec<Vec<[f64; 3]>> {
+        (0..lines[0].strips.len())
+            .filter_map(|k| lines[0].strips.strip(k).map(<[_]>::to_vec))
+            .collect()
+    };
+    let first = sides(&last_lines(&record));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    let before = view(&h).camera().clone();
+    double_click(&mut h, "Browser", "Loose");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert_ne!(view(&h).camera(), &before, "turned");
+    assert!(last_lines(&record).is_empty(), "none while it's open");
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Enter);
+    step_until(&mut h, "sketch mode left", |h| sketch_mode(h).is_none());
+    step_until(&mut h, "Loose's lines back", |_| {
+        last_lines(&record).len() == 1
+    });
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &before, "back");
+    assert_eq!(sides(&last_lines(&record)), first);
+    let kept = Arc::clone(&last_lines(&record)[0].strips);
+    for _ in 0..10 {
+        step(&mut h);
+        assert!(
+            Arc::ptr_eq(&last_lines(&record)[0].strips, &kept),
+            "made again"
+        );
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -50043,6 +51521,11 @@ fn sketch_mode_keeps_the_triad_and_the_view_label_and_its_look_at_names_the_top(
     sketch_read(&mut h);
     step(&mut h);
     assert!(h.state().tabs()[0].in_sketch());
+    // Sketch mode turned square to the sketch as it opened (its own test): Home, a corner's
+    // view, shows all three axes.
+    h.key_press(Key::Home);
+    step(&mut h);
+    step(&mut h);
     let (strokes, dot) = triad_painted(&h);
     assert_eq!(strokes.len(), 3, "{strokes:?}");
     assert!(dot.is_some());

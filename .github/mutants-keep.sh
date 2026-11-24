@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# A mutants shard's outcomes kept on the VM, for the run's summary (mutants.yml), which reads
-# them there rather than from artifacts: so GitHub's artifact storage full can't fail a run
-# or hide its results. Every runner is on the one VM, as one user, so the summary, on a
-# control runner, reads what a shard on any runner kept.
+# A mutants shard's outcomes kept for the run's summary (mutants.yml), which reads them from
+# the shard's artifact (mutants-shard-<n>): only what the summary and triage read, not the
+# logs of every mutant, which the shard uploads apart.
 #
 #   bash .github/mutants-keep.sh MUTANTS_OUT RESULTS
 #
@@ -69,6 +68,6 @@ count() {
   if [ -f "$results/$1.txt" ]; then grep -c . "$results/$1.txt" || true; else echo 0; fi
 }
 echo "${GITHUB_RUN_ATTEMPT:-1}" >"$results/kept"
-line="Kept on the VM: $(count caught) caught, $(count missed) missed, $(count timeout) timed out, $(count unviable) unviable, in $results"
+line="Kept for the summary: $(count caught) caught, $(count missed) missed, $(count timeout) timed out, $(count unviable) unviable, in $results"
 echo "$line"
 if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then echo "$line" >>"$GITHUB_STEP_SUMMARY"; fi

@@ -1,10 +1,9 @@
-# Sourced by CI scripts that call GitHub's CLI: puts gh on PATH. The runners' image hasn't
-# it, so it's downloaded once per version into the runner's home, verified, and kept: the
-# filler (.github/workflows/filler.yml) runs every 15 minutes. Several jobs may install it
-# at once: each unpacks into its own directory and renames it into place, and the first
-# rename wins. Each step must succeed whatever the caller's shell options (cancel-filler.sh
-# runs without -e), so a failed download or checksum installs nothing: it warns and
-# returns 1, and the next job tries again.
+# Sourced by CI scripts that call GitHub's CLI: puts gh on PATH. GitHub's hosted images have
+# it; a machine that hasn't (a self-hosted runner's) downloads it once per version
+# into the runner's home, verified, and keeps it. Several jobs may install it at once: each
+# unpacks into its own directory and renames it into place, and the first rename wins. Each
+# step must succeed whatever the caller's shell options, so a failed download or checksum
+# installs nothing: it warns and returns 1, and the next job tries again.
 
 GH_VERSION=2.102.1
 GH_SHA256=77b9e297e94c50336823d0f84de7ef1be60cba704601fa0d98f129f47a94987b
