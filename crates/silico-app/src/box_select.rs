@@ -650,7 +650,8 @@ fn side(first: f64, second: f64, low: f64, high: f64) -> (f64, f64) {
 
 /// A piece of what's drawn of an element, as a box decides it ([`ScreenBox::takes`]).
 pub(crate) enum Piece {
-    /// A polyline, whose segments a crossing tests.
+    /// A polyline, whose segments a crossing tests: of one point, that point (a sketch's
+    /// stroke cut to one, a canvas's edge of one point).
     Path(Vec<[f64; 2]>),
     /// Places a crossing tests one by one: a triangle's corners, a single point.
     Places(Vec<[f64; 2]>),
@@ -754,8 +755,8 @@ impl<'a> Sight<'a> {
 fn decide(pieces: impl Iterator<Item = Drawn>, area: &ScreenBox, crossing: bool) -> bool {
     let pieces = pieces.filter_map(|piece| match piece {
         Drawn::Cut => None,
-        Drawn::Shown(points) if points.len() == 2 => Some(Piece::Path(points)),
-        Drawn::Shown(points) => Some(Piece::Places(points)),
+        // A segment, or a single point (`takes` tests a path of one point as a place).
+        Drawn::Shown(points) => Some(Piece::Path(points)),
         Drawn::Unread(points) => Some(Piece::Unread(points)),
     });
     area.takes(pieces, crossing)
@@ -1126,6 +1127,18 @@ mod tests {
         // Off the middle, left of x 50: nothing drawn there.
         let aside = ScreenBox::clamped([0.0, 0.0], [40.0, 128.0], SIZE);
         assert!(names(aside, true).is_empty());
+    }
+
+    #[test]
+    fn a_path_of_one_point_is_taken_as_that_point() {
+        // A path whose segments are none (a stroke cut to one point) is its point: inside the
+        // box (100..160, 10..50) a window and a crossing take it, outside neither does.
+        let area = ScreenBox::clamped([100.0, 10.0], [160.0, 50.0], SIZE);
+        for crossing in [false, true] {
+            let one = |p: [f64; 2]| [Piece::Path(vec![p])];
+            assert!(area.takes(one([120.0, 20.0]), crossing), "{crossing}");
+            assert!(!area.takes(one([200.0, 20.0]), crossing), "{crossing}");
+        }
     }
 
     #[test]

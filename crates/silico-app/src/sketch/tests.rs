@@ -2029,6 +2029,30 @@ fn a_crossing_over_a_sides_middle_takes_the_side_though_neither_end_is_in_it() {
 }
 
 #[test]
+fn a_box_dragged_straight_down_is_a_window() {
+    // From (300, 490) straight down to (300, 510): of no width, dragged neither way, so a
+    // window, which holds nothing; the bottom side, (100, 500) to (500, 500), meets it, so a
+    // crossing would take it.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(300.0, 490.0),
+        pos2(300.0, 510.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    box_drag(
+        &mut mode,
+        pos2(300.5, 490.0),
+        pos2(300.0, 510.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+}
+
+#[test]
 fn a_box_takes_circles_and_arcs_as_it_takes_lines() {
     // A circle ca000001 about pa000005 (70, 10), radius 5: on the screen about (800, 400),
     // 50 points across each way. An arc aa000001 about pb000001 (100, 10), counter-clockwise
