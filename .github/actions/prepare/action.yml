@@ -134,4 +134,7 @@ runs:
         workspaces: ${{ steps.tree.outputs.tree }} -> ${{ inputs.target }}
         shared-key: ${{ inputs.rust-key }}
         save-if: ${{ inputs.save }}
+        # TEMPORARY: saved even by a failed gate, so this pull request's next gate measures a
+        # warm run while a test fails it on hosted runners.
+        cache-on-failure: true
         cache-bin: false
