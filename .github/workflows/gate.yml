@@ -55,8 +55,7 @@ jobs:
       - uses: ./.github/actions/prepare
         with:
           rust-key: gate
-          # TEMPORARY: this pull request saves its caches, so its next gate measures a warm run.
-          save: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.head_ref == 'ci/github-hosted-runners' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Test scratch
         run: bash .github/scratch.sh start
       # tests/gate.sh as `pixi run gate` runs it, without that task's environment, which it
