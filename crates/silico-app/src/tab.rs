@@ -477,8 +477,8 @@ fn undeleted(why: &str) -> String {
     format!("The selection wasn't deleted: {why}")
 }
 
-/// Why a click (a constraint tool's, or Construction's) is let go once its sketch mode has
-/// gone unread.
+/// Why a click (a constraint tool's, or Construction's), or a Delete, is let go once its
+/// sketch mode has gone unread.
 const SKETCH_CLOSED: &str = "the sketch closed before it was read";
 
 /// Why a click (a constraint tool's, or Construction's) can't be planned while the tab's
@@ -496,8 +496,9 @@ const REBUILD_FAILED: &str =
 /// the read it's planned on (an edit queued before it removed them).
 const CURVES_GONE: &str = "the curves selected are no longer in the sketch";
 
-/// Why a click (a constraint tool's, or Construction's) waiting to be planned is let go at its
-/// sketch mode's Cancel, which takes back its edits anyway.
+/// Why a click (a constraint tool's, or Construction's) waiting to be planned, or a Delete
+/// waiting to be judged, is let go at its sketch mode's Cancel, which takes back its edits
+/// anyway.
 const SKETCH_CANCELLED: &str = "the sketch was cancelled first";
 
 /// What Create Sketch's Finish of a sketch holding nothing toasts, as the prototype's
@@ -1547,7 +1548,7 @@ pub struct Tab {
     /// what that sketch mode's Finish reads to judge it ([`judge_created`](Self::judge_created)),
     /// its add having answered by then, though the sketch mode may have left first.
     created_sketch: Option<(u64, FeatureId)>,
-    /// Each sketch mode closed (Finish, Cancel) while a click of it (a constraint tool's, or
+    /// Each sketch mode Finish closed while a click of it (a constraint tool's, or
     /// Construction's) or a Delete was unsettled: its reads polled still, so the click is
     /// planned, or the Delete judged, and let go once none is.
     leaving: Vec<SketchMode>,
@@ -8407,7 +8408,8 @@ impl Tab {
     /// asked before it made (the point a split leaves, before the read of the split has
     /// come), waits for the read of the tab's revision, the one it's sent against, unless
     /// that read won't come unasked (its rebuild stopped or failed). Anything else is judged
-    /// on the read as it is, at once, as it was pressed.
+    /// on the read as it is, at once, as it was pressed. Let go, said, if its sketch mode has
+    /// gone (a Revert behind a Save closed it), as a click is.
     fn judge_delete(&self, serial: u64, sketch: &FeatureId, picks: &[Hit]) -> Judged {
         let Some(mode) = self
             .sketch

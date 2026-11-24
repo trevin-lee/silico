@@ -27549,8 +27549,20 @@ fn a_delete_waiting_for_the_read_of_a_stopped_rebuild_is_judged_once_the_stop_is
     let tab = &h.state().tabs()[0];
     assert!(tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
     assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_join")));
-    assert!(tab.message.is_some());
-    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    // The core's refusal, naming the point and the two lines the split left at it.
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5);
+    let piece = line_between(&sketch, &split, "pa000003").unwrap();
+    let said = tab.message.clone().unwrap_or_default();
+    assert!(
+        said.starts_with(&format!("point {split} is used by lines ")),
+        "{said}"
+    );
+    assert!(said.contains("na000002") && said.contains(&piece), "{said}");
+    assert!(
+        said.ends_with("(remove the curves that use it with it, or unjoin it first)"),
+        "{said}"
+    );
     drop(hold);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -27577,7 +27589,11 @@ fn a_delete_of_a_point_the_read_of_the_tabs_revision_lacks_is_judged_at_once() {
     });
     let tab = &h.state().tabs()[0];
     assert!(tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
-    assert!(tab.message.is_some());
+    let said = tab.message.clone().unwrap_or_default();
+    assert!(
+        said.starts_with("the sketch has no member pz000001 "),
+        "{said}"
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -27608,6 +27624,65 @@ fn an_undo_asked_behind_a_delete_waiting_for_its_read_takes_back_the_join() {
         "the Undo took back the join, not the split"
     );
     assert!(sketch.points.iter().any(|p| p.id.as_str() == split));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_delete_whose_sketch_mode_a_revert_closed_is_let_go_and_said() {
+    // A Save queued behind a Delete waiting for its read, then Revert: the revert keeps
+    // what's queued up to the Save, the Delete with it, and closes sketch mode, which no
+    // longer polls the read the Delete waits for. It's let go, said, and the Save and the
+    // Revert behind it run.
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    let (hold, split) = split_unread(&f, &mut h);
+    select_member(&mut h, &split, silico_core::document::ElementKind::Point);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    assert!(h.state().tabs()[0].unsettled());
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.save(&sessions, false);
+        tab.revert(&sessions, false);
+    }
+    step_until(&mut h, "the Delete let go, said", |h| {
+        h.state().tabs()[0].message.as_deref()
+            == Some("The selection wasn't deleted: the sketch closed before it was read")
+    });
+    hold.release();
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    assert!(sketch_mode(&h).is_none());
+    assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_join")));
+    assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_revert_that_drops_a_delete_waiting_for_its_read_says_so() {
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    let (hold, split) = split_unread(&f, &mut h);
+    select_member(&mut h, &split, silico_core::document::ElementKind::Point);
+    h.key_press(eframe::egui::Key::Delete);
+    step(&mut h);
+    assert!(h.state().tabs()[0].unsettled());
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].revert(&sessions, false);
+    }
+    assert_eq!(
+        h.state().tabs()[0].message.as_deref(),
+        Some("The selection wasn't deleted: the part was reverted first")
+    );
+    hold.release();
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_join")));
+    assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
     assert_eq!(never_waits::waits(), 0);
 }
 
