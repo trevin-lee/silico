@@ -17,6 +17,7 @@
 
 pub mod bar;
 pub mod bounds;
+pub mod boxing;
 pub mod dimension;
 pub mod drag;
 pub mod draw;
@@ -42,6 +43,7 @@ use silico_core::sketch_tools::{Axes, DimensionEvent, Event, Modifiers, Offer, O
 
 use crate::tab::{Row, said};
 use bar::{DimensionShown, PaletteView, Settings, StateShown, StatusLine};
+use boxing::SketchBox;
 use dimension::{Ask, EditBox, Edited, ModifyAction, ModifyView, OfferView, value_of};
 use drag::Drag;
 use draw::{
@@ -344,6 +346,8 @@ pub struct SketchMode {
     /// its release.
     pub selection: SketchSelection,
     pressed: Option<(Option<SketchPick>, bool)>,
+    /// A press on empty space with no tool on, which a move makes a box (`boxing`).
+    boxing: Option<SketchBox>,
     pub settings: Settings,
     /// The tool chosen, if one is (M5.11b's): what it draws as it's used, what it says, and
     /// what it asks of the core, which the tab sends.
@@ -405,6 +409,7 @@ impl SketchMode {
             drawings: 0,
             selection: SketchSelection::default(),
             pressed: None,
+            boxing: None,
             settings: Settings::default(),
             tools: Tools::default(),
             pointer: None,
@@ -550,6 +555,7 @@ impl SketchMode {
         let dragging = dragged.as_ref().is_some_and(Drag::held);
         let selecting: &[PointerEvent] = if self.tools.choice().is_some() && !dragging {
             self.pressed = None;
+            self.boxing = None;
             let held = painter.ctx().input(|i| Modifiers {
                 shift: i.modifiers.shift,
                 ctrl: i.modifiers.command,
@@ -569,9 +575,18 @@ impl SketchMode {
                             .and_then(SketchPick::member)
                             .and_then(|hit| self.grab(hit, input, event.at));
                     }
+                    // On empty space, with no drag, maybe a box (`boxing`).
+                    self.boxing = (found.is_none() && dragged.is_none())
+                        .then(|| SketchBox::pressed(event.at));
                     self.pressed = Some((found, event.ctrl));
                 }
                 PointerAction::Move => {
+                    if let Some(boxing) = self.boxing.as_mut()
+                        && boxing.moved(event.at)
+                    {
+                        // A box, not a click: its release selects what's in it.
+                        self.pressed = None;
+                    }
                     if let Some(drag) = dragged.as_mut().filter(|drag| drag.held()) {
                         if !drag.moved && (event.at - drag.press).length() > SKETCH_DRAG_THRESHOLD {
                             // A drag, not a click: its release selects nothing.
@@ -589,6 +604,13 @@ impl SketchMode {
                     }
                 }
                 PointerAction::Release => {
+                    if let Some(mut boxing) = self.boxing.take() {
+                        boxing.moved(event.at);
+                        if boxing.open {
+                            self.pressed = None;
+                            self.box_released(&boxing, event, clip);
+                        }
+                    }
                     // A press that never moved is a click: no drag.
                     if dragged.as_ref().is_some_and(Drag::held) {
                         *dragged = None;
@@ -608,6 +630,7 @@ impl SketchMode {
                 }
                 PointerAction::Cancel => {
                     self.pressed = None;
+                    self.boxing = None;
                     match dragged.as_mut() {
                         Some(drag) if drag.held() && drag.moved => {
                             drag.cancel();
@@ -656,6 +679,21 @@ impl SketchMode {
             (None, None) => None,
         };
         painter.extend(to_shapes(painter, &drawn));
+        if let Some(boxing) = &self.boxing {
+            boxing.draw(painter);
+        }
+    }
+
+    /// A box let go at `event`: the selection changed by what it takes of the frame
+    /// before's drawing, what the person saw, as the modifiers held at its release say
+    /// (`boxing`). Nothing with no read or no drawing.
+    fn box_released(&mut self, boxing: &SketchBox, event: &PointerEvent, clip: Rect) {
+        let taken = match (self.drawable(), self.drawn.as_ref()) {
+            (Some(read), Some((_, drawn))) => boxing.taken(drawn, read, clip),
+            _ => return,
+        };
+        self.selection
+            .boxed(taken, boxing::how(event.shift, event.ctrl));
     }
 
     /// What's under `at` on the screen, within the pick tolerance at the view's scale there:
@@ -1163,6 +1201,7 @@ impl SketchMode {
     /// on something that would have been dragged, as it ends.
     pub fn let_go_press(&mut self) {
         self.pressed = None;
+        self.boxing = None;
     }
 
     /// Esc, with a tool on: the gesture ended and the tool left, the tool told if the sketch

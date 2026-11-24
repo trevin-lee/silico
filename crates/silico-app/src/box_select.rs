@@ -70,7 +70,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use eframe::egui::{self, Painter, Rect, Shape, Stroke};
+use eframe::egui::{self, Painter, Pos2, Rect, Shape, Stroke};
 use silico_core::document::FeatureId;
 use silico_core::naming::Name;
 use silico_protocol::vec3::{dot, sub};
@@ -534,15 +534,37 @@ fn box_words(crossing: bool, count: usize) -> String {
     format!("{kind} selection: {count} edge{plural}")
 }
 
-/// A box on the canvas, in physical pixels from its top left: `[x0, x1] × [y0, y1]`, its
-/// sides counted inside.
+/// A box on the canvas, in physical pixels from its top left (sketch mode's, in screen
+/// points: [`PxBox::in_rect`]): `[x0, x1] × [y0, y1]`, its sides counted inside.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct PxBox {
+pub(crate) struct PxBox {
     min: [f64; 2],
     max: [f64; 2],
 }
 
 impl PxBox {
+    /// The box with corners `a` and `b`, in screen points, clamped to `clip` (what's off
+    /// the canvas isn't seen, so it's never inside), as [`PxBox::clamped`] takes a corner
+    /// that isn't finite.
+    pub(crate) fn in_rect(a: Pos2, b: Pos2, clip: Rect) -> PxBox {
+        let side = |first: f32, second: f32, low: f32, high: f32| {
+            let (first, second) = match (first.is_finite(), second.is_finite()) {
+                (true, true) => (first, second),
+                (true, false) => (first, first),
+                (false, true) => (second, second),
+                (false, false) => (low, low),
+            };
+            let clamp = |v: f32| f64::from(v.clamp(low, high.max(low)));
+            (clamp(first.min(second)), clamp(first.max(second)))
+        };
+        let (x0, x1) = side(a.x, b.x, clip.left(), clip.right());
+        let (y0, y1) = side(a.y, b.y, clip.top(), clip.bottom());
+        PxBox {
+            min: [x0, y0],
+            max: [x1, y1],
+        }
+    }
+
     /// The box with corners `a` and `b`, clamped to a canvas `size` pixels (what's off the
     /// canvas isn't seen, so it's never inside). A corner that isn't finite is taken as the
     /// other's.
@@ -569,7 +591,7 @@ impl PxBox {
         }
     }
 
-    fn holds(&self, p: [f64; 2]) -> bool {
+    pub(crate) fn holds(&self, p: [f64; 2]) -> bool {
         self.min[0] <= p[0] && p[0] <= self.max[0] && self.min[1] <= p[1] && p[1] <= self.max[1]
     }
 
@@ -598,7 +620,7 @@ impl PxBox {
     /// boxes overlap, and the box's corners aren't all strictly on one side of its line
     /// (the separating axes of a segment and a box). A segment with an end inside meets it
     /// so, as does one of no length on it (every corner then on its line).
-    fn meets_segment(&self, a: [f64; 2], b: [f64; 2]) -> bool {
+    pub(crate) fn meets_segment(&self, a: [f64; 2], b: [f64; 2]) -> bool {
         if !self.overlaps_bounds(&[a, b]) {
             return false;
         }
@@ -783,11 +805,19 @@ pub(crate) fn draw_box(painter: &Painter, frame: &ViewFrame, from: [f32; 2], to:
     // finite, which draws nothing.
     let ppp = frame.pixels_per_point;
     let at = |p: [f32; 2]| frame.rect.min + egui::vec2(p[0] / ppp, p[1] / ppp);
-    let (a, b) = (at(from), at(to));
-    if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) || a == b {
+    draw_rect(painter, at(from), at(to));
+}
+
+/// The box from `from` to `to`, in screen points: filled, and outlined solid as a window
+/// (dragged left to right) or dashed as a crossing (right to left). Nothing for corners
+/// that aren't finite, or one box of no size.
+pub(crate) fn draw_rect(painter: &Painter, from: Pos2, to: Pos2) {
+    if !(from.x.is_finite() && from.y.is_finite() && to.x.is_finite() && to.y.is_finite())
+        || from == to
+    {
         return;
     }
-    let rect = Rect::from_two_pos(a, b);
+    let rect = Rect::from_two_pos(from, to);
     let stroke = Stroke::new(
         theme::BOX_SELECT_STROKE_WIDTH,
         theme::color32(theme::BOX_SELECT_STROKE),
@@ -800,7 +830,7 @@ pub(crate) fn draw_box(painter: &Painter, frame: &ViewFrame, from: [f32; 2], to:
         rect.left_bottom(),
         rect.left_top(),
     ];
-    if to[0] < from[0] {
+    if to.x < from.x {
         let [dash, gap] = theme::BOX_SELECT_CROSSING_DASH;
         painter.extend(Shape::dashed_line(&outline, stroke, dash, gap));
     } else {

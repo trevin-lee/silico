@@ -27814,6 +27814,96 @@ fn in_sketch_mode_the_status_bar_says_the_sketch_the_pointer_on_it_and_its_state
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn in_sketch_mode_a_drag_from_empty_space_is_a_box_of_the_sketchs_members() {
+    use eframe::egui::{PointerButton, Rect, Shape};
+    // SKETCHED with its triangle moved to pa000000 (40, 20), pb000000 (60, 20), and
+    // pc000000 (40, 30), on the canvas as `to_screen` draws them ([`hand_camera`]): (500,
+    // 300), (700, 300), and (500, 200). na000000 is pa–pb, nb000000 pb–pc, nc000000 pc–pa.
+    let text = SKETCHED
+        .replace(
+            r#""id": "pa000000", "x": 0, "y": 0"#,
+            r#""id": "pa000000", "x": 40, "y": 20"#,
+        )
+        .replace(
+            r#""id": "pb000000", "x": 20, "y": 0"#,
+            r#""id": "pb000000", "x": 60, "y": 20"#,
+        )
+        .replace(
+            r#""id": "pc000000", "x": 0, "y": 10"#,
+            r#""id": "pc000000", "x": 40, "y": 30"#,
+        );
+    assert_ne!(text, SKETCHED);
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    hand_camera(&mut h);
+    step(&mut h);
+    let picked = |h: &AppHarness| -> Vec<String> {
+        sketch_mode(h)
+            .unwrap()
+            .selection
+            .references()
+            .iter()
+            .map(|r| match r {
+                silico_core::document::Reference::Element(id) => id.as_str().to_owned(),
+                other => format!("{other:?}"),
+            })
+            .collect()
+    };
+    // From (39, 19) to (61, 25): (490, 310) to (710, 250), on the canvas, nothing within the
+    // pick of its first corner.
+    let (low, high) = (
+        to_screen([39.0, 19.0]).unwrap(),
+        to_screen([61.0, 25.0]).unwrap(),
+    );
+    let canvas = the_viewport(&h);
+    assert!(canvas.contains(low) && canvas.contains(high), "{canvas:?}");
+    // Pressed and dragged, not yet let go: the box is drawn, the canvas's box fill over the
+    // rectangle the drag spans.
+    h.hover_at(low);
+    button_event(&h, low, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    for at in [low + (high - low) / 2.0, high] {
+        h.hover_at(at);
+        step(&mut h);
+    }
+    let fill = silico_app::theme::color32(silico_app::theme::BOX_SELECT_FILL);
+    let boxes: Vec<Rect> = shapes_painted(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Rect(r) if r.fill == fill => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(boxes, [Rect::from_two_pos(low, high)]);
+    assert!(picked(&h).is_empty());
+    // Let go: left to right, a window, which takes the bottom side and its two ends, wholly
+    // inside; the other two sides reach up to pc000000 (40, 30), out of it.
+    button_event(&h, high, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_eq!(picked(&h), ["na000000", "pa000000", "pb000000"]);
+    // Drawn no more.
+    step(&mut h);
+    assert!(
+        !shapes_painted(&h)
+            .into_iter()
+            .any(|shape| matches!(shape, Shape::Rect(r) if r.fill == fill))
+    );
+    // The same box dragged right to left: a crossing, which takes the two sides that
+    // cross it too.
+    drag(&mut h, PointerButton::Primary, high, low, 4);
+    assert_eq!(
+        picked(&h),
+        ["na000000", "nb000000", "nc000000", "pa000000", "pb000000"]
+    );
+    // Nothing sent: a box changes sketch mode's selection alone.
+    assert_eq!(text_of(&f.sessions, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// A sketch of 511 points, whose 1022 unknowns leave room for one more point and no more
 /// (the gate takes 1024 at most).
 fn crowded() -> String {
