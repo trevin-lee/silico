@@ -308,8 +308,18 @@ pub fn not_documents(names: &[String]) -> String {
     }
 }
 
-/// What a toast says of the files dropped on the window while a quit closes the tabs,
-/// `names`, none of which was opened.
+/// What a toast says of a new part asked for (New part, on the start page or the app bar,
+/// File > New, Ctrl+N) while a quit closes the tabs: none is opened, as no dropped file is
+/// ([`not_opened_quitting`]).
+pub const NEW_PART_QUITTING: &str = "Quitting: no new part opened";
+
+/// What a toast says of Open asked for (Open… on the start page, File > Open…, Ctrl+O)
+/// while a quit closes the tabs: no panel or question is opened.
+pub const OPEN_QUITTING: &str = "Quitting: no document opened";
+
+/// What a toast says of the documents asked for while a quit closes the tabs (dropped on
+/// the window, picked in Open, typed in its path, or a recent one), `names`, none of which
+/// was opened.
 pub fn not_opened_quitting(names: &[String]) -> String {
     format!("Quitting: {} not opened", listed(names))
 }
