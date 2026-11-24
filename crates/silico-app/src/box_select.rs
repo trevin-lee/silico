@@ -568,17 +568,20 @@ impl ScreenBox {
     /// segment meeting it, or another piece's point inside).
     pub(crate) fn takes(&self, pieces: impl IntoIterator<Item = Piece>, crossing: bool) -> bool {
         let mut any = false;
-        for Piece { points, read, path } in pieces {
+        for piece in pieces {
+            let (points, read) = match &piece {
+                Piece::Path(points) | Piece::Places(points) => (points, true),
+                Piece::Unread(points) => (points, false),
+            };
             if points.is_empty() {
                 continue;
             }
             if crossing {
-                let meets = if read && path && points.len() > 1 {
-                    points
+                let meets = match &piece {
+                    Piece::Path(points) if points.len() > 1 => points
                         .windows(2)
-                        .any(|pair| self.meets_segment(pair[0], pair[1]))
-                } else {
-                    points.iter().any(|p| self.holds(*p))
+                        .any(|pair| self.meets_segment(pair[0], pair[1])),
+                    _ => points.iter().any(|p| self.holds(*p)),
                 };
                 if meets {
                     return true;
@@ -645,15 +648,15 @@ fn side(first: f64, second: f64, low: f64, high: f64) -> (f64, f64) {
     (clamp(first.min(second)), clamp(first.max(second)))
 }
 
-/// A piece of what's drawn of an element, as a box decides it ([`ScreenBox::takes`]): its
-/// points; whether they're all read (a point that can't be read leaves the element not
-/// wholly inside, and a crossing tests the points beside it); and whether they're a path,
-/// a polyline whose segments a crossing tests, or places (a triangle's corners, single
-/// points) it tests one by one.
-pub(crate) struct Piece {
-    pub(crate) points: Vec<[f64; 2]>,
-    pub(crate) read: bool,
-    pub(crate) path: bool,
+/// A piece of what's drawn of an element, as a box decides it ([`ScreenBox::takes`]).
+pub(crate) enum Piece {
+    /// A polyline, whose segments a crossing tests.
+    Path(Vec<[f64; 2]>),
+    /// Places a crossing tests one by one: a triangle's corners, a single point.
+    Places(Vec<[f64; 2]>),
+    /// The points of a piece beside one that can't be read: it leaves the element not
+    /// wholly inside, and a crossing tests these one by one.
+    Unread(Vec<[f64; 2]>),
 }
 
 /// Twice the signed area of `a`, `b`, `c`: positive if they turn one way, negative the
@@ -751,19 +754,9 @@ impl<'a> Sight<'a> {
 fn decide(pieces: impl Iterator<Item = Drawn>, area: &ScreenBox, crossing: bool) -> bool {
     let pieces = pieces.filter_map(|piece| match piece {
         Drawn::Cut => None,
-        Drawn::Shown(points) => {
-            let path = points.len() == 2;
-            Some(Piece {
-                points,
-                read: true,
-                path,
-            })
-        }
-        Drawn::Unread(points) => Some(Piece {
-            points,
-            read: false,
-            path: false,
-        }),
+        Drawn::Shown(points) if points.len() == 2 => Some(Piece::Path(points)),
+        Drawn::Shown(points) => Some(Piece::Places(points)),
+        Drawn::Unread(points) => Some(Piece::Unread(points)),
     });
     area.takes(pieces, crossing)
 }

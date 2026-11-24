@@ -2168,6 +2168,66 @@ fn a_box_let_go_in_a_frame_its_tab_isnt_shown_in_takes_what_was_drawn() {
 }
 
 #[test]
+fn a_box_let_go_unshown_is_clamped_to_the_canvas_its_drawing_was_made_on() {
+    // Drawn on a canvas ending at x 300 (the bottom side and its dimension run on to x
+    // 500), then let go in a frame the tab isn't shown in, its painter clipped to nothing:
+    // the window, (90, 490) to (510, 540) as dragged, is judged on the 0 to 300 canvas the
+    // drawing was made on, which holds the corner pa000001 alone.
+    let mut mode = boxed_rectangle();
+    let canvas = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(300.0, 1000.0));
+    let on = |mode: &mut SketchMode, clip: egui::Rect, events: &[PointerEvent]| {
+        with_painter(|painter| {
+            let painter = painter.with_clip_rect(clip);
+            let input = FrameInput {
+                events,
+                pointer: events.last().map(|e| e.at),
+                project: &hand,
+                to_plane: &unhand,
+            };
+            mode.frame(&painter, &input, &mut None);
+        });
+    };
+    let (from, to) = (pos2(90.0, 490.0), pos2(510.0, 540.0));
+    on(&mut mode, canvas, &[]);
+    on(
+        &mut mode,
+        canvas,
+        &[event(PointerAction::Press, from, false)],
+    );
+    on(&mut mode, canvas, &[event(PointerAction::Move, to, false)]);
+    on(
+        &mut mode,
+        egui::Rect::NOTHING,
+        &[event(PointerAction::Release, to, false)],
+    );
+    assert_eq!(picked(&mode), ["pa000001"]);
+}
+
+#[test]
+fn a_box_takes_a_reference_dimension_as_a_driving_one() {
+    // The bottom side's 40 mm length, driven (a reference dimension, drawn "(40)"): the
+    // window that holds the side and its ends holds it too.
+    let mut mode = mode_on(read(
+        rectangle(vec![length("ka000001", "na000001", "40", false)]),
+        SketchState::FullyDefined,
+        MemberState::FullyDefined,
+        &[],
+    ));
+    pointer_frame(&mut mode, &[]);
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
 fn with_a_tool_on_a_drag_from_empty_space_is_the_tools_and_no_box() {
     let mut mode = boxed_rectangle();
     pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));

@@ -123,14 +123,16 @@ pub(crate) fn taken(
                 }
                 ElementKind::Constraint => dimensions.contains(id),
             };
-            let drawn = pieces.into_iter().map(|piece| Piece {
-                points: piece
+            let drawn = pieces.into_iter().map(|piece| {
+                let points = piece
                     .positions()
                     .into_iter()
                     .map(|p| [f64::from(p.x), f64::from(p.y)])
-                    .collect(),
-                read: true,
-                path: matches!(piece, Drawn::Stroke { .. }),
+                    .collect();
+                match piece {
+                    Drawn::Stroke { .. } => Piece::Path(points),
+                    _ => Piece::Places(points),
+                }
             });
             (wanted && area.takes(drawn, crossing)).then(|| {
                 SketchPick::Member(Hit {
