@@ -73,6 +73,7 @@ pixi run test      # OCCT, then the libm shim tests, the OCCT guard and cache te
 pixi run lint      # fmt and clippy, including the libm shim crate
 pixi run stress    # 605-case stress test, 10 runs, byte-identical to the committed reference
 pixi run gate      # every check on the committed tree: workspace lints, cargo-deny, lint, test, one stress run
+                   # (CI runs its parts side by side: bash tests/gate.sh lint | test count:K/N | stress)
 pixi run app       # build everything in release and open the app
 pixi run view      # the kernel's parts (a box, fillets, the primitives) in Rerun, edges labelled Edge1, ...
 pixi run oracle    # every case in tests/oracle compared with FreeCAD

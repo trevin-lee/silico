@@ -30,7 +30,17 @@ env:
   # New seeds are explored apart (proptest-explore.yml).
 
 jobs:
-  gate:
+  # The gate (tests/gate.sh) in parts side by side, each on a runner of its own: `lint` with
+  # the stress run, and the tests in partitions. Together they are every check `pixi run gate`
+  # makes, and `verdict` posts one status for them all. One hosted gate (4 vCPUs) took about
+  # 36 minutes warm, 29.5 of them in the tests (run 45408845819). Each part builds what it
+  # needs from the cache's dependencies (about 3.5 minutes for the tests) rather than taking
+  # one build's archive (cargo nextest archive): that build alone would take as long, before
+  # an upload and a download of its binaries, so the partitions would start no sooner. Four
+  # jobs a gate leave room for three or four gates beside a mutants run among the account's 20
+  # (mutants.yml).
+  lint:
+    name: lint and stress
     # A fork's pull request is skipped here: its gate is run by pushing its head to a branch of
     # this repository, after the maintainer has read it (README.md, "Pull requests and CI").
     # This isn't the guard: a pull request runs the workflow files of its own merge commit, so
@@ -43,27 +53,70 @@ jobs:
     # schedule, a dispatch (write access), a push, or a workflow_run of those, on this
     # repository's own refs.
     #
-    # A job skipped by its `if` counts as passed for a required check, so this job's check
-    # ("gate") isn't what main's branch protection requires: `verdict`'s status, below, is.
+    # A job skipped by its `if` counts as passed for a required check, so these jobs' checks
+    # aren't what main's branch protection requires: `verdict`'s status, below, is.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-24.04
-    # A cold gate (no cache: OCCT, every dependency, and the tests, on 4 vCPUs) within it, under
-    # GitHub's 6 hours a job.
-    timeout-minutes: 300
+    # A cold run (OCCT and every dependency built) within it.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/prepare
         with:
-          rust-key: gate
+          rust-key: gate-lint
           save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-      - name: Test scratch
-        run: bash .github/scratch.sh start
       # tests/gate.sh as `pixi run gate` runs it, without that task's environment, which it
       # doesn't use (each of its steps is a `pixi run` in the gate's worktree, whose
       # environments the cache restored), so the checkout needs none of its own. Every CPU is
-      # the gate's: Cargo and CMake take them all by default, and nextest's ci profile too.
-      - name: Gate
-        run: bash tests/gate.sh
+      # the job's: Cargo and CMake take them all by default, and nextest's ci profile too.
+      - name: Lint
+        run: bash tests/gate.sh lint
+      # Even after a lint failure, so one run reports both.
+      - name: Stress
+        if: ${{ !cancelled() }}
+        run: bash tests/gate.sh stress
+
+  test:
+    name: test (${{ matrix.partition }} of ${{ strategy.job-total }})
+    # A fork's pull request is skipped here: its gate is run by pushing its head to a branch of
+    # this repository, after the maintainer has read it (README.md, "Pull requests and CI").
+    # This isn't the guard: a pull request runs the workflow files of its own merge commit, so
+    # a fork can change this line or add a workflow of its own. The guard is the repository's
+    # Actions setting that requires approval for every outside contributor's run; never
+    # approve one: a fork's run on a hosted runner gets a fresh machine, a read-only token, and
+    # no secrets, but its workflow files can ask for a self-hosted runner instead, and the
+    # bench's is registered to this repository. Gating forks directly is the maintainer's
+    # decision; until he makes it, this stays. Every other workflow starts only from a
+    # schedule, a dispatch (write access), a push, or a workflow_run of those, on this
+    # repository's own refs.
+    #
+    # A job skipped by its `if` counts as passed for a required check, so these jobs' checks
+    # aren't what main's branch protection requires: `verdict`'s status, below, is.
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-24.04
+    # A cold gate's share (OCCT, every dependency, and a third of the tests) within it.
+    timeout-minutes: 180
+    strategy:
+      # Every partition to its end, so one run reports every failing test.
+      fail-fast: false
+      matrix:
+        partition: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      # Saved by one partition only, so the three don't race to save the same key. The
+      # proptest exploration and the oracle sweep restore it too.
+      - uses: ./.github/actions/prepare
+        with:
+          rust-key: gate
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && matrix.partition == 1 }}
+      - name: Test scratch
+        run: bash .github/scratch.sh start
+      # nextest's count partition: test K of every N in each binary, so each share holds
+      # some of every crate's tests, the slow ones spread with the rest.
+      - name: Test
+        env:
+          PARTITION: count:${{ matrix.partition }}/${{ strategy.job-total }}
+        run: bash tests/gate.sh test "$PARTITION"
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
@@ -71,15 +124,16 @@ jobs:
   verdict:
     # The gate's verdict as a commit status, silico/gate, on the commit a pull request shows
     # (its head; a push's or a dispatch's own commit), which main's branch protection
-    # requires. Only this job posts it, when the gate ran to an end, passed or failed (a
-    # failure replaces an earlier pass on the same commit). A pull request whose gate was
-    # skipped (a fork's) or cancelled before its first verdict has none: its required check
-    # reads "Expected, waiting for status to be reported", and it can't be merged. A fork's
-    # head gated as a branch of this repository is the same commit, so the fork's pull
-    # request gets that status too. A job of its own, so the one write permission is never
-    # held by the gate's build; it checks out and runs nothing from the repository.
-    needs: gate
-    if: ${{ always() && (needs.gate.result == 'success' || needs.gate.result == 'failure') }}
+    # requires. Only this job posts it, once for every part of the gate: failure if any part
+    # failed, success if every part passed (a failure replaces an earlier pass on the same
+    # commit). A gate skipped (a fork's) or cancelled with no part failed posts nothing: its
+    # pull request's required check reads "Expected, waiting for status to be reported", and
+    # it can't be merged. A fork's head gated as a branch of this repository is the same
+    # commit, so the fork's pull request gets that status too. A job of its own, so the one
+    # write permission is never held by the gate's build; it checks out and runs nothing from
+    # the repository.
+    needs: [lint, test]
+    if: ${{ always() && (contains(needs.*.result, 'failure') || (needs.lint.result == 'success' && needs.test.result == 'success')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -89,7 +143,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          STATE: ${{ needs.gate.result }}
+          STATE: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
