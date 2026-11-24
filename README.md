@@ -61,9 +61,11 @@ The CLI (`target/debug/silico`) checks, formats, shows, and exports documents: `
 
 ## Pull requests and CI
 
-CI runs on the maintainer's own machine, through self-hosted GitHub Actions runners, so it never runs a fork's code: a pull request from a fork gets no gate (its run waits for an approval no maintainer gives, and approved, its `gate` job is skipped), and it can't be merged until its exact commit passes the gate as a branch of this repository.
+CI runs on GitHub's hosted runners (`ubuntu-24.04`), free for a public repository: the gate on every pull request and push to `main`, mutation testing on request, and the nightly oracle sweep, the proptest exploration, and the advisories on a schedule (`.github/workflows/`). Only the benchmarks (`bench.yml`) stay on the maintainer's own machine, through a self-hosted runner, since their times are compared between runs and need the same machine each time. Each job starts on a fresh machine and restores pixi's environments, OCCT's build, and the dependencies' build from GitHub's Actions cache, which only `main`'s runs save (`.github/actions/prepare`).
 
-Pushing a fork's commit here runs it on those runners, with this repository's token, before any gate has looked at it: a workflow it adds or edits runs on the push, and the gate builds and runs its build scripts, proc macros, tests, and pixi tasks. So only the maintainer does it, by hand, after reading the change:
+CI never runs a fork's code: a pull request from a fork gets no gate (its run waits for an approval no maintainer gives, and approved, its `gate` job is skipped), and it can't be merged until its exact commit passes the gate as a branch of this repository. On hosted runners a fork's own run would get a fresh machine, a read-only token, and no secrets, so gating forks' pull requests directly is now safe enough to consider; it stays off until the maintainer decides to turn it on.
+
+Pushing a fork's commit here runs it in CI with this repository's token and caches, before any gate has looked at it: a workflow it adds or edits runs on the push, and the gate builds and runs its build scripts, proc macros, tests, and pixi tasks. So only the maintainer does it, by hand, after reading the change:
 
 ```bash
 gh pr checkout N    # the fork's head, locally
@@ -79,7 +81,7 @@ git push origin HEAD:refs/heads/fork-pr-N       # the same commit, as a branch h
 gh pr create --draft --fill --head fork-pr-N    # its gate runs on that pull request
 ```
 
-The gate posts its verdict as the commit status `silico/gate`, which `main` requires, on that commit, so the fork's pull request shows it too, and either pull request can then be merged. Each new push to the fork is read and pushed again the same way. Never approve a fork's workflow run: GitHub would run its workflow files, which a fork can change, on the self-hosted runners.
+The gate posts its verdict as the commit status `silico/gate`, which `main` requires, on that commit, so the fork's pull request shows it too, and either pull request can then be merged. Each new push to the fork is read and pushed again the same way. Never approve a fork's workflow run: GitHub would run its workflow files, which a fork can change.
 
 ## Read more
 

@@ -28,13 +28,11 @@ slow-timeout = { period = "60s", terminate-after = 5 }
 filter = 'test(/stress|oracle/)'
 slow-timeout = { period = "60s", terminate-after = 10 }
 
-# CI (NEXTEST_PROFILE=ci): every test runs, so one run reports every failure. One test per
-# physical core: the runner VM's 30 vCPUs are 15 cores' SMT siblings, and 30 tests at once
-# run each thread slower.
+# CI (NEXTEST_PROFILE=ci): every test runs, so one run reports every failure. A test per
+# CPU: a GitHub-hosted runner's 4 vCPUs are the gate's alone (gate.yml).
 [profile.ci]
 fail-fast = false
-test-threads = 15
-# CI's gate overrides it with NEXTEST_TEST_THREADS, a quarter of the runner VM (gate.yml).
+test-threads = "num-cpus"
 # The default profile's timeouts and overrides hold here too: nextest takes them from it.
 
 # The document reader's and the cache's timed tests (named `..._promptly`) measure their

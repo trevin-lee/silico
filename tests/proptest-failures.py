@@ -245,7 +245,7 @@ Commit the case proptest saves when it fails there (an integration test's `.prop
         else:
             why = (
                 "None of these failed giving proptest's input and then failed again alone at the"
-                " seed: a timeout or a crash under the idle priority filler runs at, a test that"
+                " seed: a timeout or a crash under load, a test that"
                 " isn't a property's, or a property only load makes fail."
             )
         body = f"""A proptest exploration at seed {seed}, on {commit}, had {len(unconfirmed)} failed tests this issue gathers{where}

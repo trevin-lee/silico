@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# A CI job's test scratch, in memory (a gate's, or a mutants shard's): `start` makes a directory for the job on the VM's
-# tmpfs (/dev/shm) and points TMPDIR and the tests' tmp/ in the build's target directory
-# (target/tmp, target-mutants/tmp or target-filler/tmp: SILICO_TEST_SCRATCH, which
-# tests/committed-tree.sh links it to) into it; `end` reports how large it grew,
-# puts that tmp/ back as a directory, and removes it. On the VM's disk, which every runner's builds and tests share, a test's fsync
-# stalled for 70 to 102 s with three gates writing at once (#75), past nextest's limit.
-# Build outputs stay on disk.
+# A CI job's test scratch, in memory (a gate's, or a mutants shard's): `start` makes a
+# directory for the job on the runner's tmpfs (/dev/shm) and points TMPDIR and the tests'
+# tmp/ in the build's target directory (target/tmp or target-mutants/tmp:
+# SILICO_TEST_SCRATCH, which tests/committed-tree.sh links it to) into it; `end` reports how
+# large it grew, puts that tmp/ back as a directory, and removes it. On the CI VM's disk,
+# which every runner's builds and tests shared, a test's fsync stalled for 70 to 102 s with
+# three gates writing at once (#75), past nextest's limit; in memory, no test waits on a
+# disk. Build outputs stay on disk.
 #
 # Usage: bash .github/scratch.sh start   (a step before the tests)
 #        bash .github/scratch.sh end     (a step after them, `if: always()`)
@@ -13,9 +14,9 @@ set -euo pipefail
 
 root=/dev/shm
 scratch="$root/silico-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$RUNNER_NAME"
-# What one job may hold before it warns: the VM has 70 GB and no swap, shared with other
-# projects' runners, and its two tmpfs (this and /tmp) may each grow to 48 GB.
-warn_kib=$((8 * 1024 * 1024))
+# What one job may hold before it warns: a hosted runner has 16 GB, which the tests share, and
+# its /dev/shm may grow to half of it.
+warn_kib=$((4 * 1024 * 1024))
 
 # Removes scratch, made writable first: a test can leave a directory it made read-only
 # behind (cache_bound's read-only cache), whose entries rm can't unlink.
@@ -30,15 +31,15 @@ remove() {
 case "${1-}" in
   start)
     # A job whose `end` never ran (its runner died, or it was force-cancelled) leaves its
-    # scratch holding memory: removed here once it's over 25 hours old, past the longest
-    # job's limit (a mutants shard's, a day).
+    # scratch holding memory on a machine that runs more jobs (a developer's, a self-hosted
+    # runner's): removed here once it's over 25 hours old, past the longest job's limit.
     find "$root" -maxdepth 1 -name 'silico-*' -user "$(id -u)" -mmin +1500 -print0 2>/dev/null |
       while IFS= read -r -d '' lost; do remove "$lost" || true; done
     # And a gate tree's target*/tmp left linked to scratch that's gone (the job lost, its
     # scratch swept) is put back as an empty directory, as `end` does: a running job's
     # link always leads to a directory. Only under the tree's own lock (committed-tree.sh
     # holds it for a whole gate or mutants run), so a job that's linking it isn't raced.
-    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target*/tmp; do
+    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target*/tmp ${SILICO_GATE_TREE:+"$SILICO_GATE_TREE"/target*/tmp}; do
       if [ -L "$link" ] && [ ! -e "$link" ]; then
         flock -n "${link%/target*/tmp}.lock" \
           sh -c 'if [ -L "$1" ] && [ ! -e "$1" ]; then rm -f "$1"; mkdir -p "$1"; fi' _ "$link" ||
@@ -79,7 +80,7 @@ case "${1-}" in
     # back as an empty directory, so the next job finds a plain tree whatever its scripts'
     # age: a tree checked out from before the link existed fails at its first cargo step
     # on a dangling one ("failed to create directory .../target/tmp: File exists").
-    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target*/tmp; do
+    for link in "${XDG_CACHE_HOME:-$HOME/.cache}"/silico/gate/*/target*/tmp ${SILICO_GATE_TREE:+"$SILICO_GATE_TREE"/target*/tmp}; do
       if [ -L "$link" ] && [ "$(readlink "$link")" = "$scratch/target-tmp" ]; then
         rm -f "$link"
         mkdir -p "$link" || true

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# .github/mutants-keep.sh, which keeps a mutants shard's outcomes on the VM for the run's
+# .github/mutants-keep.sh, which keeps a mutants shard's outcomes for the run's
 # summary, against a made-up mutants.out shaped as cargo-mutants 27.1.0 writes it (its
 # outcomes.json read from a real run of it on 2026-11-10: "Baseline" or {"Mutant": ...} as
 # the scenario, a summary of Success, CaughtMutant, MissedMutant, Timeout, Unviable or

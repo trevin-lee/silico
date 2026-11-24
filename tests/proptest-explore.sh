@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # The workspace's tests on the committed tree with new proptest seeds, in rounds: where the
 # gate meets the same cases every run (pixi.toml's test task fixes PROPTEST_RNG_SEED), this
-# looks for the cases it never meets (.github/workflows/proptest-explore.yml runs it on idle
-# runners). Each round draws a random u64 for PROPTEST_RNG_SEED, says it, and runs every test
+# looks for the cases it never meets (.github/workflows/proptest-explore.yml runs it every
+# four hours). Each round draws a random u64 for PROPTEST_RNG_SEED, says it, and runs every test
 # but those tests/mutants.sh leaves out for holding to a wall clock or GiBs (its
 # $explore_filter): no filter tells a property's tests from the rest, which share their
 # binaries and ignore the seed. The slow proptests mutants leave out ($slow) run here, each
 # given 20 minutes a try and no retry. Each property takes its own case count each round (not PROPTEST_CASES, which proptest
 # lets override every test's own, so a property that takes 32 costly cases would take the
 # variable's count, and one that takes 20,000 fewer): four rounds meet four times the cases.
-# About an hour in all, as a filler mutants shard has, the build included: a round starts
+# About an hour in all by default (PROPTEST_EXPLORE_MINUTES), the build included: a round starts
 # only in the first three quarters of the minutes, and only if one as long as the longest yet
 # would end within them, and the last is cut off at their end. The first failing round is the
 # last: each property failure in it (if no more than five) is run again alone at its seed,
@@ -90,7 +90,7 @@ report() {
   if [ -n "${GITHUB_STEP_SUMMARY-}" ]; then echo "$1" >>"$GITHUB_STEP_SUMMARY"; fi
 }
 
-# The exploration's clock: the build counts, as a filler mutants shard's hour does.
+# The exploration's clock: the build counts.
 start=$SECONDS
 pixi run occt
 pixi install -e oracle
@@ -120,11 +120,10 @@ trap 'rm -f "$nextest_config"' EXIT
     printf '\n[[profile.silico-explore.overrides]]\nfilter = "%s"\n' "$slow"
     printf 'retries = 0\n'
     printf 'slow-timeout = { period = "120s", terminate-after = 10 }\n'
-    # Alone, nothing else of this run beside it, when the exploration was overdue
-    # (.github/proptest-room.sh) and may have started on a busy VM: its runner at the idle
-    # weight then gets about an equal share with each busy runner's (2 or 3 CPUs of 30), and a
-    # slow proptest (some 357 s alone, 3 threads with lavapipe's) beside six other tests
-    # gets a third of that, past its 20 minutes. Alone, it has the share to itself.
+    # Alone, nothing else of this run beside it, when PROPTEST_EXPLORE_SLOW_ALONE asks, for a
+    # machine whose CPUs are mostly busy with other work (as the CI VM's often were): a slow
+    # proptest (some 357 s alone, 3 threads with lavapipe's) beside six other tests on a
+    # small share of the CPUs passes its 20 minutes. Alone, it has the share to itself.
     if [ -n "${PROPTEST_EXPLORE_SLOW_ALONE-}" ]; then
       printf 'threads-required = "num-test-threads"\n'
     fi
@@ -211,9 +210,8 @@ failures() {
 echo "proptest-explore: testing $commit"
 "${nextest[@]}" --workspace --no-run
 printf 'round\tseed\tstatus\tseconds\n' >"$out/rounds.tsv"
-# No time left for a round passes, but explores nothing: the rounds.tsv it leaves, its header
-# alone, keeps an overdue exploration overdue (proptest-explore.yml's "Rounds ran",
-# .github/proptest-room.sh).
+# No time left for a round passes, but explores nothing: the rounds.tsv it leaves has its
+# header alone.
 if [ "$SECONDS" -ge "$last_start" ]; then
   report "No round: the build ended past $((minutes * 3 / 4)) minutes"
   echo passed >"$out/outcome"

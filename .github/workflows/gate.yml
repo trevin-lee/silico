@@ -1,7 +1,9 @@
-# The gate (tests/gate.sh) on every pull request and push to main, on the self-hosted
-# runner (the Proxmox VM ci-runner, x86-64 Linux; docs/roadmap/m0-foundations.md, M0.9).
-# Each job starts from an empty workspace; the runner's home keeps the toolchains, the
-# OCCT build cache, pixi's package cache, and the gate's worktree with its target/.
+# The gate (tests/gate.sh) on every pull request and push to main, on GitHub's hosted
+# runners (ubuntu-24.04, x86-64 Linux: 4 vCPUs, 16 GB, free for a public repository). Each job
+# starts on a fresh machine: .github/actions/prepare frees its disk and restores the pixi
+# environments, OCCT's build, and the dependencies' build from GitHub's Actions cache, which
+# only main's runs save (OCCT's, any run that missed it), so pull requests never evict
+# main's caches.
 name: gate
 
 on:
@@ -20,48 +22,47 @@ permissions:
 
 env:
   NEXTEST_PROFILE: ci
-  # Each runner keeps one build (tests/committed-tree.sh); incremental compilation's caches
-  # grew to about 19 GB on each (2026-10-18), for rebuilds that rarely reuse them.
+  # Every job builds from a fresh checkout, whose files Cargo sees as changed, and the cache
+  # keeps no workspace crate: incremental compilation's caches would only be written.
   CARGO_INCREMENTAL: "0"
   # Proptest's seed isn't set here: pixi.toml's test task fixes it (PROPTEST_RNG_SEED=20261021,
   # mutants' too), so every gate meets the same cases, and a task's env wins over a workflow's.
-  # New seeds are explored apart, on idle runners (proptest-explore.yml).
+  # New seeds are explored apart (proptest-explore.yml).
 
 jobs:
   gate:
-    # A fork's pull request is skipped here, so an unmodified one never reaches the
-    # self-hosted runners. This isn't the guard: a pull request runs the workflow files of its
-    # own merge commit, so a fork can change this line or add a workflow of its own. The guard
-    # is the repository's Actions setting that requires approval for every outside
-    # contributor's run; never approve one. A fork's change is gated by pushing its head to a
-    # branch of this repository (README.md, "Pull requests and CI"). Every other workflow
-    # starts only from a schedule, a dispatch (write access), a push, or a workflow_run of
-    # those, on this repository's own refs.
+    # A fork's pull request is skipped here: its gate is run by pushing its head to a branch of
+    # this repository, after the maintainer has read it (README.md, "Pull requests and CI").
+    # This isn't the guard: a pull request runs the workflow files of its own merge commit, so
+    # a fork can change this line or add a workflow of its own. The guard is the repository's
+    # Actions setting that requires approval for every outside contributor's run; never
+    # approve one. On GitHub's hosted runners a fork's run would get a fresh machine, a
+    # read-only token, and no secrets, so running forks' gates is now safe enough to choose;
+    # whether to is the maintainer's decision, and until he makes it this stays. Every other
+    # workflow starts only from a schedule, a dispatch (write access), a push, or a
+    # workflow_run of those, on this repository's own refs.
     #
     # A job skipped by its `if` counts as passed for a required check, so this job's check
     # ("gate") isn't what main's branch protection requires: `verdict`'s status, below, is.
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: [self-hosted, linux, x64, pve, gate]
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    # A cold gate (no cache: OCCT, every dependency, and the tests, on 4 vCPUs) within it, under
+    # GitHub's 6 hours a job.
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - name: Toolchains
-        run: bash .github/tools.sh
+      - uses: ./.github/actions/prepare
+        with:
+          rust-key: gate
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
       - name: Test scratch
         run: bash .github/scratch.sh start
+      # tests/gate.sh as `pixi run gate` runs it, without that task's environment, which it
+      # doesn't use (each of its steps is a `pixi run` in the gate's worktree, whose
+      # environments the cache restored), so the checkout needs none of its own. Every CPU is
+      # the gate's: Cargo and CMake take them all by default, and nextest's ci profile too.
       - name: Gate
-        # A quarter of the runner VM (30 vCPUs) for its builds and tests. Each gate building
-        # with Cargo's default (every vCPU) and testing on 15 threads, beside other gates and
-        # mutants shards, left CPU pressure averaging 25% and failed tests held to CPU time.
-        # Four gates at once (silico-1 to -4, the runners labelled gate) ask for 28 threads,
-        # against 240 while building before; past four, they'd oversubscribe the VM (2026-10-28).
-        # Set here because a nextest profile can't say "a quarter of the CPUs" (it takes a
-        # number), and Cargo has no CI-only config; CMake (OCCT, on a cache miss) takes the
-        # same share. Kernel pool tests sized by the CPU count, and the linker, still burst.
-        run: |
-          share=$(( $(nproc) / 4 > 2 ? $(nproc) / 4 : 2 ))
-          export CARGO_BUILD_JOBS=$share NEXTEST_TEST_THREADS=$share CMAKE_BUILD_PARALLEL_LEVEL=$share
-          pixi run gate
+        run: bash tests/gate.sh
       - name: Remove the test scratch
         if: ${{ always() }}
         run: bash .github/scratch.sh end
@@ -78,7 +79,7 @@ jobs:
     # held by the gate's build; it checks out and runs nothing from the repository.
     needs: gate
     if: ${{ always() && (needs.gate.result == 'success' || needs.gate.result == 'failure') }}
-    runs-on: [self-hosted, linux, x64, control]
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       statuses: write
