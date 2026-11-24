@@ -1309,3 +1309,71 @@ fn a_tools_copy_given_a_sweep_features_last_map_leaves_out_its_bases_names() {
         );
     }
 }
+
+#[test]
+fn only_a_pattern_steps_own_copies_after_its_base_are_numbered_by_their_place_in_the_result() {
+    // `Builder::is_copy`: a map leaving an element unnamed is numbered by the step's result
+    // only where it's a copy the step places, an input after its base, of a pattern's or
+    // mirror's own feature. Any other input's unnamed element keeps its own number, by its own
+    // map's feature and type, as every input's has. A box copied past the bound (255 whole
+    // copies, then one more) leaves its six faces unnamed; each step keeps them.
+    let mut map = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let one = Instance::new(&[1]).unwrap();
+    for _ in 0..255 {
+        map = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    }
+    let past = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    // Input 0's six faces kept as `first` to `first + 5`, input 1's as `second` on.
+    let history = |first: u32, second: u32| History {
+        inputs: [first, second]
+            .map(|from| InputHistory {
+                faces: (from..from + 6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            })
+            .to_vec(),
+        result: ElementCounts {
+            faces: 12,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let named = |step: &ElementMap, n: u32| step.name(face(n)).unwrap().to_string();
+    // A fuse places no copies: the unnamed faces keep the mirror's own numbers.
+    let fuse = ElementMap::operation(id("f0000001"), OpCode::Fuse, &[&map, &past], &history(1, 7));
+    assert_eq!(named(&fuse, 7), "m0000001.mirror.Face1");
+    // Another pattern's step, given the mirror's copy: not its own, so likewise.
+    let other = ElementMap::operation(
+        id("t0000009"),
+        OpCode::LinearPattern,
+        &[&map, &past],
+        &history(1, 7),
+    );
+    assert_eq!(named(&other, 7), "m0000001.mirror.Face1");
+    // The mirror's own step: its base (input 0) is no copy, so its unnamed faces keep their
+    // numbers too, kept here as 7 to 12; its copy's are numbered by their place, 1 to 6.
+    let own = ElementMap::operation(
+        id("m0000001"),
+        OpCode::Mirror,
+        &[&past, &past],
+        &history(7, 1),
+    );
+    assert_eq!(named(&own, 7), "m0000001.mirror.Face1");
+    assert!(
+        own.names(face(1))
+            .iter()
+            .all(|n| n.to_string() != "m0000001.mirror.Face7")
+    );
+}
