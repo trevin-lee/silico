@@ -305,7 +305,7 @@ pub struct PaletteView {
 }
 
 /// A tool's name, as the palette and the toolbar say it.
-pub fn tool_name(tool: ToolKind) -> &'static str {
+pub const fn tool_name(tool: ToolKind) -> &'static str {
     match tool {
         ToolKind::Line => "Line",
         ToolKind::CornerRectangle => "Corner Rectangle",
