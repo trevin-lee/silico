@@ -135,11 +135,13 @@ jobs:
           esac
           # Enough shards that none runs past about 4.5 hours, three quarters of a hosted job's
           # 6 (the shard's timeout-minutes, below), the rest for its setup and baseline: 40
-          # mutants each, at up to about 400 seconds a mutant on a hosted runner's 4 vCPUs (per,
-          # below; the CI VM's shards took up to 540 at 2 threads, loaded). Counted as the
-          # shards will list them, in a tree of the ref; past 32 shards' worth (1,280 mutants),
-          # a shard holds more. A filler run is cut off after an hour whatever it holds, so has
-          # the shards it asks for.
+          # mutants each (per, below). On a hosted runner's 4 vCPUs a caught mutant took about
+          # 2 minutes, build and tests, even with every workspace test to run (run 45382472584:
+          # vec3.rs's 51, two shards of 25 and 26 in 50 and 52 minutes after a 6-minute setup),
+          # so 40 take about 80 minutes, leaving room for six that run the whole suite to their
+          # 30-minute limit (tests/mutants.sh). Counted as the shards will list them, in a tree
+          # of the ref; past 32 shards' worth (1,280 mutants), a shard holds more. A filler run
+          # is cut off after an hour whatever it holds, so has the shards it asks for.
           shards=$SHARDS
           if [ -z "$FILLER" ]; then
             resolve() { git rev-parse --verify --quiet "origin/$1^{commit}" || git rev-parse --verify "$1^{commit}"; }
