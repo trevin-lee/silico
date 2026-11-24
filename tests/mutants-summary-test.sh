@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A mutants run's verdict: the summary step of .github/workflows/mutants.yml, cut from it as
-# CI runs it, against made-up shards' outcomes kept on the VM; and .github/mutants-none.sh,
+# CI runs it, against made-up shards' outcomes as their artifacts hold them; and .github/mutants-none.sh,
 # which a shard runs once cargo-mutants has ended well, against a made-up tree. Each case
 # says whether the run must pass or fail, and what the summary must say. Above all: a run
 # whose cargo-mutants found nothing to mutate passes and says so (run 43831530760 read
@@ -35,7 +35,7 @@ awk '/^      - name: Summary$/ { step = 1 } step && /^        run: \|$/ { body =
   "$repo/.github/workflows/mutants.yml" >"$summary"
 grep -q 'all/incomplete.txt' "$summary" || fail "couldn't cut the Summary step from mutants.yml"
 
-# A run of the summary over the shards made in $tmp/case/home, in the bash GitHub runs it in
+# A run of the summary over the shards made in $tmp/case/results, in the bash GitHub runs it in
 # (`bash -e {0}`, as run 43831530760's log shows): its exit status in $status, what it
 # printed in $said. The environment is the case's.
 run=0
@@ -46,7 +46,7 @@ summarize() {
   cp "$repo/.github/mutants-triaged.txt" "$dir/.github/"
   status=0
   said=$(cd "$dir" && env -i PATH="$PATH" HOME="$tmp/case/home" GITHUB_RUN_ID=7 \
-    GITHUB_STEP_SUMMARY="$tmp/case/step-summary.md" SHARDS="${SHARDS:-1}" \
+    GITHUB_STEP_SUMMARY="$tmp/case/step-summary.md" RESULTS="$tmp/case/results" SHARDS="${SHARDS:-1}" \
     SHARD_RESULT="${SHARD_RESULT:-success}" REF=abc BASE="${BASE-main}" PACKAGES="" \
     FILES="${FILES-}" RE="${RE-}" TESTS="" TESTS_WHY="" FILLER="" \
     bash -e "$summary" 2>&1) || status=$?
@@ -55,13 +55,13 @@ summarize() {
 # A fresh case: no shards kept yet.
 fresh() {
   rm -rf "$tmp/case"
-  mkdir -p "$tmp/case/home"
+  mkdir -p "$tmp/case/home" "$tmp/case/results"
 }
 
-# Shard N's outcomes as its keep step leaves them (.github/mutants-keep.sh): the `kept`
-# marker, its threads, then whatever the case adds.
+# Shard N's outcomes as its keep step leaves them (.github/mutants-keep.sh) and its artifact
+# downloads them: the `kept` marker, its threads, then whatever the case adds.
 shard() {
-  local dir=$tmp/case/home/.cache/silico/mutants-results/7/mutants-shard-$1
+  local dir=$tmp/case/results/mutants-shard-$1
   mkdir -p "$dir"
   echo 1 >"$dir/kept"
   echo "2 threads" >"$dir/threads"

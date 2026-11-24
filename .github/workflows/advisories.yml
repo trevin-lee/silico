@@ -1,11 +1,11 @@
 # Security advisories (M5 decision 13c): `cargo deny check advisories` on main, daily, on a
-# runner labelled control (silico-13, -14), which runs only short jobs. The gate checks
+# GitHub-hosted runner (ubuntu-24.04). The gate checks
 # bans, licences, and sources only, since advisories need the network and change without a
 # commit; this run catches a new one within a day. A scheduled run that fails opens an
 # issue assigned to the repository's owner ("Nightly advisories failed"), or comments on
 # the one open; a green one closes it. Accepted advisories are ignored by name, with their
-# reason, in deny.toml. GitHub may drop a scheduled run (filler-clock.yml); the next day's
-# runs, or one started by hand, check the same database.
+# reason, in deny.toml. GitHub may drop a scheduled run; the next day's runs, or one started
+# by hand, check the same database.
 #
 #   gh workflow run advisories.yml --ref main   (checks now)
 name: advisories
@@ -20,7 +20,7 @@ permissions:
 
 jobs:
   advisories:
-    runs-on: [self-hosted, linux, x64, control]
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -34,7 +34,7 @@ jobs:
     needs: advisories
     # Scheduled runs only: a run started by hand reports to whoever started it.
     if: ${{ always() && github.event_name == 'schedule' }}
-    runs-on: [self-hosted, linux, x64, control]
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read

@@ -6,29 +6,22 @@
 # part that failed (sweep, corpus, sketch-edit-sweep, sketch-extend-sweep, or setup),
 # listing the cases a sketch sweep found differing, or comments on the open one; a green
 # night closes the corpus's and setup's and comments on the sweeps' (.github/nightly-report.sh).
-# The filler (filler.yml) also starts it every four hours on idle runners, as `filler: true`:
-# its title then starts "filler", it runs on the runners labelled filler, it reports only a
-# failure, and real work cancels it (.github/cancel-filler.sh), without a report: a bench or
-# a night always, a real mutants run unless it's overdue (none in a day but those cancelled,
-# filler.yml), then only if that run's shards would wait for a runner it holds or would take,
-# so a busy VM still gets its day's sweep. A scheduled night cancels filler first. The
+# On GitHub's hosted runners (ubuntu-24.04), in the gate's worktree with the gate's build
+# (.github/actions/prepare: FreeCAD 1.1.3 from conda-forge in pixi's oracle environment, as
+# every gate installs it; the corpus's parts from the Actions cache once downloaded). The
 # sketch-edit sweep (`pixi run oracle-sketch-edit-sweep`: 500 generated sketches, each edited
 # by Silico and by FreeCAD, docs/ports/sketch-edit.md's *The oracle*) and the sketch-extend
 # sweep (`oracle-sketch-extend-sweep`, 500 extends) run each night; started by hand with
 # `sketch_edits: true`, the run is those two alone. A run started by hand can name its
 # `seed`, to repeat a sweep (any of them) at it; the run's title names the seed it used.
 name: oracle-sweep
-run-name: "${{ inputs.filler && 'filler ' || '' }}oracle ${{ inputs.sketch_edits && 'sketch-edit and extend sweep' || (github.event_name == 'schedule' && 'sweeps and corpus' || 'sweep') }}, seed ${{ inputs.seed || github.run_number }}"
+run-name: "oracle ${{ inputs.sketch_edits && 'sketch-edit and extend sweep' || (github.event_name == 'schedule' && 'sweeps and corpus' || 'sweep') }}, seed ${{ inputs.seed || github.run_number }}"
 
 on:
   schedule:
     - cron: "17 9 * * *"
   workflow_dispatch:
     inputs:
-      filler:
-        description: "Set only by the filler (filler.yml): a run on idle runners, which yields to real work"
-        type: boolean
-        default: false
       sketch_edits:
         description: "Run the sketch-edit and sketch-extend sweeps (pixi run oracle-sketch-edit-sweep, oracle-sketch-extend-sweep) instead of the sweep and the corpus"
         type: boolean
@@ -42,28 +35,10 @@ permissions:
   contents: read
 
 jobs:
-  # A night is real work: filler runs yield to it.
-  yield:
-    if: ${{ github.event_name == 'schedule' }}
-    runs-on: [self-hosted, linux, x64, control]
-    timeout-minutes: 5
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-        with:
-          sparse-checkout: .github
-      - env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: bash .github/cancel-filler.sh
-
   sweep:
-    needs: yield
-    if: ${{ !cancelled() }}
-    runs-on: ${{ inputs.filler && fromJSON('["self-hosted", "linux", "x64", "filler"]') || fromJSON('["self-hosted", "linux", "x64", "sweep"]') }}
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    # The sweeps and the corpus, and a cold build before them on a cache miss.
+    timeout-minutes: 300
     outputs:
       sweep: ${{ steps.sweep.outcome }}
       corpus: ${{ steps.corpus.outcome }}
@@ -75,17 +50,23 @@ jobs:
       extend_status: ${{ steps.extends.outputs.status }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - name: Toolchains
+      # The gate's worktree, environments, OCCT, and dependencies (only the gate saves them).
+      # The report's `setup`, if it fails.
+      - uses: ./.github/actions/prepare
         id: toolchains
-        run: bash .github/tools.sh
+        with:
+          rust-key: gate
+      # The corpus's parts (tests/corpus/run.sh downloads each dataset once, checked against
+      # its pinned SHA-256), saved by the first night that passes.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/silico/corpus
+          key: corpus-${{ hashFiles('tests/corpus/run.sh') }}
       - name: Sweep
         id: sweep
         if: ${{ !inputs.sketch_edits }}
-        # A filler sweep runs on a runner at the idle CPU weight (mutants.yml), where gates can
-        # starve it: a case's FreeCAD deadline there is half an hour, not two minutes, so a
-        # starved case isn't reported as a failure. (Silico's own conversion keeps its 60 s.)
+        working-directory: ${{ env.SILICO_GATE_TREE }}
         env:
-          SILICO_ORACLE_CASE_DEADLINE: ${{ inputs.filler && '1800' || '' }}
           # Through the environment, so the input is never read as the script's text.
           SEED: ${{ inputs.seed || github.run_number }}
         run: |
@@ -94,8 +75,7 @@ jobs:
       - name: Corpus
         id: corpus
         if: ${{ !cancelled() && steps.toolchains.outcome == 'success' && !inputs.sketch_edits }}
-        env:
-          SILICO_ORACLE_CASE_DEADLINE: ${{ inputs.filler && '1800' || '' }}
+        working-directory: ${{ env.SILICO_GATE_TREE }}
         run: pixi run corpus
       # The sketch sweeps, each night and when started for them, from the same seed: each
       # runs whatever the ones before it found, but not after the toolchains failed (that's the
@@ -104,8 +84,8 @@ jobs:
       - name: Sketch-edit sweep
         id: edits
         if: ${{ !cancelled() && steps.toolchains.outcome == 'success' && (inputs.sketch_edits || github.event_name == 'schedule') }}
+        working-directory: ${{ env.SILICO_GATE_TREE }}
         env:
-          SILICO_ORACLE_CASE_DEADLINE: ${{ inputs.filler && '1800' || '' }}
           # Through the environment, so the input is never read as the script's text.
           SEED: ${{ inputs.seed || github.run_number }}
         run: |
@@ -119,8 +99,8 @@ jobs:
       - name: Sketch-extend sweep
         id: extends
         if: ${{ !cancelled() && steps.toolchains.outcome == 'success' && (inputs.sketch_edits || github.event_name == 'schedule') }}
+        working-directory: ${{ env.SILICO_GATE_TREE }}
         env:
-          SILICO_ORACLE_CASE_DEADLINE: ${{ inputs.filler && '1800' || '' }}
           SEED: ${{ inputs.seed || github.run_number }}
         run: |
           echo "seed $SEED"
@@ -133,10 +113,9 @@ jobs:
 
   report:
     needs: sweep
-    # Scheduled nights, and the filler's runs that failed (not those real work cancelled):
-    # a run started by hand reports to whoever started it.
-    if: ${{ always() && (github.event_name == 'schedule' || (inputs.filler && needs.sweep.result == 'failure')) }}
-    runs-on: [self-hosted, linux, x64, control]
+    # Scheduled nights: a run started by hand reports to whoever started it.
+    if: ${{ always() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       contents: read

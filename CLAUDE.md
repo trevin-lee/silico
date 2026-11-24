@@ -50,7 +50,7 @@ Tests stand in for line-by-line human review, so they have to be able to fail.
 - One short-lived branch per task, off `main`. Squash-merge only after `/adversarial-review` approves. Never rewrite `main`.
 - Conventional commits. The scope is the crate name without the `silico-` prefix: `feat(sketch): …`, `fix(kernel): …`, `docs: …`.
 - Commit subjects say what the project gains. No version numbers in subjects.
-- Never push a fork's commits to this repository, nor approve a fork's workflow run: either runs its code on the self-hosted runners. Gating a fork's pull request is the maintainer's step alone, by hand (README.md, "Pull requests and CI").
+- Never push a fork's commits to this repository, nor approve a fork's workflow run: either runs its code in this repository's CI, with its token and caches. Gating a fork's pull request is the maintainer's step alone, by hand (README.md, "Pull requests and CI").
 
 ## Skills
 
@@ -73,6 +73,7 @@ pixi run test      # OCCT, then the libm shim tests, the OCCT guard and cache te
 pixi run lint      # fmt and clippy, including the libm shim crate
 pixi run stress    # 605-case stress test, 10 runs, byte-identical to the committed reference
 pixi run gate      # every check on the committed tree: workspace lints, cargo-deny, lint, test, one stress run
+                   # (CI runs its parts side by side: bash tests/gate.sh lint | test count:K/N | stress)
 pixi run app       # build everything in release and open the app
 pixi run view      # the kernel's parts (a box, fillets, the primitives) in Rerun, edges labelled Edge1, ...
 pixi run oracle    # every case in tests/oracle compared with FreeCAD
@@ -83,16 +84,20 @@ pixi run mutants -- --in-diff /tmp/change.diff --output /tmp
                    # in a checkout: every workspace test for each mutant (.cargo/mutants.toml), but the
                    # few that hold to a wall clock, which fail a loaded baseline. Arguments go to cargo
                    # mutants, paths absolute (git diff main...HEAD > /tmp/change.diff first; -p to
-                   # narrow it). CI shards it over the runners (.github/workflows/mutants.yml):
+                   # narrow it). CI shards it over GitHub's hosted runners (.github/workflows/mutants.yml):
 gh workflow run mutants.yml --ref main -f ref=SHA -f base=main
                    # the same on CI, but each mutant runs the tests of the packages that can see it (the
                    # mutated ones and their dependents, or every workspace test for code in the worker
                    # binaries: .github/mutants-tests.py; -f tests=workspace for all); -f packages="silico-core",
                    # -f files="PATHS" (from the repository's root, globs allowed), -f shards=N (the fewest: the
-                   # plan adds shards, up to 16, so none runs past about 12 hours), -f long=true for a
-                   # milestone's or a whole crate's run, which takes runners of its own so a PR's run never
-                   # waits behind it; a full SHA as the ref, so a push mid-run can't mix commits. Its outcomes
-                   # are kept on the CI VM, so a full artifact storage fails nothing
+                   # plan adds shards, up to 32, so none runs past about 4.5 hours), -f long=true for a
+                   # milestone's or a whole crate's run, past six shards (twelve at once; a PR's run takes
+                   # at most six, so gates keep room among GitHub's 20 jobs at once); a full SHA as the ref,
+                   # so a push mid-run can't mix commits. Its outcomes are the run's artifacts (mutants, and
+                   # each shard's). CI runs on GitHub's hosted runners (README.md, "Pull requests and CI"),
+                   # all but the benchmarks (bench.yml, on the self-hosted runner labelled sweep); the CI
+                   # VM's runner labels (gate, control, filler, mutants, mutants-pr, clock) are no longer
+                   # asked for, and the filler (filler.yml, filler-clock.yml) is gone
 ```
 
 Run C++ builds through pixi so the pinned clang is used. `pixi run gate` runs every check on the committed tree and must pass before a merge. `silico check FILE` checks a document, `silico fmt FILE` writes it in canonical form with its fingerprints and its sketches as solved, `silico export FILE OUT.3mf` (or `OUT.step`) exports its bodies, and `silico serve [--workspace DIR]` runs the MCP server over stdio for an agent (docs/cli.md, docs/mcp.md).

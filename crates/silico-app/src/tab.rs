@@ -27,6 +27,7 @@ use crate::changes::{self, Changes};
 use crate::dialog::{Dialog, Kind, Standing, feature_node, quoted};
 use crate::sketch::dimension::{Ask, ModifyAction};
 use crate::sketch::drag::{Drag, News};
+use crate::sketch::hit::Hit;
 use crate::sketch::screen::Screen;
 use crate::sketch::tools::{Choice, ExtendFrom, Request};
 use crate::sketch::{self, Deletion, FrameInput, SketchMode, SketchReads};
@@ -257,6 +258,18 @@ enum Queued {
         serial: u64,
         feature: Node,
     },
+    /// Delete in sketch mode, of sketch mode numbered `serial`, as it was pressed: `picks`,
+    /// the selection then, judged when it comes up ([`Tab::judge_delete`]) on sketch mode's
+    /// read: a lone point two curves end at there joined ([`Queued::SketchJoin`]), anything
+    /// else removed ([`Queued::SketchRemove`]). A lone point the read doesn't hold (one an
+    /// edit asked before it made) waits for the read of the revision it's sent against.
+    /// `hushed`, the tab's [`hushes`](Tab::hushes) as it was queued.
+    SketchDelete {
+        serial: u64,
+        sketch: FeatureId,
+        picks: Vec<Hit>,
+        hushed: u64,
+    },
     /// Delete in sketch mode: `members` of the sketch `sketch` removed (`sketch_remove`).
     SketchRemove {
         sketch: FeatureId,
@@ -448,8 +461,24 @@ enum Planned {
     Gone(String),
 }
 
-/// Why a click (a constraint tool's, or Construction's) is let go once its sketch mode has
-/// gone unread.
+/// A sketch mode's Delete, judged as it comes up in the queue ([`Tab::judge_delete`]): waits
+/// for the read it's judged on; is a removal or a join, to send now; selected nothing, so
+/// sends nothing; or is let go, its sketch mode gone, saying so.
+#[derive(Debug, Clone, PartialEq)]
+enum Judged {
+    Wait,
+    Is(Deletion),
+    Nothing,
+    Gone(String),
+}
+
+/// What's said of a sketch mode's Delete let go unsent, and `why`.
+fn undeleted(why: &str) -> String {
+    format!("The selection wasn't deleted: {why}")
+}
+
+/// Why a click (a constraint tool's, or Construction's), or a Delete, is let go once its
+/// sketch mode has gone unread.
 const SKETCH_CLOSED: &str = "the sketch closed before it was read";
 
 /// Why a click (a constraint tool's, or Construction's) can't be planned while the tab's
@@ -467,8 +496,9 @@ const REBUILD_FAILED: &str =
 /// the read it's planned on (an edit queued before it removed them).
 const CURVES_GONE: &str = "the curves selected are no longer in the sketch";
 
-/// Why a click (a constraint tool's, or Construction's) waiting to be planned is let go at its
-/// sketch mode's Cancel, which takes back its edits anyway.
+/// Why a click (a constraint tool's, or Construction's) waiting to be planned, or a Delete
+/// waiting to be judged, is let go at its sketch mode's Cancel, which takes back its edits
+/// anyway.
 const SKETCH_CANCELLED: &str = "the sketch was cancelled first";
 
 /// What Create Sketch's Finish of a sketch holding nothing toasts, as the prototype's
@@ -638,6 +668,16 @@ pub const LOOK_AT_UNMEASURED: &str = "Look At: the face selected isn't measured 
 /// What Look At says of the one face selected when the core's measures of it failed: the
 /// selection view says why.
 pub const LOOK_AT_UNMEASURABLE: &str = "Look At: the face selected couldn't be measured.";
+
+/// The view as sketch mode found it: the camera it was heading for (a transition's end), or
+/// none if no camera had been chosen yet (the view not yet placed by its first read); and
+/// whether sketch mode's turn square to its sketch is settled, made or passed over
+/// ([`Tab::turn_to_sketch`]).
+#[derive(Debug, Clone, PartialEq)]
+struct SketchView {
+    before: Option<silico_protocol::Camera>,
+    settled: bool,
+}
 
 /// What Look At turns the view square to ([`Tab::look_at_target`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -833,6 +873,7 @@ impl Edits {
                 | Queued::Add { .. }
                 | Queued::Opened { .. }
                 | Queued::AddSketch { .. }
+                | Queued::SketchDelete { .. }
                 | Queued::SketchRemove { .. }
                 | Queued::SketchJoin { .. }
                 | Queued::SketchAdd { .. }
@@ -1516,6 +1557,10 @@ pub struct Tab {
     pub sketch: Option<SketchMode>,
     /// Create Sketch's pick of a plane or a flat face, while it's on (`crate::plane_pick`).
     pub plane_pick: Option<crate::plane_pick::PlanePick>,
+    /// The view as sketch mode found it, and whether its turn square to the sketch is settled
+    /// ([`turn_to_sketch`](Self::turn_to_sketch)): gone back to as sketch mode leaves
+    /// ([`leave_sketch_mode`](Self::leave_sketch_mode)), every way it does.
+    sketch_view: Option<SketchView>,
     pub sketch_reads: SketchReads,
     /// The selected feature's text, read for its PARAMETERS in the property panel.
     pub parameters: crate::parameters::FeatureRead,
@@ -1540,9 +1585,9 @@ pub struct Tab {
     /// what that sketch mode's Finish reads to judge it ([`judge_created`](Self::judge_created)),
     /// its add having answered by then, though the sketch mode may have left first.
     created_sketch: Option<(u64, FeatureId)>,
-    /// Each sketch mode closed (Finish, Cancel) while a click of it (a constraint tool's, or
-    /// Construction's) was unsettled: its reads polled still, so the click is planned, and
-    /// let go once none is.
+    /// Each sketch mode Finish closed while a click of it (a constraint tool's, or
+    /// Construction's) or a Delete was unsettled: its reads polled still, so the click is
+    /// planned, or the Delete judged, and let go once none is.
     leaving: Vec<SketchMode>,
     /// The click (a constraint tool's, or Construction's) being pressed, while its press's
     /// call runs: let go in it, it's toasted as well as said.
@@ -1954,6 +1999,7 @@ impl Tab {
             sketch_pairs: Vec::new(),
             created_sketch: None,
             leaving: Vec::new(),
+            sketch_view: None,
             pressed: None,
             steps: BTreeMap::new(),
             names: BTreeMap::new(),
@@ -2472,6 +2518,66 @@ impl Tab {
             toward,
             up: silico_core::views::up_across(toward),
         });
+    }
+
+    /// The view as sketch mode opens on it kept, to go back to as sketch mode leaves
+    /// ([`leave_sketch_mode`](Self::leave_sketch_mode)): the camera it's heading for, if one
+    /// has been chosen.
+    fn keep_sketch_view(&mut self) {
+        self.sketch_view = Some(SketchView {
+            before: self.view.placed().then(|| self.view.heading().clone()),
+            settled: false,
+        });
+    }
+
+    /// Sketch mode's turn square to its sketch, once, as its first read comes (the approved
+    /// prototype's `enter`, docs/design/m5-ui/js/sketch.js; SolidWorks' *Auto-rotate view
+    /// normal to sketch plane on sketch creation and sketch edit*, docs/ux/solidworks.md):
+    /// Look At's view of the sketch ([`look_at_target`](Self::look_at_target): its x across,
+    /// its y up, fitted with the sketch clear of the bar and the palette), as Ctrl+8 asks it.
+    /// Not if the view has been moved since sketch mode opened, which the person's view keeps;
+    /// nor if no camera had been chosen for it yet (its first meshes not read: that read
+    /// places it at Home, as ever, which a turn would take the place of); nor for a read whose
+    /// plane is an error (a face not found), which places the sketch nowhere: any way it's
+    /// passed over for good.
+    fn turn_to_sketch(&mut self) {
+        if self
+            .sketch
+            .as_ref()
+            .and_then(SketchMode::drawable)
+            .is_none()
+        {
+            return;
+        }
+        let unmoved = match &self.sketch_view {
+            Some(kept) if !kept.settled => kept
+                .before
+                .as_ref()
+                .is_some_and(|before| self.view.heading() == before),
+            _ => return,
+        };
+        let target = self.look_at_target();
+        if let Some(kept) = self.sketch_view.as_mut() {
+            kept.settled = true;
+        }
+        if let (true, Ok(LookAtTarget::Sketch { toward, up })) = (unmoved, target) {
+            self.view
+                .ask(crate::viewport::ViewAsk::LookAt { toward, up });
+        }
+    }
+
+    /// Sketch mode left (Finish, Cancel, a refused add, a revert): taken, and the view as it
+    /// found it gone back to, eased to as the prototype's `exit` animates back to its camera,
+    /// in the projection the view has now. SolidWorks reverts the view only when the changes
+    /// are discarded; the prototype, which the view's UI follows, on either. A view no camera
+    /// had been chosen for as sketch mode opened was never turned, and has nothing to go back
+    /// to: its first read places it.
+    fn leave_sketch_mode(&mut self) -> Option<SketchMode> {
+        let left = self.sketch.take();
+        if let Some(before) = self.sketch_view.take().and_then(|kept| kept.before) {
+            self.view.return_to(before);
+        }
+        left
     }
 
     /// The outward normal of the one element selected, if it's a face the core's answer for
@@ -3091,6 +3197,7 @@ impl Tab {
             | Queued::Add { .. }
             | Queued::Replace { .. }
             | Queued::AddSketch { .. }
+            | Queued::SketchDelete { .. }
             | Queued::SketchRemove { .. }
             | Queued::SketchJoin { .. }
             | Queued::SketchAdd { .. }
@@ -3277,7 +3384,7 @@ impl Tab {
         self.sketch_requests(sessions);
         self.drive_drag(sessions);
         self.read_sketches(sessions);
-        self.relate_waiting(sessions);
+        self.retry_waiting(sessions);
         self.measure(sessions);
         // The unsaved edits, counted while every answer of the tab's is taken: what the bar
         // holds while the next is under way.
@@ -3298,6 +3405,7 @@ impl Tab {
                 drag.read(mode.read.as_ref().and_then(|read| read.model));
             }
         }
+        self.turn_to_sketch();
         for mode in &mut self.leaving {
             mode.poll(sessions, &self.id, self.published);
         }
@@ -4008,7 +4116,7 @@ impl Tab {
                             // transaction its add began, if it did, rolled back.
                             if ours {
                                 self.leave_drag();
-                                self.sketch = None;
+                                self.leave_sketch_mode();
                                 self.edits.queue.push_front(Queued::Closed {
                                     ok: false,
                                     sketch: true,
@@ -4763,6 +4871,37 @@ impl Tab {
                         running: sessions.add_feature(&self.id, self.revision, None, feature),
                     });
                 }
+                Queued::SketchDelete {
+                    serial,
+                    sketch,
+                    picks,
+                    hushed,
+                } => match self.judge_delete(serial, &sketch, &picks) {
+                    // Its read not there yet: it keeps its place, and what's after it waits.
+                    Judged::Wait => {
+                        self.edits.queue.push_front(Queued::SketchDelete {
+                            serial,
+                            sketch,
+                            picks,
+                            hushed,
+                        });
+                        return;
+                    }
+                    Judged::Is(Deletion::Remove(members)) => {
+                        self.edits
+                            .queue
+                            .push_front(Queued::SketchRemove { sketch, members });
+                    }
+                    Judged::Is(Deletion::Join(point)) => {
+                        self.edits.queue.push_front(Queued::SketchJoin {
+                            sketch,
+                            point,
+                            hushed,
+                        });
+                    }
+                    Judged::Nothing => {}
+                    Judged::Gone(said) => self.message = Some(said),
+                },
                 Queued::SketchRemove { sketch, members } => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
@@ -5755,7 +5894,7 @@ impl Tab {
         self.dropped(dropped.as_ref());
         self.loading = None;
         self.leave_drag();
-        self.sketch = None;
+        self.leave_sketch_mode();
         self.drive_drag(sessions);
         let kept = self
             .edits
@@ -5770,7 +5909,9 @@ impl Tab {
                 .queue
                 .range(kept..)
                 .any(|queued| matches!(queued, Queued::Revert { then_close: true }));
-        // A constraint tool's click it drops, or Construction's, unplanned or unsent, said.
+        // A constraint tool's click it drops, or Construction's, unplanned or unsent, said;
+        // or else a Delete still to be judged.
+        let reverted = "the part was reverted first";
         if let Some(applies) = self
             .edits
             .queue
@@ -5780,7 +5921,14 @@ impl Tab {
                 _ => None,
             })
         {
-            self.message = Some(applies.unmade("the part was reverted first"));
+            self.message = Some(applies.unmade(reverted));
+        } else if self
+            .edits
+            .queue
+            .range(kept..)
+            .any(|queued| matches!(queued, Queued::SketchDelete { .. }))
+        {
+            self.message = Some(undeleted(reverted));
         }
         self.edits.queue.truncate(kept);
         self.edits.queue.push_back(Queued::Revert { then_close });
@@ -6644,8 +6792,8 @@ impl Tab {
             | Queued::Load { .. }
             | Queued::Closed { .. }
             | Queued::Restore { .. } => None,
-            // Its edit, once planned, says it.
-            Queued::Click { .. } => None,
+            // Its edit, once planned (or judged), says it.
+            Queued::Click { .. } | Queued::SketchDelete { .. } => None,
         }
     }
 
@@ -7967,6 +8115,7 @@ impl Tab {
         let mut mode = SketchMode::new(serial, None);
         mode.created = Some(name);
         self.sketch = Some(mode);
+        self.keep_sketch_view();
         self.edits
             .queue
             .push_back(Queued::AddSketch { serial, feature });
@@ -8080,6 +8229,7 @@ impl Tab {
         }
         let serial = self.opening();
         self.sketch = Some(SketchMode::new(serial, Some(id.clone())));
+        self.keep_sketch_view();
         self.selection.select_feature(id.clone());
         self.advance(sessions);
     }
@@ -8130,26 +8280,33 @@ impl Tab {
         // Its close waits for a drag's end (the queue waits while one is under way).
         self.leave_drag();
         // And, for Finish, for a click of it (a constraint tool's, or Construction's) still to
-        // plan: its reads go
-        // on. Cancel takes back what it adds anyway: a click still waiting to be planned is let
-        // go, said, and an edit already planned is sent and taken back with the rest.
-        if let Some(mode) = self.sketch.take() {
+        // plan, or a Delete still to judge: its reads go on. Cancel takes back what it adds
+        // anyway: a click still waiting to be planned, or a Delete to be judged, is let go,
+        // said, and an edit already planned is sent and taken back with the rest.
+        if let Some(mode) = self.leave_sketch_mode() {
             if !ok {
                 // Cancel takes back what sketch mode did: what its edits said goes too.
                 self.edit_words.let_go();
                 let serial = mode.serial;
                 let mut dropped = None;
+                let mut undeleted_too = false;
                 self.edits.queue.retain(|queued| match queued {
                     Queued::Click { click, .. } if click.serial == serial => {
                         dropped.get_or_insert(click.applies);
+                        false
+                    }
+                    Queued::SketchDelete { serial: of, .. } if *of == serial => {
+                        undeleted_too = true;
                         false
                     }
                     _ => true,
                 });
                 if let Some(applies) = dropped {
                     self.message = Some(applies.unmade(SKETCH_CANCELLED));
+                } else if undeleted_too {
+                    self.message = Some(undeleted(SKETCH_CANCELLED));
                 }
-            } else if self.relating(mode.serial) {
+            } else if self.pending_in(mode.serial) {
                 self.leaving.push(mode);
             }
         }
@@ -8463,8 +8620,10 @@ impl Tab {
     }
 
     /// Delete in sketch mode: the selection removed (`sketch_remove`), or a lone split point
-    /// joined (`sketch_join`), once what's asked before has answered; the selection let
-    /// go. A refusal is said. Nothing with nothing selected, or before the sketch is known.
+    /// joined (`sketch_join`), once what's asked before has answered, judged then on sketch
+    /// mode's read ([`judge_delete`](Self::judge_delete)), a split point a split asked before
+    /// made once the read of the split has come; the selection let go. A refusal is said.
+    /// Nothing with nothing selected, or before the sketch is known.
     pub fn sketch_delete<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if !self.sketch_deletable() {
             return;
@@ -8472,22 +8631,57 @@ impl Tab {
         let Some(mode) = self.sketch.as_mut() else {
             return;
         };
-        let (Some(sketch), Some(deletion)) = (mode.sketch.clone(), mode.deletion()) else {
+        let Some(sketch) = mode.sketch.clone() else {
             return;
         };
+        let picks: Vec<Hit> = mode.selection.members().cloned().collect();
+        let serial = mode.serial;
         mode.selection.clear();
         // A new edit drops what was undone: Redo has nothing of sketch mode's to give back.
         mode.undone = 0;
         self.hush();
-        self.edits.queue.push_back(match deletion {
-            Deletion::Remove(members) => Queued::SketchRemove { sketch, members },
-            Deletion::Join(point) => Queued::SketchJoin {
-                sketch,
-                point,
-                hushed: self.edit_words.hushes,
-            },
+        self.edits.queue.push_back(Queued::SketchDelete {
+            serial,
+            sketch,
+            picks,
+            hushed: self.edit_words.hushes,
         });
         self.advance(sessions);
+    }
+
+    /// Sketch mode numbered `serial`'s Delete of `picks` in the sketch `sketch`, come up in
+    /// the queue, judged ([`sketch::deletion_of`]) on its read. Only a lone point's turns on
+    /// the read (whether two curves end at it); one the read doesn't hold, which an edit
+    /// asked before it made (the point a split leaves, before the read of the split has
+    /// come), waits for the read of the tab's revision, the one it's sent against, unless
+    /// that read won't come unasked (its rebuild stopped or failed). Anything else is judged
+    /// on the read as it is, at once, as it was pressed. Let go, said, if its sketch mode has
+    /// gone (a Revert behind a Save closed it), as a click is.
+    fn judge_delete(&self, serial: u64, sketch: &FeatureId, picks: &[Hit]) -> Judged {
+        let Some(mode) = self
+            .sketch
+            .iter()
+            .chain(self.leaving.iter())
+            .find(|mode| mode.serial == serial)
+        else {
+            return Judged::Gone(undeleted(SKETCH_CLOSED));
+        };
+        let read = mode.read.as_ref();
+        let drawn = read
+            .and_then(|read| read.result.as_ref().ok())
+            .filter(|drawn| &drawn.sketch == sketch);
+        let unheld = match picks {
+            [only] if only.kind == ElementKind::Point => {
+                !drawn.is_some_and(|drawn| drawn.members.points.iter().any(|p| p.id == only.id))
+            }
+            _ => false,
+        };
+        let model = read.and_then(|read| read.model);
+        let behind = model.is_none_or(|model| model < self.revision);
+        if unheld && behind && self.unreadable(model).is_none() {
+            return Judged::Wait;
+        }
+        sketch::deletion_of(picks, drawn).map_or(Judged::Nothing, Judged::Is)
     }
 
     /// A constraint tool's button in sketch mode (C7): `relation` made of the selection, in
@@ -8671,32 +8865,37 @@ impl Tab {
         }
     }
 
-    /// How many sketch modes closed with a click (a constraint tool's, or Construction's)
-    /// still unsettled are kept for it: what a test counts.
+    /// How many sketch modes closed with a click (a constraint tool's, or Construction's) or
+    /// a Delete still unsettled are kept for it: what a test counts.
     pub fn leaving(&self) -> usize {
         self.leaving.len()
     }
 
-    /// Whether a click (a constraint tool's, or Construction's) of sketch mode numbered
-    /// `serial` is unsettled: queued to be planned, or an edit of its chain queued or under
-    /// way.
-    fn relating(&self, serial: u64) -> bool {
-        self.edits.queue.iter().any(|queued| {
-            matches!(queued, Queued::Click { click, .. } | Queued::Relate { click, .. } if click.serial == serial)
+    /// Whether a click (a constraint tool's, or Construction's) or a Delete of sketch mode
+    /// numbered `serial` is unsettled: a click queued to be planned, or an edit of its chain
+    /// queued or under way; a Delete queued to be judged.
+    fn pending_in(&self, serial: u64) -> bool {
+        self.edits.queue.iter().any(|queued| match queued {
+            Queued::Click { click, .. } | Queued::Relate { click, .. } => click.serial == serial,
+            Queued::SketchDelete { serial: of, .. } => *of == serial,
+            _ => false,
         }) || self
             .under
             .iter()
             .any(|under| matches!(under, Under::Relate { click, .. } if click.serial == serial))
     }
 
-    /// A click waiting at the queue's front for its read, given another chance once a read
-    /// may have come; and each sketch mode closed with a click still unsettled, its read
-    /// polled meanwhile, let go once none is.
-    fn relate_waiting<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+    /// A click, or a Delete, waiting at the queue's front for its read, given another chance
+    /// once a read may have come; and each sketch mode closed with a click or a Delete still
+    /// unsettled, its read polled meanwhile, let go once none is.
+    fn retry_waiting<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         let mut leaving = std::mem::take(&mut self.leaving);
-        leaving.retain(|mode| self.relating(mode.serial));
+        leaving.retain(|mode| self.pending_in(mode.serial));
         self.leaving = leaving;
-        if matches!(self.edits.queue.front(), Some(Queued::Click { .. })) {
+        if matches!(
+            self.edits.queue.front(),
+            Some(Queued::Click { .. } | Queued::SketchDelete { .. })
+        ) {
             self.advance(sessions);
         }
     }
@@ -13102,17 +13301,27 @@ mod tests {
     /// Edge13 broken, at `edges.1`.
     const BROKEN_ROUND: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}, {"id": "f0000001", "type": "fillet", "v": 1, "name": "Round", "base": "k7f2qx3m", "edges": ["k7f2qx3m.box.Edge1", "k7f2qx3m.box.Edge13"], "radius": 0.1}]}"#;
 
-    /// Polled until nothing of the tab's is under way and the session's revision's model is
-    /// published, as the selection holds it.
+    /// Polled until nothing of the tab's is under way, the session's revision's model is
+    /// published, as the selection holds it, and its block's elements are named, which the
+    /// model's background does after it's published: a repair reads its candidate in the
+    /// block's solid, and is refused as not answered yet until they are (#580).
     fn published_quietly(tab: &mut Tab, sessions: &FakeSessions) {
+        let block = FeatureId::new("k7f2qx3m").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         loop {
             tab.poll(sessions);
             let published = tab.selection.model().map(|(_, revision)| revision);
-            if tab.quiet() && published == Some(tab.revision) {
+            let named = matches!(
+                tab.selection.read_on("k7f2qx3m.box.Edge12", &block),
+                crate::selection::OnBase::Found(Ok(_))
+            );
+            if tab.quiet() && published == Some(tab.revision) && named {
                 return;
             }
-            assert!(std::time::Instant::now() < deadline, "never published");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "never published, or the block's elements never named"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }

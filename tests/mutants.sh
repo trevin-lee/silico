@@ -124,8 +124,8 @@ pixi install -e oracle
 cargo nextest run --workspace --no-run
 echo "mutants: testing $commit"
 # Each test given 5 minutes a try, not the 2 its slow-timeout gives (.config/nextest.toml):
-# the shards run niced, and while gates build and test at full priority a niced test that
-# takes 20 s alone can take minutes. Ended at 2, under retries no longer than a burst of
+# a loaded machine stretches tests (on the CI VM the shards ran niced beside gates, where a
+# test that takes 20 s alone took minutes). Ended at 2, under retries no longer than a burst of
 # gates, its failure would count the mutant as caught: a false kill, which hides a miss. A
 # mutant that hangs a test is still caught: three tries of 5 minutes end inside the
 # 30-minute minimum below. The tree's own config with a profile added (tests that allow
@@ -153,23 +153,18 @@ trap 'rm -f "$nextest_config"' EXIT
 # limit: its small baseline leaves it at the 30-minute floor. cargo-mutants has no upper
 # bound on the limit, and the worst case is a mutant that slows tests without failing them
 # (one that fails a test ends the run there: the profile keeps nextest's fail-fast), which
-# runs to the limit. Against the plan's bound (mutants.yml: 80 mutants a shard at 540 s
-# each, 12 hours, half the job's 24), the other 12 hours hold the baseline (its build, up to
-# 780 s on 2026-11-16, and its tests) and what each timeout takes past 540 s: its limit and
-# its build, which has no limit (up to 303 s in the runs above), less 540. So a shard holds
-# up to (43200 - 780 - B) / (max(1800, 4B) + 300 - 540) timeouts for a baseline of B
-# seconds, an upper bound, since a slower build fits fewer. While the baseline stays under
-# 450 s the limit is the 30 minutes it was, and 26 fit; at 600 s, 19; at 800 s, 14; at
-# 1305 s, 8 (run 44253716210's, 2026-11-18, whose other mutants took about 250 s each, build
-# and tests, against that baseline); at 1800 s, 5, where --timeout 1800 tested none. A shard
-# past them ends at its job's 24 hours, and the summary reads it incomplete. A fixed 30
-# minutes would instead time out every mutant once the baseline passed it, each a timeout
-# triaged as missed.
+# runs to the limit. On CI's hosted runners (mutants.yml) a shard holds 40 mutants in a job of
+# 6 hours: a caught one takes about 2 minutes, so some 80 minutes of them, and its setup and
+# baseline under half an hour, leave about 3.5 hours, room for six mutants that run to a
+# 30-minute limit, or fewer at a longer one (a baseline past 450 s). A shard past them ends at
+# its job's limit, and the summary reads it incomplete. (On the CI VM, loaded, at 80 mutants
+# a shard of 24 hours, run 44253716210's took about 250 s each against a 1305 s baseline.) A
+# fixed 30 minutes would instead time out every mutant once the baseline passed it, each a
+# timeout triaged as missed.
 #
-# The workspace's tests take about 15.5 minutes in a gate at about 7 threads at full priority
-# (#430's, run 42658028231, 2026-11-09), longer at a shard's 2 to 4 at the idle weight, and
-# Cargo can wait before them on the package cache's lock, which every runner on the VM
-# shares: a mutant only the last packages' tests catch took 26 to 30 minutes (#445), so CI's
+# The workspace's tests take about 28 to 30 minutes on a hosted runner's 4 vCPUs (gate runs
+# 45372353423 and 45382461311, 2026-11-24; 15.5 minutes at about 7 threads on the CI VM): a
+# mutant only the last packages' tests catch took 26 to 30 minutes on the VM (#445), so CI's
 # plan narrows each run's tests to the packages that can see its mutants where it can
 # (.github/mutants-tests.py). (At 300 s, every test had passed so far in 10 of
 # run 39630661896's 11 timeouts.) A hung test, retried twice on CI, takes 15 minutes from

@@ -1,0 +1,137 @@
+# A GitHub-hosted runner made ready for work in the gate's worktree (tests/committed-tree.sh):
+# room on its disk, the worktree checked out at a commit, its pixi environments, the
+# toolchains, OCCT, and the workspace's dependencies built, each from GitHub's Actions cache
+# where it can be. Used by the gate, mutants shards, the proptest exploration, and the oracle
+# sweep, which all build in that worktree, at the same path (SILICO_GATE_TREE, set here for
+# the job's later steps), so each can restore what another saved: GitHub keys a cache by its
+# paths too.
+#
+# The caches (the repository has 10 GB in all; the least recently used go first):
+#   - pixi's environments in the worktree (.pixi), keyed by pixi.lock, the environments, and
+#     their path (prefix-dev/setup-pixi);
+#   - OCCT's build cache (~/.cache/silico/occt, third_party/occt/build.sh), keyed by the
+#     commit's recipe (third_party/occt, pixi.toml, pixi.lock, rust-toolchain.toml: the inputs
+#     of build.sh's own stamp, and the task that runs it) and the runner's image. Saved by any run that missed it, since it
+#     changes only when the recipe or the toolchain does, and a pull request that changes them
+#     would otherwise build OCCT on every push;
+#   - Cargo's registry and the worktree's target directory with the dependencies' builds only
+#     (Swatinem/rust-cache, which drops the workspace's own crates before saving), keyed by
+#     `rust-key`, the toolchain, Cargo.lock, and the CARGO/RUST/CMAKE environment.
+# The pixi environments and the dependencies are saved only when `save` is true (the callers
+# pass it on main alone), so pull requests never evict main's caches or each other's; a pull
+# request restores main's.
+name: Prepare
+description: Room on the disk, the gate's worktree, pixi, the toolchains, OCCT, and the dependencies' build, from the cache
+
+inputs:
+  commit:
+    description: The commit to check out in the gate's worktree
+    default: HEAD
+  environments:
+    description: The pixi environments to install in the worktree, space-separated
+    default: default oracle
+  target:
+    description: The worktree's target directory to cache (target, or target-mutants for a mutants shard)
+    default: target
+  rust-key:
+    description: The dependencies' cache key (gate, mutants, ...); jobs that build alike share one
+    required: true
+  save:
+    description: Whether to save the pixi environments and the dependencies' build ('true' on main)
+    default: "false"
+
+outputs:
+  tree:
+    description: The gate's worktree (also SILICO_GATE_TREE in the job's later steps)
+    value: ${{ steps.tree.outputs.tree }}
+
+runs:
+  using: composite
+  steps:
+    - name: Room on the disk
+      shell: bash
+      run: bash .github/free-disk.sh
+
+    # User namespaces for an unprivileged user, as Debian (the CI VM) and most Linux allow:
+    # silico-core's file tests make one (`unshare -Urm`) to mount a bind or a tmpfs, and
+    # Ubuntu 24.04's AppArmor forbids it by default ("unshare: write failed
+    # /proc/self/uid_map: Operation not permitted").
+    - name: Unprivileged user namespaces
+      shell: bash
+      run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+    # Outside the checkout (Cargo would take the checkout's workspace for the tree's), and the
+    # same path in every job, so their caches match.
+    - name: The gate's worktree
+      id: tree
+      shell: bash
+      env:
+        COMMIT: ${{ inputs.commit }}
+      run: |
+        tree=$RUNNER_WORKSPACE/gate
+        git worktree add --detach --quiet "$tree" "$COMMIT"
+        echo "SILICO_GATE_TREE=$tree" >>"$GITHUB_ENV"
+        echo "tree=$tree" >>"$GITHUB_OUTPUT"
+        echo "The gate's worktree: $tree at $(git -C "$tree" log -1 --format='%h %s')"
+
+    # pixi itself, at tools.sh's version (which then finds it in place), and the worktree's
+    # environments.
+    - uses: prefix-dev/setup-pixi@9936258fee697aff89b3fed6ca1f80a382ef694e # v0.11.3
+      with:
+        pixi-version: v0.81.0
+        working-directory: ${{ steps.tree.outputs.tree }}
+        environments: ${{ inputs.environments }}
+        locked: true
+        cache: true
+        cache-key: pixi-gate-
+        cache-write: ${{ inputs.save }}
+        post-cleanup: false
+
+    - name: Toolchains
+      shell: bash
+      run: bash .github/tools.sh
+
+    # Only the toolchains the worktree's rust-toolchain.toml (and the checkout's) pin, which
+    # rustup installs as they're first used: the dependencies' cache key hashes every
+    # installed toolchain's version (Swatinem/rust-cache), so the image's own, which changes
+    # as GitHub updates it, would change the key with nothing Silico builds.
+    - name: The image's Rust toolchains
+      shell: bash
+      run: |
+        keep=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml "$SILICO_GATE_TREE/rust-toolchain.toml" | sort -u)
+        rustup toolchain list | awk '{ print $1 }' | while read -r toolchain; do
+          case " $(echo $keep) " in *" ${toolchain%%-*} "*) continue ;; esac
+          rustup toolchain uninstall "$toolchain"
+        done
+
+    - name: OCCT's cache key
+      id: occt
+      shell: bash
+      run: |
+        recipe=$(git -C "$SILICO_GATE_TREE" rev-parse HEAD:third_party/occt HEAD:pixi.toml HEAD:pixi.lock HEAD:rust-toolchain.toml | sha256sum | cut -c1-16)
+        echo "key=occt-v1-$ImageOS-$recipe" >>"$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      id: occt-cache
+      with:
+        path: ~/.cache/silico/occt
+        key: ${{ steps.occt.outputs.key }}
+    - name: OCCT
+      shell: bash
+      working-directory: ${{ steps.tree.outputs.tree }}
+      run: pixi run occt
+    - if: ${{ steps.occt-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cache/silico/occt
+        key: ${{ steps.occt.outputs.key }}
+
+    # Saved at the end of a job that passed, never one that failed: a key, once saved, is
+    # never saved again (rust-cache skips the save on an exact hit), so a build cut short, by
+    # a failure before the tests were built, would stand for that key until Cargo.lock or the
+    # toolchain changed.
+    - uses: Swatinem/rust-cache@2201cc584a476d1b508be977bbe4b7d1c7a52e9c # v2.9.3
+      with:
+        workspaces: ${{ steps.tree.outputs.tree }} -> ${{ inputs.target }}
+        shared-key: ${{ inputs.rust-key }}
+        save-if: ${{ inputs.save }}
+        cache-bin: false

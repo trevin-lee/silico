@@ -4,9 +4,11 @@
 # runs and cleaned of everything untracked except build caches (target/, target-mutants/,
 # target-filler/ and .pixi/), so runs after the first are incremental, and cds into it. (Not
 # inside the repository: Cargo would take the outer checkout's workspace for the tree's.)
+# SILICO_GATE_TREE names another place for it: CI's jobs on GitHub's hosted runners put it at
+# one path in every job, so each restores the caches another saved (.github/actions/prepare).
 # The gate, mutation testing, and the proptest exploration share it, taking turns under one
-# lock; on CI the gate, mutants, and filler (filler mutants and the exploration) each keep a
-# build of their own in it (SILICO_TARGET, below), so none evicts another's.
+# lock; a mutants run keeps a build of its own in it (SILICO_TARGET, below), so neither
+# evicts the other's.
 #
 # Re-runs the sourcing script ("$0", with its arguments) holding the lock, so source it
 # before anything with side effects.
@@ -17,7 +19,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lane-caches.sh"
 root=$(git rev-parse --show-toplevel)
 commit=$(git -C "$root" rev-parse --verify "${SILICO_TREE_COMMIT:-HEAD}^{commit}")
 checkout_id=$(printf '%s' "$root" | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-16)
-tree=${XDG_CACHE_HOME:-$HOME/.cache}/silico/gate/$checkout_id
+tree=${SILICO_GATE_TREE:-${XDG_CACHE_HOME:-$HOME/.cache}/silico/gate/$checkout_id}
 mkdir -p "$(dirname "$tree")"
 
 # Removes trees, made readable and writable first: a test killed before it cleans up can leave
@@ -79,8 +81,8 @@ for keep in "$tree".keep.*; do
   remove_tree "$keep"
 done
 # The build's own target directory: target/, or the one SILICO_TARGET names (CI's mutants
-# shards build without debug info in target-mutants/, and filler shards, with a Cargo home of
-# their own, in target-filler/, so no build evicts or invalidates another).
+# shards build without debug info in target-mutants/, so neither build evicts or invalidates
+# the other; target-filler/ was the CI VM's filler's, kept until a week unbuilt, below).
 # target/occt stays in target/: the build scripts find OCCT there.
 target=$(lane_of_run)
 # A lane's cache unbuilt for a week goes, here and in each sibling checkout no run holds
