@@ -238,6 +238,45 @@ pub struct FrameInput<'a> {
     pub to_plane: &'a dyn Fn(Pos2) -> Option<[f64; 2]>,
 }
 
+/// What a Delete of `selected` does, judged on `read`: a lone point two curves (lines or
+/// arcs) end at there joins them (`sketch_join`, §9, *Split*); anything else is removed
+/// (`sketch_remove`), in ID order. None with nothing selected.
+pub fn deletion_of(selected: &[Hit], read: Option<&SketchRead>) -> Option<Deletion> {
+    if selected.is_empty() {
+        return None;
+    }
+    if let ([only], Some(sketch)) = (selected, read)
+        && only.kind == ElementKind::Point
+    {
+        let id = &only.id;
+        let members = &sketch.members;
+        let ends = members
+            .lines
+            .iter()
+            .filter(|l| &l.from == id || &l.to == id)
+            .map(|l| &l.id)
+            .chain(
+                members
+                    .arcs
+                    .iter()
+                    .filter(|a| &a.start == id || &a.end == id)
+                    .map(|a| &a.id),
+            )
+            .collect::<BTreeSet<_>>();
+        if ends.len() == 2 {
+            return Some(Deletion::Join(id.clone()));
+        }
+    }
+    let mut selected: Vec<&Hit> = selected.iter().collect();
+    selected.sort();
+    Some(Deletion::Remove(
+        selected
+            .into_iter()
+            .map(|hit| Reference::Element(hit.id.clone()))
+            .collect(),
+    ))
+}
+
 /// What Delete does with the selection: removes it (`sketch_remove`), or, for a lone point
 /// two pieces share, joins them (`sketch_join`, §9, *Split*).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,43 +513,14 @@ impl SketchMode {
     }
 
     /// What Delete would do with the selection's members, the origin and the axes ignored
-    /// (C9): a lone point whose two curves end there, the pieces a split leaves, joined
-    /// (whether `sketch_join` takes them is its own to say); anything else removed, by ID,
-    /// as `sketch_remove` judges it. None with no member selected.
+    /// (C9), judged on the read drawn ([`deletion_of`]): a lone point whose two curves end
+    /// there, the pieces a split leaves, joined (whether `sketch_join` takes them is its own
+    /// to say); anything else removed, by ID, as `sketch_remove` judges it. None with no
+    /// member selected. A Delete pressed is judged again on the read of the revision it's
+    /// sent against (`Tab::judge_delete`).
     pub fn deletion(&self) -> Option<Deletion> {
-        let mut selected: Vec<&Hit> = self.selection.members().collect();
-        if selected.is_empty() {
-            return None;
-        }
-        if let ([only], Some(sketch)) = (selected.as_slice(), self.drawable())
-            && only.kind == ElementKind::Point
-        {
-            let id = &only.id;
-            let members = &sketch.members;
-            let ends = members
-                .lines
-                .iter()
-                .filter(|l| &l.from == id || &l.to == id)
-                .map(|l| &l.id)
-                .chain(
-                    members
-                        .arcs
-                        .iter()
-                        .filter(|a| &a.start == id || &a.end == id)
-                        .map(|a| &a.id),
-                )
-                .collect::<BTreeSet<_>>();
-            if ends.len() == 2 {
-                return Some(Deletion::Join(id.clone()));
-            }
-        }
-        selected.sort();
-        Some(Deletion::Remove(
-            selected
-                .into_iter()
-                .map(|hit| Reference::Element(hit.id.clone()))
-                .collect(),
-        ))
+        let selected: Vec<Hit> = self.selection.members().cloned().collect();
+        deletion_of(&selected, self.drawable())
     }
 
     /// One frame of the viewport's: the pointer's place on the plane kept for the status

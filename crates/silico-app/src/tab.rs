@@ -27,6 +27,7 @@ use crate::changes::{self, Changes};
 use crate::dialog::{Dialog, Kind, Standing, feature_node, quoted};
 use crate::sketch::dimension::{Ask, ModifyAction};
 use crate::sketch::drag::{Drag, News};
+use crate::sketch::hit::Hit;
 use crate::sketch::screen::Screen;
 use crate::sketch::tools::{Choice, ExtendFrom, Request};
 use crate::sketch::{self, Deletion, FrameInput, SketchMode, SketchReads};
@@ -257,6 +258,18 @@ enum Queued {
         serial: u64,
         feature: Node,
     },
+    /// Delete in sketch mode, of sketch mode numbered `serial`, as it was pressed: `picks`,
+    /// the selection then, judged when it comes up ([`Tab::judge_delete`]) on sketch mode's
+    /// read: a lone point two curves end at there joined ([`Queued::SketchJoin`]), anything
+    /// else removed ([`Queued::SketchRemove`]). A lone point the read doesn't hold (one an
+    /// edit asked before it made) waits for the read of the revision it's sent against.
+    /// `hushed`, the tab's [`hushes`](Tab::hushes) as it was queued.
+    SketchDelete {
+        serial: u64,
+        sketch: FeatureId,
+        picks: Vec<Hit>,
+        hushed: u64,
+    },
     /// Delete in sketch mode: `members` of the sketch `sketch` removed (`sketch_remove`).
     SketchRemove {
         sketch: FeatureId,
@@ -446,6 +459,21 @@ enum Planned {
     Send(Revision, Box<Relating>),
     Said,
     Gone(String),
+}
+
+/// A sketch mode's Delete, judged as it comes up in the queue ([`Tab::judge_delete`]): waits
+/// for the read it's judged on; is a removal or a join, to send now; or selected nothing,
+/// so sends nothing.
+#[derive(Debug, Clone, PartialEq)]
+enum Judged {
+    Wait,
+    Is(Deletion),
+    Nothing,
+}
+
+/// What's said of a sketch mode's Delete let go unsent, and `why`.
+fn undeleted(why: &str) -> String {
+    format!("The selection wasn't deleted: {why}")
 }
 
 /// Why a click (a constraint tool's, or Construction's) is let go once its sketch mode has
@@ -814,6 +842,7 @@ impl Edits {
                 | Queued::Add { .. }
                 | Queued::Opened { .. }
                 | Queued::AddSketch { .. }
+                | Queued::SketchDelete { .. }
                 | Queued::SketchRemove { .. }
                 | Queued::SketchJoin { .. }
                 | Queued::SketchAdd { .. }
@@ -3032,6 +3061,7 @@ impl Tab {
             | Queued::Add { .. }
             | Queued::Replace { .. }
             | Queued::AddSketch { .. }
+            | Queued::SketchDelete { .. }
             | Queued::SketchRemove { .. }
             | Queued::SketchJoin { .. }
             | Queued::SketchAdd { .. }
@@ -4704,6 +4734,36 @@ impl Tab {
                         running: sessions.add_feature(&self.id, self.revision, None, feature),
                     });
                 }
+                Queued::SketchDelete {
+                    serial,
+                    sketch,
+                    picks,
+                    hushed,
+                } => match self.judge_delete(serial, &sketch, &picks) {
+                    // Its read not there yet: it keeps its place, and what's after it waits.
+                    Judged::Wait => {
+                        self.edits.queue.push_front(Queued::SketchDelete {
+                            serial,
+                            sketch,
+                            picks,
+                            hushed,
+                        });
+                        return;
+                    }
+                    Judged::Is(Deletion::Remove(members)) => {
+                        self.edits
+                            .queue
+                            .push_front(Queued::SketchRemove { sketch, members });
+                    }
+                    Judged::Is(Deletion::Join(point)) => {
+                        self.edits.queue.push_front(Queued::SketchJoin {
+                            sketch,
+                            point,
+                            hushed,
+                        });
+                    }
+                    Judged::Nothing => {}
+                },
                 Queued::SketchRemove { sketch, members } => {
                     self.begin_if_none(sessions);
                     self.supersede_preview();
@@ -6582,8 +6642,8 @@ impl Tab {
             | Queued::Load { .. }
             | Queued::Closed { .. }
             | Queued::Restore { .. } => None,
-            // Its edit, once planned, says it.
-            Queued::Click { .. } => None,
+            // Its edit, once planned (or judged), says it.
+            Queued::Click { .. } | Queued::SketchDelete { .. } => None,
         }
     }
 
@@ -7970,15 +8030,22 @@ impl Tab {
                 self.edit_words.let_go();
                 let serial = mode.serial;
                 let mut dropped = None;
+                let mut undeleted_too = false;
                 self.edits.queue.retain(|queued| match queued {
                     Queued::Click { click, .. } if click.serial == serial => {
                         dropped.get_or_insert(click.applies);
+                        false
+                    }
+                    Queued::SketchDelete { serial: of, .. } if *of == serial => {
+                        undeleted_too = true;
                         false
                     }
                     _ => true,
                 });
                 if let Some(applies) = dropped {
                     self.message = Some(applies.unmade(SKETCH_CANCELLED));
+                } else if undeleted_too {
+                    self.message = Some(undeleted(SKETCH_CANCELLED));
                 }
             } else if self.relating(mode.serial) {
                 self.leaving.push(mode);
@@ -8294,8 +8361,10 @@ impl Tab {
     }
 
     /// Delete in sketch mode: the selection removed (`sketch_remove`), or a lone split point
-    /// joined (`sketch_join`), once what's asked before has answered; the selection let
-    /// go. A refusal is said. Nothing with nothing selected, or before the sketch is known.
+    /// joined (`sketch_join`), once what's asked before has answered, judged then on sketch
+    /// mode's read ([`judge_delete`](Self::judge_delete)), a split point a split asked before
+    /// made once the read of the split has come; the selection let go. A refusal is said.
+    /// Nothing with nothing selected, or before the sketch is known.
     pub fn sketch_delete<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
         if !self.sketch_deletable() {
             return;
@@ -8303,22 +8372,53 @@ impl Tab {
         let Some(mode) = self.sketch.as_mut() else {
             return;
         };
-        let (Some(sketch), Some(deletion)) = (mode.sketch.clone(), mode.deletion()) else {
+        let Some(sketch) = mode.sketch.clone() else {
             return;
         };
+        let picks: Vec<Hit> = mode.selection.members().cloned().collect();
+        let serial = mode.serial;
         mode.selection.clear();
         // A new edit drops what was undone: Redo has nothing of sketch mode's to give back.
         mode.undone = 0;
         self.hush();
-        self.edits.queue.push_back(match deletion {
-            Deletion::Remove(members) => Queued::SketchRemove { sketch, members },
-            Deletion::Join(point) => Queued::SketchJoin {
-                sketch,
-                point,
-                hushed: self.edit_words.hushes,
-            },
+        self.edits.queue.push_back(Queued::SketchDelete {
+            serial,
+            sketch,
+            picks,
+            hushed: self.edit_words.hushes,
         });
         self.advance(sessions);
+    }
+
+    /// Sketch mode numbered `serial`'s Delete of `picks` in the sketch `sketch`, come up in
+    /// the queue, judged ([`sketch::deletion_of`]) on its read. Only a lone point's turns on
+    /// the read (whether two curves end at it); one the read doesn't hold, which an edit
+    /// asked before it made (the point a split leaves, before the read of the split has
+    /// come), waits for the read of the tab's revision, the one it's sent against, unless
+    /// that read won't come unasked (its rebuild stopped or failed). Anything else is judged
+    /// on the read as it is, at once, as it was pressed.
+    fn judge_delete(&self, serial: u64, sketch: &FeatureId, picks: &[Hit]) -> Judged {
+        let read = self
+            .sketch
+            .iter()
+            .chain(self.leaving.iter())
+            .find(|mode| mode.serial == serial)
+            .and_then(|mode| mode.read.as_ref());
+        let drawn = read
+            .and_then(|read| read.result.as_ref().ok())
+            .filter(|drawn| &drawn.sketch == sketch);
+        let unheld = match picks {
+            [only] if only.kind == ElementKind::Point => {
+                !drawn.is_some_and(|drawn| drawn.members.points.iter().any(|p| p.id == only.id))
+            }
+            _ => false,
+        };
+        let model = read.and_then(|read| read.model);
+        let behind = model.is_none_or(|model| model < self.revision);
+        if unheld && behind && self.unreadable(model).is_none() {
+            return Judged::Wait;
+        }
+        sketch::deletion_of(picks, drawn).map_or(Judged::Nothing, Judged::Is)
     }
 
     /// A constraint tool's button in sketch mode (C7): `relation` made of the selection, in
@@ -8512,8 +8612,10 @@ impl Tab {
     /// `serial` is unsettled: queued to be planned, or an edit of its chain queued or under
     /// way.
     fn relating(&self, serial: u64) -> bool {
-        self.edits.queue.iter().any(|queued| {
-            matches!(queued, Queued::Click { click, .. } | Queued::Relate { click, .. } if click.serial == serial)
+        self.edits.queue.iter().any(|queued| match queued {
+            Queued::Click { click, .. } | Queued::Relate { click, .. } => click.serial == serial,
+            Queued::SketchDelete { serial: of, .. } => *of == serial,
+            _ => false,
         }) || self
             .under
             .iter()
@@ -8527,7 +8629,10 @@ impl Tab {
         let mut leaving = std::mem::take(&mut self.leaving);
         leaving.retain(|mode| self.relating(mode.serial));
         self.leaving = leaving;
-        if matches!(self.edits.queue.front(), Some(Queued::Click { .. })) {
+        if matches!(
+            self.edits.queue.front(),
+            Some(Queued::Click { .. } | Queued::SketchDelete { .. })
+        ) {
             self.advance(sessions);
         }
     }
