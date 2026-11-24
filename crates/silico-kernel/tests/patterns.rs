@@ -430,6 +430,32 @@ fn twenty_holes_on_a_175_plate_cut_17_and_keep_the_three_that_miss_as_changed_no
         .collect();
     assert_eq!(nothing, ["17", "18", "19"]);
     assert!(verdicts[0].off_base.is_empty());
+    // The warning, section 4.3's example byte for byte, the only one.
+    // Every feature spared its fingerprint's warnings (the documents store none), which
+    // the pattern's isn't.
+    let spared = model
+        .document()
+        .features
+        .iter()
+        .map(|f| f.id.clone())
+        .collect();
+    let warnings = silico_core::warnings::of(&model, &spared);
+    let written: Vec<String> = warnings
+        .listed()
+        .iter()
+        .map(|warning| wire(&warning.to_wire(), Layout::Canonical).unwrap())
+        .collect();
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/design/m6.0-patterns.md");
+    let doc = std::fs::read_to_string(path).unwrap();
+    let start = doc.find("### 4.3 The warning").unwrap();
+    let example = doc[start..]
+        .split("```json\n")
+        .nth(1)
+        .unwrap()
+        .split("\n```")
+        .next()
+        .unwrap();
+    assert_eq!(written, [example]);
 }
 
 #[test]
@@ -457,6 +483,21 @@ fn more_than_100_copies_that_change_nothing_are_each_kept() {
         .collect();
     let want: Vec<String> = (2..=120).map(|k: u32| k.to_string()).collect();
     assert_eq!(nothing, want);
+    // The warning lists the first 100, and counts all 119.
+    // Every feature spared its fingerprint's warnings (the documents store none), which
+    // the pattern's isn't.
+    let spared = model
+        .document()
+        .features
+        .iter()
+        .map(|f| f.id.clone())
+        .collect();
+    let warnings = silico_core::warnings::of(&model, &spared);
+    let [warning] = warnings.listed() else {
+        panic!("{:?}", warnings.listed());
+    };
+    assert_eq!(warning.elements(), &want[..100]);
+    assert_eq!(warning.elements_total(), 119);
 }
 
 /// The plate of section 2.2 to its corner hole (r 2.75 at (−40, −20)), and a linear pattern

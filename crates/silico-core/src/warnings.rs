@@ -3,7 +3,7 @@
 //! its own ([`WarningCode`]). A warning never refuses a command, blocks a save, or sets an
 //! exit code.
 //!
-//! Five codes, each from the model alone, so a gate's refusal (no model) has none:
+//! Six codes, each from the model alone, so a gate's refusal (no model) has none:
 //! - `ends_not_joined` (M3.2's D2): ends of a sketch's profile curves (lines and arcs that
 //!   aren't construction geometry) that are separate points FreeCAD would join, on the sketch
 //!   as it solved: points strictly closer than FreeCAD's joining distance, 1e-7 mm, grouped
@@ -63,10 +63,19 @@
 //!   where the solid has material. The rebuild isn't compared on that measure until
 //!   `format`, or a commit that reaches the feature, writes it in. Spared as
 //!   `fingerprint_missing` is.
+//! - `instances_changed_nothing` (docs/design/m6.0-patterns.md, section 4.3; decision 6 of
+//!   docs/ports/patterns.md): a pattern or mirror that built, some of whose instances'
+//!   copies add or remove nothing (none of their faces in the result, by the history's
+//!   fates: none kept, modified, or generating), one warning a pattern, naming each such
+//!   instance as `skip` takes it, sorted as `skip` is, the first hundred and their total,
+//!   the message naming each original's; from the verdicts the model keeps
+//!   (`Model::pattern_verdicts`), uncapped. Not spared inside a transaction: it's the
+//!   geometry's, not the file's.
 //!
 //! **Order:** by timeline (the document's features, in order), then by code, in
 //! [`WarningCode`]'s order (`ends_not_joined`, `constraints_redundant`,
-//! `fingerprint_missing`, `constraints_partially_redundant`, `fingerprint_incomplete`), then,
+//! `fingerprint_missing`, `constraints_partially_redundant`, `fingerprint_incomplete`,
+//! `instances_changed_nothing`), then,
 //! for a sketch's `ends_not_joined`, by cluster, by its least point ID. The first
 //! [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED) are listed, all counted, as
 //! problems are. Nothing depends on the order the file lists a sketch's members in.
@@ -150,7 +159,7 @@ pub fn of(model: &Model, spared: &BTreeSet<FeatureId>) -> Warnings {
     let mut warnings = Warnings::none();
     // The model's features are its document's, in order.
     for (feature, (_, outcome)) in model.document().features.iter().zip(model.features()) {
-        of_feature(feature, outcome, spared, &mut warnings);
+        of_feature(model, feature, outcome, spared, &mut warnings);
     }
     tracing::debug!(total = warnings.total(), "warned");
     warnings
@@ -167,7 +176,7 @@ pub fn per_feature(model: &Model, spared: &BTreeSet<FeatureId>) -> Vec<(FeatureI
         .zip(model.features())
         .map(|(feature, (_, outcome))| {
             let mut warnings = Warnings::none();
-            of_feature(feature, outcome, spared, &mut warnings);
+            of_feature(model, feature, outcome, spared, &mut warnings);
             (feature.id.clone(), warnings.total())
         })
         .collect()
@@ -175,6 +184,7 @@ pub fn per_feature(model: &Model, spared: &BTreeSet<FeatureId>) -> Vec<(FeatureI
 
 /// `feature`'s warnings, built as `outcome` says, added to `warnings`.
 fn of_feature(
+    model: &Model,
     feature: &Feature,
     outcome: &FeatureOutcome,
     spared: &BTreeSet<FeatureId>,
@@ -191,6 +201,59 @@ fn of_feature(
         }
         _ => {}
     }
+    // A pattern that built, whatever a transaction reached: its copies that changed nothing,
+    // after its fingerprint's warnings, as the codes are ordered.
+    if let FeatureOutcome::Built { .. } = outcome {
+        instances_changed_nothing(model, feature, warnings);
+    }
+}
+
+/// `instances_changed_nothing` (docs/design/m6.0-patterns.md, section 4.3): one warning a
+/// pattern or mirror that built, naming each instance a step of one of its originals
+/// changed nothing of (no face of its copy in the result, by the history's fates, decision
+/// 6), sorted as `skip` is, each once, the first [`PROBLEMS_LISTED`] and their total; the
+/// message naming each original's. From the verdicts the model keeps, uncapped, which the
+/// `pattern` read gives every one of.
+fn instances_changed_nothing(model: &Model, feature: &Feature, warnings: &mut Warnings) {
+    let Some(verdicts) = model.pattern_verdicts(&feature.id) else {
+        return;
+    };
+    let steps: Vec<(Option<&FeatureId>, bool, &[crate::naming::Instance])> = verdicts
+        .iter()
+        .map(|v| {
+            (
+                v.original.as_ref(),
+                v.op == silico_protocol::CopiesOp::Fuse,
+                v.changed_nothing.as_slice(),
+            )
+        })
+        .collect();
+    let Some(message) =
+        crate::pattern::changed_nothing_message(&feature.id, feature.operation.type_name(), &steps)
+    else {
+        return;
+    };
+    let instances: BTreeSet<&crate::naming::Instance> = verdicts
+        .iter()
+        .flat_map(|v| v.changed_nothing.iter())
+        .collect();
+    let total = instances.len() as u64;
+    let mirror = matches!(feature.operation, Operation::Mirror { .. });
+    warnings.push_with(|| {
+        let warning = Warning::new(WarningCode::InstancesChangedNothing, message)
+            .with_feature(feature.id.as_str())
+            .with_elements(instances.iter().take(PROBLEMS_LISTED).map(ToString::to_string))
+            .with_elements_total(total);
+        if mirror {
+            warning.with_parameter("copies").with_suggestion(
+                "take the original out of copies if it isn't meant; a copy inside the base, or a pocket's copy that misses it, is built exactly as asked",
+            )
+        } else {
+            warning.with_parameter("skip").with_suggestion(
+                "lower count or add them to skip if they aren't meant; a copy inside the base, or a pocket's copy that misses it, is built exactly as asked",
+            )
+        }
+    });
 }
 
 /// The distance between two points as FreeCAD measures it when it joins a sketch's wires

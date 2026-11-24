@@ -683,6 +683,48 @@ fn a_base_cut_in_pieces_or_left_in_pieces_is_refused_naming_no_instance() {
 }
 
 #[test]
+fn the_warnings_words_name_each_instance_and_each_original_where_there_are_several() {
+    let i = |k: u32| Instance::new(&[k]).unwrap();
+    let three = [i(17), i(18), i(19)];
+    assert_eq!(
+        changed_nothing_message(
+            &id("t0000009"),
+            "linear_pattern",
+            &[(Some(&id("q0000009")), false, &three)]
+        )
+        .unwrap(),
+        "linear_pattern t0000009: the copies of instances 17, 18, and 19 remove nothing (no face of theirs is in the result)"
+    );
+    let one = [i(2)];
+    assert_eq!(
+        changed_nothing_message(&id("t0000009"), "mirror", &[(None, true, &one)]).unwrap(),
+        "mirror t0000009: the copy of instance 2 adds nothing (none of its faces is in the result)"
+    );
+    let none: [Instance; 0] = [];
+    assert_eq!(
+        changed_nothing_message(
+            &id("t0000009"),
+            "linear_pattern",
+            &[
+                (Some(&id("p0000001")), true, &one),
+                (Some(&id("q0000002")), false, &none),
+                (Some(&id("q0000003")), false, &three)
+            ]
+        )
+        .unwrap(),
+        "linear_pattern t0000009: the copy of p0000001's instance 2 adds nothing (none of its faces is in the result); the copies of q0000003's instances 17, 18, and 19 remove nothing (no face of theirs is in the result)"
+    );
+    assert!(changed_nothing_message(&id("t0000009"), "mirror", &[(None, true, &none)]).is_none());
+    // Past ten, the rest counted.
+    let many: Vec<Instance> = (1..=12).map(i).collect();
+    assert!(
+        changed_nothing_message(&id("t0000009"), "linear_pattern", &[(None, false, &many)])
+            .unwrap()
+            .contains("instances 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, and 2 more remove nothing")
+    );
+}
+
+#[test]
 fn the_values_line_holds_each_integer_and_skip_as_written() {
     let grid = linear(
         vec![

@@ -1658,3 +1658,18 @@ fn a_mirrors_originals_are_a_set_in_any_order() {
     assert!(shuffled.canonically_eq(&sorted));
     assert!(!sorted.canonically_eq(&listed("\"q0000001\"")));
 }
+
+#[test]
+fn the_warnings_example_is_the_designs_own_text() {
+    // Section 4.3's example, as the contract's example file holds it.
+    let block = blocks(
+        &section("### 4.3 The warning", "## 5. The `pattern` read"),
+        "json",
+    );
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/contract/commands/examples/warning/instances-changed-nothing.json");
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        format!("{}\n", block[0])
+    );
+}

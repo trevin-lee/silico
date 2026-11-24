@@ -781,5 +781,40 @@ pub(crate) fn solids_refused(
     Some(error)
 }
 
+/// The warning's words (section 4.3) for a pattern `id` of `kind` whose steps changed
+/// nothing of these instances' copies, each step's (its original, whether it fuses, and its
+/// instances): one clause a step that has any, naming the original where there are several.
+/// None if no step has any.
+pub(crate) fn changed_nothing_message(
+    id: &FeatureId,
+    kind: &str,
+    steps: &[(Option<&FeatureId>, bool, &[Instance])],
+) -> Option<String> {
+    let several = steps.len() > 1;
+    let clauses: Vec<String> = steps
+        .iter()
+        .filter(|(_, _, instances)| !instances.is_empty())
+        .map(|(original, fuses, instances)| {
+            let (copies, plural) = copies_of(instances, if several { *original } else { None });
+            let verb = match (fuses, plural) {
+                (true, true) => "add nothing",
+                (true, false) => "adds nothing",
+                (false, true) => "remove nothing",
+                (false, false) => "removes nothing",
+            };
+            let why = if plural {
+                "no face of theirs is in the result"
+            } else {
+                "none of its faces is in the result"
+            };
+            format!("{copies} {verb} ({why})")
+        })
+        .collect();
+    if clauses.is_empty() {
+        return None;
+    }
+    Some(format!("{kind} {id}: {}", clauses.join("; ")))
+}
+
 #[cfg(test)]
 mod tests;
