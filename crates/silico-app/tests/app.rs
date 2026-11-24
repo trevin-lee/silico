@@ -55123,9 +55123,14 @@ fn planes_become(h: &mut AppHarness, record: &Record, want: &[(&str, bool)]) {
     }
 }
 
-/// The browser's eye labelled `label` clicked, then the pointer taken off the browser (a
-/// plane's row under it would light its plane).
+/// The browser's eye labelled `label` clicked, once the browser shows it, then the pointer
+/// taken off the browser (a plane's row under it would light its plane). A body's row comes
+/// with the timeline's read, which answers apart from the meshes' read the frames draw, so
+/// a frame may draw a body before the browser lists it.
 fn click_browser_eye(h: &mut AppHarness, label: &str) {
+    step_until(h, &format!("the browser's {label}"), |h| {
+        browser(h).query_by_label(label).is_some()
+    });
     browser(h).get_by_label(label).click();
     step(h);
     step(h);
