@@ -1054,11 +1054,21 @@ mod tests {
 
     #[test]
     fn every_kind_but_the_primitives_has_parameters() {
-        // The format's every type (`FEATURE_TYPES`), and by hand the primitives, which the
-        // app makes none of.
-        let primitives = ["box", "cylinder", "sphere", "cone", "torus"];
+        // The format's every type (`FEATURE_TYPES`), and by hand those with none: the
+        // primitives, which the app makes none of, and the patterns and mirror (M6.2), whose
+        // rows come with their rebuild and their dialogs, past M6.3.
+        let none = [
+            "box",
+            "cylinder",
+            "sphere",
+            "cone",
+            "torus",
+            "linear_pattern",
+            "polar_pattern",
+            "mirror",
+        ];
         for kind in silico_core::document::FEATURE_TYPES {
-            assert_eq!(has_parameters(kind), !primitives.contains(&kind), "{kind}");
+            assert_eq!(has_parameters(kind), !none.contains(&kind), "{kind}");
         }
     }
 
