@@ -601,6 +601,25 @@ pub const SENT_KEPT: usize = 256;
 /// Why a boolean's command is off in a part of fewer than two bodies ([`Tab::why_closed`]).
 pub const NEEDS_TWO_BODIES: &str = "Needs two bodies";
 
+/// The sketch `entry` is built from, as the timeline lists its inputs, each input's kind
+/// as `kind_of` gives it: the input that's a sketch, a pad's, a pocket's, a revolve's, or a
+/// groove's. None for a sketch: a sketch on a face names its face's feature, which a file
+/// may make another sketch (`s0000001.sketch.Face1`, refused only as the rebuild finds no
+/// such face), and a sketch's menu has its own Edit Sketch. None for a feature built from
+/// solids alone.
+fn built_from(
+    entry: &Entry,
+    kind_of: impl Fn(&FeatureId) -> Option<&'static str>,
+) -> Option<&FeatureId> {
+    if entry.kind == "sketch" {
+        return None;
+    }
+    entry
+        .inputs
+        .iter()
+        .find(|input| kind_of(input) == Some("sketch"))
+}
+
 /// Why nothing of a document the gate (or the reader) refused changes but its text: a
 /// feature's menu's items and the toolbar's dialogs say it.
 pub const UNMENDED: &str =
@@ -1510,6 +1529,8 @@ pub struct Tab {
     /// ([`leave_sketch_mode`](Self::leave_sketch_mode)), every way it does.
     sketch_view: Option<SketchView>,
     pub sketch_reads: SketchReads,
+    /// The selected feature's text, read for its PARAMETERS in the property panel.
+    pub parameters: crate::parameters::FeatureRead,
     /// The shown sketches' lines the viewport draws, each made again only when its read is
     /// replaced or the view's scale at it leaves its bucket (`crate::sketch::lines`).
     pub sketch_lines: crate::sketch::lines::ShownLines,
@@ -1936,6 +1957,7 @@ impl Tab {
             dialog_began: false,
             sketch: None,
             sketch_reads: SketchReads::default(),
+            parameters: Default::default(),
             sketch_lines: Default::default(),
             before_dialog: None,
             oked: None,
@@ -2041,30 +2063,44 @@ impl Tab {
         // the selection nor the box. Sketch mode claims the canvas before this, so Select
         // Other, the selection's, never opens in a sketch (one open, or waiting, as a sketch
         // opens is closed there).
-        // Why Edit can't open each feature's dialog, as the feature menus say it: worked out
-        // only in a frame a right click may open the menu in.
-        let edit_off: BTreeMap<silico_core::document::FeatureId, Option<String>> =
-            if frame.secondary.is_empty() {
-                BTreeMap::new()
-            } else {
-                let entries = self
-                    .timeline
-                    .as_ref()
-                    .and_then(|timeline| timeline.features.as_deref())
-                    .unwrap_or_default();
-                entries
-                    .iter()
-                    .map(|entry| {
-                        let off = crate::feature_menu::off(
-                            self,
-                            entry,
-                            crate::feature_menu::Item::Edit,
-                            crate::feature_menu::Place::Browser,
-                        );
-                        (entry.id.clone(), off)
-                    })
-                    .collect()
-            };
+        // Why Edit can't open each feature's dialog, as the feature menus say it, and which
+        // features are built from a sketch (Edit Sketch's): worked out only in a frame a
+        // right click may open the menu in.
+        let (edit_off, sketched): (
+            BTreeMap<FeatureId, Option<String>>,
+            std::collections::BTreeSet<FeatureId>,
+        ) = if frame.secondary.is_empty() {
+            (BTreeMap::new(), std::collections::BTreeSet::new())
+        } else {
+            let entries = self
+                .timeline
+                .as_ref()
+                .and_then(|timeline| timeline.features.as_deref())
+                .unwrap_or_default();
+            let edit_off = entries
+                .iter()
+                .map(|entry| {
+                    let off = crate::feature_menu::off(
+                        self,
+                        entry,
+                        crate::feature_menu::Item::Edit,
+                        crate::feature_menu::Place::Browser,
+                    );
+                    (entry.id.clone(), off)
+                })
+                .collect();
+            // Each input's kind found by its ID once, not by a scan of the timeline.
+            let kinds: BTreeMap<&FeatureId, &'static str> = entries
+                .iter()
+                .map(|entry| (&entry.id, entry.kind))
+                .collect();
+            let sketched = entries
+                .iter()
+                .filter(|entry| built_from(entry, |input| kinds.get(input).copied()).is_some())
+                .map(|entry| entry.id.clone())
+                .collect();
+            (edit_off, sketched)
+        };
         let entries = self
             .timeline
             .as_ref()
@@ -2082,9 +2118,11 @@ impl Tab {
                 .cloned()
                 .unwrap_or_else(|| Some("Its feature isn't in the timeline yet".to_owned()))
         };
+        let built_from_sketch = |id: &FeatureId| sketched.contains(id);
         let facts = crate::select_other::Facts {
             names: &names,
             edit_off: &edit,
+            sketched: &built_from_sketch,
             sketch_off: crate::feature_menu::sketch_off(self),
         };
         let (left, asked) = self.select_other.overlay(
@@ -2358,6 +2396,9 @@ impl Tab {
         match asked {
             CanvasAct::Edit(id) => {
                 crate::feature_menu::act(self, sessions, crate::feature_menu::Act::Edit(id));
+            }
+            CanvasAct::EditSketch(id) => {
+                crate::feature_menu::act(self, sessions, crate::feature_menu::Act::EditSketch(id));
             }
             CanvasAct::SketchOnFace(face) => {
                 self.create_sketch_on_face(sessions, &face.to_string());
@@ -7252,6 +7293,18 @@ impl Tab {
             .as_ref()?
             .iter()
             .find(|entry| entry.id.as_str() == id)
+    }
+
+    /// The sketch the feature `id` is built from, as the timeline lists its inputs: the one
+    /// that's a sketch, a pad's, a pocket's, a revolve's, or a groove's; none for a sketch
+    /// (a sketch on a face names the face's feature, a solid's) or a feature built from
+    /// solids alone. What its menus' Edit Sketch opens (docs/ux/solidworks.md, §5, *Editing
+    /// upstream*: "from a feature built on it").
+    pub fn sketch_of(&self, id: &FeatureId) -> Option<&Entry> {
+        let sketch = built_from(self.entry(id.as_str())?, |input| {
+            self.entry(input.as_str()).map(|entry| entry.kind)
+        })?;
+        self.entry(sketch.as_str())
     }
 
     /// Whether an error card's Edit would open the feature `id` now: for a sketch, Edit
