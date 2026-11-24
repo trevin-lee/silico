@@ -460,9 +460,11 @@ pub struct View {
     model: Option<Revision>,
     answered: Option<Asked>,
     generation: u64,
-    /// The table the frame before this one drew: [`table`](Self::table) as this frame
-    /// began, before its poll.
+    /// The table the frame before this one drew, and the model its bodies were of:
+    /// [`table`](Self::table) and [`bodies_of`](Self::bodies_of) as this frame began, before
+    /// its poll ([`begin_frame`](Self::begin_frame)).
     table_before: u64,
+    of_before: Option<(u64, Revision)>,
     reading: Option<Reading>,
     /// The read out's answer, waited for between frames by a test
     /// ([`read_answered_within`](Self::read_answered_within)): taken by the next poll.
@@ -624,6 +626,7 @@ impl Default for View {
             answered: None,
             generation: 0,
             table_before: 0,
+            of_before: None,
             reading: None,
             came: None,
             refused: None,
@@ -955,6 +958,21 @@ impl View {
     /// on now.
     pub fn table_taken(&self) -> bool {
         self.generation != self.table_before
+    }
+
+    /// The model the bodies the frame before this one drew were of: [`bodies_of`](Self::bodies_of)
+    /// as this frame began. With [`table_taken`](Self::table_taken), whether the clicks this
+    /// frame hands on were made on bodies of the model they're read against, or of another.
+    pub fn drew_of(&self) -> Option<(u64, Revision)> {
+        self.of_before
+    }
+
+    /// A frame begun: the table it starts with, and the model its bodies are of, kept as
+    /// what the frame before drew, before the frame polls for a new one. Crate-wide so a
+    /// unit test begins its frames as the viewport does.
+    pub(crate) fn begin_frame(&mut self) {
+        self.table_before = self.generation;
+        self.of_before = self.bodies_of();
     }
 
     /// As if bodies read from `of` had come, and the answer to the pick of frame `picking`
@@ -2104,7 +2122,7 @@ pub fn show<P: Clients + 'static>(
         view.rows = size_px[1].max(1);
         view.camera = navigate::clamped(view.camera.clone(), view.rows, view.drawn_boxes());
     }
-    view.table_before = view.generation;
+    view.begin_frame();
     view.poll(now);
     match view.notice.take() {
         Some(Notice::Refused(said)) => tab.message = Some(said),
@@ -2462,6 +2480,9 @@ pub fn end_unshown<P: Clients + 'static>(
     }];
     let mut painter = egui::Painter::new(ctx.clone(), egui::LayerId::background(), Rect::NOTHING);
     painter.set_invisible();
+    // This frame, unshown, takes no table: the release was made on the one its last frame
+    // drew, which is the one it holds (`View::table_taken`).
+    tab.view.begin_frame();
     overlaid(tab, sessions, &painter, &frame);
 }
 
