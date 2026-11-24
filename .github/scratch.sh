@@ -13,7 +13,9 @@
 set -euo pipefail
 
 root=/dev/shm
-scratch="$root/silico-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$RUNNER_NAME"
+# The runner's name as a word: a hosted runner's is "GitHub Actions <number>", and a space in
+# TMPDIR breaks scripts the tests run that split it (third_party/occt/scripts/test-cache.sh).
+scratch="$root/silico-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${RUNNER_NAME//[^A-Za-z0-9_.-]/-}"
 # What one job may hold before it warns: a hosted runner has 16 GB, which the tests share, and
 # its /dev/shm may grow to half of it.
 warn_kib=$((4 * 1024 * 1024))
