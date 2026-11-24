@@ -49381,7 +49381,8 @@ fn a_shown_sketch_with_no_solution_is_drawn_red_and_one_solved_invalid_yellow() 
         values[9] = values[7];
         Solved { values, ..sent }
     };
-    let cases: [(fn(Solved) -> Solved, [u8; 4], &str); 2] = [
+    type Answer = fn(Solved) -> Solved;
+    let cases: [(Answer, [u8; 4], &str); 2] = [
         (failed, [0xff, 0x38, 0x65, 0xff], "no solution"),
         (collapsed, [0xf2, 0xc9, 0x4c, 0xff], "invalid"),
     ];
