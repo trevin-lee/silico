@@ -1130,7 +1130,9 @@ fn every_failure_says_what_to_try() {
     // stack overflows takes them, and returns), so a segfault is the worker's own.
     // Answered once first, so it has started however slowly a loaded machine starts it:
     // killed before its first frame, it would be worker_unavailable (gate run 45264753529's
-    // kill came before a start that took longer than the 200 ms).
+    // kill came before a start that took longer than the 200 ms). The 200 ms then cover only
+    // this thread's send of a small request, whose first byte is what makes the kill one of a
+    // worker the request reached.
     let mid_request = |signal: &'static str| {
         let mut w = KernelWorker::start_worker(Path::new(TEST_WORKER)).unwrap();
         w.run(KernelRequest::debug(DebugOp::Sleep { millis: 0 }))
