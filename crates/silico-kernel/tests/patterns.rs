@@ -742,6 +742,31 @@ fn a_copy_flush_inside_the_base_is_probed_and_its_verdict_recorded() {
     // The verdict, recorded in patterns.md: the flush copy (1) is caught, and so is (1, 1)
     // (5 down and 20 along, also flush inside), as no face of theirs is in the result.
     assert_eq!(nothing, ["1", "1,1"]);
+    // Its warning, after the pattern's own fingerprint's (it stores none), as the codes are
+    // ordered: a fuse step's words, "add nothing".
+    let spared = model
+        .document()
+        .features
+        .iter()
+        .map(|f| f.id.clone())
+        .filter(|f| f.as_str() != "t0000001")
+        .collect();
+    let warnings = silico_core::warnings::of(&model, &spared);
+    let codes: Vec<silico_core::WarningCode> = warnings.listed().iter().map(|w| w.code()).collect();
+    assert_eq!(
+        codes,
+        [
+            silico_core::WarningCode::FingerprintMissing,
+            silico_core::WarningCode::InstancesChangedNothing
+        ]
+    );
+    let warning = &warnings.listed()[1];
+    assert_eq!(
+        warning.message(),
+        "linear_pattern t0000001: the copies of instances 1 and 1,1 add nothing (no face of theirs is in the result)"
+    );
+    assert_eq!(warning.elements(), ["1", "1,1"]);
+    assert_eq!(warning.parameter(), Some("skip"));
 }
 
 /// M4.1's block with a hole, its pin `height` tall, turned whole (`copies` of type `solid`)
@@ -871,4 +896,40 @@ fn two_originals_along_a_named_edge_each_resolve_it_in_their_own_step() {
     );
     let verdicts = model.pattern_verdicts(&id("t0000001")).unwrap();
     assert_eq!(verdicts.len(), 2);
+}
+
+#[test]
+fn a_refused_patterns_copies_that_change_nothing_are_kept_but_never_warned_of() {
+    // Section 4.3: the warning is a built pattern's. A hole near a plate's end mirrored about
+    // yz lands off the plate: the step removes nothing, refused by S7's rule, its verdict
+    // (instance 1 changed nothing) kept, and no warning beside the refusal.
+    let model = built(&[
+        rectangle("s0000001", "xy", [0.0, 0.0], 40.0, 20.0),
+        pad("p0000001", None, "s0000001", &up("5")),
+        circles("s0000002", "xy", &[([35.0, 10.0], 2.75)]),
+        pocket("q0000001", "p0000001", "s0000002", THROUGH),
+        mirror("m0000001", "q0000001", &of("q0000001"), "yz"),
+    ]);
+    let error = failure(&model, "m0000001");
+    assert!(
+        error
+            .message()
+            .starts_with("mirror m0000001 removes nothing from its base q0000001"),
+        "{error}"
+    );
+    let verdicts = model.pattern_verdicts(&id("m0000001")).unwrap();
+    let nothing: Vec<String> = verdicts[0]
+        .changed_nothing
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    assert_eq!(nothing, ["1"]);
+    let spared = model
+        .document()
+        .features
+        .iter()
+        .map(|f| f.id.clone())
+        .collect();
+    let warnings = silico_core::warnings::of(&model, &spared);
+    assert!(warnings.listed().is_empty(), "{:?}", warnings.listed());
 }

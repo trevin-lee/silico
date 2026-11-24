@@ -85,8 +85,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use silico_protocol::{LENGTH_TOLERANCE, format_number};
 
 use crate::document::{
-    ElementId, Feature, FeatureId, Fingerprint, Operation, PROBLEMS_LISTED, Sketch,
+    ElementId, Feature, FeatureId, Fingerprint, Made, Operation, PROBLEMS_LISTED, PatternFeature,
+    Sketch,
 };
+use crate::pattern::StepVerdict;
 use crate::profile::{
     Collapsing, CurveKind, collapsing_advice, one_place_groups, sweeps_past_half_turn,
 };
@@ -208,16 +210,32 @@ fn of_feature(
     }
 }
 
-/// `instances_changed_nothing` (docs/design/m6.0-patterns.md, section 4.3): one warning a
-/// pattern or mirror that built, naming each instance a step of one of its originals
-/// changed nothing of (no face of its copy in the result, by the history's fates, decision
-/// 6), sorted as `skip` is, each once, the first [`PROBLEMS_LISTED`] and their total; the
-/// message naming each original's. From the verdicts the model keeps, uncapped, which the
-/// `pattern` read gives every one of.
+/// `instances_changed_nothing` (docs/design/m6.0-patterns.md, section 4.3), of a pattern
+/// or mirror that built, from the verdicts the model keeps, uncapped, which the `pattern`
+/// read gives every one of ([`changed_nothing_warning`]).
 fn instances_changed_nothing(model: &Model, feature: &Feature, warnings: &mut Warnings) {
-    let Some(verdicts) = model.pattern_verdicts(&feature.id) else {
+    let (Some(verdicts), Made::Pattern(kind)) = (
+        model.pattern_verdicts(&feature.id),
+        feature.operation.made(),
+    ) else {
         return;
     };
+    if let Some(warning) = changed_nothing_warning(&feature.id, kind, verdicts) {
+        warnings.push_with(|| warning);
+    }
+}
+
+/// Pattern `id`'s warning, of type `kind`, from its steps' `verdicts`: naming each instance a
+/// step of one of its originals changed nothing of (no face of its copy in the result, by
+/// the history's fates, decision 6), each once, sorted as `skip` is, the first
+/// [`PROBLEMS_LISTED`] and their total, the message naming each original's where there are
+/// several. Its parameter is `skip`, where its elements paste; a mirror's, which has no
+/// `skip`, is `copies` (section 4.3). None if no step changed nothing of any.
+pub(crate) fn changed_nothing_warning(
+    id: &FeatureId,
+    kind: PatternFeature,
+    verdicts: &[StepVerdict],
+) -> Option<Warning> {
     let steps: Vec<(Option<&FeatureId>, bool, &[crate::naming::Instance])> = verdicts
         .iter()
         .map(|v| {
@@ -228,32 +246,29 @@ fn instances_changed_nothing(model: &Model, feature: &Feature, warnings: &mut Wa
             )
         })
         .collect();
-    let Some(message) =
-        crate::pattern::changed_nothing_message(&feature.id, feature.operation.type_name(), &steps)
-    else {
-        return;
-    };
+    let message = crate::pattern::changed_nothing_message(id, kind.word(), &steps)?;
     let instances: BTreeSet<&crate::naming::Instance> = verdicts
         .iter()
         .flat_map(|v| v.changed_nothing.iter())
         .collect();
-    let total = instances.len() as u64;
-    let mirror = matches!(feature.operation, Operation::Mirror { .. });
-    warnings.push_with(|| {
-        let warning = Warning::new(WarningCode::InstancesChangedNothing, message)
-            .with_feature(feature.id.as_str())
-            .with_elements(instances.iter().take(PROBLEMS_LISTED).map(ToString::to_string))
-            .with_elements_total(total);
-        if mirror {
-            warning.with_parameter("copies").with_suggestion(
-                "take the original out of copies if it isn't meant; a copy inside the base, or a pocket's copy that misses it, is built exactly as asked",
-            )
-        } else {
-            warning.with_parameter("skip").with_suggestion(
-                "lower count or add them to skip if they aren't meant; a copy inside the base, or a pocket's copy that misses it, is built exactly as asked",
-            )
-        }
-    });
+    let warning = Warning::new(WarningCode::InstancesChangedNothing, message)
+        .with_feature(id.as_str())
+        .with_elements(
+            instances
+                .iter()
+                .take(PROBLEMS_LISTED)
+                .map(ToString::to_string),
+        )
+        .with_elements_total(instances.len() as u64);
+    Some(if kind == PatternFeature::Mirror {
+        warning.with_parameter("copies").with_suggestion(
+            "take the original out of copies if it isn't meant; a copy inside the base, or a pocket's copy that misses it, is built exactly as asked",
+        )
+    } else {
+        warning.with_parameter("skip").with_suggestion(
+            "lower count or add them to skip if they aren't meant; a copy inside the base, or a pocket's copy that misses it, is built exactly as asked",
+        )
+    })
 }
 
 /// The distance between two points as FreeCAD measures it when it joins a sketch's wires
@@ -554,4 +569,94 @@ fn fingerprint_missing(feature: &Feature, built: &Built, warnings: &mut Warnings
         .with_parameter("fingerprint")
         .with_suggestion("format the document to store it")
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::naming::Instance;
+    use silico_protocol::CopiesOp;
+
+    fn id(text: &str) -> FeatureId {
+        FeatureId::new(text).unwrap()
+    }
+
+    fn verdict(original: Option<&str>, op: CopiesOp, nothing: &[&[u32]]) -> StepVerdict {
+        StepVerdict {
+            original: original.map(id),
+            op,
+            solids: 1,
+            base_solids: 1,
+            off_base: Vec::new(),
+            changed_nothing: nothing.iter().map(|o| Instance::new(o).unwrap()).collect(),
+        }
+    }
+
+    #[test]
+    fn a_mirrors_warning_names_copies_where_a_patterns_names_skip() {
+        // Section 4.3: a mirror has no `skip`, so its warning's parameter is `copies`, with
+        // its own suggestion; a pattern's is `skip`. A fuse step's copy "adds nothing".
+        let mirror = changed_nothing_warning(
+            &id("m0000003"),
+            PatternFeature::Mirror,
+            &[verdict(None, CopiesOp::Fuse, &[&[1]])],
+        )
+        .unwrap();
+        assert_eq!(mirror.code(), WarningCode::InstancesChangedNothing);
+        assert_eq!(
+            mirror.message(),
+            "mirror m0000003: the copy of instance 1 adds nothing (none of its faces is in the result)"
+        );
+        assert_eq!(mirror.parameter(), Some("copies"));
+        assert_eq!(
+            mirror.suggestion(),
+            Some(
+                "take the original out of copies if it isn't meant; a copy inside the base, or a pocket's copy that misses it, is built exactly as asked"
+            )
+        );
+        assert_eq!(mirror.elements(), ["1"]);
+        let polar = changed_nothing_warning(
+            &id("t0000004"),
+            PatternFeature::Polar,
+            &[verdict(None, CopiesOp::Cut, &[&[3]])],
+        )
+        .unwrap();
+        assert_eq!(polar.parameter(), Some("skip"));
+        assert!(
+            polar
+                .message()
+                .starts_with("polar_pattern t0000004: the copy of instance 3 removes nothing")
+        );
+        // No step changed nothing: no warning.
+        assert!(
+            changed_nothing_warning(
+                &id("t0000004"),
+                PatternFeature::Polar,
+                &[verdict(None, CopiesOp::Cut, &[])]
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn several_originals_list_each_instance_once_sorted_as_skip_is() {
+        // Two steps: a pocket's copies 17 to 19 change nothing, then a pad's 3, 17, and 2,1:
+        // listed once each, in `skip`'s order (2,1 before 3), counted once each; the message
+        // names each original's.
+        let warning = changed_nothing_warning(
+            &id("t0000009"),
+            PatternFeature::Linear,
+            &[
+                verdict(Some("q0000009"), CopiesOp::Cut, &[&[17], &[18], &[19]]),
+                verdict(Some("p0000009"), CopiesOp::Fuse, &[&[2, 1], &[3], &[17]]),
+            ],
+        )
+        .unwrap();
+        assert_eq!(warning.elements(), ["2,1", "3", "17", "18", "19"]);
+        assert_eq!(warning.elements_total(), 5);
+        assert_eq!(
+            warning.message(),
+            "linear_pattern t0000009: the copies of q0000009's instances 17, 18, and 19 remove nothing (no face of theirs is in the result); the copies of p0000009's instances 2,1, 3, and 17 add nothing (no face of theirs is in the result)"
+        );
+    }
 }

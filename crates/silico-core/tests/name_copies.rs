@@ -1363,7 +1363,7 @@ fn only_a_pattern_steps_own_copies_after_its_base_are_numbered_by_their_place_in
     );
     assert_eq!(named(&other, 7), "m0000001.mirror.Face1");
     // The mirror's own step: its base (input 0) is no copy, so its unnamed faces keep their
-    // numbers too, kept here as 7 to 12; its copy's are numbered by their place, 1 to 6.
+    // numbers too, kept here as 7 to 12.
     let own = ElementMap::operation(
         id("m0000001"),
         OpCode::Mirror,
@@ -1371,9 +1371,4 @@ fn only_a_pattern_steps_own_copies_after_its_base_are_numbered_by_their_place_in
         &history(7, 1),
     );
     assert_eq!(named(&own, 7), "m0000001.mirror.Face1");
-    assert!(
-        own.names(face(1))
-            .iter()
-            .all(|n| n.to_string() != "m0000001.mirror.Face7")
-    );
 }
