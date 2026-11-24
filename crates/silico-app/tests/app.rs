@@ -27256,7 +27256,12 @@ fn rounded_split(f: &Fixture, h: &mut AppHarness) -> String {
     step(h);
     assert_eq!(tool_on(h), Some(silico_app::sketch::tools::Choice::Split));
     sketch_events(f, h, &clicked(50.3, 20.0));
-    settled(h);
+    // Until the read of the split's revision is drawn, as a person sees the split point
+    // before selecting it: a Delete is judged on the read drawn (a point two lines end at
+    // there is joined, any other removed), so one pressed while the read before the split
+    // was still drawn asked the point removed, not joined (gate runs 45367591888 and
+    // 45385197973, the rebuild published late).
+    settled_and_read(h);
     step_until(h, "the split's words", |h| {
         said_to_check(h).as_deref() == Some(NEAR_ROUND_SPLIT)
     });
