@@ -1934,6 +1934,72 @@ fn a_box_is_a_press_on_empty_space_moved_past_three_points_and_takes_only_whats_
 }
 
 #[test]
+fn a_box_let_go_after_a_read_without_a_member_never_takes_it() {
+    // Drawn with the right side na000002, then a read comes without it before the release:
+    // the box is decided against what was drawn, but takes only what the read holds.
+    let mut mode = boxed_rectangle();
+    let at = |action, at| event(action, at, false);
+    pointer_frame(&mut mode, &[at(PointerAction::Press, pos2(0.0, 100.0))]);
+    pointer_frame(&mut mode, &[at(PointerAction::Move, pos2(700.0, 700.0))]);
+    let mut fewer = rectangle(vec![length("ka000001", "na000001", "40", true)]);
+    fewer.lines.remove(1);
+    mode.took(Read {
+        model: None,
+        result: Ok(read(
+            fewer,
+            SketchState::FullyDefined,
+            MemberState::FullyDefined,
+            &[],
+        )),
+    });
+    pointer_frame(&mut mode, &[at(PointerAction::Release, pos2(700.0, 700.0))]);
+    assert_eq!(
+        picked(&mode),
+        [
+            "ka000001", "na000001", "na000003", "na000004", "pa000001", "pa000002", "pa000003",
+            "pa000004"
+        ]
+    );
+}
+
+#[test]
+fn a_box_with_a_corner_that_isnt_finite_takes_nothing_and_a_move_to_nan_is_no_move() {
+    // A move to an infinite place (a broken projection's) opens the box (the distance is
+    // infinite), but the box is its finite corner alone, of no size, which holds nothing
+    // drawn: Shift's adds nothing. Nothing panics, and the next box works.
+    let mut mode = boxed_rectangle();
+    for far in [
+        pos2(f32::INFINITY, 400.0),
+        pos2(f32::NEG_INFINITY, f32::INFINITY),
+    ] {
+        pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
+        box_drag(&mut mode, pos2(300.0, 400.0), far, true, false);
+        assert_eq!(picked(&mode), ["na000002"], "{far:?}");
+    }
+    // A move to no place at all (NaN) is no move: the press is the click on nothing it
+    // was, which clears the selection.
+    box_drag(
+        &mut mode,
+        pos2(300.0, 400.0),
+        pos2(f32::NAN, f32::NAN),
+        true,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
 fn with_a_tool_on_a_drag_from_empty_space_is_the_tools_and_no_box() {
     let mut mode = boxed_rectangle();
     pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
