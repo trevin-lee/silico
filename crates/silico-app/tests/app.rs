@@ -27927,6 +27927,62 @@ fn finish_of_the_sketch_keeps_a_delete_waiting_for_its_read_and_joins_it() {
 }
 
 #[test]
+fn cancel_of_a_sketch_opened_after_a_revert_lets_go_of_none_of_the_reverted_ones_deletes() {
+    // A Delete queued behind Box's split, whose solve is held, then a Save and a Revert: the
+    // Revert keeps what's queued up to the Save, the Delete with it, and closes sketch mode
+    // with no Closed queued, so Box can be opened again while that Delete still waits. That
+    // second sketch mode's Cancel lets go only what it asked, never the first's Delete,
+    // which, once the split answers, is let go as its own: its sketch mode is gone.
+    use silico_core::document::ElementKind;
+    let f = fixture();
+    let (mut h, _) = f.opened("rounded.silico", BOXED_ROUNDED);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Box"));
+    double_click(&mut h, "Browser", "Box");
+    sketch_read(&mut h);
+    sketch_button(&h, "Split").click_accesskit();
+    step(&mut h);
+    step(&mut h);
+    let first = sketch_mode(&h).unwrap().serial;
+    f.sketches.hold();
+    sketch_events(&f, &mut h, &clicked(50.3, 20.0));
+    assert!(h.state().tabs()[0].unsettled(), "the split under way");
+    select_member(&mut h, "pa000004", ElementKind::Point);
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        let tab = &mut h.state_mut().tabs_mut()[0];
+        tab.sketch_delete(&sessions);
+        tab.save(&sessions, false);
+        tab.revert(&sessions, false);
+        assert!(tab.sketch.is_none());
+        assert_eq!(tab.message, None, "the Delete kept, not dropped");
+        tab.edit_sketch(&sessions, &sketch_id("s0000001"));
+    }
+    assert!(sketch_mode(&h).is_some_and(|mode| mode.serial != first));
+    {
+        let sessions = Arc::clone(&f.sessions);
+        let _marked = never_waits::marked();
+        h.state_mut().tabs_mut()[0].finish_sketch(&sessions, false);
+    }
+    assert!(sketch_mode(&h).is_none());
+    assert_eq!(
+        h.state().tabs()[0].message,
+        None,
+        "the second's Cancel let go of the first's Delete"
+    );
+    f.sketches.release();
+    step_until(&mut h, "the first's Delete let go as its own", |h| {
+        h.state().tabs()[0].message.as_deref()
+            == Some("The selection wasn't deleted: the sketch closed before it was read")
+    });
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_remove")));
+    assert!(!tab.sent.contains(&Sent::SketchEdit("sketch_join")));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_delete_waiting_for_the_read_of_a_stopped_rebuild_is_judged_once_the_stop_is_seen() {
     // Stop ends the split's rebuild, so the read the Delete waits for won't come unasked:
     // it's judged at once on the read drawn, from before the split, as a removal, which the
