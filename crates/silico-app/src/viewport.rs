@@ -479,10 +479,14 @@ pub struct View {
     /// The bodies the browser hides, by feature, as the last frame had them: drawn by no
     /// frame, and so not in the reach a view is clamped by.
     hidden: BTreeSet<FeatureId>,
-    /// The boxes of the shown sketches' lines (`crate::sketch::lines`) and of the origin
-    /// planes (`crate::planes`) the last frame drew: in the reach a view is clamped by, as
-    /// the renderer takes them into its own.
+    /// The boxes of the shown sketches' lines (`crate::sketch::lines`) the last frame drew:
+    /// in the reach a view is clamped by, as the renderer takes them into its own, and in
+    /// what a fit takes, as the bodies are.
     sketch_boxes: Vec<[[f64; 3]; 2]>,
+    /// The boxes of the origin planes (`crate::planes`) the last frame drew: in the reach a
+    /// view is clamped by, as the sketches' lines are, but never fitted, as a plane shown for
+    /// a moment never moves the view.
+    plane_boxes: Vec<[[f64; 3]; 2]>,
     notice: Option<Notice>,
     /// A held mesh an answer gave none of wasn't found: the next read holds none.
     hold_none: bool,
@@ -632,6 +636,7 @@ impl Default for View {
             said_for: None,
             hidden: BTreeSet::new(),
             sketch_boxes: Vec::new(),
+            plane_boxes: Vec::new(),
             notice: None,
             hold_none: false,
             reads: 0,
@@ -1162,14 +1167,14 @@ impl View {
         self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
     }
 
-    /// The shown sketches' lines' boxes and the planes', as the frame draws them: if they
-    /// changed, the view
-    /// raised to the least they allow with the bodies, if it's under it, as the renderer
-    /// takes their reach too (an orthographic view under it would have every frame
-    /// refused).
-    fn take_sketch_boxes(&mut self, boxes: Vec<[[f64; 3]; 2]>) {
-        if boxes != self.sketch_boxes {
-            self.sketch_boxes = boxes;
+    /// The shown sketches' lines' boxes, `sketches`, and the planes', `planes`, as the frame
+    /// draws them: if they changed, the view raised to the least they allow with the
+    /// bodies, if it's under it, as the renderer takes their reach too (an orthographic
+    /// view under it would have every frame refused).
+    fn take_drawn_boxes(&mut self, sketches: Vec<[[f64; 3]; 2]>, planes: Vec<[[f64; 3]; 2]>) {
+        if sketches != self.sketch_boxes || planes != self.plane_boxes {
+            self.sketch_boxes = sketches;
+            self.plane_boxes = planes;
             self.camera = navigate::clamped(self.camera.clone(), self.rows, self.drawn_boxes());
         }
     }
@@ -1181,13 +1186,15 @@ impl View {
 
     /// The boxes of the bodies drawn (those the browser hides left out), as the renderer
     /// takes their reach: a body's tight box, or, for one that couldn't be measured, its
-    /// mesh's own extent; and the shown sketches' lines' boxes, which it takes too.
+    /// mesh's own extent; and the shown sketches' lines' boxes and the planes', which it
+    /// takes too.
     fn drawn_boxes(&self) -> impl Iterator<Item = [[f64; 3]; 2]> + '_ {
         self.bodies
             .values()
             .filter(|body| !self.hidden.contains(&body.feature))
             .filter_map(|body| body.bounds.or_else(|| extent(&body.mesh)))
             .chain(self.sketch_boxes.iter().copied())
+            .chain(self.plane_boxes.iter().copied())
     }
 
     /// The read to start at `now`, if one is wanted (section 3, *When the app reads*): none
@@ -1361,9 +1368,16 @@ impl View {
         silico_core::views::joined(self.boxes())
     }
 
-    /// The bodies' boxes and the open sketch's (its framing's), joined: what a fit takes.
+    /// The bodies' boxes, the shown sketches' lines' boxes, and the open sketch's (its
+    /// framing's), joined: what a fit, Home, a named view, and Look At take, as Fusion's Fit
+    /// takes every object shown.
     fn fit_bounds(&self) -> Option<[[f64; 3]; 2]> {
-        silico_core::views::joined(self.bounds().into_iter().chain(self.framing.sketch_box))
+        silico_core::views::joined(
+            self.bounds()
+                .into_iter()
+                .chain(self.sketch_boxes.iter().copied())
+                .chain(self.framing.sketch_box),
+        )
     }
 
     /// The named view `view` of the bodies' boxes and the open sketch's (a cube's, with
@@ -2085,15 +2099,14 @@ pub fn show<P: Clients + 'static>(
         .iter()
         .filter_map(|line| line.strips.bounds())
         .map(|(low, high)| [low, high])
-        .chain(
-            planes
-                .iter()
-                .filter(|drawn| drawn.shown)
-                .filter_map(|drawn| plane_box(&drawn.plane)),
-        )
+        .collect();
+    let plane_boxes: Vec<[[f64; 3]; 2]> = planes
+        .iter()
+        .filter(|drawn| drawn.shown)
+        .filter_map(|drawn| plane_box(&drawn.plane))
         .collect();
     let view = &mut tab.view;
-    view.take_sketch_boxes(sketch_boxes);
+    view.take_drawn_boxes(sketch_boxes, plane_boxes);
     if now_hidden != view.hidden {
         view.hidden = now_hidden;
         // A body shown again may reach farther than the view's least allowed.
@@ -4045,7 +4058,7 @@ mod tests {
             ..View::default()
         };
         view.set_camera(front(0.01));
-        view.take_sketch_boxes(vec![[[320.0, 10.0, 5.0], [320.0, 10.0, 5.0]]]);
+        view.take_drawn_boxes(vec![[[320.0, 10.0, 5.0], [320.0, 10.0, 5.0]]], Vec::new());
         let least = 1600.0 * 300.0 / 524_288.0 * 1.01;
         let Projection::Orthographic { view_height } = view.camera.projection else {
             panic!("orthographic")
@@ -4056,7 +4069,7 @@ mod tests {
             view.camera.projection,
             Projection::Orthographic { view_height }
         );
-        view.take_sketch_boxes(Vec::new());
+        view.take_drawn_boxes(Vec::new(), Vec::new());
         view.zoom(200.0, [0.0, 0.0], 800.0);
         assert_eq!(
             view.camera.projection,
@@ -4064,6 +4077,78 @@ mod tests {
                 view_height: view_height / 2.0
             }
         );
+    }
+
+    #[test]
+    fn fit_and_home_take_a_shown_sketchs_lines_and_never_a_planes_box() {
+        // No body; a shown sketch's lines from (300, 0, 0) to (340, 0, 20), on XZ, and a 50 mm
+        // origin plane's box about the origin. By hand (`views::fit_along`): Fit from the
+        // front, in an 800 by 800 pane, centres the lines' box, (320, 0, 10), its view 1.1
+        // times the larger of its 20 mm up and its 40 mm across, 44 mm; the plane taken too
+        // would centre (157.5, 0, 10). Home centres the same box, from its own direction.
+        let mut view = View {
+            rows: 800,
+            ..View::default()
+        };
+        view.set_camera(front(100.0));
+        view.take_drawn_boxes(
+            vec![[[300.0, 0.0, 0.0], [340.0, 0.0, 20.0]]],
+            vec![[[-25.0, -25.0, 0.0], [25.0, 25.0, 0.0]]],
+        );
+        view.give(ViewAsk::Fit, [800, 800], Motion::JUMP);
+        let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 1e-9);
+        assert!(
+            near(view.camera.target, [320.0, 0.0, 10.0]),
+            "{:?}",
+            view.camera
+        );
+        let Projection::Orthographic { view_height } = view.camera.projection else {
+            panic!("orthographic")
+        };
+        assert!((view_height - 44.0).abs() < 1e-9, "{view_height}");
+        // Looking as it looked: along y, z up.
+        assert!(near(view.camera.up, [0.0, 0.0, 1.0]), "{:?}", view.camera);
+        view.set_camera(front(100.0));
+        view.give(ViewAsk::Named(HOME), [800, 800], Motion::JUMP);
+        assert!(
+            near(view.camera.target, [320.0, 0.0, 10.0]),
+            "{:?}",
+            view.camera
+        );
+        // With no sketch shown, nothing to fit: the view stays.
+        view.take_drawn_boxes(Vec::new(), vec![[[-25.0, -25.0, 0.0], [25.0, 25.0, 0.0]]]);
+        view.set_camera(front(100.0));
+        view.give(ViewAsk::Fit, [800, 800], Motion::JUMP);
+        assert_eq!(view.camera, front(100.0));
+    }
+
+    #[test]
+    fn fit_on_a_shown_sketch_drawn_as_a_point_or_a_line_end_on_stays_drawable() {
+        // Break-it: a shown sketch whose lines are one point (a side of no length, as an
+        // invalid sketch's members are drawn as stored) has no extent to fit: Fit leaves the
+        // view as it was, never a view of no height. One line seen end on, (20, 0, 5) to
+        // (20, 40, 5) from the front: no extent across or up, so its view is the least the
+        // renderer draws its 20 mm half length at, 800 · 20 / 2^19 · 1.01, onto its middle.
+        let mut view = View {
+            rows: 800,
+            ..View::default()
+        };
+        view.set_camera(front(100.0));
+        view.take_drawn_boxes(vec![[[5.0, 5.0, 5.0], [5.0, 5.0, 5.0]]], Vec::new());
+        view.give(ViewAsk::Fit, [800, 800], Motion::JUMP);
+        assert_eq!(view.camera, front(100.0));
+        view.take_drawn_boxes(vec![[[20.0, 0.0, 5.0], [20.0, 40.0, 5.0]]], Vec::new());
+        view.give(ViewAsk::Fit, [800, 800], Motion::JUMP);
+        assert_eq!(view.camera.target, [20.0, 20.0, 5.0]);
+        let Projection::Orthographic { view_height } = view.camera.projection else {
+            panic!("orthographic")
+        };
+        let least = 800.0 * 20.0 / 524_288.0 * 1.01;
+        assert!(
+            (view_height - least).abs() < 1e-12,
+            "{view_height} for {least}"
+        );
+        assert!(view.camera.check(800, 800).is_ok());
     }
 
     #[test]

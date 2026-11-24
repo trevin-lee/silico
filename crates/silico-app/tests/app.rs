@@ -49272,14 +49272,8 @@ fn a_far_shown_sketch_raises_the_least_view_its_frames_are_drawn_at() {
     // reaches √(320² + 10² + 15²) = 320.507 mm from the target, past the bodies', so its
     // frames are drawn at a view no lower than rows · 320.507 / 2^19 · 1.01, the rows the
     // frame's own.
-    let far = ABSORBED_AND_LOOSE
-        .replace("\"pb000001\", \"x\": 0,", "\"pb000001\", \"x\": 300,")
-        .replace("\"pb000002\", \"x\": 40,", "\"pb000002\", \"x\": 340,")
-        .replace("\"pb000003\", \"x\": 40,", "\"pb000003\", \"x\": 340,")
-        .replace("\"pb000004\", \"x\": 0,", "\"pb000004\", \"x\": 300,");
-    assert_eq!(far.matches(": 340,").count(), 2);
     let f = fixture();
-    let (mut h, record) = f.drawn("far.silico", &far);
+    let (mut h, record) = f.drawn("far.silico", &loose_far());
     step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
     click_eye(&mut h, "Hide", "Loose");
     step_until(&mut h, "Loose's lines gone", |_| {
@@ -49310,6 +49304,111 @@ fn a_far_shown_sketch_raises_the_least_view_its_frames_are_drawn_at() {
         "{view_height} under {least}"
     );
     assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`ABSORBED_AND_LOOSE`] with Loose moved 300 mm along x: x 300 to 340, z 0 to 20, on XZ.
+fn loose_far() -> String {
+    let far = ABSORBED_AND_LOOSE
+        .replace("\"pb000001\", \"x\": 0,", "\"pb000001\", \"x\": 300,")
+        .replace("\"pb000002\", \"x\": 40,", "\"pb000002\", \"x\": 340,")
+        .replace("\"pb000003\", \"x\": 40,", "\"pb000003\", \"x\": 340,")
+        .replace("\"pb000004\", \"x\": 0,", "\"pb000004\", \"x\": 300,");
+    assert_eq!(far.matches(": 340,").count(), 2);
+    far
+}
+
+#[test]
+fn fit_and_home_take_a_shown_sketchs_lines_with_the_bodies() {
+    // Legs, Profile's 30 by 20 padded 10 (x 0 to 30, y 0 to 20, z 0 to 10), and Loose shown,
+    // 300 mm off (x 300 to 340, y 0, z 0 to 20): by hand, together x 0 to 340, y 0 to 20,
+    // z 0 to 20, centred on (170, 10, 10). Fit from the front looks as it looked onto that
+    // centre, its view 1.1 times the larger of its 20 mm up and its 340 mm across times the
+    // pane's height over its width (Legs alone would centre (15, 10, 5)). Home onto the same
+    // centre. Loose hidden: Fit takes Legs alone again.
+    let f = fixture();
+    let (mut h, record) = f.drawn("far.silico", &loose_far());
+    meshes_settled(&mut h);
+    step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Num1);
+    step(&mut h);
+    panned(&mut h);
+    h.key_press(eframe::egui::Key::F6);
+    step(&mut h);
+    let fit = view(&h).camera().clone();
+    near(view_direction(&fit), [0.0, -1.0, 0.0], 1e-12);
+    near(fit.target, [170.0, 10.0, 10.0], 1e-9);
+    let [width, height] = view(&h).frame().unwrap().size_px;
+    let fitted = 1.1 * 20f64.max(340.0 * f64::from(height) / f64::from(width));
+    assert!(
+        (ortho_height(&fit) - fitted).abs() < 1e-9,
+        "{} for {fitted}",
+        ortho_height(&fit)
+    );
+    panned(&mut h);
+    h.key_press(eframe::egui::Key::Home);
+    step(&mut h);
+    near(view(&h).camera().target, [170.0, 10.0, 10.0], 1e-9);
+    click_eye(&mut h, "Hide", "Loose");
+    step_until(&mut h, "Loose's lines gone", |_| {
+        last_lines(&record).is_empty()
+    });
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Num1);
+    step(&mut h);
+    panned(&mut h);
+    h.key_press(eframe::egui::Key::F6);
+    step(&mut h);
+    near(view(&h).camera().target, [15.0, 10.0, 5.0], 1e-9);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_shown_sketch_with_no_solution_is_drawn_red_and_one_solved_invalid_yellow() {
+    // DESIGN.md's *Sketch definition states*: unsolvable #ff3865, invalid #f2c94c, as sketch
+    // mode's status colours them, never fully defined's #eeeeed. Loose alone (its corner at
+    // x = 40) is answered so; Profile solves, so Legs builds. No solution: every solver
+    // failed. Invalid: a solution whose second corner lands on its first (the values after
+    // the origin's and the axes' six are each corner's two, in order), so its first side
+    // has no length and can't be built.
+    use silico_protocol::{SolveStatus, Solved};
+    let failed = |sent: Solved| Solved {
+        status: SolveStatus::Failed,
+        algorithm: None,
+        ..sent
+    };
+    let collapsed = |sent: Solved| {
+        let mut values = sent.values.clone();
+        values[8] = values[6];
+        values[9] = values[7];
+        Solved { values, ..sent }
+    };
+    let cases: [(fn(Solved) -> Solved, [u8; 4], &str); 2] = [
+        (failed, [0xff, 0x38, 0x65, 0xff], "no solution"),
+        (collapsed, [0xf2, 0xc9, 0x4c, 0xff], "invalid"),
+    ];
+    for (answer, colour, what) in cases {
+        let f = fixture();
+        f.sketches.answer(move |system| {
+            let sent = FakeSketches::as_sent(system);
+            Ok(if system.values.contains(&40.0) {
+                answer(sent)
+            } else {
+                sent
+            })
+        });
+        let (mut h, record) = f.drawn("absorbed.silico", ABSORBED_AND_LOOSE);
+        step_until(&mut h, "Loose's lines", |_| last_lines(&record).len() == 1);
+        assert_eq!(last_lines(&record)[0].colour, colour, "{what}");
+        let state = h.state().tabs()[0]
+            .sketch_reads
+            .state(&sketch_id("s0000002"));
+        let want = if what == "invalid" {
+            silico_core::sketch_states::SketchState::Invalid
+        } else {
+            silico_core::sketch_states::SketchState::NoSolution
+        };
+        assert_eq!(state, Some(want), "{what}");
+        assert_eq!(never_waits::waits(), 0);
+    }
 }
 
 /// [`A_BOX`] with Front, a sketch on XZ of one line at z = 7.5 from x = 0 to 40: on the

@@ -15,18 +15,18 @@
 //!   its bucket moves, never each frame ([`ShownLines`]).
 //! - **Construction** curves are dashed in millimetres at the bucket, sketch mode's dash and
 //!   gap (`SKETCH_CONSTRUCTION_DASH`, points), one strip a dash ([`dashes`]).
-//! - **The colour** is the prototype's two ([`colour`]): under defined `#7a95ff`, any other
-//!   state `#eeeeed`. SEAM: over defined, no solution, and invalid are `#eeeeed` too, as the
-//!   prototype draws them (app.js:978), though DESIGN.md gives over defined red and invalid
-//!   yellow; the port of the sketch colours decides.
+//! - **The colour** is its state's, as DESIGN.md's *Sketch definition states* gives them and
+//!   sketch mode draws them ([`colour`]): under defined `#7a95ff`, fully defined `#eeeeed`,
+//!   over defined and unsolvable `#ff3865`, invalid `#f2c94c`. The prototype's
+//!   `syncSketchLines` (app.js:978) draws only its demo's two, under and fully defined.
 //! - **None** is drawn for a read whose plane is an error (a face gone, not planar, found by
 //!   an unstable name, or its feature unbuilt: nothing guesses a placement), and none for a
 //!   sketch past [`MAX_LINE_POINTS`], which a warning names. Nor for a sketch whose lines
 //!   would take a frame's past the renderer's most (`MAX_FRAME_LINE_POINTS`, over every
 //!   shown sketch, in the order they're given), which a warning names once: the rest are
 //!   drawn, so a frame is never refused for its lines' count.
-//! - SEAM: Fit and Home fit the bodies alone (the core's named views, a core change); the
-//!   camera's clamp takes the lines' boxes.
+//! - **Fit, Home, the named views, and Look At** take the lines' boxes with the bodies', as
+//!   Fusion's Fit takes every object shown, and so does the camera's clamp.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -49,15 +49,16 @@ pub const MAX_LINE_POINTS: usize = 200_000;
 // A sketch within its own cap always fits a frame's lines alone.
 const _: () = assert!(MAX_LINE_POINTS <= MAX_FRAME_LINE_POINTS);
 
-/// The colour a sketch in `state` is drawn in, sRGB and opaque, as the prototype draws it
-/// (app.js:978): under defined `#7a95ff`, any other state `#eeeeed` (the module's SEAM).
+/// The colour a sketch in `state` is drawn in, sRGB and opaque, as DESIGN.md's *Sketch
+/// definition states* gives it and sketch mode's status says it (`super::state_shown`):
+/// under defined `#7a95ff`, fully defined `#eeeeed`, over defined and unsolvable `#ff3865`,
+/// invalid `#f2c94c`.
 pub fn colour(state: SketchState) -> [u8; 4] {
     let colour = match state {
         SketchState::UnderDefined => theme::SKETCH_UNDER_DEFINED,
-        SketchState::FullyDefined
-        | SketchState::OverDefined
-        | SketchState::NoSolution
-        | SketchState::Invalid => theme::SKETCH_FULLY_DEFINED,
+        SketchState::FullyDefined => theme::SKETCH_FULLY_DEFINED,
+        SketchState::OverDefined | SketchState::NoSolution => theme::SKETCH_OVER_DEFINED,
+        SketchState::Invalid => theme::SKETCH_INVALID,
     };
     colour.to_array()
 }
@@ -907,14 +908,15 @@ mod tests {
     }
 
     #[test]
-    fn each_state_has_the_prototypes_colour() {
-        // The prototype's two (app.js:978): under defined #7a95ff, every other #eeeeed.
+    fn each_state_has_design_mds_colour() {
+        // DESIGN.md's *Sketch definition states*: under defined #7a95ff, fully defined
+        // #eeeeed, over defined and unsolvable #ff3865, invalid #f2c94c.
         for (state, rgb) in [
             (SketchState::UnderDefined, 0x7a95ff),
             (SketchState::FullyDefined, 0xeeeeed),
-            (SketchState::OverDefined, 0xeeeeed),
-            (SketchState::NoSolution, 0xeeeeed),
-            (SketchState::Invalid, 0xeeeeed),
+            (SketchState::OverDefined, 0xff3865),
+            (SketchState::NoSolution, 0xff3865),
+            (SketchState::Invalid, 0xf2c94c),
         ] {
             let [r, g, b, a] = colour(state);
             assert_eq!(
