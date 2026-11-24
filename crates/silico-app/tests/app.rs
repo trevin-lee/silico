@@ -48633,6 +48633,26 @@ fn the_parts_first_meshes_read_while_its_sketch_is_open_place_the_view_and_leavi
 }
 
 #[test]
+fn a_view_moved_after_the_first_meshes_placed_it_in_sketch_mode_is_kept_on_leaving() {
+    // The first meshes place the view at Home while sketch mode is open, then the person
+    // pans: sketch mode found no camera, so it has nothing to go back to, and leaving keeps
+    // the panned view, not Home.
+    let home = sketched_home();
+    let (_f, failing, mut h) = sketch_opened_before_the_first_meshes();
+    failing.store(false, Ordering::SeqCst);
+    meshes_settled(&mut h);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &home);
+    panned(&mut h);
+    let moved = view(&h).camera().clone();
+    assert_ne!(moved, home);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(view(&h).camera(), &moved);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_first_meshes_read_out_as_sketch_mode_leaves_still_places_the_view_at_home() {
     // The first read's retry is out (held) as sketch mode leaves: it was asked for Home's
     // view, the view unplaced, and its answer places the view there.
