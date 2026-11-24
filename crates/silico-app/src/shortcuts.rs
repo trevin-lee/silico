@@ -1438,6 +1438,72 @@ mod tests {
         assert_eq!(found(&nix, "cache"), [Command::RebuildAll]);
         assert_eq!(found(&nix, "middle-drag"), [Command::Orbit, Command::Pan]);
         assert!(found(&nix, "no such thing").is_empty());
+        // A held key's caps, as the sheet shows them, and its words: Sketch without
+        // relations alone has "hold" (its caps; "Holding" in its words too).
+        assert_eq!(found(&nix, "ctrl+hold"), [Command::NoRelations]);
+        assert_eq!(found(&mac, "⌘hold"), [Command::NoRelations]);
+        assert_eq!(found(&nix, "hold"), [Command::NoRelations]);
+        assert_eq!(found(&mac, "relations"), [Command::NoRelations]);
+    }
+
+    #[test]
+    fn a_held_chord_is_never_a_keys_press() {
+        // Sketch without relations is Ctrl held as the pointer acts: no key of its own, so
+        // nothing a frame brings (Ctrl down alone, a Ctrl+key, a Ctrl+click, a key with
+        // every modifier) is its press, and nothing is taken for it. Ctrl as the platform's
+        // keyboard sends it off macOS, Ctrl and Command, and ⌘ on macOS.
+        for (os, held) in [
+            (OperatingSystem::Nix, Modifiers::CTRL | Modifiers::COMMAND),
+            (
+                OperatingSystem::Mac,
+                Modifiers::MAC_CMD | Modifiers::COMMAND,
+            ),
+        ] {
+            let ctx = on(os);
+            let every = Modifiers::CTRL | Modifiers::COMMAND | Modifiers::SHIFT | Modifiers::ALT;
+            let frames: Vec<Vec<egui::Event>> = vec![
+                vec![egui::Event::ModifiersChanged(held)],
+                vec![egui::Event::Key {
+                    key: Key::L,
+                    physical_key: Some(Key::L),
+                    pressed: true,
+                    repeat: false,
+                    modifiers: held,
+                }],
+                vec![
+                    egui::Event::PointerMoved(egui::pos2(10.0, 10.0)),
+                    egui::Event::PointerButton {
+                        pos: egui::pos2(10.0, 10.0),
+                        button: egui::PointerButton::Primary,
+                        pressed: true,
+                        modifiers: held,
+                    },
+                ],
+                vec![egui::Event::Key {
+                    key: Key::Enter,
+                    physical_key: Some(Key::Enter),
+                    pressed: true,
+                    repeat: true,
+                    modifiers: every,
+                }],
+            ];
+            for events in frames {
+                let (mut found, mut taken) = (false, false);
+                ctx.run_ui(
+                    egui::RawInput {
+                        events: events.clone(),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        found = pressed(ui.ctx(), Command::NoRelations);
+                        taken = take(ui, Command::NoRelations);
+                    },
+                )
+                .textures_delta
+                .clear();
+                assert!(!found && !taken, "{os:?}: {events:?}");
+            }
+        }
     }
 
     #[test]
