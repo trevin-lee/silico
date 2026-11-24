@@ -20,7 +20,7 @@
 //! it would have opened at the click (the part 3 design's section 2): it never casts without
 //! a body that's drawn. Waiting, it's let go as an open menu is closed, and takes the keys
 //! as one does (Esc lets it go; the rest do nothing). A right click acts on what was on the
-//! screen, as SolidWorks' does (#568): one in the frame the view takes another table of
+//! screen when it was made (#568): one in the frame the view takes another table of
 //! bodies (it was made on the table the frame before drew) opens nothing, and one waiting
 //! is let go if the model, a body drawn, or its mesh changes first; a toast says so of
 //! each ([`OTHER_REDRAWN`]).
@@ -204,7 +204,8 @@ pub struct SelectOther {
     /// it, so no answer of another menu's is taken for it.
     opened: u64,
     /// A right click let go before its menu opened, as the bodies it was made on changed
-    /// ([`OTHER_REDRAWN`]): for the tab to say, once.
+    /// ([`OTHER_REDRAWN`]), this frame: returned by [`overlay`](Self::overlay) for the tab to
+    /// say.
     said: Option<&'static str>,
 }
 
@@ -295,11 +296,6 @@ enum CanvasEvent<'a> {
 }
 
 impl SelectOther {
-    /// What a right click let go says, taken once ([`OTHER_REDRAWN`]).
-    pub(crate) fn take_said(&mut self) -> Option<&'static str> {
-        self.said.take()
-    }
-
     /// Whether a menu is open.
     pub fn is_open(&self) -> bool {
         self.menu.is_some()
@@ -466,7 +462,8 @@ impl SelectOther {
     /// `painter`'s context; it closed as the module says. `facts` give a feature's name, by
     /// its ID, for the rows, and Edit's reason it's off. The left events the selection and
     /// the box select are to be given (every one but those of a press that closed the menu),
-    /// and what an item chosen asks of the tab.
+    /// what an item chosen asks of the tab, and what a toast is to say of a right click let
+    /// go, if one was ([`OTHER_REDRAWN`]).
     pub(crate) fn overlay(
         &mut self,
         selection: &mut Selection,
@@ -475,7 +472,7 @@ impl SelectOther {
         painter: &egui::Painter,
         current: bool,
         facts: &Facts<'_>,
-    ) -> (Vec<LeftEvent>, Option<CanvasAct>) {
+    ) -> (Vec<LeftEvent>, Option<CanvasAct>, Option<&'static str>) {
         let ctx = painter.ctx().clone();
         let before = self.state();
         let pass = ctx.cumulative_pass_nr();
@@ -501,7 +498,8 @@ impl SelectOther {
                     facts,
                     ctx: &ctx,
                 };
-                return (self.canvas_events(selection, view, &given).0, None);
+                let (kept, _) = self.canvas_events(selection, view, &given);
+                return (kept, None, self.said.take());
             }
         }
         self.hold_boxes(view, &ctx);
@@ -570,7 +568,7 @@ impl SelectOther {
             ctx.request_repaint();
         }
         view.wheel_held = self.menu.is_some();
-        (kept, asked)
+        (kept, asked, self.said.take())
     }
 
     /// Which menu is open, and its item or row lit: what a frame changing asks the next to
@@ -2533,25 +2531,35 @@ mod tests {
         let mut frame = |so: &mut SelectOther, view: &mut View, clicks| {
             time += 1;
             let given = canvas(Vec::new(), clicks, None);
+            let mut said = None;
             pass(&ctx, time, Vec::new(), |ui| {
                 let painter = ui.painter().clone();
-                so.overlay(&mut selection, view, &given, &painter, false, &facts);
+                said = so
+                    .overlay(&mut selection, view, &given, &painter, false, &facts)
+                    .2;
             });
+            said
         };
-        frame(&mut so, &mut view, vec![right([40.0, 30.0], 1)]);
+        assert_eq!(
+            frame(&mut so, &mut view, vec![right([40.0, 30.0], 1)]),
+            None
+        );
         assert!(so.is_open());
-        assert_eq!(so.take_said(), None);
-        view.began_frame();
+        view.begin_frame();
         view.tabled_again();
-        frame(&mut so, &mut view, vec![right([40.0, 30.0], 2)]);
+        let said = frame(&mut so, &mut view, vec![right([40.0, 30.0], 2)]);
+        assert_eq!(said, Some(OTHER_REDRAWN));
         assert!(!so.is_open());
         assert!(!so.is_waiting());
-        assert_eq!(so.take_said(), Some(OTHER_REDRAWN));
-        assert_eq!(so.take_said(), None);
-        view.began_frame();
-        frame(&mut so, &mut view, vec![right([40.0, 30.0], 3)]);
+        // Said once: the frame after, with nothing done, says nothing.
+        view.begin_frame();
+        assert_eq!(frame(&mut so, &mut view, Vec::new()), None);
+        view.begin_frame();
+        assert_eq!(
+            frame(&mut so, &mut view, vec![right([40.0, 30.0], 3)]),
+            None
+        );
         assert!(so.is_open());
-        assert_eq!(so.take_said(), None);
     }
 
     #[test]
@@ -2725,7 +2733,7 @@ mod tests {
                 if !shown {
                     painter.set_invisible();
                 }
-                let (left, asked) =
+                let (left, asked, _) =
                     so.overlay(&mut selection, &mut view, frame, &painter, false, &facts);
                 assert_eq!(asked, None);
                 kept = left.iter().map(|event| event.kind).collect::<Vec<_>>();

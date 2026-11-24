@@ -42,18 +42,20 @@
 //! number of the new model is drawn on the old model's meshes. A click waits for the
 //! meshes of one model, however long they take, counting no frames (a slow read on a busy
 //! machine is no reason to drop it); it's let go once what it was aimed at, or what it
-//! would be picked on, changes: the camera moves (its pixel was of the view before), the
-//! view takes another table of the selection's model's bodies than the one it was made on
-//! before it's decided, in the frame its release came in too (its pixel was of the bodies
-//! drawn before, as SolidWorks acts on what was on the screen: [`CLICK_REDRAWN`], #568; one
-//! made on another model's bodies waits for that model's, and is picked on the first table
-//! of them drawn), another model is published before the meshes it waits for come, the
-//! filter changes, a
+//! would be picked on, changes: the camera moves (its pixel was of the view before),
+//! another model is published before the meshes it waits for come, the filter changes, a
 //! mode claims the canvas ([`Selection::canvas_claimed`]), or the selection is cleared or
 //! set from elsewhere; and once no meshes are coming: their read refused
 //! ([`View::refused_of`]), or no model built. A read in flight that never answers is let go
 //! after [`CLICK_WAIT`], a backstop. Each let go the person didn't do is said, in its
 //! cause's words, never over what a rebuild left gone from the same model.
+//!
+//! A click acts on what was on the screen when it was made (#568). One on the bodies of
+//! the selection's model is picked on that table of them ([`View::table`]) or not at all:
+//! the view taking another before it's decided lets it go, said ([`CLICK_REDRAWN`]), and so
+//! does one whose release comes in the very frame the view takes another, as it was made on
+//! the table the frame before drew ([`View::table_taken`]). One made on another model's
+//! bodies waits for that model's, as above, and is picked on the first table of them.
 //!
 //! While a dialog's selection box of names is active ([`Selection::take_into`], section 9's
 //! *Feature dialogs*), the canvas picks only what the box takes, every click toggles the
@@ -1447,7 +1449,7 @@ impl Selection {
             // Its release came in the frame the view took another table of the selection's
             // model's bodies: it was made on the table the frame before drew, which is gone.
             // One made on another model's bodies waits for this model's, as ever, and these
-            // are they.
+            // are they. (A click taken already is let go by the same rule in `view_changed`.)
             if current && view.table_taken() && view.drew_of() == self.of {
                 tracing::debug!("a click let go in the frame a new table was taken: let go");
                 self.click = None;
@@ -1602,8 +1604,10 @@ impl Selection {
     /// What's hovered let go if the camera or the bodies changed since the last frame: the
     /// pointer may be over something else now. It's asked again when the pointer moves. A
     /// click waiting for its pick is let go if the camera changed: its pixel was of the view
-    /// before. (Not for the bodies alone: a click waiting for the meshes of the selection's
-    /// model is asked once they come.)
+    /// before. So is one picked on a table of bodies ([`Click::table`]) once the view takes
+    /// another, said ([`CLICK_REDRAWN`]; one let go in the frame that takes it is let go as
+    /// it's made, in [`overlay`](Self::overlay)). A click still waiting for the meshes of the
+    /// selection's model has no table yet: the bodies changing asks its pick again.
     fn view_changed(&mut self, view: &View, frame: &ViewFrame) {
         let now = Seen {
             camera: frame.camera.clone(),
@@ -1619,7 +1623,8 @@ impl Selection {
                 if seen.camera != now.camera && self.click.take().is_some() {
                     tracing::debug!("the camera moved under a click waiting for its pick: let go");
                 }
-                // A click on the bodies drawn before these: its pixel was of them.
+                // A click on the bodies drawn before these: its pixel was of them. (One let go
+                // in the frame these were taken is let go as it's made, in `overlay`.)
                 if self
                     .click
                     .is_some_and(|click| click.table.is_some_and(|table| table != now.table))
@@ -3517,7 +3522,7 @@ pub(crate) mod tests {
         assert_eq!(selection.names(), ["aaaaaaaa.box.Edge1"]);
         // Another, answered, waiting; another model published meanwhile: its click isn't
         // decided on the bodies of the model before, though a face is cast under it there.
-        view.began_frame();
+        view.begin_frame();
         selection.overlay(&mut view, &click(&moved), &ctx, &waiting);
         view.answered_as(of, stroke(9));
         selection.overlay(&mut view, &still(&moved), &ctx, &waiting);
@@ -3539,7 +3544,7 @@ pub(crate) mod tests {
         // answer, of the bodies before, is dropped and its pick asked again this frame, of
         // these, to be answered by a frame after the one it had; nothing cleared.
         let second = (2, Revision::from_number(2).unwrap());
-        view.began_frame();
+        view.begin_frame();
         view.tabled_again();
         view.answered_as(second, stroke(9));
         view.take_asked();
@@ -3579,14 +3584,14 @@ pub(crate) mod tests {
                 event(Release, [50.0, 50.0], false),
             ])
         };
-        view.began_frame();
+        view.begin_frame();
         view.tabled_again();
         selection.overlay(&mut view, &click(), &ctx, &no_face);
         assert_eq!(selection.click, None);
         assert_eq!(view.asking(), None);
         assert_eq!(selection.said(), Some(CLICK_REDRAWN));
         assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
-        view.began_frame();
+        view.begin_frame();
         selection.overlay(&mut view, &click(), &ctx, &no_face);
         let asked = selection.click.unwrap();
         assert_eq!((asked.awaits, asked.table), (None, Some(view.table())));
@@ -3599,10 +3604,10 @@ pub(crate) mod tests {
         let mut view = View::default();
         view.answered_as(of, nothing);
         selection.published(Some((box_model(), second.1)), second.0);
-        view.began_frame();
+        view.begin_frame();
         selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         view.take_asked();
-        view.began_frame();
+        view.begin_frame();
         view.tabled_again();
         view.answered_as(second, nothing);
         selection.overlay(&mut view, &click(), &ctx, &no_face);

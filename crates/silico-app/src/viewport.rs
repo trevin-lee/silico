@@ -968,17 +968,11 @@ impl View {
     }
 
     /// A frame begun: the table it starts with, and the model its bodies are of, kept as
-    /// what the frame before drew, before the frame polls for a new one.
-    fn begin_frame(&mut self) {
+    /// what the frame before drew, before the frame polls for a new one. Crate-wide so a
+    /// unit test begins its frames as the viewport does.
+    pub(crate) fn begin_frame(&mut self) {
         self.table_before = self.generation;
         self.of_before = self.bodies_of();
-    }
-
-    /// As if a frame had begun ([`begin_frame`](Self::begin_frame)): a unit test's, so what it
-    /// changes after is what this frame took.
-    #[cfg(test)]
-    pub(crate) fn began_frame(&mut self) {
-        self.begin_frame();
     }
 
     /// As if bodies read from `of` had come, and the answer to the pick of frame `picking`

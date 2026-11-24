@@ -2171,7 +2171,7 @@ impl Tab {
             sketched: &built_from_sketch,
             sketch_off: crate::feature_menu::sketch_off(self),
         };
-        let (left, asked) = self.select_other.overlay(
+        let (left, asked, said) = self.select_other.overlay(
             &mut self.selection,
             &mut self.view,
             frame,
@@ -2179,7 +2179,7 @@ impl Tab {
             current,
             &facts,
         );
-        if let Some(said) = self.select_other.take_said() {
+        if let Some(said) = said {
             self.toasts.push(Toast::info(said));
         }
         self.menu_face_read(sessions, painter.ctx());

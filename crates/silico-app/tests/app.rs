@@ -47054,6 +47054,7 @@ fn a_right_click_waiting_for_its_boxes_is_let_go_by_esc_or_a_press_and_never_ope
     }
     assert!(!select_other(&h).is_waiting());
     assert!(selected_names(&h).is_empty(), "{:?}", selected_names(&h));
+    assert_eq!(newest_toast(&h), None, "the person's own let go said");
     // Made after: neither opens; and the next click selects.
     making.release();
     boxes_made(&mut h);

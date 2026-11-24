@@ -1274,7 +1274,7 @@ mod tests {
         }
         let mut view = View::default();
         if taken {
-            view.began_frame();
+            view.begin_frame();
             view.tabled_again();
         }
         let mut frame = view_frame(None);
