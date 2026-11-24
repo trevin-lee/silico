@@ -5135,6 +5135,9 @@ impl Tab {
                             field,
                             value,
                         } => {
+                            // The prompt's follows the edit that began the transaction; the
+                            // card's Make it driven may be the first edit since it opened.
+                            self.begin_if_none(sessions);
                             self.record(Sent::Edit(field.clone()));
                             let sending = Sending {
                                 against: revision,
@@ -7468,8 +7471,8 @@ impl Tab {
         self.timeline_scroll = None;
     }
 
-    /// What an error card asked (`errCard`'s Edit and Show in timeline), done through
-    /// `sessions`: whether a command was started.
+    /// What an error card asked (`errCard`'s Edit and Show in timeline, sketch mode's card's
+    /// Make it driven), done through `sessions`: whether a command was started.
     pub(crate) fn card_asked<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -7489,6 +7492,10 @@ impl Tab {
                 self.use_candidate(sessions, &broken, &candidate)
             }
             crate::properties::CardAct::Remove(broken) => self.remove_reference(sessions, &broken),
+            crate::properties::CardAct::MakeDriven(constraint) => {
+                self.sketch_make_driven(sessions, &constraint);
+                true
+            }
         }
     }
 
@@ -8400,6 +8407,26 @@ impl Tab {
     ) {
         if let Some(mode) = self.sketch.as_mut()
             && mode.answer_offer(choice)
+        {
+            self.message = None;
+        }
+        self.sketch_requests(sessions);
+    }
+
+    /// Sketch mode's card's Make it driven for `constraint` ([`SketchMode::ask_driven`]):
+    /// its `set_field` queued, against the revision of the read the card was drawn from,
+    /// if the newest read still offers it. Nothing while the tab closes, whose queue takes no
+    /// edit.
+    pub fn sketch_make_driven<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        constraint: &ElementId,
+    ) {
+        if self.closing() {
+            return;
+        }
+        if let Some(mode) = self.sketch.as_mut()
+            && mode.ask_driven(constraint)
         {
             self.message = None;
         }

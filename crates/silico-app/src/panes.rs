@@ -422,13 +422,17 @@ impl<P: Clients + 'static> Panes<'_, P> {
         if tab.sketch.is_some() {
             // Sketch mode's own (app.js's `renderRight`: `S.sketch` before the selection).
             properties::title(ui, None, "Properties", None);
-            egui::ScrollArea::vertical()
+            let asked = egui::ScrollArea::vertical()
                 .id_salt("properties")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = Vec2::ZERO;
-                    sketch_mode(ui, tab);
-                });
+                    sketch_mode(ui, tab)
+                })
+                .inner;
+            if let Some(asked) = asked {
+                *self.next_frame |= tab.card_asked(self.sessions, asked);
+            }
             return;
         }
         // The selection's views close with Clear selection (`selectionProps`' `clearSel`).
@@ -600,10 +604,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
 ///
 /// [`sketch_mode_rows`]: crate::parameters::sketch_mode_rows
 /// [`sketch::problem_card`]: crate::sketch::problem_card
-fn sketch_mode(ui: &mut Ui, tab: &Tab) {
-    let Some(mode) = tab.sketch.as_ref() else {
-        return;
-    };
+fn sketch_mode(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
+    let mode = tab.sketch.as_ref()?;
     let name = tab.sketch_name();
     let id = mode
         .sketch
@@ -633,14 +635,28 @@ fn sketch_mode(ui: &mut Ui, tab: &Tab) {
             let _ = draw_row(ui, row);
         }
     }
+    let mut asked = None;
     if let Some(said) = read.and_then(|read| crate::sketch::problem_card(read, &name)) {
         let offer = properties::Offer {
             edit: None,
             show: false,
         };
-        ui.push_id("sketch-card", |ui| {
-            properties::card(ui, &said, Some(&name), offer)
+        // Off while the tab closes, whose queue takes no edit.
+        let driven = mode.make_driven().map(|driven| crate::sketch::MakeDriven {
+            target: driven.target.and_then(|id| {
+                if tab.closing() {
+                    Err(crate::sketch::CLOSING)
+                } else {
+                    Ok(id)
+                }
+            }),
+            ..driven
         });
+        asked = ui
+            .push_id("sketch-card", |ui| {
+                properties::driven_card(ui, &said, Some(&name), offer, driven.as_ref())
+            })
+            .inner;
     }
     properties::hint(
         ui,
@@ -659,6 +675,7 @@ fn sketch_mode(ui: &mut Ui, tab: &Tab) {
             (" drops them.", false),
         ],
     );
+    asked
 }
 
 /// A row of PARAMETERS, or of sketch mode's SKETCH, drawn: words in their colour, an ID in
