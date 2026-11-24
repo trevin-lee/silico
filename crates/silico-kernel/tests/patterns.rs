@@ -151,6 +151,36 @@ fn freecads_mirrored_cubes_double_and_its_offset_case_is_refused_off_the_base() 
 }
 
 #[test]
+fn a_copy_off_the_base_of_one_of_several_originals_is_named_with_its_original() {
+    // Section 4.2, decision 6: a pattern of two originals, a boss and a hole, on a 20 mm
+    // block 5 thick. The boss (r 1 at (5, 5), 8 tall) copied 30 along y stands at (5, 35),
+    // clear of the block: its step's result is two solids, its base's faces in one, and the
+    // refusal names whose copy it is, as one original's never does (above).
+    let model = built(&[
+        rectangle("s0000001", "xy", [0.0, 0.0], 20.0, 20.0),
+        pad("p0000001", None, "s0000001", &up("5")),
+        circles("s0000002", "xy", &[([5.0, 5.0], 1.0)]),
+        pad("p0000002", Some("p0000001"), "s0000002", &up("8")),
+        circles("s0000003", "xy", &[([15.0, 5.0], 1.0)]),
+        pocket("q0000001", "p0000002", "s0000003", THROUGH),
+        linear_as(
+            "t0000001",
+            "q0000001",
+            r#"{"type": "features", "features": ["q0000001", "p0000002"]}"#,
+            &[direction("y", "spacing", "30", 2)],
+            "[]",
+        ),
+    ]);
+    let error = failure(&model, "t0000001");
+    assert_eq!(error.code(), ErrorCode::KernelFailed);
+    assert_eq!(
+        error.message(),
+        "linear_pattern t0000001 makes 2 solids: the copy of p0000002's instance 1 doesn't touch the base, or meets it only along an edge or at a point"
+    );
+    assert_eq!(error.elements(), ["1"]);
+}
+
+#[test]
 fn mains_suppression_grid_keeps_a_skip_past_a_count_and_skips_it_again_once_reached() {
     // FreeCAD main's testSuppressionKeepsGridPosition, testSuppressionPersistence, and
     // testSuppressedIndicesOnlyProjectPositionsInsideTheGrid (patterns.md §5): 3 × 3 10 mm

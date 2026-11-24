@@ -299,13 +299,15 @@ fn a_skipped_instance_and_a_shorter_count_placing_one_copy_alike_have_two_keys_a
 
 #[test]
 fn originals_are_copied_one_step_each_in_timeline_order_whatever_the_list_says() {
-    // z0000001 is pocketed before a0000002; the pattern lists a0000002 first.
+    // z0000001 is pocketed before a0000002; the pattern lists a0000002 first. The first is
+    // a round hole and the second a square one, so each copy's names come from its own
+    // original's faces and sweep, never another's: a square's four walls aren't a circle's one.
     let features = vec![
         rectangle("s0000001", "xy", [-50.0, -30.0], 100.0, 60.0),
         pad("p0000001", None, "s0000001", FIVE),
         circles("s0000003", "xy", &[([-40.0, -20.0], 2.75)]),
         pocket("z0000001", "p0000001", "s0000003", THROUGH),
-        circles("s0000004", "xy", &[([-40.0, 0.0], 1.5)]),
+        rectangle("s0000004", "xy", [-42.0, -2.0], 4.0, 4.0),
         pocket(
             "a0000002",
             "z0000001",

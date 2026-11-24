@@ -1372,3 +1372,75 @@ fn only_a_pattern_steps_own_copies_after_its_base_are_numbered_by_their_place_in
     );
     assert_eq!(named(&own, 7), "m0000001.mirror.Face1");
 }
+
+#[test]
+fn a_past_bound_copys_element_numbers_no_solid_and_nothing_named_already() {
+    // `Builder::derived`, of a copy's element its map leaves unnamed (past the bound): only
+    // what it made that's still unnamed, and no solid, is numbered by its place in the
+    // step's result. The box's 256th whole copy (above) has no names; the step keeps the
+    // base's faces 1 to 6 and the copy's 1 to 5 as 7 to 11, and the copy's face 6 becomes
+    // 12, a piece of the base's face 1 (named already, as the base's), and a whole solid
+    // (as an extrusion's history reports one). Face 12 is numbered; face 1 keeps the base's
+    // one name, gaining none; and the solid is named by nothing, as every step leaves it.
+    let mut map = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let one = Instance::new(&[1]).unwrap();
+    for _ in 0..255 {
+        map = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    }
+    let past = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    let made =
+        |element: ElementRef, position: u32| silico_core::kernel::Reported { element, position };
+    let solid = ElementRef {
+        kind: ElementKind::Solid,
+        index: 1,
+    };
+    let mut copied: Vec<ElementFate> = (7..=11).map(kept).collect();
+    copied.push(ElementFate {
+        kept: None,
+        modified: vec![made(face(12), 1), made(face(1), 2)],
+        generated: vec![made(solid, 1)],
+    });
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+            InputHistory {
+                faces: copied,
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+        ],
+        result: ElementCounts {
+            faces: 12,
+            solids: 1,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let step = ElementMap::operation(id("m0000001"), OpCode::Mirror, &[&map, &past], &history);
+    assert_eq!(
+        step.name(face(12)).unwrap().to_string(),
+        "m0000001.mirror.Face12"
+    );
+    assert_eq!(step.names(face(1)), map.names(face(1)));
+    assert_eq!(step.names(face(1)).len(), 1);
+    let base_face = parse("m0000001.mirror.Face1").unwrap();
+    assert_eq!(step.element(&base_face), None);
+    assert_eq!(step.name(solid), None);
+    assert_eq!(step.count(ElementKind::Solid), 0);
+}

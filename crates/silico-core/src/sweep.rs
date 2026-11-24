@@ -1515,4 +1515,67 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn a_patterns_step_is_judged_by_s7s_rule_with_its_own_advice() {
+        // Section 4.2: a pattern's step changes its base's volume, by S7's rule, each
+        // refusal with a pattern's advice: no solid left, several, a change the volume
+        // can't tell, and none.
+        use crate::document::PatternFeature;
+        use silico_protocol::CopiesOp;
+        let (t, q) = (
+            FeatureId::new("t0000001").unwrap(),
+            FeatureId::new("q0000001").unwrap(),
+        );
+        let measured = |volume: f64, solids: u32| Measured {
+            volume,
+            solids,
+            faces: 10,
+            edges: 24,
+            vertices: 16,
+        };
+        let base = measured(1000.0, 1);
+        let refused = |op, after: Measured| {
+            check_pattern_change(&t, PatternFeature::Linear, op, &q, &base, &after).unwrap_err()
+        };
+        let lost = refused(CopiesOp::Cut, measured(0.0, 0));
+        assert_eq!(
+            lost.message(),
+            "linear_pattern t0000001 leaves nothing of its base q0000001: the result is no solid"
+        );
+        assert_eq!(
+            lost.suggestion(),
+            Some("move or shrink the copies, so the result keeps some of its base")
+        );
+        let parted = refused(CopiesOp::Cut, measured(900.0, 2));
+        assert_eq!(
+            parted.suggestion(),
+            Some("move the copies so the result is one piece")
+        );
+        let small = refused(CopiesOp::Fuse, measured(1000.0 + 5e-7, 1));
+        assert_eq!(
+            small.suggestion(),
+            Some(
+                "make what the linear_pattern copies larger, or the linear_pattern on a smaller part"
+            )
+        );
+        let none = refused(CopiesOp::Fuse, measured(1000.0, 1));
+        assert!(
+            none.message()
+                .starts_with("linear_pattern t0000001 adds nothing to its base q0000001")
+        );
+        // Held as it's checked: a change past the limit passes, one within it doesn't.
+        assert!(pattern_change_holds(
+            PatternFeature::Linear,
+            CopiesOp::Cut,
+            &base,
+            &measured(990.0, 1)
+        ));
+        assert!(!pattern_change_holds(
+            PatternFeature::Linear,
+            CopiesOp::Cut,
+            &base,
+            &measured(1000.0, 1)
+        ));
+    }
 }

@@ -766,3 +766,5 @@ crates/silico-app/src/shortcuts.rs | after_release | replace > with >= | #535
 crates/silico-app/src/app.rs | App<P>::take_drops | replace |= with &= | #522
 crates/silico-app/src/start.rs | when | replace > with >= | #522
 crates/silico-core/src/document/pattern_gate.rs | Gate<'a, '_>::originals | replace < with <= | #553
+crates/silico-core/src/pattern.rs | placements | replace + with - | #576
+crates/silico-core/src/pattern.rs | unplaceable | replace < with <= | #576

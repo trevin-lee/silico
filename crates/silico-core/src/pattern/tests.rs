@@ -856,3 +856,98 @@ fn copies_off_the_base_of_several_originals_are_named_with_their_originals() {
         one.message()
     );
 }
+
+#[test]
+fn a_reversed_axis_and_a_mirror_planes_origin_hold_no_negative_zero() {
+    // Requests hold +0, never −0 (section 9; −0 is written 0): `reversed` turns z into
+    // (+0, +0, −1), and a plane at y = −30 facing +y passes through (+0, −30, +0), though
+    // −0 · and 0 · −30 are −0.
+    let bits = |v: [f64; 3]| v.map(f64::to_bits);
+    let pattern = polar(
+        PolarDistribution::Extent {
+            angle: degrees(360),
+        },
+        4,
+        true,
+    );
+    let Ok(Resolved::Polar(axis)) = resolve(&id("t0000002"), &pattern, &mut |_| unreachable!())
+    else {
+        panic!("not resolved");
+    };
+    assert_eq!(bits(axis.direction), bits([0.0, 0.0, -1.0]));
+    let mirror = Operation::Mirror {
+        base: id("c0000001"),
+        copies: Copies::Solid,
+        plane: OriginOrName::Name(name("p0000001.pad.Face(G s0000001.sketch.Edge.na000001)")),
+    };
+    let Ok(Resolved::Mirror { origin, normal }) = resolve(&id("m0000002"), &mirror, &mut |_| {
+        Ok(plane(
+            [0.0, 1.0, 0.0],
+            [-7.0, -30.0, 2.0],
+            FaceOrientation::Forward,
+        ))
+    }) else {
+        panic!("not resolved");
+    };
+    assert_eq!(bits(origin), bits([0.0, -30.0, 0.0]));
+    assert_eq!(bits(normal), bits([0.0, 1.0, 0.0]));
+}
+
+#[test]
+fn a_placement_past_a_kilometre_names_the_component_past_it_and_its_sense() {
+    // The first component past a kilometre, not one at it: x at exactly 1e6 is within reach,
+    // y at 2e6 isn't. And one past it the other way is along −y.
+    let instance = Instance::new(&[1, 1]).unwrap();
+    let past = |offset| {
+        unplaceable(
+            &id("t0000001"),
+            "linear_pattern",
+            &instance,
+            &Placement::Translation { offset },
+            "unused",
+        )
+    };
+    assert_eq!(
+        past([1e6, 2e6, 0.0]).message(),
+        "linear_pattern t0000001 would move instance 1,1 2000000 mm along y, past the 1000000 mm (a kilometre) a copy may move"
+    );
+    assert_eq!(
+        past([0.0, -2e6, 0.0]).message(),
+        "linear_pattern t0000001 would move instance 1,1 2000000 mm along -y, past the 1000000 mm (a kilometre) a copy may move"
+    );
+}
+
+#[test]
+fn about_gives_three_significant_figures_and_a_value_of_no_size_as_it_is() {
+    assert_eq!(about(1_234_567.0), "1230000");
+    assert_eq!(about(0.0123456), "0.0123");
+    assert_eq!(about(0.0), "0");
+    assert_eq!(about(-2.0), "-2");
+}
+
+#[test]
+fn a_fuse_of_several_solids_its_base_in_one_but_no_copy_off_it_is_a_base_in_pieces() {
+    // No instance named, the words a base left in pieces takes: there's no instance to name.
+    let verdict = StepVerdict {
+        original: None,
+        op: CopiesOp::Fuse,
+        solids: 2,
+        base_solids: 1,
+        off_base: Vec::new(),
+        changed_nothing: Vec::new(),
+    };
+    let error = solids_refused(
+        &id("t0000007"),
+        "linear_pattern",
+        &id("p0000012"),
+        &verdict,
+        false,
+        None,
+    )
+    .unwrap();
+    assert_eq!(
+        error.message(),
+        "linear_pattern t0000007 leaves its base p0000012 in pieces: the base's faces lie in 1 of the result's 2 solids, so no instance is named"
+    );
+    assert!(error.elements().is_empty());
+}

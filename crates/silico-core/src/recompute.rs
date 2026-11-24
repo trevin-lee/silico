@@ -8902,6 +8902,64 @@ mod tests {
         );
     }
 
+    /// A pattern's naming key, pinned as a sweep's is (M6.3's mutants: no test held its
+    /// arm's op code byte): the scheme's line, the step's key, the ID, 1 + its op code (a
+    /// linear pattern's, 10, so 11; a mirror's, 12, so 13), its steps' count, and each step's
+    /// letter, its original's ID (its length first) and faces' naming key if a tool's, and
+    /// its instances (their count, then each one's offsets, their count first), then the
+    /// inputs'. Computed by hand with Python's hashlib from bytes chosen here.
+    #[test]
+    fn a_patterns_naming_key_holds_its_op_code_its_originals_and_its_instances() {
+        let id = |text: &str| FeatureId::new(text).unwrap();
+        let instance = |offsets: &[u32]| Instance::new(offsets).unwrap();
+        let mirror = Naming::Pattern(Arc::new(PatternNaming {
+            operation: OpCode::Mirror,
+            steps: vec![CopyNaming {
+                copied: Copied::Solid,
+                original: None,
+                instances: vec![instance(&[1])].into(),
+            }],
+        }));
+        let key = naming_key(
+            Key([1; 32]),
+            &id("mmmmmmmm"),
+            &mirror,
+            &[NamingKey([3; 32])],
+        );
+        assert_eq!(
+            crate::hex(&key.0),
+            "a0631205362feeec2564c5b0f7bc10ecce61c49e3b10b081a5084239d244bd3d"
+        );
+        let linear = Naming::Pattern(Arc::new(PatternNaming {
+            operation: OpCode::LinearPattern,
+            steps: vec![CopyNaming {
+                copied: Copied::Tool,
+                original: Some((
+                    id("p0000002"),
+                    Arc::new(SweepNaming {
+                        operation: OpCode::Pad,
+                        sketch: id("ssssssss"),
+                        curves: Vec::new(),
+                        points: Vec::new(),
+                        regions: Vec::new(),
+                        faces: NamingKey([2; 32]),
+                    }),
+                )),
+                instances: vec![instance(&[1]), instance(&[0, 1])].into(),
+            }],
+        }));
+        let key = naming_key(
+            Key([1; 32]),
+            &id("tttttttt"),
+            &linear,
+            &[NamingKey([3; 32])],
+        );
+        assert_eq!(
+            crate::hex(&key.0),
+            "144414d3af073aa42ec77417651ca080e1e4dcb766a176600e462810e284bb42"
+        );
+    }
+
     /// M3.6's step kinds' keys (design S3), pinned, computed by hand with Python's hashlib
     /// from the lines their doc describes: a faces step's plane, its regions and loops
     /// marked, each curve by its kind and its values' bits; a prism's faces key, start, and
@@ -9405,6 +9463,215 @@ mod tests {
             assert_eq!(warmed.ok(), (!panics).then_some(0), "panics: {panics}");
             taken(&solvers).unwrap();
             assert_eq!(starts.load(Ordering::SeqCst), 2, "panics: {panics}");
+        }
+    }
+
+    /// A box, a pad and a pocket on it of one circle each, and a linear pattern of both, on
+    /// the pocket: two copies steps, the pad's (a fuse) then the pocket's (a cut).
+    fn two_originals_patterned() -> Checked {
+        let circle = |id: &str, x: u32| {
+            format!(
+                r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "Circle", "plane": "xy", "points": [{{"id": "pc000001", "x": {x}, "y": 2, "construction": false}}], "lines": [], "circles": [{{"id": "ca000001", "center": "pc000001", "radius": 1, "construction": false}}], "arcs": [], "constraints": []}}"#
+            )
+        };
+        let features = [
+            r#"{"id": "a0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#.to_owned(),
+            circle("s0000001", 2),
+            r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Boss", "base": "a0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 12, "reversed": false}}"#.to_owned(),
+            circle("s0000002", 6),
+            r#"{"id": "q0000001", "type": "pocket", "v": 1, "name": "Hole", "base": "p0000001", "sketch": "s0000002", "extent": {"type": "through_all", "reversed": true}}"#.to_owned(),
+            r#"{"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "Pattern", "base": "q0000001", "copies": {"type": "features", "features": ["q0000001", "p0000001"]}, "directions": [{"along": "y", "reversed": false, "distribution": {"type": "spacing", "length": 4}, "count": 2}], "skip": []}"#.to_owned(),
+        ];
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 6, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    /// [`two_originals_patterned`]'s plan, its sketches solved by the fake: the plan, the
+    /// pattern's place, its base's key, and its steps' keys.
+    fn two_originals_plan() -> (Plan, usize, Key, Vec<Key>) {
+        let document = Arc::new(two_originals_patterned());
+        let engine = Recompute::new(crate::fake::FakeKernel::new(1).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        let generation = lock(&engine.engine.state).generation;
+        let first = engine
+            .engine
+            .solve_swept(&document, generation, Reads::Kept, &StepCounter::default())
+            .unwrap()
+            .unwrap();
+        let plan = Plan::of(&document, &first.swept, &BTreeMap::new());
+        let at = |id: &str| document.place(&FeatureId::new(id).unwrap()).unwrap();
+        let (pattern, pocket) = (at("t0000001"), at("q0000001"));
+        let base = plan.features[pocket].key().unwrap();
+        let steps = plan.features[pattern].steps.clone();
+        (plan, pattern, base, steps)
+    }
+
+    /// A built solid of `volume`, measured (6 faces, 12 edges, 8 vertices) or not, its last
+    /// step's history counting `solids` (none: a primitive's, one).
+    fn solid_of(volume: Option<f64>, solids: Option<u32>) -> StepResult {
+        let shape = ShapeData::checked(crate::kernel::Blob::inline(b"a solid".to_vec()), true);
+        let history = solids.map(|solids| History {
+            result: crate::kernel::ElementCounts {
+                faces: 6,
+                edges: 12,
+                vertices: 8,
+                solids,
+            },
+            ..History::default()
+        });
+        let summary = volume.map(|volume| ShapeSummary {
+            volume,
+            area: 600.0,
+            center: [5.0; 3],
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            bounds: Some([[0.0; 3], [10.0; 3]]),
+            valid: true,
+        });
+        Ok(Arc::new(Built::new(shape, history, summary)))
+    }
+
+    #[test]
+    fn every_step_of_a_pattern_and_its_base_judge_it() {
+        // Section 4.2: each step is judged on the one before, so a pattern of two originals
+        // is judged when either step settles (and its base), not its last alone.
+        let (plan, pattern, base, steps) = two_originals_plan();
+        assert_eq!(steps.len(), 2);
+        assert_ne!(steps[0], steps[1]);
+        for key in steps.iter().chain([&base]) {
+            assert!(
+                plan.judged_by
+                    .get(key)
+                    .is_some_and(|f| f.contains(&pattern)),
+                "{key:?}: {:?}",
+                plan.judged_by.get(key)
+            );
+        }
+    }
+
+    #[test]
+    fn a_patterns_verdict_reads_its_base_and_every_step_in_turn() {
+        // Section 4.2, by hand: the base 1000 mm³; the pad's copies fuse to 1010 (they add),
+        // the hole's cut it to 1005 (they take away): it holds. The cut to 1010 changes
+        // nothing: it doesn't. A step whose history counts three solids is refused before its
+        // measure, which may never come. A step not built yet, or failed: not yet known.
+        let (plan, pattern, base, steps) = two_originals_plan();
+        let done = |results: [StepResult; 3]| -> BTreeMap<Key, StepResult> {
+            [base, steps[0], steps[1]]
+                .into_iter()
+                .zip(results)
+                .collect()
+        };
+        let verdict = |results| plan.verdict(pattern, &done(results));
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(Some(1010.0), Some(1)),
+                solid_of(Some(1005.0), Some(1)),
+            ]),
+            Some(true)
+        );
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(Some(1010.0), Some(1)),
+                solid_of(Some(1010.0), Some(1)),
+            ]),
+            Some(false)
+        );
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(None, Some(3)),
+                solid_of(None, Some(1)),
+            ]),
+            Some(false)
+        );
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(Some(1010.0), Some(1)),
+                solid_of(None, Some(1)),
+            ]),
+            None
+        );
+        let failed = || Err(Error::new(ErrorCode::KernelFailed, "Copies failed"));
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(Some(1010.0), Some(1)),
+                failed(),
+            ]),
+            None
+        );
+        let mut unbuilt = done([
+            solid_of(Some(1000.0), None),
+            solid_of(Some(1010.0), Some(1)),
+            solid_of(Some(1005.0), Some(1)),
+        ]);
+        unbuilt.remove(&steps[1]);
+        assert_eq!(plan.verdict(pattern, &unbuilt), None);
+    }
+
+    #[test]
+    fn a_pattern_fails_for_want_of_a_measure_only_of_a_step_built() {
+        // A measure refused of any of its steps, once built, or of its base, fails it; a
+        // refusal kept for a step not built (or failed) is no one's yet.
+        let (plan, pattern, base, steps) = two_originals_plan();
+        let refused = Error::new(ErrorCode::KernelFailed, "Summarize failed");
+        let unmeasured: BTreeMap<Key, Error> = [(steps[0], refused.clone())].into();
+        let mut done: BTreeMap<Key, StepResult> = [
+            (base, solid_of(Some(1000.0), None)),
+            (steps[0], solid_of(None, Some(1))),
+        ]
+        .into();
+        assert_eq!(
+            plan.unmeasured_failure(pattern, &done, &unmeasured),
+            Some(&refused)
+        );
+        done.insert(
+            steps[0],
+            Err(Error::new(ErrorCode::KernelFailed, "Copies failed")),
+        );
+        assert_eq!(plan.unmeasured_failure(pattern, &done, &unmeasured), None);
+        done.remove(&steps[0]);
+        assert_eq!(plan.unmeasured_failure(pattern, &done, &unmeasured), None);
+    }
+
+    #[test]
+    fn only_a_hang_of_a_patterns_request_is_kept_and_said_so() {
+        use crate::worker::Advice;
+        // Section 4.2, *A hang kept*: a copies request that hung is kept for the session,
+        // its advice and suggestion saying so; any other failure, or a worker slow to start
+        // (try again, said of the launch), is as it was, never kept.
+        let hang = kept_if_hung(Error::new(
+            ErrorCode::WorkerTimeout,
+            "the kernel worker timed out",
+        ));
+        assert!(kept_hang(&hang));
+        assert_eq!(
+            hang.suggestion(),
+            Some(
+                "check with fresh (silico check --fresh) to ask the kernel again; if the copies hang again, lower a count"
+            )
+        );
+        for other in [
+            Error::new(ErrorCode::KernelFailed, "Copies failed")
+                .with_advice(Advice::SimplifyOrWait),
+            Error::new(ErrorCode::WorkerTimeout, "the kernel worker timed out").with_advice(
+                Advice::TryAgain {
+                    once_more: true,
+                    why: "the worker was slow to start".to_owned(),
+                },
+            ),
+        ] {
+            let kept = kept_if_hung(other.clone());
+            assert_eq!(kept, other);
+            assert!(!kept_hang(&kept));
         }
     }
 }
