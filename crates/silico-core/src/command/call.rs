@@ -39,6 +39,7 @@ use super::wire::export::ExportRequest;
 use super::wire::logs::ReadLogsRequest;
 use super::wire::measure::{MassPropertiesRequest, PairRequest};
 use super::wire::meshes::MeshesRequest;
+use super::wire::pattern::PatternRequest;
 use super::wire::reads::{CheckRequest, DiffRequest, TextRequest, TimelineRequest};
 use super::wire::render::RenderRequest;
 use super::wire::schema::SchemaRequest;
@@ -107,12 +108,13 @@ pub enum Command {
     Undo,
     Redo,
     Diff,
+    Pattern,
 }
 
 impl Command {
     /// Every command, in the design's order: M4.1's (section 7), then M5.0's (its section
-    /// 7), then `diff` (Fable's decision of 2026-11-04).
-    pub const ALL: [Command; 45] = [
+    /// 7), then `diff` (Fable's decision of 2026-11-04), then `pattern` (M6.5).
+    pub const ALL: [Command; 46] = [
         Command::Version,
         Command::Open,
         Command::Close,
@@ -158,6 +160,7 @@ impl Command {
         Command::Undo,
         Command::Redo,
         Command::Diff,
+        Command::Pattern,
     ];
 
     /// The command's name, as requests and tools give it.
@@ -208,6 +211,7 @@ impl Command {
             Command::Undo => "undo",
             Command::Redo => "redo",
             Command::Diff => "diff",
+            Command::Pattern => "pattern",
         }
     }
 
@@ -269,7 +273,8 @@ impl Command {
             | Command::SketchJoin
             | Command::Undo
             | Command::Redo
-            | Command::Diff => false,
+            | Command::Diff
+            | Command::Pattern => false,
         }
     }
 }
@@ -782,6 +787,9 @@ impl<P: Clients + 'static> Sessions<P> {
                 Ok(r) => Calling::waiting(self.diff(&r.session, r.from, r.to), diffed),
                 Err(problems) => Calling::refused(named, problems),
             },
+            Command::Pattern => typed(named, PatternRequest::read(request), |r| {
+                self.pattern(&r.session, r.model, r.pattern)
+            }),
         }
     }
 }

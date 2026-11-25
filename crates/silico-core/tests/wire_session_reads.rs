@@ -592,13 +592,15 @@ fn version_and_open_take_only_their_fields_and_require_each() {
 fn cancel_names_only_a_command_and_any_other_name_is_refused_with_every_command_as_candidates() {
     let text = example("cancel/request");
     let names: Vec<String> = CANCELLABLE.map(str::to_owned).to_vec();
-    // Every command that runs in a session, then the rebuild: 39 and one, counted by hand
+    // Every command that runs in a session, then the rebuild: 40 and one, counted by hand
     // from the design's lists (M4.1's 20, M5.0's 18, the drag's three and `meshes` among
-    // them, sketch_join the last of the sketch edits; then `diff`, Fable's of 2026-11-04).
-    assert_eq!(names.len(), 40);
-    assert_eq!(names[..39], SESSION_COMMANDS.map(str::to_owned));
+    // them, sketch_join the last of the sketch edits; then `diff`, Fable's of 2026-11-04;
+    // then M6.5's `pattern`).
+    assert_eq!(names.len(), 41);
+    assert_eq!(names[..40], SESSION_COMMANDS.map(str::to_owned));
     assert_eq!(names[38], "diff");
-    assert_eq!(names[39], "rebuild");
+    assert_eq!(names[39], "pattern");
+    assert_eq!(names[40], "rebuild");
     // A name close to one, the session's own probe, commands that never run in a session
     // (`read_logs` among them, answered at once), and other types.
     for (value, got) in [

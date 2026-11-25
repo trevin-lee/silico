@@ -1,0 +1,526 @@
+{
+  "request": {
+    "$defs": {
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "ModelChoice": {
+        "description": "Which model to read: the current one, or the newest published.",
+        "oneOf": [
+          {
+            "const": "current",
+            "description": "The session's current revision's model, rebuilt if it isn't yet: what an agent that\njust edited reads.",
+            "type": "string"
+          },
+          {
+            "const": "published",
+            "description": "The newest model published, which may be an older revision's, read at once: what a\nUI reads while a rebuild runs.",
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`pattern`'s request: a pattern as the model named built it.",
+    "properties": {
+      "model": {
+        "$ref": "#/$defs/ModelChoice"
+      },
+      "pattern": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The pattern, by its feature's ID: a linear_pattern, polar_pattern, or mirror."
+      },
+      "session": {
+        "description": "The session's ID, as `open` gave it.",
+        "pattern": "^s[1-9][0-9]*$",
+        "type": "string"
+      }
+    },
+    "required": [
+      "model",
+      "pattern",
+      "session"
+    ],
+    "title": "PatternRequest",
+    "type": "object"
+  },
+  "result": {
+    "$defs": {
+      "Angle": {
+        "description": "An angle in degrees: a number, to at most 9 decimals (nanodegrees). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "description": "Why a command was refused, or a problem it found, in Silico's error contract: a code, a\nmessage, and, where they apply, the feature, the elements at fault (the first of them, and\nhow many in all), the request's field at fault, the cause, what to do, and the names that\nmight have been meant. Every field is always present: null, or empty, where it doesn't\napply.",
+        "properties": {
+          "advice": {
+            "description": "What the suggestion advises, as data, for a kernel fault whose worker said:\n`change_the_values` (the request's values crashed the worker, and would again: change\nthem, never retry as is), `simplify_or_wait` (it ran past its time: simplify the\noperation, or try again), `try_again` (it wasn't the values: try the request again),\nor `try_once_more` (only once more: the worker may have been stopped for the memory\nthe request used). Null for any other error, and a fault whose advice is in its\nsuggestion's words alone.",
+            "enum": [
+              "change_the_values",
+              "simplify_or_wait",
+              "try_again",
+              "try_once_more",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "candidates": {
+            "description": "What might have been meant, such as the names nearest one that found nothing.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "cause": {
+            "description": "What lay under it, such as the kernel's own failure, if known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "code": {
+            "description": "What kind of error it is: one of Silico's error codes, such as `invalid_input`.",
+            "enum": [
+              "invalid_input",
+              "kernel_failed",
+              "worker_crashed",
+              "worker_timeout",
+              "protocol_error",
+              "internal",
+              "invalid_result",
+              "resource_exhausted",
+              "drift",
+              "io_failed",
+              "reference_broken",
+              "over_constrained",
+              "solve_failed",
+              "conflict",
+              "worker_unavailable",
+              "cancelled"
+            ],
+            "type": "string"
+          },
+          "elements": {
+            "description": "The elements at fault, by name: the first of them, if there are many.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "elements_total": {
+            "description": "How many elements are at fault, listed or not.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "feature": {
+            "description": "The ID of the feature at fault, if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "description": "What went wrong, in a sentence.",
+            "type": "string"
+          },
+          "parameter": {
+            "description": "The field at fault, as a dotted path (`position.2`), if one is.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ranking": {
+            "description": "Why each candidate is where it is, one a candidate, in their order: what it's made\nfrom that the broken name is (`shared`), what of the broken name it isn't\n(`unshared`), whether it's the name's own feature's, and, for a name by number that\nfinds nothing, the nearest number and its gap. Empty where the candidates follow\nanother rule, which the suggestion states.",
+            "items": {
+              "$ref": "#/$defs/Rank"
+            },
+            "type": "array"
+          },
+          "suggestion": {
+            "description": "What to do about it, if Silico can say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "advice",
+          "candidates",
+          "cause",
+          "code",
+          "elements",
+          "elements_total",
+          "feature",
+          "message",
+          "parameter",
+          "ranking",
+          "suggestion"
+        ],
+        "type": "object"
+      },
+      "FeatureId": {
+        "description": "A feature's ID: 8 characters of Crockford's base32 in lower case (digits and letters but i, l, o, and u).",
+        "pattern": "^[0123456789abcdefghjkmnpqrstvwxyz]{8}$",
+        "type": "string"
+      },
+      "Instance": {
+        "description": "An instance of a pattern: its steps from the original along each direction, direction 1 first, trailing zeros left off, as its copies' names write it (C2, C2,1): [2], [2, 1], [0, 1].",
+        "items": {
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "minItems": 1,
+        "type": "array"
+      },
+      "InstanceState": {
+        "description": "What the rebuild said of the instance's copy, the first that holds: skipped (`skip` holds it), off_base (its copy misses the base, which refuses the pattern), changed_nothing (its copy adds or removes nothing: none of its faces is in the result), or built. Null where a step that would place it didn't run, or named no instance.",
+        "enum": [
+          "skipped",
+          "off_base",
+          "changed_nothing",
+          "built"
+        ],
+        "type": "string"
+      },
+      "Length": {
+        "description": "A length in millimetres: a number, to at most 6 decimals (nanometres). An exponent is read exactly; Silico writes plain decimals. (Strings are reserved for expressions, which aren't read yet.)",
+        "type": "number"
+      },
+      "Nearest": {
+        "additionalProperties": false,
+        "description": "A candidate's element numbered nearest a broken name by number.",
+        "properties": {
+          "element": {
+            "description": "The element, by its own name (`k7f2qx3m.box.Face6`).",
+            "type": "string"
+          },
+          "gap": {
+            "description": "How many numbers apart it and the broken name are.",
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "element",
+          "gap"
+        ],
+        "type": "object"
+      },
+      "PatternAxis": {
+        "additionalProperties": false,
+        "description": "A polar pattern's axis, resolved.",
+        "properties": {
+          "direction": {
+            "description": "The axis's direction, a unit vector, `reversed` taken: the instances turn\nright-handed about it.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "point": {
+            "description": "A point on the axis (mm).",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Angle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The angle between neighbours (degrees): a whole turn's extent over the count, any\nother extent over the count less one, or the spacing; null for an extent of count 1."
+          }
+        },
+        "required": [
+          "direction",
+          "point",
+          "step"
+        ],
+        "type": "object"
+      },
+      "PatternDirection": {
+        "additionalProperties": false,
+        "description": "One direction of a linear pattern, resolved.",
+        "properties": {
+          "direction": {
+            "description": "The direction its instances step along, a unit vector, `reversed` taken.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "step": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Length"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The distance between neighbours (mm): the extent's length over the count less one,\nor the spacing; null for an extent of count 1, which has no neighbours."
+          }
+        },
+        "required": [
+          "direction",
+          "step"
+        ],
+        "type": "object"
+      },
+      "PatternInstance": {
+        "additionalProperties": false,
+        "description": "One instance of a pattern, the original's left out.",
+        "properties": {
+          "anchor": {
+            "description": "Where this instance puts the pattern's anchor (mm): where the copied profile's\ncentre, or a whole solid's centre of mass, lands. Null where `anchor` is.",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "angle": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Angle"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A polar instance's turn about the axis from the original (degrees); null for another\ntype's. A mirror's copy has neither: it's a reflection in `plane`."
+          },
+          "index": {
+            "$ref": "#/$defs/Instance",
+            "description": "The instance, as `skip` writes it and its copies' names carry it after `C` or `S`."
+          },
+          "offset": {
+            "description": "A linear instance's move from the original (mm); null for another type's.",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "state": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/InstanceState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What the rebuild said of its copy; null where it said nothing."
+          }
+        },
+        "required": [
+          "anchor",
+          "angle",
+          "index",
+          "offset",
+          "state"
+        ],
+        "type": "object"
+      },
+      "PatternPlane": {
+        "additionalProperties": false,
+        "description": "A mirror's plane, resolved.",
+        "properties": {
+          "normal": {
+            "description": "The plane's normal, a unit vector.",
+            "items": {
+              "type": "number"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          },
+          "origin": {
+            "description": "The global origin projected onto the plane (mm).",
+            "items": {
+              "$ref": "#/$defs/Length"
+            },
+            "maxItems": 3,
+            "minItems": 3,
+            "type": "array"
+          }
+        },
+        "required": [
+          "normal",
+          "origin"
+        ],
+        "type": "object"
+      },
+      "PatternType": {
+        "description": "The pattern's type, as the document writes it.",
+        "enum": [
+          "linear_pattern",
+          "polar_pattern",
+          "mirror"
+        ],
+        "type": "string"
+      },
+      "Rank": {
+        "additionalProperties": false,
+        "description": "Why a candidate for a broken name is where it is among them. The candidates' order\nfollows from it: more `shared` first, then `same_feature`, then by name.",
+        "properties": {
+          "nearest": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/Nearest"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "For a name by number that finds nothing and shares nothing with any element, the\ncandidate's element numbered nearest it, and how far; null otherwise."
+          },
+          "same_feature": {
+            "description": "Whether the candidate is an element of the broken name's own feature.",
+            "type": "boolean"
+          },
+          "shared": {
+            "description": "The elements both the candidate's name and the broken one are made from, by their\nown names (a sketch's element by its ID), whole, in the names' order.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "unshared": {
+            "description": "The broken name's other elements, in the names' order: with `shared`, every element\nthe broken name is made from.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "nearest",
+          "same_feature",
+          "shared",
+          "unshared"
+        ],
+        "type": "object"
+      }
+    },
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "additionalProperties": false,
+    "description": "`pattern`'s result: the pattern as the model's rebuild built it, its references resolved\nin 3D and each instance placed, for the app's instance boxes and for an agent choosing\nwhich copy to name.",
+    "properties": {
+      "anchor": {
+        "description": "Where the original sits (mm): the centre of area of its originals' profiles, each on\nits sketch's plane, weighted by their areas; or, for a whole solid's copies\n(`copies` of type `solid`), the base's centre of mass. Null where it can't be had\n(`problems` says why).",
+        "items": {
+          "$ref": "#/$defs/Length"
+        },
+        "maxItems": 3,
+        "minItems": 3,
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "axis": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/PatternAxis"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "A polar_pattern's axis, resolved in 3D with its sense (`reversed`) taken: null for\nanother type, or where it didn't resolve (`problems` says why)."
+      },
+      "directions": {
+        "description": "A linear_pattern's directions, in the document's order, each resolved in 3D with its\nsense (`reversed`) taken: null for another type, or where a direction's reference\ndidn't resolve (`problems` says why).",
+        "items": {
+          "$ref": "#/$defs/PatternDirection"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "instances": {
+        "description": "Every instance but the original, skipped or not, in `skip`'s order (direction 1's\noffset first): none where the references didn't resolve.",
+        "items": {
+          "$ref": "#/$defs/PatternInstance"
+        },
+        "type": "array"
+      },
+      "pattern": {
+        "$ref": "#/$defs/FeatureId",
+        "description": "The pattern, by its feature's ID."
+      },
+      "plane": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/PatternPlane"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "A mirror's plane, resolved in 3D: null for another type, or where it didn't resolve\n(`problems` says why)."
+      },
+      "problems": {
+        "description": "The pattern's own problems, as `check` gives them (the first 100): none when it\nbuilt. For a pattern blocked on another feature, the error a read of its solid\ngives; where its base's elements couldn't be described, the error `elements` gives\nfor that solid.",
+        "items": {
+          "$ref": "#/$defs/Error"
+        },
+        "maxItems": 100,
+        "type": "array"
+      },
+      "problems_total": {
+        "description": "How many problems there are, listed or not.",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "type": {
+        "$ref": "#/$defs/PatternType"
+      }
+    },
+    "required": [
+      "anchor",
+      "axis",
+      "directions",
+      "instances",
+      "pattern",
+      "plane",
+      "problems",
+      "problems_total",
+      "type"
+    ],
+    "title": "PatternResult",
+    "type": "object"
+  }
+}

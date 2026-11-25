@@ -1,0 +1,15 @@
+{
+  "pattern": "t0000002",
+  "type": "polar_pattern",
+  "directions": null,
+  "axis": {"point": [0, 0, 0], "direction": [0, 0, 1], "step": 90},
+  "plane": null,
+  "anchor": [5, 0, 0],
+  "instances": [
+    {"index": [1], "offset": null, "angle": 90, "anchor": [0, 5, 0], "state": "built"},
+    {"index": [2], "offset": null, "angle": 180, "anchor": [-5, 0, 0], "state": "built"},
+    {"index": [3], "offset": null, "angle": 270, "anchor": [0, -5, 0], "state": "built"}
+  ],
+  "problems": [],
+  "problems_total": 0
+}

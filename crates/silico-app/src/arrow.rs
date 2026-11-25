@@ -80,6 +80,7 @@ use eframe::egui::{
 use silico_core::command::sketch::SketchRead;
 use silico_core::document::{Length, SweepFeature, read_extent};
 use silico_core::kernel::SketchPlane;
+use silico_core::profile::LoopRole;
 use silico_core::sweep;
 use silico_protocol::Camera;
 use silico_render::render::project;
@@ -142,20 +143,18 @@ pub struct Handles {
 /// The centroid of `read`'s profile, in the sketch's millimetres: of every region's area, its
 /// outer loop's less its holes'. Each loop is its curves as the walk of its outline runs them
 /// ([`oriented`]), sent from the read's stored points by the core's own conversion of a
-/// profile's curve ([`silico_core::profile::sent`]), and measured exactly by the request's
-/// own measure ([`silico_protocol::area_moments`], beside its area and perimeter). None for a
+/// profile's curve ([`silico_core::profile::sent`]), and measured as the core measures a
+/// profile's centre ([`silico_core::profile::area_centre`], by the request's own measure,
+/// `silico_protocol::area_moments`). None for a
 /// sketch that makes no profile, a loop that doesn't run end to end or whose arc makes none,
 /// or a profile whose area isn't above 0.
 pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
     let geometry = Geometry::of(read);
-    // Each loop about a point of its own, then all about the first's: a profile far from the
-    // sketch's origin, or a loop far from the others, keeps the precision its own size has.
-    let mut about: Option<[f64; 2]> = None;
-    let (mut area, mut moment) = (0.0, [0.0, 0.0]);
+    let mut loops = Vec::new();
     for region in &read.regions {
-        let loops = std::iter::once((&region.outer, 1.0))
-            .chain(region.holes.iter().map(|hole| (hole, -1.0)));
-        for (curves, role) in loops {
+        let roles = std::iter::once((&region.outer, LoopRole::Outer))
+            .chain(region.holes.iter().map(|hole| (hole, LoopRole::Hole)));
+        for (curves, role) in roles {
             // The walk's curves, in `curves`' order, each as the core's profile sends it.
             let sent: Vec<silico_protocol::Curve> = curves
                 .iter()
@@ -164,18 +163,10 @@ pub fn profile_centroid(read: &SketchRead) -> Option<[f64; 2]> {
                     silico_core::profile::sent(geometry.profile_curve(id)?, walked.backwards)
                 })
                 .collect::<Option<_>>()?;
-            let measured = silico_protocol::area_moments(&sent);
-            let shift = sub(measured.about, *about.get_or_insert(measured.about));
-            // However a loop runs (a lone circle counter-clockwise, a hole or not), it counts by
-            // what it is: an outer loop's area added, a hole's taken away.
-            let sense = role * measured.area.signum();
-            area += sense * measured.area;
-            let moment_here = add(measured.moment, mul(shift, measured.area));
-            moment = add(moment, mul(moment_here, sense));
+            loops.push((sent, role));
         }
     }
-    let centroid = add(about?, mul(moment, 1.0 / area));
-    (area > 0.0 && centroid.iter().all(|c| c.is_finite())).then_some(centroid)
+    silico_core::profile::area_centre(loops).map(|(_, centroid)| centroid)
 }
 
 /// `dialog`'s arrows in model space, its sketch on `plane` with its profile's centroid at

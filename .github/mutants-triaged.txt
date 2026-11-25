@@ -727,8 +727,6 @@ crates/silico-app/src/tab.rs | Tab::reloaded_under_dialog | replace && with || |
 crates/silico-app/src/navigate.rs | at_view | replace % with + | #476
 crates/silico-app/src/navigate.rs | at_view | replace < with <= | #476
 crates/silico-app/src/navigate.rs | at_view | replace > with >= | #476
-crates/silico-app/src/arrow.rs | profile_centroid | replace * with / | #480
-crates/silico-app/src/arrow.rs | profile_centroid | replace > with >= | #480
 crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | handles | replace * with / | #480
 crates/silico-app/src/arrow.rs | arrows | replace > with >= | #480
@@ -769,6 +767,11 @@ crates/silico-app/src/parameters.rs | way_words | replace > with >= | #566
 crates/silico-core/src/document/pattern_gate.rs | Gate<'a, '_>::originals | replace < with <= | #553
 crates/silico-app/src/plane_pick.rs | under_at | replace match guard boxed with true | #565
 crates/silico-app/src/plane_pick.rs | under_at | replace match guard boxed with false | #565
-crates/silico-core/src/pattern.rs | placements | replace + with - | #576
+crates/silico-core/src/pattern.rs | placement | replace + with - | #576
 crates/silico-core/src/pattern.rs | unplaceable | replace < with <= | #576
 crates/silico-app/src/properties.rs | segments | replace * with / | #605
+crates/silico-core/src/profile.rs | area_centre | replace * with / | #603
+crates/silico-core/src/profile.rs | area_centre | replace > with >= | #603
+crates/silico-core/src/command/pattern.rs | read | replace || with && | #603
+crates/silico-core/src/command/pattern.rs | anchor | replace > with >= | #603
+crates/silico-core/src/command/pattern.rs | anchor | replace && with || | #603

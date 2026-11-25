@@ -47,6 +47,8 @@ mod history_fixtures;
 mod name_collisions;
 #[path = "naming.rs"]
 mod naming;
+#[path = "pattern_read.rs"]
+mod pattern_read;
 #[path = "patterns.rs"]
 mod patterns;
 #[path = "references.rs"]

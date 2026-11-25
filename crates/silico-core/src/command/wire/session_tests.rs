@@ -588,7 +588,7 @@ fn the_commands_a_session_runs_are_the_wires_in_the_designs_order() {
         ["version", "open", "status", "cancel", "schema", "read_logs"]
     );
     // The design's reads of the published model (section 2: those that take `model`; and
-    // M5.0's A8, `meshes`, `sketch`, and `timeline`).
+    // M5.0's A8, `meshes`, `sketch`, and `timeline`; and M6.5's `pattern`).
     assert_eq!(
         PUBLISHED_READS,
         [
@@ -601,7 +601,8 @@ fn the_commands_a_session_runs_are_the_wires_in_the_designs_order() {
             "render",
             "timeline",
             "meshes",
-            "sketch"
+            "sketch",
+            "pattern"
         ]
     );
 }
