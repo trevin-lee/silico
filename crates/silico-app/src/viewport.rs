@@ -2272,11 +2272,7 @@ pub fn show<P: Clients + 'static>(
     let tinted = tinted_faces(makers, &highlights, &hovered, drawn);
     // The vertices among them, drawn over the bodies by the pane (the renderer draws none).
     let dots = vertex_dots(&view.bodies, &highlights, &hovered);
-    let mut outlines = crate::selection::outlines();
-    if candidate.is_some() {
-        let [r, g, b, _] = theme::VIEWPORT_CANDIDATE;
-        outlines.hovered = [r, g, b];
-    }
+    let (outlines, hover_outlined) = hover_look(candidate.is_some());
     let picking = view.picking.take();
     let serial = match picking {
         Some(_) => {
@@ -2318,7 +2314,7 @@ pub fn show<P: Clients + 'static>(
         highlights,
         hovered,
         outlines,
-        hover_outlined: candidate.is_some(),
+        hover_outlined,
         tinted,
         tint: feature_tint(),
         picking,
@@ -2420,6 +2416,19 @@ pub fn feature_tint() -> Tint {
         theme::VIEWPORT_FEATURE_HOVER_TINT,
         theme::VIEWPORT_FEATURE_HOVER_TINT_AMOUNT,
     )
+}
+
+/// How a frame draws its hover, as one rule: the selection's outlines, a hovered face
+/// tinted; or, with a broken reference's `candidate` lit, the hover outlined whole (a face
+/// too, not tinted) in the candidate's colour ([`theme::VIEWPORT_CANDIDATE`]). The outlines,
+/// and whether the hover is outlined whole (`FrameData::hover_outlined`).
+fn hover_look(candidate: bool) -> (crate::renderer::Outlines, bool) {
+    let mut outlines = crate::selection::outlines();
+    if candidate {
+        let [r, g, b, _] = theme::VIEWPORT_CANDIDATE;
+        outlines.hovered = [r, g, b];
+    }
+    (outlines, candidate)
 }
 
 /// A selected face's tint, the prototype's (`SELECT` at 0.55): the theme's, as the renderer
@@ -4322,6 +4331,18 @@ mod tests {
                 view_height: view_height * 2.0
             }
         );
+    }
+
+    #[test]
+    fn a_lit_candidate_is_outlined_whole_in_its_colour_and_a_hover_else_tinted() {
+        // flow 6b's candidate, lit from its card's row: the hover's outline in the
+        // candidate's orange (#ff7a0c), a face of it outlined, not tinted; no candidate: the
+        // hover's white outline, its faces tinted.
+        let (outlines, whole) = hover_look(true);
+        assert_eq!((outlines.hovered, whole), ([0xff, 0x7a, 0x0c], true));
+        assert_eq!(outlines.selected, crate::selection::outlines().selected);
+        let (outlines, whole) = hover_look(false);
+        assert_eq!((outlines.hovered, whole), ([0xff, 0xff, 0xff], false));
     }
 
     #[test]

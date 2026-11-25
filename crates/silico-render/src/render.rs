@@ -388,17 +388,32 @@ impl Frame<'_> {
             group.tint.check()?;
         }
         let mut lit: BTreeMap<u32, Lit> = BTreeMap::new();
+        // Each list, its parameter, and what its entries are called in a refusal: a tint
+        // group's faces by the group's place too (`tinted[1].faces[0]`).
         let lists = [
-            ("highlights", self.highlights, Listed::Highlighted),
-            ("hovered", self.hovered, Listed::Hovered),
+            (
+                "highlights",
+                "highlights".to_owned(),
+                self.highlights,
+                Listed::Highlighted,
+            ),
+            (
+                "hovered",
+                "hovered".to_owned(),
+                self.hovered,
+                Listed::Hovered,
+            ),
         ]
         .into_iter()
-        .chain(
-            self.tinted
-                .iter()
-                .map(|group| ("tinted", group.faces, Listed::Tinted(group.tint))),
-        );
-        for (parameter, list, listed) in lists {
+        .chain(self.tinted.iter().enumerate().map(|(g, group)| {
+            (
+                "tinted",
+                format!("tinted[{g}].faces"),
+                group.faces,
+                Listed::Tinted(group.tint),
+            )
+        }));
+        for (parameter, named, list, listed) in lists {
             for (i, &(body, element)) in list.iter().enumerate() {
                 let Some(mesh) = self
                     .bodies
@@ -408,7 +423,7 @@ impl Frame<'_> {
                 else {
                     return Err(InvalidParameter {
                         parameter,
-                        message: format!("{parameter}[{i}]'s body {body} isn't drawn in the frame"),
+                        message: format!("{named}[{i}]'s body {body} isn't drawn in the frame"),
                     });
                 };
                 let (number, count, what) = match element {
@@ -420,7 +435,7 @@ impl Frame<'_> {
                     return Err(InvalidParameter {
                         parameter,
                         message: format!(
-                            "{parameter}[{i}], {element:?} of body {body}, isn't one of its {count} {what} (numbered from 1)"
+                            "{named}[{i}], {element:?} of body {body}, isn't one of its {count} {what} (numbered from 1)"
                         ),
                     });
                 }
@@ -437,7 +452,7 @@ impl Frame<'_> {
                         return Err(InvalidParameter {
                             parameter,
                             message: format!(
-                                "{parameter}[{i}], {element:?} of body {body}, isn't a face: only faces are tinted"
+                                "{named}[{i}], {element:?} of body {body}, isn't a face: only faces are tinted"
                             ),
                         });
                     }

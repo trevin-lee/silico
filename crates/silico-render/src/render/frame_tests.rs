@@ -2089,6 +2089,24 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
                 },
             );
             assert_eq!(r.mixes.donors.len(), 1);
+            // The face's mixed mesh kept, of the tint's amount, and drawn again as it is.
+            let mixed = |r: &Renderer| {
+                r.bodies[&1]
+                    .faces
+                    .iter()
+                    .find_map(|face| face.mixed.clone())
+                    .expect("Face3's mixed mesh")
+            };
+            let (bits, held) = mixed(r);
+            assert_eq!(bits, FEATURE_TINT.amount.to_bits());
+            draw(
+                r,
+                &Frame {
+                    tinted: &tinted,
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            assert!(Arc::ptr_eq(&held, &mixed(r).1), "made again");
             // A frame that asks, then fails as the GPU fails one (its request the last
             // readback identifier given).
             draw(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)));
@@ -2901,7 +2919,7 @@ fn a_frames_values_are_checked_without_a_gpu_each_one_refused_named() {
         }),
         said(
             "tinted",
-            "tinted[0], Vertex(1) of body 1, isn't a face: only faces are tinted"
+            "tinted[1].faces[0], Vertex(1) of body 1, isn't a face: only faces are tinted"
         )
     );
     assert_eq!(
@@ -2924,7 +2942,7 @@ fn a_frames_values_are_checked_without_a_gpu_each_one_refused_named() {
         }),
         said(
             "tinted",
-            "tinted[1], Edge(3) of body 1, isn't a face: only faces are tinted"
+            "tinted[0].faces[1], Edge(3) of body 1, isn't a face: only faces are tinted"
         )
     );
     assert_eq!(
@@ -3372,6 +3390,43 @@ fn a_tinted_face_leaves_its_neighbours_plain_and_two_groups_tint_each_its_own() 
 }
 
 #[test]
+fn a_tinted_faces_mixed_mesh_is_made_again_when_a_view_cuts_it_again() {
+    // From inside the box, looking along +y in perspective, its floor (Face5) crosses the
+    // eye's pyramid and is cut to it, about the eye. The eye moved: the floor cut again, so
+    // its mixed mesh is made again from the new cut, and the frame is pixel for pixel a
+    // fresh body's, never the old cut moved.
+    on_lavapipe(
+        "render::frame_tests::a_tinted_faces_mixed_mesh_is_made_again_when_a_view_cuts_it_again",
+        |r| {
+            let inside = |eye: [f64; 3]| Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 90.0,
+                },
+                eye,
+                target: [eye[0], 20.0, eye[2]],
+                up: [0.0, 0.0, 1.0],
+            };
+            r.upload(1, &the_box()).unwrap();
+            let floor = [(1, Element::Face(5))];
+            let first = inside([20.0, 10.0, 5.0]);
+            let one = tinted_image(r, &frame(&first, &[1], &[], None), &floor, FEATURE_TINT);
+            let moved = inside([20.0, 6.0, 5.0]);
+            let held = tinted_image(r, &frame(&moved, &[1], &[], None), &floor, FEATURE_TINT);
+            assert_ne!(one, held, "the view didn't move the floor");
+            r.upload(2, &the_box()).unwrap();
+            let fresh = tinted_image(
+                r,
+                &frame(&moved, &[2], &[], None),
+                &[(2, Element::Face(5))],
+                FEATURE_TINT,
+            );
+            let differ = held.iter().zip(&fresh).filter(|(a, b)| a != b).count();
+            assert_eq!(differ, 0, "{differ} pixels differ from a fresh body's");
+        },
+    );
+}
+
+#[test]
 fn a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing() {
     on_lavapipe(
         "render::frame_tests::a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing",
@@ -3402,7 +3457,7 @@ fn a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing() {
                 refused_by(&[(2, Element::Face(1))], FEATURE_TINT),
                 (
                     "tinted",
-                    "tinted[0]'s body 2 isn't drawn in the frame".to_owned()
+                    "tinted[0].faces[0]'s body 2 isn't drawn in the frame".to_owned()
                 )
             );
             assert_eq!(
@@ -3412,7 +3467,7 @@ fn a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing() {
                 ),
                 (
                     "tinted",
-                    "tinted[1], Face(7) of body 1, isn't one of its 6 faces (numbered from 1)"
+                    "tinted[0].faces[1], Face(7) of body 1, isn't one of its 6 faces (numbered from 1)"
                         .to_owned()
                 )
             );
@@ -3425,7 +3480,8 @@ fn a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing() {
                 refused_by(&[(1, Element::Edge(3))], FEATURE_TINT),
                 (
                     "tinted",
-                    "tinted[0], Edge(3) of body 1, isn't a face: only faces are tinted".to_owned()
+                    "tinted[0].faces[0], Edge(3) of body 1, isn't a face: only faces are tinted"
+                        .to_owned()
                 )
             );
             assert_eq!(
@@ -3435,7 +3491,7 @@ fn a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing() {
                 ),
                 (
                     "tinted",
-                    "tinted[1], Vertex(1) of body 1, isn't a face: only faces are tinted"
+                    "tinted[0].faces[1], Vertex(1) of body 1, isn't a face: only faces are tinted"
                         .to_owned()
                 )
             );
