@@ -478,12 +478,6 @@ fn tool_section(ui: &mut Ui, view: &PaletteView, settings: &mut Settings) {
                 small("None. Line L, Rectangle R, Circle C, Arc A, Point P, Trim T, Dimension D")
                     .color(TEXT_SUBDUED),
             );
-            ui.label(
-                small(
-                    "Drag a blue point or curve to move it: what's fully defined stays put. Double-click a dimension to change it.",
-                )
-                .color(TEXT_SUBDUED),
-            );
         }
     }
     let held = match ui.ctx().os() {

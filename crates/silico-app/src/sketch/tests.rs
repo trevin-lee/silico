@@ -95,7 +95,7 @@ pub(crate) fn rectangle(constraints: Vec<SketchConstraint>) -> Sketch {
 
 /// `sketch` read as solved, in state `state`, every point and curve `members`, and each
 /// constraint `satisfied` but those `flagged` says.
-fn read(
+pub(crate) fn read(
     sketch: Sketch,
     state: SketchState,
     members: MemberState,
@@ -306,7 +306,7 @@ fn a_sketch_with_no_solution_or_an_invalid_one_colours_every_member_its_way() {
     }
 }
 
-fn length(name: &str, side: &str, value: &str, driving: bool) -> SketchConstraint {
+pub(crate) fn length(name: &str, side: &str, value: &str, driving: bool) -> SketchConstraint {
     constraint(
         name,
         Form::Length {
@@ -1647,6 +1647,635 @@ fn a_frames_presses_select_ctrl_adds_and_a_press_on_nothing_clears() {
         None,
     );
     assert_eq!(selected(&mode), ["na000003"]);
+}
+
+/// One frame of `events` given to `mode` through [`hand`], the pointer at the last.
+fn pointer_frame(mode: &mut SketchMode, events: &[PointerEvent]) {
+    with_painter(|painter| {
+        let input = FrameInput {
+            events,
+            pointer: events.last().map(|event| event.at),
+            project: &hand,
+            to_plane: &unhand,
+        };
+        mode.frame(painter, &input, &mut None);
+    });
+}
+
+/// A left drag from `from` to `to` (each in screen points), Shift and Ctrl as given at
+/// every event: its press in one frame, a move halfway and one to `to` in the next, and its
+/// release in a third, as the viewport gives a drag over several frames.
+fn box_drag(mode: &mut SketchMode, from: Pos2, to: Pos2, shift: bool, ctrl: bool) {
+    let at = |action, at| PointerEvent {
+        action,
+        at,
+        shift,
+        ctrl,
+    };
+    pointer_frame(mode, &[at(PointerAction::Press, from)]);
+    pointer_frame(
+        mode,
+        &[
+            at(PointerAction::Move, from + (to - from) / 2.0),
+            at(PointerAction::Move, to),
+        ],
+    );
+    pointer_frame(mode, &[at(PointerAction::Release, to)]);
+}
+
+/// What's selected, in pick order, by ID (the origin and the axes by name).
+fn picked(mode: &SketchMode) -> Vec<String> {
+    mode.selection
+        .references()
+        .iter()
+        .map(|reference| match reference {
+            Reference::Element(id) => id.as_str().to_owned(),
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
+/// The rectangle (0, 0) to (40, 20), fully defined, so a press on it drags nothing: its
+/// bottom side's 40 mm `length` (ka000001, drawn below it: its extension lines from (100,
+/// 504) to (100, 531) and from (500, 504) to (500, 531), its line at y 526, its value at
+/// (300, 526)), and its top side's `horizontal` (kb000001, a glyph by the top side).
+fn boxed_rectangle() -> SketchMode {
+    let mut mode = mode_on(read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            horizontal("kb000001", "na000003"),
+        ]),
+        SketchState::FullyDefined,
+        MemberState::FullyDefined,
+        &[],
+    ));
+    // A first frame draws it: what a box is decided against.
+    pointer_frame(&mut mode, &[]);
+    mode
+}
+
+#[test]
+fn a_box_dragged_left_to_right_takes_what_its_wholly_inside() {
+    // On the screen the rectangle's corners are pa000001 (100, 500), pa000002 (500, 500),
+    // pa000003 (500, 300), and pa000004 (100, 300). A window from (90, 490) to (510, 540)
+    // holds the bottom side na000001 and its ends, and its dimension ka000001 whole (y 504
+    // to 531); the sides na000002 and na000004 reach up out of it. By ID.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+    // A box round everything takes every point, line, and the dimension, but never the
+    // top side's relation (its glyph inside too), the origin at (100, 500), or an axis.
+    box_drag(
+        &mut mode,
+        pos2(0.0, 100.0),
+        pos2(700.0, 700.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        [
+            "ka000001", "na000001", "na000002", "na000003", "na000004", "pa000001", "pa000002",
+            "pa000003", "pa000004"
+        ]
+    );
+    // Dragged upward and leftward the same box is a crossing; downward and rightward a
+    // window, whichever corner it starts from (a window from its bottom left).
+    box_drag(
+        &mut mode,
+        pos2(90.0, 540.0),
+        pos2(510.0, 490.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
+fn a_box_dragged_right_to_left_takes_what_it_crosses_too() {
+    // The same box, (510, 540) to (90, 490): the sides na000002 (x 500) and na000004 (x
+    // 100) cross its top, y 490, from (500, 500) and (100, 500); the top side and its ends
+    // stay out of it.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(510.0, 540.0),
+        pos2(90.0, 490.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        [
+            "ka000001", "na000001", "na000002", "na000004", "pa000001", "pa000002"
+        ]
+    );
+    // A crossing of the dimension's value alone, (310, 520) to (290, 530): ka000001 (its
+    // line at y 526 crosses it too), and nothing else.
+    box_drag(
+        &mut mode,
+        pos2(310.0, 520.0),
+        pos2(290.0, 530.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["ka000001"]);
+    // A crossing between the sides, touching nothing drawn: nothing.
+    box_drag(
+        &mut mode,
+        pos2(400.0, 350.0),
+        pos2(200.0, 450.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+}
+
+#[test]
+fn shift_with_a_box_adds_and_ctrl_inverts_inside_it_what_is_outside_staying() {
+    // SolidWorks' Box Selection: Shift adds everything inside, selected or not; Ctrl
+    // inverts the selection inside; selections outside stay. What joins comes after what's
+    // selected, by ID (C9).
+    let mut mode = boxed_rectangle();
+    pointer_frame(&mut mode, &press(pos2(100.0, 300.0), false));
+    assert_eq!(picked(&mode), ["pa000004"]);
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        true,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["pa000004", "ka000001", "na000001", "pa000001", "pa000002"]
+    );
+    // Shift again over the same box: nothing new, nothing reordered.
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        true,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["pa000004", "ka000001", "na000001", "pa000001", "pa000002"]
+    );
+    // Ctrl with a crossing about the corner pa000001, (110, 510) to (90, 490): it holds
+    // the corner and crosses the bottom side, the left side, and the dimension's left
+    // extension line (x 100, y 504 to 531). The three selected go; the left side joins.
+    box_drag(
+        &mut mode,
+        pos2(110.0, 510.0),
+        pos2(90.0, 490.0),
+        false,
+        true,
+    );
+    assert_eq!(picked(&mode), ["pa000004", "pa000002", "na000004"]);
+    // Shift and Ctrl both: Shift's adding, as the canvas's box takes them (the prototype's
+    // `onBox`, its `add` before its `invert`): the left side kept, the rest of the box
+    // joining.
+    box_drag(&mut mode, pos2(110.0, 510.0), pos2(90.0, 490.0), true, true);
+    assert_eq!(
+        picked(&mode),
+        [
+            "pa000004", "pa000002", "na000004", "ka000001", "na000001", "pa000001"
+        ]
+    );
+}
+
+#[test]
+fn a_box_is_a_press_on_empty_space_moved_past_three_points_and_takes_only_whats_drawn() {
+    let mut mode = boxed_rectangle();
+    pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
+    assert_eq!(picked(&mode), ["na000002"]);
+    // From (300, 400), nothing within the pick, Shift held: moved 3 points (no farther than
+    // a drag must go) it's a click on nothing, which clears the selection.
+    box_drag(
+        &mut mode,
+        pos2(300.0, 400.0),
+        pos2(303.0, 400.0),
+        true,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
+    // Moved 3.5 points: a box, Shift's, holding nothing, so the selection stays.
+    box_drag(
+        &mut mode,
+        pos2(300.0, 400.0),
+        pos2(303.5, 400.0),
+        true,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000002"]);
+    // A press on the bottom side, a fully defined line, dragged away: no box, and its
+    // release selects the line (a drag on geometry selects what's under the press).
+    box_drag(
+        &mut mode,
+        pos2(300.0, 500.0),
+        pos2(600.0, 560.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+    // A box cancelled (a navigation tool taking the button, a modal coming) changes
+    // nothing, and its release, should one come, selects nothing.
+    pointer_frame(
+        &mut mode,
+        &[event(PointerAction::Press, pos2(90.0, 490.0), false)],
+    );
+    pointer_frame(
+        &mut mode,
+        &[event(PointerAction::Move, pos2(510.0, 540.0), false)],
+    );
+    pointer_frame(
+        &mut mode,
+        &[event(PointerAction::Cancel, pos2(510.0, 540.0), false)],
+    );
+    pointer_frame(
+        &mut mode,
+        &[event(PointerAction::Release, pos2(510.0, 540.0), false)],
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+    // With the points hidden (the palette's Show), a window about a corner takes nothing
+    // of it: only what's drawn is taken.
+    mode.settings.show_points = false;
+    pointer_frame(&mut mode, &[]);
+    box_drag(
+        &mut mode,
+        pos2(90.0, 290.0),
+        pos2(110.0, 310.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    // And dimensions hidden: the window that held the bottom side and its dimension holds
+    // the side alone.
+    mode.settings.show_dimensions = false;
+    pointer_frame(&mut mode, &[]);
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+}
+
+#[test]
+fn a_box_let_go_after_a_read_without_a_member_never_takes_it() {
+    // Drawn with the right side na000002, then a read comes without it before the release:
+    // the box is decided against what was drawn, but takes only what the read holds.
+    let mut mode = boxed_rectangle();
+    let at = |action, at| event(action, at, false);
+    pointer_frame(&mut mode, &[at(PointerAction::Press, pos2(0.0, 100.0))]);
+    pointer_frame(&mut mode, &[at(PointerAction::Move, pos2(700.0, 700.0))]);
+    let mut fewer = rectangle(vec![length("ka000001", "na000001", "40", true)]);
+    fewer.lines.remove(1);
+    mode.took(Read {
+        model: None,
+        result: Ok(read(
+            fewer,
+            SketchState::FullyDefined,
+            MemberState::FullyDefined,
+            &[],
+        )),
+    });
+    pointer_frame(&mut mode, &[at(PointerAction::Release, pos2(700.0, 700.0))]);
+    assert_eq!(
+        picked(&mode),
+        [
+            "ka000001", "na000001", "na000003", "na000004", "pa000001", "pa000002", "pa000003",
+            "pa000004"
+        ]
+    );
+}
+
+#[test]
+fn a_box_with_a_corner_that_isnt_finite_takes_nothing_and_a_move_to_nan_is_no_move() {
+    // A move to an infinite place (a broken projection's) opens the box (the distance is
+    // infinite), but the box is its finite corner alone, of no size, which holds nothing
+    // drawn: Shift's adds nothing. Nothing panics, and the next box works.
+    let mut mode = boxed_rectangle();
+    for far in [
+        pos2(f32::INFINITY, 400.0),
+        pos2(f32::NEG_INFINITY, f32::INFINITY),
+    ] {
+        pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
+        box_drag(&mut mode, pos2(300.0, 400.0), far, true, false);
+        assert_eq!(picked(&mode), ["na000002"], "{far:?}");
+    }
+    // A move to no place at all (NaN) is no move: the press is the click on nothing it
+    // was, which clears the selection.
+    box_drag(
+        &mut mode,
+        pos2(300.0, 400.0),
+        pos2(f32::NAN, f32::NAN),
+        true,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
+fn a_crossing_over_a_sides_middle_takes_the_side_though_neither_end_is_in_it() {
+    // (310, 490) to (290, 510), right to left: across the bottom side, (100, 500) to (500,
+    // 500), at its middle, its press 10 points from it (the pick is 7); no end, no piece of
+    // the dimension (from y 504 at x 100 and 500, its line at y 526), and no glyph inside.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(310.0, 490.0),
+        pos2(290.0, 510.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+    // The same box left to right, a window: nothing is wholly in it.
+    box_drag(
+        &mut mode,
+        pos2(290.0, 490.0),
+        pos2(310.0, 510.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+}
+
+#[test]
+fn a_box_dragged_straight_down_is_a_window() {
+    // From (300, 490) straight down to (300, 510): of no width, dragged neither way, so a
+    // window, which holds nothing; the bottom side, (100, 500) to (500, 500), meets it, so a
+    // crossing would take it.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(300.0, 490.0),
+        pos2(300.0, 510.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    box_drag(
+        &mut mode,
+        pos2(300.5, 490.0),
+        pos2(300.0, 510.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+}
+
+#[test]
+fn a_box_takes_circles_and_arcs_as_it_takes_lines() {
+    // A circle ca000001 about pa000005 (70, 10), radius 5: on the screen about (800, 400),
+    // 50 points across each way. An arc aa000001 about pb000001 (100, 10), counter-clockwise
+    // from pb000002 (105, 10) to pb000003 (100, 15): on the screen from (1150, 400) up to
+    // (1100, 350) about (1100, 400).
+    let sketch = Sketch {
+        plane: OriginPlane::Xy.into(),
+        points: vec![
+            point("pa000005", 70.0, 10.0),
+            point("pb000001", 100.0, 10.0),
+            point("pb000002", 105.0, 10.0),
+            point("pb000003", 100.0, 15.0),
+        ],
+        lines: Vec::new(),
+        circles: vec![SketchCircle {
+            id: id("ca000001"),
+            center: id("pa000005"),
+            radius: Coordinate::new(5.0).unwrap(),
+            construction: false,
+        }],
+        arcs: vec![SketchArc {
+            id: id("aa000001"),
+            center: id("pb000001"),
+            start: id("pb000002"),
+            end: id("pb000003"),
+            construction: false,
+        }],
+        constraints: Vec::new(),
+    };
+    let mut mode = mode_on(read(
+        sketch,
+        SketchState::FullyDefined,
+        MemberState::FullyDefined,
+        &[],
+    ));
+    pointer_frame(&mut mode, &[]);
+    // Windows about each: the circle and its centre; the arc, its centre, and its ends.
+    box_drag(
+        &mut mode,
+        pos2(740.0, 340.0),
+        pos2(860.0, 460.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["ca000001", "pa000005"]);
+    box_drag(
+        &mut mode,
+        pos2(1090.0, 340.0),
+        pos2(1160.0, 410.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["aa000001", "pb000001", "pb000002", "pb000003"]
+    );
+    // A window holding the circle's left half only: nothing of it but its centre.
+    box_drag(
+        &mut mode,
+        pos2(740.0, 340.0),
+        pos2(810.0, 460.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["pa000005"]);
+    // The same box right to left: the circle too, which crosses it.
+    box_drag(
+        &mut mode,
+        pos2(810.0, 340.0),
+        pos2(740.0, 460.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["ca000001", "pa000005"]);
+    // A crossing about the arc's middle, (1135.4, 364.6), only: the arc alone.
+    box_drag(
+        &mut mode,
+        pos2(1140.0, 360.0),
+        pos2(1130.0, 370.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["aa000001"]);
+}
+
+#[test]
+fn a_box_is_clamped_to_the_canvas_its_drawing_was_made_on() {
+    // The canvas ends at x 300; the bottom side and its dimension run on to x 500, off it.
+    // A window dragged to (510, 540) is clamped to (90..300, 490..540): the corner pa000001
+    // alone is in it, though the side's far end is in the box as dragged.
+    let mode = boxed_rectangle();
+    let (_, drawn) = mode.drawn.as_ref().unwrap();
+    let read = mode.drawable().unwrap();
+    let clip = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(300.0, 1000.0));
+    let window = boxing::SketchBox {
+        from: pos2(90.0, 490.0),
+        to: pos2(510.0, 540.0),
+        open: true,
+    };
+    let taken = window.taken(drawn, read, clip);
+    let taken: Vec<&str> = taken
+        .iter()
+        .filter_map(SketchPick::member)
+        .map(|hit| hit.id.as_str())
+        .collect();
+    assert_eq!(taken, ["pa000001"]);
+    // And down: a canvas ending at y 510 cuts the window to y 490..510, which holds the
+    // bottom side and its ends, not its dimension, drawn from y 504 to 531.
+    let clip = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 510.0));
+    let taken = window.taken(drawn, read, clip);
+    let taken: Vec<&str> = taken
+        .iter()
+        .filter_map(SketchPick::member)
+        .map(|hit| hit.id.as_str())
+        .collect();
+    assert_eq!(taken, ["na000001", "pa000001", "pa000002"]);
+}
+
+#[test]
+fn a_box_let_go_in_a_frame_its_tab_isnt_shown_in_takes_what_was_drawn() {
+    // The viewport gives a release in a frame the tab is left in through a painter clipped
+    // to nothing (`viewport::end_unshown`): the box is judged on the canvas the drawing the
+    // person saw was made on.
+    let mut mode = boxed_rectangle();
+    let (from, to) = (pos2(90.0, 490.0), pos2(510.0, 540.0));
+    pointer_frame(&mut mode, &[event(PointerAction::Press, from, false)]);
+    pointer_frame(&mut mode, &[event(PointerAction::Move, to, false)]);
+    with_painter(|painter| {
+        let unshown = egui::Painter::new(
+            painter.ctx().clone(),
+            egui::LayerId::background(),
+            egui::Rect::NOTHING,
+        );
+        let events = [event(PointerAction::Release, to, false)];
+        let input = FrameInput {
+            events: &events,
+            pointer: None,
+            project: &hand,
+            to_plane: &unhand,
+        };
+        mode.frame(&unshown, &input, &mut None);
+    });
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
+fn a_box_let_go_unshown_is_clamped_to_the_canvas_its_drawing_was_made_on() {
+    // Drawn on a canvas ending at x 300 (the bottom side and its dimension run on to x
+    // 500), then let go in a frame the tab isn't shown in, its painter clipped to nothing:
+    // the window, (90, 490) to (510, 540) as dragged, is judged on the 0 to 300 canvas the
+    // drawing was made on, which holds the corner pa000001 alone.
+    let mut mode = boxed_rectangle();
+    let canvas = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(300.0, 1000.0));
+    let on = |mode: &mut SketchMode, clip: egui::Rect, events: &[PointerEvent]| {
+        with_painter(|painter| {
+            let painter = painter.with_clip_rect(clip);
+            let input = FrameInput {
+                events,
+                pointer: events.last().map(|e| e.at),
+                project: &hand,
+                to_plane: &unhand,
+            };
+            mode.frame(&painter, &input, &mut None);
+        });
+    };
+    let (from, to) = (pos2(90.0, 490.0), pos2(510.0, 540.0));
+    on(&mut mode, canvas, &[]);
+    on(
+        &mut mode,
+        canvas,
+        &[event(PointerAction::Press, from, false)],
+    );
+    on(&mut mode, canvas, &[event(PointerAction::Move, to, false)]);
+    on(
+        &mut mode,
+        egui::Rect::NOTHING,
+        &[event(PointerAction::Release, to, false)],
+    );
+    assert_eq!(picked(&mode), ["pa000001"]);
+}
+
+#[test]
+fn a_box_takes_a_reference_dimension_as_a_driving_one() {
+    // The bottom side's 40 mm length, driven (a reference dimension, drawn "(40)"): the
+    // window that holds the side and its ends holds it too.
+    let mut mode = mode_on(read(
+        rectangle(vec![length("ka000001", "na000001", "40", false)]),
+        SketchState::FullyDefined,
+        MemberState::FullyDefined,
+        &[],
+    ));
+    pointer_frame(&mut mode, &[]);
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
+fn with_a_tool_on_a_drag_from_empty_space_is_the_tools_and_no_box() {
+    let mut mode = boxed_rectangle();
+    pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
+    mode.tools.choose(Some(tools::Choice::Draw(
+        silico_core::sketch_tools::ToolKind::Line,
+    )));
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000002"]);
 }
 
 #[test]
@@ -7449,6 +8078,177 @@ fn a_glyphs_and_a_values_boxes_are_hit_to_their_edges_and_not_past_them() {
     assert_eq!(found([20.0, -1.6], 0.05), None);
 }
 
+#[test]
+fn values_that_overlap_are_hit_as_drawn_the_one_on_top_taken() {
+    // Issue #599. Two lengths of the bottom side, ka000002's 40 and ka000003's 30: a placed
+    // dimension stores no place, so both values stand at (20, −2.6), as the test above works
+    // out, in boxes of the same size (two characters each), 1.16011 mm either way across and
+    // 0.9 up. They're drawn in the constraints' order, so ka000003's is on top: a click
+    // anywhere inside the two takes it, never the one beneath, and so does a click on their
+    // lines, which coincide as well. The relation's glyph, drawn under both values, is still
+    // taken in its own box, clear of theirs.
+    let read = under(rectangle(vec![
+        horizontal("ka000001", "na000001"),
+        length("ka000002", "na000001", "40", true),
+        length("ka000003", "na000001", "30", true),
+    ]));
+    // The order they're drawn in: the glyph, then the 40's value, then the 30's, at one place.
+    let drawn = drawn(&read);
+    let labels: Vec<(&str, Pos2)> = drawn
+        .iter()
+        .filter_map(|d| match d {
+            Drawn::Label {
+                of: Some(of), at, ..
+            } => Some((of.as_str(), *at)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels.len(), 2);
+    assert_eq!(
+        (labels[0].0, labels[1].0, labels[0].1),
+        ("ka000002", "ka000003", labels[1].1)
+    );
+    let found = |at: [f64; 2], tolerance: f64| {
+        hit(&read, at, tolerance, HAND, Axes::BOTH).map(|h| h.reference())
+    };
+    // At the middle, off it, near each corner: the 30's.
+    for at in [
+        [20.0, -2.6],
+        [21.1, -1.75],
+        [18.9, -3.45],
+        [21.1, -3.45],
+        [18.9, -1.75],
+    ] {
+        assert_eq!(found(at, 0.05), Some(element("ka000003")), "{at:?}");
+    }
+    // Just outside, within the reach: as near to both, the 30's too; 0.1 outside, and 0.85
+    // off their lines, nothing.
+    assert_eq!(found([21.2, -1.75], 0.05), Some(element("ka000003")));
+    assert_eq!(found([21.26, -1.75], 0.05), None);
+    // Their dimension lines, at the values' height from 0 to 40, lie one on the other too:
+    // on them, clear of the boxes and 2.6 from the side, the 30's line, drawn on top.
+    assert_eq!(found([30.0, -2.6], 0.05), Some(element("ka000003")));
+    // The glyph, in its own box: its own.
+    assert_eq!(found([11.7, -1.8], 0.1), Some(element("ka000001")));
+}
+
+#[test]
+fn of_three_values_at_one_place_the_last_drawn_is_hit_inside_and_just_outside() {
+    // Three lengths of the bottom side, their values at one place, (20, −2.6), as above:
+    // ka000004's, drawn last, is taken just inside the box's edge (1.16011 across) with no
+    // reach at all, and from 0.5 under the boxes (0.9 down), all three as far, 1.4 from
+    // their lines and 4 from the side, within a 0.6 reach.
+    let read = under(rectangle(vec![
+        length("ka000002", "na000001", "40", true),
+        length("ka000003", "na000001", "30", true),
+        length("ka000004", "na000001", "50", true),
+    ]));
+    let found = |at: [f64; 2], tolerance: f64| {
+        hit(&read, at, tolerance, HAND, Axes::BOTH).map(|h| h.reference())
+    };
+    assert_eq!(found([18.84, -1.75], 0.0), Some(element("ka000004")));
+    assert_eq!(found([20.0, -4.0], 0.6), Some(element("ka000004")));
+}
+
+#[test]
+fn a_nearer_box_drawn_first_is_taken_over_a_farther_one_drawn_after_it() {
+    // The bottom's horizontal glyph's box about (11.2, −1.3), 0.8 either way, and its
+    // length's value's about (20, −2.6), 1.16011 across and 0.9 up, drawn after it.
+    // (12.5, −1.5): 0.5 right of the glyph's box, hypot(6.33989, 0.2) = 6.343 from the
+    // value's; the corner and the origin 12.59 off, past the 7: the glyph, the nearer.
+    let read = dimensioned();
+    assert_eq!(
+        hit(&read, [12.5, -1.5], 7.0, HAND, Axes::BOTH),
+        constraint_pick("ka000001")
+    );
+}
+
+#[test]
+fn a_nearer_dimension_line_drawn_first_is_taken_over_a_farther_one_drawn_after_it() {
+    // The bottom's length, its extension lines from 0.4 to 3.1 under the corners, and the
+    // left side's, drawn after it, 2.6 left of the side, its extension lines from 0.4 to 3.1
+    // left of them. (−1.5, −2.5): 1.5 from the bottom's left extension line, 2.5 from the
+    // left's lower one, 2.731 from its dimension line; the corner, the origin, and both
+    // sides 2.915 off, past the 2.8; the values far: the bottom's, the nearer.
+    let read = under(rectangle(vec![
+        length("ka000002", "na000001", "40", true),
+        length("ka000003", "na000004", "20", true),
+    ]));
+    assert_eq!(
+        hit(&read, [-1.5, -2.5], 2.8, HAND, Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+}
+
+#[test]
+fn a_value_over_a_glyph_is_taken_whatever_their_ids() {
+    // At a millimetre a point: the bottom's horizontal glyph about (11.2, −13), 8 either
+    // way; its length's value "40" about (20, −26), 11.6011 across (two characters of
+    // 0.574 × 11.5, and 5 a side) and 9 up. (15, −19) is inside both, with no reach: the
+    // value, drawn over the glyph, whether the glyph's ID is the lower or the higher.
+    let at = [15.0, -19.0];
+    let lower_glyph = under(rectangle(vec![
+        horizontal("ka000001", "na000001"),
+        length("ka000002", "na000001", "40", true),
+    ]));
+    assert_eq!(
+        hit(&lower_glyph, at, 0.0, Scale(1.0), Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+    let higher_glyph = under(rectangle(vec![
+        length("ka000002", "na000001", "40", true),
+        horizontal("ka000003", "na000001"),
+    ]));
+    assert_eq!(
+        hit(&higher_glyph, at, 0.0, Scale(1.0), Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+}
+
+#[test]
+fn every_glyph_is_drawn_under_every_dimensions_value_as_hit_takes_them() {
+    // `hit` lists the glyphs' boxes before the values', taking the last drawn of those as
+    // near: the drawing paints them in that order, whatever their IDs.
+    for read in [
+        dimensioned(),
+        under(rectangle(vec![
+            length("ka000002", "na000001", "40", true),
+            horizontal("ka000003", "na000001"),
+        ])),
+    ] {
+        let drawn = drawn(&read);
+        let last_glyph = drawn
+            .iter()
+            .rposition(|d| matches!(d, Drawn::Glyph { .. }))
+            .unwrap();
+        let first_value = drawn
+            .iter()
+            .position(|d| matches!(d, Drawn::Label { of: Some(_), .. }))
+            .unwrap();
+        assert!(last_glyph < first_value, "{drawn:?}");
+    }
+}
+
+#[test]
+fn of_two_values_at_one_place_the_one_drawn_last_is_hit_with_the_lower_id() {
+    // An edit appends what it adds, so a read's constraints needn't be in their IDs' order:
+    // the 40's value, ka000002, listed and drawn after the 30's at (20, −2.6), is on top.
+    let read = under(rectangle(vec![
+        length("ka000003", "na000001", "30", true),
+        length("ka000002", "na000001", "40", true),
+    ]));
+    assert_eq!(
+        hit(&read, [20.0, -2.6], 0.0, HAND, Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+    // And on their lines, which lie one on the other: at (30, −2.6), 8.8 from the boxes,
+    // 2.6 from the side, and 10 from the extension lines, within 0.05 of the lines alone.
+    assert_eq!(
+        hit(&read, [30.0, -2.6], 0.05, HAND, Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+}
+
 // The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
 // the legend, and the state's dot, each against the prototype (docs/design/m5-ui/:
 // styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's palette). The status
@@ -7858,4 +8658,451 @@ fn construction_sets_every_selected_curve_one_way_and_leaves_out_what_isnt_a_cur
     );
     // A curve the read doesn't hold is left out.
     assert_eq!(switched(&sketch, &[element("nz000001")]), None);
+}
+
+#[test]
+fn sketch_modes_card_is_the_cores_refusal_or_for_a_solved_sketch_over_defined_the_dimensions_that_repeat()
+ {
+    use silico_core::{Error, ErrorCode};
+    // Solved, over defined: the right side's 20 given twice (ka000001 and ka000002), the
+    // second flagged redundant; and a horizontal flagged redundant too, which, a relation,
+    // over-defines nothing and isn't named (`sketch_states::over_defines`).
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", true),
+        length("ka000002", "na000002", "20", true),
+        horizontal("kb000001", "na000001"),
+    ]);
+    let flagged = [
+        ("ka000002", ConstraintState::Redundant),
+        ("kb000001", ConstraintState::Redundant),
+    ];
+    let over = read(
+        sketch.clone(),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &flagged,
+    );
+    let said = problem_card(&over, "Sketch1").unwrap();
+    // sketch.js's card: "<name> is over defined", the dimension that repeats the others by
+    // its value, and its fix; the app's words, so no code and no JSON to copy.
+    assert_eq!(said.message, "Sketch1 is over defined");
+    assert_eq!(
+        said.cause.as_deref(),
+        Some("The 20 mm dimension repeats what the others already give.")
+    );
+    assert_eq!(said.elements, ["ka000002"]);
+    assert_eq!(said.elements_total, 1);
+    assert_eq!(
+        said.suggestion.as_deref(),
+        Some("Make it driven, or delete it.")
+    );
+    assert!(!said.warning);
+    assert_eq!(said.code(), None);
+    assert_eq!(said.json(), None);
+    // Two dimensions flagged: counted, both named, the fix for one of them.
+    let both = read(
+        sketch.clone(),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::PartiallyRedundant),
+            ("ka000002", ConstraintState::Redundant),
+        ],
+    );
+    let said = problem_card(&both, "Sketch1").unwrap();
+    assert_eq!(
+        said.cause.as_deref(),
+        Some("2 dimensions repeat what the others already give.")
+    );
+    assert_eq!(said.elements, ["ka000001", "ka000002"]);
+    assert_eq!(said.elements_total, 2);
+    assert_eq!(
+        said.suggestion.as_deref(),
+        Some("Make one driven, or delete one.")
+    );
+    // A solve refused: the core's error, whole, whatever the state (its code and JSON kept).
+    let error = Error::new(
+        ErrorCode::OverConstrained,
+        "the sketch's constraints conflict: the ones named can't all hold",
+    )
+    .with_elements(["ka000001", "ka000002"])
+    .with_suggestion("remove or change one of the constraints named");
+    for state in [SketchState::OverDefined, SketchState::NoSolution] {
+        let mut refused = read(sketch.clone(), state, MemberState::OverDefined, &flagged);
+        refused.states.solve_problem = Some(error.clone());
+        let said = problem_card(&refused, "Sketch1").unwrap();
+        assert_eq!(said, crate::tab::Said::of(&error));
+        assert_eq!(said.code(), Some("over_constrained"));
+    }
+    // Any other state solved: no card; nor under defined with a dimension flagged.
+    for state in [
+        SketchState::UnderDefined,
+        SketchState::FullyDefined,
+        SketchState::Invalid,
+    ] {
+        let solved = read(sketch.clone(), state, MemberState::FullyDefined, &flagged);
+        assert_eq!(problem_card(&solved, "Sketch1"), None, "{state:?}");
+    }
+}
+
+#[test]
+fn sketch_modes_card_names_no_reference_dimension_and_counts_nothing_it_cannot_name() {
+    // Break-it: a read whose flags the core would never give. A reference dimension flagged
+    // isn't named (it drives nothing, so making it driven repairs nothing); a sketch over
+    // defined with nothing flagged says so without a count of none, and names nothing.
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", false),
+        length("ka000002", "na000002", "20", true),
+    ]);
+    let over = read(
+        sketch.clone(),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Redundant),
+            ("ka000002", ConstraintState::Redundant),
+        ],
+    );
+    let said = problem_card(&over, "Sketch1").unwrap();
+    assert_eq!(said.elements, ["ka000002"]);
+    assert_eq!(
+        said.cause.as_deref(),
+        Some("The 20 mm dimension repeats what the others already give.")
+    );
+    let unflagged = read(
+        sketch,
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[],
+    );
+    let said = problem_card(&unflagged, "Sketch1").unwrap();
+    assert_eq!(
+        said.cause.as_deref(),
+        Some("A dimension repeats what the others already give.")
+    );
+    assert!(said.elements.is_empty());
+    assert_eq!(said.elements_total, 0);
+    assert_eq!(
+        said.suggestion.as_deref(),
+        Some("Make it driven, or delete it.")
+    );
+    // A name of any length and script, as the head gives it, whole.
+    let name = "Ünïcødé 草图 ".repeat(40);
+    let said = problem_card(&over, &name).unwrap();
+    assert_eq!(said.message, format!("{name} is over defined"));
+}
+
+#[test]
+fn sketch_modes_card_writes_an_angle_in_degrees_and_a_negative_length_with_a_true_minus() {
+    // The card's value as the Dimensions row writes it (the prototype's `fmt`): an angle
+    // `90°`, no space; a distance along x of −12.5 with U+2212, as a direction's minus.
+    let angle = constraint(
+        "ka000003",
+        Form::Angle {
+            a: element("na000001"),
+            b: element("na000002"),
+            reversed: false,
+            value: Angle::parse("90").unwrap(),
+            driving: true,
+        },
+    );
+    let across = constraint(
+        "ka000004",
+        Form::DistanceX {
+            a: element("pa000002"),
+            b: element("pa000001"),
+            value: mm("-12.5"),
+            driving: true,
+        },
+    );
+    for (dimension, words) in [
+        (
+            angle,
+            "The 90° dimension repeats what the others already give.",
+        ),
+        (
+            across,
+            "The \u{2212}12.5 mm dimension repeats what the others already give.",
+        ),
+    ] {
+        let name = dimension.id.as_str().to_owned();
+        let over = read(
+            rectangle(vec![dimension]),
+            SketchState::OverDefined,
+            MemberState::OverDefined,
+            &[(&name, ConstraintState::Redundant)],
+        );
+        let said = problem_card(&over, "Sketch1").unwrap();
+        assert_eq!(said.cause.as_deref(), Some(words));
+        assert_eq!(said.elements, [name]);
+    }
+}
+
+#[test]
+fn sketch_modes_card_marks_a_radius_and_a_diameter_as_the_dimensions_row_does() {
+    // A circle about (20, 10), radius 10: a flagged radius reads `R10 mm`, a flagged
+    // diameter `Ø11 mm`, as the Dimensions row and the canvas mark them.
+    for (form, words) in [
+        (
+            Form::Radius {
+                curve: element("ca000001"),
+                value: mm("10"),
+                driving: true,
+            },
+            "The R10 mm dimension repeats what the others already give.",
+        ),
+        (
+            Form::Diameter {
+                curve: element("ca000001"),
+                value: mm("11"),
+                driving: true,
+            },
+            "The \u{d8}11 mm dimension repeats what the others already give.",
+        ),
+    ] {
+        let mut sketch = rectangle(vec![constraint("ka000009", form)]);
+        sketch.points.push(point("pa000006", 20.0, 10.0));
+        sketch.circles.push(SketchCircle {
+            id: id("ca000001"),
+            center: id("pa000006"),
+            radius: Coordinate::new(10.0).unwrap(),
+            construction: false,
+        });
+        let over = read(
+            sketch,
+            SketchState::OverDefined,
+            MemberState::OverDefined,
+            &[("ka000009", ConstraintState::Redundant)],
+        );
+        let said = problem_card(&over, "Sketch1").unwrap();
+        assert_eq!(said.cause.as_deref(), Some(words));
+    }
+}
+
+/// The rectangle with the right side's length twice (ka000001, ka000002, both 20) and the
+/// bottom's (ka000003, 40), all driving, read at a published revision in `state` with
+/// `flagged`; the sketch s0000001 open.
+fn twice_measured(state: SketchState, flagged: &[(&str, ConstraintState)]) -> SketchMode {
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", true),
+        length("ka000002", "na000002", "20", true),
+        length("ka000003", "na000001", "40", true),
+        horizontal("kb000001", "na000001"),
+    ]);
+    let mut mode = SketchMode::new(
+        1,
+        Some(silico_core::document::FeatureId::new("s0000001").unwrap()),
+    );
+    mode.read = Some(Read {
+        model: silico_core::command::Revision::from_number(3),
+        result: Ok(read(sketch, state, MemberState::OverDefined, flagged)),
+    });
+    mode
+}
+
+fn target(mode: &SketchMode) -> Option<Result<String, &'static str>> {
+    mode.make_driven()
+        .map(|driven| driven.target.map(|id| id.as_str().to_owned()))
+}
+
+fn select_constraint(mode: &mut SketchMode, name: &str) {
+    mode.selection
+        .click(member(name, ElementKind::Constraint), true);
+}
+
+#[test]
+fn make_it_driven_means_the_dimension_left_driving_else_the_one_over_defining_else_the_one_selected()
+ {
+    use ConstraintState::{Conflicting, Redundant};
+    // One over-defining driving dimension: it, with its value as the panel writes it.
+    let mode = twice_measured(SketchState::OverDefined, &[("ka000002", Redundant)]);
+    assert_eq!(
+        mode.make_driven(),
+        Some(MakeDriven {
+            target: Ok(id("ka000002")),
+            value: Some("20 mm".to_owned()),
+        })
+    );
+    // Both lengths in conflict, the relation too: none known, none selected, off, saying why.
+    let flagged = [
+        ("ka000001", Conflicting),
+        ("ka000002", Conflicting),
+        ("kb000001", Conflicting),
+    ];
+    let mut mode = twice_measured(SketchState::OverDefined, &flagged);
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    // The relation selected, or the bottom's length (which over-defines nothing): still off.
+    select_constraint(&mut mode, "kb000001");
+    select_constraint(&mut mode, "ka000003");
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    // One of the two selected: it (SolidWorks' right-click Driven acts on the selection).
+    select_constraint(&mut mode, "ka000001");
+    assert_eq!(target(&mode), Some(Ok("ka000001".to_owned())));
+    // Both selected: off again.
+    select_constraint(&mut mode, "ka000002");
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    // Left driving at its prompt: it, whatever's selected (the prompt's "this dimension").
+    mode.left_driving = vec![id("ka000002")];
+    assert_eq!(target(&mode), Some(Ok("ka000002".to_owned())));
+    // The newest left driving that still over-defines; one that doesn't (ka000003) passed.
+    mode.left_driving = vec![id("ka000002"), id("ka000001"), id("ka000003")];
+    assert_eq!(target(&mode), Some(Ok("ka000001".to_owned())));
+}
+
+#[test]
+fn make_it_driven_is_offered_only_over_defined_or_unsolvable_at_a_published_read_for_a_driving_dimension()
+ {
+    use ConstraintState::{Conflicting, Redundant};
+    // Fully or under defined, or invalid: none.
+    for state in [
+        SketchState::FullyDefined,
+        SketchState::UnderDefined,
+        SketchState::Invalid,
+    ] {
+        let mode = twice_measured(state, &[("ka000002", Redundant)]);
+        assert_eq!(mode.make_driven(), None, "{state:?}");
+    }
+    // A read of no published revision: none.
+    let mut mode = twice_measured(SketchState::OverDefined, &[("ka000002", Redundant)]);
+    if let Some(read) = mode.read.as_mut() {
+        read.model = None;
+    }
+    assert_eq!(mode.make_driven(), None);
+    // A conflict of relations alone: no dimension to make driven.
+    let mode = twice_measured(SketchState::OverDefined, &[("kb000001", Conflicting)]);
+    assert_eq!(mode.make_driven(), None);
+    // No solution, which flags nothing: none, unless one was left driving at its prompt,
+    // which still drives (SolidWorks' driven repairs "the over defined or unsolvable state").
+    let mut mode = twice_measured(SketchState::NoSolution, &[]);
+    assert_eq!(mode.make_driven(), None);
+    mode.left_driving = vec![id("ka000003")];
+    assert_eq!(target(&mode), Some(Ok("ka000003".to_owned())));
+}
+
+#[test]
+fn make_it_driven_asks_its_driving_false_at_the_reads_revision_and_nothing_for_another_dimension() {
+    use ConstraintState::Redundant;
+    let mut mode = twice_measured(SketchState::OverDefined, &[("ka000002", Redundant)]);
+    // Not the one offered: nothing asked.
+    assert!(!mode.ask_driven(&id("ka000001")));
+    assert!(mode.take_asks().is_empty());
+    assert!(mode.ask_driven(&id("ka000002")));
+    let asks = mode.take_asks();
+    let [
+        Ask::Offer(OfferRequest::SetField {
+            revision,
+            feature,
+            field,
+            value,
+        }),
+    ] = asks.as_slice()
+    else {
+        panic!("{asks:?}");
+    };
+    assert_eq!(revision.number(), 3);
+    assert_eq!(feature.as_str(), "s0000001");
+    assert_eq!(field, "constraints.ka000002.driving");
+    assert_eq!(value.value, silico_core::document::json::Value::Bool(false));
+    // Asked again on the same read (a double-click before its edit's read comes): nothing.
+    assert!(!mode.ask_driven(&id("ka000002")));
+    assert!(mode.take_asks().is_empty());
+    // On a newer read still offering it (the edit refused, say): asked again.
+    if let Some(read) = mode.read.as_mut() {
+        read.model = silico_core::command::Revision::from_number(4);
+    }
+    assert!(mode.ask_driven(&id("ka000002")));
+    assert_eq!(mode.take_asks().len(), 1);
+    // With no sketch known (Create Sketch's add unanswered): nothing.
+    mode.sketch = None;
+    assert!(!mode.ask_driven(&id("ka000002")));
+    assert!(mode.take_asks().is_empty());
+}
+
+#[test]
+fn make_it_driven_passes_over_a_dimension_left_driving_but_since_made_driven_when_unsolvable() {
+    // No solution flags nothing, so whether the dimension left driving still drives is what
+    // decides: ka000002 left driving, since made driven, means nothing; with ka000003 left
+    // driving before it, ka000003.
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", true),
+        length("ka000002", "na000002", "20", false),
+        length("ka000003", "na000001", "40", true),
+        horizontal("kb000001", "na000001"),
+    ]);
+    let mut mode = mode_at(read(
+        sketch,
+        SketchState::NoSolution,
+        MemberState::OverDefined,
+        &[],
+    ));
+    mode.left_driving = vec![id("ka000002")];
+    assert_eq!(mode.make_driven(), None);
+    mode.left_driving = vec![id("ka000003"), id("ka000002")];
+    assert_eq!(target(&mode), Some(Ok("ka000003".to_owned())));
+}
+
+#[test]
+fn leave_it_driving_at_an_edits_prompt_makes_the_card_mean_the_edited_dimension() {
+    // The right side's length edited (ka000002) into a conflict with the bottom's (both
+    // flagged): with nothing known and nothing selected, off; once the edit's prompt is
+    // answered Leave it driving, the edited one (the prompt's "this dimension").
+    let both = read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Conflicting),
+            ("ka000002", ConstraintState::Conflicting),
+        ],
+    );
+    let two = Revision::OPENED.next().unwrap().next().unwrap();
+    let offered = edited_right()
+        .judged(&two_lengths_over(), two)
+        .unwrap()
+        .unwrap();
+    assert_eq!(offered.constraint, id("ka000002"));
+    let mut mode = mode_at(both);
+    mode.edit_offer = Some((offered, two));
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert!(mode.take_asks().is_empty());
+    assert_eq!(target(&mode), Some(Ok("ka000002".to_owned())));
+}
+
+#[test]
+fn leave_it_driving_keeps_the_dimensions_left_before_it_each_once_the_newest_last() {
+    // One left driving before (ka000001); the edit's prompt for ka000002 answered Leave:
+    // both kept, ka000002 newest. Left again for ka000001: once, now the newest.
+    let both = read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Conflicting),
+            ("ka000002", ConstraintState::Conflicting),
+        ],
+    );
+    let two = Revision::OPENED.next().unwrap().next().unwrap();
+    let offered = edited_right()
+        .judged(&two_lengths_over(), two)
+        .unwrap()
+        .unwrap();
+    let mut mode = mode_at(both);
+    mode.left_driving = vec![id("ka000001")];
+    mode.edit_offer = Some((offered.clone(), two));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert_eq!(mode.left_driving, [id("ka000001"), id("ka000002")]);
+    // ka000001 left again (an offer for it, judged from the same edit's shape): once.
+    mode.left_driving = vec![id("ka000001"), id("ka000002")];
+    let mut again = offered;
+    again.constraint = id("ka000001");
+    mode.edit_offer = Some((again, two));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert_eq!(mode.left_driving, [id("ka000002"), id("ka000001")]);
 }

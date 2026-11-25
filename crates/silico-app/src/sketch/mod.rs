@@ -11,12 +11,14 @@
 //! then sends what the tool asked) with its left button's events, a projection to the
 //! screen, and the pointer's way back onto the sketch's plane; nothing here knows of a
 //! camera. A drag under way takes the left button first; then a tool on; then, with none,
-//! a press on an under-defined point or curve that moves begins a drag ([`drag`]), and
+//! a press on an under-defined point or curve that moves begins a drag ([`drag`]), a press
+//! on empty space that moves draws a box that selects what it takes ([`boxing`]), and
 //! anything else is the selection's, a double-click on a dimension opening its Modify box
 //! ([`dimension`]).
 
 pub mod bar;
 pub mod bounds;
+pub mod boxing;
 pub mod dimension;
 pub mod drag;
 pub mod draw;
@@ -38,10 +40,14 @@ use silico_core::command::{ModelChoice, Problems, Revision, Running, SessionId, 
 use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
 use silico_core::kernel::{Clients, SketchPlane};
 use silico_core::sketch_states::{MemberState, SketchState};
-use silico_core::sketch_tools::{Axes, DimensionEvent, Event, Modifiers, Offer, OfferChoice};
+use silico_core::sketch_tools::{
+    Axes, DimensionEvent, Event, Modifiers, Offer, OfferChoice, OfferRequest,
+};
 
-use crate::tab::{Row, said};
+use crate::selection::How;
+use crate::tab::{Row, Said, said};
 use bar::{DimensionShown, PaletteView, Settings, StateShown, StatusLine};
+use boxing::SketchBox;
 use dimension::{Ask, EditBox, Edited, ModifyAction, ModifyView, OfferView, value_of};
 use drag::Drag;
 use draw::{
@@ -93,6 +99,71 @@ fn hint(state: SketchState) -> Option<&'static str> {
         }
         SketchState::FullyDefined => None,
     }
+}
+
+/// The error card sketch mode's property panel shows for the sketch open, `name`, from its
+/// read (sketch.js's `renderProps`, its card for an over-defined sketch): the core's error
+/// for a solve it refused (a conflict, `over_constrained`, or no solution, or one that
+/// can't be built), as every error card gives the core's words, its code, and its JSON;
+/// else, for a sketch solved but over defined (a driving dimension repeating others and
+/// agreeing, which the core reports as a state, not an error), the prototype's card:
+/// "`name` is over defined", the dimensions that repeat the others, by value and ID, and its
+/// fix, "Make it driven, or delete it." None for a sketch in any other state.
+pub fn problem_card(read: &SketchRead, name: &str) -> Option<Said> {
+    if let Some(problem) = &read.states.solve_problem {
+        return Some(Said::of(problem));
+    }
+    if read.states.state != SketchState::OverDefined {
+        return None;
+    }
+    // What over-defines it, as the core decides it: on a solved sketch, its flagged
+    // dimensions, of which the card names the driving ones (a reference dimension is never
+    // sent to the solver, so never flagged).
+    let repeating: Vec<&silico_core::document::SketchConstraint> = read
+        .states
+        .over_defining(&read.members)
+        .filter(|c| c.form.driving() == Some(true))
+        .collect();
+    let cause = match repeating.as_slice() {
+        // Never, as the core states it: a solved sketch is over defined only by a dimension
+        // it flags. Said without a count all the same.
+        [] => "A dimension repeats what the others already give.".to_owned(),
+        [one] => match crate::parameters::dimension_value(&one.form) {
+            Some(value) => format!("The {value} dimension repeats what the others already give."),
+            None => "A dimension repeats what the others already give.".to_owned(),
+        },
+        many => format!(
+            "{} dimensions repeat what the others already give.",
+            many.len()
+        ),
+    };
+    let suggestion = if repeating.len() > 1 {
+        "Make one driven, or delete one."
+    } else {
+        "Make it driven, or delete it."
+    };
+    Some(Said {
+        warning: false,
+        message: format!("{name} is over defined"),
+        cause: Some(cause),
+        elements: repeating.iter().map(|c| c.id.as_str().to_owned()).collect(),
+        elements_total: repeating.len() as u64,
+        suggestion: Some(suggestion.to_owned()),
+        source: None,
+    })
+}
+
+/// Why the card's Make it driven is off: several driving dimensions over-define the sketch,
+/// none of them left driving at its prompt here, and none of them selected.
+pub const SELECT_ONE_TO_MAKE_DRIVEN: &str =
+    "Several dimensions over-define the sketch: select the one to make driven";
+
+/// What the card's Make it driven would make driven ([`SketchMode::make_driven`]): the
+/// dimension, or why it's off; and its value, as the property panel writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MakeDriven {
+    pub target: Result<ElementId, &'static str>,
+    pub value: Option<String>,
 }
 
 /// A plane's name, as the sketch bar says it, and its axes' letters, as the status bar's
@@ -344,6 +415,8 @@ pub struct SketchMode {
     /// its release.
     pub selection: SketchSelection,
     pressed: Option<(Option<SketchPick>, bool)>,
+    /// A press on empty space with no tool on, which a move makes a box (`boxing`).
+    boxing: Option<SketchBox>,
     pub settings: Settings,
     /// The tool chosen, if one is (M5.11b's): what it draws as it's used, what it says, and
     /// what it asks of the core, which the tab sends.
@@ -363,6 +436,13 @@ pub struct SketchMode {
     edit_boxes: u64,
     pub edited: Option<Edited>,
     edit_offer: Option<(Offer, Revision)>,
+    /// The dimensions whose over-define prompt was answered "Leave it driving", the newest
+    /// last: which one the card's Make it driven means (SolidWorks' prompt is about "this
+    /// dimension", the one just placed or edited).
+    left_driving: Vec<ElementId>,
+    /// The revision of the read the card's Make it driven was last asked on: a second click
+    /// before the read of its edit comes asks nothing (it would be refused as overtaken).
+    driven_at: Option<Revision>,
     /// What it asks of the core besides its tools' requests, until the tab takes it.
     asks: Vec<Ask>,
     /// Where the canvas's right-click menu (End chain, Finish Sketch, Cancel sketch) is open,
@@ -405,6 +485,7 @@ impl SketchMode {
             drawings: 0,
             selection: SketchSelection::default(),
             pressed: None,
+            boxing: None,
             settings: Settings::default(),
             tools: Tools::default(),
             pointer: None,
@@ -414,6 +495,8 @@ impl SketchMode {
             edit_boxes: 0,
             edited: None,
             edit_offer: None,
+            left_driving: Vec::new(),
+            driven_at: None,
             asks: Vec::new(),
             modify_screen: None,
             tolerance: 0.0,
@@ -529,7 +612,9 @@ impl SketchMode {
     /// One frame of the viewport's: the pointer's place on the plane kept for the status
     /// bar; each press noted with what's under it (within the pick tolerance at the view's
     /// scale there), and taken as a click when it's released, or let go if it's cancelled;
-    /// and the sketch, and the tool's preview, drawn with `painter`, the grid over the part
+    /// one on empty space moved past the drag threshold a box instead ([`boxing`]), drawn
+    /// while it's held and let go as what it takes; and the sketch, and the tool's preview,
+    /// drawn with `painter`, the grid over the part
     /// of the plane the painter's rectangle shows. The glyphs' and dimensions' sizes are
     /// worked out at the rectangle's centre, so they don't move with the pointer. What's
     /// drawn of the sketch is worked out again only when the read, the selection, what's
@@ -550,6 +635,7 @@ impl SketchMode {
         let dragging = dragged.as_ref().is_some_and(Drag::held);
         let selecting: &[PointerEvent] = if self.tools.choice().is_some() && !dragging {
             self.pressed = None;
+            self.boxing = None;
             let held = painter.ctx().input(|i| Modifiers {
                 shift: i.modifiers.shift,
                 ctrl: i.modifiers.command,
@@ -569,9 +655,18 @@ impl SketchMode {
                             .and_then(SketchPick::member)
                             .and_then(|hit| self.grab(hit, input, event.at));
                     }
+                    // On empty space, with no drag, maybe a box (`boxing`).
+                    self.boxing = (found.is_none() && dragged.is_none())
+                        .then(|| SketchBox::pressed(event.at));
                     self.pressed = Some((found, event.ctrl));
                 }
                 PointerAction::Move => {
+                    if let Some(boxing) = self.boxing.as_mut()
+                        && boxing.moved(event.at)
+                    {
+                        // A box, not a click: its release selects what's in it.
+                        self.pressed = None;
+                    }
                     if let Some(drag) = dragged.as_mut().filter(|drag| drag.held()) {
                         if !drag.moved && (event.at - drag.press).length() > SKETCH_DRAG_THRESHOLD {
                             // A drag, not a click: its release selects nothing.
@@ -589,6 +684,13 @@ impl SketchMode {
                     }
                 }
                 PointerAction::Release => {
+                    if let Some(mut boxing) = self.boxing.take() {
+                        boxing.moved(event.at);
+                        if boxing.open {
+                            self.pressed = None;
+                            self.box_released(&boxing, event);
+                        }
+                    }
                     // A press that never moved is a click: no drag.
                     if dragged.as_ref().is_some_and(Drag::held) {
                         *dragged = None;
@@ -608,6 +710,7 @@ impl SketchMode {
                 }
                 PointerAction::Cancel => {
                     self.pressed = None;
+                    self.boxing = None;
                     match dragged.as_mut() {
                         Some(drag) if drag.held() && drag.moved => {
                             drag.cancel();
@@ -656,6 +759,23 @@ impl SketchMode {
             (None, None) => None,
         };
         painter.extend(to_shapes(painter, &drawn));
+        if let Some(boxing) = &self.boxing {
+            boxing.draw(painter);
+        }
+    }
+
+    /// A box let go at `event`: the selection changed by what it takes of the frame
+    /// before's drawing, what the person saw, on the canvas that drawing was made on (so a
+    /// release in a frame the tab isn't shown in, with nothing to clip to, is judged as it
+    /// was seen), as the modifiers held at its release say (`boxing`). Nothing with no read
+    /// or no drawing.
+    fn box_released(&mut self, boxing: &SketchBox, event: &PointerEvent) {
+        let taken = match (self.drawable(), self.drawn.as_ref()) {
+            (Some(read), Some((of, drawn))) => boxing.taken(drawn, read, of.clip),
+            _ => return,
+        };
+        self.selection
+            .boxed(taken, How::of_box(event.shift, event.ctrl));
     }
 
     /// What's under `at` on the screen, within the pick tolerance at the view's scale there:
@@ -1018,16 +1138,105 @@ impl SketchMode {
     /// nothing), and the offer let go, so the next dimension may be placed. Whether one was
     /// open to answer.
     pub fn answer_offer(&mut self, choice: OfferChoice) -> bool {
-        let request = if let Some((offer, _)) = self.edit_offer.take() {
-            offer.request(choice)
+        let (request, constraint) = if let Some((offer, _)) = self.edit_offer.take() {
+            (offer.request(choice), offer.constraint)
         } else if let Some(offer) = self.tools.open_offer() {
-            let request = offer.request(choice);
+            let answered = (offer.request(choice), offer.constraint.clone());
             self.tools.dismiss_offer();
-            request
+            answered
         } else {
             return false;
         };
+        if choice == OfferChoice::Leave {
+            // The newest last, once: the card's Make it driven means it while it over-defines.
+            self.left_driving.retain(|left| *left != constraint);
+            self.left_driving.push(constraint);
+        }
         self.asks.extend(request.map(Ask::Offer));
+        true
+    }
+
+    /// What the card's Make it driven (sketch.js's `skMakeDriven`) would make driven, on the
+    /// newest read, if the card offers it: only on a read of a published revision, for a
+    /// sketch over defined or with no solution (SolidWorks' prompt repairs "the over
+    /// defined or unsolvable state"), and only for a driving dimension. Which one, as
+    /// SolidWorks has it (docs/ux/solidworks.md, §2; its prompt is about the dimension just
+    /// placed, its right-click Driven about the one selected):
+    /// - the newest dimension whose prompt was answered "Leave it driving" that still drives
+    ///   and still over-defines (or the sketch has no solution, which flags nothing);
+    /// - else the one driving dimension that over-defines, if there's one;
+    /// - else the one of those selected, if one is;
+    /// - else none: off, saying to select one.
+    ///
+    /// None where there's no driving dimension to offer (a conflict of relations alone).
+    ///
+    /// SEAM: a driven dimension made driving again (SolidWorks' right-click Driven toggle,
+    /// Fusion's right-click) has no control in the approved prototype; waiting on Trevin.
+    pub fn make_driven(&self) -> Option<MakeDriven> {
+        let read = self.drawable()?;
+        self.read.as_ref()?.model?;
+        let state = read.states.state;
+        if !matches!(state, SketchState::OverDefined | SketchState::NoSolution) {
+            return None;
+        }
+        let constraints = &read.members.constraints;
+        let over: Vec<&ElementId> = read
+            .states
+            .over_defining(&read.members)
+            .filter(|c| c.form.driving() == Some(true))
+            .map(|c| &c.id)
+            .collect();
+        let driving = |id: &ElementId| {
+            constraints
+                .iter()
+                .any(|c| &c.id == id && c.form.driving() == Some(true))
+        };
+        let left = self.left_driving.iter().rev().find(|left| {
+            driving(left) && (over.contains(left) || state == SketchState::NoSolution)
+        });
+        if left.is_none() && over.is_empty() {
+            return None;
+        }
+        let selected: Vec<&ElementId> = self
+            .selection
+            .members()
+            .map(|hit| &hit.id)
+            .filter(|id| over.contains(id))
+            .collect();
+        let target = match (left, over.as_slice(), selected.as_slice()) {
+            (Some(left), _, _) => Ok(left.clone()),
+            (None, [one], _) | (None, _, [one]) => Ok((*one).clone()),
+            (None, _, _) => Err(SELECT_ONE_TO_MAKE_DRIVEN),
+        };
+        let value = target.as_ref().ok().and_then(|id| {
+            constraints
+                .iter()
+                .find(|c| &c.id == id)
+                .and_then(|c| crate::parameters::dimension_value(&c.form))
+        });
+        Some(MakeDriven { target, value })
+    }
+
+    /// The card's Make it driven asked for `constraint`: a `set_field` of its `driving` to
+    /// false asked, against the revision of the read the card was drawn from, if the newest
+    /// read still offers it for that dimension and none was asked on that read already.
+    /// Whether it was asked.
+    pub fn ask_driven(&mut self, constraint: &ElementId) -> bool {
+        let offered = self
+            .make_driven()
+            .is_some_and(|driven| driven.target.as_ref() == Ok(constraint));
+        let (Some(sketch), Some(model)) = (
+            self.sketch.clone(),
+            self.read.as_ref().and_then(|read| read.model),
+        ) else {
+            return false;
+        };
+        if !offered || self.driven_at == Some(model) {
+            return false;
+        }
+        self.driven_at = Some(model);
+        self.asks
+            .push(Ask::Offer(OfferRequest::driven(model, sketch, constraint)));
         true
     }
 
@@ -1163,6 +1372,7 @@ impl SketchMode {
     /// on something that would have been dragged, as it ends.
     pub fn let_go_press(&mut self) {
         self.pressed = None;
+        self.boxing = None;
     }
 
     /// Esc, with a tool on: the gesture ended and the tool left, the tool told if the sketch
