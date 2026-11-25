@@ -6455,7 +6455,7 @@ fn model(
         .iter()
         .filter(|planned| !planned.suppressed)
         .filter_map(|planned| match &planned.on_face {
-            OnFace::Placed(Placed::Blocked { through, .. }) if !through.is_empty() => {
+            OnFace::Placed(Placed::Blocked { through, .. }) => {
                 Some((planned.id.clone(), through.clone()))
             }
             OnFace::No | OnFace::Waits | OnFace::Placed(_) => None,
