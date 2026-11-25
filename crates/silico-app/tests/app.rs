@@ -10609,6 +10609,7 @@ impl silico_app::renderer::ViewRenderer for FakeRenderer {
             rect,
             hit,
             edge: told.edge,
+            stale: false,
         })
     }
 }
@@ -11091,6 +11092,7 @@ fn each_frame_gives_the_camera_its_size_scale_pointer_highlights_and_picking_a_f
             rect: rect_px,
             hit: Some(pick),
             edge: None,
+            stale: false,
         })
     );
     assert_eq!(record.lock().unwrap().frames.last().unwrap().picking, None);

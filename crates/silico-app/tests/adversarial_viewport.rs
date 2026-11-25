@@ -170,6 +170,7 @@ impl Present for Recorder {
                             ..hit
                         }),
                         edge: None,
+                        stale: false,
                     });
                 }
                 // silico-render's own check of the frame's values against the meshes held,
@@ -1124,6 +1125,7 @@ impl Present for LaggingPicks {
                     rect,
                     hit: None,
                     edge: None,
+                    stale: false,
                 },
             ));
         }

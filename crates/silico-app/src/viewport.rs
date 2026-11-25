@@ -4040,6 +4040,7 @@ mod tests {
             },
             hit: None,
             edge: None,
+            stale: false,
         }
     }
 

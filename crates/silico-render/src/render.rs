@@ -821,6 +821,11 @@ pub struct Picking {
     /// pick that takes one within a tolerance band (M5.7) reads the band's square and
     /// prefers it to the face under the centre. The same rules as `hit`'s otherwise.
     pub edge: Option<Pick>,
+    /// Whether any of the frame's pixels in the rectangle was passed over, of a body
+    /// forgotten or replaced since, or drawn by a mesh before its newest: the answer is then
+    /// of what was drawn only in part, and nothing found may be something not yet drawn as it
+    /// is, so a caller deciding by it (a click) asks again.
+    pub stale: bool,
 }
 
 /// A render context on one device, kept between renders and frames, with the bodies it
@@ -836,11 +841,16 @@ pub struct Renderer {
     /// the others are dropped before it uploads anything, and all of them after a render
     /// that failed).
     bodies: BTreeMap<u32, Uploaded>,
-    /// The mesh a body had before its newest ([`Renderer::upload`]), drawn in its place by
-    /// the frames until the newest's faces are all made: so a body replaced is drawn whole,
-    /// old or new, never part of each. Dropped once the newest is drawn, or by a frame that
-    /// doesn't draw the body.
+    /// The mesh a body had before the one in `bodies` ([`Renderer::upload`]), drawn in its
+    /// place by the frames until that one's faces are all made: so a body replaced is drawn
+    /// whole, old or new, never part of each. Dropped once the one in `bodies` is drawn, or
+    /// by a frame that doesn't draw the body.
     outgoing: BTreeMap<u32, Uploaded>,
+    /// A body's newest mesh, uploaded while the one in `bodies` was being made (drawn in its
+    /// place by its `outgoing`): it waits till that one is whole, then is made as that one is
+    /// drawn in its place. So meshes coming faster than a frame makes one still move the body
+    /// on, a mesh at a time, never starting over; one coming while another waits replaces it.
+    waiting: BTreeMap<u32, Uploaded>,
     /// How much face-making a frame may do ([`UPLOAD_BUDGET`]).
     budget: u64,
     /// Whether the last frame left faces it draws to be made by the frames after
@@ -938,6 +948,7 @@ impl Renderer {
             readback: 1,
             bodies: BTreeMap::new(),
             outgoing: BTreeMap::new(),
+            waiting: BTreeMap::new(),
             budget: UPLOAD_BUDGET,
             uploading: false,
             uploads: 0,
@@ -990,19 +1001,34 @@ impl Renderer {
             ));
         }
         let same = |held: &Uploaded| Arc::ptr_eq(&held.mesh, mesh) || *held.mesh == **mesh;
-        if let Some(held) = self.bodies.get_mut(&body)
+        // The newest asked for again: nothing changes.
+        let newest = match self.waiting.get_mut(&body) {
+            Some(waiting) => Some(waiting),
+            None => self.bodies.get_mut(&body),
+        };
+        if let Some(held) = newest
             && same(held)
         {
             held.mesh = Arc::clone(mesh);
             return Ok(());
         }
+        // The mesh being made asked for again while another waited: the one waiting goes.
+        if self.waiting.contains_key(&body)
+            && let Some(held) = self.bodies.get_mut(&body)
+            && same(held)
+        {
+            held.mesh = Arc::clone(mesh);
+            self.waiting.remove(&body);
+            return Ok(());
+        }
         // The mesh the frames still draw, asked for again before its replacement was whole:
         // it's the body's again, as it was (its generation too, so the pickings of the
-        // frames that drew it stand), and the replacement is dropped.
+        // frames that drew it stand), and the replacement, and any waiting, are dropped.
         if let Some(mut drawn) = self.outgoing.remove(&body) {
             if same(&drawn) {
                 drawn.mesh = Arc::clone(mesh);
                 self.bodies.insert(body, drawn);
+                self.waiting.remove(&body);
                 return Ok(());
             }
             self.outgoing.insert(body, drawn);
@@ -1011,12 +1037,15 @@ impl Renderer {
             .map_err(|what| invalid("mesh", format!("body {body}'s mesh: {what}")))?;
         let mut uploaded = Uploaded::new(Arc::clone(mesh)).map_err(RenderFailure::Failed)?;
         uploaded.generation = self.next_generation();
-        // The mesh replaced is drawn until this one's faces are made, unless one older still
-        // is drawn already, or it has no face made to draw.
-        if let Some(replaced) = self.bodies.insert(body, uploaded)
-            && !self.outgoing.contains_key(&body)
+        if self.outgoing.contains_key(&body) {
+            // One is being made, drawn in place by the one before it: this one waits till
+            // that one's whole, in place of any waiting already.
+            self.waiting.insert(body, uploaded);
+        } else if let Some(replaced) = self.bodies.insert(body, uploaded)
             && replaced.any_made()
         {
+            // The mesh replaced is drawn until this one's faces are made, if it has any face
+            // made to draw.
             self.outgoing.insert(body, replaced);
         }
         self.backoff.try_next();
@@ -1029,6 +1058,22 @@ impl Renderer {
     pub fn forget(&mut self, body: u32) {
         self.bodies.remove(&body);
         self.outgoing.remove(&body);
+        self.waiting.remove(&body);
+    }
+
+    /// Body `body`'s newest mesh, the one its pickings and highlights are of: the one
+    /// waiting, if one is, else its own.
+    fn newest(&self, body: u32) -> Option<&Uploaded> {
+        self.waiting.get(&body).or_else(|| self.bodies.get(&body))
+    }
+
+    /// Body `body` left to be drawn by its newest mesh alone: none drawn in its place, and a
+    /// mesh waiting made the body's (the one it waited on dropped).
+    fn newest_alone(&mut self, body: u32) {
+        self.outgoing.remove(&body);
+        if let Some(newest) = self.waiting.remove(&body) {
+            self.bodies.insert(body, newest);
+        }
     }
 
     /// Whether the last frame [`Renderer::prepare`] built left faces of the bodies it drew for
@@ -1093,10 +1138,18 @@ impl Renderer {
         }
         let CheckedFrame { view, lit, planes } =
             self.check_frame(frame).map_err(RenderFailure::Invalid)?;
-        // A body this frame doesn't draw isn't drawn by its mesh before its newest either:
-        // what's made of the newest when it's drawn again is drawn then.
-        self.outgoing
-            .retain(|body, _| frame.bodies.binary_search(body).is_ok());
+        // A body this frame doesn't draw is left to its newest mesh alone: what's made of it
+        // when it's drawn again is drawn then.
+        let undrawn: Vec<u32> = self
+            .outgoing
+            .keys()
+            .chain(self.waiting.keys())
+            .filter(|body| frame.bodies.binary_search(body).is_err())
+            .copied()
+            .collect();
+        for body in undrawn {
+            self.newest_alone(body);
+        }
         let device = self.ctx.device.clone();
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validity = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -1193,14 +1246,23 @@ impl Renderer {
     /// What a frame the GPU failed leaves: its picking request (`request`, its readback's
     /// identifier) dropped, and every body's GPU meshes, the planes', the dim's material, and
     /// the tints', which nothing vouches for, to be made again when they're next drawn; the
-    /// bodies themselves kept, but none by the mesh before its newest (its GPU meshes gone
-    /// too, it would draw nothing); and the next frames refused for a while ([`Backoff`]).
+    /// bodies themselves kept, each by its newest mesh alone (none drawn in its place, whose
+    /// GPU meshes would be gone too, and a mesh waiting made the body's); and the next frames
+    /// refused for a while ([`Backoff`]).
     fn failed(&mut self, request: Option<u64>) {
         if let Some(id) = request {
             self.pending.remove(&id);
         }
         self.backoff.failed();
-        self.outgoing.clear();
+        let replaced: Vec<u32> = self
+            .outgoing
+            .keys()
+            .chain(self.waiting.keys())
+            .copied()
+            .collect();
+        for body in replaced {
+            self.newest_alone(body);
+        }
         for body in self.bodies.values_mut() {
             body.drop_gpu_meshes();
         }
@@ -1238,14 +1300,13 @@ impl Renderer {
                 .ok()
                 .and_then(|i| request.bodies.get(i))
                 .map(|&(_, generation)| generation);
-            drawn.is_some() && drawn == self.bodies.get(&body).map(|u| u.generation)
+            drawn.is_some() && drawn == self.newest(body).map(|u| u.generation)
         };
-        let [any, edge] = request.nearest(&ids, extent, current);
-        let bodies = &self.bodies;
+        let ([any, edge], stale) = request.nearest(&ids, extent, current);
         let with_point = |(i, mut pick): (u32, Pick)| {
             if let Element::Vertex(n) = pick.hit {
                 // A vertex's own point: its disc is drawn toward the eye ([`VERTEX_REACH`]).
-                pick.point = bodies.get(&pick.body).and_then(|body| {
+                pick.point = self.newest(pick.body).and_then(|body| {
                     let at = usize::try_from(n).ok()?.checked_sub(1)?;
                     body.mesh.vertex_points.get(at).copied()
                 });
@@ -1265,6 +1326,7 @@ impl Renderer {
             rect: request.rect,
             hit: any.map(with_point),
             edge: edge.map(with_point),
+            stale,
         })
     }
 
@@ -1285,14 +1347,14 @@ impl Renderer {
                 ),
             });
         }
-        let lit = frame.checked(|body| self.bodies.get(&body).map(|uploaded| &*uploaded.mesh))?;
+        // Its highlights are of each body's newest mesh, as the caller numbers its faces.
+        let lit = frame.checked(|body| self.newest(body).map(|uploaded| &*uploaded.mesh))?;
         // The camera at this size, and the bodies and lines in its view, by the rules a
         // scene's check takes (`RenderScene::check`).
         let [_, height] = frame.size_px;
         let camera_frame = frame.camera.check(frame.size_px[0], height)?;
-        let held = &self.bodies;
         let drawn = frame.bodies.iter().filter_map(|b| {
-            held.get(b).map(|u| InViewBody {
+            self.newest(*b).map(|u| InViewBody {
                 body: *b,
                 mesh: &u.mesh,
                 bounds: u.bounds,
@@ -1301,16 +1363,21 @@ impl Renderer {
         let target = frame.camera.target;
         let mut exact = |_: u32, mesh: &Mesh| reach_of_points(mesh, target);
         let in_view = check_bodies_in_view(frame.camera, height, drawn, &mut exact)?;
-        // A body drawn by its mesh before its newest is drawn whole: an orthographic view's
-        // reach takes that mesh's box too (by its farthest corner, never refusing: the rule
-        // passed its newest, which the frame is checked for).
+        // A body drawn by a mesh before its newest is drawn whole: an orthographic view's
+        // reach takes the box of each such mesh too, the one drawn in its place and the one
+        // being made while another waits (by its farthest corner, never refusing: the rule
+        // passed the newest, which the frame is checked for).
         let in_view = match in_view {
             InView::Orthographic { view_height, reach } => InView::Orthographic {
                 view_height,
                 reach: frame
                     .bodies
                     .iter()
-                    .filter_map(|b| self.outgoing.get(b)?.bounds)
+                    .flat_map(|b| {
+                        let made = self.bodies.get(b).filter(|_| self.waiting.contains_key(b));
+                        [self.outgoing.get(b), made]
+                    })
+                    .filter_map(|held| held?.bounds)
                     .map(|bounds| reach_of_box(bounds, target))
                     .fold(reach, f64::max),
             },
@@ -1413,8 +1480,16 @@ impl Renderer {
         // bodies it hasn't with the same mesh (and of those it has, [`Uploaded::settle`]
         // drops each face's mesh in the other colour, and makes again each about another
         // point). So the GPU holds about one scene's meshes. A render draws each body by its
-        // mesh, whole: none by a mesh before it.
-        self.outgoing.clear();
+        // newest mesh, whole: none by a mesh before it.
+        let replaced: Vec<u32> = self
+            .outgoing
+            .keys()
+            .chain(self.waiting.keys())
+            .copied()
+            .collect();
+        for body in replaced {
+            self.newest_alone(body);
+        }
         self.bodies.retain(|number, uploaded| {
             scene
                 .bodies
@@ -1477,13 +1552,8 @@ impl Renderer {
     /// ([`vertices`]), and, for a render, the image's readback (`purpose`); behind it all,
     /// `colours`' background, or none, the view composited over what its pass holds.
     ///
-    /// A frame's budget (`purpose`) bounds the faces' meshes it makes. A body is drawn by its
-    /// newest mesh once every face of it the view places has a mesh made, and till then by
-    /// the mesh it had before ([`Renderer::outgoing`]) where it has one, plain (its
-    /// highlights are its newest's), or else by the faces of its newest made so far. The
-    /// budget goes first to the faces that have no mesh, the drawn mesh's before the
-    /// newest's, then to the newest's faces drawn by a mesh made for an earlier view, which
-    /// are drawn by it till they're made again.
+    /// A frame's budget (`purpose`) bounds the faces' meshes it makes, and which of each
+    /// body's meshes it draws is [`schedule`]'s.
     fn build(
         &mut self,
         view: &View,
@@ -1511,6 +1581,7 @@ impl Renderer {
             ctx,
             bodies,
             outgoing,
+            waiting,
             uploads,
             placed,
             plane_meshes,
@@ -1537,75 +1608,32 @@ impl Renderer {
         // Every drawn edge toward the eye by one reach, its plain stroke's.
         let reach = drawn_edge_fraction(view.height, pixels_per_point);
         let plain = Lit::default();
-        // A body that can have no pixel, by its edges' widest stroke, isn't placed: no face,
-        // no edge. One that can is settled for the view.
-        let seen = |uploaded: &Uploaded| {
-            uploaded
-                .bounds
-                .is_some_and(|bounds| strokes[1].class_of_box(bounds) != Class::Out)
-        };
-        let settled = |uploaded: &mut Uploaded, lit: &Lit| {
-            if seen(uploaded) {
-                uploaded.settle(view, lit);
-            } else {
-                for face in &mut uploaded.faces {
-                    face.placed = false;
-                }
-            }
-        };
-        // First the faces with no mesh, of each body's mesh before its newest (if it's drawn
-        // by one), then of its newest; and so which it's drawn by: its newest if that's
-        // whole, else its mesh before.
-        let mut by_outgoing = Vec::with_capacity(drawn.len());
-        for &(number, lit) in drawn {
-            let newest = bodies
-                .get_mut(&number)
-                .ok_or_else(|| format!("body {number} isn't uploaded"))?;
-            settled(newest, lit);
-            if let Some(before) = outgoing.get_mut(&number) {
-                settled(before, &plain);
-                *uploads += before.make(ctx, number, &plain, view, &mut budget, Making::Unmade)?;
-            }
-            *uploads += newest.make(ctx, number, lit, view, &mut budget, Making::Unmade)?;
-            let whole = newest.left(lit).unmade == 0;
-            if whole {
-                outgoing.remove(&number);
-            }
-            by_outgoing.push(!whole && outgoing.contains_key(&number));
-        }
-        // Each body's mesh drawn, and the highlights it's drawn with: a mesh before its
-        // newest, plain.
-        let mut shown: Vec<(u32, &mut Uploaded, &Lit, bool)> = Vec::with_capacity(drawn.len());
-        {
-            let mut newest: BTreeMap<u32, &mut Uploaded> =
-                bodies.iter_mut().map(|(b, u)| (*b, u)).collect();
-            let mut before: BTreeMap<u32, &mut Uploaded> =
-                outgoing.iter_mut().map(|(b, u)| (*b, u)).collect();
-            for (&(number, lit), &old) in drawn.iter().zip(&by_outgoing) {
-                let (held, lit) = if old {
-                    (before.remove(&number), &plain)
-                } else {
-                    (newest.remove(&number), lit)
-                };
-                if let Some(uploaded) = held {
-                    shown.push((number, uploaded, lit, old));
-                }
-            }
-        }
-        // Then the faces of the newest meshes drawn that are drawn by meshes made for an
-        // earlier view (a mesh before its newest's are drawn so till it goes).
-        for (number, uploaded, lit, old) in &mut shown {
-            if !*old {
-                *uploads += uploaded.make(ctx, *number, lit, view, &mut budget, Making::Earlier)?;
-            }
-        }
+        let mut shown = schedule(
+            ctx,
+            Held {
+                bodies,
+                outgoing,
+                waiting,
+            },
+            drawn,
+            &plain,
+            view,
+            &strokes[1],
+            (&mut budget, uploads),
+        )?;
         let mut left = false;
-        for (number, uploaded, lit, old) in &mut shown {
+        for Shown {
+            number,
+            uploaded,
+            lit,
+            by,
+        } in &mut shown
+        {
             let (number, lit): (u32, &Lit) = (*number, lit);
             let uploaded: &mut Uploaded = uploaded;
             let Left { unmade, earlier } = uploaded.left(lit);
-            left |= *old || unmade > 0 || earlier > 0;
-            if !seen(uploaded) {
+            left |= *by == By::Outgoing || unmade > 0 || earlier > 0;
+            if !seen_by(uploaded, &strokes[1]) {
                 continue;
             }
             // The dim's material, for the faces a frame dims and doesn't tint; and the dim
@@ -1627,7 +1655,7 @@ impl Renderer {
         }
         let drawn_by: Vec<(u32, &Uploaded)> = shown
             .into_iter()
-            .map(|(number, uploaded, _, _)| (number, &*uploaded))
+            .map(|shown| (shown.number, &*shown.uploaded))
             .collect();
         // The frame's lines after every body's edges, so a line coinciding with an edge is
         // drawn over it.
@@ -1769,6 +1797,142 @@ impl Renderer {
             left,
         })
     }
+}
+
+/// The renderer's meshes of its bodies, by number ([`Renderer::bodies`],
+/// [`Renderer::outgoing`], [`Renderer::waiting`]), for a frame's [`schedule`].
+struct Held<'a> {
+    bodies: &'a mut BTreeMap<u32, Uploaded>,
+    outgoing: &'a mut BTreeMap<u32, Uploaded>,
+    waiting: &'a mut BTreeMap<u32, Uploaded>,
+}
+
+/// Which of a body's meshes a frame draws it by: the one in [`Renderer::bodies`], or the one
+/// drawn in its place while that one's faces are made ([`Renderer::outgoing`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum By {
+    Bodies,
+    Outgoing,
+}
+
+/// A body as a frame draws it: its number, the mesh it's drawn by, which that is, and the
+/// highlights it's drawn with (none for a mesh that isn't its newest, whose faces the
+/// highlights don't number).
+struct Shown<'a> {
+    number: u32,
+    uploaded: &'a mut Uploaded,
+    lit: &'a Lit,
+    by: By,
+}
+
+/// Whether `uploaded` can have a pixel, by its edges' widest stroke (`stroke`, the view's
+/// frustum widened by it): one that can't isn't placed, no face and no edge.
+fn seen_by(uploaded: &Uploaded, stroke: &ViewRegion) -> bool {
+    uploaded
+        .bounds
+        .is_some_and(|bounds| stroke.class_of_box(bounds) != Class::Out)
+}
+
+/// `uploaded` settled for `view` in `lit`'s colours where it can have a pixel (`stroke`,
+/// [`seen_by`]), and none of its faces placed where it can't.
+fn settle_seen(uploaded: &mut Uploaded, view: &View, lit: &Lit, stroke: &ViewRegion) {
+    if seen_by(uploaded, stroke) {
+        uploaded.settle(view, lit);
+    } else {
+        for face in &mut uploaded.faces {
+            face.placed = false;
+        }
+    }
+}
+
+/// What a frame draws of `drawn` (each body with its highlights) and the faces' meshes it
+/// makes, as far as `budget` goes, each counted in `uploads`: first the faces with no mesh,
+/// of each body's mesh drawn in its place (if it has one) and then of the one being made;
+/// then, of the meshes it'll draw that are their bodies' own, the faces whose mesh is of an
+/// earlier view. A body is drawn by the one being made once that's whole (every face its
+/// view places made), the one in its place dropped, and a mesh waiting then made the one
+/// being made, the one just made drawn in its place; till then by the one in its place, if
+/// it has one, else by what's made of the one being made. Highlights (`drawn`'s, of each
+/// body's newest mesh) light only a newest mesh drawn; any other is drawn `plain`.
+fn schedule<'a>(
+    ctx: &RenderContext,
+    held: Held<'a>,
+    drawn: &[(u32, &'a Lit)],
+    plain: &'a Lit,
+    view: &View,
+    stroke: &ViewRegion,
+    (budget, uploads): (&mut Budget, &mut u64),
+) -> Result<Vec<Shown<'a>>, String> {
+    let Held {
+        bodies,
+        outgoing,
+        waiting,
+    } = held;
+    let mut by = Vec::with_capacity(drawn.len());
+    for &(number, lit) in drawn {
+        // While a mesh waits, the one being made isn't the newest: drawn plain.
+        let lit = if waiting.contains_key(&number) {
+            plain
+        } else {
+            lit
+        };
+        let made = bodies
+            .get_mut(&number)
+            .ok_or_else(|| format!("body {number} isn't uploaded"))?;
+        settle_seen(made, view, lit, stroke);
+        if let Some(before) = outgoing.get_mut(&number) {
+            settle_seen(before, view, plain, stroke);
+            *uploads += before.make(ctx, number, plain, view, budget, Making::Unmade)?;
+        }
+        *uploads += made.make(ctx, number, lit, view, budget, Making::Unmade)?;
+        if made.left(lit).unmade > 0 {
+            by.push(if outgoing.contains_key(&number) {
+                (By::Outgoing, plain)
+            } else {
+                (By::Bodies, lit)
+            });
+            continue;
+        }
+        outgoing.remove(&number);
+        match waiting.remove(&number) {
+            // The one made drawn in place of the one waiting, which is made next.
+            Some(next) => {
+                if let Some(done) = bodies.insert(number, next) {
+                    outgoing.insert(number, done);
+                }
+                by.push((By::Outgoing, plain));
+            }
+            None => by.push((By::Bodies, lit)),
+        }
+    }
+    let mut made: BTreeMap<u32, &'a mut Uploaded> =
+        bodies.iter_mut().map(|(b, u)| (*b, u)).collect();
+    let mut before: BTreeMap<u32, &'a mut Uploaded> =
+        outgoing.iter_mut().map(|(b, u)| (*b, u)).collect();
+    let mut shown = Vec::with_capacity(drawn.len());
+    for (&(number, _), (by, lit)) in drawn.iter().zip(by) {
+        let held = match by {
+            By::Bodies => made.remove(&number),
+            By::Outgoing => before.remove(&number),
+        };
+        if let Some(uploaded) = held {
+            shown.push(Shown {
+                number,
+                uploaded,
+                lit,
+                by,
+            });
+        }
+    }
+    for shown in &mut shown {
+        if shown.by == By::Bodies {
+            *uploads +=
+                shown
+                    .uploaded
+                    .make(ctx, shown.number, shown.lit, view, budget, Making::Earlier)?;
+        }
+    }
+    Ok(shown)
 }
 
 /// `in_view`, a view as its bodies' check found it ([`check_bodies_in_view`]), with `sets`,
@@ -2042,18 +2206,21 @@ impl PendingPick {
     /// frame, re_renderer draws on as if it were larger, which isn't shown), the one with a
     /// body nearest the rectangle's centre, the first in rows of those as near, of the
     /// bodies `current` takes (those not, the background's); and, the same way, the one
-    /// with an edge. Each its index in `ids`, and what's there, without its point.
+    /// with an edge. Each its index in `ids`, and what's there, without its point; and
+    /// whether any of the frame's pixels was passed over, of a body `current` doesn't take
+    /// ([`Picking::stale`]).
     fn nearest(
         &self,
         ids: &[PickingLayerId],
         extent: glam::UVec2,
         current: impl Fn(u32) -> bool,
-    ) -> [Option<(u32, Pick)>; 2] {
+    ) -> ([Option<(u32, Pick)>; 2], bool) {
         let width = extent.x;
         let pixels = u64::from(width) * u64::from(extent.y);
         if ids.len() as u64 != pixels || width == 0 {
-            return [None, None];
+            return ([None, None], false);
         }
+        let mut stale = false;
         let centre = self.rect.size.map(|s| f64::from(s) / 2.0);
         let mut nearest: Option<(f64, u32, Pick)> = None;
         let mut edge: Option<(f64, u32, Pick)> = None;
@@ -2064,7 +2231,7 @@ impl PendingPick {
             let Some(hit) = Element::of_instance(id.instance.0) else {
                 continue;
             };
-            if body == 0 || !current(body) {
+            if body == 0 {
                 continue;
             }
             // At most MAX_PICKING_SIDE² pixels: each index a u32.
@@ -2078,6 +2245,10 @@ impl PendingPick {
                 continue;
             };
             if px >= self.size[0] || py >= self.size[1] {
+                continue;
+            }
+            if !current(body) {
+                stale = true;
                 continue;
             }
             let dx = f64::from(x) + 0.5 - centre[0];
@@ -2096,7 +2267,10 @@ impl PendingPick {
                 edge = Some((d2, i, pick));
             }
         }
-        [nearest, edge].map(|found| found.map(|(_, i, pick)| (i, pick)))
+        (
+            [nearest, edge].map(|found| found.map(|(_, i, pick)| (i, pick))),
+            stale,
+        )
     }
 
     /// The point seen at the centre of the frame's pixel `pixel`, at the picking layer's
@@ -4099,6 +4273,13 @@ impl Lit {
         self.faces.binary_search(&number).is_ok()
     }
 
+    /// Whether face `number`'s mesh is baked in the highlight's colour ([`Highlight::Baked`]),
+    /// not plain: the one rule [`Uploaded::settle`], [`Uploaded::make`], [`Uploaded::left`],
+    /// and [`Uploaded::instances`] all take.
+    fn baked(&self, number: u32) -> bool {
+        self.style == Highlight::Baked && self.face(number)
+    }
+
     fn edge(&self, number: u32) -> bool {
         self.edges.binary_search(&number).is_ok()
     }
@@ -4168,6 +4349,20 @@ impl UploadedFace {
     /// Whether `mesh` was made about its point and to its pyramid in the last view settled.
     fn current(&self, mesh: &FaceMesh) -> bool {
         mesh.anchor == self.anchor && mesh.cut == self.cut
+    }
+
+    /// The making it wants, placed, in `lit`'s colours: none if it isn't placed or its mesh
+    /// is made for the last view settled. [`Uploaded::make`] makes by it and
+    /// [`Uploaded::left`] counts by it, so what's left is always what's made next.
+    fn wants(&self, lit: &Lit) -> Option<Making> {
+        if !self.placed {
+            return None;
+        }
+        match self.held(lit.baked(self.span.number)) {
+            None => Some(Making::Unmade),
+            Some(made) if !self.current(made) => Some(Making::Earlier),
+            Some(_) => None,
+        }
     }
 }
 
@@ -4342,7 +4537,7 @@ impl Uploaded {
             };
             face.anchor = anchor;
             face.cut = cut;
-            if lit.style == Highlight::Baked && lit.face(face.span.number) {
+            if lit.baked(face.span.number) {
                 face.plain = None;
             } else {
                 face.baked = None;
@@ -4363,15 +4558,7 @@ impl Uploaded {
         budget: &mut Budget,
         making: Making,
     ) -> Result<u64, String> {
-        let wanted = |face: &UploadedFace| {
-            let baked = lit.style == Highlight::Baked && lit.face(face.span.number);
-            face.placed
-                && match (face.held(baked), making) {
-                    (None, Making::Unmade) => true,
-                    (Some(made), Making::Earlier) => !face.current(made),
-                    _ => false,
-                }
-        };
+        let wanted = |face: &UploadedFace| face.wants(lit) == Some(making);
         let asked = self.faces.iter().filter(|f| wanted(f)).count();
         let _span =
             (asked > 0).then(|| tracing::debug_span!("upload", body, faces = asked).entered());
@@ -4381,7 +4568,7 @@ impl Uploaded {
                 continue;
             }
             let number = face.span.number;
-            let baked = lit.style == Highlight::Baked && lit.face(number);
+            let baked = lit.baked(number);
             let vertices = match face.cut {
                 Some(_) => cut_face_vertices(&self.mesh, face.span, view)?,
                 None => face_vertices(&self.mesh, face.span, face.anchor)?,
@@ -4418,12 +4605,11 @@ impl Uploaded {
             unmade: 0,
             earlier: 0,
         };
-        for face in self.faces.iter().filter(|face| face.placed) {
-            let baked = lit.style == Highlight::Baked && lit.face(face.span.number);
-            match face.held(baked) {
-                None => left.unmade += 1,
-                Some(made) if !face.current(made) => left.earlier += 1,
-                Some(_) => {}
+        for face in &self.faces {
+            match face.wants(lit) {
+                Some(Making::Unmade) => left.unmade += 1,
+                Some(Making::Earlier) => left.earlier += 1,
+                None => {}
             }
         }
         left
@@ -4454,7 +4640,7 @@ impl Uploaded {
             }
             let number = face.span.number;
             let highlighted = lit.face(number);
-            let baked = lit.style == Highlight::Baked && highlighted;
+            let baked = lit.baked(number);
             let Some(FaceMesh {
                 gpu: Some(gpu_mesh),
                 anchor,

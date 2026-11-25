@@ -748,6 +748,7 @@ mod tests {
             },
             hit: None,
             edge: None,
+            stale: false,
         };
         let mut renderer = Counting {
             picking: Some(pick),

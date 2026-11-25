@@ -2345,6 +2345,7 @@ mod tests {
                 rect: ours,
                 hit: None,
                 edge: None,
+                stale: false,
             },
         );
         let before = view.picked();
