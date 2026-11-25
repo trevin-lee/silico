@@ -1026,6 +1026,55 @@ fn a_face_sketch_blocked_through_a_fuse_whose_tool_failed_for_the_document_is_an
     }
 }
 
+#[test]
+fn a_face_sketch_blocked_through_two_solids_the_second_the_documents_is_an_error() {
+    // From the PR's review (round 2): s1's face names both boxes, so it's looked for in
+    // both fillets, the first crashing the worker (a fault), the second broken (an edge its
+    // box hasn't, the document's). Blocked on the first's root, through both: an error, and
+    // so is the body padded from it. Read through the first solid alone, both were unknown.
+    let kernel = FakeKernel::new(2).unwrap();
+    kernel.refuse(|op| {
+        matches!(op, Op::Fillet { .. })
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let engine = Recompute::new(kernel).with_sketches(FakeSketches::new());
+    let f1 = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F1", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1}"#;
+    let f2 = r#"{"id": "f0000002", "type": "fillet", "v": 1, "name": "F2", "base": "b0000002", "edges": ["b0000002.box.Edge40"], "radius": 1}"#;
+    let features = [
+        cube(),
+        f1.to_owned(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+        f2.to_owned(),
+        on_face(
+            "s0000001",
+            &face("f0000001.fillet.Face(G b0000002.box.Edge1)", "+x", false),
+        ),
+        pad("p0000001", None, "s0000001", &one_side("1")),
+    ];
+    let model = publish(&engine, checked_document(&strs(&features)));
+    assert!(matches!(
+        model.outcome(&id("f0000001")),
+        Some(FeatureOutcome::Failed(e)) if e.code() == ErrorCode::WorkerCrashed
+    ));
+    assert!(matches!(
+        model.outcome(&id("f0000002")),
+        Some(FeatureOutcome::Broken { total: 1, .. })
+    ));
+    for blocked in ["s0000001", "p0000001"] {
+        assert_eq!(
+            model.outcome(&id(blocked)),
+            Some(&FeatureOutcome::Blocked { on: id("f0000001") }),
+            "{blocked}"
+        );
+    }
+    let got = healths(&model);
+    assert_eq!(got["f0000001"], (Health::Unknown, 0));
+    assert_eq!(got["f0000002"], (Health::Error, 1));
+    for blocked in ["s0000001", "p0000001"] {
+        assert_eq!(got[blocked], (Health::Error, 0), "{blocked}");
+    }
+}
+
 /// The fake's description of `shape` with each face's surface as `surface` gives it, by
 /// number from 1: a planar face whose normal is +Z, through the origin, or a cylinder's.
 fn surfaced(
