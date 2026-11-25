@@ -5,9 +5,9 @@
 //! input, so it's as deterministic as the clicks that made it. A click changes it by open
 //! item 24's rules ([`SketchSelection::click`]).
 //!
-//! C9 also orders what joins together, as a box's would: in ID order (the members by ID,
-//! then the origin and the axes), after what's already selected. Sketch mode has no box
-//! yet; one that joins several at once follows that rule.
+//! C9 also orders what joins together, as a box's does: in ID order (the members by ID,
+//! then the origin and the axes), after what's already selected ([`SketchSelection::boxed`],
+//! `super::boxing`).
 
 use std::collections::BTreeSet;
 
@@ -15,6 +15,7 @@ use silico_core::command::sketch::SketchRead;
 use silico_core::document::{ElementId, ElementKind, Reference, Sketch};
 
 use super::hit::{Hit, SketchPick};
+use crate::selection::How;
 
 /// What's selected in sketch mode, in pick order, each once.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -55,6 +56,34 @@ impl SketchSelection {
                 if self.picked.len() == before {
                     self.picked.push(picked);
                 }
+            }
+        }
+    }
+
+    /// What a box took, `taken`, joined as `how` says (SolidWorks' Box Selection): a plain
+    /// box replaces the selection with it; Shift adds what of it isn't selected; Ctrl
+    /// inverts it, taking away what of it is selected and adding what isn't. What's
+    /// outside the box stays either way, in its order, and what joins comes after it in ID
+    /// order (C9), as `taken` holds it.
+    pub fn boxed(&mut self, taken: BTreeSet<SketchPick>, how: How) {
+        match how {
+            How::Replace => self.picked = taken.into_iter().collect(),
+            How::Add => {
+                let joining: Vec<SketchPick> = taken
+                    .into_iter()
+                    .filter(|pick| !self.picked.contains(pick))
+                    .collect();
+                self.picked.extend(joining);
+            }
+            How::Toggle => {
+                // What of the box was selected is taken away; the rest of it joins.
+                let joining: Vec<SketchPick> = taken
+                    .iter()
+                    .filter(|pick| !self.picked.contains(pick))
+                    .cloned()
+                    .collect();
+                self.picked.retain(|held| !taken.contains(held));
+                self.picked.extend(joining);
             }
         }
     }

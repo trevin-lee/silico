@@ -70,7 +70,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Instant;
 
-use eframe::egui::{self, Painter, Rect, Shape, Stroke};
+use eframe::egui::{self, Painter, Pos2, Rect, Shape, Stroke};
 use silico_core::document::FeatureId;
 use silico_core::naming::Name;
 use silico_protocol::vec3::{dot, sub};
@@ -278,7 +278,7 @@ impl BoxSelect {
                     crossing,
                     how,
                 } if current => {
-                    let area = PxBox::clamped(from, to, frame.size_px);
+                    let area = ScreenBox::clamped(from, to, frame.size_px);
                     let names = taken(
                         view.bodies(),
                         hidden,
@@ -504,13 +504,7 @@ impl BoxSelect {
         }
         match press.phase {
             Phase::Boxing => {
-                let how = if press.shift {
-                    How::Add
-                } else if press.ctrl {
-                    How::Toggle
-                } else {
-                    How::Replace
-                };
+                let how = How::of_box(press.shift, press.ctrl);
                 effects.push(Effect::Box {
                     from: press.at_px,
                     to: press.corner,
@@ -534,39 +528,72 @@ fn box_words(crossing: bool, count: usize) -> String {
     format!("{kind} selection: {count} edge{plural}")
 }
 
-/// A box on the canvas, in physical pixels from its top left: `[x0, x1] × [y0, y1]`, its
-/// sides counted inside.
+/// A box on the screen, `[x0, x1] × [y0, y1]`, its sides counted inside: the canvas's in
+/// physical pixels from its top left ([`ScreenBox::clamped`]), sketch mode's in screen
+/// points ([`ScreenBox::in_rect`]); what it's tested against is in its units.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct PxBox {
+pub(crate) struct ScreenBox {
     min: [f64; 2],
     max: [f64; 2],
 }
 
-impl PxBox {
-    /// The box with corners `a` and `b`, clamped to a canvas `size` pixels (what's off the
-    /// canvas isn't seen, so it's never inside). A corner that isn't finite is taken as the
-    /// other's.
-    fn clamped(a: [f32; 2], b: [f32; 2], size: [u32; 2]) -> PxBox {
-        let side = |k: usize| {
-            let limit = f64::from(size[k]);
-            let first = f64::from(a[k]);
-            let second = f64::from(b[k]);
-            let (first, second) = match (first.is_finite(), second.is_finite()) {
-                (true, true) => (first, second),
-                (true, false) => (first, first),
-                (false, true) => (second, second),
-                (false, false) => (0.0, 0.0),
-            };
-            let low = first.min(second).clamp(0.0, limit);
-            let high = first.max(second).clamp(0.0, limit);
-            (low, high)
-        };
-        let (x0, x1) = side(0);
-        let (y0, y1) = side(1);
-        PxBox {
+impl ScreenBox {
+    /// The box with corners `a` and `b`, in screen points, clamped to `clip`, as
+    /// [`ScreenBox::clamped`] takes its corners: sketch mode's box.
+    pub(crate) fn in_rect(a: Pos2, b: Pos2, clip: Rect) -> ScreenBox {
+        let f = f64::from;
+        let (x0, x1) = side(f(a.x), f(b.x), f(clip.left()), f(clip.right()));
+        let (y0, y1) = side(f(a.y), f(b.y), f(clip.top()), f(clip.bottom()));
+        ScreenBox {
             min: [x0, y0],
             max: [x1, y1],
         }
+    }
+
+    /// The box with corners `a` and `b`, in physical pixels, clamped to a canvas `size`
+    /// pixels (what's off the canvas isn't seen, so it's never inside). A corner that isn't
+    /// finite is taken as the other's.
+    fn clamped(a: [f32; 2], b: [f32; 2], size: [u32; 2]) -> ScreenBox {
+        let f = f64::from;
+        let (x0, x1) = side(f(a[0]), f(b[0]), 0.0, f64::from(size[0]));
+        let (y0, y1) = side(f(a[1]), f(b[1]), 0.0, f64::from(size[1]));
+        ScreenBox {
+            min: [x0, y0],
+            max: [x1, y1],
+        }
+    }
+
+    /// Whether it takes an element drawn as `pieces`: wholly inside (something of it drawn,
+    /// every piece read and every point inside), or, for a `crossing`, meeting it (a path's
+    /// segment meeting it, or another piece's point inside).
+    pub(crate) fn takes(&self, pieces: impl IntoIterator<Item = Piece>, crossing: bool) -> bool {
+        let mut any = false;
+        for piece in pieces {
+            let (points, read) = match &piece {
+                Piece::Path(points) | Piece::Places(points) => (points, true),
+                Piece::Unread(points) => (points, false),
+            };
+            if points.is_empty() {
+                continue;
+            }
+            if crossing {
+                let meets = match &piece {
+                    Piece::Path(points) if points.len() > 1 => points
+                        .windows(2)
+                        .any(|pair| self.meets_segment(pair[0], pair[1])),
+                    _ => points.iter().any(|p| self.holds(*p)),
+                };
+                if meets {
+                    return true;
+                }
+            } else {
+                if !read || !points.iter().all(|p| self.holds(*p)) {
+                    return false;
+                }
+                any = true;
+            }
+        }
+        !crossing && any
     }
 
     fn holds(&self, p: [f64; 2]) -> bool {
@@ -605,6 +632,32 @@ impl PxBox {
         let sides = self.corners().map(|c| orient(a, b, c));
         !(sides.iter().all(|s| *s > 0.0) || sides.iter().all(|s| *s < 0.0))
     }
+}
+
+/// A box's side from the corners' `first` and `second` along it, clamped to `low` to
+/// `high` (`high` below `low`, as an empty rectangle's are, taken as `low`): a corner that
+/// isn't finite taken as the other's, and with neither, `low`.
+fn side(first: f64, second: f64, low: f64, high: f64) -> (f64, f64) {
+    let (first, second) = match (first.is_finite(), second.is_finite()) {
+        (true, true) => (first, second),
+        (true, false) => (first, first),
+        (false, true) => (second, second),
+        (false, false) => (low, low),
+    };
+    let clamp = |v: f64| v.clamp(low, high.max(low));
+    (clamp(first.min(second)), clamp(first.max(second)))
+}
+
+/// A piece of what's drawn of an element, as a box decides it ([`ScreenBox::takes`]).
+pub(crate) enum Piece {
+    /// A polyline, whose segments a crossing tests: of one point, that point (a sketch's
+    /// stroke cut to one, a canvas's edge of one point).
+    Path(Vec<[f64; 2]>),
+    /// Places a crossing tests one by one: a triangle's corners, a single point.
+    Places(Vec<[f64; 2]>),
+    /// The points of a piece beside one that can't be read: it leaves the element not
+    /// wholly inside, and a crossing tests these one by one.
+    Unread(Vec<[f64; 2]>),
 }
 
 /// Twice the signed area of `a`, `b`, `c`: positive if they turn one way, negative the
@@ -698,35 +751,15 @@ impl<'a> Sight<'a> {
 
 /// What's decided of an element from its drawn pieces (segments or triangles): whether
 /// it's wholly inside `area` (something of it drawn, all of it read and inside), or, for a
-/// crossing, whether it meets it.
-fn decide(pieces: impl Iterator<Item = Drawn>, area: &PxBox, crossing: bool) -> bool {
-    let mut any = false;
-    for piece in pieces {
-        let (points, read) = match piece {
-            Drawn::Cut => continue,
-            Drawn::Shown(points) => (points, true),
-            Drawn::Unread(points) => (points, false),
-        };
-        if crossing {
-            let meets = if read {
-                match points.as_slice() {
-                    [a, b] => area.meets_segment(*a, *b),
-                    points => points.iter().any(|p| area.holds(*p)),
-                }
-            } else {
-                points.iter().any(|p| area.holds(*p))
-            };
-            if meets {
-                return true;
-            }
-        } else {
-            if !read || !points.iter().all(|p| area.holds(*p)) {
-                return false;
-            }
-            any = true;
-        }
-    }
-    !crossing && any
+/// crossing, whether it meets it ([`ScreenBox::takes`]).
+fn decide(pieces: impl Iterator<Item = Drawn>, area: &ScreenBox, crossing: bool) -> bool {
+    let pieces = pieces.filter_map(|piece| match piece {
+        Drawn::Cut => None,
+        // A segment, or a single point (`takes` tests a path of one point as a place).
+        Drawn::Shown(points) => Some(Piece::Path(points)),
+        Drawn::Unread(points) => Some(Piece::Unread(points)),
+    });
+    area.takes(pieces, crossing)
 }
 
 /// The names of the edges a box `area` takes of `bodies`, but those `hidden`, seen through
@@ -740,7 +773,7 @@ fn taken(
     hidden: &BTreeSet<FeatureId>,
     camera: &Camera,
     size: [u32; 2],
-    area: PxBox,
+    area: ScreenBox,
     crossing: bool,
 ) -> Vec<String> {
     let sight = Sight::new(camera, size);
@@ -783,11 +816,19 @@ pub(crate) fn draw_box(painter: &Painter, frame: &ViewFrame, from: [f32; 2], to:
     // finite, which draws nothing.
     let ppp = frame.pixels_per_point;
     let at = |p: [f32; 2]| frame.rect.min + egui::vec2(p[0] / ppp, p[1] / ppp);
-    let (a, b) = (at(from), at(to));
-    if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) || a == b {
+    draw_rect(painter, at(from), at(to));
+}
+
+/// The box from `from` to `to`, in screen points: filled, and outlined solid as a window
+/// (dragged left to right) or dashed as a crossing (right to left). Nothing for corners
+/// that aren't finite, or one box of no size.
+pub(crate) fn draw_rect(painter: &Painter, from: Pos2, to: Pos2) {
+    if !(from.x.is_finite() && from.y.is_finite() && to.x.is_finite() && to.y.is_finite())
+        || from == to
+    {
         return;
     }
-    let rect = Rect::from_two_pos(a, b);
+    let rect = Rect::from_two_pos(from, to);
     let stroke = Stroke::new(
         theme::BOX_SELECT_STROKE_WIDTH,
         theme::color32(theme::BOX_SELECT_STROKE),
@@ -800,7 +841,7 @@ pub(crate) fn draw_box(painter: &Painter, frame: &ViewFrame, from: [f32; 2], to:
         rect.left_bottom(),
         rect.left_top(),
     ];
-    if to[0] < from[0] {
+    if to.x < from.x {
         let [dash, gap] = theme::BOX_SELECT_CROSSING_DASH;
         painter.extend(Shape::dashed_line(&outline, stroke, dash, gap));
     } else {
@@ -907,7 +948,7 @@ mod tests {
     /// What a box from `a` to `b` (pixels) takes of `bodies` on [`front`], window or
     /// crossing as dragged (right to left a crossing), as short names (`Edge1`).
     fn boxed(bodies: &BTreeMap<u32, ViewBody>, a: [f32; 2], b: [f32; 2]) -> Vec<String> {
-        let area = PxBox::clamped(a, b, SIZE);
+        let area = ScreenBox::clamped(a, b, SIZE);
         taken(bodies, &none(), &front(), SIZE, area, b[0] < a[0])
             .into_iter()
             .map(|name| name.trim_start_matches("k7f2qx3m.box.").to_owned())
@@ -1014,7 +1055,7 @@ mod tests {
         assert_eq!(boxed(&held, [100.0, 10.0], [160.0, 50.0]), ["Edge2"]);
         assert_eq!(boxed(&held, [160.0, 10.0], [100.0, 50.0]), ["Edge2"]);
         // Its body hidden: nothing; another feature hidden: as before.
-        let area = PxBox::clamped([100.0, 10.0], [160.0, 50.0], SIZE);
+        let area = ScreenBox::clamped([100.0, 10.0], [160.0, 50.0], SIZE);
         let hidden = BTreeSet::from([FeatureId::new(BODY).unwrap()]);
         assert!(taken(&held, &hidden, &front(), SIZE, area, false).is_empty());
         let other = BTreeSet::from([FeatureId::new("a91cw0de").unwrap()]);
@@ -1068,7 +1109,7 @@ mod tests {
             &[[0.0, -200.0, 0.0], [0.0, 0.0, 0.0]],
         ];
         let held = body_at(&edges);
-        let names = |area: PxBox, crossing| -> Vec<String> {
+        let names = |area: ScreenBox, crossing| -> Vec<String> {
             taken(&held, &none(), &camera, SIZE, area, crossing)
                 .into_iter()
                 .map(|name| name.trim_start_matches("k7f2qx3m.box.").to_owned())
@@ -1076,38 +1117,50 @@ mod tests {
         };
         // The reviewer's box, (190, 60) to (150, 68), right to left: Edge1's drawn part
         // crosses it, though its far end doesn't project.
-        let right = PxBox::clamped([190.0, 60.0], [150.0, 68.0], SIZE);
+        let right = ScreenBox::clamped([190.0, 60.0], [150.0, 68.0], SIZE);
         assert_eq!(names(right, true), ["Edge1"]);
         // A window over the whole canvas: Edge3's drawn part is inside; Edge1's runs off
         // the canvas to its cut; Edge2 has nothing drawn.
-        let whole = PxBox::clamped([0.0, 0.0], [256.0, 128.0], SIZE);
+        let whole = ScreenBox::clamped([0.0, 0.0], [256.0, 128.0], SIZE);
         assert_eq!(names(whole, false), ["Edge3"]);
         assert_eq!(names(whole, true), ["Edge1", "Edge3"]);
         // Off the middle, left of x 50: nothing drawn there.
-        let aside = PxBox::clamped([0.0, 0.0], [40.0, 128.0], SIZE);
+        let aside = ScreenBox::clamped([0.0, 0.0], [40.0, 128.0], SIZE);
         assert!(names(aside, true).is_empty());
+    }
+
+    #[test]
+    fn a_path_of_one_point_is_taken_as_that_point() {
+        // A path whose segments are none (a stroke cut to one point) is its point: inside the
+        // box (100..160, 10..50) a window and a crossing take it, outside neither does.
+        let area = ScreenBox::clamped([100.0, 10.0], [160.0, 50.0], SIZE);
+        for crossing in [false, true] {
+            let one = |p: [f64; 2]| [Piece::Path(vec![p])];
+            assert!(area.takes(one([120.0, 20.0]), crossing), "{crossing}");
+            assert!(!area.takes(one([200.0, 20.0]), crossing), "{crossing}");
+        }
     }
 
     #[test]
     fn a_box_is_clamped_to_the_canvas_and_a_corner_that_isnt_finite_is_the_others() {
         assert_eq!(
-            PxBox::clamped([150.0, 50.0], [500.0, -20.0], SIZE),
-            PxBox {
+            ScreenBox::clamped([150.0, 50.0], [500.0, -20.0], SIZE),
+            ScreenBox {
                 min: [150.0, 0.0],
                 max: [256.0, 50.0]
             }
         );
         assert_eq!(
-            PxBox::clamped([150.0, 50.0], [f32::NAN, f32::INFINITY], SIZE),
-            PxBox {
+            ScreenBox::clamped([150.0, 50.0], [f32::NAN, f32::INFINITY], SIZE),
+            ScreenBox {
                 min: [150.0, 50.0],
                 max: [150.0, 50.0]
             }
         );
         // Wholly off the canvas: a line along its side, which holds only what's on it.
         assert_eq!(
-            PxBox::clamped([-50.0, 10.0], [-10.0, 20.0], SIZE),
-            PxBox {
+            ScreenBox::clamped([-50.0, 10.0], [-10.0, 20.0], SIZE),
+            ScreenBox {
                 min: [0.0, 10.0],
                 max: [0.0, 20.0]
             }
@@ -1907,7 +1960,7 @@ mod tests {
         // A camera the renderer refuses, or a canvas of no size: nothing projects.
         let mut camera = front();
         camera.eye = camera.target;
-        let area = PxBox::clamped([0.0, 0.0], [256.0, 128.0], SIZE);
+        let area = ScreenBox::clamped([0.0, 0.0], [256.0, 128.0], SIZE);
         assert!(taken(&held, &none(), &camera, SIZE, area, true).is_empty());
         assert!(taken(&held, &none(), &front(), [0, 0], area, true).is_empty());
     }
@@ -2059,7 +2112,7 @@ mod tests {
         let edges: [&[[f64; 3]]; 1] = [&[[x - 0.25, 0.0, 1.0], [x + 0.25, 0.0, -1.0]]];
         let held = body_at(&edges);
         let crossing = |from: f32, to: f32| -> Vec<String> {
-            let area = PxBox::clamped([to, 60.0], [from, 68.0], SIZE);
+            let area = ScreenBox::clamped([to, 60.0], [from, 68.0], SIZE);
             taken(&held, &none(), &camera, SIZE, area, true)
         };
         assert!(crossing(132.0, 140.0).is_empty());
