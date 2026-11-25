@@ -39,8 +39,9 @@
 //!   click on a timeline item selects it unless it's selected already, and as SolidWorks'
 //!   shortcut menu acts on the entity right-clicked. Off as MODIFY's Fillet is, with the
 //!   feature menus' reason (`crate::feature_menu::fillet_off`);
-//! - Copy name copies the element's name as the selection holds it and an agent writes it
-//!   (the selection view's Stable name, `crate::panes`), never off;
+//! - Copy name copies the name the selection would hold the element by, as an agent writes
+//!   it (the selection view's Stable name, `crate::panes`: a stable alias for an unstable
+//!   own name, `Selection::held_name`), never off;
 //! - Hide is as a body's eye in the browser hides it (with no key's cap: H, the registry's
 //!   Hide, hides the feature selected, not the body under the pointer);
 //! - Create Sketch is the toolbar's: chosen, it closes the menu and begins the pick of a
@@ -58,18 +59,18 @@ use silico_core::naming::Name;
 
 use crate::icons::Icon;
 use crate::menu;
+use crate::renderer::Element;
 use crate::shortcuts::Command;
 
 /// *Select Other…*, as the prototype labels it.
 pub const SELECT_OTHER: &str = "Select Other…";
 
-/// Fillet, and Copy name and its dim words, as the prototype's `onContext` labels them.
+/// Fillet, as the prototype's `onContext` labels it.
 pub const FILLET: &str = "Fillet";
+/// Copy name, as the prototype's `onContext` labels it.
 pub const COPY_NAME: &str = "Copy name";
+/// Copy name's dim words, as the prototype's `onContext` has them.
 pub const COPY_NAME_SUB: &str = "as agents write it";
-
-/// An edge's kind, as [`Under::kind`] says it.
-pub const EDGE: &str = "Edge";
 
 /// What *Select Other…* says while the view's meshes aren't of the model the selection is
 /// read against: nothing was cast.
@@ -173,8 +174,8 @@ impl Shown {
 }
 
 /// What's under the pointer at the right click, as the menu says it: the element a click
-/// there would select, by its words ("Face6"), its kind ("Face"), and its name, as the
-/// selection holds it; the feature that made it, by its ID and its name, and whether it's
+/// there would select, by its words ("Face6"), its kind ("Face"), what it is in its body's
+/// mesh (Fillet's for an edge alone), and its own name, as the element map gives it; the feature that made it, by its ID and its name, and whether it's
 /// built from a sketch; its body, by the feature that ends its chain and its name; and, for
 /// a face `elements` has said is a plane, what Sketch on this face and Look At need of it
 /// (none for another face, an edge, a vertex, or a face not read yet). None over nothing.
@@ -182,6 +183,7 @@ impl Shown {
 pub struct Under {
     pub label: String,
     pub kind: &'static str,
+    pub element: Element,
     pub name: Arc<Name>,
     pub maker: FeatureId,
     pub maker_name: String,
@@ -285,7 +287,7 @@ impl CanvasMenu {
                     .keys(Command::LookAt, ctx)
                 });
                 // An edge's alone, as the prototype has it.
-                let fillet = (under.kind == EDGE).then(|| {
+                let fillet = matches!(under.element, Element::Edge(_)).then(|| {
                     let mut fillet = Shown::of(
                         CanvasItem::Act(CanvasAct::Fillet(Arc::clone(&under.name))),
                         Some(Icon::Fillet),
@@ -448,6 +450,7 @@ mod tests {
         Under {
             label: "Face6".to_owned(),
             kind: "Face",
+            element: Element::Face(6),
             name: block_element(silico_protocol::ElementKind::Face, 6),
             maker: fid("k7f2qx3m"),
             maker_name: "Block".to_owned(),
@@ -876,7 +879,8 @@ mod tests {
         ctx.set_os(egui::os::OperatingSystem::Nix);
         let edge = Under {
             label: "Edge12".to_owned(),
-            kind: EDGE,
+            kind: "Edge",
+            element: Element::Edge(12),
             name: block_element(silico_protocol::ElementKind::Edge, 12),
             ..under()
         };
@@ -931,6 +935,7 @@ mod tests {
         let vertex = Under {
             label: "Vertex8".to_owned(),
             kind: "Vertex",
+            element: Element::Vertex(8),
             name: block_element(silico_protocol::ElementKind::Vertex, 8),
             ..under()
         };

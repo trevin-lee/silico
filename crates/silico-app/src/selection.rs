@@ -1011,23 +1011,7 @@ impl Selection {
             self.said = Some(format!("Can't select {name}: {}", words(&gone.why)));
             return;
         }
-        let picked = match answer.kept.into_iter().next() {
-            Some(selected) => Picked {
-                name: selected.name.to_string(),
-                state: State::Found(selected),
-                carry: Carry::Pick,
-                found_in: self.of,
-            },
-            None => Picked {
-                name: name.to_owned(),
-                state: State::Waiting {
-                    why: None,
-                    last: None,
-                },
-                carry: Carry::Pick,
-                found_in: None,
-            },
-        };
+        let picked = self.picked(name, answer.kept.into_iter().next());
         if let Some(found) = picked.found() {
             self.scroll = Some(found.feature.clone());
         }
@@ -1072,29 +1056,58 @@ impl Selection {
 
     /// `name` selected as a right click's menu acts on it (the canvas's Fillet, of the edge
     /// under the pointer): the selection kept as it is if it holds the element already (by
-    /// any of its names), else `name` picked in place of it, as a click picks it.
-    pub fn pick_unless_held(&mut self, name: &str) {
+    /// any of its names), else `name` picked in place of it, as a click picks it. Whether
+    /// the selection holds it then: not if the pick was refused (why is said).
+    pub fn pick_unless_held(&mut self, name: &str) -> bool {
         if !self.holds(name) {
             self.pick(name, How::Replace);
         }
+        self.holds(name)
     }
 
-    /// Whether the selection holds the element `name` names in the published model: one
-    /// found there as the same element of the same solid, or one by that very name.
+    /// Whether the selection holds the element `name` names in the published model, by the
+    /// rule a pick finds it there by (`Index`): the same element of the same solid, or, for
+    /// one not found, the same name.
     fn holds(&self, name: &str) -> bool {
-        let found = self.model.as_ref().and_then(|model| {
-            rules::resolve(model, &[name], PARAMETER)
-                .ok()
-                .and_then(|answer| answer.kept.into_iter().next())
-        });
-        self.elements().any(|picked| {
-            picked.name == name
-                || found.as_ref().is_some_and(|found| {
-                    picked.found().is_some_and(|held| {
-                        held.feature == found.feature && held.element == found.element
-                    })
-                })
-        })
+        let mut index = Index::default();
+        for (at, item) in self.items.iter().enumerate() {
+            if let Item::Element(each) = item {
+                index.add(at, each);
+            }
+        }
+        index
+            .find(&self.picked(name, self.resolve_one(name)))
+            .is_some()
+    }
+
+    /// `name` as a pick holds it, given what the published model finds of it (`found`): by
+    /// the name the core holds for it, found; or as written, waiting.
+    fn picked(&self, name: &str, found: Option<Selected>) -> Picked {
+        match found {
+            Some(selected) => Picked {
+                name: selected.name.to_string(),
+                state: State::Found(selected),
+                carry: Carry::Pick,
+                found_in: self.of,
+            },
+            None => Picked {
+                name: name.to_owned(),
+                state: State::Waiting {
+                    why: None,
+                    last: None,
+                },
+                carry: Carry::Pick,
+                found_in: None,
+            },
+        }
+    }
+
+    /// The name the selection would hold the element `name` names by, as the selection
+    /// view's Stable name shows it and an agent writes it: the core's for it (a stable alias
+    /// for an unstable own name), or `name` itself if the published model finds none.
+    pub fn held_name(&self, name: &str) -> String {
+        self.resolve_one(name)
+            .map_or_else(|| name.to_owned(), |found| found.name.to_string())
     }
 
     /// `names` picked together, `how` (a box's elements, by their names as the element map

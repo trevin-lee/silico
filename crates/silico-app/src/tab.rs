@@ -2436,7 +2436,7 @@ impl Tab {
     /// Look At as Ctrl+8 turns to the face selected ([`look_at_face`](Self::look_at_face)),
     /// Fillet as MODIFY's Fillet opens its dialog with `remembered` (its edge selected first
     /// as a click selects it, unless it's selected already), Copy name onto `ctx`'s
-    /// clipboard, Hide as H hides a body, Fit and Home view as F6 and Home, Clear selection
+    /// clipboard (the name the selection would hold it by), Hide as H hides a body, Fit and Home view as F6 and Home, Clear selection
     /// as Esc clears it, and a plane of Create Sketch's as the toolbar's
     /// ([`create_sketch`](Self::create_sketch)).
     fn canvas_act<P: Clients + 'static>(
@@ -2460,10 +2460,21 @@ impl Tab {
             }
             CanvasAct::LookAt(toward) => self.look_at_face(toward),
             CanvasAct::Fillet(edge) => {
-                self.selection.pick_unless_held(&edge.to_string());
-                self.open_dialog(sessions, Kind::Fillet, remembered);
+                // Its dialog can't open since the menu opened (a reload the gate refused):
+                // said, the selection left alone.
+                if let Some(why) = crate::feature_menu::fillet_off(self) {
+                    self.toasts.push(Toast::info(why));
+                    return;
+                }
+                // Opened on the edge only if the selection holds it (a refused pick says
+                // why, its selection kept).
+                if self.selection.pick_unless_held(&edge.to_string()) {
+                    self.open_dialog(sessions, Kind::Fillet, remembered);
+                }
             }
-            CanvasAct::CopyName(name) => ctx.copy_text(name.to_string()),
+            CanvasAct::CopyName(name) => {
+                ctx.copy_text(self.selection.held_name(&name.to_string()));
+            }
             CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
             CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
             CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),

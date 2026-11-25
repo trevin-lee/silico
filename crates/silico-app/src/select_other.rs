@@ -1210,7 +1210,7 @@ fn menu_id() -> Id {
 fn kind_of(element: Element) -> (&'static str, u32) {
     match element {
         Element::Face(n) => ("Face", n),
-        Element::Edge(n) => (crate::canvas_menu::EDGE, n),
+        Element::Edge(n) => ("Edge", n),
         Element::Vertex(n) => ("Vertex", n),
     }
 }
@@ -1235,6 +1235,7 @@ fn under_of(
     Some(Under {
         label: format!("{kind}{number}"),
         kind,
+        element,
         name: Arc::clone(name),
         maker_name: named(facts.names, &maker),
         sketched: (facts.sketched)(&maker),
@@ -1628,6 +1629,7 @@ mod tests {
         let under = Under {
             label: "Face6".to_owned(),
             kind: "Face",
+            element: Element::Face(6),
             name: Arc::new(Name::Element {
                 feature: block.clone(),
                 made: silico_core::naming::TypeWord::Primitive(

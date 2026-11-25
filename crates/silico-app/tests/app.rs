@@ -46656,6 +46656,186 @@ fn the_context_menus_fillet_opens_the_fillet_dialog_with_the_edge_selected_or_th
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// [`FUSED`], then a 2 mm cube, Cap, fused onto Fused as Capped: the cube's Edge1 the same
+/// edge as Fused's (`aliasing_edge_fuse`), so Capped's Edge1 is named by its own name,
+/// `rrrrrrrr.fuse.Edge1` (unstable: Fused's numbering fuse kept no name for it), with the
+/// stable alias `cccccccc.box.Edge1`.
+const ALIASED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 6,
+  "features": [
+    {"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Base", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1},
+    {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Tool", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1},
+    {"id": "rrrrrrrr", "type": "fuse", "v": 1, "name": "Fused", "base": "aaaaaaaa", "tool": "bbbbbbbb"},
+    {"id": "cccccccc", "type": "box", "v": 1, "name": "Cap", "position": [9, 0, 0], "length": 2, "width": 2, "height": 2},
+    {"id": "ssssssss", "type": "fuse", "v": 1, "name": "Capped", "base": "rrrrrrrr", "tool": "cccccccc"}
+  ]
+}
+"#;
+
+/// A fuse that keeps every element of its base, and its tool's Edge1 as the result's Edge1:
+/// one edge, two derivations.
+fn aliasing_edge_fuse() -> silico_core::kernel::History {
+    use silico_core::kernel::{ElementCounts, ElementFate, History, InputHistory, Topology};
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        ..ElementFate::default()
+    };
+    let mut tool_edges = vec![ElementFate::default(); 12];
+    tool_edges[0] = kept(1);
+    History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: (1..=12).map(kept).collect(),
+                vertices: (1..=8).map(kept).collect(),
+            },
+            InputHistory {
+                faces: vec![ElementFate::default(); 6],
+                edges: tool_edges,
+                vertices: vec![ElementFate::default(); 8],
+            },
+        ],
+        result: ElementCounts {
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]; 6],
+            outer_edges: vec![vec![]; 6],
+            edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=6).collect()],
+        },
+    }
+}
+
+/// [`ALIASED`] seen from above, its one body meshed as the box is, Capped's Edge1 hovered at
+/// the point returned.
+fn aliased_edge_hovered(f: &Fixture) -> (AppHarness, Record, eframe::egui::Pos2) {
+    use silico_app::renderer::Element::Edge;
+    fusing(f, |tool| {
+        if tool.contains("box(2,") {
+            aliasing_edge_fuse()
+        } else {
+            numbering_fuse()
+        }
+    });
+    let (mut h, record) = from_above_made(f, "aliased.silico", ALIASED, None);
+    boxes_made(&mut h);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, None, Some((1, Edge(1), pixel_at(&h, at))));
+    h.hover_at(at);
+    step_until(&mut h, "Edge1 hovered", |h| {
+        hover_name(h).as_deref() == Some("rrrrrrrr.fuse.Edge1")
+    });
+    (h, record, at)
+}
+
+#[test]
+fn copy_name_over_an_edge_unstable_by_its_own_name_copies_the_stable_alias_the_selection_holds() {
+    // The prototype's `ref.stable || h.id`, as the selection view's Stable name: an edge
+    // whose own name is unstable is copied by its stable alias, which a store takes, as a
+    // click on it is held by it.
+    let f = fixture();
+    let (mut h, _record, at) = aliased_edge_hovered(&f);
+    context_at(&mut h, at);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Copy name as agents write it")
+        .click();
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("cccccccc.box.Edge1"));
+    // As a click on it holds it.
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("rrrrrrrr.fuse.Edge1", silico_app::selection::How::Replace);
+    selected_until(&mut h, &["cccccccc.box.Edge1"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_fillet_over_an_edge_held_by_its_alias_keeps_the_selection() {
+    // The selection holds Capped's Edge1 by its stable alias, and Base's Edge2: Fillet over
+    // the edge, hovered by its own name, finds it held (the same element of the same solid),
+    // so the selection is kept and the box takes both.
+    use silico_app::selection::How;
+    let f = fixture();
+    let (mut h, _record, at) = aliased_edge_hovered(&f);
+    {
+        let selection = h.state_mut().tabs_mut()[0].selection_mut();
+        selection.pick("cccccccc.box.Edge1", How::Replace);
+        selection.pick("aaaaaaaa.box.Edge2", How::Toggle);
+    }
+    selected_until(&mut h, &["cccccccc.box.Edge1", "aaaaaaaa.box.Edge2"]);
+    h.hover_at(at);
+    step_until(&mut h, "Edge1 hovered", |h| {
+        hover_name(h).as_deref() == Some("rrrrrrrr.fuse.Edge1")
+    });
+    context_at(&mut h, at);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    step_until(&mut h, "the fillet dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+    });
+    boxed_until(&mut h, &["cccccccc.box.Edge1", "aaaaaaaa.box.Edge2"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_fillet_opens_at_the_radius_last_okd_as_modifys_does() {
+    // The app's remembered inputs: a fillet OK'd at 2.5 mm, then Fillet from the menu over
+    // another edge opens at 2.5, not the first 1.
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    context_over_edge(&mut h, &record, at, 12);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    step_until(&mut h, "the fillet dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+    });
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge12"]);
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("1")
+    );
+    retype(&mut h, In::Dialog, "Radius", "2.5");
+    settled(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    boxes_made(&mut h);
+    let body = *view(&h).bodies().keys().next().unwrap();
+    answering(&record, None, Some((body, Edge(5), pixel_at(&h, at))));
+    h.hover_at(at);
+    step_until(&mut h, "Edge5 hovered", |h| {
+        hover_name(h).is_some_and(|name| name.ends_with("Edge5"))
+    });
+    context_at(&mut h, at);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    step_until(&mut h, "the fillet dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+    });
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("2.5")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn the_context_menus_fillet_over_a_held_edge_with_a_face_selected_takes_the_edge_and_says_the_face()
 {
