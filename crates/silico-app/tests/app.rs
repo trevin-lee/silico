@@ -12880,6 +12880,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     highlights: Vec::new(),
                     hovered: Vec::new(),
                     outlines: silico_app::renderer::Outlines::DEFAULT,
+                    hover_outlined: false,
                     tinted: Vec::new(),
                     tint: silico_app::renderer::Tint::NONE,
                     picking: None,
@@ -21818,8 +21819,11 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             let image = h.render().unwrap();
             let got = image.get_pixel(face.0, face.1).0;
             assert!(near(got, tinted, 2.0), "the face {got:?} tinted");
-            // The face hovered in the canvas (lavapipe's ID buffer finds it): untinted, and
-            // the block's item ringed, its inside the bar's.
+            // The face hovered in the canvas (lavapipe's ID buffer finds it): in the hover's
+            // tint, not the maker's (the prototype's `applyHighlight`: `HOVER`, white, at
+            // 0.28, by hand (0.5694, 0.5887, 0.6168) in linear light, in sRGB (198.74, 201.7,
+            // 205.94)), and the block's item ringed, its inside the bar's.
+            let hovered = [198.74, 201.7, 205.94];
             h.hover_at(on_face);
             step_until(&mut h, "the face hovered", |h| {
                 h.state().tabs()[0]
@@ -21830,7 +21834,7 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             settle(&mut h);
             let image = h.render().unwrap();
             let got = image.get_pixel(face.0, face.1).0;
-            assert!(near(got, body, 2.0), "the face {got:?}");
+            assert!(near(got, hovered, 2.0), "the face {got:?} hovered");
             for x in ring {
                 let got = image.get_pixel(x, row).0;
                 assert!(near(got, g600, 3.0), "({x}, {row}) {got:?} ringed");
@@ -21857,7 +21861,10 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
                 assert!(near(got, bar, 2.0), "({x}, {row}) {got:?} let go");
             }
             // The face selected, then the block hovered in the timeline: the face keeps the
-            // selection's look, its colour its own, not the tint.
+            // selection's look, the selection's tint, not the maker's (`SELECT`, #2f7bff, at
+            // 0.55, by hand (0.1965, 0.3018, 0.7605) in linear light, in sRGB (122.55,
+            // 149.29, 226.0)).
+            let selected = [122.55, 149.29, 226.0];
             click_over_two_frames(&mut h, on_face, Modifiers::NONE);
             step_until(&mut h, "the face selected", |h| {
                 selected_names(h) == ["k7f2qx3m.box.Face3"]
@@ -21866,7 +21873,7 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             settle(&mut h);
             let image = h.render().unwrap();
             let got = image.get_pixel(face.0, face.1).0;
-            assert!(near(got, body, 2.0), "the face {got:?}");
+            assert!(near(got, selected, 2.0), "the face {got:?} selected");
             assert_eq!(never_waits::waits(), 0);
         },
     );
@@ -45840,6 +45847,8 @@ fn hovering_a_candidates_row_lights_its_edge_and_hovering_its_edge_marks_the_row
     assert_eq!(h.state().tabs()[0].candidate_hovered(), Some(EDGE4));
     let outlines = record.lock().unwrap().frames.last().unwrap().outlines;
     assert_eq!(outlines.hovered, [0xff, 0x7a, 0x0c]);
+    // Outlined whole, a face too, never tinted as a hover is.
+    assert!(record.lock().unwrap().frames.last().unwrap().hover_outlined);
     // Edge6's row next: Edge6 lit alone.
     let at = candidate_row(&h, EDGE6).0.center();
     h.hover_at(at);
@@ -45865,6 +45874,7 @@ fn hovering_a_candidates_row_lights_its_edge_and_hovering_its_edge_marks_the_row
     let last = record.lock().unwrap().frames.last().unwrap().clone();
     assert_eq!(last.hovered, [(body, Edge(6))]);
     assert_eq!(last.outlines.hovered, [255, 255, 255]);
+    assert!(!last.hover_outlined);
     // Over Edge4 in the canvas: Edge4's row marked, Edge6's not.
     answering(&record, None, Some((body, Edge(4), pixel_at(&h, canvas))));
     h.hover_at(canvas + eframe::egui::vec2(1.0, 0.0));

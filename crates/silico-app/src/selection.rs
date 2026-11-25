@@ -174,11 +174,12 @@ pub const CLICK_NO_MODEL: &str = "The click was let go: the model isn't built";
 pub const CLICK_REDRAWN: &str =
     "The click was let go: the view's meshes changed under it; click again";
 
-/// The colours the selection and the hover are outlined in: [`theme`]'s, as plain values
-/// for the renderer, which takes values, never the app's theme. SEAM: the prototype tints
-/// a selected face ([`theme::VIEWPORT_SELECTION_TINT`]) and a hovered one
-/// ([`theme::VIEWPORT_HOVER_TINT`]), and widens a selected edge; the renderer outlines both
-/// at one width (re_renderer's outline has one radius), its edges' colours its own.
+/// The colours the selection's edges and the hover's are outlined in: [`theme`]'s, as plain
+/// values for the renderer, which takes values, never the app's theme. A selected face and
+/// a hovered one are tinted, not outlined, as the prototype tints them
+/// ([`theme::VIEWPORT_SELECTION_TINT`], [`theme::VIEWPORT_HOVER_TINT`];
+/// `crate::renderer`'s frame preparation). SEAM: the prototype widens a selected edge; the
+/// renderer outlines both at one width (re_renderer's outline has one radius).
 pub fn outlines() -> Outlines {
     let rgb = |[r, g, b, _]: theme::Rgba8| [r, g, b];
     Outlines {

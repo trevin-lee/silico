@@ -26,8 +26,8 @@
 //! each ([`OTHER_REDRAWN`]).
 //!
 //! **The list.** Choosing *Select Other…* opens it beside the click, its first row lit. The
-//! row lit is the selection's hover ([`Selection::hold_hover`]: its face or edge outlined, its
-//! vertex's dot drawn); hovering a row lights it, and Tab and the down arrow (Shift+Tab and
+//! row lit is the selection's hover ([`Selection::hold_hover`]: its face tinted, its edge
+//! outlined, its vertex's dot drawn); hovering a row lights it, and Tab and the down arrow (Shift+Tab and
 //! the up arrow back) and the wheel step through the rows, round from the last to the first.
 //! A click on a row, or Enter, chooses it as a click on the canvas would: it replaces the
 //! selection, Ctrl (Cmd on macOS) toggling it, and while a dialog's box of names takes the
