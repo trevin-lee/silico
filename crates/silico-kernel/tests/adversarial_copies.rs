@@ -12,6 +12,7 @@ use proptest::prelude::*;
 
 use super::close::assert_close;
 use super::kernel::kernel;
+use super::numbers::relative_error;
 use crate::wait::WAIT;
 use silico_core::ErrorCode;
 use silico_core::kernel::{
@@ -605,7 +606,9 @@ fn placement() -> impl Strategy<Value = Placement> {
 }
 
 /// OCCT's confusion, `Precision::Confusion()`: points closer than this are one point to it,
-/// with a fuzzy value or without, and each input's elements carry it as their tolerance.
+/// and every input's elements carry it as their tolerance. Elements a hair further apart are
+/// two, but within both tolerances OCCT merges them anyway, and can be wrong with no fuzzy
+/// value at all (the fifth counterexample below, 1.01e-7 apart).
 const CONFUSION: f64 = 1e-7;
 
 /// Where `placement` puts the unit square [0, 1]², the unit cube's footprint, by hand: its
@@ -635,6 +638,13 @@ fn footprint(placement: &Placement) -> [[f64; 2]; 4] {
     })
 }
 
+/// The plate's footprint, then those of the copies `placements` put on it.
+fn footprints_of(placements: &[Placement]) -> Vec<[[f64; 2]; 4]> {
+    let mut footprints = vec![[[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]]];
+    footprints.extend(placements.iter().map(footprint));
+    footprints
+}
+
 /// The boolean's fuzzy value, by hand: 1e-6 of the diagonal of the box round every input
 /// (FreeCAD 1.1.3's automatic value, docs/ports/booleans.md), the footprints' box in x and
 /// y, and `height` in z.
@@ -646,6 +656,13 @@ fn fuzzy_value(footprints: &[[[f64; 2]; 4]], height: f64) -> f64 {
         high - low
     };
     1e-6 * (span(0) * span(0) + span(1) * span(1) + height * height).sqrt()
+}
+
+/// How far OCCT's boolean reaches under the fuzzy value `fuzzy`: `BOPDS_DS::Init` adds half
+/// of it to every element's own tolerance, so two elements interfere within `fuzzy` and
+/// both tolerances.
+fn reach_of(fuzzy: f64) -> f64 {
+    fuzzy + 2.0 * CONFUSION
 }
 
 fn minus(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
@@ -669,7 +686,7 @@ fn to_segment(p: [f64; 2], [a, b]: [[f64; 2]; 2]) -> f64 {
 }
 
 /// The least distance between two segments.
-fn between(a: [[f64; 2]; 2], b: [[f64; 2]; 2]) -> f64 {
+fn segment_gap(a: [[f64; 2]; 2], b: [[f64; 2]; 2]) -> f64 {
     let (da, db) = (minus(a[1], a[0]), minus(b[1], b[0]));
     let across = cross(da, db);
     if across != 0.0 {
@@ -693,61 +710,78 @@ fn sides(polygon: &[[f64; 2]; 4]) -> impl Iterator<Item = [[f64; 2]; 2]> + '_ {
     (0..4).map(|i| [polygon[i], polygon[(i + 1) % 4]])
 }
 
-/// Where two inputs' sides (the footprints' edges, every input upright between heights
-/// whole or half millimetres apart) come within `t` of each other, or of a third input's,
-/// without lying on each other (within [`CONFUSION`]), `t` being how far OCCT's boolean
-/// reaches. Two sides crossing at an angle θ are within `t` of each other for `t / sin θ`
-/// either way along them: a corner of either in that stretch is within `t` of the other
-/// side. The vertex OCCT makes of the crossing takes that stretch as its tolerance, so it
-/// reaches a third input's side within `t / sin θ + t` of the crossing. Parallel sides, or
-/// sides so nearly parallel that the stretch spans one, reach each other within `t`. Says
-/// what's within reach, or `None`.
-fn within_reach(footprints: &[[[f64; 2]; 4]], t: f64) -> Option<String> {
+/// What came within reach of what, and how far apart they are.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Reached {
+    /// Parallel sides, or sides so nearly parallel that they're within reach along one.
+    Sides { gap: f64 },
+    /// A corner of either of two sides, `gap` from the other.
+    Corner { gap: f64 },
+    /// A third input's side, `gap` from where two sides cross at `degrees`.
+    Third { gap: f64, degrees: f64 },
+}
+
+/// Whether two sides of different inputs, `a` and `b`, come within `t` of each other
+/// without lying on each other (within [`CONFUSION`]), or cross near the third inputs'
+/// sides, `others`. Parallel sides, or sides so nearly parallel that they're within `t` of
+/// each other along one, reach each other within `t`; so does a corner of either and the
+/// other side. Two sides crossing at an angle θ are within `t` of each other for `t / sin θ`
+/// either way along them; the vertex OCCT makes of the crossing takes that stretch as its
+/// tolerance, so it reaches a third input's side within `t / sin θ + t` of the crossing.
+fn sides_reach(
+    a: [[f64; 2]; 2],
+    b: [[f64; 2]; 2],
+    t: f64,
+    others: impl Iterator<Item = [[f64; 2]; 2]>,
+) -> Option<Reached> {
     let apart = |d: f64| d > CONFUSION;
+    let (da, db) = (minus(a[1], a[0]), minus(b[1], b[0]));
+    let sin = cross(da, db).abs() / (length(da) * length(db));
+    let reach = t / sin;
+    if reach >= length(da).min(length(db)) {
+        let ends = [(a[0], b), (a[1], b), (b[0], a), (b[1], a)];
+        return ends
+            .iter()
+            .map(|&(p, side)| to_segment(p, side))
+            .find(|&gap| apart(gap) && gap <= t)
+            .map(|gap| Reached::Sides { gap });
+    }
+    if segment_gap(a, b) > t {
+        return None;
+    }
+    let corner = [(a[0], b), (a[1], b), (b[0], a), (b[1], a)]
+        .into_iter()
+        .map(|(end, side)| to_segment(end, side))
+        .find(|&gap| apart(gap) && gap <= t);
+    if let Some(gap) = corner {
+        return Some(Reached::Corner { gap });
+    }
+    let along = cross(minus(b[0], a[0]), db) / cross(da, db);
+    let crossing = [a[0][0] + along * da[0], a[0][1] + along * da[1]];
+    others
+        .map(|side| to_segment(crossing, side))
+        .find(|&gap| apart(gap) && gap <= reach + t)
+        .map(|gap| Reached::Third {
+            gap,
+            degrees: libm::asin(sin).to_degrees(),
+        })
+}
+
+/// The first place two inputs' sides come within `t` of each other, or of a third input's,
+/// without lying on each other ([`sides_reach`]): the inputs (by their place in
+/// `footprints`) and what reached what.
+fn within_reach(footprints: &[[[f64; 2]; 4]], t: f64) -> Option<(usize, usize, Reached)> {
     for (i, first) in footprints.iter().enumerate() {
         for (j, second) in footprints.iter().enumerate().skip(i + 1) {
             for a in sides(first) {
                 for b in sides(second) {
-                    let (da, db) = (minus(a[1], a[0]), minus(b[1], b[0]));
-                    let sin = cross(da, db).abs() / (length(da) * length(db));
-                    let reach = t / sin;
-                    if reach >= length(da).min(length(db)) {
-                        let ends = [(a[0], b), (a[1], b), (b[0], a), (b[1], a)];
-                        if let Some(d) = ends
-                            .iter()
-                            .map(|&(p, side)| to_segment(p, side))
-                            .find(|&d| apart(d) && d <= t)
-                        {
-                            return Some(format!("inputs {i} and {j} have sides {d:e} apart"));
-                        }
-                        continue;
-                    }
-                    if between(a, b) > t {
-                        continue;
-                    }
-                    let along = cross(minus(b[0], a[0]), db) / cross(da, db);
-                    let crossing = [a[0][0] + along * da[0], a[0][1] + along * da[1]];
-                    for end in [a[0], a[1], b[0], b[1]] {
-                        let d = length(minus(end, crossing));
-                        if apart(d) && d <= reach {
-                            return Some(format!(
-                                "inputs {i} and {j} cross at {crossing:?}, a corner {d:e} off"
-                            ));
-                        }
-                    }
-                    for (k, third) in footprints.iter().enumerate() {
-                        if k == i || k == j {
-                            continue;
-                        }
-                        let d = sides(third)
-                            .map(|side| to_segment(crossing, side))
-                            .fold(f64::INFINITY, f64::min);
-                        if apart(d) && d <= reach + t {
-                            return Some(format!(
-                                "inputs {i} and {j} cross at {crossing:?} at {:.3}°, {d:e} from input {k}",
-                                libm::asin(sin).to_degrees()
-                            ));
-                        }
+                    let others = footprints
+                        .iter()
+                        .enumerate()
+                        .filter(|&(k, _)| k != i && k != j)
+                        .flat_map(|(_, third)| sides(third));
+                    if let Some(reached) = sides_reach(a, b, t, others) {
+                        return Some((i, j, reached));
                     }
                 }
             }
@@ -758,16 +792,15 @@ fn within_reach(footprints: &[[[f64; 2]; 4]], t: f64) -> Option<String> {
 
 /// Where OCCT's boolean under the fuzzy value `fuzzy` can give a valid result that's wrong,
 /// as FreeCAD 1.1.3's `-1.0` booleans do on the same inputs (docs/ports/booleans.md, Known
-/// wrong results): inputs' sides within twice its reach of each other, or of a third's,
-/// that don't lie on each other ([`within_reach`]). Its reach, from OCCT's tolerances
-/// (`BOPDS_DS::Init` adds half the fuzzy value to every element's own 1e-7), is `fuzzy +
-/// 2e-7`: what's within it is merged, and FreeCAD 1.1.3's cuts at a swept fuzzy value
-/// break where it reaches, to its second digit (`the_reach_is_where_freecad_breaks`). Just
-/// past it OCCT can be wrong too, as parallel faces are up to about 1.7 times it
+/// wrong results): inputs' sides within twice its reach ([`reach_of`]) of each other, or of
+/// a third's, that don't lie on each other ([`within_reach`]). What's within the reach is
+/// merged, and FreeCAD 1.1.3's booleans at a swept fuzzy value break where it reaches, to
+/// its second digit (`the_reach_is_where_freecad_breaks`). Just past it OCCT can be wrong
+/// too, as parallel faces are up to about 1.7 times it
 /// (`boxes_with_flat_faces_just_past_the_fuzzy_value_are_right_or_occts_known_wrong_answer`)
-/// and two corners are at 1.004 times it (the third counterexample below): twice it.
-fn merged_unmet(footprints: &[[[f64; 2]; 4]], fuzzy: f64) -> Option<String> {
-    within_reach(footprints, 2.0 * (fuzzy + 2.0 * CONFUSION))
+/// and the mirrored copy crossing the seed's place is at 1.004 times it (below): twice it.
+fn merged_unmet(footprints: &[[[f64; 2]; 4]], fuzzy: f64) -> Option<(usize, usize, Reached)> {
+    within_reach(footprints, 2.0 * reach_of(fuzzy))
 }
 
 /// The 10 × 10 × 1 plate the random placements' copies go on, its top at z = 0; the unit
@@ -783,15 +816,15 @@ fn plate_and_tools(k: &mut KernelWorker) -> (ShapeData, ShapeData, ShapeData) {
 /// volume is between the base's and the base's with every copy (a fuse) or with every copy
 /// removed (a cut), or a structured refusal of the kernel's; never a crash, never a result
 /// the worker can't read back. Where the fuzzy value merges inputs' sides that don't meet
-/// ([`merged_unmet`]), the volume isn't held: OCCT can be wrong there, as FreeCAD 1.1.3 is
-/// on the same inputs, and Silico takes its answer as FreeCAD does (the counterexamples
-/// below, each pinned by hand).
+/// ([`merged_unmet`]), the volume isn't held, and that is returned: OCCT can be wrong
+/// there, as FreeCAD 1.1.3 is on the same inputs, and Silico takes its answer as FreeCAD
+/// does (the counterexamples below, each pinned by hand).
 fn copies_are_sound(
     k: &mut KernelWorker,
     (plate, cube, sunk): &(ShapeData, ShapeData, ShapeData),
     placements: &[Placement],
     cut: bool,
-) -> Result<(), TestCaseError> {
+) -> Result<Option<Reached>, TestCaseError> {
     let n = placements.len() as f64;
     let (op, tool) = if cut {
         (CopiesOp::Cut, sunk)
@@ -803,11 +836,11 @@ fn copies_are_sound(
             prop_assert_eq!(made.shape.valid(), Some(true));
             prop_assert_eq!(made.history.inputs.len(), placements.len() + 1);
             let v = k.summarize(&made.shape).unwrap().volume;
-            let footprints = plate_and(placements);
+            let footprints = footprints_of(placements);
             // The plate from z −1 to 0, the cube on it to 1 or the sunk one to 0.5.
             let fuzzy = fuzzy_value(&footprints, if cut { 1.5 } else { 2.0 });
-            if merged_unmet(&footprints, fuzzy).is_some() {
-                return Ok(());
+            if let Some((_, _, reached)) = merged_unmet(&footprints, fuzzy) {
+                return Ok(Some(reached));
             }
             let slack = 1e-7 * 100.0;
             if cut {
@@ -822,7 +855,7 @@ fn copies_are_sound(
             e
         ),
     }
-    Ok(())
+    Ok(None)
 }
 
 #[test]
@@ -831,6 +864,7 @@ fn random_placements_build_a_valid_result_within_the_volumes_they_could_have() {
     let inputs = plate_and_tools(&mut k);
     // The test runner's closure is `Fn`: the worker is borrowed in it, a case at a time.
     let worker = std::cell::RefCell::new(k);
+    let unheld = std::cell::Cell::new(0);
     let config = ProptestConfig {
         cases: 1000,
         failure_persistence: None,
@@ -844,8 +878,19 @@ fn random_placements_build_a_valid_result_within_the_volumes_they_could_have() {
         cut in any::<bool>(),
     )| {
         prop_assume!(silico_protocol::check_copies(&placements).is_ok());
-        copies_are_sound(&mut worker.borrow_mut(), &inputs, &placements, cut)?;
+        if copies_are_sound(&mut worker.borrow_mut(), &inputs, &placements, cut)?.is_some() {
+            unheld.set(unheld.get() + 1);
+        }
     });
+    // The volume is held on all but a few: a wider `merged_unmet` would empty the property.
+    // This seed's cases leave 151 of 1,000 unheld, most of them a hair (1.01e-7) apart, the
+    // generator's own edge value and the fifth counterexample's gap (random seeds, one in
+    // seven: 86,334 of 600,000).
+    assert!(
+        unheld.get() <= 160,
+        "{} cases' volume not held",
+        unheld.get()
+    );
 }
 
 /// A turn about a vertical axis through (x, y).
@@ -870,16 +915,40 @@ struct Counterexample {
     /// cut) or added a millimetre high (a fuse), by hand: each footprint clipped to the
     /// plate and to the others, inclusion and exclusion, in exact rationals from the
     /// corners as [`footprint`] places them. FreeCAD 1.1.3 with no fuzzy value, `cut` or
-    /// `fuse(copies, 0.0)`, gives it too (to 1e-11, by its fixed-order measure).
+    /// `fuse(copies, 0.0)`, gives it too (to 2e-11, by its fixed-order measure), but for the
+    /// fifth, which it gets wrong that way too.
     right: f64,
     /// OCCT's, Silico's and FreeCAD 1.1.3's `-1.0` (to 1e-13).
     occts: f64,
-    /// The fuzzy value at which FreeCAD 1.1.3's boolean is last right and first wrong, swept
-    /// by hand; `None` where it breaks short of the reach, and right again past it.
-    breaks: Option<(f64, f64)>,
+    /// Where FreeCAD 1.1.3's boolean breaks, at fuzzy values swept by hand.
+    breaks: Breaks,
+    /// Moves the counterexample by `d` along the coordinate that sets its gap.
+    nudge: fn(&mut [Placement], f64),
+    /// The steps it's moved by in `each_counterexample_moved_across_the_reach_holds_the_
+    /// property`, and each step in reaches ([`reach_of`]).
+    sweep: (std::ops::RangeInclusive<i32>, f64),
 }
 
-fn counterexamples() -> [Counterexample; 4] {
+/// Where a counterexample's boolean breaks in FreeCAD 1.1.3, as its fuzzy value is swept.
+enum Breaks {
+    /// Right up to the first fuzzy value and wrong from the second: where the reach meets
+    /// the gap.
+    Between(f64, f64),
+    /// Wrong just past the reach, at the value the copies run with, and right again once
+    /// the gap is within it.
+    JustPast,
+    /// Wrong with no fuzzy value at all: the gap is within both tolerances.
+    Unfuzzed,
+}
+
+/// Moves the mirror plane of the first placement, a mirror, by `d` along y.
+fn nudge_mirror(placements: &mut [Placement], d: f64) {
+    if let [Placement::Mirror { origin, .. }, ..] = placements {
+        origin[1] += d;
+    }
+}
+
+fn counterexamples() -> [Counterexample; 5] {
     [
         Counterexample {
             // The sunk cube mirrored in an upright plane through (−4, 1.01e-7) at nearly 45°:
@@ -894,7 +963,10 @@ fn counterexamples() -> [Counterexample; 4] {
             cut: true,
             right: 99.500_103_728_468_83,
             occts: 99.499_569_129_073_32,
-            breaks: Some((3.2e-7, 3.4e-7)),
+            breaks: Breaks::Between(3.2e-7, 3.4e-7),
+            // The corner's gap moves by as much: 3 reaches either way.
+            nudge: nudge_mirror,
+            sweep: (-60..=60, 0.05),
         },
         Counterexample {
             // Three turned copies of the sunk cube: about (1.0057, 1.01e-7) by 348.7°, about
@@ -907,7 +979,19 @@ fn counterexamples() -> [Counterexample; 4] {
             cut: true,
             right: 98.924_888_020_692_8,
             occts: 0.575_111_610_664_817_3,
-            breaks: Some((1.37e-5, 1.4e-5)),
+            breaks: Breaks::Between(1.37e-5, 1.4e-5),
+            // The third copy moved along x: its side's gap from the crossing moves by as
+            // much, 3e-4 back and 6e-4 on.
+            nudge: |placements, d| {
+                if let [_, _, third] = placements {
+                    *third = Placement::TurnedAndMoved {
+                        axis: Z,
+                        angle: TAU - radians(1e-9),
+                        offset: [d, 0.0, 0.0],
+                    };
+                }
+            },
+            sweep: (-60..=120, 0.35),
         },
         Counterexample {
             // The cube mirrored in an upright plane through (−3.0344, 1.01e-7) whose normal is
@@ -928,7 +1012,10 @@ fn counterexamples() -> [Counterexample; 4] {
             cut: false,
             right: 101.989_058_133_011,
             occts: 99.995_729_961_765_8,
-            breaks: None,
+            breaks: Breaks::JustPast,
+            // The corners' gaps move by 3.1e-3 of the plane's move: 2.6 reaches either way.
+            nudge: nudge_mirror,
+            sweep: (-60..=60, 14.0),
         },
         Counterexample {
             // The sunk cube a nanodegree short of a whole turn about (1.01e-7, 1.01e-7) and
@@ -950,7 +1037,45 @@ fn counterexamples() -> [Counterexample; 4] {
             cut: true,
             right: 99.000_362_633_809_93,
             occts: 98.998_296_060_062_47,
-            breaks: Some((5e-6, 6e-6)),
+            breaks: Breaks::Between(5e-6, 6e-6),
+            // The second's axis moved along y: the corner's gap moves by as much, 3 reaches
+            // either way.
+            nudge: |placements, d| {
+                if let [_, Placement::Rotation { axis, .. }] = placements {
+                    axis.origin[1] += d;
+                }
+            },
+            sweep: (-60..=60, 0.05),
+        },
+        Counterexample {
+            // Three copies of the sunk cube: a nanodegree short of a whole turn about the
+            // origin (the seed's place), moved a hair (1.01e-7) along y, and mirrored in an
+            // upright plane through (0, 4) whose normal is 3.2e-3 rad off x. The mirror's
+            // sides cross the first two's y = 0 and y = 1.01e-7 at 6.45e-3 rad, 1.57e-5
+            // apart, and the plate is all but lost, four solids. FreeCAD 1.1.3 is wrong with
+            // no fuzzy value too (0.488709678121 at 0, 1e-7, and 2e-7), right from 2e-5, and
+            // right on any two of the three (99.0112903216 without the hair).
+            what: "a mirrored copy crossing two a hair apart",
+            placements: vec![
+                turn(0.0, 0.0, TAU - radians(1e-9)),
+                moved([-0.0, 1.009_999_999_999_999_9e-7, 0.0]),
+                Placement::Mirror {
+                    origin: [0.0, 4.0, 0.0],
+                    normal: [0.999_994_796_849_384_5, 0.003_225_875_719_589_867_3, 0.0],
+                },
+            ],
+            cut: true,
+            right: 99.011_290_271_613,
+            occts: 0.488_709_678_121_477_7,
+            breaks: Breaks::Unfuzzed,
+            // The hair moved along y: its sides' gap from the others' moves by as much, 3
+            // reaches either way.
+            nudge: |placements, d| {
+                if let [_, Placement::Translation { offset }, _] = placements {
+                    offset[1] += d;
+                }
+            },
+            sweep: (-60..=60, 0.05),
         },
     ]
 }
@@ -1006,7 +1131,7 @@ fn each_counterexample_is_right_or_occts_known_wrong_answer() {
     for c in counterexamples() {
         let v = built(&c.placements, c.cut);
         assert!(
-            close(v, c.right) || close(v, c.occts),
+            relative_error(v, c.right) <= 1e-9 || relative_error(v, c.occts) <= 1e-9,
             "{}: {v}, right {}, OCCT's known {}",
             c.what,
             c.right,
@@ -1025,52 +1150,37 @@ fn each_counterexample_is_right_or_occts_known_wrong_answer() {
     }
 }
 
-fn close(got: f64, want: f64) -> bool {
-    (got - want).abs() <= 1e-9 * want.abs()
-}
-
-/// The plate's footprint, then those of the copies `placements` put on it.
-fn plate_and(placements: &[Placement]) -> Vec<[[f64; 2]; 4]> {
-    let mut footprints = vec![[[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0]]];
-    footprints.extend(placements.iter().map(footprint));
-    footprints
-}
-
 #[test]
 fn the_reach_is_where_freecad_breaks() {
-    // FreeCAD 1.1.3's boolean of each counterexample at fuzzy values f swept by hand is
-    // right up to one and wrong from the next; its reach, f + 2e-7, reaches across the
-    // gap that makes it wrong between them: the mirrored copy's corner 5.34e-7 inside the
-    // plate's side (from f = 3.34e-7), the turns' crossing at 3.51°, 2.41e-4 from the
-    // third's side (t / sin θ + t, from f = 1.373e-5), the turned copy's corner 5.44e-6
-    // inside the side (from f = 5.24e-6).
+    // FreeCAD 1.1.3's boolean of each counterexample at fuzzy values f swept by hand: where
+    // it's right up to one and wrong from the next, its reach, f + 2e-7, reaches across the
+    // gap that makes it wrong between them (the mirrored copy's corner 5.34e-7 inside the
+    // plate's side, from f = 3.34e-7; the turns' crossing at 3.51°, 2.41e-4 from the third's
+    // side, t / sin θ + t, from f = 1.373e-5; the turned copy's corner 5.44e-6 inside the
+    // side, from f = 5.24e-6). Where it's wrong just past the reach, the reach falls short;
+    // where it's wrong with no fuzzy value, the tolerances alone reach.
     for c in counterexamples() {
-        let footprints = plate_and(&c.placements);
-        let height = if c.cut { 1.5 } else { 2.0 };
-        if let Some((right, wrong)) = c.breaks {
-            let reach = |f: f64| within_reach(&footprints, f + 2.0 * CONFUSION);
-            assert_eq!(reach(right), None, "{} at {right}", c.what);
-            assert!(reach(wrong).is_some(), "{} at {wrong}", c.what);
-        } else {
-            // Just past the reach at the value the copies run with, and within twice it.
-            let fuzzy = fuzzy_value(&footprints, height);
-            assert_eq!(
-                within_reach(&footprints, fuzzy + 2.0 * CONFUSION),
-                None,
-                "{}",
-                c.what
-            );
+        let footprints = footprints_of(&c.placements);
+        let fuzzy = fuzzy_value(&footprints, if c.cut { 1.5 } else { 2.0 });
+        let reached = |f: f64| within_reach(&footprints, reach_of(f));
+        match c.breaks {
+            Breaks::Between(right, wrong) => {
+                assert_eq!(reached(right), None, "{} at {right}", c.what);
+                assert!(reached(wrong).is_some(), "{} at {wrong}", c.what);
+            }
+            Breaks::JustPast => assert_eq!(reached(fuzzy), None, "{}", c.what),
+            Breaks::Unfuzzed => assert!(reached(0.0).is_some(), "{}", c.what),
         }
         // At the value the copies run with, 1e-6 of the box round the plate and them, each
         // is within twice the reach.
-        let fuzzy = fuzzy_value(&footprints, height);
         assert!((1.42e-5..1.43e-5).contains(&fuzzy), "{}: {fuzzy}", c.what);
         assert!(merged_unmet(&footprints, fuzzy).is_some(), "{}", c.what);
     }
-    // What lies exactly on each other isn't merged: a copy beside the seed's place, one
-    // turned a quarter about its corner, one a nanodegree short of a whole turn, and one
-    // mirrored onto the plate's corner exactly, sides and corners shared to the rounding.
-    let exact = plate_and(&[
+    // What lies on each other isn't merged: a copy beside the seed's place, one turned a
+    // quarter about its corner, one a nanodegree short of a whole turn, and one mirrored onto
+    // the plate's corner exactly, sides and corners shared to the rounding; and copies
+    // 9.9e-8 apart, and a corner 9.9e-8 from a side, within OCCT's confusion.
+    let exact = footprints_of(&[
         moved([2.0, 0.0, 0.0]),
         turn(1.0, 0.0, PI / 2.0),
         turn(0.0, 0.0, TAU - radians(1e-9)),
@@ -1082,63 +1192,77 @@ fn the_reach_is_where_freecad_breaks() {
                 0.0,
             ],
         },
+        moved([3.0 + 9.9e-8, 0.0, 0.0]),
+        Placement::TurnedAndMoved {
+            axis: Z,
+            angle: PI / 4.0,
+            offset: [-3.0, -5.0 + 9.9e-8, 0.0],
+        },
     ]);
     assert_eq!(merged_unmet(&exact, fuzzy_value(&exact, 1.5)), None);
-    // A hair apart: a copy 1.01e-7 past another's side (parallel), or a copy turned 45°
-    // with its lowest corner 1e-6 inside the plate's side.
-    let hair = plate_and(&[moved([2.0, 0.0, 0.0]), moved([3.0 + 1.01e-7, 0.0, 0.0])]);
-    let reason = merged_unmet(&hair, fuzzy_value(&hair, 1.5)).unwrap();
-    assert!(reason.contains("sides 1.0"), "{reason}");
-    let inside = plate_and(&[Placement::TurnedAndMoved {
+    // Past it: a copy a hair (1.01e-7) past another's side (parallel), a copy turned 45°
+    // with its lowest corner 1e-6 inside the plate's side, and the turns' crossing near the
+    // third.
+    let apart = footprints_of(&[moved([2.0, 0.0, 0.0]), moved([3.0 + 1.01e-7, 0.0, 0.0])]);
+    let reached = merged_unmet(&apart, fuzzy_value(&apart, 1.5));
+    assert!(
+        matches!(reached, Some((1, 2, Reached::Sides { gap })) if (1.0e-7..1.02e-7).contains(&gap)),
+        "{reached:?}"
+    );
+    let inside = footprints_of(&[Placement::TurnedAndMoved {
         axis: Z,
         angle: PI / 4.0,
         offset: [0.0, -5.0 + 1e-6, 0.0],
     }]);
-    let reason = merged_unmet(&inside, fuzzy_value(&inside, 1.5)).unwrap();
-    assert!(reason.contains("a corner"), "{reason}");
+    let reached = merged_unmet(&inside, fuzzy_value(&inside, 1.5));
+    assert!(
+        matches!(reached, Some((0, 1, Reached::Corner { gap })) if (0.99e-6..1.01e-6).contains(&gap)),
+        "{reached:?}"
+    );
+    let turned = footprints_of(&three_turns());
+    let reached = within_reach(&turned, reach_of(1.4e-5));
+    assert!(
+        matches!(
+            reached,
+            Some((1, 2, Reached::Third { gap, degrees }))
+                if (2.41e-4..2.42e-4).contains(&gap) && (3.51..3.52).contains(&degrees)
+        ),
+        "{reached:?}"
+    );
 }
 
 #[test]
 fn each_counterexample_moved_across_the_reach_holds_the_property() {
     // /break-it on the reach: each counterexample moved, along the coordinate that sets its
-    // gap, from well inside the reach to well past twice it, in about 120 steps: the first's
-    // mirror plane and the fourth's axis 4.3e-5 either way (the corner's gap moves by as
-    // much); the turns' third copy 3e-4 back and 6e-4 on along x (its side's gap from the
-    // crossing moves by as much); the third's mirror plane 1.2e-2 either way (its corners'
-    // gaps move by 3.1e-3 of that). OCCT is wrong across a band round each (a corner up to
-    // the reach inside the side; the turns' third side up to 1.3 times the crossing's
-    // reach off), and the property holds on every one: wrong only where `merged_unmet` says.
+    // gap, from well inside the reach to well past twice it, in 120 or 180 steps (each one's
+    // `nudge` and `sweep`). OCCT is wrong across a band round each (a corner up to the
+    // reach inside the side; the turns' third side up to 1.3 times the crossing's reach
+    // off), and the property holds on every one: wrong only where `merged_unmet` says. The
+    // volume is held on ten or more of each one's steps (13 of the turns', 41 to 76 of the
+    // others').
     let mut k = kernel();
     let inputs = plate_and_tools(&mut k);
-    let t = 1.4222e-5 + 2.0 * CONFUSION;
     let mut broken = Vec::new();
-    for (n, c) in counterexamples().into_iter().enumerate() {
-        let steps: Vec<f64> = match n {
-            1 => (-60..=120).map(|i| f64::from(i) * 5e-6).collect(),
-            2 => (-60..=60).map(|i| f64::from(i) * 2e-4).collect(),
-            _ => (-60..=60).map(|i| f64::from(i) * 0.05 * t).collect(),
-        };
-        for d in steps {
-            let mut p = c.placements.clone();
-            match (n, &mut p[..]) {
-                (0 | 2, [Placement::Mirror { origin, .. }, ..]) => origin[1] += d,
-                (1, [_, _, third]) => {
-                    *third = Placement::TurnedAndMoved {
-                        axis: Z,
-                        angle: TAU - radians(1e-9),
-                        offset: [d, 0.0, 0.0],
-                    }
-                }
-                (3, [_, Placement::Rotation { axis, .. }]) => axis.origin[1] += d,
-                _ => unreachable!("{}", c.what),
-            }
-            if silico_protocol::check_copies(&p).is_err() {
+    for c in counterexamples() {
+        let footprints = footprints_of(&c.placements);
+        let reach = reach_of(fuzzy_value(&footprints, if c.cut { 1.5 } else { 2.0 }));
+        let (steps, step) = c.sweep.clone();
+        let (mut held, mut moves) = (0, 0);
+        for i in steps {
+            let d = f64::from(i) * step * reach;
+            let mut placements = c.placements.clone();
+            (c.nudge)(&mut placements, d);
+            if silico_protocol::check_copies(&placements).is_err() {
                 continue;
             }
-            if let Err(e) = copies_are_sound(&mut k, &inputs, &p, c.cut) {
-                broken.push(format!("{} moved {d:e}: {e}", c.what));
+            moves += 1;
+            match copies_are_sound(&mut k, &inputs, &placements, c.cut) {
+                Ok(None) => held += 1,
+                Ok(Some(_)) => {}
+                Err(e) => broken.push(format!("{} moved {d:e}: {e}", c.what)),
             }
         }
+        assert!(held >= 10, "{}: held on {held} of {moves}", c.what);
     }
     assert!(broken.is_empty(), "{broken:#?}");
 }
