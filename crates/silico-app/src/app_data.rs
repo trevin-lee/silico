@@ -90,7 +90,7 @@ pub(crate) fn write_bytes(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// How old a file left by a write that never finished (`<name>.<pid>.<n>.new`, a quit or a
 /// kill mid-write) is before it's removed: far longer than any write takes, so a write under
 /// way, this instance's or another's, is never taken for one.
-pub const LEFT_OVER_AGE: Duration = Duration::from_secs(60 * 60);
+pub(crate) const LEFT_OVER_AGE: Duration = Duration::from_secs(60 * 60);
 
 /// Whether a file named `name` is one a write of a kept file left ([`write_bytes`]'s
 /// `<kept>.<pid>.<n>.new`), `kept` saying whether `<kept>` is the name of a kept file;
@@ -184,15 +184,12 @@ pub(crate) mod tests {
             "pane-widths.123.4.new",
             "notes.txt",
         ];
+        // Every file modified at the same moment, `at`, so none is a hair older than another
+        // however fine the file system's clock (APFS's is a nanosecond's).
+        let at = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
         for name in names {
-            std::fs::write(dir.path().join(name), b"x").unwrap();
+            written_at(dir.path(), name, at);
         }
-        let modified = |name: &str| {
-            std::fs::metadata(dir.path().join(name))
-                .unwrap()
-                .modified()
-                .unwrap()
-        };
         let listed = || {
             let mut listed: Vec<String> = std::fs::read_dir(dir.path())
                 .unwrap()
@@ -201,14 +198,13 @@ pub(crate) mod tests {
             listed.sort();
             listed
         };
-        // An hour on, to the second, from the newest: nothing yet (older than, not as old as).
-        let newest = names.iter().map(|name| modified(name)).max().unwrap();
-        remove_left_over(&file, newest + Duration::from_secs(60 * 60));
+        // An hour on, to the second: nothing yet (older than an hour, not as old as).
+        remove_left_over(&file, at + Duration::from_secs(60 * 60));
         let mut all: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
         all.sort();
         assert_eq!(listed(), all);
         // Past it: the two the kept file's writes left, alone.
-        remove_left_over(&file, newest + Duration::from_secs(60 * 60 + 1));
+        remove_left_over(&file, at + Duration::from_secs(60 * 60 + 1));
         assert_eq!(
             listed(),
             [
@@ -219,24 +215,33 @@ pub(crate) mod tests {
             ]
         );
         // A clock set back: nothing.
-        std::fs::write(dir.path().join("recent-documents.9.9.new"), b"x").unwrap();
-        remove_left_over(&file, SystemTime::UNIX_EPOCH);
+        written_at(dir.path(), "recent-documents.9.9.new", at);
+        remove_left_over(&file, at - Duration::from_secs(1));
         assert!(listed().contains(&"recent-documents.9.9.new".to_owned()));
         // No folder: nothing, and no panic.
-        remove_left_over(&dir.path().join("gone").join("recent-documents"), newest);
-        remove_left_over(Path::new("/"), newest);
+        remove_left_over(&dir.path().join("gone").join("recent-documents"), at);
+        remove_left_over(Path::new("/"), at);
+    }
+
+    /// `name` in `folder`, written and modified at `at`.
+    fn written_at(folder: &Path, name: &str, at: SystemTime) {
+        let file = folder.join(name);
+        std::fs::write(&file, b"x").unwrap();
+        std::fs::File::options()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
     }
 
     /// `name` in `folder`, written as a write that never finished left it, modified two
     /// hours ago.
     pub(crate) fn left_two_hours_ago(folder: &Path, name: &str) {
-        let left = folder.join(name);
-        std::fs::write(&left, b"half").unwrap();
-        std::fs::File::options()
-            .write(true)
-            .open(&left)
-            .unwrap()
-            .set_modified(SystemTime::now() - Duration::from_secs(2 * 60 * 60))
-            .unwrap();
+        written_at(
+            folder,
+            name,
+            SystemTime::now() - Duration::from_secs(2 * 60 * 60),
+        );
     }
 }

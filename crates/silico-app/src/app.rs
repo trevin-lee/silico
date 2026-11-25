@@ -3198,7 +3198,8 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The File menu's items: New, Open…, Save As…, Export…, Revert, Reload, and Close.
+    /// The File menu's items: New, Open…, Save As…, Export…, Revert to saved, Reload, and
+    /// Close.
     fn file_menu(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let open = !self.tabs.is_empty();
         let revertible = self

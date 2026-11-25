@@ -70,10 +70,6 @@ pub const MAX_SIDE: u32 = 1024;
 /// that can't be read just now, isn't removed at once ([`prune`]).
 pub const SPARE: usize = crate::recent::KEPT;
 
-/// How old a file left by a write that never finished (`<key>.png.<pid>.<n>.new`, a quit
-/// mid-write) is before it's removed: the app's files' rule (`app_data::LEFT_OVER_AGE`).
-pub use crate::app_data::LEFT_OVER_AGE;
-
 /// How many of a picture's pixels a point of the cell has, each way: a Retina display's 2
 /// shows it pixel for pixel, a display of 1 at half (egui's wgpu textures have no mipmaps,
 /// so the thread cuts it down, averaging, rather than leave a quarter of a 260 by 160
@@ -919,8 +915,9 @@ fn look_and_prune(folder: &Path, paths: &[String]) -> Told {
 
 /// `folder` pruned at `now`: every picture but those of `keys` and the newest [`SPARE`] of
 /// the rest (by when each was modified, then by name) removed, or none if `keys` is none;
-/// and every file a write left ([`left_by_a_write`]) older than [`LEFT_OVER_AGE`]. Any other
-/// file is left. So the folder holds at most twice as many pictures as Recent lists.
+/// and every file a write left ([`left_by_a_write`]) older than an hour
+/// (`app_data::LEFT_OVER_AGE`). Any other file is left. So the folder holds at most twice as
+/// many pictures as Recent lists.
 fn prune(folder: &Path, keys: Option<&BTreeSet<String>>, now: SystemTime) {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return;

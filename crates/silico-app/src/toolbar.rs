@@ -225,10 +225,6 @@ const fn keyed(button: Button, key: shortcuts::Command) -> Button {
 /// What a command's tooltip says when it isn't built yet.
 const NOT_BUILT: &str = "Not built yet";
 
-/// Create Sketch's words: its button's, and its item's in the canvas's context menu
-/// (`crate::canvas_menu`), which begins the same pick (`crate::plane_pick`).
-pub(crate) const CREATE_SKETCH_WORDS: &str = shortcuts::Command::CreateSketch.label();
-
 const CREATE_SKETCH: Button = registered(shortcuts::Command::CreateSketch, Does::CreateSketch);
 const PAD: Button = registered(shortcuts::Command::Pad, Does::Dialog(Kind::Pad));
 const POCKET: Button = registered(shortcuts::Command::Pocket, Does::Dialog(Kind::Pocket));
@@ -744,8 +740,8 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
             .layout(Layout::left_to_right(Align::Center));
         ui.scope_builder(buttons, |ui| {
             ui.spacing_mut().item_spacing.x = theme::TOOLBAR_BUTTON_GAP;
-            for command in panel.row {
-                row_button(ui, command, shown, act);
+            for button in panel.row {
+                row_button(ui, button, shown, act);
             }
         });
         let opener = ui.put(label_rect, |ui: &mut Ui| {
@@ -759,8 +755,8 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
                     }
                 }
                 None => {
-                    for command in panel.row {
-                        menu_entry(ui, &Entry::Button(*command), shown, act);
+                    for button in panel.row {
+                        menu_entry(ui, &Entry::Button(*button), shown, act);
                     }
                 }
             });
@@ -778,19 +774,19 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
 /// A command's button in a panel's row, with its tooltip, its keys named if the registry
 /// gives it any; a click opens its dialog, or, for Create Sketch, begins its pick; or chooses
 /// its tool, or turns Construction on or off.
-fn row_button(ui: &mut Ui, command: &Button, shown: &Shown<'_>, act: &mut Option<Act>) {
+fn row_button(ui: &mut Ui, button: &Button, shown: &Shown<'_>, act: &mut Option<Act>) {
     let response = tool_button(
         ui,
-        command.icon,
-        command.label,
-        command.enabled(shown),
-        command.pressed(shown),
+        button.icon,
+        button.label,
+        button.enabled(shown),
+        button.pressed(shown),
     );
-    let said = command.said(shown);
-    let keys = command.key.and_then(|key| key.shown(ui.ctx()));
-    let response = bar::tooltip(response, command.label, keys, said.as_deref());
+    let said = button.said(shown);
+    let keys = button.key.and_then(|key| key.shown(ui.ctx()));
+    let response = bar::tooltip(response, button.label, keys, said.as_deref());
     if response.clicked()
-        && let Some(asked) = command.act()
+        && let Some(asked) = button.act()
     {
         *act = Some(asked);
     }
@@ -954,42 +950,42 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                 ui.close();
             }
         }
-        Entry::Button(command) => {
-            let item = egui::Button::image_and_text(icons::icon(command.icon), command.label);
-            let enabled = command.enabled(shown);
-            match command.does {
+        Entry::Button(button) => {
+            let item = egui::Button::image_and_text(icons::icon(button.icon), button.label);
+            let enabled = button.enabled(shown);
+            match button.does {
                 Does::Tool(_) | Does::Construction => {
-                    let on = command.pressed(shown).is_some_and(|(_, on)| on);
+                    let on = button.pressed(shown).is_some_and(|(_, on)| on);
                     if ui.add_enabled(enabled, item.selected(on)).clicked() {
-                        *act = command.act();
+                        *act = button.act();
                         ui.close();
                     }
                 }
                 Does::CreateSketch => {
                     let item = ui.add_enabled(enabled, item);
-                    let item = match (command.built(shown), command.said(shown)) {
+                    let item = match (button.built(shown), button.said(shown)) {
                         (false, Some(said)) => item.on_disabled_hover_text(said),
                         _ => item,
                     };
                     if item.clicked() {
-                        *act = command.act();
+                        *act = button.act();
                         ui.close();
                     }
                 }
                 Does::Dialog(_) | Does::Constraint(_) => {
                     let item = ui.add_enabled(enabled, item);
-                    let item = match command.why_off(shown) {
+                    let item = match button.why_off(shown) {
                         Some(why) => item.on_disabled_hover_text(why),
                         None => item,
                     };
                     if item.clicked() {
-                        *act = command.act();
+                        *act = button.act();
                         ui.close();
                     }
                 }
                 Does::Filter(kind) => {
                     // Checked while its kind is taken (the prototype's `✓`), its key beside it.
-                    let key = command
+                    let key = button
                         .key
                         .map(|key| key.keys_text(ui.ctx()))
                         .unwrap_or_default();
@@ -1001,7 +997,7 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                 }
                 Does::NotBuilt => {
                     let item = ui.add_enabled(false, item);
-                    if let Some(said) = command.said(shown) {
+                    if let Some(said) = button.said(shown) {
                         item.on_disabled_hover_text(said);
                     }
                 }

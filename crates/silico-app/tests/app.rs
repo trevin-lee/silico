@@ -61792,7 +61792,20 @@ fn a_command_that_cant_run_is_listed_off_and_runs_neither_by_enter_nor_by_a_clic
             .is_disabled()
     );
     open_search(&mut h);
-    search_for(&mut h, "undo", "Undo Edit");
+    // Revert to saved with no edits (no transaction): off, no words, as File's item is.
+    search_for(&mut h, "revert", "Revert to saved File");
+    assert_eq!(
+        search_rows(&h),
+        [("Revert to saved File".to_owned(), true, true)]
+    );
+    h.key_press(Key::Enter);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(search_open(&h));
+    assert!(!h.state().tabs()[0].transaction);
+    retype(&mut h, In::Window, "Search commands", "undo");
+    step_until(&mut h, "Undo", |h| search_words(h) == ["Undo Edit"]);
     assert_eq!(search_rows(&h), [("Undo Edit".to_owned(), true, true)]);
     assert_eq!(why(&h, "Undo Edit"), None);
     // Enter on it: nothing run, the search still open.
