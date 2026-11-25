@@ -1046,7 +1046,11 @@ fn a_step_never_run_in_two_rounds_is_counted_once_so_done_stays_under_steps_whil
     // and a sketch on the 10 mm box's top, padded onto it: a second round. That round plans
     // the cut unsettled again (it has no result) and settles it again. Its pad's last
     // step, the fuse onto the box, is held: while it is, one step is still to settle, so
-    // `done` is under `steps`. Counted twice, the cut made them equal.
+    // `done` is under `steps`. Counted twice, the cut made them equal. Since M5's milestone
+    // review (A13-M1) the sketch is placed ahead of the first round's end, once the box is
+    // built and described, so the pad's steps run, and are counted, in the first round,
+    // and the fuse is held there: `done` is under `steps` by it alone, the pad's other steps
+    // counted, and the second round, which plans the cut again, follows its release.
     let engine = engine_with_a_planar_box();
     let refused_pocket = [
         cube(),
@@ -1089,7 +1093,7 @@ fn a_step_never_run_in_two_rounds_is_counted_once_so_done_stays_under_steps_whil
         std::thread::sleep(Duration::from_millis(2));
     }
     let held = progress.now();
-    assert_eq!(progress.rounds(), 2, "{held:?}");
+    assert_eq!(progress.rounds(), 1, "{held:?}");
     assert!(held.done < held.steps, "{held:?}");
     assert_eq!(
         held.done + 1,
@@ -1112,6 +1116,9 @@ fn a_step_never_run_in_two_rounds_is_counted_once_so_done_stays_under_steps_whil
     );
     let done = progress.now();
     assert_eq!((done.done, done.ended), (done.steps, true), "{done:?}");
+    // The second round, placing the sketch, and planning the cut again.
+    assert_eq!(progress.rounds(), 2, "{done:?}");
+    assert_eq!(done.steps, held.steps, "{done:?}");
 }
 
 // ---- any face plane, read, written, gated, and rebuilt ----

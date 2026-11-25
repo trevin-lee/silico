@@ -1096,7 +1096,8 @@ pub struct StepCount {
     /// The steps of its plan: none until its plan is made (after the sketches it sweeps are
     /// solved). A rebuild with sketches on faces plans in rounds, each adding the steps of
     /// the features whose faces the rounds before it placed (docs/ports/attacher.md, *In
-    /// rounds*): so this grows, round to round, and never shrinks.
+    /// rounds*), and within a round those of the features whose faces it places ahead of its
+    /// end: so this grows, round to round, and never shrinks.
     pub steps: usize,
     /// The step started last of those running, as its feature and the feature's type
     /// (`f0000001 fillet`): none while no step runs.
@@ -1125,8 +1126,9 @@ pub enum StepState {
     /// rebuild stopped before it settled; Rebuild resumes it.
     Queued,
     /// A step it owns is running; a sketch, its solve; a sketch on a face reads queued until
-    /// the round that places it, its solve included, then its outcome: its result is the
-    /// sketch placed on its face.
+    /// its face is placed (by the round that places it, or ahead of that round's end, once
+    /// its face's solids are built and described), its solve included, then its outcome:
+    /// its result is the sketch placed on its face.
     Running,
     /// Its solid made (its last step settled with a result, or kept from before); a sketch,
     /// solved.
@@ -1466,6 +1468,43 @@ impl StepCounter {
         });
     }
 
+    /// Sketches' faces placed ahead of their round's end (`Engine::look_ahead`): the plan the
+    /// round's jobs run by has `steps` steps now, each called as `labels` says, and the
+    /// features at `planned` (by place: the sketches placed, and what's made from them, which
+    /// waited on them) are as `found` finds them, each with its check, held failure, and
+    /// firmness. Not a round: the rest of the features are left as the round has them, its
+    /// plan for them the same. Neither count goes back.
+    fn placed_ahead(
+        &self,
+        steps: usize,
+        labels: BTreeMap<Key, String>,
+        found: &Found,
+        planned: &[usize],
+    ) {
+        self.change(|counted| {
+            for &f in planned {
+                if let Some(&state) = found.states.get(f) {
+                    counted.force(f, state);
+                }
+                if found.unchecked.contains(&f) {
+                    counted.unchecked.insert(f);
+                } else {
+                    counted.unchecked.remove(&f);
+                }
+                match found.held.get(&f) {
+                    Some(&state) => counted.held.insert(f, state),
+                    None => counted.held.remove(&f),
+                };
+                if let (Some(firm), Some(&now)) = (counted.firm.get_mut(f), found.firm.get(f)) {
+                    *firm = now;
+                }
+            }
+            counted.count.steps = counted.count.steps.max(steps);
+            counted.count.done = counted.settled.len().min(counted.count.steps);
+            counted.labels = labels;
+        });
+    }
+
     /// How many rounds the recompute has planned so far (docs/ports/attacher.md, *In
     /// rounds*): a test's measure of how far it went.
     #[cfg(any(test, feature = "fake"))]
@@ -1749,8 +1788,9 @@ impl Counted {
 /// ([`StepCounter::sketch_started`]): not for a sketch on a face. Its solve comes before its
 /// face is placed, and the model words it by its placement first (a face broken, or one whose
 /// solid didn't build, is its outcome however it solved, as FreeCAD attaches a sketch before
-/// solving it): so it's queued until the round that places it says what it came to, and
-/// never goes back from what its solve said.
+/// solving it): so it's queued until its face is placed (by the round that places it, or
+/// ahead of that round's end) and its solve is had, and it's said what it came to, never
+/// going back from what its solve said.
 fn reported(document: &Checked, id: &FeatureId) -> Option<usize> {
     let place = document.place(id)?;
     match &document.document().features.get(place)?.operation {
@@ -4461,7 +4501,8 @@ fn silico_bug(message: &str) -> Error {
 
 /// What every round of one rebuild shares ([`Engine::run`]): its document, the sketches it
 /// solved before its first plan, its generation, its count of steps, what it reads of what's
-/// kept, and the element maps its features are named with.
+/// kept, the element maps its features are named with, and the faces placed ahead of their
+/// rounds' ends.
 #[derive(Clone, Copy)]
 struct Rebuild<'a> {
     document: &'a Arc<Checked>,
@@ -4470,6 +4511,143 @@ struct Rebuild<'a> {
     progress: &'a StepCounter,
     reads: Reads,
     known: &'a NamedMaps,
+    ahead: &'a Mutex<Ahead>,
+}
+
+/// The sketches on faces a rebuild has placed ahead of the ends of their rounds
+/// ([`Engine::look_ahead`]), so their features' steps run beside the rest of the round
+/// rather than after it (docs/ports/attacher.md, *In rounds*: a slow branch a sketch doesn't
+/// come from never delays it). A sketch is placed ahead only on a frame, and only once every
+/// feature its face's solids are made from has settled: its frame is then the one the end of
+/// the round that places it finds, from the same solids, so the rounds, their plans, and the
+/// model are as they'd be without it, and a step run ahead is one a later round's plan holds
+/// by the same key, which it takes as built. Kept from round to round, so a round's plan
+/// for its jobs starts with every frame placed ahead before it.
+#[derive(Default)]
+struct Ahead {
+    /// Each sketch placed ahead: its face's frame.
+    frames: BTreeMap<FeatureId, silico_protocol::FaceFrame>,
+    /// The sketches, by place, whose faces were found settled but on no frame (refused,
+    /// blocked, or found by a name no solid built from its makers holds): left for the end
+    /// of the round that places them, as every refusal is, since a broken name's candidates
+    /// are read from every live solid.
+    left: BTreeSet<usize>,
+}
+
+/// What a look ahead finds of a sketch's face ([`ahead_faces`]).
+enum Look {
+    /// Placed on this frame, its face's solids settled.
+    Frame(silico_protocol::FaceFrame),
+    /// Settled, but on no frame: left for its round's end.
+    Left,
+    /// Not settled yet: the features, by place, that its face's solids are made from
+    /// (those solids themselves among them), to wait for.
+    Unsettled(BTreeSet<usize>),
+}
+
+/// The sketches on faces a schedule waits on to look ahead again ([`Engine::look_ahead`]),
+/// each until every feature its face's solids are made from has settled
+/// ([`settled_feature`]).
+#[derive(Default)]
+struct Watch {
+    /// For each sketch, by place, how many of those features haven't settled yet.
+    pending: BTreeMap<usize, usize>,
+    /// Each of those features not settled yet, by place: the sketches waiting on it.
+    unsettled: BTreeMap<usize, Vec<usize>>,
+}
+
+impl Watch {
+    /// The watch of `sketches`, each with the features it waits on, as `s` has them settled
+    /// under `plan`; or none, if one of them has nothing left to wait on (it settled since it
+    /// was looked at, and is to be looked at again).
+    fn of(s: &Schedule, plan: &Plan, sketches: Vec<(usize, BTreeSet<usize>)>) -> Option<Watch> {
+        let mut watch = Watch::default();
+        for (sketch, features) in sketches {
+            let mut pending = 0;
+            for f in features {
+                if !settled_feature(plan, f, &s.done, &s.measuring) {
+                    pending += 1;
+                    watch.unsettled.entry(f).or_default().push(sketch);
+                }
+            }
+            if pending == 0 {
+                return None;
+            }
+            watch.pending.insert(sketch, pending);
+        }
+        Some(watch)
+    }
+
+    /// The features of `plan` whose step `key` just settled in `s`, each counted settled for
+    /// the sketches waiting on it if it has: whether any of those sketches has nothing left to
+    /// wait on, and is to be looked at again.
+    fn settled(s: &mut Schedule, plan: &Plan, key: &Key) -> bool {
+        let mut look = false;
+        for &f in plan.owners.get(key).into_iter().flatten() {
+            if !s.watch.unsettled.contains_key(&f)
+                || !settled_feature(plan, f, &s.done, &s.measuring)
+            {
+                continue;
+            }
+            for sketch in s.watch.unsettled.remove(&f).unwrap_or_default() {
+                if let Some(pending) = s.watch.pending.get_mut(&sketch) {
+                    *pending = pending.saturating_sub(1);
+                    look |= *pending == 0;
+                }
+            }
+        }
+        look
+    }
+}
+
+/// Whether the feature at `f` of `plan` has settled in a schedule (`done`, its results, and
+/// `measuring`, the solids whose measures are still to come): a step of its own failed, or
+/// each is built and none is still to be measured. So its outcome is the one the end of its
+/// round finds, once all it's made from has settled too. A feature with no steps (a sketch,
+/// or one refused or blocked by its plan) has settled as it's planned.
+fn settled_feature(
+    plan: &Plan,
+    f: usize,
+    done: &BTreeMap<Key, StepResult>,
+    measuring: &BTreeSet<Key>,
+) -> bool {
+    let Some(planned) = plan.features.get(f) else {
+        return true;
+    };
+    for key in &planned.steps {
+        match done.get(key) {
+            None => return false,
+            Some(Err(_)) => return true,
+            Some(Ok(_)) if measuring.contains(key) => return false,
+            Some(Ok(_)) => {}
+        }
+    }
+    true
+}
+
+/// The features of `plan`, by place, that the features at `from` are made from, all the way
+/// up (their bases, tools, originals, and sketches), and those at `from` themselves.
+fn made_from(plan: &Plan, from: &BTreeSet<usize>) -> BTreeSet<usize> {
+    let mut features = BTreeSet::new();
+    let mut stack: Vec<usize> = from.iter().copied().collect();
+    while let Some(f) = stack.pop() {
+        if !features.insert(f) {
+            continue;
+        }
+        if let Some(planned) = plan.features.get(f) {
+            stack.extend(planned.uses.iter().chain(&planned.sweeps).copied());
+        }
+    }
+    features
+}
+
+/// What a schedule has settled: each step's result, the solids that couldn't be measured,
+/// and the fillets' and chamfers' steps whose edges didn't resolve.
+#[derive(Clone, Copy)]
+struct Results<'a> {
+    done: &'a BTreeMap<Key, StepResult>,
+    unmeasured: &'a BTreeMap<Key, Error>,
+    unresolved: &'a BTreeMap<Key, crate::references::Broken>,
 }
 
 /// What a round of a rebuild takes from those before it: its number, from 0, and the
@@ -4495,8 +4673,16 @@ struct Round {
 
 /// A recompute's steps in flight.
 struct Schedule {
+    /// The plan its jobs run by: the round's, or, once sketches' faces are placed ahead of
+    /// the round's end ([`Engine::look_ahead`]), the round's with those frames too, which
+    /// holds every step of the round's, each the same, and the steps of the features made from
+    /// those sketches besides.
+    plan: Arc<Plan>,
     /// Results so far: the kept ones it started with, and its own.
     done: BTreeMap<Key, StepResult>,
+    /// Steps that can't run, since an input failed (in this recompute, or an earlier one
+    /// whose failure was kept): never started, and decided blocked or failed from `done`.
+    doomed: BTreeSet<Key>,
     /// For each step not yet run, how many of its inputs aren't built yet.
     waiting: BTreeMap<Key, usize>,
     /// The steps that use each step.
@@ -4507,7 +4693,15 @@ struct Schedule {
     /// Features' solids measured, or tried, in this rebuild (any round), by their steps'
     /// keys: none is measured twice in one rebuild.
     measured: BTreeSet<Key>,
+    /// The solids whose measures are queued or running, by their steps' keys.
+    measuring: BTreeSet<Key>,
     running: usize,
+    /// How many of its threads wait for a job.
+    idle: usize,
+    /// How many threads it has started.
+    threads: usize,
+    /// The sketches on faces it waits on to look ahead again.
+    watch: Watch,
     superseded: bool,
     /// A step that panicked, a bug in Silico: the recompute stops, and fails with this.
     broken: Option<Error>,
@@ -4517,6 +4711,151 @@ struct Schedule {
     /// Features refused by their result's check, and every feature made from one: a step
     /// only these need isn't started (one already running finishes, unused).
     refusals: Refusals,
+}
+
+impl Schedule {
+    fn results(&self) -> Results<'_> {
+        Results {
+            done: &self.done,
+            unmeasured: &self.unmeasured,
+            unresolved: &self.unresolved,
+        }
+    }
+
+    /// Whether nothing is left to run: every thread stops.
+    fn finished(&self) -> bool {
+        self.superseded || self.broken.is_some() || (self.ready.is_empty() && self.running == 0)
+    }
+
+    /// Each step of `to`, a plan holding every step of `from` (the plan its jobs ran by) and
+    /// more, that `from` hasn't: taken from `fetched` (kept in memory, or read from the
+    /// cache) or built so far, or left out if an input failed, or else scheduled, as a
+    /// round's steps are ([`Engine::build_round`]); and the solids among them built but not
+    /// measured yet, measured. `to` is the plan its jobs run by from now on.
+    fn extend(&mut self, from: &Plan, to: Arc<Plan>, fetched: BTreeMap<Key, StepResult>) {
+        for (key, result) in fetched {
+            self.done.entry(key).or_insert(result);
+        }
+        // Its features refused already, by results kept or read from the cache: the same,
+        // for `from`'s features, as the round's checks have them so far.
+        self.refusals = to.refusals(&self.done);
+        for key in &to.order {
+            if from.steps.contains_key(key) || self.done.contains_key(key) {
+                continue;
+            }
+            let inputs = to.steps.get(key).map(Step::inputs).unwrap_or_default();
+            let cant = inputs.iter().any(|input| {
+                self.doomed.contains(input) || matches!(self.done.get(input), Some(Err(_)))
+            });
+            if cant {
+                self.doomed.insert(*key);
+                continue;
+            }
+            let mut unbuilt = 0;
+            for input in inputs {
+                if !self.done.contains_key(&input) {
+                    unbuilt += 1;
+                    self.users.entry(input).or_default().push(*key);
+                }
+            }
+            if unbuilt == 0 {
+                self.ready.push_back(Job::Make(*key));
+            } else {
+                self.waiting.insert(*key, unbuilt);
+            }
+        }
+        let results: Vec<Key> = to.results.difference(&from.results).copied().collect();
+        self.measure_kept(results);
+        self.plan = to;
+    }
+
+    /// Each of `results`, solids built before (kept, or from the cache, or carried from the
+    /// rounds before) but not summarized or described yet, measured, unless the kernel
+    /// refused to for their values (it would again), or a round before this one measured
+    /// them or tried to (a worker that failed is asked again by the next rebuild).
+    fn measure_kept(&mut self, results: impl IntoIterator<Item = Key>) {
+        for key in results {
+            if let Some(Ok(built)) = self.done.get(&key) {
+                if built.needs_measure() {
+                    self.measure(key);
+                } else if let Some(error) = built.measure_refused() {
+                    self.unmeasured.insert(key, error.clone());
+                }
+            }
+        }
+    }
+
+    /// The solid of step `key` measured by a job of its own, unless it has been in this
+    /// rebuild.
+    fn measure(&mut self, key: Key) {
+        if self.measured.insert(key) {
+            self.measuring.insert(key);
+            self.ready.push_back(Job::Measure(key));
+        }
+    }
+}
+
+/// What a round's threads share ([`Engine::serve`]): its schedule, the rebuild's
+/// generation, count, and maps, and, to look ahead ([`Engine::look_ahead`]), its document,
+/// the sketches it sweeps, the frames placed by the rounds before, the sketches solved, and
+/// the faces placed ahead.
+struct Serving<'a> {
+    schedule: Mutex<Schedule>,
+    changed: Condvar,
+    rebuild: Rebuild<'a>,
+    frames: &'a BTreeMap<FeatureId, Placed>,
+    solutions: &'a SketchResults,
+    /// The recompute's span, for its threads' steps: so a worker's call traces back to the
+    /// recompute, and the edit that started it (ARCHITECTURE.md, invariant 9).
+    parent: tracing::Span,
+}
+
+impl Serving<'_> {
+    /// A job counted as running no longer (the look ahead a round starts with): if it was
+    /// the last, every thread is told nothing is left.
+    fn stopped_running(&self) {
+        let mut s = lock(&self.schedule);
+        s.running = s.running.saturating_sub(1);
+        let finished = s.finished();
+        drop(s);
+        if finished {
+            self.changed.notify_all();
+        }
+    }
+}
+
+/// Every step's and solve's key of `plan`: what's worth keeping for it.
+fn keys_of(plan: &Plan) -> Arc<BTreeSet<Key>> {
+    Arc::new(
+        plan.steps
+            .keys()
+            .copied()
+            .chain(plan.sketches.iter().map(|(_, key)| *key))
+            .collect(),
+    )
+}
+
+/// The frames `frames` places, the rounds' so far, and with them each `ahead` placed that
+/// they don't hold yet.
+fn with_ahead(frames: &BTreeMap<FeatureId, Placed>, ahead: &Ahead) -> BTreeMap<FeatureId, Placed> {
+    let mut with = frames.clone();
+    for (id, frame) in &ahead.frames {
+        with.entry(id.clone()).or_insert(Placed::Frame(*frame));
+    }
+    with
+}
+
+/// The places of the sketches on faces `plan` has waiting that `ahead` hasn't left for their
+/// rounds' ends: those a look ahead may place.
+fn to_look(plan: &Plan, ahead: &Ahead) -> Vec<usize> {
+    plan.features
+        .iter()
+        .enumerate()
+        .filter(|(at, planned)| {
+            matches!(planned.on_face, OnFace::Waits) && !ahead.left.contains(at)
+        })
+        .map(|(at, _)| at)
+        .collect()
 }
 
 /// Features refused by their result's check, and what's made from them, by index.
@@ -4538,7 +4877,11 @@ impl<K: Kernel + 'static> Engine<K> {
     /// that round, the last, is published, once. Each round's plan is a function of the
     /// document and the frames before it, so the rounds and the model don't depend on which
     /// thread finishes first. Sketches are solved in the first round only: later rounds find
-    /// every solve done.
+    /// every solve done. Within a round, a sketch whose face's solids have settled is placed
+    /// ahead of the round's end ([`look_ahead`](Self::look_ahead)), and the steps of what's
+    /// made from it run beside the rest of the round, so a slow branch it doesn't come from
+    /// never delays it; its frame is the one the round that places it finds, so the rounds
+    /// and the model are the same, and a later round takes those steps as built.
     fn run(
         &self,
         document: &Arc<Checked>,
@@ -4562,6 +4905,7 @@ impl<K: Kernel + 'static> Engine<K> {
         } else {
             NamedMaps::default()
         };
+        let ahead = Mutex::new(Ahead::default());
         let rebuild = Rebuild {
             document,
             first: &first,
@@ -4569,6 +4913,7 @@ impl<K: Kernel + 'static> Engine<K> {
             progress,
             reads,
             known: &known,
+            ahead: &ahead,
         };
         let mut solutions: SketchResults = BTreeMap::new();
         let mut frames: BTreeMap<FeatureId, Placed> = BTreeMap::new();
@@ -4583,16 +4928,16 @@ impl<K: Kernel + 'static> Engine<K> {
                     return Ok(RunOutcome::Superseded);
                 }
             }
-            let plan = Plan::of(document, &first.swept, &frames);
+            let plan = Arc::new(Plan::of(document, &first.swept, &frames));
             let Some(Round { schedule, keys }) =
-                self.build_round(&rebuild, &plan, carried, &mut solutions)?
+                self.build_round(&rebuild, &plan, &frames, carried, &mut solutions)?
             else {
                 return Ok(RunOutcome::Superseded);
             };
             let model = model(
                 document,
                 &plan,
-                &schedule,
+                schedule.results(),
                 &solutions,
                 generation,
                 Arc::clone(&known),
@@ -4664,16 +5009,21 @@ impl<K: Kernel + 'static> Engine<K> {
         Ok(RunOutcome::Published(model))
     }
 
-    /// One round of `rebuild` ([`run`](Self::run)): `plan`'s steps built, those `carried`
+    /// One round of `rebuild` ([`run`](Self::run)): `round`'s steps built, those `carried`
     /// from the rounds before taken as they are, and the rest read from what the engine
     /// keeps and the cache (unless nothing kept is read) or run; and, the first round, every
-    /// sketch not solved before the plan solved beside them, into `solutions`. The schedule
-    /// as it ended, and the plan's keys (its steps' and solves'); or none, if a newer
-    /// recompute superseded this one meanwhile.
+    /// sketch not solved before the plan solved beside them, into `solutions`. `round` is
+    /// planned with `frames`, those the rounds before placed; beside its steps, those of the
+    /// features made from the sketches whose faces were placed ahead of their rounds' ends
+    /// ([`look_ahead`](Self::look_ahead)), before or during this one, so its jobs and its
+    /// progress go by the plan with those frames too. The schedule as it ended, and its
+    /// plan's keys (its steps' and solves'); or none, if a newer recompute superseded this one
+    /// meanwhile.
     fn build_round(
         &self,
         rebuild: &Rebuild<'_>,
-        plan: &Plan,
+        round: &Arc<Plan>,
+        frames: &BTreeMap<FeatureId, Placed>,
         carried: Carried,
         solutions: &mut SketchResults,
     ) -> Result<Option<Round>, Error> {
@@ -4683,17 +5033,27 @@ impl<K: Kernel + 'static> Engine<K> {
             generation,
             progress,
             reads,
-            known,
+            ahead,
+            ..
         } = *rebuild;
         let kept = reads == Reads::Kept;
         let first_round = carried.round == 0;
-        let keys: Arc<BTreeSet<Key>> = Arc::new(
-            plan.steps
-                .keys()
-                .copied()
-                .chain(plan.sketches.iter().map(|(_, key)| *key))
-                .collect(),
-        );
+        // The round's plan, with the frames placed ahead in the rounds before that it doesn't
+        // hold yet: steps carried from those rounds, mostly.
+        let plan = {
+            let ahead = lock(ahead);
+            if ahead.frames.keys().all(|id| frames.contains_key(id)) {
+                Arc::clone(round)
+            } else {
+                Arc::new(Plan::of(
+                    document,
+                    &first.swept,
+                    &with_ahead(frames, &ahead),
+                ))
+            }
+        };
+        let plan = &plan;
+        let keys = keys_of(plan);
         let mut done = carried.done;
         {
             let mut state = lock(&self.state);
@@ -4707,15 +5067,8 @@ impl<K: Kernel + 'static> Engine<K> {
                 // the plan's keys hold them.
                 state.profiles.extend(first.profiles.iter().cloned());
             }
-            // Reading nothing kept, every step is built and every sketch solved.
+            // Reading nothing kept, every sketch is solved.
             if kept {
-                for key in &plan.order {
-                    if !done.contains_key(key)
-                        && let Some(result) = state.results.get(key)
-                    {
-                        done.insert(*key, result.clone());
-                    }
-                }
                 for (_, key) in &plan.sketches {
                     if !solutions.contains_key(key)
                         && let Some(result) = state.solutions.get(key)
@@ -4739,26 +5092,16 @@ impl<K: Kernel + 'static> Engine<K> {
             .filter(|(_, key)| !solutions.contains_key(key))
             .cloned()
             .collect();
-        // What's kept on disk for this kernel, for the steps not kept in memory.
-        if let Some(cache) = self.cache.get().filter(|_| kept) {
-            let kernel = self.kernel.identity();
-            for key in &plan.order {
-                if !done.contains_key(key)
-                    && let Some(built) = cache.get(kernel, key)
-                {
-                    // A seal says this user's Silico wrote the bytes, not that what it wrote
-                    // fits the step: a history that doesn't is a miss, as a worker's reply
-                    // with one would be refused.
-                    if plan.steps.get(key).is_some_and(|step| fits(step, &built)) {
-                        done.insert(*key, Ok(Arc::new(built)));
-                    } else {
-                        tracing::warn!(key = %key, "a cache entry doesn't fit its step: rebuilding it");
-                    }
-                }
-            }
+        // Reading nothing kept, every step is built: else what's kept in memory, and on disk
+        // for this kernel, for the steps not carried.
+        if kept {
+            self.read_kept(plan, plan.order.iter().copied(), &mut done);
         }
         let mut schedule = Schedule {
+            plan: Arc::clone(plan),
             done,
+            doomed: BTreeSet::new(),
+            measuring: BTreeSet::new(),
             waiting: BTreeMap::new(),
             users: BTreeMap::new(),
             ready: VecDeque::new(),
@@ -4767,6 +5110,9 @@ impl<K: Kernel + 'static> Engine<K> {
             unresolved: carried.unresolved,
             refusals: Refusals::default(),
             running: 0,
+            idle: 0,
+            threads: 0,
+            watch: Watch::default(),
             superseded: false,
             broken: None,
         };
@@ -4774,17 +5120,16 @@ impl<K: Kernel + 'static> Engine<K> {
         schedule.refusals = plan.refusals(&schedule.done);
         // Steps that can't run, since an input failed in an earlier recompute (and its
         // failure was kept): left out, and decided blocked or failed from `done`.
-        let mut doomed: BTreeSet<Key> = BTreeSet::new();
         for key in &plan.order {
             if schedule.done.contains_key(key) {
                 continue;
             }
             let inputs = plan.steps.get(key).map(Step::inputs).unwrap_or_default();
             let cant = inputs.iter().any(|input| {
-                doomed.contains(input) || matches!(schedule.done.get(input), Some(Err(_)))
+                schedule.doomed.contains(input) || matches!(schedule.done.get(input), Some(Err(_)))
             });
             if cant {
-                doomed.insert(*key);
+                schedule.doomed.insert(*key);
                 continue;
             }
             let mut unbuilt = 0;
@@ -4800,43 +5145,43 @@ impl<K: Kernel + 'static> Engine<K> {
                 schedule.waiting.insert(*key, unbuilt);
             }
         }
-        // Features' solids built before (kept, or from the cache) but not summarized or
-        // described yet, unless the kernel refused to for their values (it would again), or
-        // a round before this one measured them or tried to (a worker that failed is asked
-        // again by the next rebuild).
-        for key in &plan.results {
-            if let Some(Ok(built)) = schedule.done.get(key) {
-                if built.needs_measure() {
-                    if schedule.measured.insert(*key) {
-                        schedule.ready.push_back(Job::Measure(*key));
-                    }
-                } else if let Some(error) = built.measure_refused() {
-                    schedule.unmeasured.insert(*key, error.clone());
-                }
-            }
-        }
-        let to_run = schedule.ready.len() + schedule.waiting.len();
-        tracing::debug!(steps = plan.order.len(), to_run, "recompute planned");
+        // Features' solids built before, measured if they need it.
+        schedule.measure_kept(plan.results.iter().copied());
+        tracing::debug!(
+            steps = plan.order.len(),
+            to_run = schedule.ready.len() + schedule.waiting.len(),
+            "recompute planned"
+        );
         // Settled before any runs: those kept, and those that can't run.
         let settled = plan
             .order
             .iter()
-            .filter(|key| schedule.done.contains_key(key) || doomed.contains(key))
+            .filter(|key| schedule.done.contains_key(key) || schedule.doomed.contains(key))
             .copied();
         let found = plan.states(
             &schedule.done,
-            &doomed,
+            &schedule.doomed,
             solutions,
             &schedule.refusals,
             &schedule.unmeasured,
         );
         progress.planned(plan.order.len(), settled, plan.labels(document), &found);
-        let schedule = Mutex::new(schedule);
-        let changed = Condvar::new();
-        let threads = to_run.min(MOST_AT_ONCE);
-        // The recompute's span, for its threads' steps: so a worker's call traces back to
-        // the recompute, and the edit that started it (ARCHITECTURE.md, invariant 9).
-        let parent = tracing::Span::current();
+        // Whether a sketch's face may yet be placed ahead of the round's end: looked at
+        // first on a thread of its own, counted as running meanwhile.
+        let looks = !to_look(&schedule.plan, &lock(ahead)).is_empty();
+        if looks {
+            schedule.running += 1;
+        }
+        let threads = (schedule.ready.len() + schedule.waiting.len()).min(MOST_AT_ONCE);
+        let shared = Serving {
+            schedule: Mutex::new(schedule),
+            changed: Condvar::new(),
+            rebuild: *rebuild,
+            frames,
+            solutions,
+            parent: tracing::Span::current(),
+        };
+        let serving = &shared;
         let solved = std::thread::scope(|scope| -> Result<Option<SketchRun>, Error> {
             let sketches = if to_solve.is_empty() {
                 None
@@ -4844,7 +5189,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 let spawned = std::thread::Builder::new()
                     .name(format!("recompute-{}-sketches", generation.0))
                     .spawn_scoped(scope, || {
-                        let _entered = parent.enter();
+                        let _entered = serving.parent.enter();
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             self.solve_sketches(document, &to_solve, generation, progress)
                         }))
@@ -4852,15 +5197,21 @@ impl<K: Kernel + 'static> Engine<K> {
                     .map_err(|e| crate::worker::thread_error("recompute", &e))?;
                 Some(spawned)
             };
-            start_threads(threads, |n| {
-                std::thread::Builder::new()
-                    .name(format!("recompute-{}-{n}", generation.0))
-                    .spawn_scoped(scope, || {
-                        let _entered = parent.enter();
-                        self.serve(plan, &schedule, &changed, generation, progress, known);
+            self.servers(serving, scope, threads)?;
+            if looks {
+                let looking = std::thread::Builder::new()
+                    .name(format!("recompute-{}-ahead", generation.0))
+                    .spawn_scoped(scope, move || {
+                        let _entered = serving.parent.enter();
+                        self.look_ahead(serving, scope);
+                        serving.stopped_running();
                     })
-                    .map(drop)
-            })?;
+                    .map(drop);
+                // No look ahead: what waits is placed at the round's end, as without one.
+                if looking.is_err() {
+                    serving.stopped_running();
+                }
+            }
             let Some(sketches) = sketches else {
                 return Ok(Some(SketchRun::new()));
             };
@@ -4870,7 +5221,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 Ok(Err(panic)) | Err(panic) => {
                     progress.sketches_panicked(
                         to_solve.iter().filter_map(|(id, _)| reported(document, id)),
-                        Some(plan),
+                        Some(&**plan),
                     );
                     Err(Error::new(ErrorCode::Internal, "a sketch's solve panicked")
                         .with_cause(panic_text(panic.as_ref()))
@@ -4878,7 +5229,8 @@ impl<K: Kernel + 'static> Engine<K> {
                 }
             }
         })?;
-        let schedule = schedule
+        let schedule = shared
+            .schedule
             .into_inner()
             .unwrap_or_else(PoisonError::into_inner);
         if let Some(error) = schedule.broken {
@@ -4895,6 +5247,87 @@ impl<K: Kernel + 'static> Engine<K> {
             return Ok(None);
         }
         Ok(Some(Round { schedule, keys }))
+    }
+
+    /// What the engine keeps of `keys`, steps of `plan`, not in `done` already, put there:
+    /// each one kept in memory, and the rest read from the cache on disk for this kernel.
+    fn read_kept(
+        &self,
+        plan: &Plan,
+        keys: impl IntoIterator<Item = Key>,
+        done: &mut BTreeMap<Key, StepResult>,
+    ) {
+        let keys: Vec<Key> = keys
+            .into_iter()
+            .filter(|key| !done.contains_key(key))
+            .collect();
+        {
+            let state = lock(&self.state);
+            for key in &keys {
+                if let Some(result) = state.results.get(key) {
+                    done.insert(*key, result.clone());
+                }
+            }
+        }
+        let Some(cache) = self.cache.get() else {
+            return;
+        };
+        let kernel = self.kernel.identity();
+        for key in &keys {
+            if !done.contains_key(key)
+                && let Some(built) = cache.get(kernel, key)
+            {
+                // A seal says this user's Silico wrote the bytes, not that what it wrote
+                // fits the step: a history that doesn't is a miss, as a worker's reply
+                // with one would be refused.
+                if plan.steps.get(key).is_some_and(|step| fits(step, &built)) {
+                    done.insert(*key, Ok(Arc::new(built)));
+                } else {
+                    tracing::warn!(key = %key, "a cache entry doesn't fit its step: rebuilding it");
+                }
+            }
+        }
+    }
+
+    /// `plan`'s keys kept as the newest recompute's, if `generation` is the newest: so a step
+    /// run ahead of its round is kept as the round's own are ([`keep`](Self::keep)).
+    fn newest_plan(&self, generation: Generation, plan: &Plan) {
+        let mut state = lock(&self.state);
+        if state.newest_started == generation {
+            state.newest_plan = Some(keys_of(plan));
+        }
+    }
+
+    /// Starts up to `n` more of the round's threads ([`serve`](Self::serve)), no more than
+    /// [`MOST_AT_ONCE`] in all: how many started. An error only if none could start of the
+    /// first `n` asked; later, the threads running serve what's ready.
+    fn servers<'scope, 'env: 'scope>(
+        &'env self,
+        serving: &'env Serving<'env>,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+        n: usize,
+    ) -> Result<usize, Error> {
+        let n = {
+            let s = lock(&serving.schedule);
+            n.min(MOST_AT_ONCE.saturating_sub(s.threads))
+        };
+        start_threads(n, |_| {
+            let number = {
+                let mut s = lock(&serving.schedule);
+                s.threads += 1;
+                s.threads - 1
+            };
+            std::thread::Builder::new()
+                .name(format!(
+                    "recompute-{}-{number}",
+                    serving.rebuild.generation.0
+                ))
+                .spawn_scoped(scope, move || {
+                    let _entered = serving.parent.enter();
+                    self.serve(serving, scope);
+                })
+                .map(drop)
+        })
     }
 
     /// The sketches `document`'s pads, pockets, revolves, and grooves sweep, each solved
@@ -5159,35 +5592,45 @@ impl<K: Kernel + 'static> Engine<K> {
     }
 
     /// One of a recompute's threads: runs ready jobs (steps, and measures of features'
-    /// solids) until none are left to run.
-    fn serve(
-        &self,
-        plan: &Plan,
-        schedule: &Mutex<Schedule>,
-        changed: &Condvar,
-        generation: Generation,
-        progress: &StepCounter,
-        known: &NamedMaps,
+    /// solids) until none are left to run, each by the plan the schedule's jobs run by
+    /// ([`Schedule::plan`]), which its progress is told of; and looks ahead
+    /// ([`look_ahead`](Self::look_ahead)) when a job settles the last feature a sketch on a
+    /// face waits on.
+    fn serve<'scope, 'env: 'scope>(
+        &'env self,
+        serving: &'env Serving<'env>,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
     ) {
+        let Serving {
+            schedule, changed, ..
+        } = serving;
+        let Rebuild {
+            generation,
+            progress,
+            known,
+            ..
+        } = serving.rebuild;
         loop {
-            let (job, inputs, sources, named_on) = {
+            let (job, inputs, sources, named_on, plan) = {
                 let mut s = lock(schedule);
-                let (job, sources, named_on) = loop {
-                    if s.superseded || s.broken.is_some() || (s.ready.is_empty() && s.running == 0)
-                    {
+                let (job, sources, named_on, plan) = loop {
+                    if s.finished() {
                         changed.notify_all();
                         return;
                     }
                     let Some(job) = s.ready.pop_front() else {
+                        s.idle += 1;
                         s = changed.wait(s).unwrap_or_else(PoisonError::into_inner);
+                        s.idle -= 1;
                         continue;
                     };
+                    let plan = Arc::clone(&s.plan);
                     // A step only refused features' users need isn't started: they're
                     // reported blocked, whatever ran.
                     if let Job::Make(key) = job
                         && !plan.needed(&key, &s.refusals)
                     {
-                        progress.settled(key, Settled::Unrun, plan);
+                        progress.settled(key, Settled::Unrun, &plan);
                         continue;
                     }
                     // A fillet's, chamfer's, or pattern's base is built: what the elements
@@ -5229,11 +5672,11 @@ impl<K: Kernel + 'static> Engine<K> {
                             }
                         },
                     };
-                    break (job, sources, named_on);
+                    break (job, sources, named_on, plan);
                 };
                 s.running += 1;
                 if let Job::Make(key) = job {
-                    progress.started(key, plan);
+                    progress.started(key, &plan);
                 }
                 // A step's inputs' results; a measure's, its step's own.
                 let keys = match job {
@@ -5247,7 +5690,7 @@ impl<K: Kernel + 'static> Engine<K> {
                         _ => None,
                     })
                     .collect();
-                (job, inputs, sources, named_on)
+                (job, inputs, sources, named_on, plan)
             };
             let key = job.key();
             // A panic under a job is a bug in Silico: caught, so the recompute ends with an
@@ -5272,7 +5715,7 @@ impl<K: Kernel + 'static> Engine<K> {
                                     base,
                                     sources: &sources,
                                 };
-                                self.copied(plan, &job, known, generation)
+                                self.copied(&plan, &job, known, generation)
                             }
                             _ => Ran::Made(Outcome::Done(Err(silico_bug(
                                 "a pattern's step ran before its base was built",
@@ -5282,7 +5725,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     Job::Make(key) => match (plan.steps.get(&key), plan.dresses.get(&key)) {
                         (Some(step), Some(dress)) => {
                             let sources = sources.unwrap_or_default();
-                            match self.resolve(plan, dress, &sources, known) {
+                            match self.resolve(&plan, dress, &sources, known) {
                                 Ok((edges, names)) => Ran::Made(self.dressed(
                                     step.clone(),
                                     &inputs,
@@ -5312,12 +5755,15 @@ impl<K: Kernel + 'static> Engine<K> {
                 ran
             }));
             let mut s = lock(schedule);
+            // The plan the schedule's jobs run by now: the one this job ran by, or one
+            // holding it and the steps of frames placed ahead meanwhile.
+            let plan = Arc::clone(&s.plan);
             let ran = match outcome {
                 Ok(ran) => ran,
                 Err(panic) => {
                     // A bug's failure, as a fault's: its features faulted, and what uses them
                     // blocked, not left queued under a faulted rebuild.
-                    progress.settled(key, Settled::Panicked, plan);
+                    progress.settled(key, Settled::Panicked, &plan);
                     s.running -= 1;
                     let said = panic
                         .downcast_ref::<&str>()
@@ -5352,7 +5798,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     ),
                     Ran::Made(Outcome::Superseded) | Ran::Measured(_) => Settled::Superseded,
                 };
-                progress.settled(key, settled, plan);
+                progress.settled(key, settled, &plan);
             }
             match ran {
                 Ran::Made(Outcome::Superseded) | Ran::Measured(Outcome::Superseded) => {
@@ -5383,14 +5829,14 @@ impl<K: Kernel + 'static> Engine<K> {
                         woken += release(&mut s, key);
                         let Schedule { done, refusals, .. } = &mut *s;
                         let refused = failed(plan.judge(&key, done, refusals));
-                        progress.judged(&plan.passed(&key, done), &refused, plan);
+                        progress.judged(&plan.passed(&key, done), &refused, &plan);
                         // A feature's solid is measured once it's made, by a job of its own:
                         // what uses it doesn't wait for that.
                         // This thread takes a job itself next (it has nothing to write: a
                         // feature's solid is written once measured), so the measure wakes no
                         // other.
-                        if plan.results.contains(&key) && s.measured.insert(key) {
-                            s.ready.push_back(Job::Measure(key));
+                        if plan.results.contains(&key) {
+                            s.measure(key);
                         }
                     }
                 }
@@ -5413,7 +5859,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     let mut refused = failed(plan.judge(&key, done, refusals));
                     // Its base's measure refused, a sweep made from it fails its check.
                     refused.extend(plan.unmeasured_failures(&key, done, unmeasured));
-                    progress.judged(&plan.passed(&key, done), &refused, plan);
+                    progress.judged(&plan.passed(&key, done), &refused, &plan);
                 }
                 Ran::Measured(Outcome::Done(Err(error))) => {
                     // A solid that couldn't be measured is kept on disk all the same, so the
@@ -5438,10 +5884,16 @@ impl<K: Kernel + 'static> Engine<K> {
                     progress.judged(
                         &[],
                         &plan.unmeasured_failures(&key, &s.done, &s.unmeasured),
-                        plan,
+                        &plan,
                     );
                 }
             }
+            if let Job::Measure(key) = job {
+                s.measuring.remove(&key);
+            }
+            // The last feature a sketch on a face waits on settled: looked at again, before
+            // this job stops counting as running, so the round can't end meanwhile.
+            let look = Watch::settled(&mut s, &plan, &key);
             // A job counts as running until its result is written to the cache, so a
             // recompute doesn't end before its results are on disk; the jobs it made ready
             // start meanwhile.
@@ -5452,14 +5904,152 @@ impl<K: Kernel + 'static> Engine<K> {
             if let (Some(cache), Some(built)) = (self.cache.get(), to_keep) {
                 cache.put(self.kernel.identity(), &key, &built);
             }
+            if look {
+                self.look_ahead(serving, scope);
+            }
             let mut s = lock(schedule);
             s.running -= 1;
             // Every thread, once nothing is left.
-            let finished = s.superseded || (s.ready.is_empty() && s.running == 0);
+            let finished = s.finished();
             drop(s);
             if finished {
                 changed.notify_all();
             }
+        }
+    }
+
+    /// Places, ahead of the round's end, the face of each sketch waiting in the plan the
+    /// schedule's jobs run by whose face's solids have all settled on a frame
+    /// ([`ahead_faces`]), and feeds the steps of the features made from it into the round's
+    /// schedule ([`Schedule::extend`]), starting threads for them as needed; again, as those
+    /// settle, for the sketches on their faces; and then watches the sketches still waiting
+    /// for the features they wait on ([`Watch`]), to look again once one has none left. A
+    /// sketch whose face settles on no frame is left for the round's end (docs/ports/
+    /// attacher.md, *In rounds*: its refusal waits for every live solid). One look at a time,
+    /// under the rebuild's [`Ahead`]: each either places a sketch or leaves one, or watches,
+    /// so a round looks at most twice a sketch, and once more.
+    fn look_ahead<'scope, 'env: 'scope>(
+        &'env self,
+        serving: &'env Serving<'env>,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) {
+        let Rebuild {
+            document,
+            first,
+            generation,
+            progress,
+            reads,
+            known,
+            ahead,
+        } = serving.rebuild;
+        let mut ahead = lock(ahead);
+        loop {
+            // What's settled so far, and the plan the jobs run by: only a look changes it.
+            let (plan, done, unmeasured, unresolved, measuring) = {
+                let s = lock(&serving.schedule);
+                if s.superseded || s.broken.is_some() {
+                    return;
+                }
+                (
+                    Arc::clone(&s.plan),
+                    s.done.clone(),
+                    s.unmeasured.clone(),
+                    s.unresolved.clone(),
+                    s.measuring.clone(),
+                )
+            };
+            let sketches = to_look(&plan, &ahead);
+            if sketches.is_empty() {
+                lock(&serving.schedule).watch = Watch::default();
+                return;
+            }
+            let settled = Results {
+                done: &done,
+                unmeasured: &unmeasured,
+                unresolved: &unresolved,
+            };
+            let model = model(
+                document,
+                &plan,
+                settled,
+                serving.solutions,
+                generation,
+                Arc::clone(known),
+            );
+            let mut placed = Vec::new();
+            let mut unsettled = Vec::new();
+            for (sketch, look) in ahead_faces(document, &plan, &model, sketches, &done, &measuring)
+            {
+                let Some(at) = document.place(&sketch) else {
+                    continue;
+                };
+                match look {
+                    Look::Frame(frame)
+                        if placeable(document, &sketch, frame, first.swept.get(&sketch))
+                            .is_none() =>
+                    {
+                        placed.push((sketch, frame));
+                    }
+                    Look::Frame(_) | Look::Left => {
+                        ahead.left.insert(at);
+                    }
+                    Look::Unsettled(features) => unsettled.push((at, features)),
+                }
+            }
+            if placed.is_empty() {
+                let mut s = lock(&serving.schedule);
+                if s.superseded || s.broken.is_some() {
+                    return;
+                }
+                // None of them settled meanwhile: watched until one has. One that has is
+                // looked at again.
+                if let Some(watch) = Watch::of(&s, &plan, unsettled) {
+                    s.watch = watch;
+                    return;
+                }
+                continue;
+            }
+            tracing::debug!(faces = placed.len(), "sketches' faces placed ahead");
+            ahead.frames.extend(placed);
+            let to = Arc::new(Plan::of(
+                document,
+                &first.swept,
+                &with_ahead(serving.frames, &ahead),
+            ));
+            let mut fetched = BTreeMap::new();
+            if reads == Reads::Kept {
+                let new = to
+                    .order
+                    .iter()
+                    .filter(|key| !plan.steps.contains_key(key) && !done.contains_key(key))
+                    .copied()
+                    .collect::<Vec<_>>();
+                self.read_kept(&to, new, &mut fetched);
+            }
+            self.newest_plan(generation, &to);
+            let labels = to.labels(document);
+            let more = {
+                let mut s = lock(&serving.schedule);
+                if s.superseded || s.broken.is_some() {
+                    return;
+                }
+                s.extend(&plan, Arc::clone(&to), fetched);
+                // What the round's progress says of the features planned now: as a round's
+                // plan finds them, those the rounds before it settled among them.
+                let found = to.states(
+                    &s.done,
+                    &s.doomed,
+                    serving.solutions,
+                    &s.refusals,
+                    &s.unmeasured,
+                );
+                let planned: Vec<usize> = plan.waits.difference(&to.waits).copied().collect();
+                progress.placed_ahead(to.order.len(), labels, &found, &planned);
+                s.ready.len().saturating_sub(s.idle)
+            };
+            serving.changed.notify_all();
+            // The threads running serve what's ready if none more can start.
+            let _ = self.servers(serving, scope, more);
         }
     }
 
@@ -5930,7 +6520,7 @@ fn placed_faces(
         &plan.waits,
         waiting,
         &maker,
-        |sketch, face, related, others| {
+        |sketch, face, related, others, _| {
             crate::face_plane::place(sketch, face, related, others, &maker)
         },
     );
@@ -5965,6 +6555,71 @@ fn placed_faces(
     faces
 }
 
+/// What a look ahead ([`Engine::look_ahead`]) finds of the face of each sketch at `sketches`
+/// (places of sketches on faces `plan` has waiting), in `model`, the model of `plan` as far
+/// as the round has built it (`done`, with the measures still to come `measuring`), looked
+/// for as the round's end looks for it ([`faces_at`]): on a frame, if every solid its face may be in is built and described in
+/// `model`, and `face_plane::place` finds a frame there; settled on none, if those solids are
+/// all built and described but it finds none, or if every feature they're made from has
+/// settled ([`settled_feature`]); or else the features to wait for. A built and described
+/// solid there is one the round's end finds the same (its outcome follows from what it's
+/// made from, settled too, or it wouldn't read built), and a frame is found from those
+/// solids alone, so a frame found here is the round's end's. A sketch whose name's makers'
+/// chains wait on a face not placed yet, or whose solid couldn't be named, isn't looked at:
+/// the plan that places those, or the round's end, does.
+fn ahead_faces(
+    document: &Checked,
+    plan: &Plan,
+    model: &Model,
+    sketches: Vec<usize>,
+    done: &BTreeMap<Key, StepResult>,
+    measuring: &BTreeSet<Key>,
+) -> Vec<(FeatureId, Look)> {
+    use crate::face_plane::Resolved;
+    let maker = |f: &FeatureId| plan.maker(f);
+    let found = faces_at(
+        document,
+        model,
+        &plan.waits,
+        sketches,
+        &maker,
+        |sketch, face, related, others, tails| {
+            let described = related.iter().all(|solid| {
+                matches!(
+                    solid,
+                    Live::Built {
+                        description: Ok(_),
+                        ..
+                    }
+                )
+            });
+            if described {
+                return match crate::face_plane::place(sketch, face, related, others, &maker) {
+                    Resolved::Placed(Placed::Frame(frame)) => Look::Frame(frame),
+                    Resolved::Placed(_) | Resolved::Waits(_) => Look::Left,
+                };
+            }
+            let features = made_from(plan, tails);
+            if features
+                .iter()
+                .all(|&f| settled_feature(plan, f, done, measuring))
+            {
+                Look::Left
+            } else {
+                Look::Unsettled(features)
+            }
+        },
+    );
+    found
+        .into_iter()
+        .filter_map(|(sketch, at)| match at {
+            AtPlace::Found(look) => Some((sketch, look)),
+            AtPlace::Waits(_) => None,
+            AtPlace::Unnamed(_) => Some((sketch, Look::Left)),
+        })
+        .collect()
+}
+
 /// What [`faces_at`] finds at a sketch's place.
 enum AtPlace<R> {
     /// What was made of the face, from the solids live there.
@@ -5997,7 +6652,7 @@ pub(crate) fn default_x(document: &Checked, model: &Model, at: usize) -> Option<
         &BTreeSet::new(),
         [at],
         &maker,
-        |sketch, face, related, others| {
+        |sketch, face, related, others, _| {
             crate::face_plane::default_x(sketch, &face.face, related, others, &maker)
         },
     );
@@ -6021,9 +6676,9 @@ pub(crate) fn default_x(document: &Checked, model: &Model, at: usize) -> Option<
 /// suppressed feature's base passed through, `document::suppression::consumed`): M4.1
 /// section 5's rule for `add_feature`. Only those built from one of its name's makers can
 /// hold it, so only they're `resolve`'s `related` solids, waited for, or block it; the
-/// rest, `others`, are read for a broken name's candidates. A feature in `waits` (by place)
-/// isn't built yet, so its solid waits. By sketch, in order; a place that isn't a sketch on
-/// a face is passed over.
+/// rest, `others`, are read for a broken name's candidates, and the related solids' places
+/// are `resolve`'s last argument. A feature in `waits` (by place) isn't built yet, so its
+/// solid waits. By sketch, in order; a place that isn't a sketch on a face is passed over.
 ///
 /// Linear in the timeline each round, however many sketches wait: each solid has at most
 /// one consumer (the gate's consumed-solid rule), so what's made from a maker is one chain
@@ -6043,6 +6698,7 @@ fn faces_at<'m, R>(
         &crate::document::FacePlane,
         &[Live<'m>],
         &dyn Fn() -> Vec<Live<'m>>,
+        &BTreeSet<usize>,
     ) -> R,
 ) -> Vec<(FeatureId, AtPlace<R>)> {
     let features = &document.document().features;
@@ -6215,7 +6871,7 @@ fn faces_at<'m, R>(
                 .filter_map(|&j| live(j, features.get(j)?)?.ok())
                 .collect()
         };
-        let made = resolve(&sketch.id, face, &related, &others);
+        let made = resolve(&sketch.id, face, &related, &others, &tails);
         found.push((sketch.id.clone(), AtPlace::Found(made)));
     }
     found
@@ -6296,16 +6952,17 @@ fn placeable(
     })
 }
 
-/// What became of each feature of `source`, from its steps' results, and the bodies.
+/// What became of each feature of `source`, from its steps' results (`settled`), and the
+/// bodies.
 fn model(
     source: &Arc<Checked>,
     plan: &Plan,
-    schedule: &Schedule,
+    settled: Results<'_>,
     solutions: &SketchResults,
     generation: Generation,
     known: NamedMaps,
 ) -> Model {
-    let done = &schedule.done;
+    let done = settled.done;
     let mut features: Vec<(FeatureId, FeatureOutcome)> = Vec::with_capacity(plan.features.len());
     let mut diagnoses = BTreeMap::new();
     for planned in &plan.features {
@@ -6374,10 +7031,10 @@ fn model(
                 Some(error) => FeatureOutcome::Failed(error.clone()),
                 None => checked(
                     planned,
-                    feature_outcome(planned, done, &schedule.unresolved),
+                    feature_outcome(planned, done, settled.unresolved),
                     &features,
                     done,
-                    &schedule.unmeasured,
+                    settled.unmeasured,
                 ),
             },
         };
@@ -6405,7 +7062,7 @@ fn model(
     let unmeasured = features
         .iter()
         .filter_map(|(id, outcome)| match outcome {
-            FeatureOutcome::Built { key, .. } => schedule
+            FeatureOutcome::Built { key, .. } => settled
                 .unmeasured
                 .get(key)
                 .map(|error| (id.clone(), error.clone().with_feature(id.as_str()))),
@@ -7606,12 +8263,15 @@ mod tests {
     fn a_sketch_on_a_planar_face_reads_queued_through_its_solve_then_built_in_its_round() {
         // A box; a sketch on its top, padded onto it; and another on its top that nothing
         // sweeps. The fake made to describe every face as the plane z = 10, so both faces are
-        // found planar and placed once the box is built: the first round builds the box, the
-        // second places both sketches and builds the pad. Each sketch on a face reads queued
-        // until the round that places it, its solve included (the padded one solved before
-        // any plan, the other beside the box's step), then built; never running, never
-        // back. Built in its round, not only at the end: whenever the pad reads running
-        // (copied as each of its requests is made) or built, both sketches read built.
+        // found planar and placed once the box is built: the first round builds the box, and
+        // places the padded sketch ahead of its end, once the box is built and described,
+        // and builds the pad beside the rest of the round (M5's milestone review, A13-M1);
+        // the second places both sketches. Each sketch on a face reads queued until its face
+        // is placed, its solve included (the padded one solved before any plan, the other
+        // beside the box's step, so it reads queued until the round that plans it with its
+        // solve), then built; never running, never back. Built as it's placed, not only at
+        // the end: whenever the pad reads running (copied as each of its requests is made) or
+        // built, its sketch reads built.
         let features = vec![
             r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#
                 .to_owned(),
@@ -7699,18 +8359,36 @@ mod tests {
             FeatureId::new("s0000003").unwrap(),
             FeatureId::new("p0000001").unwrap(),
         );
-        let solves = copies.iter().filter(|(solving, _)| *solving).count();
-        assert_eq!(solves, 2, "{copies:#?}");
-        for (solving, copy) in &copies {
+        // The solves in order: s1's, before any plan, with both queued; then s3's, beside
+        // the box's step, with s3 queued (s1 may be placed ahead by then).
+        let solves: Vec<&StepCount> = copies
+            .iter()
+            .filter(|(solving, _)| *solving)
+            .map(|(_, copy)| copy)
+            .collect();
+        assert_eq!(solves.len(), 2, "{copies:#?}");
+        for sketch in [&s1, &s3] {
+            assert_eq!(
+                solves[0].features.get(sketch),
+                Some(Queued),
+                "{sketch} while s1's solve ran"
+            );
+        }
+        assert_eq!(
+            solves[1].features.get(&s3),
+            Some(Queued),
+            "s3 while its solve ran"
+        );
+        for (_, copy) in &copies {
             for sketch in [&s1, &s3] {
-                let state = copy.features.get(sketch);
-                assert_ne!(state, Some(Running), "{sketch}: {copies:#?}");
-                if *solving {
-                    assert_eq!(state, Some(Queued), "{sketch} while a solve ran");
-                }
-                if matches!(copy.features.get(&pad), Some(Running | Built)) {
-                    assert_eq!(state, Some(Built), "{sketch} with the pad begun");
-                }
+                assert_ne!(
+                    copy.features.get(sketch),
+                    Some(Running),
+                    "{sketch}: {copies:#?}"
+                );
+            }
+            if matches!(copy.features.get(&pad), Some(Running | Built)) {
+                assert_eq!(copy.features.get(&s1), Some(Built), "s1 with the pad begun");
             }
         }
         assert!(
