@@ -12735,6 +12735,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     vertices: None,
                     lines: Vec::new(),
                     planes: Vec::new(),
+                    dim: 1.0,
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
                 ViewRenderer::forget(renderer, 1);
@@ -12861,6 +12862,28 @@ impl Fixture {
         h.state_mut().tabs_mut()[0].watch = Some(watching(&seen));
         (h, seen)
     }
+}
+
+#[test]
+fn the_model_is_dimmed_while_a_sketch_is_open_and_drawn_as_it_is_after() {
+    // The approved prototype dims the model while a sketch is open (sketch.js's
+    // `VP.setDim(0.45)` on entering, `VP.setDim(1)` on leaving): to 0.18 in linear light,
+    // the 0.45 of its sRGB colour worked by hand (`theme::SKETCH_MODEL_DIM`).
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let last = |record: &Record| record.lock().unwrap().frames.last().map(|frame| frame.dim);
+    assert_eq!(last(&record), Some(1.0));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert_eq!(last(&record), Some(0.18));
+    assert_eq!(silico_app::theme::SKETCH_MODEL_DIM, 0.18);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(last(&record), Some(1.0));
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
