@@ -45519,6 +45519,8 @@ fn hovering_a_candidates_row_lights_its_edge_and_hovering_its_edge_marks_the_row
     assert_eq!(h.state().tabs()[0].candidate_hovered(), Some(EDGE4));
     let outlines = record.lock().unwrap().frames.last().unwrap().outlines;
     assert_eq!(outlines.hovered, [0xff, 0x7a, 0x0c]);
+    // Outlined whole, a face too, never tinted as a hover is.
+    assert!(record.lock().unwrap().frames.last().unwrap().hover_outlined);
     // Edge6's row next: Edge6 lit alone.
     let at = candidate_row(&h, EDGE6).0.center();
     h.hover_at(at);
@@ -45544,6 +45546,7 @@ fn hovering_a_candidates_row_lights_its_edge_and_hovering_its_edge_marks_the_row
     let last = record.lock().unwrap().frames.last().unwrap().clone();
     assert_eq!(last.hovered, [(body, Edge(6))]);
     assert_eq!(last.outlines.hovered, [255, 255, 255]);
+    assert!(!last.hover_outlined);
     // Over Edge4 in the canvas: Edge4's row marked, Edge6's not.
     answering(&record, None, Some((body, Edge(4), pixel_at(&h, canvas))));
     h.hover_at(canvas + eframe::egui::vec2(1.0, 0.0));
