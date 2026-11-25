@@ -395,3 +395,47 @@ fn a_boss_sketched_on_a_face_is_anchored_on_that_face() {
     assert_eq!(read.instances[0].state, Some(InstanceState::Built));
     assert_eq!(read.problems_total, 0, "{:?}", read.problems);
 }
+
+#[test]
+fn two_directions_and_a_mirror_plane_by_faces_names_read_as_the_origins_words() {
+    // Direction 1 along the plate's right face (swept from na000002, along x = 50), whose
+    // outward normal is +X; direction 2 along its front face (from na000001, y = −30)
+    // turned round, +Y; each found by its own name, on the plate before its notches split
+    // the side faces. The read is the design's example of `x` and `y` byte for byte.
+    let right = "p0000001.pad.Face(G s0000001.sketch.Edge.na000002)";
+    let front = "p0000001.pad.Face(G s0000001.sketch.Edge.na000001)";
+    let model = rebuilt(&pattern_docs::document(&pattern_docs::with(
+        pattern_docs::plate_with_hole_at([-40.0, -20.0]),
+        &[linear_as(
+            "t0000001",
+            "q0000002",
+            &of("q0000002"),
+            &[
+                direction(right, "extent", "80", 3),
+                direction(front, "extent", "40", 2)
+                    .replace("\"reversed\": false", "\"reversed\": true"),
+            ],
+            "[]",
+        )],
+    )));
+    assert_eq!(written(&read_of(&model, "t0000001")), example("result"));
+    // The whole plate (100 × 60 × 5 about (0, 0, 2.5)) mirrored in its right face, x = 50:
+    // the plane through (50, 0, 0) facing +X, the copy's centre of mass at (100, 0, 2.5).
+    let model = rebuilt(&pattern_docs::document(&[
+        rectangle("s0000001", "xy", [-50.0, -30.0], 100.0, 60.0),
+        pad("p0000001", None, "s0000001", pattern_docs::FIVE),
+        pattern_docs::mirror(
+            "m0000001",
+            "p0000001",
+            pattern_docs::SOLID,
+            "p0000001.pad.Face(G s0000001.sketch.Edge.na000002)",
+        ),
+    ]));
+    let read = read_of(&model, "m0000001");
+    let plane = read.plane.as_ref().unwrap();
+    assert_eq!(plane.origin, point([50.0, 0.0, 0.0]));
+    assert_eq!(plane.normal, [1.0, 0.0, 0.0]);
+    assert_eq!(read.anchor, Some(point([0.0, 0.0, 2.5])));
+    assert_eq!(read.instances[0].anchor, Some(point([100.0, 0.0, 2.5])));
+    assert_eq!(read.instances[0].state, Some(InstanceState::Built));
+}

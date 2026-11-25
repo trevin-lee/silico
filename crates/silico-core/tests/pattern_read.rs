@@ -642,3 +642,73 @@ fn a_direction_of_one_instance_has_no_step_by_extent_and_its_spacing_by_spacing(
     assert_eq!(axis.direction, [0.0, 0.0, -1.0]);
     assert!(polar.instances.is_empty());
 }
+
+/// A sketch `id` on `plane` of two squares, lettered `a` and `b`, each `(x, y, side)`: the
+/// second inside the first, a hole in it.
+fn square_in_square(
+    id: &str,
+    plane: &str,
+    outer: (f64, f64, f64),
+    inner: (f64, f64, f64),
+) -> String {
+    let mut points = Vec::new();
+    let mut lines = Vec::new();
+    for (l, (x, y, side)) in [('a', outer), ('b', inner)] {
+        let corners = [(x, y), (x + side, y), (x + side, y + side), (x, y + side)];
+        for (n, (cx, cy)) in (1..).zip(corners) {
+            points.push(format!(
+                r#"{{"id": "p{l}00000{n}", "x": {cx}, "y": {cy}, "construction": false}}"#
+            ));
+            lines.push(format!(
+                r#"{{"id": "n{l}00000{n}", "from": "p{l}00000{n}", "to": "p{l}00000{}", "construction": false}}"#,
+                n % 4 + 1
+            ));
+        }
+    }
+    format!(
+        r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "S", "plane": "{plane}", "points": [{}], "lines": [{}], "circles": [], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", ")
+    )
+}
+
+#[test]
+fn a_square_hole_is_taken_away_and_an_xz_sketch_is_placed_in_3d() {
+    // A 10 × 10 square about (20, 0) with a 4 × 4 square hole about (22, 0) in it: area
+    // 100 − 16 = 84, its centre (100 · 20 − 16 · 22) / 84 = 1648 / 84 along x and 0 along
+    // y (a hole of lines, walked clockwise, unlike a circle). Pocketed on xy, it sits at
+    // (1648 / 84, 0, 0). A disc r 1 sketched on xz at (10, 3) sits at (10, 0, 3): the xz
+    // plane's x is +X and its y +Z. Each alone is its own pattern's anchor, moved 15 along x.
+    let holed = (1648.0 / 84.0, 0.0, 0.0);
+    let text = document(&[
+        sketch("s0000001", 'a', (-50.0, -30.0, 100.0, 60.0), &[]),
+        feature("p0000001", "pad", None, "s0000001", UP),
+        square_in_square(
+            "s0000002",
+            "xy",
+            (15.0, -5.0, 10.0),
+            (20.0, -2.0, 4.0),
+        ),
+        feature("q0000001", "pocket", Some("p0000001"), "s0000002", THROUGH),
+        r#"{"id": "s0000003", "type": "sketch", "v": 1, "name": "S", "plane": "xz", "points": [{"id": "pz000001", "x": 10, "y": 3, "construction": false}], "lines": [], "circles": [{"id": "cz000001", "center": "pz000001", "radius": 1, "construction": false}], "arcs": [], "constraints": []}"#.to_owned(),
+        feature("q0000002", "pocket", Some("q0000001"), "s0000003", THROUGH),
+        r#"{"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "T", "base": "q0000002", "copies": {"type": "features", "features": ["q0000001"]}, "directions": [{"along": "x", "reversed": false, "distribution": {"type": "spacing", "length": 15}, "count": 2}], "skip": []}"#.to_owned(),
+        r#"{"id": "t0000002", "type": "linear_pattern", "v": 1, "name": "T", "base": "t0000001", "copies": {"type": "features", "features": ["q0000002"]}, "directions": [{"along": "x", "reversed": false, "distribution": {"type": "spacing", "length": 15}, "count": 2}], "skip": []}"#.to_owned(),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let (sessions, session, _) = opened(dir.path(), &text);
+    let read = |pattern: &str| {
+        answered(sessions.pattern(&session, ModelChoice::Current, id(pattern)))
+            .result
+            .unwrap_or_else(|p| panic!("{pattern}: {:?}", p.errors()))
+    };
+    let square = read("t0000001");
+    assert_eq!(square.anchor, Some(point([holed.0, holed.1, holed.2])));
+    assert_eq!(
+        square.instances[0].anchor,
+        Some(point([holed.0 + 15.0, 0.0, 0.0]))
+    );
+    let disc = read("t0000002");
+    assert_eq!(disc.anchor, Some(point([10.0, 0.0, 3.0])));
+    assert_eq!(disc.instances[0].anchor, Some(point([25.0, 0.0, 3.0])));
+}

@@ -166,6 +166,25 @@ pub(crate) fn references(operation: &Operation) -> Vec<(String, &str)> {
     }
 }
 
+/// Each name `operation` stores, with its field's path and the kind of element its own word
+/// says (the gate has checked the word is one the field takes; one that doesn't parse is
+/// looked for as an edge, and refused there): what a pattern's step finds in its base's map,
+/// and what the `pattern` read finds there too. `makers` says how each feature makes its
+/// elements, to read the names.
+pub(crate) fn wanted<'o>(
+    operation: &'o Operation,
+    makers: &dyn Fn(&FeatureId) -> Option<crate::naming::Maker>,
+) -> Vec<(NameField, &'o ElementName, ElementKind)> {
+    operation
+        .stored_names()
+        .map(|(field, name)| {
+            let kind = crate::naming::Name::parse(name.as_str(), makers)
+                .map_or(ElementKind::Edge, |parsed| parsed.kind());
+            (field, name, kind)
+        })
+        .collect()
+}
+
 /// What the kernel describes of a referenced element (`describe`, M4.4).
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Geometry {

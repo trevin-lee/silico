@@ -31,6 +31,8 @@ mod refusals;
 mod share;
 #[path = "common/sweeps.rs"]
 mod sweeps;
+#[path = "common/within.rs"]
+mod within;
 
 #[path = "adversarial_described.rs"]
 mod adversarial_described;

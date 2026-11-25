@@ -19,8 +19,7 @@ use silico_protocol::{Axis, Placement, SketchPlane, vec3};
 use super::elements::{built, solid, summarized, worded};
 use super::{ModelChoice, Problems, ReadCommand, Running, SessionId, Sessions};
 use crate::document::{
-    Angle, Copies, ElementName, FeatureId, Length, Made, NameField, Operation, PROBLEMS_LISTED,
-    PatternFeature,
+    Angle, Copies, ElementName, FeatureId, Length, Made, Operation, PROBLEMS_LISTED, PatternFeature,
 };
 use crate::kernel::{Clients, ElementKind};
 use crate::naming::Instance;
@@ -336,14 +335,7 @@ fn resolved(
     base: &FeatureId,
 ) -> Result<Resolved, Unresolved> {
     let makers = |f: &FeatureId| model.maker(f);
-    let wanted: Vec<(NameField, &ElementName, ElementKind)> = operation
-        .stored_names()
-        .map(|(field, name)| {
-            let kind = crate::naming::Name::parse(name.as_str(), &makers)
-                .map_or(ElementKind::Edge, |parsed| parsed.kind());
-            (field, name, kind)
-        })
-        .collect();
+    let wanted = crate::pattern::wanted(operation, &makers);
     let mut found = Vec::new();
     let mut description = None;
     if !wanted.is_empty() {
@@ -443,12 +435,9 @@ fn anchor(
 }
 
 /// The area of the original `original`'s profile and its centre of area in 3D: the profile
-/// of the sketch it sweeps, from the loops of that sketch's solve the model keeps, measured
-/// exactly by the faces request's own measure (`silico_protocol::area_moments`), each loop
-/// about a point of its own, then all about the first's, an outer loop's area counted and a
-/// hole's taken away, by its role, since the measure runs a lone circle counter-clockwise
-/// whichever it is; placed on its sketch's plane as the rebuild
-/// resolved it. None where any of it can't be had.
+/// of the sketch it sweeps, from the loops of that sketch's solve the model keeps
+/// ([`Profile::area_centre`](profile::Profile::area_centre)), placed on its sketch's plane as
+/// the rebuild resolved it. None where any of it can't be had.
 fn profile_centre(model: &Model, original: &FeatureId) -> Option<(f64, [f64; 3])> {
     let sketch_id = model.feature(original)?.operation.sketch()?;
     let Operation::Sketch(sketch) = &model.feature(sketch_id)?.operation else {
@@ -461,28 +450,8 @@ fn profile_centre(model: &Model, original: &FeatureId) -> Option<(f64, [f64; 3])
         Some(origin) => SketchPlane::from(origin),
         None => SketchPlane::Face(*model.frame(sketch_id)?),
     };
-    let mut about: Option<[f64; 2]> = None;
-    let (mut area, mut moment) = (0.0, [0.0, 0.0]);
-    for region in &profile.regions {
-        let loops = std::iter::once((&region.outer, 1.0))
-            .chain(region.holes.iter().map(|hole| (hole, -1.0)));
-        for (walked, role) in loops {
-            let measured = silico_protocol::area_moments(&walked.sent());
-            let here = *about.get_or_insert(measured.about);
-            let shift = [measured.about[0] - here[0], measured.about[1] - here[1]];
-            // However the measure runs a loop (a lone circle counter-clockwise, a hole or
-            // not), it counts by what it is: an outer loop's area added, a hole's taken away.
-            let sense = role * measured.area.signum();
-            area += sense * measured.area;
-            moment = [
-                moment[0] + sense * (measured.moment[0] + shift[0] * measured.area),
-                moment[1] + sense * (measured.moment[1] + shift[1] * measured.area),
-            ];
-        }
-    }
-    let about = about?;
-    let centre = [about[0] + moment[0] / area, about[1] + moment[1] / area];
-    (area > 0.0).then(|| (area, plane.place(centre)))
+    let (area, centre) = profile.area_centre()?;
+    Some((area, plane.place(centre)))
 }
 
 /// `read`'s references, as `resolved` has them in 3D, each step from the document's values
@@ -578,24 +547,23 @@ fn instances(
         .map(|index| {
             let placement = crate::pattern::placement(operation, resolved, &index)
                 .ok_or_else(|| bug(id, "a pattern's references were resolved as another type's"))?;
-            let (offset, angle_of) = match &placement {
-                Placement::Translation { offset } => (Some(rounded(*offset)?), None),
-                Placement::Rotation { .. } => {
-                    let degrees = match operation {
-                        Operation::PolarPattern {
-                            distribution,
-                            count,
-                            ..
-                        } => crate::pattern::polar_degrees(
-                            *distribution,
-                            *count,
-                            index.offsets().first().copied().unwrap_or(0),
-                        ),
-                        _ => 0.0,
-                    };
-                    (None, Some(angle(degrees)?))
-                }
-                Placement::Mirror { .. } | Placement::TurnedAndMoved { .. } => (None, None),
+            // A linear instance's move, as placed; a polar instance's turn, in degrees from
+            // the document's integers, as its placement's radians were worked out.
+            let offset = match &placement {
+                Placement::Translation { offset } => Some(rounded(*offset)?),
+                _ => None,
+            };
+            let angle_of = match operation {
+                Operation::PolarPattern {
+                    distribution,
+                    count,
+                    ..
+                } => Some(angle(crate::pattern::polar_degrees(
+                    *distribution,
+                    *count,
+                    index.offsets().first().copied().unwrap_or(0),
+                ))?),
+                _ => None,
             };
             let anchor = anchor
                 .map(|point| rounded(placed(&placement, point)))

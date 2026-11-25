@@ -757,10 +757,9 @@ impl Model {
         let place = |f: &FeatureId| self.source.place(f);
         let at = place(id)?;
         let standing = crate::document::suppression::standing(features, &place);
-        crate::document::suppression::effective_inputs(features, &standing, &place, at)
-            .into_iter()
-            .find(|(field, _)| *field == "base")
-            .and_then(|(_, stands)| stands)
+        let inputs =
+            crate::document::suppression::effective_inputs(features, &standing, &place, at);
+        base_of(&inputs)
             .and_then(|stands| features.get(stands))
             .map(|feature| &feature.id)
     }
@@ -5571,14 +5570,7 @@ impl<K: Kernel + 'static> Engine<K> {
         let makers = |f: &FeatureId| plan.maker(f);
         // Each name it stores, with its field's path and the kind its own word says (the
         // gate has checked the word is one the field takes), found in its base's map.
-        let wanted: Vec<(crate::document::NameField, &ElementName, ElementKind)> = operation
-            .stored_names()
-            .map(|(field, name)| {
-                let kind = crate::naming::Name::parse(name.as_str(), &makers)
-                    .map_or(ElementKind::Edge, |parsed| parsed.kind());
-                (field, name, kind)
-            })
-            .collect();
+        let wanted = crate::pattern::wanted(operation, &makers);
         let mut found: Vec<(&ElementName, crate::kernel::ElementRef)> = Vec::new();
         if !wanted.is_empty() {
             let _span = tracing::debug_span!("resolve", references = wanted.len()).entered();

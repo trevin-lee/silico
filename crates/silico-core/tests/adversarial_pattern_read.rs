@@ -1,11 +1,12 @@
 //! /break-it on M6.5's `pattern` read, on the fake kernel: references that break, name the
 //! wrong kind of element, or run parallel, each said once among the problems and never
 //! twice; the identity, and every copy skipped; a skip past a count; the cap's thousand instances; a base whose description was
-//! refused; and a read of every published revision while a pattern is edited. Every
-//! expected value is worked by hand from the document's integers.
+//! refused; a base suppressed, read up its chain as the rebuild built it; and a copies step
+//! that failed, or that never ran. Every expected value is worked by hand from the
+//! document's integers.
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use silico_core::command::pattern::{InstanceState, PatternRead, read};
 use silico_core::document::{FeatureId, Length};
@@ -14,7 +15,11 @@ use silico_core::kernel::{ElementKind, Op};
 use silico_core::recompute::{FeatureOutcome, Model, Recompute};
 use silico_core::{Error, ErrorCode};
 
-use super::pattern_docs::{HOLE, direction, linear_as, map, plate_with_hole_at, polar, with};
+use super::pattern_docs::{
+    HOLE, SOLID, THROUGH, direction, linear_as, map, mirror, plate_with_hole_at, polar, with,
+};
+use super::sweeps::{circles, pocket};
+use super::within::within;
 
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
@@ -177,13 +182,7 @@ fn a_thousand_instances_are_read_whole_in_order_and_promptly() {
             )],
         ),
     );
-    let started = Instant::now();
-    let read = read_of(&model);
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "{:?}",
-        started.elapsed()
-    );
+    let read = within(Duration::from_secs(5), move || read_of(&model));
     assert_eq!(read.instances.len(), 999);
     let mut want = Vec::new();
     for i in 0..40u32 {
@@ -272,5 +271,111 @@ fn a_polar_pattern_turned_by_a_nanodegree_short_of_a_whole_turn_reads_its_steps_
     assert_eq!(
         read.axis.unwrap().step.map(|a| a.ndeg()),
         Some(120_000_000_000)
+    );
+}
+
+#[test]
+fn a_pattern_whose_base_is_suppressed_is_read_on_the_base_up_its_chain() {
+    // A whole-solid mirror in yz on a suppressed pocket builds on the corner hole's pocket,
+    // as the rebuild takes it: read alike, its anchor the same centre of mass, with no
+    // problem; and alike to the mirror on that pocket itself.
+    let mut features = plate();
+    features.push(circles("s0000005", "xy", &[([0.0, 0.0], 1.0)]));
+    features.push(pocket("q0000005", "q0000002", "s0000005", THROUGH).replace(
+        r#""name": "Pocket", "#,
+        r#""name": "Pocket", "suppressed": true, "#,
+    ));
+    let on_suppressed = read_of(&published(
+        &engine(),
+        &with(features, &[mirror("t0000001", "q0000005", SOLID, "yz")]),
+    ));
+    let direct = read_of(&published(
+        &engine(),
+        &with(plate(), &[mirror("t0000001", "q0000002", SOLID, "yz")]),
+    ));
+    assert_eq!(
+        on_suppressed.problems_total, 0,
+        "{:?}",
+        on_suppressed.problems
+    );
+    assert!(on_suppressed.anchor.is_some());
+    assert_eq!(on_suppressed.anchor, direct.anchor);
+    assert_eq!(on_suppressed.instances, direct.instances);
+    assert_eq!(on_suppressed.instances[0].state, Some(InstanceState::Built));
+}
+
+#[test]
+fn a_copies_step_that_failed_or_never_ran_gives_its_copies_no_state() {
+    // The kernel refuses the copies: no step's verdict, so no copy has a state, and the
+    // refusal is the problem.
+    let engine = engine();
+    engine.kernel().refuse(|op| {
+        matches!(op, Op::Copies { .. })
+            .then(|| Error::new(ErrorCode::KernelFailed, "OCCT couldn't copy it"))
+    });
+    let model = published(
+        &engine,
+        &with(
+            plate(),
+            &[linear(&[direction("x", "spacing", "10", 3)], "[]")],
+        ),
+    );
+    let read = read_of(&model);
+    let states: Vec<(String, Option<InstanceState>)> = read
+        .instances
+        .iter()
+        .map(|i| (i.index.to_string(), i.state))
+        .collect();
+    assert_eq!(states, [("1".to_owned(), None), ("2".to_owned(), None)]);
+    assert!(
+        read.problems
+            .iter()
+            .any(|e| e.message().contains("OCCT couldn't copy it")),
+        "{:?}",
+        read.problems
+    );
+    // Two originals, the second's step refused: the first's verdict kept, but one step of
+    // two never gave its own, so no copy has a state.
+    let engine = self::engine();
+    let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = Arc::clone(&seen);
+    engine.kernel().refuse(move |op| {
+        (matches!(op, Op::Copies { .. })
+            && counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1)
+            .then(|| Error::new(ErrorCode::KernelFailed, "OCCT couldn't copy the second"))
+    });
+    let mut features = plate();
+    features.push(circles("s0000005", "xy", &[([0.0, 20.0], 1.0)]));
+    features.push(pocket("q0000005", "q0000002", "s0000005", THROUGH));
+    let both = r#"{"type": "features", "features": ["q0000002", "q0000005"]}"#;
+    let model = published(
+        &engine,
+        &with(
+            features,
+            &[linear_as(
+                "t0000001",
+                "q0000005",
+                both,
+                &[direction("x", "spacing", "10", 3)],
+                "[]",
+            )],
+        ),
+    );
+    assert_eq!(
+        model.pattern_verdicts(&id("t0000001")).map(<[_]>::len),
+        Some(1)
+    );
+    let read = read_of(&model);
+    assert!(
+        read.instances.iter().all(|i| i.state.is_none()),
+        "{:?}",
+        read.instances
+    );
+    assert!(
+        read.problems
+            .iter()
+            .any(|e| e.message().contains("OCCT couldn't copy the second")),
+        "{:?}",
+        read.problems
     );
 }
