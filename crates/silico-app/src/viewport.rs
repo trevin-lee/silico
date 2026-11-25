@@ -2322,6 +2322,11 @@ pub fn show<P: Clients + 'static>(
         vertices: view.vertices,
         lines,
         planes,
+        dim: if sketching {
+            crate::theme::SKETCH_MODEL_DIM
+        } else {
+            1.0
+        },
     };
     if view.grid && !sketching {
         let shapes = crate::grid::shapes(&view.camera, size_px, ppp, rect);

@@ -58,6 +58,7 @@ fn frame<'a>(
         background: VIEWPORT_BG,
         lines: &[],
         planes: &[],
+        dim: 1.0,
     }
 }
 
@@ -2089,7 +2090,8 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
                 },
             );
             assert_eq!(r.mixes.donors.len(), 1);
-            // The face's mixed mesh kept, of the tint's amount, and drawn again as it is.
+            // The face's mixed mesh kept, of its material's scale (1 − 0.4, undimmed), and
+            // drawn again as it is.
             let mixed = |r: &Renderer| {
                 r.bodies[&1]
                     .faces
@@ -2098,7 +2100,7 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
                     .expect("Face3's mixed mesh")
             };
             let (bits, held) = mixed(r);
-            assert_eq!(bits, FEATURE_TINT.amount.to_bits());
+            assert_eq!(bits, (1.0 - FEATURE_TINT.amount).to_bits());
             draw(
                 r,
                 &Frame {
@@ -2945,6 +2947,14 @@ fn a_frames_values_are_checked_without_a_gpu_each_one_refused_named() {
             "tinted[0].faces[1], Edge(3) of body 1, isn't a face: only faces are tinted"
         )
     );
+    for dim in [f32::NAN, -0.01, 1.01, f32::INFINITY] {
+        assert_eq!(
+            refused(Frame { dim, ..good }),
+            said("dim", &format!("dim {dim:?} must be finite, from 0 to 1"))
+        );
+    }
+    assert_eq!(good.check(held), Ok(()));
+    assert_eq!(Frame { dim: 0.0, ..good }.check(held), Ok(()));
     assert_eq!(
         refused(Frame {
             vertices: Some(0.0),
@@ -3032,6 +3042,188 @@ fn a_tinted_face_is_the_bodys_colour_mixed_with_the_tint_and_nothing_else_change
             // The tint gone: the plain frame again, and no upload all along.
             assert_eq!(tinted_image(r, &plain_frame, &[], FEATURE_TINT), plain);
             assert_eq!(r.uploads(), uploaded);
+        },
+    );
+}
+
+// ---- The dim (the app's model while a sketch is open) ----
+
+/// The app's dim while a sketch is open, typed here as the prototype's 0.45 of the body's
+/// sRGB colour worked into linear light by hand (silico-app's `theme::SKETCH_MODEL_DIM`).
+const SKETCH_DIM: f32 = 0.18;
+
+#[test]
+fn a_dimmed_frame_darkens_every_face_and_edge_by_its_dim_and_uploads_nothing() {
+    // From the front the box's front face shows its colour as it is (lit at 1, clamped). Its
+    // colour in linear light times 0.18, by hand: BODY (170, 175, 182), (0.4020, 0.4287,
+    // 0.4678), to (0.0724, 0.0772, 0.0842), in sRGB (76.0, 78.5, 81.9): the prototype's 0.45
+    // of the sRGB colour, (76.5, 78.75, 81.9), to half a level. An edge's core, EDGE (40, 40,
+    // 40), to (12.4, 12.4, 12.4). Off the body, the background as it is; at 1, the plain
+    // frame exactly. Nothing is uploaded again, and a pick finds what it finds plain.
+    on_lavapipe(
+        "render::frame_tests::a_dimmed_frame_darkens_every_face_and_edge_by_its_dim_and_uploads_nothing",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain_frame = frame(&camera, &[1], &[], None);
+            let image = |r: &mut Renderer, dim: f32| {
+                let commands = r.prepare(&Frame { dim, ..plain_frame }).unwrap();
+                composited(r, Some(commands))
+            };
+            let plain = image(r, 1.0);
+            assert!(
+                r.dimmed.made.is_none(),
+                "a plain frame made a dim's material"
+            );
+            let uploaded = r.uploads();
+            let dimmed = image(r, SKETCH_DIM);
+            assert_eq!(r.uploads(), uploaded, "a dim uploaded a mesh");
+            // One material for the dim, kept: the same dim again makes none.
+            assert_eq!(r.dimmed.makes, 1);
+            assert_eq!(image(r, SKETCH_DIM), dimmed);
+            assert_eq!(r.dimmed.makes, 1);
+            let dim = f64::from(SKETCH_DIM);
+            let face: [f64; 3] = std::array::from_fn(|k| srgb_of(dim * linear(BODY[k])));
+            for (k, hand) in [76.0, 78.5, 81.9].into_iter().enumerate() {
+                assert!((face[k] - hand).abs() < 0.1, "{face:?}");
+            }
+            let edge = srgb_of(dim * linear(EDGE[0]));
+            assert!((edge - 12.4).abs() < 0.1, "{edge}");
+            let (mut inside, mut edges, mut background) = (0, 0, 0);
+            for i in 0..dimmed.len() {
+                let (x, y) = pixel_centre(i);
+                if into_the_front(i) >= 2.0 {
+                    assert_colour(dimmed[i], face, 1.0, &format!("({x}, {y}) on the face"));
+                    inside += 1;
+                } else if plain[i] == [EDGE[0], EDGE[1], EDGE[2], 255] {
+                    // An edge's core, drawn whole in its colour.
+                    assert_colour(dimmed[i], [edge; 3], 1.0, &format!("({x}, {y}) an edge"));
+                    edges += 1;
+                } else if into_the_front(i) <= -3.0 {
+                    // Off the body, past its edges' strokes: the background, dimmed or not.
+                    assert_eq!(dimmed[i], plain[i], "({x}, {y}) off the body");
+                    background += 1;
+                }
+            }
+            assert!(
+                inside > 100 && edges > 10 && background > 100,
+                "{inside} {edges} {background}"
+            );
+            // A tinted face dimmed: its tint dimmed with its colour, the mix by hand times
+            // the dim, (0.5045, 0.5406, 0.6807) × 0.18 in sRGB.
+            let tinted = {
+                let commands = r
+                    .prepare(&Frame {
+                        dim: SKETCH_DIM,
+                        tinted: &[Tinted {
+                            faces: &[(1, Element::Face(3))],
+                            tint: FEATURE_TINT,
+                        }],
+                        ..plain_frame
+                    })
+                    .unwrap();
+                composited(r, Some(commands))
+            };
+            let mixed: [f64; 3] = std::array::from_fn(|k| {
+                srgb_of(dim * (0.6 * linear(BODY[k]) + 0.4 * linear(FEATURE_TINT.colour[k])))
+            });
+            let centre = (0..tinted.len())
+                .max_by(|a, b| into_the_front(*a).total_cmp(&into_the_front(*b)))
+                .unwrap();
+            assert_colour(tinted[centre], mixed, 1.0, "the tinted face's centre");
+            // A dim picks what the plain frame picks.
+            for picking in [ON_THE_FACE, ON_THE_TOP_EDGE] {
+                let plain = hit(r, &frame(&camera, &[1], &[], Some(picking)));
+                let dimmed = hit(
+                    r,
+                    &Frame {
+                        dim: SKETCH_DIM,
+                        ..frame(&camera, &[1], &[], Some(picking))
+                    },
+                );
+                assert!(plain.is_some());
+                assert_eq!(dimmed, plain);
+            }
+            // Back to 1: the plain frame, byte for byte, and still no upload.
+            assert_eq!(image(r, 1.0), plain);
+            assert_eq!(r.uploads(), uploaded);
+        },
+    );
+}
+
+#[test]
+fn a_dim_of_0_draws_the_bodies_black_and_dims_changing_each_frame_each_draw_their_own() {
+    // At 0 every face's colour and its tint are nothing: the front face is black, lit or
+    // not. Dims changing frame to frame (0.18, 0.5, 0, 0.18, a subnormal) each draw their
+    // own colour, the same dim the same image, with no upload: one material is kept, made
+    // again for each new dim.
+    on_lavapipe(
+        "render::frame_tests::a_dim_of_0_draws_the_bodies_black_and_dims_changing_each_frame_each_draw_their_own",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain_frame = frame(&camera, &[1], &[], None);
+            let image = |r: &mut Renderer, dim: f32| {
+                let commands = r
+                    .prepare(&Frame {
+                        dim,
+                        tinted: &[Tinted {
+                            faces: &[(1, Element::Face(3))],
+                            tint: FEATURE_TINT,
+                        }],
+                        ..plain_frame
+                    })
+                    .unwrap();
+                composited(r, Some(commands))
+            };
+            let first = image(r, SKETCH_DIM);
+            let uploaded = r.uploads();
+            let half = image(r, 0.5);
+            let black = image(r, 0.0);
+            let again = image(r, SKETCH_DIM);
+            let tiny = image(r, f32::MIN_POSITIVE / 2.0);
+            assert_eq!(r.uploads(), uploaded);
+            assert_eq!(again, first);
+            let centre = (0..black.len())
+                .max_by(|a, b| into_the_front(*a).total_cmp(&into_the_front(*b)))
+                .unwrap();
+            assert_eq!(black[centre], [0, 0, 0, 255]);
+            assert_eq!(tiny[centre], [0, 0, 0, 255]);
+            let mixed = |dim: f64| -> [f64; 3] {
+                std::array::from_fn(|k| {
+                    srgb_of(dim * (0.6 * linear(BODY[k]) + 0.4 * linear(FEATURE_TINT.colour[k])))
+                })
+            };
+            assert_colour(half[centre], mixed(0.5), 1.0, "at 0.5");
+            assert_colour(first[centre], mixed(f64::from(SKETCH_DIM)), 1.0, "at 0.18");
+        },
+    );
+}
+
+#[test]
+fn a_failed_frame_lets_the_dims_material_go_and_the_next_dimmed_frame_makes_it_again() {
+    // Nothing made on the GPU before a failed frame is trusted after it (`Renderer::failed`):
+    // the dim's material, as the faces' meshes and the planes', is made again.
+    on_lavapipe(
+        "render::frame_tests::a_failed_frame_lets_the_dims_material_go_and_the_next_dimmed_frame_makes_it_again",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let dimmed = Frame {
+                dim: SKETCH_DIM,
+                ..frame(&camera, &[1], &[], None)
+            };
+            assert_eq!(outcome(r, &dimmed), Outcome::Drawn);
+            assert_eq!(r.dimmed.makes, 1);
+            r.fail_frames = 1;
+            assert_eq!(outcome(r, &dimmed), Outcome::Failed);
+            assert!(
+                r.dimmed.made.is_none(),
+                "the dim's material outlived a failed frame"
+            );
+            assert_eq!(outcome(r, &dimmed), Outcome::Refused(1));
+            assert_eq!(outcome(r, &dimmed), Outcome::Drawn);
+            assert_eq!(r.dimmed.makes, 2);
         },
     );
 }

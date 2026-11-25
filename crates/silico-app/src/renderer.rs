@@ -54,6 +54,11 @@ pub struct FrameData {
     /// The origin planes drawn (`crate::planes`): among the bodies, translucent, and in no
     /// picking.
     pub planes: Vec<silico_render::render::Plane>,
+    /// How much of their colour the bodies keep: [`theme::SKETCH_MODEL_DIM`] while a sketch
+    /// is open, else 1 (`silico_render::render::Frame::dim`).
+    ///
+    /// [`theme::SKETCH_MODEL_DIM`]: crate::theme::SKETCH_MODEL_DIM
+    pub dim: f32,
 }
 
 impl FrameData {
@@ -78,6 +83,7 @@ impl FrameData {
             background: crate::theme::VIEWPORT_FRAME_BG,
             lines: &[],
             planes: &self.planes,
+            dim: self.dim,
         }
     }
 }
@@ -636,6 +642,7 @@ mod tests {
             vertices: None,
             lines: Vec::new(),
             planes: Vec::new(),
+            dim: 1.0,
         }
     }
 
@@ -742,6 +749,17 @@ mod tests {
         );
         assert_eq!(locked(&shared).picked, Some(pick));
         assert!(locked(&shared).changes.is_empty());
+    }
+
+    #[test]
+    fn a_frames_dim_is_its_datas() {
+        for dim in [0.0, crate::theme::SKETCH_MODEL_DIM, 1.0] {
+            let frame = FrameData {
+                dim,
+                ..data(&[1], &[])
+            };
+            assert_eq!(frame.frame().dim, dim);
+        }
     }
 
     #[test]
