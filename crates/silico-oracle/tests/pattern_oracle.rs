@@ -33,7 +33,7 @@ fn report(found: &[String]) -> String {
 /// The pattern cases, by name, in the file's order: each FreeCAD test M6.3 ports that 1.1.3
 /// builds as Silico does, patterns.md's probes, and a case for each kind of reference and
 /// each form of the document.
-const PATTERNS: [&str; 27] = [
+const PATTERNS: [&str; 29] = [
     "linear_x",
     "linear_y",
     "linear_z",
@@ -61,11 +61,13 @@ const PATTERNS: [&str; 27] = [
     "nested_pattern",
     "nested",
     "groove_copies",
+    "drawn_back",
+    "hole_circle",
 ];
 
 #[test]
 fn the_pattern_file_holds_every_case_of_the_step() {
-    // Every pattern case, and nothing else is a pattern: the 27 patterns and the 41 pads,
+    // Every pattern case, and nothing else is a pattern: the 29 patterns and the 43 pads,
     // pockets, and the groove they're built on, each a case of its own.
     let cases = cases();
     let patterns: Vec<&str> = cases
@@ -84,7 +86,7 @@ fn the_pattern_file_holds_every_case_of_the_step() {
         .map(|c| c.name.as_str())
         .collect();
     assert_eq!(patterns, PATTERNS);
-    assert_eq!(cases.cases.len(), 27 + 41);
+    assert_eq!(cases.cases.len(), 29 + 43);
     let names: BTreeSet<&str> = cases.cases.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names.len(), cases.cases.len());
 }
@@ -157,9 +159,10 @@ fn the_harness_catches_a_freecad_pattern_built_otherwise_than_the_document_says(
     // values: the case's expected values say so. A direction reversed; extent taken as
     // spacing; an axis swapped; a polar extent as spacing (copies past a turn); a reversed
     // polar not reversed; a mirror in the wrong plane; a feature's copies as the whole
-    // shape's; a grid's second direction dropped; both ways for decision 3, a face's
-    // direction left as FreeCAD's surface axis, which points into the block; and the block
-    // turned about its hole's rim the other way.
+    // shape's; a grid's second direction dropped; the block turned about its hole's rim
+    // the other way; and, both ways for decision 3, a face's direction left as FreeCAD's
+    // surface axis, which points into the block, and an edge's as FreeCAD's curve runs, as
+    // the sketch drew it, where Silico's runs as the profile walks it (Fable, 2026-11-24).
     let described = features::described(&cases()).unwrap();
     let wrong = [
         spoiled(case(&described, "linear_x"), |f| {
@@ -187,10 +190,16 @@ fn the_harness_catches_a_freecad_pattern_built_otherwise_than_the_document_says(
             linear(f).directions.pop();
         }),
         spoiled(case(&described, "bottom_face"), |f| {
-            linear(f).directions[0].outward = false;
+            uncorrected(&mut linear(f).directions[0].reference);
         }),
         spoiled(case(&described, "rim_axis"), |f| {
             polar(f).reversed = true;
+        }),
+        spoiled(case(&described, "drawn_back"), |f| {
+            uncorrected(&mut linear(f).directions[0].reference);
+        }),
+        spoiled(case(&described, "hole_circle"), |f| {
+            uncorrected(&mut polar(f).axis);
         }),
     ];
     let theirs = features::freecad(&wrong).unwrap();
@@ -203,16 +212,48 @@ fn the_harness_catches_a_freecad_pattern_built_otherwise_than_the_document_says(
     }
     // The face's direction left as FreeCAD's: the copy goes up, not down (decision 3): the
     // same volume, the box from z = 0 to 20, as patterns.md §1 has a box's Face5.
-    let bottom = wrong.iter().position(|c| c.name == "bottom_face").unwrap();
-    let silico_oracle::Outcome::Built(measured) = &theirs[bottom] else {
-        panic!("{:?}", theirs[bottom]);
-    };
-    assert!((measured.volume - 16_000.0).abs() < 1e-6, "{measured:?}");
-    let [low, high] = measured.bounds.unwrap();
-    assert!(
-        low[2].abs() < 1e-9 && (high[2] - 20.0).abs() < 1e-9,
-        "{measured:?}"
-    );
+    // The line drawn from (40, 0) to (0, 0) left as FreeCAD's: the copy goes -x, the box
+    // from x = -40 to 40. The hole's circle left as FreeCAD's, about +z: the block turned
+    // (x, y) to (20 - y, x), the box from y = 0 to 40. Each by hand, the volume unchanged.
+    for (name, volume, low, high) in [
+        ("bottom_face", 16_000.0, [0.0, 0.0, 0.0], [40.0, 20.0, 20.0]),
+        (
+            "drawn_back",
+            16_000.0,
+            [-40.0, 0.0, 0.0],
+            [40.0, 20.0, 10.0],
+        ),
+        (
+            "hole_circle",
+            12_000.0 - 40.0 * std::f64::consts::PI,
+            [0.0, 0.0, 0.0],
+            [40.0, 40.0, 10.0],
+        ),
+    ] {
+        let at = wrong.iter().position(|c| c.name == name).unwrap();
+        let silico_oracle::Outcome::Built(measured) = &theirs[at] else {
+            panic!("{name}: {:?}", theirs[at]);
+        };
+        assert!(
+            (measured.volume - volume).abs() < 1e-6,
+            "{name}: {measured:?}"
+        );
+        let [got_low, got_high] = measured.bounds.unwrap();
+        for k in 0..3 {
+            assert!(
+                (got_low[k] - low[k]).abs() < 1e-9 && (got_high[k] - high[k]).abs() < 1e-9,
+                "{name}: {measured:?}"
+            );
+        }
+    }
+}
+
+/// `reference` left as FreeCAD reads it, uncorrected to Silico's sense.
+fn uncorrected(reference: &mut Reference) {
+    match reference {
+        Reference::Element { corrected, .. } => *corrected = false,
+        other => panic!("{other:?}"),
+    }
 }
 
 /// A document of `features` (JSON, after the header), under scheme 6.
@@ -250,7 +291,7 @@ fn each_pattern_is_freecads_as_the_port_note_maps_it() {
     // Written out by hand from docs/ports/patterns.md §1 and §7: a linear pattern's
     // directions as Direction and Direction2, an origin axis as the body's X_Axis, a name as
     // an element of the base's solid, extent as Extent's Length and spacing as Spacing's
-    // Offset, a face's direction corrected to its outward normal; the originals in timeline
+    // Offset, a reference by name corrected to Silico's sense; the originals in timeline
     // order (the boss p0000002 after the hole q0000002), whatever their IDs' order; a polar
     // pattern's spacing as Spacing's Offset in degrees, reversed as Reversed, about an edge;
     // a mirror's origin plane as XZ_Plane, and the whole solid as Whole shape.
@@ -269,6 +310,8 @@ fn each_pattern_is_freecads_as_the_port_note_maps_it() {
         of: of.to_owned(),
         name: name.to_owned(),
         element: None,
+        sense: None,
+        corrected: true,
     };
     assert_eq!(
         model[6],
@@ -282,7 +325,6 @@ fn each_pattern_is_freecads_as_the_port_note_maps_it() {
                     mode: "Extent",
                     length: 20.0,
                     occurrences: 3,
-                    outward: true,
                 },
                 PatternDirection {
                     reference: element("p0000002", "p0000001.pad.Face(M s0000001.sketch.Face1)"),
@@ -290,7 +332,6 @@ fn each_pattern_is_freecads_as_the_port_note_maps_it() {
                     mode: "Spacing",
                     length: 2.5,
                     occurrences: 2,
-                    outward: true,
                 },
             ],
         })
@@ -411,4 +452,31 @@ fn a_pattern_case_and_a_measure_case_find_a_reference_by_silicos_description_of_
         .as_f64()
         .unwrap();
     assert!((area - 800.0).abs() < 1e-9, "{last}");
+    // A face has no sense of Silico's to give: FreeCAD's own outward normal corrects it.
+    assert!(matches!(
+        &p.directions[0].reference,
+        Reference::Element { sense: None, .. }
+    ));
+    // An edge's sense, as Silico's describe gives it, by hand: drawn_back's front bottom
+    // line from (0, 0, 0) to (40, 0, 0), as the profile walks it, not as it's drawn; and
+    // hole_circle's hole, walked clockwise, about -z.
+    let sense = |name: &str| {
+        let case = case(&described, name);
+        match case.model.last().unwrap().references()[0] {
+            Reference::Element {
+                sense: Some(sense), ..
+            } => *sense,
+            other => panic!("{name}: {other:?}"),
+        }
+    };
+    for (name, want) in [
+        ("drawn_back", [40.0, 0.0, 0.0]),
+        ("hole_circle", [0.0, 0.0, -1.0]),
+    ] {
+        let got = sense(name);
+        assert!(
+            (0..3).all(|k| (got[k] - want[k]).abs() < 1e-9),
+            "{name}: {got:?}"
+        );
+    }
 }

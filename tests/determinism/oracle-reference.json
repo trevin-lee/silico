@@ -269,6 +269,24 @@
   "discs_overlapping": {
     "answer": "61e939da59614f75"
   },
+  "drawn_back": {
+    "brep": "31f26117a7c2076f",
+    "cameras": "877786fa9f332ada",
+    "history": "bde2372fc526ad46",
+    "measures": "50353fba940ab9ee",
+    "mesh": "0725504fa3187265",
+    "summary": "e6e15cb06f64e5d6",
+    "topology": "c6283ef6448cf24a"
+  },
+  "drawn_back_block": {
+    "brep": "336aec5bb65eb5c8",
+    "cameras": "e18c5690016935d0",
+    "history": "f8233f40d30f41a9",
+    "measures": "910810dce0925486",
+    "mesh": "5358af06c0bed145",
+    "summary": "94abb00fac60e531",
+    "topology": "24e6ef92cb7923ed"
+  },
   "edge_axis": {
     "brep": "3ec023b223efbd77",
     "cameras": "5f67da3e1ad1b6d9",
@@ -1193,6 +1211,24 @@
   },
   "hexagon_top_edges": {
     "answer": "57d82b5395f9fb2c"
+  },
+  "hole_circle": {
+    "brep": "2bf5b6ee9a399cba",
+    "cameras": "d218f47b96c2b0e9",
+    "history": "3ab1aceab584a373",
+    "measures": "84ef8d481fc6f452",
+    "mesh": "094cd7c93a1ac96a",
+    "summary": "96b422ed50b91171",
+    "topology": "a15d7575309aa1cf"
+  },
+  "hole_circle_block": {
+    "brep": "4382b253aa03af30",
+    "cameras": "e18c5690016935d0",
+    "history": "5428f6b65077c0be",
+    "measures": "c0104ca51e211fe4",
+    "mesh": "570542fc80b6dab9",
+    "summary": "7c599f04c18899ed",
+    "topology": "f21f0fa107132a4d"
   },
   "hole_rims": {
     "answer": "6e7e9e86783d39b8"

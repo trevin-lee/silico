@@ -420,11 +420,6 @@ pub struct PatternDirection {
     /// mode, between neighbours, in mm.
     pub length: f64,
     pub occurrences: u32,
-    /// A face's direction is its outward normal in Silico (decision 3), and its surface's
-    /// axis in FreeCAD, so where `reference` is a face the harness turns `Reversed` round
-    /// wherever the two point opposite ways (docs/ports/patterns.md, decision 3: a FreeCAD
-    /// import corrects each face once). Only a test that shows the difference turns it off.
-    pub outward: bool,
 }
 
 /// A PolarPattern, in FreeCAD's terms.
@@ -459,10 +454,20 @@ pub enum Reference {
     /// document. FreeCAD finds it in its own build of `of` by its geometry, as Silico's
     /// rebuild describes it (`element`, which [`describe`] gives), never by its number,
     /// which the two builds needn't share.
+    ///
+    /// Where the two programs give it opposite senses, the harness turns FreeCAD's
+    /// `Reversed` round (`corrected`), as a FreeCAD import corrects each once
+    /// (docs/ports/patterns.md, decision 3): a face's direction is its outward normal in
+    /// Silico and its surface's axis in FreeCAD; an edge's is `sense`, as Silico's
+    /// `describe` gives it (a line from its start to its end, a circle's axis, which follow
+    /// the way the profile walks its loop, M3.5), and its curve's own in FreeCAD (as the
+    /// sketch drew it). Only a test that shows the difference turns `corrected` off.
     Element {
         of: String,
         name: String,
         element: Option<Element>,
+        sense: Option<[f64; 3]>,
+        corrected: bool,
     },
 }
 
@@ -697,7 +702,6 @@ fn part_design(
                         mode,
                         length: length.mm(),
                         occurrences: d.count,
-                        outward: true,
                     }
                 })
                 .collect();
@@ -793,6 +797,8 @@ fn element(base: &FeatureId, name: &str) -> Reference {
         of: base.as_str().to_owned(),
         name: name.to_owned(),
         element: None,
+        sense: None,
+        corrected: true,
     }
 }
 
@@ -856,10 +862,18 @@ pub(crate) fn describe_model(
 ) -> Result<(), String> {
     for feature in features {
         for reference in feature.references_mut() {
-            if let Reference::Element { of, name, element } = reference {
+            if let Reference::Element {
+                of,
+                name,
+                element,
+                sense,
+                ..
+            } = reference
+            {
                 let of = FeatureId::new(of.as_str())
                     .ok_or_else(|| format!("{of} isn't a feature's ID"))?;
                 *element = Some(measures::resolve(model, std::slice::from_ref(&of), name)?.element);
+                *sense = measures::sense(model, &of, name)?;
             }
         }
     }

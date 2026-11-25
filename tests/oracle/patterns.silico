@@ -1598,6 +1598,103 @@
       ],
       "skip": [],
       "note": "The groove copied 20 apart along x: holes r 2 3 deep at x = 10, 30, 50. Expected: volume 11886.902664471; box 0 -10 0 60 10 10; center 30.0 0 4.966699427."
+    },
+    {
+      "id": "s0000042",
+      "type": "sketch",
+      "v": 1,
+      "name": "drawn_back_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000002", "to": "pa000001", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000035",
+      "type": "pad",
+      "v": 1,
+      "name": "drawn_back_block",
+      "sketch": "s0000042",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 40 x 20 block 10 tall, its front line drawn from (40, 0) to (0, 0). Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 0 40 20 10; center 20 10 5."
+    },
+    {
+      "id": "t0000022",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "drawn_back",
+      "base": "p0000035",
+      "copies": {"type": "solid"},
+      "directions": [
+        {
+          "along": "p0000035.pad.Edge(M s0000042.sketch.Edge.na000001)",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 40},
+          "count": 2
+        }
+      ],
+      "skip": [],
+      "note": "The whole block copied 40 along its front bottom edge, which runs +x as the profile walks it (from (0, 0) to (40, 0)), though its line is drawn the other way: the copy beside it, face to face. FreeCAD's edge runs as drawn, -x, which the harness turns round with Reversed. Expected: volume 16000; faces 10; edges 20; vertices 12; box 0 0 0 80 20 10; center 40 10 5."
+    },
+    {
+      "id": "s0000043",
+      "type": "sketch",
+      "v": 1,
+      "name": "hole_circle_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false},
+        {"id": "pa000005", "x": 10, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [
+        {"id": "ca000001", "center": "pa000005", "radius": 2, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000036",
+      "type": "pad",
+      "v": 1,
+      "name": "hole_circle_block",
+      "sketch": "s0000043",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 40 x 20 block 10 tall with a hole r 2 at (10, 10) in its profile: 8000 - 40 pi. Expected: volume 7874.336293856; box 0 0 0 40 20 10; center 20.15958641 10 5."
+    },
+    {
+      "id": "t0000023",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "hole_circle",
+      "base": "p0000036",
+      "copies": {"type": "solid"},
+      "axis": "p0000036.pad.Edge(G s0000043.sketch.Edge.ca000001)",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 90},
+      "count": 2,
+      "skip": [],
+      "note": "The whole block turned a quarter turn about the top edge of its hole, a circle the profile walks clockwise, so its axis points down (-z) in Silico, though the sketch draws it about +z, as FreeCAD's edge keeps it (the harness turns Reversed round): (x, y) to (y, 20 - x), over x = 0 to 20, y = -20 to 20, crossing itself in 20 x 20 x 10: 2 (8000 - 40 pi) - (4000 - 40 pi) = 12000 - 40 pi. Expected: volume 11874.336293856; box 0 -20 0 40 20 10; center 16.737218655 3.262781345 5."
     }
   ]
 }

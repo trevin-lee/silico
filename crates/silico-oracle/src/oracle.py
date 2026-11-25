@@ -209,6 +209,25 @@ def reference(origin, solids, r):
     return (o, [name]), o.Shape.getElement(name)
 
 
+def turned(picked, r):
+    """Whether FreeCAD's sense of the element `picked` points against Silico's, so its
+    pattern's `Reversed` is turned round (docs/ports/patterns.md, decision 3), unless the
+    reference says not (`corrected`, off only in a test of the difference): a planar face's
+    surface axis against its outward normal; a straight edge's line, or a circle's axis, as
+    its curve runs (the sketch's drawing), against Silico's `sense` (the profile's walk)."""
+    if picked is None or not r["corrected"]:
+        return False
+    if picked.ShapeType == "Face":
+        return surface_axis_inward(picked)
+    if picked.ShapeType == "Edge" and r["sense"] is not None:
+        curve = picked.Curve
+        if isinstance(curve, Part.Line):
+            return dot(curve.Direction, r["sense"]) < 0
+        if isinstance(curve, Part.Circle):
+            return dot(curve.Axis, r["sense"]) < 0
+    return False
+
+
 def surface_axis_inward(face):
     """Whether a planar face's surface axis, which LinearPattern's direction is
     (`adapt.Plane().Axis().Direction()`, LP:440), points against its outward normal, which
@@ -238,9 +257,8 @@ def pattern(body, origin, solids, f):
         for n, d in enumerate(f["directions"]):
             suffix = "" if n == 0 else "2"
             link, picked = reference(origin, solids, d["reference"])
-            turned = d["outward"] and picked is not None and picked.ShapeType == "Face" and surface_axis_inward(picked)
             setattr(o, "Direction" + suffix, link)
-            setattr(o, "Reversed" + suffix, d["reversed"] != turned)
+            setattr(o, "Reversed" + suffix, d["reversed"] != turned(picked, d["reference"]))
             setattr(o, "Mode" + suffix, d["mode"])
             setattr(o, "Occurrences" + suffix, d["occurrences"])
             # Every gap the Offset (-1), as Silico spaces them. Spacings2's default is one
@@ -249,8 +267,9 @@ def pattern(body, origin, solids, f):
             setattr(o, "Spacings" + suffix, [-1.0] * (d["occurrences"] - 1))
             setattr(o, ("Length" if d["mode"] == "Extent" else "Offset") + suffix, d["length"])
     elif f["kind"] == "polar_pattern":
-        o.Axis = reference(origin, solids, f["axis"])[0]
-        o.Reversed = f["reversed"]
+        link, picked = reference(origin, solids, f["axis"])
+        o.Axis = link
+        o.Reversed = f["reversed"] != turned(picked, f["axis"])
         o.Mode = f["mode"]
         o.Occurrences = f["occurrences"]
         if f["mode"] == "Extent":

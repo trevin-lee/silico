@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use silico_core::command::measure::{AngleAnswer, DistanceAnswer, angle, distance};
 use silico_core::command::rebuild;
 use silico_core::document::{Angle, Checked, Feature, FeatureId, Length, Operation, read};
-use silico_core::kernel::{EdgeCurve, ElementKind, Kernel, Surface};
+use silico_core::kernel::{Description, EdgeCurve, ElementKind, ElementRef, Kernel, Surface};
 use silico_core::naming::{Maker, Name};
 use silico_core::pool::KernelPool;
 use silico_core::recompute::{Model, Recompute};
@@ -203,22 +203,7 @@ pub struct Found {
 /// core's measures look for it (`find`, in `command::measure`): the name parsed as a rebuild
 /// parses names, then looked for in each solid's map in turn.
 pub fn resolve(model: &Model, solids: &[FeatureId], text: &str) -> Result<Found, String> {
-    let makers = |id: &FeatureId| {
-        model
-            .document()
-            .features
-            .iter()
-            .find(|f| f.id == *id)
-            .map(|f| Maker::of(&f.operation))
-    };
-    let name = Name::parse(text, &makers).map_err(|e| format!("{text} isn't a name: {e}"))?;
-    let (body, element) = solids
-        .iter()
-        .find_map(|id| Some((id, model.element_map(id)?.element(&name)?)))
-        .ok_or_else(|| format!("{text} names no element of {solids:?}"))?;
-    let description = model
-        .description(body)
-        .ok_or_else(|| format!("{body}'s solid wasn't described"))?;
+    let (body, element, description) = located(model, solids, text)?;
     let at = (element.index as usize).checked_sub(1);
     let missing = || format!("{text} is {element}, which {body}'s description hasn't");
     let element = match element.kind {
@@ -266,6 +251,51 @@ pub fn resolve(model: &Model, solids: &[FeatureId], text: &str) -> Result<Found,
     Ok(Found {
         body: body.clone(),
         element,
+    })
+}
+
+/// The solid of `solids` whose element map has the element `text` names, as [`resolve`]
+/// looks for it, that element, and the solid's description.
+fn located<'m>(
+    model: &'m Model,
+    solids: &'m [FeatureId],
+    text: &str,
+) -> Result<(&'m FeatureId, ElementRef, &'m Description), String> {
+    let makers = |id: &FeatureId| {
+        model
+            .document()
+            .features
+            .iter()
+            .find(|f| f.id == *id)
+            .map(|f| Maker::of(&f.operation))
+    };
+    let name = Name::parse(text, &makers).map_err(|e| format!("{text} isn't a name: {e}"))?;
+    let (body, element) = solids
+        .iter()
+        .find_map(|id| Some((id, model.element_map(id)?.element(&name)?)))
+        .ok_or_else(|| format!("{text} names no element of {solids:?}"))?;
+    let description = model
+        .description(body)
+        .ok_or_else(|| format!("{body}'s solid wasn't described"))?;
+    Ok((body, element, description))
+}
+
+/// Which way the edge `text` names, of `solid`, runs as Silico's rebuild describes it, the
+/// sense a pattern takes from it (`silico_core::pattern`): a line's from its start to its
+/// end, a circle's its axis; none for any other element.
+pub fn sense(model: &Model, solid: &FeatureId, text: &str) -> Result<Option<[f64; 3]>, String> {
+    let (_, element, description) = located(model, std::slice::from_ref(solid), text)?;
+    if element.kind != ElementKind::Edge {
+        return Ok(None);
+    }
+    let edge = (element.index as usize)
+        .checked_sub(1)
+        .and_then(|i| description.edges.get(i))
+        .ok_or_else(|| format!("{text} is {element}, which {solid}'s description hasn't"))?;
+    Ok(match &edge.curve {
+        EdgeCurve::Line => Some(std::array::from_fn(|k| edge.end[k] - edge.start[k])),
+        EdgeCurve::Circle { axis, .. } => Some(axis.direction),
+        _ => None,
     })
 }
 

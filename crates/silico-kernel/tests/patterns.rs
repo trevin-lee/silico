@@ -963,3 +963,91 @@ fn a_refused_patterns_copies_that_change_nothing_are_kept_but_never_warned_of() 
     let warnings = silico_core::warnings::of(&model, &spared);
     assert!(warnings.listed().is_empty(), "{:?}", warnings.listed());
 }
+
+/// The described edge `name` of `feature`'s solid in `model`.
+fn described_edge(model: &Model, feature: &str, name: &str) -> silico_protocol::EdgeDescription {
+    let map = model.element_map(&id(feature)).unwrap();
+    let parsed = silico_core::naming::Name::parse(name, &|f| {
+        model
+            .document()
+            .features
+            .iter()
+            .find(|x| &x.id == f)
+            .map(|x| silico_core::naming::Maker::of(&x.operation))
+    })
+    .unwrap();
+    let element = map.element(&parsed).unwrap();
+    model.description(&id(feature)).unwrap().edges[element.index as usize - 1].clone()
+}
+
+#[test]
+fn a_sketch_made_edge_runs_as_its_profile_walks_and_a_pattern_along_it_goes_that_way() {
+    // Decision 3's edges (Fable, 2026-11-24, docs/ports/patterns.md): an edge a pad makes
+    // from a sketch's curve runs as the profile walks its loop (M3.5's faces: an outer loop
+    // counter-clockwise, a hole clockwise), whichever way the curve is drawn, where FreeCAD's
+    // runs as drawn; the pattern takes describe's sense. A 40 x 20 block whose front line is
+    // drawn from (40, 0) to (0, 0): its bottom edge runs from (0, 0, 0) to (40, 0, 0), and
+    // the whole block copied 40 along it lies beside it, x = 0 to 80, 16,000, by hand.
+    let drawn_back = rectangle("s0000001", "xy", [0.0, 0.0], 40.0, 20.0).replacen(
+        r#""id": "na000001", "from": "pa000001", "to": "pa000002""#,
+        r#""id": "na000001", "from": "pa000002", "to": "pa000001""#,
+        1,
+    );
+    assert!(drawn_back.contains(r#""from": "pa000002", "to": "pa000001""#));
+    let edge = "p0000001.pad.Edge(M s0000001.sketch.Edge.na000001)";
+    let model = built(&[
+        drawn_back,
+        pad("p0000001", None, "s0000001", &up("10")),
+        linear_as(
+            "t0000001",
+            "p0000001",
+            SOLID,
+            &[direction(edge, "spacing", "40", 2)],
+            "[]",
+        ),
+    ]);
+    let described = described_edge(&model, "p0000001", edge);
+    assert!(matches!(described.curve, EdgeCurve::Line));
+    for (got, want) in [
+        (described.start, [0.0; 3]),
+        (described.end, [40.0, 0.0, 0.0]),
+    ] {
+        assert!(
+            (0..3).all(|k| (got[k] - want[k]).abs() < 1e-12),
+            "{described:?}"
+        );
+    }
+    let s = summary(&model, "t0000001");
+    assert_close("volume", s.volume, 16_000.0, 1e-9);
+    let [low, high] = s.bounds.unwrap();
+    assert!(low[0].abs() < 1e-12, "{low:?}");
+    assert_close("high x", high[0], 80.0, 1e-12);
+
+    // The same block with a hole r 2 at (10, 10) in its profile: the hole's circle is walked
+    // clockwise, so its top edge's axis points down (-z), though drawn about +z; the block
+    // turned a quarter turn right-handed about it, (x, y) to (y, 20 - x), lies over y = -20
+    // to 20: 2 (8000 - 40 pi) - (4000 - 40 pi) = 12000 - 40 pi, by hand.
+    let holed = r#"{"id": "s0000002", "type": "sketch", "v": 1, "name": "Holed", "plane": "xy",
+      "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}, {"id": "pa000004", "x": 0, "y": 20, "construction": false}, {"id": "pa000005", "x": 10, "y": 10, "construction": false}],
+      "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}],
+      "circles": [{"id": "ca000001", "center": "pa000005", "radius": 2, "construction": false}], "arcs": [], "constraints": []}"#;
+    let rim = "p0000002.pad.Edge(G s0000002.sketch.Edge.ca000001)";
+    let model = built(&[
+        holed.to_owned(),
+        pad("p0000002", None, "s0000002", &up("10")),
+        polar("t0000002", "p0000002", SOLID, rim, "90", 2),
+    ]);
+    let described = described_edge(&model, "p0000002", rim);
+    let EdgeCurve::Circle { axis, .. } = described.curve else {
+        panic!("{described:?}");
+    };
+    assert!(
+        (0..3).all(|k| (axis.direction[k] - [0.0, 0.0, -1.0][k]).abs() < 1e-12),
+        "{axis:?}"
+    );
+    let s = summary(&model, "t0000002");
+    assert_close("volume", s.volume, 12_000.0 - 40.0 * PI, 1e-9);
+    let [low, high] = s.bounds.unwrap();
+    assert_close("low y", low[1], -20.0, 1e-12);
+    assert_close("high y", high[1], 20.0, 1e-12);
+}
