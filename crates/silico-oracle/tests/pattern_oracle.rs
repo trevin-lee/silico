@@ -33,7 +33,7 @@ fn report(found: &[String]) -> String {
 /// The pattern cases, by name, in the file's order: each FreeCAD test M6.3 ports that 1.1.3
 /// builds as Silico does, patterns.md's probes, and a case for each kind of reference and
 /// each form of the document.
-const PATTERNS: [&str; 29] = [
+const PATTERNS: [&str; 30] = [
     "linear_x",
     "linear_y",
     "linear_z",
@@ -63,11 +63,12 @@ const PATTERNS: [&str; 29] = [
     "groove_copies",
     "drawn_back",
     "hole_circle",
+    "slot_arc",
 ];
 
 #[test]
 fn the_pattern_file_holds_every_case_of_the_step() {
-    // Every pattern case, and nothing else is a pattern: the 29 patterns and the 43 pads,
+    // Every pattern case, and nothing else is a pattern: the 30 patterns and the 44 pads,
     // pockets, and the groove they're built on, each a case of its own.
     let cases = cases();
     let patterns: Vec<&str> = cases
@@ -86,7 +87,7 @@ fn the_pattern_file_holds_every_case_of_the_step() {
         .map(|c| c.name.as_str())
         .collect();
     assert_eq!(patterns, PATTERNS);
-    assert_eq!(cases.cases.len(), 29 + 43);
+    assert_eq!(cases.cases.len(), 30 + 44);
     let names: BTreeSet<&str> = cases.cases.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names.len(), cases.cases.len());
 }
@@ -201,6 +202,9 @@ fn the_harness_catches_a_freecad_pattern_built_otherwise_than_the_document_says(
         spoiled(case(&described, "hole_circle"), |f| {
             uncorrected(&mut polar(f).axis);
         }),
+        spoiled(case(&described, "slot_arc"), |f| {
+            uncorrected(&mut polar(f).axis);
+        }),
     ];
     let theirs = features::freecad(&wrong).unwrap();
     for (case, outcome) in wrong.iter().zip(&theirs) {
@@ -214,7 +218,9 @@ fn the_harness_catches_a_freecad_pattern_built_otherwise_than_the_document_says(
     // same volume, the box from z = 0 to 20, as patterns.md §1 has a box's Face5.
     // The line drawn from (40, 0) to (0, 0) left as FreeCAD's: the copy goes -x, the box
     // from x = -40 to 40. The hole's circle left as FreeCAD's, about +z: the block turned
-    // (x, y) to (20 - y, x), the box from y = 0 to 40. Each by hand, the volume unchanged.
+    // (x, y) to (20 - y, x), the box from y = 0 to 40. The slot's arc left as FreeCAD's,
+    // about +z through (12, 10): (x, y) to (22 - y, x - 2), the box from y = -2 to 38. Each
+    // by hand, the volume unchanged.
     for (name, volume, low, high) in [
         ("bottom_face", 16_000.0, [0.0, 0.0, 0.0], [40.0, 20.0, 20.0]),
         (
@@ -228,6 +234,12 @@ fn the_harness_catches_a_freecad_pattern_built_otherwise_than_the_document_says(
             12_000.0 - 40.0 * std::f64::consts::PI,
             [0.0, 0.0, 0.0],
             [40.0, 40.0, 10.0],
+        ),
+        (
+            "slot_arc",
+            11_960.0 - 30.0 * std::f64::consts::PI,
+            [0.0, -2.0, 0.0],
+            [40.0, 38.0, 10.0],
         ),
     ] {
         let at = wrong.iter().position(|c| c.name == name).unwrap();
@@ -469,9 +481,16 @@ fn a_pattern_case_and_a_measure_case_find_a_reference_by_silicos_description_of_
             other => panic!("{name}: {other:?}"),
         }
     };
+    // And edges away from the origin, from their cases' notes, so a sense read from where
+    // an edge lies rather than which way it runs is caught: edge_axis's from (10, 0, 0) to
+    // (10, 0, 10), edge_direction's from (-50, -30, 0) to (50, -30, 0); and slot_arc's arc,
+    // walked clockwise in its hole, about -z.
     for (name, want) in [
         ("drawn_back", [40.0, 0.0, 0.0]),
         ("hole_circle", [0.0, 0.0, -1.0]),
+        ("edge_axis", [0.0, 0.0, 10.0]),
+        ("edge_direction", [100.0, 0.0, 0.0]),
+        ("slot_arc", [0.0, 0.0, -1.0]),
     ] {
         let got = sense(name);
         assert!(

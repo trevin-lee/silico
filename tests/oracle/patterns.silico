@@ -1695,6 +1695,62 @@
       "count": 2,
       "skip": [],
       "note": "The whole block turned a quarter turn about the top edge of its hole, a circle the profile walks clockwise, so its axis points down (-z) in Silico, though the sketch draws it about +z, as FreeCAD's edge keeps it (the harness turns Reversed round): (x, y) to (y, 20 - x), over x = 0 to 20, y = -20 to 20, crossing itself in 20 x 20 x 10: 2 (8000 - 40 pi) - (4000 - 40 pi) = 12000 - 40 pi. Expected: volume 11874.336293856; box 0 -20 0 40 20 10; center 16.737218655 3.262781345 5."
+    },
+    {
+      "id": "s0000044",
+      "type": "sketch",
+      "v": 1,
+      "name": "slot_arc_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false},
+        {"id": "pa000005", "x": 8, "y": 8, "construction": false},
+        {"id": "pa000006", "x": 12, "y": 8, "construction": false},
+        {"id": "pa000007", "x": 12, "y": 12, "construction": false},
+        {"id": "pa000008", "x": 8, "y": 12, "construction": false},
+        {"id": "pa000009", "x": 12, "y": 10, "construction": false},
+        {"id": "pa000010", "x": 8, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+        {"id": "na000005", "from": "pa000005", "to": "pa000006", "construction": false},
+        {"id": "na000006", "from": "pa000007", "to": "pa000008", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "ra000001", "center": "pa000009", "start": "pa000006", "end": "pa000007", "construction": false},
+        {"id": "ra000002", "center": "pa000010", "start": "pa000008", "end": "pa000005", "construction": false}
+      ],
+      "constraints": []
+    },
+    {
+      "id": "p0000037",
+      "type": "pad",
+      "v": 1,
+      "name": "slot_arc_block",
+      "sketch": "s0000044",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 40 x 20 block 10 tall with a slot hole in its profile, 4 between its arcs' centres (8, 10) and (12, 10), r 2: 8000 - 10 (16 + 4 pi). Expected: volume 7714.336293856; box 0 0 0 40 20 10; center 20.370302376 10 5."
+    },
+    {
+      "id": "t0000024",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "slot_arc",
+      "base": "p0000037",
+      "copies": {"type": "solid"},
+      "axis": "p0000037.pad.Edge(G s0000044.sketch.Edge.ra000001)",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 90},
+      "count": 2,
+      "skip": [],
+      "note": "The whole block turned a quarter turn about the top edge of its slot's right arc, drawn counter-clockwise about (12, 10) but walked clockwise in the hole, so its axis points down (-z) in Silico and up as FreeCAD draws it (the harness turns Reversed round): (x, y) to (y + 2, 22 - x), over y = -18 to 22. The slots' union 28 + 5 pi (their common part the square x, y = 10 to 12 and three quarter discs r 2), so 2 (8000 - 10 (16 + 4 pi)) - 10 (400 - (28 + 5 pi)) = 11960 - 30 pi. About +z it would lie over y = -2 to 38. Expected: volume 11865.752220392; box 0 -18 0 40 22 10."
     }
   ]
 }

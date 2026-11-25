@@ -2019,6 +2019,24 @@
   "skew_edges": {
     "answer": "418d39cf7572b39a"
   },
+  "slot_arc": {
+    "brep": "565c59405413b313",
+    "cameras": "4313b991d890e183",
+    "history": "5a0e2ae6f4f1a45d",
+    "measures": "25b183038435e992",
+    "mesh": "f447c60256497496",
+    "summary": "3219378c0921dd44",
+    "topology": "8f6471397d76cb50"
+  },
+  "slot_arc_block": {
+    "brep": "a8c5564ff55b6da8",
+    "cameras": "e18c5690016935d0",
+    "history": "ea6c421e056a089f",
+    "measures": "1b9a431bda204387",
+    "mesh": "4db86f8d71f98d76",
+    "summary": "3e6ba4830de9a25c",
+    "topology": "9dd4286529f1ead5"
+  },
   "slot_plate": {
     "brep": "003df2bbf29bff54",
     "cameras": "218f58d6fa0184f6",

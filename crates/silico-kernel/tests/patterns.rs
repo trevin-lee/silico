@@ -983,8 +983,9 @@ fn described_edge(model: &Model, feature: &str, name: &str) -> silico_protocol::
 #[test]
 fn a_sketch_made_edge_runs_as_its_profile_walks_and_a_pattern_along_it_goes_that_way() {
     // Decision 3's edges (Fable, 2026-11-24, docs/ports/patterns.md): an edge a pad makes
-    // from a sketch's curve runs as the profile walks its loop (M3.5's faces: an outer loop
-    // counter-clockwise, a hole clockwise), whichever way the curve is drawn, where FreeCAD's
+    // from a sketch's curve (a line, a circle, an arc) runs as the profile walks its loop
+    // (M3.5's faces: an outer loop counter-clockwise, a hole clockwise), whichever way the
+    // curve is drawn, where FreeCAD's
     // runs as drawn; the pattern takes describe's sense. A 40 x 20 block whose front line is
     // drawn from (40, 0) to (0, 0): its bottom edge runs from (0, 0, 0) to (40, 0, 0), and
     // the whole block copied 40 along it lies beside it, x = 0 to 80, 16,000, by hand.
@@ -1050,4 +1051,32 @@ fn a_sketch_made_edge_runs_as_its_profile_walks_and_a_pattern_along_it_goes_that
     let [low, high] = s.bounds.unwrap();
     assert_close("low y", low[1], -20.0, 1e-12);
     assert_close("high y", high[1], 20.0, 1e-12);
+
+    // An arc walked clockwise: a slot hole's right end, drawn counter-clockwise about
+    // (12, 10) from (12, 8) to (12, 12), its edge's axis -z; the block turned a quarter turn
+    // about it, (x, y) to (y + 2, 22 - x), lies over y = -18 to 22: 11960 - 30 pi, by hand
+    // (the two slots' union 28 + 5 pi; tests/oracle/patterns.silico's slot_arc).
+    let slotted = r#"{"id": "s0000003", "type": "sketch", "v": 1, "name": "Slotted", "plane": "xy",
+      "points": [{"id": "pa000001", "x": 0, "y": 0, "construction": false}, {"id": "pa000002", "x": 40, "y": 0, "construction": false}, {"id": "pa000003", "x": 40, "y": 20, "construction": false}, {"id": "pa000004", "x": 0, "y": 20, "construction": false}, {"id": "pa000005", "x": 8, "y": 8, "construction": false}, {"id": "pa000006", "x": 12, "y": 8, "construction": false}, {"id": "pa000007", "x": 12, "y": 12, "construction": false}, {"id": "pa000008", "x": 8, "y": 12, "construction": false}, {"id": "pa000009", "x": 12, "y": 10, "construction": false}, {"id": "pa000010", "x": 8, "y": 10, "construction": false}],
+      "lines": [{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}, {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}, {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false}, {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}, {"id": "na000005", "from": "pa000005", "to": "pa000006", "construction": false}, {"id": "na000006", "from": "pa000007", "to": "pa000008", "construction": false}],
+      "circles": [], "arcs": [{"id": "ra000001", "center": "pa000009", "start": "pa000006", "end": "pa000007", "construction": false}, {"id": "ra000002", "center": "pa000010", "start": "pa000008", "end": "pa000005", "construction": false}], "constraints": []}"#;
+    let arc = "p0000003.pad.Edge(G s0000003.sketch.Edge.ra000001)";
+    let model = built(&[
+        slotted.to_owned(),
+        pad("p0000003", None, "s0000003", &up("10")),
+        polar("t0000003", "p0000003", SOLID, arc, "90", 2),
+    ]);
+    let described = described_edge(&model, "p0000003", arc);
+    let EdgeCurve::Circle { axis, .. } = described.curve else {
+        panic!("{described:?}");
+    };
+    assert!(
+        (0..3).all(|k| (axis.direction[k] - [0.0, 0.0, -1.0][k]).abs() < 1e-12),
+        "{axis:?}"
+    );
+    let s = summary(&model, "t0000003");
+    assert_close("volume", s.volume, 11_960.0 - 30.0 * PI, 1e-9);
+    let [low, high] = s.bounds.unwrap();
+    assert_close("low y", low[1], -18.0, 1e-12);
+    assert_close("high y", high[1], 22.0, 1e-12);
 }
