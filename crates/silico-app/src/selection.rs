@@ -1026,23 +1026,7 @@ impl Selection {
             self.said = Some(format!("Can't select {name}: {}", words(&gone.why)));
             return;
         }
-        let picked = match answer.kept.into_iter().next() {
-            Some(selected) => Picked {
-                name: selected.name.to_string(),
-                state: State::Found(selected),
-                carry: Carry::Pick,
-                found_in: self.of,
-            },
-            None => Picked {
-                name: name.to_owned(),
-                state: State::Waiting {
-                    why: None,
-                    last: None,
-                },
-                carry: Carry::Pick,
-                found_in: None,
-            },
-        };
+        let picked = self.picked(name, answer.kept.into_iter().next());
         if let Some(found) = picked.found() {
             self.scroll = Some(found.feature.clone());
         }
@@ -1050,12 +1034,7 @@ impl Selection {
             How::Replace => Vec::new(),
             How::Toggle | How::Add => self.items.clone(),
         };
-        let mut index = Index::default();
-        for (at, item) in items.iter().enumerate() {
-            if let Item::Element(each) = item {
-                index.add(at, each);
-            }
-        }
+        let index = Index::of(&items);
         let boxed = how == How::Toggle && self.taking.is_some();
         match index.find(&picked) {
             Some(at) if how == How::Toggle => {
@@ -1083,6 +1062,56 @@ impl Selection {
         if self.held.is_none() {
             self.read(&model);
         }
+    }
+
+    /// `name` selected as a right click's menu acts on it (the canvas's Fillet, of the edge
+    /// under the pointer): the selection kept as it is if it holds the element already (by
+    /// any of its names), else `name` picked in place of it, as a click picks it. Whether
+    /// the selection holds it then: not if the pick was refused (why is said).
+    pub fn pick_unless_held(&mut self, name: &str) -> bool {
+        if !self.holds(name) {
+            self.pick(name, How::Replace);
+        }
+        self.holds(name)
+    }
+
+    /// Whether the selection holds the element `name` names in the published model, by the
+    /// rule a pick finds it there by (`Index`): the same element of the same solid, or, for
+    /// one not found, the same name.
+    fn holds(&self, name: &str) -> bool {
+        Index::of(&self.items)
+            .find(&self.picked(name, self.resolve_one(name)))
+            .is_some()
+    }
+
+    /// `name` as a pick holds it, given what the published model finds of it (`found`): by
+    /// the name the core holds for it, found; or as written, waiting.
+    fn picked(&self, name: &str, found: Option<Selected>) -> Picked {
+        match found {
+            Some(selected) => Picked {
+                name: selected.name.to_string(),
+                state: State::Found(selected),
+                carry: Carry::Pick,
+                found_in: self.of,
+            },
+            None => Picked {
+                name: name.to_owned(),
+                state: State::Waiting {
+                    why: None,
+                    last: None,
+                },
+                carry: Carry::Pick,
+                found_in: None,
+            },
+        }
+    }
+
+    /// The name the selection would hold the element `name` names by, as the selection
+    /// view's Stable name shows it and an agent writes it: the core's for it (a stable alias
+    /// for an unstable own name), or `name` itself if the published model finds none.
+    pub fn held_name(&self, name: &str) -> String {
+        self.resolve_one(name)
+            .map_or_else(|| name.to_owned(), |found| found.name.to_string())
     }
 
     /// `names` picked together, `how` (a box's elements, by their names as the element map
@@ -1175,12 +1204,7 @@ impl Selection {
         // Each picked matched to the item that's its element, by
         // index, so a box of thousands costs no more than a sort: the items', and those the
         // batch has added so far.
-        let mut index = Index::default();
-        for (at, item) in items.iter().enumerate() {
-            if let Item::Element(picked) = item {
-                index.add(at, picked);
-            }
-        }
+        let mut index = Index::of(&items);
         let mut removed: BTreeSet<usize> = BTreeSet::new();
         let mut scroll = None;
         // Each toggled, in the order named, by its item's index here: added, or let go.
@@ -2045,6 +2069,17 @@ struct Index {
 }
 
 impl Index {
+    /// The elements of `items`, each where it stands.
+    fn of(items: &[Item]) -> Index {
+        let mut index = Index::default();
+        for (at, item) in items.iter().enumerate() {
+            if let Item::Element(each) = item {
+                index.add(at, each);
+            }
+        }
+        index
+    }
+
     /// `picked`, standing `at`: the first of each key kept.
     fn add(&mut self, at: usize, picked: &Picked) {
         match picked.found() {
@@ -3153,6 +3188,42 @@ pub(crate) mod tests {
         }
         selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.click, None);
+    }
+
+    #[test]
+    fn a_refused_pick_unless_held_says_why_and_holds_nothing() {
+        // No model: the pick is refused, said, and nothing is held.
+        let mut selection = Selection::default();
+        assert!(!selection.pick_unless_held("rrrrrrrr.fuse.Face1"));
+        assert!(selection.names().is_empty());
+        assert!(
+            selection
+                .said()
+                .is_some_and(|said| said.contains("no model"))
+        );
+    }
+
+    #[test]
+    fn a_held_name_is_the_stable_alias_or_the_name_itself_where_nothing_is_found() {
+        // The face of `fused(3, 4)` the text `rrrrrrrr.fuse.Face1` names has the stable alias
+        // `cccccccc.box.Face1`: what Copy name copies, as a pick holds it. With no model, or
+        // for a name the model doesn't find, the name as written.
+        let name = "rrrrrrrr.fuse.Face1";
+        let mut selection = Selection::default();
+        assert_eq!(selection.held_name(name), name);
+        selection.published(Some((fused(3, 4), Revision::from_number(1).unwrap())), 1);
+        assert_eq!(selection.held_name(name), "cccccccc.box.Face1");
+        assert_eq!(
+            selection.held_name("aaaaaaaa.box.Face99"),
+            "aaaaaaaa.box.Face99"
+        );
+        // Picked by its own name, the selection holds it by the alias, and holds it by
+        // either.
+        selection.pick(name, How::Replace);
+        assert_eq!(selection.names(), ["cccccccc.box.Face1"]);
+        assert!(selection.pick_unless_held(name));
+        assert!(selection.pick_unless_held("cccccccc.box.Face1"));
+        assert_eq!(selection.names(), ["cccccccc.box.Face1"]);
     }
 
     #[test]

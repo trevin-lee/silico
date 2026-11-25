@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use re_renderer::mesh::{CpuMesh, GpuMesh, Material};
+use re_renderer::mesh::{CpuMesh, GpuMaterial, GpuMesh, Material};
 use re_renderer::renderer::{GpuMeshInstance, MeshDrawData, PointCloudBatchFlags};
 use re_renderer::view_builder::{
     BlendWithBackground, OrthographicCameraMode, Projection as ViewProjection, TargetConfiguration,
@@ -334,6 +334,14 @@ pub struct Frame<'a> {
     /// line's, so a plane with no body is drawn whole; one the view is too small for is
     /// refused, naming `planes`.
     pub planes: &'a [Plane],
+    /// How much of their colour the bodies keep, in linear light: 1 draws them as they
+    /// are; less darkens every face's and edge's colour toward black by it, its tint's too,
+    /// before its light, as the approved prototype dims the model while a sketch is
+    /// open (viewport.js's `uDim`). Finite, from 0 to 1. Each face is drawn from its own
+    /// mesh's buffers with a material of that colour, so a dim, like a tint,
+    /// uploads no face again and changes no picking ID; the lines and planes keep theirs.
+    /// A render's is 1.
+    pub dim: f32,
 }
 
 impl Frame<'_> {
@@ -386,6 +394,12 @@ impl Frame<'_> {
             last = body;
         }
         self.tint.check()?;
+        if !(self.dim.is_finite() && (0.0..=1.0).contains(&self.dim)) {
+            return Err(InvalidParameter {
+                parameter: "dim",
+                message: format!("dim {:?} must be finite, from 0 to 1", self.dim),
+            });
+        }
         let mut lit: BTreeMap<u32, Lit> = BTreeMap::new();
         let lists = [
             ("highlights", self.highlights, Listed::Highlighted),
@@ -646,6 +660,8 @@ struct Colours {
     outlines: Outlines,
     background: Option<Rgba>,
     tint: Color32,
+    /// [`Frame::dim`]: 1 for a render.
+    dim: f32,
 }
 
 impl Outlines {
@@ -796,6 +812,8 @@ pub struct Renderer {
     backoff: Backoff,
     /// The planes' fill meshes, one for each fill colour drawn ([`planes::Meshes`]).
     plane_meshes: planes::Meshes,
+    /// The material the faces of a frame that dims the bodies are drawn with ([`Dimmed`]).
+    dimmed: Dimmed,
     /// How many of the next frames fail as the GPU fails one, once built: a stand-in for
     /// out of memory or a lost device, which lavapipe can't be made to give.
     #[cfg(test)]
@@ -872,6 +890,7 @@ impl Renderer {
             generations: 0,
             backoff: Backoff::NONE,
             plane_meshes: planes::Meshes::new(),
+            dimmed: Dimmed::default(),
             #[cfg(test)]
             fail_frames: 0,
         })
@@ -1025,6 +1044,7 @@ impl Renderer {
                 outlines: frame.outlines,
                 background: frame.background.map(srgb),
                 tint: frame.tint.added(),
+                dim: frame.dim,
             },
             Drawn {
                 bodies: &drawn,
@@ -1065,9 +1085,9 @@ impl Renderer {
     }
 
     /// What a frame the GPU failed leaves: its picking request (`request`, its readback's
-    /// identifier) dropped, and every body's GPU meshes and the planes', which nothing
-    /// vouches for, to be uploaded again when they're next drawn; the bodies themselves kept; and the next
-    /// frames refused for a while ([`Backoff`]).
+    /// identifier) dropped, and every body's GPU meshes, the planes', and the dim's material,
+    /// which nothing vouches for, to be made again when they're next drawn; the bodies
+    /// themselves kept; and the next frames refused for a while ([`Backoff`]).
     fn failed(&mut self, request: Option<u64>) {
         if let Some(id) = request {
             self.pending.remove(&id);
@@ -1077,6 +1097,7 @@ impl Renderer {
             body.drop_gpu_meshes();
         }
         self.plane_meshes.clear();
+        self.dimmed.made = None;
     }
 
     /// The last frame [`Renderer::prepare`] built, composited into `pass` (egui's, in its
@@ -1298,6 +1319,7 @@ impl Renderer {
                 outlines: Outlines::DEFAULT,
                 background: Some(srgb(BACKGROUND)),
                 tint: Color32::BLACK,
+                dim: 1.0,
             },
             Drawn {
                 bodies: &drawn,
@@ -1342,6 +1364,7 @@ impl Renderer {
             outlines,
             background,
             tint,
+            dim,
         } = colours;
         let Drawn {
             bodies: drawn,
@@ -1354,8 +1377,15 @@ impl Renderer {
             uploads,
             placed,
             plane_meshes,
+            dimmed,
             ..
         } = self;
+        // The material a dimmed frame's faces are drawn with, made once for each dim.
+        let dim_material = if dim < 1.0 {
+            Some(dimmed.material(ctx, dim)?)
+        } else {
+            None
+        };
         let placing = std::time::Instant::now();
         let mut instances = Vec::new();
         let mut lines = LineDrawableBuilder::new(ctx);
@@ -1384,8 +1414,20 @@ impl Renderer {
                 continue;
             }
             uploaded.settle(view, lit);
-            *uploads += uploaded.faces(ctx, number, lit, tint, view, &mut instances)?;
-            edges(&mut lines, number, uploaded, lit, view, (&strokes, reach));
+            // The tint added to a face's colour, dimmed with it.
+            let looks = FaceLooks {
+                tint: darkened(tint, dim),
+                material: dim_material.as_ref(),
+            };
+            *uploads += uploaded.faces(ctx, number, lit, looks, view, &mut instances)?;
+            edges(
+                &mut lines,
+                number,
+                uploaded,
+                (lit, dim),
+                view,
+                (&strokes, reach),
+            );
         }
         // The frame's lines after every body's edges, so a line coinciding with an edge is
         // drawn over it.
@@ -3685,6 +3727,96 @@ fn srgb([r, g, b]: [u8; 3]) -> Rgba {
     Rgba::from_srgba_unmultiplied(r, g, b, 255)
 }
 
+/// What a frame draws its faces in beyond their own colour: the tint added to the tinted
+/// ones ([`Frame::tinted`]), dimmed with the frame, and the dim's material, if it dims.
+#[derive(Clone, Copy)]
+struct FaceLooks<'a> {
+    tint: Color32,
+    material: Option<&'a GpuMaterial>,
+}
+
+/// The material a frame's faces are drawn with when it dims the bodies ([`Frame::dim`]): a
+/// face's own colour, its vertices', times the dim in linear light, its alpha 1 so the
+/// face stays opaque. Made once for each dim, on a mesh of its own (re_renderer makes a
+/// material only with a mesh), and kept while frames dim by it; each face is drawn with it
+/// from its own mesh's buffers ([`Dimmed::with_material`]), so a dim uploads no face again.
+/// Its material is the face's own ([`face_material`]) with the dim as its factor.
+#[derive(Default)]
+struct Dimmed {
+    made: Option<(u32, GpuMaterial)>,
+    /// How many materials it has made: what a test counts.
+    #[cfg(test)]
+    makes: u32,
+}
+
+impl Dimmed {
+    /// The material of `dim` (from 0, below 1, checked), made if it isn't held.
+    fn material(&mut self, ctx: &RenderContext, dim: f32) -> Result<GpuMaterial, String> {
+        match &self.made {
+            Some((bits, material)) if *bits == dim.to_bits() => Ok(material.clone()),
+            _ => {
+                let cpu = CpuMesh {
+                    label: "dimmed".into(),
+                    materials: smallvec::smallvec![face_material(
+                        ctx,
+                        3,
+                        Rgba::from_rgb(dim, dim, dim)
+                    )],
+                    triangle_indices: vec![glam::UVec3::new(0, 1, 2)],
+                    vertex_positions: vec![glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y],
+                    vertex_colors: vec![Rgba32Unmul::WHITE; 3],
+                    vertex_normals: vec![glam::Vec3::Z; 3],
+                    vertex_texcoords: vec![glam::Vec2::ZERO; 3],
+                    bbox: macaw::BoundingBox::from_points(
+                        [glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y].into_iter(),
+                    ),
+                };
+                let gpu =
+                    GpuMesh::new(ctx, &cpu).map_err(|e| format!("the dim's material: {e}"))?;
+                let material = gpu
+                    .materials
+                    .first()
+                    .cloned()
+                    .ok_or_else(|| "the dim's mesh has no material".to_owned())?;
+                self.made = Some((dim.to_bits(), material.clone()));
+                #[cfg(test)]
+                {
+                    self.makes += 1;
+                }
+                Ok(material)
+            }
+        }
+    }
+
+    /// `mesh` drawn with `material`: its own buffers, each of its materials' triangles
+    /// with the dim's bind group in place of its own.
+    fn with_material(mesh: &GpuMesh, material: &GpuMaterial) -> GpuMesh {
+        let mut dimmed = mesh.clone();
+        for own in &mut dimmed.materials {
+            own.bind_group = material.bind_group.clone();
+        }
+        dimmed
+    }
+}
+
+/// `colour` (sRGB) times `dim` in linear light, as a line's colour: `colour` itself at 1.
+fn dimmed_colour(colour: [u8; 3], dim: f32) -> Color32 {
+    darkened(Color32::from_rgb(colour[0], colour[1], colour[2]), dim)
+}
+
+/// `colour`, opaque, times `dim` in linear light, still opaque: `colour` itself at 1.
+fn darkened(colour: Color32, dim: f32) -> Color32 {
+    if dim >= 1.0 {
+        return colour;
+    }
+    let linear = Rgba::from(colour);
+    Color32::from(Rgba::from_rgb(
+        linear.r() * dim,
+        linear.g() * dim,
+        linear.b() * dim,
+    ))
+}
+
 /// The body's colour as a vertex's, plain or tinted with the highlight: in linear light, half
 /// the body's and half the blue, then sRGB (an `Rgba`'s alpha must stay 1, or the
 /// conversion premultiplies in sRGB). re_renderer's light then shades it.
@@ -3909,7 +4041,7 @@ impl Uploaded {
         ctx: &RenderContext,
         body: u32,
         lit: &Lit,
-        tint: Color32,
+        FaceLooks { tint, material }: FaceLooks<'_>,
         view: &View,
         instances: &mut Vec<GpuMeshInstance>,
     ) -> Result<u64, String> {
@@ -3950,6 +4082,11 @@ impl Uploaded {
                     uploads += 1;
                     Arc::clone(held.insert(Arc::new(gpu)))
                 }
+            };
+            // Dimmed: the same buffers, drawn with the dim's material.
+            let gpu_mesh = match material {
+                Some(material) => Arc::new(Dimmed::with_material(&gpu_mesh, material)),
+                None => gpu_mesh,
             };
             instances.push(GpuMeshInstance {
                 gpu_mesh,
@@ -4068,7 +4205,7 @@ fn edges(
     lines: &mut LineDrawableBuilder<'_>,
     body: u32,
     uploaded: &Uploaded,
-    lit: &Lit,
+    (lit, dim): (&Lit, f32),
     view: &View,
     (strokes, reach): (&[ViewRegion; 2], f64),
 ) {
@@ -4090,7 +4227,7 @@ fn edges(
         let style = |strip: re_renderer::LineStripBuilder<'_, '_>| {
             strip
                 .radius(Size::new_ui_points(width / 2.0))
-                .color(Color32::from_rgb(colour[0], colour[1], colour[2]))
+                .color(dimmed_colour(colour, dim))
                 .picking_instance_id(edge_instance(number))
                 .outline_mask_ids(outline);
         };
@@ -4372,6 +4509,20 @@ fn cut_face_vertices(mesh: &Mesh, span: FaceSpan, view: &View) -> Result<FaceVer
     Ok(out)
 }
 
+/// A face's material, over `indices` of its triangles' indices: its colour its vertices',
+/// times `factor` (white, as a face is drawn; the dim, as [`Dimmed`] draws it).
+fn face_material(ctx: &RenderContext, indices: u32, factor: Rgba) -> Material {
+    Material {
+        label: "body".into(),
+        index_range: re_renderer::Span {
+            start: 0,
+            len: indices,
+        },
+        albedo: ctx.texture_manager_2d.white_texture_unorm_handle().clone(),
+        albedo_factor: factor,
+    }
+}
+
 /// The face `span` of body `body` as a mesh of its own, of its `vertices` ([`face_vertices`],
 /// or [`cut_face_vertices`]), coloured plain or baked with the highlight's blue.
 fn face_cpu_mesh(
@@ -4389,15 +4540,11 @@ fn face_cpu_mesh(
     let vertices = positions.len();
     Ok(CpuMesh {
         label: format!("Body{body}Face{}", span.number).into(),
-        materials: smallvec::smallvec![Material {
-            label: "body".into(),
-            index_range: re_renderer::Span {
-                start: 0,
-                len: u32::try_from(triangles.len() * 3).map_err(|e| e.to_string())?,
-            },
-            albedo: ctx.texture_manager_2d.white_texture_unorm_handle().clone(),
-            albedo_factor: Rgba::WHITE,
-        }],
+        materials: smallvec::smallvec![face_material(
+            ctx,
+            u32::try_from(triangles.len() * 3).map_err(|e| e.to_string())?,
+            Rgba::WHITE
+        )],
         triangle_indices: triangles,
         vertex_colors: vec![vertex_colour(baked); vertices],
         vertex_normals: normals,

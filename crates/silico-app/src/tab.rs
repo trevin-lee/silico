@@ -1478,6 +1478,9 @@ pub struct Tab {
     /// What the core says of the face the canvas's context menu is over: its entry, read as
     /// the selection view's is, for its type (Sketch on this face, `crate::canvas_menu`).
     menu_face: crate::measures::Measures,
+    /// What the core says of the published model's bodies, for the property panel's
+    /// document view (`docProps`' Volume, Area, and Faces).
+    model_measures: crate::model_measures::ModelMeasures,
     /// What toasts are to say for the tab (a box's count, or why it took nothing; an undo's,
     /// a save's), in the order said, until the app takes them.
     toasts: Vec<Toast>,
@@ -1965,6 +1968,7 @@ impl Tab {
             select_other: crate::select_other::SelectOther::default(),
             measures: crate::measures::Measures::default(),
             menu_face: crate::measures::Measures::default(),
+            model_measures: crate::model_measures::ModelMeasures::default(),
             toasts: Vec::new(),
             stop_asked: None,
             stopped: None,
@@ -2068,6 +2072,7 @@ impl Tab {
         sessions: &Arc<Sessions<P>>,
         painter: &eframe::egui::Painter,
         frame: &crate::viewport::ViewFrame,
+        remembered: &crate::dialog::Remembered,
     ) {
         // Create Sketch's pick ends once sketch mode can't open: a dialog or a sketch opened
         // another way (Edit Sketch, a feature's dialog), or the tab closing.
@@ -2171,6 +2176,7 @@ impl Tab {
             names: &names,
             edit_off: &edit,
             sketched: &built_from_sketch,
+            fillet_off: crate::feature_menu::fillet_off(self),
             sketch_off: crate::feature_menu::sketch_off(self),
         };
         let (left, asked, said) = self.select_other.overlay(
@@ -2241,7 +2247,7 @@ impl Tab {
             painter.ctx().request_repaint();
         }
         if let Some(asked) = asked {
-            self.canvas_act(sessions, asked);
+            self.canvas_act(sessions, asked, remembered, painter.ctx());
             painter.ctx().request_repaint();
         }
         self.paint_arrows(painter, shown);
@@ -2450,13 +2456,17 @@ impl Tab {
     /// feature menus' Edit feature (`crate::feature_menu::act`), Sketch on this face as the
     /// selection view's button ([`create_sketch_on_face`](Self::create_sketch_on_face)),
     /// Look At as Ctrl+8 turns to the face selected ([`look_at_face`](Self::look_at_face)),
-    /// Hide as H hides a body, Fit and Home view as F6 and Home, Clear selection as Esc
-    /// clears it, and a plane of Create Sketch's as the toolbar's
-    /// ([`create_sketch`](Self::create_sketch)).
+    /// Fillet as MODIFY's Fillet opens its dialog with `remembered` (its edge selected first
+    /// as a click selects it, unless it's selected already), Copy name onto `ctx`'s
+    /// clipboard (the name the selection would hold it by), Hide as H hides a body, Fit
+    /// and Home view as F6 and Home, Clear selection as Esc clears it, and a plane of
+    /// Create Sketch's as the toolbar's ([`create_sketch`](Self::create_sketch)).
     fn canvas_act<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         asked: crate::canvas_menu::CanvasAct,
+        remembered: &crate::dialog::Remembered,
+        ctx: &eframe::egui::Context,
     ) {
         use crate::canvas_menu::CanvasAct;
         use crate::viewport::ViewAsk;
@@ -2471,6 +2481,22 @@ impl Tab {
                 self.create_sketch_on_face(sessions, &face.to_string());
             }
             CanvasAct::LookAt(toward) => self.look_at_face(toward),
+            CanvasAct::Fillet(edge) => {
+                // Its dialog can't open since the menu opened (a reload the gate refused):
+                // said, the selection left alone.
+                if let Some(why) = crate::feature_menu::fillet_off(self) {
+                    self.toasts.push(Toast::info(why));
+                    return;
+                }
+                // Opened on the edge only if the selection holds it (a refused pick says
+                // why, its selection kept).
+                if self.selection.pick_unless_held(&edge.to_string()) {
+                    self.open_dialog(sessions, Kind::Fillet, remembered);
+                }
+            }
+            CanvasAct::CopyName(name) => {
+                ctx.copy_text(self.selection.held_name(&name.to_string()));
+            }
             CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
             CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
             CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),
@@ -2827,6 +2853,41 @@ impl Tab {
         }
         let measured = crate::measures::Measured::of(&self.selection);
         self.measures.ask(sessions, &self.id, of, measured);
+    }
+
+    /// The published model, as its measures are keyed: the tab's count of the models
+    /// published, and its revision; none while nothing is published.
+    pub fn published_model(&self) -> Option<crate::model_measures::ModelKey> {
+        self.published
+            .map(|revision| (self.published_models, revision))
+    }
+
+    /// What the core says of the published model's bodies (`docProps`' measures), as last
+    /// answered.
+    pub fn model_measures(&self) -> &crate::model_measures::ModelMeasures {
+        &self.model_measures
+    }
+
+    /// The published model's measures' reads out polled, then the measures asked at `now`,
+    /// if they're not what was asked last (a rebuild since) or a read refused is due to be
+    /// asked again: what the property panel's document view asks as it's drawn, so nothing
+    /// is read while it isn't shown.
+    pub fn measure_model<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        now: std::time::Instant,
+    ) {
+        // Polled first: a read answered this frame lets a refused one due be asked now.
+        self.model_measures.poll(now);
+        let of = self.published_model();
+        self.model_measures.ask(sessions, &self.id, of, now);
+    }
+
+    /// The model's measures, for a crate's test to answer as if read
+    /// (`ModelMeasures::answered_as`).
+    #[cfg(test)]
+    pub(crate) fn model_measures_mut(&mut self) -> &mut crate::model_measures::ModelMeasures {
+        &mut self.model_measures
     }
 
     /// The measures, for a crate's test to answer as if read (`Measures::answered_as`).
