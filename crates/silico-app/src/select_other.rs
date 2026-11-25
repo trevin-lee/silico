@@ -26,8 +26,8 @@
 //! each ([`OTHER_REDRAWN`]).
 //!
 //! **The list.** Choosing *Select Other…* opens it beside the click, its first row lit. The
-//! row lit is the selection's hover ([`Selection::hold_hover`]: its face or edge outlined, its
-//! vertex's dot drawn); hovering a row lights it, and Tab and the down arrow (Shift+Tab and
+//! row lit is the selection's hover ([`Selection::hold_hover`]: its face tinted, its edge
+//! outlined, its vertex's dot drawn); hovering a row lights it, and Tab and the down arrow (Shift+Tab and
 //! the up arrow back) and the wheel step through the rows, round from the last to the first.
 //! A click on a row, or Enter, chooses it as a click on the canvas would: it replaces the
 //! selection, Ctrl (Cmd on macOS) toggling it, and while a dialog's box of names takes the
@@ -178,12 +178,14 @@ impl Row {
 
 /// What the tab knows that the canvas's menus say ([`SelectOther::overlay`]): a feature's
 /// name by its ID; why Edit can't open a feature's dialog now, if it can't (the feature
-/// menus' reason, `crate::feature_menu::off`); whether a feature is built from a sketch
+/// menus' reason, `crate::feature_menu::off`); why Fillet's dialog can't open now, if it
+/// can't (`crate::feature_menu::fillet_off`); whether a feature is built from a sketch
 /// (`Tab::sketch_of`, for its Edit Sketch); and why sketch mode can't open now, if it can't
 /// (`crate::feature_menu::sketch_off`).
 pub(crate) struct Facts<'a> {
     pub(crate) names: &'a dyn Fn(&FeatureId) -> Option<String>,
     pub(crate) edit_off: &'a dyn Fn(&FeatureId) -> Option<String>,
+    pub(crate) fillet_off: Option<String>,
     pub(crate) sketched: &'a dyn Fn(&FeatureId) -> bool,
     pub(crate) sketch_off: Option<String>,
 }
@@ -841,6 +843,7 @@ impl SelectOther {
             edit_off: under
                 .as_ref()
                 .and_then(|under| (facts.edit_off)(&under.maker)),
+            fillet_off: facts.fillet_off.clone(),
             selected: !selection.is_empty(),
             sketch_off: facts.sketch_off.clone(),
         };
@@ -1203,15 +1206,6 @@ fn menu_id() -> Id {
     Id::new("select_other_menu")
 }
 
-/// An element's kind, as the rows and the context menu's head say it, and its number.
-fn kind_of(element: Element) -> (&'static str, u32) {
-    match element {
-        Element::Face(n) => ("Face", n),
-        Element::Edge(n) => ("Edge", n),
-        Element::Vertex(n) => ("Vertex", n),
-    }
-}
-
 /// A feature's name, as `names` gives it, or its ID.
 fn named(names: &dyn Fn(&FeatureId) -> Option<String>, id: &FeatureId) -> String {
     names(id).unwrap_or_else(|| id.as_str().to_owned())
@@ -1224,14 +1218,13 @@ fn under_of(
     facts: &Facts<'_>,
     body: u32,
     element: Element,
-    name: &Name,
+    name: &Arc<Name>,
 ) -> Option<Under> {
     let body = view.bodies().get(&body)?;
-    let (kind, number) = kind_of(element);
     let maker = name.feature().clone();
     Some(Under {
-        label: format!("{kind}{number}"),
-        kind,
+        element,
+        name: Arc::clone(name),
         maker_name: named(facts.names, &maker),
         sketched: (facts.sketched)(&maker),
         maker,
@@ -1268,7 +1261,7 @@ fn rows_of<'a>(
 /// `hit` as a row: named `named_as`, its note its kind, the feature that made it (by its
 /// name, as `names` gives it, or its ID), and whether it's hidden.
 fn row_of(hit: &Hit, named_as: &MeshElement, names: &dyn Fn(&FeatureId) -> Option<String>) -> Row {
-    let (kind, number) = kind_of(hit.element);
+    let (kind, number) = crate::canvas_menu::kind_of(hit.element);
     let made_by = named(names, named_as.name.feature());
     let mut note = format!("{kind} · {made_by}");
     if hit.hidden {
@@ -1592,6 +1585,7 @@ mod tests {
             count: format!("{rows} under the pointer"),
             listable: rows > 0,
             edit_off: None,
+            fillet_off: None,
             selected: false,
             sketch_off: Some("Close the open dialog first".to_owned()),
         };
@@ -1621,8 +1615,17 @@ mod tests {
     fn over_the_top(of: Of, phase: Phase) -> Menu {
         let block = FeatureId::new("k7f2qx3m").unwrap();
         let under = Under {
-            label: "Face6".to_owned(),
-            kind: "Face",
+            element: Element::Face(6),
+            name: Arc::new(Name::Element {
+                feature: block.clone(),
+                made: silico_core::naming::TypeWord::Primitive(
+                    silico_core::naming::PrimitiveKind::Box,
+                ),
+                element: silico_protocol::ElementRef {
+                    kind: silico_protocol::ElementKind::Face,
+                    index: 6,
+                },
+            }),
             maker: block.clone(),
             maker_name: "Block".to_owned(),
             sketched: false,
@@ -1667,9 +1670,9 @@ mod tests {
 
     #[test]
     fn a_face_read_as_a_plane_keeps_what_was_lit_in_the_menu_and_in_the_list() {
-        // #444's review. Over the top: Select Other…, Edit Block, and Hide Block,
+        // #444's review. Over the top: Select Other…, Edit Block, Copy name, and Hide Block,
         // Hide lit by the keys. Another menu's answer is dropped; its own puts Sketch on this
-        // face and Look At before Hide, and Hide stays lit, now fifth.
+        // face and Look At before Copy name, and Hide stays lit, now sixth.
         let ctx = egui::Context::default();
         let of = Of {
             version: 7,
@@ -1679,11 +1682,11 @@ mod tests {
             menu: Some(over_the_top(of, Phase::Context)),
             ..Default::default()
         };
-        so.menu.as_mut().unwrap().lit = Some(2);
-        let before = ["Select Other…", "Edit Block", "Hide Block"];
+        so.menu.as_mut().unwrap().lit = Some(3);
+        let before = ["Select Other…", "Edit Block", "Copy name", "Hide Block"];
         so.face_typed(Of { version: 6, ..of }, Some(TILTED), &ctx);
         assert_eq!(labels(&so), before);
-        assert_eq!((so.lit(), so.face_read()), (Some(2), Some(false)));
+        assert_eq!((so.lit(), so.face_read()), (Some(3), Some(false)));
         so.face_typed(
             Of {
                 model: (2, of.model.1),
@@ -1701,10 +1704,11 @@ mod tests {
                 "Edit Block",
                 "Sketch on this face",
                 "Look At",
+                "Copy name",
                 "Hide Block"
             ]
         );
-        assert_eq!((so.lit(), so.face_read()), (Some(4), Some(true)));
+        assert_eq!((so.lit(), so.face_read()), (Some(5), Some(true)));
         assert_eq!(
             so.context().unwrap().items[3].item,
             CanvasItem::Act(CanvasAct::LookAt(TILTED))
@@ -2522,6 +2526,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            fillet_off: None,
             sketched: &|_| false,
             sketch_off: None,
         };
@@ -2573,6 +2578,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            fillet_off: None,
             sketched: &|_| false,
             sketch_off: None,
         };
@@ -2628,6 +2634,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            fillet_off: None,
             sketched: &|_| false,
             sketch_off: None,
         };
@@ -2685,6 +2692,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            fillet_off: None,
             sketched: &|_| false,
             sketch_off: None,
         };
@@ -2721,6 +2729,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            fillet_off: None,
             sketched: &|_| false,
             sketch_off: None,
         };
@@ -2784,6 +2793,7 @@ mod tests {
         let facts = Facts {
             names: &names,
             edit_off: &edit_off,
+            fillet_off: None,
             sketched: &|_| false,
             sketch_off: None,
         };

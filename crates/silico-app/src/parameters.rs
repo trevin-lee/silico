@@ -578,18 +578,33 @@ fn direction_words(kind: SweepFeature, extent: Extent, normal: Option<[f64; 3]>)
         }
         _ => return None,
     };
-    let word = match (reversed, kind.adds()) {
-        (true, _) => "Reversed",
-        (false, true) => "Normal",
-        (false, false) => "Default",
-    };
-    Some(match normal {
+    Some(way_said(kind, reversed, normal))
+}
+
+/// A sweep's way flipped or not (`reversed`), as its Direction says it: its word
+/// ([`direction_word`]), then the way the core's rule gives ([`sweep::prism_direction`]) as
+/// a signed axis or its components ([`way_words`]) once its sketch's `normal` is known
+/// (`Normal (−Y)`); its word alone before. What the parameters pane's Direction row and the
+/// pad dialog's Direction's tooltips (`crate::dialog::direction_choices`) both say.
+pub(crate) fn way_said(kind: SweepFeature, reversed: bool, normal: Option<[f64; 3]>) -> String {
+    let word = direction_word(kind, reversed);
+    match normal {
         Some(normal) => {
             let way = sweep::prism_direction(kind, reversed, normal);
             format!("{word} ({})", way_words(way))
         }
         None => word.to_owned(),
-    })
+    }
+}
+
+/// A sweep's way's word: `Reversed` flipped; else `Normal` for one that adds (a pad's, along
+/// its sketch's normal), `Default` for one that cuts (a pocket's, against it).
+pub(crate) fn direction_word(kind: SweepFeature, reversed: bool) -> &'static str {
+    match (reversed, kind.adds()) {
+        (true, _) => "Reversed",
+        (false, true) => "Normal",
+        (false, false) => "Default",
+    }
 }
 
 /// `way` as a signed axis (`+X`, `−Y`) if it's one exactly, else its components.
