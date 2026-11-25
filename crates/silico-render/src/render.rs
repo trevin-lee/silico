@@ -844,8 +844,8 @@ pub struct Renderer {
     /// The mesh a body had before the one in `bodies` ([`Renderer::upload`]), drawn in its
     /// place by the frames until that one's faces are all made: so a body replaced is drawn
     /// by one mesh, old or new, never part of each. It's whole, unless it was part made when
-    /// it was replaced (a body's first, still being made): then it's drawn as far as it's
-    /// made, and made on first. Dropped once the one in `bodies` is drawn, or by a frame that
+    /// it was replaced (being made with nothing drawn in its place, as a body's first is):
+    /// then it's drawn as far as it's made, and made on first. Dropped once the one in `bodies` is drawn, or by a frame that
     /// doesn't draw the body.
     outgoing: BTreeMap<u32, Uploaded>,
     /// A body's newest mesh, uploaded while the one in `bodies` was being made (drawn in its
@@ -990,8 +990,9 @@ impl Renderer {
     /// one mesh at a time:
     /// - none drawn in the body's place, it's made, the mesh it replaces drawn in its place
     ///   till its faces are all made, if that one has any made to draw (one whole; or one
-    ///   part made, as a body's first is, still made on first, before this one, as far as
-    ///   each frame's budget goes); else, as it's made;
+    ///   part made, being made with nothing drawn in its place as a body's first is, still
+    ///   made on first, before this one, as far as each frame's budget goes); else, as it's
+    ///   made;
     /// - one being made, drawn in place by the one before it, it waits till that one is
     ///   whole, then is made as that one is drawn in its place; one waiting already is
     ///   dropped for it;
