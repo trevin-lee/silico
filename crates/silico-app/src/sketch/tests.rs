@@ -7612,6 +7612,12 @@ fn of_two_values_at_one_place_the_one_drawn_last_is_hit_with_the_lower_id() {
         hit(&read, [20.0, -2.6], 0.0, HAND, Axes::BOTH),
         constraint_pick("ka000002")
     );
+    // And on their lines, which lie one on the other: at (30, −2.6), 8.8 from the boxes,
+    // 2.6 from the side, and 10 from the extension lines, within 0.05 of the lines alone.
+    assert_eq!(
+        hit(&read, [30.0, -2.6], 0.05, HAND, Axes::BOTH),
+        constraint_pick("ka000002")
+    );
 }
 
 // The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
