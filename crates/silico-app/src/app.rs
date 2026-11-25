@@ -226,7 +226,7 @@ const SKETCH_BAR_FROM_SIDE: f32 = SKETCH_BAR_FROM_TOP;
 const SKETCH_BAR_FROM_RIGHT: f32 = theme::BANNER_MARGIN_RIGHT;
 const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
-    egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
+    egui::Vec2::new(-PALETTE_MARGIN - theme::SKETCH_PALETTE_WIDTH, 118.0);
 
 /// Where the sketch bar showing `bar` stands over `canvas`, its top left, and the most it may
 /// be wide ([`sketch_bar_room`], [`sketch_bar_left`]), from its widths laid out in the
@@ -286,8 +286,8 @@ fn sketch_inset(
             (canvas.right() - palette.left()) + (canvas.right() - palette.right()),
         ),
         _ => (
-            2.0 * SKETCH_BAR_FROM_TOP + sketch::style::SKETCH_BAR_HEIGHT,
-            2.0 * PALETTE_MARGIN + sketch::style::SKETCH_PALETTE_WIDTH,
+            2.0 * SKETCH_BAR_FROM_TOP + theme::SKETCH_BAR_HEIGHT,
+            2.0 * PALETTE_MARGIN + theme::SKETCH_PALETTE_WIDTH,
         ),
     };
     // Up to a whole pixel, so a band covers its panel; a few hundred at most, and the cast
