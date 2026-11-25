@@ -446,7 +446,8 @@ fn anchor(
 /// of the sketch it sweeps, from the loops of that sketch's solve the model keeps, measured
 /// exactly by the faces request's own measure (`silico_protocol::area_moments`), each loop
 /// about a point of its own, then all about the first's, an outer loop's area counted and a
-/// hole's (walked the other way) taken away; placed on its sketch's plane as the rebuild
+/// hole's taken away, by its role, since the measure runs a lone circle counter-clockwise
+/// whichever it is; placed on its sketch's plane as the rebuild
 /// resolved it. None where any of it can't be had.
 fn profile_centre(model: &Model, original: &FeatureId) -> Option<(f64, [f64; 3])> {
     let sketch_id = model.feature(original)?.operation.sketch()?;
@@ -463,14 +464,19 @@ fn profile_centre(model: &Model, original: &FeatureId) -> Option<(f64, [f64; 3])
     let mut about: Option<[f64; 2]> = None;
     let (mut area, mut moment) = (0.0, [0.0, 0.0]);
     for region in &profile.regions {
-        for walked in std::iter::once(&region.outer).chain(&region.holes) {
+        let loops = std::iter::once((&region.outer, 1.0))
+            .chain(region.holes.iter().map(|hole| (hole, -1.0)));
+        for (walked, role) in loops {
             let measured = silico_protocol::area_moments(&walked.sent());
             let here = *about.get_or_insert(measured.about);
             let shift = [measured.about[0] - here[0], measured.about[1] - here[1]];
-            area += measured.area;
+            // However the measure runs a loop (a lone circle counter-clockwise, a hole or
+            // not), it counts by what it is: an outer loop's area added, a hole's taken away.
+            let sense = role * measured.area.signum();
+            area += sense * measured.area;
             moment = [
-                moment[0] + measured.moment[0] + shift[0] * measured.area,
-                moment[1] + measured.moment[1] + shift[1] * measured.area,
+                moment[0] + sense * (measured.moment[0] + shift[0] * measured.area),
+                moment[1] + sense * (measured.moment[1] + shift[1] * measured.area),
             ];
         }
     }
@@ -702,4 +708,155 @@ fn bug(feature: &FeatureId, what: &str) -> Error {
     Error::new(ErrorCode::Internal, format!("{feature}: {what}"))
         .with_feature(feature.as_str())
         .with_suggestion(SILICO_BUG)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use silico_protocol::CopiesOp;
+
+    fn instance(offsets: &[u32]) -> Instance {
+        Instance::new(offsets).unwrap()
+    }
+
+    fn verdict(off_base: &[&[u32]], changed_nothing: &[&[u32]], base_solids: u32) -> StepVerdict {
+        StepVerdict {
+            original: None,
+            op: CopiesOp::Cut,
+            solids: 1,
+            base_solids,
+            off_base: off_base.iter().map(|o| instance(o)).collect(),
+            changed_nothing: changed_nothing.iter().map(|o| instance(o)).collect(),
+        }
+    }
+
+    #[test]
+    fn an_instances_state_is_the_first_that_holds_in_the_designs_order() {
+        // (1) is skipped and named by both verdicts; (2) off the base and changed nothing;
+        // (3) changed nothing; (4) named by none.
+        let skipped: BTreeSet<&[u32]> = [&[1u32][..]].into_iter().collect();
+        let verdicts = [
+            verdict(&[&[1], &[2]], &[&[1]], 1),
+            verdict(&[], &[&[2], &[3]], 1),
+        ];
+        let of =
+            |offsets: &[u32], silent: bool| state(&instance(offsets), &skipped, &verdicts, silent);
+        assert_eq!(of(&[1], false), Some(InstanceState::Skipped));
+        assert_eq!(of(&[2], false), Some(InstanceState::OffBase));
+        assert_eq!(of(&[3], false), Some(InstanceState::ChangedNothing));
+        assert_eq!(of(&[4], false), Some(InstanceState::Built));
+        // Where a step gave no verdict: what was named still is, the rest none.
+        assert_eq!(of(&[1], true), Some(InstanceState::Skipped));
+        assert_eq!(of(&[2], true), Some(InstanceState::OffBase));
+        assert_eq!(of(&[3], true), Some(InstanceState::ChangedNothing));
+        assert_eq!(of(&[4], true), None);
+    }
+
+    #[test]
+    fn a_point_is_moved_turned_and_reflected_as_by_hand() {
+        let p = [5.0, 0.0, 2.0];
+        // Moved by (1, 2, 3).
+        assert_eq!(
+            placed(
+                &Placement::Translation {
+                    offset: [1.0, 2.0, 3.0]
+                },
+                p
+            ),
+            [6.0, 2.0, 5.0]
+        );
+        // A quarter turn about +Z through (1, 0, 0), right-handed: (5, 0) is 4 along +X
+        // from the axis, so 4 along +Y after, at (1, 4, 2); about −Z, at (1, −4, 2).
+        let about = |direction| Axis {
+            origin: [1.0, 0.0, 0.0],
+            direction,
+        };
+        let quarter = std::f64::consts::FRAC_PI_2;
+        let rounded = |v: [f64; 3]| v.map(|c| (c * 1e9).round() / 1e9 + 0.0);
+        assert_eq!(
+            rounded(placed(
+                &Placement::Rotation {
+                    axis: about([0.0, 0.0, 1.0]),
+                    angle: quarter
+                },
+                p
+            )),
+            [1.0, 4.0, 2.0]
+        );
+        assert_eq!(
+            rounded(placed(
+                &Placement::Rotation {
+                    axis: about([0.0, 0.0, -1.0]),
+                    angle: quarter
+                },
+                p
+            )),
+            [1.0, -4.0, 2.0]
+        );
+        // An axis along a direction that isn't a unit vector turns as its unit vector does.
+        assert_eq!(
+            rounded(placed(
+                &Placement::Rotation {
+                    axis: about([0.0, 0.0, 3.0]),
+                    angle: quarter
+                },
+                p
+            )),
+            [1.0, 4.0, 2.0]
+        );
+        // Reflected in the plane x = 3 (its normal −X, and not a unit vector): 2 past it, so
+        // 2 before it, at x = 1.
+        assert_eq!(
+            placed(
+                &Placement::Mirror {
+                    origin: [3.0, 7.0, 0.0],
+                    normal: [-2.0, 0.0, 0.0]
+                },
+                p
+            ),
+            [1.0, 0.0, 2.0]
+        );
+        // Turned, then moved.
+        assert_eq!(
+            rounded(placed(
+                &Placement::TurnedAndMoved {
+                    axis: about([0.0, 0.0, 1.0]),
+                    angle: quarter,
+                    offset: [0.0, 0.0, 1.0]
+                },
+                p
+            )),
+            [1.0, 4.0, 3.0]
+        );
+    }
+
+    #[test]
+    fn the_problems_a_read_gathers_are_each_listed_once_the_first_hundred_and_all_counted() {
+        let error = |n: usize| Error::new(ErrorCode::InvalidInput, format!("problem {n}"));
+        let mut gathered = Gathered {
+            errors: vec![error(0)],
+            total: 1,
+        };
+        // One already listed isn't listed again, nor counted.
+        gathered.add(error(0));
+        assert_eq!((gathered.errors.len(), gathered.total), (1, 1));
+        for n in 1..=PROBLEMS_LISTED {
+            gathered.add(error(n));
+        }
+        assert_eq!(gathered.errors.len(), PROBLEMS_LISTED);
+        assert_eq!(gathered.total, PROBLEMS_LISTED as u64 + 1);
+        assert_eq!(gathered.errors.last(), Some(&error(PROBLEMS_LISTED - 1)));
+    }
+
+    #[test]
+    fn a_length_or_angle_that_isnt_one_is_a_bug_never_a_panic() {
+        for value in [f64::NAN, f64::INFINITY, 1e30] {
+            let problems = length(value).unwrap_err();
+            assert_eq!(problems.errors()[0].code(), ErrorCode::Internal, "{value}");
+            let problems = angle(value).unwrap_err();
+            assert_eq!(problems.errors()[0].code(), ErrorCode::Internal, "{value}");
+        }
+        assert_eq!(length(-0.0).unwrap(), Length::from_nm(0));
+        assert_eq!(angle(90.0).unwrap(), Angle::from_ndeg(90_000_000_000));
+    }
 }

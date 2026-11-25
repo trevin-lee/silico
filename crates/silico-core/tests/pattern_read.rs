@@ -500,3 +500,145 @@ fn a_skipped_instance_is_listed_skipped_in_its_place() {
     );
     assert_eq!(read.instances[4].anchor, Some(point([40.0, 20.0, 0.0])));
 }
+
+/// A document under scheme 6 of these features.
+fn document(features: &[String]) -> String {
+    format!(
+        "{{\"silico\": 1, \"units\": {{\"length\": \"mm\", \"resolution\": \"1nm\"}}, \"naming\": 6, \"features\": [{}]}}\n",
+        features.join(", ")
+    )
+}
+
+/// A sketch `id` on xy: a `w` by `h` rectangle from `(x, y)`, lettered `l`, and, inside it,
+/// circles at `holes` (centre and radius), lettered `m`.
+fn sketch(
+    id: &str,
+    l: char,
+    (x, y, w, h): (f64, f64, f64, f64),
+    holes: &[([f64; 2], f64)],
+) -> String {
+    let corners = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+    let mut points: Vec<String> = corners
+        .iter()
+        .zip(1..)
+        .map(|((x, y), n)| {
+            format!(r#"{{"id": "p{l}00000{n}", "x": {x}, "y": {y}, "construction": false}}"#)
+        })
+        .collect();
+    let lines: Vec<String> = (1..=4)
+        .map(|n| {
+            format!(
+                r#"{{"id": "n{l}00000{n}", "from": "p{l}00000{n}", "to": "p{l}00000{}", "construction": false}}"#,
+                n % 4 + 1
+            )
+        })
+        .collect();
+    let mut circles = Vec::new();
+    for (n, ([cx, cy], r)) in holes.iter().enumerate() {
+        points.push(format!(
+            r#"{{"id": "pm00000{n}", "x": {cx}, "y": {cy}, "construction": false}}"#
+        ));
+        circles.push(format!(
+            r#"{{"id": "cm00000{n}", "center": "pm00000{n}", "radius": {r}, "construction": false}}"#
+        ));
+    }
+    format!(
+        r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{}], "lines": [{}], "circles": [{}], "arcs": [], "constraints": []}}"#,
+        points.join(", "),
+        lines.join(", "),
+        circles.join(", ")
+    )
+}
+
+fn circle_sketch(id: &str, [x, y]: [f64; 2], r: f64) -> String {
+    format!(
+        r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "S", "plane": "xy", "points": [{{"id": "pz000001", "x": {x}, "y": {y}, "construction": false}}], "lines": [], "circles": [{{"id": "cz000001", "center": "pz000001", "radius": {r}, "construction": false}}], "arcs": [], "constraints": []}}"#
+    )
+}
+
+fn feature(id: &str, kind: &str, base: Option<&str>, sketch: &str, extent: &str) -> String {
+    let base = base.map_or(String::new(), |b| format!(r#""base": "{b}", "#));
+    format!(
+        r#"{{"id": "{id}", "type": "{kind}", "v": 1, "name": "F", {base}"sketch": "{sketch}", "extent": {extent}}}"#
+    )
+}
+
+const UP: &str = r#"{"type": "one_side", "length": 5, "reversed": false}"#;
+const THROUGH: &str = r#"{"type": "through_all", "reversed": true}"#;
+
+#[test]
+fn several_originals_are_anchored_at_their_profiles_centre_of_area_a_holes_taken_away() {
+    // Two pockets copied together: a 10 × 10 square about (20, 0) with a hole r 2 at
+    // (22, 0) in it, so a region of area 100 − 4π centred (2000 − 4π · 22) / (100 − 4π)
+    // along x; and a disc r 3 at (−20, 10), area 9π. The anchor is their areas' centre:
+    // Σ Aᵢcᵢ / Σ Aᵢ, by hand, and the copy 15 along y is it moved 15.
+    let pi = std::f64::consts::PI;
+    let (a1, a2) = (100.0 - 4.0 * pi, 9.0 * pi);
+    let c1 = [(100.0 * 20.0 - 4.0 * pi * 22.0) / a1, 0.0];
+    let c2 = [-20.0, 10.0];
+    let anchor = [
+        (a1 * c1[0] + a2 * c2[0]) / (a1 + a2),
+        (a1 * c1[1] + a2 * c2[1]) / (a1 + a2),
+        0.0,
+    ];
+    let text = document(&[
+        sketch("s0000001", 'a', (-50.0, -30.0, 100.0, 60.0), &[]),
+        feature("p0000001", "pad", None, "s0000001", UP),
+        sketch("s0000002", 'b', (15.0, -5.0, 10.0, 10.0), &[([22.0, 0.0], 2.0)]),
+        feature("q0000001", "pocket", Some("p0000001"), "s0000002", THROUGH),
+        circle_sketch("s0000003", [-20.0, 10.0], 3.0),
+        feature("q0000002", "pocket", Some("q0000001"), "s0000003", THROUGH),
+        r#"{"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "T", "base": "q0000002", "copies": {"type": "features", "features": ["q0000002", "q0000001"]}, "directions": [{"along": "y", "reversed": true, "distribution": {"type": "spacing", "length": 15}, "count": 2}], "skip": []}"#.to_owned(),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let (sessions, session, _) = opened(dir.path(), &text);
+    let read = answered(sessions.pattern(&session, ModelChoice::Current, id("t0000001")))
+        .result
+        .unwrap_or_else(|p| panic!("{:?}", p.errors()));
+    assert_eq!(read.anchor, Some(point(anchor)));
+    let directions = read.directions.unwrap();
+    assert_eq!(directions[0].direction, [0.0, -1.0, 0.0]);
+    assert_eq!(directions[0].step, Some(mm(15.0)));
+    assert_eq!(read.instances.len(), 1);
+    assert_eq!(read.instances[0].offset, Some(point([0.0, -15.0, 0.0])));
+    assert_eq!(
+        read.instances[0].anchor,
+        Some(point([anchor[0], anchor[1] - 15.0, 0.0]))
+    );
+}
+
+#[test]
+fn a_direction_of_one_instance_has_no_step_by_extent_and_its_spacing_by_spacing() {
+    // An extent over one instance has no neighbours to step to; a spacing is its value.
+    // Neither places anything along it, and a polar extent of one alike.
+    let base = [
+        sketch("s0000001", 'a', (-50.0, -30.0, 100.0, 60.0), &[]),
+        feature("p0000001", "pad", None, "s0000001", UP),
+        circle_sketch("s0000003", [-40.0, -20.0], 2.75),
+        feature("q0000002", "pocket", Some("p0000001"), "s0000003", THROUGH),
+    ];
+    let pattern = r#"{"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "T", "base": "q0000002", "copies": {"type": "features", "features": ["q0000002"]}, "directions": [{"along": "x", "reversed": false, "distribution": {"type": "extent", "length": 80}, "count": 1}, {"along": "y", "reversed": false, "distribution": {"type": "spacing", "length": 7.5}, "count": 2}], "skip": []}"#;
+    let polar = r#"{"id": "t0000002", "type": "polar_pattern", "v": 1, "name": "P", "base": "t0000001", "copies": {"type": "features", "features": ["q0000002"]}, "axis": "z", "reversed": true, "distribution": {"type": "extent", "angle": 90}, "count": 1, "skip": []}"#;
+    let mut features: Vec<String> = base.to_vec();
+    features.push(pattern.to_owned());
+    features.push(polar.to_owned());
+    let dir = tempfile::tempdir().unwrap();
+    let (sessions, session, _) = opened(dir.path(), &document(&features));
+    let read = answered(sessions.pattern(&session, ModelChoice::Current, id("t0000001")))
+        .result
+        .unwrap_or_else(|p| panic!("{:?}", p.errors()));
+    let directions = read.directions.unwrap();
+    assert_eq!(directions[0].step, None);
+    assert_eq!(directions[1].step, Some(mm(7.5)));
+    let indexes: Vec<String> = read.instances.iter().map(|i| i.index.to_string()).collect();
+    assert_eq!(indexes, ["0,1"]);
+    assert_eq!(read.instances[0].offset, Some(point([0.0, 7.5, 0.0])));
+    let polar = answered(sessions.pattern(&session, ModelChoice::Current, id("t0000002")))
+        .result
+        .unwrap_or_else(|p| panic!("{:?}", p.errors()));
+    let axis = polar.axis.unwrap();
+    assert_eq!(axis.step, None);
+    // Reversed: its axis −Z.
+    assert_eq!(axis.direction, [0.0, 0.0, -1.0]);
+    assert!(polar.instances.is_empty());
+}

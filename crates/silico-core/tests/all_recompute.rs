@@ -38,6 +38,8 @@ mod adversarial_described;
 mod adversarial_entries;
 #[path = "adversarial_measure_refusal.rs"]
 mod adversarial_measure_refusal;
+#[path = "adversarial_pattern_read.rs"]
+mod adversarial_pattern_read;
 #[path = "adversarial_pattern_rebuild.rs"]
 mod adversarial_pattern_rebuild;
 #[path = "adversarial_rebuild_features.rs"]
