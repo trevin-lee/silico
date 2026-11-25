@@ -438,6 +438,53 @@ fn pick_ranks_the_origin_with_the_points_and_the_axes_with_the_curves() {
 }
 
 #[test]
+fn a_curve_is_found_by_picks_rule_with_no_point_in_its_way_and_an_arc_only_where_its_drawn() {
+    // The quarter arc a0000001 of radius 10 about (0, 0), counter-clockwise from (10, 0) to
+    // (0, 10), and the line n0000001 from (20, 0) to (20, 10).
+    let mut quarter = empty();
+    quarter.points = vec![
+        point("c0000001", 0.0, 0.0),
+        point("s0000001", 10.0, 0.0),
+        point("e0000001", 0.0, 10.0),
+    ];
+    quarter.arcs = vec![arc("a0000001", "c0000001", "s0000001", "e0000001")];
+    let quarter = with_line(quarter, "n0000001", [20.0, 0.0], [20.0, 10.0]);
+    // (10, 0.5): its foot on the round at atan(0.05) = 2.86°, inside the sweep, and
+    // √100.25 − 10 = 0.0125 off it: the arc, though its start (10, 0) is 0.5 off, which
+    // `pick` takes first.
+    assert_eq!(curve_at(&quarter, [10.0, 0.5], 0.7), Some(id("a0000001")));
+    assert_eq!(
+        pick(&quarter, [10.0, 0.5], 0.7, Axes::BOTH),
+        Some(el("s0000001"))
+    );
+    // (10, −0.5): its foot at −2.86°, past the sweep's start, so on no arc, though the
+    // arc's end (10, 0) is 0.5 off, within 0.7; nor on the line, 10 off. Nothing.
+    assert_eq!(curve_at(&quarter, [10.0, -0.5], 0.7), None);
+    // (−0.5, 10), past its other end, at 92.86°: nothing; (0.5, 10), at 87.14°: the arc.
+    assert_eq!(curve_at(&quarter, [-0.5, 10.0], 0.7), None);
+    assert_eq!(curve_at(&quarter, [0.5, 10.0], 0.7), Some(id("a0000001")));
+    // (15, 5): the arc's round 15.81 − 10 = 5.81 off, the line 5: the line, within 6.
+    assert_eq!(curve_at(&quarter, [15.0, 5.0], 6.0), Some(id("n0000001")));
+    // No axis is a candidate: (30, 0.1) is 0.1 off the x axis and 10 off the line.
+    assert_eq!(curve_at(&quarter, [30.0, 0.1], 0.5), None);
+    // A tolerance below zero or not a number is 0, and a place that isn't finite is on
+    // nothing: (20, 5) is on the line exactly, (20.1, 5) 0.1 off it.
+    assert_eq!(curve_at(&quarter, [20.0, 5.0], -1.0), Some(id("n0000001")));
+    assert_eq!(
+        curve_at(&quarter, [20.0, 5.0], f64::NAN),
+        Some(id("n0000001"))
+    );
+    assert_eq!(curve_at(&quarter, [20.1, 5.0], -1.0), None);
+    assert_eq!(curve_at(&quarter, [f64::NAN, 5.0], 1.0), None);
+    // As near two curves: the lower ID. The line n0000002 from (10, −5) to (10, 5) crosses
+    // the arc's start; (10, 0.25) is 0.0031 off the arc and 0 off n0000002, so n0000002;
+    // (10.2, 0) is 0.2 off both, so a0000001, before n0000002.
+    let crossed = with_line(quarter, "n0000002", [10.0, -5.0], [10.0, 5.0]);
+    assert_eq!(curve_at(&crossed, [10.0, 0.25], 0.5), Some(id("n0000002")));
+    assert_eq!(curve_at(&crossed, [10.2, 0.0], 0.5), Some(id("a0000001")));
+}
+
+#[test]
 fn an_axis_a_pick_doesnt_allow_drops_out_and_the_nearest_of_the_rest_is_taken() {
     // A line 0.3 above the x axis, (10, 0.3) to (50, 0.3), and a pick at (20, 0.1): the axis
     // 0.1 off, the line 0.2. With both axes allowed, the axis; with the x axis not, the line.

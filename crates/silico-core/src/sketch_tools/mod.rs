@@ -796,3 +796,13 @@ pub fn pick(sketch: &Sketch, at: Xy, tolerance: f64, axes: Axes) -> Option<Refer
         axes,
     )
 }
+
+/// The curve of `sketch` a click at `at` is on, within `tolerance` millimetres, for trim,
+/// split, and extend: [`pick`]'s rule for curves, a line or an arc where it's drawn (a place
+/// whose foot on an arc's round is past its sweep is on no arc, however near its end), a
+/// circle all round, the nearest, ties in ID order; with no point of the sketch in its way,
+/// as there is for [`pick`], and no axis a candidate. A tolerance that isn't a finite number
+/// above 0 is taken as 0, as [`pick`] takes one; a place that isn't finite is on nothing.
+pub fn curve_at(sketch: &Sketch, at: Xy, tolerance: f64) -> Option<ElementId> {
+    infer::curve_in(&infer::View::of(sketch, &Members::default()), tolerance, at)
+}
