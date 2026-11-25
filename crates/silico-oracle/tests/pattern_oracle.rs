@@ -392,6 +392,37 @@ fn each_pattern_is_freecads_as_the_port_note_maps_it() {
 }
 
 #[test]
+fn a_mirror_about_a_face_isnt_asked_of_freecad_until_its_plane_is_described() {
+    // A mirror's plane by name is one of its references, as a direction or an axis is, so
+    // FreeCAD is never asked to find it before Silico's rebuild has described it.
+    let features = format!(
+        r#"{SEED},
+        {{"id": "a0000003", "type": "mirror", "v": 1, "name": "mirror", "base": "p0000002", "copies": {{"type": "solid"}}, "plane": "p0000001.pad.Face(G s0000001.sketch.Edge.na000002)", "note": "Expected: volume 5."}}"#
+    );
+    let loaded = load(&features).unwrap().unwrap();
+    let mirror = loaded.cases.last().unwrap();
+    assert_eq!(mirror.name, "mirror");
+    let references = mirror.model.last().unwrap().references();
+    assert_eq!(
+        references,
+        [&Reference::Element {
+            of: "p0000002".to_owned(),
+            name: "p0000001.pad.Face(G s0000001.sketch.Edge.na000002)".to_owned(),
+            element: None,
+            sense: None,
+            corrected: true,
+        }]
+    );
+    let e = features::freecad(std::slice::from_ref(mirror)).unwrap_err();
+    assert!(
+        e.contains(
+            "mirror's reference p0000001.pad.Face(G s0000001.sketch.Edge.na000002) isn't described"
+        ),
+        "{e}"
+    );
+}
+
+#[test]
 fn a_pattern_freecad_1_1_3_builds_otherwise_is_refused_naming_why() {
     // FreeCAD 1.1.3 has no instances to skip, and takes a polar extent within 1e-7 degrees of
     // 360 as a whole turn, which Silico doesn't (decision 5): the harness builds neither. A

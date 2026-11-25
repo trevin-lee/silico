@@ -1131,6 +1131,37 @@ pub fn compare(case: &FeatureCase, ours: &Outcome, theirs: &Outcome) -> Vec<Stri
     differences(ours, theirs, case.tolerance)
 }
 
+/// FreeCAD's `answered` outcomes put back in `described`'s order, one for each case it was
+/// asked (each described), and each case that couldn't be described lost, naming why;
+/// refused unless Silico gave an outcome for every case (`ours`) and FreeCAD one for each
+/// it was asked, so no case is compared with another's answer.
+fn placed(
+    described: Vec<Result<FeatureCase, String>>,
+    ours: usize,
+    answered: Vec<Outcome>,
+) -> Result<Vec<Outcome>, String> {
+    let asked = described.iter().filter(|d| d.is_ok()).count();
+    if ours != described.len() || answered.len() != asked {
+        return Err(format!(
+            "{} feature cases gave {ours} outcomes from Silico, and FreeCAD {} for the {asked} it was asked",
+            described.len(),
+            answered.len(),
+        ));
+    }
+    let mut answered = answered.into_iter();
+    Ok(described
+        .into_iter()
+        .map(|d| match d {
+            Ok(_) => answered
+                .next()
+                .unwrap_or_else(|| Outcome::Lost("unanswered".to_owned())),
+            Err(why) => Outcome::Lost(format!(
+                "not built: its reference isn't in Silico's rebuild, so FreeCAD can't be shown it: {why}"
+            )),
+        })
+        .collect())
+}
+
 /// Every case of `cases` that differs: Silico's rebuild of the document (M3.6, step iv;
 /// M6.4) compared with FreeCAD's build of each case, and with the case's expected values
 /// (each such difference said as Silico's), for `silico-oracle run` and the test alike.
@@ -1143,22 +1174,7 @@ pub fn run(cases: &Cases) -> Result<Vec<crate::Difference>, String> {
     let described = describe(&cases.cases, &model);
     let asked: Vec<FeatureCase> = described.iter().filter_map(|d| d.clone().ok()).collect();
     let answered = freecad(&asked)?;
-    if ours.len() != cases.cases.len() || answered.len() != asked.len() {
-        return Err(format!(
-            "{} feature cases gave {} outcomes from Silico, and FreeCAD {} for the {} it was asked",
-            cases.cases.len(),
-            ours.len(),
-            answered.len(),
-            asked.len()
-        ));
-    }
-    let mut answered = answered.into_iter();
-    let theirs = described.into_iter().map(|d| match d {
-        Ok(_) => answered.next().unwrap_or_else(|| Outcome::Lost("unanswered".to_owned())),
-        Err(why) => Outcome::Lost(format!(
-            "not built: its reference isn't in Silico's rebuild, so FreeCAD can't be shown it: {why}"
-        )),
-    });
+    let theirs = placed(described, ours.len(), answered)?;
     let mut found = Vec::new();
     for ((case, ours), theirs) in cases.cases.iter().zip(&ours).zip(theirs) {
         let ours = ours.outcome();
@@ -1178,4 +1194,62 @@ pub fn run(cases: &Cases) -> Result<Vec<crate::Difference>, String> {
         }
     }
     Ok(found)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A case named `name`, of no feature: only its place in the list matters here.
+    fn case(name: &str) -> FeatureCase {
+        FeatureCase {
+            name: name.to_owned(),
+            note: String::new(),
+            feature: FeatureId::new("p0000001").unwrap(),
+            expected: Expected::parse("Expected: volume 1.").unwrap(),
+            model: Vec::new(),
+            tolerance: Tolerance::PLANAR,
+        }
+    }
+
+    fn answer(why: &str) -> Outcome {
+        Outcome::Failed(why.to_owned())
+    }
+
+    #[test]
+    fn each_answer_goes_back_to_its_own_case_and_the_undescribed_are_lost() {
+        // Three cases, the middle one undescribed: FreeCAD answered the other two, in turn.
+        let described = vec![
+            Ok(case("first")),
+            Err("no such face".to_owned()),
+            Ok(case("third")),
+        ];
+        let placed = placed(described, 3, vec![answer("a"), answer("c")]).unwrap();
+        assert_eq!(placed.len(), 3);
+        assert_eq!(placed[0], answer("a"));
+        assert!(
+            matches!(&placed[1], Outcome::Lost(why) if why.ends_with(": no such face")),
+            "{:?}",
+            placed[1]
+        );
+        assert_eq!(placed[2], answer("c"));
+    }
+
+    #[test]
+    fn a_count_off_on_either_side_is_refused_naming_both() {
+        // FreeCAD one answer short, Silico's count right; then Silico's count off, FreeCAD's
+        // right: either alone is refused, so no case takes another's answer.
+        let described = || vec![Ok(case("first")), Ok(case("second"))];
+        let short = placed(described(), 2, vec![answer("a")]).unwrap_err();
+        assert_eq!(
+            short,
+            "2 feature cases gave 2 outcomes from Silico, and FreeCAD 1 for the 2 it was asked"
+        );
+        let silico = placed(described(), 1, vec![answer("a"), answer("b")]).unwrap_err();
+        assert_eq!(
+            silico,
+            "2 feature cases gave 1 outcomes from Silico, and FreeCAD 2 for the 2 it was asked"
+        );
+        assert!(placed(described(), 2, vec![answer("a"), answer("b")]).is_ok());
+    }
 }
