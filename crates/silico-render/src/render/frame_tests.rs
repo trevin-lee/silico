@@ -17,8 +17,9 @@ use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjec
 
 use super::{
     BACKGROUND, BODY, CheckedFrame, EDGE, Element, Frame, HIGHLIGHT, HIT_EDGE_POINTS,
-    HIT_VERTEX_POINTS, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines, PendingPick,
-    Pick, Pickable, Picking, PixelRect, RenderFailure, Renderer, Tint, Tinted, hits, project, ray,
+    HIT_VERTEX_POINTS, Look, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines,
+    PendingPick, Pick, Pickable, Picking, PixelRect, RenderFailure, Renderer, Tint, Tinted, hits,
+    project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -3042,6 +3043,128 @@ fn a_tinted_face_is_the_bodys_colour_mixed_with_the_tint_and_nothing_else_change
             // The tint gone: the plain frame again, and no upload all along.
             assert_eq!(tinted_image(r, &plain_frame, &[], FEATURE_TINT), plain);
             assert_eq!(r.uploads(), uploaded);
+        },
+    );
+}
+
+// ---- The look (the app's theme's colours and widths, a render's own) ----
+
+#[test]
+fn a_look_draws_the_bodies_edges_and_outlines_in_its_colours_and_widths() {
+    // The app's look, from DESIGN.md's *Viewport* by hand: body #b9c0ca (185, 192, 202),
+    // edges #101010 (16, 16, 16). From the front the box's front face is lit at 1
+    // (clamped), so it shows its colour as it is: at (32, 26), 5.77 rows inside it. Its top
+    // edge (Edge3) runs along row 20.73 at a pixel a point. 6 points wide, its stroke covers
+    // rows 17.73 to 23.73, so the pixels of rows 19 to 22 in column 32, each 1.23 or more
+    // inside it, are wholly its colour; 1.5 wide (19.98 to 21.48) it leaves row 22, 1.02
+    // below it, to the face. Highlighted, its outline reaches `outline_width` out from its
+    // stroke: 4 out from 19.98, to 15.98, row 17 (2.48 above the stroke, 1.52 inside the
+    // outline) is the highlight's blue, (6, 150, 215); 1 out, to 18.98, it's the black
+    // behind the box. A render's look is as it was: BODY and EDGE.
+    on_lavapipe(
+        "render::frame_tests::a_look_draws_the_bodies_edges_and_outlines_in_its_colours_and_widths",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let image = |r: &mut Renderer, highlights: &[(u32, Element)]| {
+                let commands = r.prepare(&frame(&camera, &[1], highlights, None)).unwrap();
+                composited(r, Some(commands))
+            };
+            let at = |row: u32| usize::try_from(row * WIDTH + 32).unwrap();
+            assert_eq!(r.look(), Look::RENDER);
+            let render = image(r, &[]);
+            assert_colour(render[at(26)], BODY.map(f64::from), 1.0, "a render's face");
+            let uploaded = r.uploads();
+            let app = Look {
+                body: [185, 192, 202],
+                edge: [16, 16, 16],
+                edge_width: 1.5,
+                outline_width: 1.0,
+            };
+            r.set_look(app).unwrap();
+            assert_eq!(r.look(), app);
+            let drawn = image(r, &[]);
+            // Another body colour: the faces drawn uploaded again, once.
+            assert_eq!(r.uploads(), 2 * uploaded);
+            let body = [185.0, 192.0, 202.0];
+            assert_colour(drawn[at(26)], body, 1.0, "the face");
+            assert_colour(drawn[at(22)], body, 1.0, "the face under a 1.5 wide edge");
+            // The same body colour with wider edges uploads nothing.
+            r.set_look(Look {
+                edge_width: 6.0,
+                ..app
+            })
+            .unwrap();
+            let wide = image(r, &[]);
+            assert_eq!(r.uploads(), 2 * uploaded);
+            for row in 19..=22 {
+                assert_colour(wide[at(row)], [16.0; 3], 1.0, &format!("row {row}, 6 wide"));
+            }
+            assert_colour(wide[at(26)], body, 1.0, "the face, 6 wide");
+            // The outline's reach: 4 out takes row 17 blue, 1 out leaves it black.
+            let top = [(1, Element::Edge(3))];
+            for (out, want) in [(4.0, [6.0, 150.0, 215.0]), (1.0, [0.0; 3])] {
+                r.set_look(Look {
+                    outline_width: out,
+                    ..app
+                })
+                .unwrap();
+                let lit = image(r, &top);
+                assert_colour(
+                    lit[at(17)],
+                    want,
+                    2.0,
+                    &format!("row 17, outlined {out} out"),
+                );
+            }
+            // A look the checks refuse leaves the renderer's as it was, naming its parameter.
+            r.set_look(app).unwrap();
+            for (bad, parameter) in [
+                (
+                    Look {
+                        edge_width: f32::NAN,
+                        ..app
+                    },
+                    "edge_width",
+                ),
+                (
+                    Look {
+                        edge_width: 0.0,
+                        ..app
+                    },
+                    "edge_width",
+                ),
+                (
+                    Look {
+                        edge_width: 64.5,
+                        ..app
+                    },
+                    "edge_width",
+                ),
+                (
+                    Look {
+                        outline_width: -0.5,
+                        ..app
+                    },
+                    "outline_width",
+                ),
+                (
+                    Look {
+                        outline_width: f32::INFINITY,
+                        ..app
+                    },
+                    "outline_width",
+                ),
+            ] {
+                let refused = r.set_look(bad).unwrap_err();
+                assert_eq!(refused.parameter, parameter, "{bad:?}");
+                assert_eq!(r.look(), app);
+            }
+            // Back to a render's look: BODY again, uploaded again.
+            r.set_look(Look::RENDER).unwrap();
+            let again = image(r, &[]);
+            assert_eq!(r.uploads(), 3 * uploaded);
+            assert_eq!(again, render);
         },
     );
 }
@@ -7280,7 +7403,7 @@ fn a_line_just_behind_a_face_is_drawn_within_its_strokes_reach_and_hidden_past_i
         "render::frame_tests::a_line_just_behind_a_face_is_drawn_within_its_strokes_reach_and_hidden_past_it",
         |r| {
             // At ROWS_192, 1.5 points wide at a pixel a point, a line is moved toward the eye by
-            // √2 × 0.75 + 1/2 = 1.561 pixels of depth (drawn_stroke_fraction), under an edge's
+            // √2 × 0.75 + 1/2 = 1.561 pixels of depth (drawn_edge_fraction), under an edge's
             // pick's 2; 4 points wide, by √2 × 2 + 1/2 = 3.33, held to the 2. A line along x
             // inside the box, d pixels behind its front face (y = d × 11/48 mm), at z = 7 −
             // 10.5 × 11/48 (row 106.5, row 106's centre), over columns 128 + (x − 21) × 48/11

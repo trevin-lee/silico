@@ -21797,15 +21797,16 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             let near = |got: [u8; 4], want: [f64; 3], within: f64| {
                 (0..3).all(|k| (f64::from(got[k]) - want[k]).abs() <= within) && got[3] == 255
             };
-            let body = silico_render::render::BODY.map(f64::from);
+            // The body's colour, DESIGN.md's *Viewport*: #b9c0ca.
+            let body = [185.0, 192.0, 202.0];
             // The bar's Gray.150 (`#timeline`) under the item at rest.
             let bar = [0x17, 0x17, 0x17].map(f64::from);
             // `.hovered-from-canvas`: `--g600`, `#9f9f9f`.
             let g600 = [0x9f, 0x9f, 0x9f].map(f64::from);
-            // Blue.800 at 0.4, mixed with the body's (170, 175, 182) in linear light, by hand:
-            // (0.4020, 0.4287, 0.4678) and (0.6584, 0.7084, 1) give (0.5045, 0.5406, 0.6807),
-            // in sRGB (188.3, 194.2, 215.2).
-            let tinted = [188.3, 194.2, 215.2];
+            // Blue.800 at 0.4, mixed with the body's (185, 192, 202) in linear light, by hand:
+            // (0.4851, 0.5271, 0.5906) and (0.6584, 0.7084, 1) give (0.5544, 0.5996, 0.7544),
+            // in sRGB (196.38, 203.37, 225.19).
+            let tinted = [196.38, 203.37, 225.19];
             let image = h.render().unwrap();
             let got = image.get_pixel(face.0, face.1).0;
             assert!(near(got, body, 2.0), "the face {got:?}");
@@ -21821,9 +21822,9 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             assert!(near(got, tinted, 2.0), "the face {got:?} tinted");
             // The face hovered in the canvas (lavapipe's ID buffer finds it): in the hover's
             // tint, not the maker's (the prototype's `applyHighlight`: `HOVER`, white, at
-            // 0.28, by hand (0.5694, 0.5887, 0.6168) in linear light, in sRGB (198.74, 201.7,
-            // 205.94)), and the block's item ringed, its inside the bar's.
-            let hovered = [198.74, 201.7, 205.94];
+            // 0.28, by hand (0.6293, 0.6595, 0.7052) in linear light, in sRGB (207.79, 212.16,
+            // 218.57)), and the block's item ringed, its inside the bar's.
+            let hovered = [207.79, 212.16, 218.57];
             h.hover_at(on_face);
             step_until(&mut h, "the face hovered", |h| {
                 h.state().tabs()[0]
@@ -21862,9 +21863,9 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             }
             // The face selected, then the block hovered in the timeline: the face keeps the
             // selection's look, the selection's tint, not the maker's (`SELECT`, #2f7bff, at
-            // 0.55, by hand (0.1965, 0.3018, 0.7605) in linear light, in sRGB (122.55,
-            // 149.29, 226.0)).
-            let selected = [122.55, 149.29, 226.0];
+            // 0.55, by hand (0.2340, 0.3461, 0.8158) in linear light, in sRGB (132.84,
+            // 158.88, 233.12)).
+            let selected = [132.84, 158.88, 233.12];
             click_over_two_frames(&mut h, on_face, Modifiers::NONE);
             step_until(&mut h, "the face selected", |h| {
                 selected_names(h) == ["k7f2qx3m.box.Face3"]
