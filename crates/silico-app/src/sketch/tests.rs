@@ -7449,6 +7449,60 @@ fn a_glyphs_and_a_values_boxes_are_hit_to_their_edges_and_not_past_them() {
     assert_eq!(found([20.0, -1.6], 0.05), None);
 }
 
+#[test]
+fn values_that_overlap_are_hit_as_drawn_the_one_on_top_taken() {
+    // Issue #599. Two lengths of the bottom side, ka000002's 40 and ka000003's 30: a placed
+    // dimension stores no place, so both values stand at (20, −2.6), as the test above works
+    // out, in boxes of the same size (two characters each), 1.16011 mm either way across and
+    // 0.9 up. They're drawn in the constraints' order, so ka000003's is on top: a click
+    // anywhere inside the two takes it, never the one beneath, and so does a click on their
+    // lines, which coincide as well. The relation's glyph, drawn under both values, is still
+    // taken in its own box, clear of theirs.
+    let read = under(rectangle(vec![
+        horizontal("ka000001", "na000001"),
+        length("ka000002", "na000001", "40", true),
+        length("ka000003", "na000001", "30", true),
+    ]));
+    // The order they're drawn in: the glyph, then the 40's value, then the 30's, at one place.
+    let drawn = drawn(&read);
+    let labels: Vec<(&str, Pos2)> = drawn
+        .iter()
+        .filter_map(|d| match d {
+            Drawn::Label {
+                of: Some(of), at, ..
+            } => Some((of.as_str(), *at)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels.len(), 2);
+    assert_eq!(
+        (labels[0].0, labels[1].0, labels[0].1),
+        ("ka000002", "ka000003", labels[1].1)
+    );
+    let found = |at: [f64; 2], tolerance: f64| {
+        hit(&read, at, tolerance, HAND, Axes::BOTH).map(|h| h.reference())
+    };
+    // At the middle, off it, near each corner: the 30's.
+    for at in [
+        [20.0, -2.6],
+        [21.1, -1.75],
+        [18.9, -3.45],
+        [21.1, -3.45],
+        [18.9, -1.75],
+    ] {
+        assert_eq!(found(at, 0.05), Some(element("ka000003")), "{at:?}");
+    }
+    // Just outside, within the reach: as near to both, the 30's too; 0.1 outside, and 0.85
+    // off their lines, nothing.
+    assert_eq!(found([21.2, -1.75], 0.05), Some(element("ka000003")));
+    assert_eq!(found([21.26, -1.75], 0.05), None);
+    // Their dimension lines, at the values' height from 0 to 40, lie one on the other too:
+    // on them, clear of the boxes and 2.6 from the side, the 30's line, drawn on top.
+    assert_eq!(found([30.0, -2.6], 0.05), Some(element("ka000003")));
+    // The glyph, in its own box: its own.
+    assert_eq!(found([11.7, -1.8], 0.1), Some(element("ka000001")));
+}
+
 // The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
 // the legend, and the state's dot, each against the prototype (docs/design/m5-ui/:
 // styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's palette). The status
