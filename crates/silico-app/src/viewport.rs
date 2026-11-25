@@ -531,7 +531,8 @@ pub struct View {
     /// face cast under it). On, as the selection's filter starts.
     pub edges: bool,
     /// The broken reference's candidate whose card row the pointer is over (flow 6b), set
-    /// from outside: drawn with the hover, in [`theme::VIEWPORT_CANDIDATE`] for that frame.
+    /// from outside: drawn with the hover, outlined (a face too, not tinted), in
+    /// [`theme::VIEWPORT_CANDIDATE`] for that frame.
     ///
     /// SEAM: the prototype lights every candidate while its card shows, in
     /// [`theme::VIEWPORT_CANDIDATE`] [`theme::VIEWPORT_CANDIDATE_WIDTH`] wide, and the hovered
@@ -2255,7 +2256,8 @@ pub fn show<P: Clients + 'static>(
                 .is_some_and(|body| body.has(*element))
     };
     let highlights: Vec<(u32, Element)> = view.highlights.iter().copied().filter(drawn).collect();
-    // A candidate lit takes the hover's layer, in its own colour: the pointer is over its
+    // A candidate lit takes the hover's layer, in its own colour, outlined whole (a face
+    // too, never tinted as a hover is: `FrameData::hover_outlined`): the pointer is over its
     // card's row, not the canvas.
     let candidate = view.candidate.filter(drawn);
     let hovered: Vec<(u32, Element)> = view
@@ -2316,6 +2318,7 @@ pub fn show<P: Clients + 'static>(
         highlights,
         hovered,
         outlines,
+        hover_outlined: candidate.is_some(),
         tinted,
         tint: feature_tint(),
         picking,
@@ -2413,30 +2416,35 @@ pub fn faces_of(
 /// The tint of the faces a feature hovered in the timeline made, from the theme, as plain
 /// values for the renderer: the prototype's `MAKER` (DESIGN.md's Blue.800) at 0.4.
 pub fn feature_tint() -> Tint {
-    let [r, g, b, _] = theme::VIEWPORT_FEATURE_HOVER_TINT;
-    Tint {
-        colour: [r, g, b],
-        amount: theme::VIEWPORT_FEATURE_HOVER_TINT_AMOUNT,
-    }
+    tint_of(
+        theme::VIEWPORT_FEATURE_HOVER_TINT,
+        theme::VIEWPORT_FEATURE_HOVER_TINT_AMOUNT,
+    )
 }
 
 /// A selected face's tint, the prototype's (`SELECT` at 0.55): the theme's, as the renderer
 /// takes it.
 pub fn selection_tint() -> Tint {
-    let [r, g, b, _] = theme::VIEWPORT_SELECTION_TINT;
-    Tint {
-        colour: [r, g, b],
-        amount: theme::VIEWPORT_SELECTION_TINT_AMOUNT,
-    }
+    tint_of(
+        theme::VIEWPORT_SELECTION_TINT,
+        theme::VIEWPORT_SELECTION_TINT_AMOUNT,
+    )
 }
 
 /// A hovered face's tint, the prototype's (`HOVER` at 0.28): the theme's, as the renderer
 /// takes it.
 pub fn hover_tint() -> Tint {
-    let [r, g, b, _] = theme::VIEWPORT_HOVER_TINT;
+    tint_of(
+        theme::VIEWPORT_HOVER_TINT,
+        theme::VIEWPORT_HOVER_TINT_AMOUNT,
+    )
+}
+
+/// The theme's `colour` at `amount`, as the renderer takes a tint.
+fn tint_of([r, g, b, _]: theme::Rgba8, amount: f32) -> Tint {
     Tint {
         colour: [r, g, b],
-        amount: theme::VIEWPORT_HOVER_TINT_AMOUNT,
+        amount,
     }
 }
 

@@ -36,6 +36,10 @@ pub struct FrameData {
     pub highlights: Vec<(u32, Element)>,
     pub hovered: Vec<(u32, Element)>,
     pub outlines: Outlines,
+    /// Whether the hover is a broken reference's candidate, lit from its card's row: then
+    /// it's outlined whole, a face too, in its own colour (`outlines.hovered`), never tinted
+    /// as a hover is.
+    pub hover_outlined: bool,
     /// The faces tinted: the feature hovered in the timeline's, but those selected or
     /// hovered (`crate::viewport`'s `tinted_faces`).
     pub tinted: Vec<(u32, Element)>,
@@ -349,7 +353,11 @@ fn prepared<R: ViewRenderer>(
             .collect()
     };
     let (highlights, selected_faces) = outlined_and_tinted(drawn(&data.highlights));
-    let (hovered, hovered_faces) = outlined_and_tinted(drawn(&data.hovered));
+    let (hovered, hovered_faces) = if data.hover_outlined {
+        (drawn(&data.hovered), Vec::new())
+    } else {
+        outlined_and_tinted(drawn(&data.hovered))
+    };
     let tinted = drawn(&data.tinted);
     let groups = tint_groups(&selected_faces, &hovered_faces, &tinted, data.tint);
     locked(shared).refused.extend(refused);
@@ -414,7 +422,9 @@ fn outlined_and_tinted(listed: Vec<(u32, Element)>) -> (Elements, Elements) {
 /// A frame's tinted faces, as the prototype's `applyHighlight` gives each face one look:
 /// the selection's faces in its tint ([`crate::viewport::selection_tint`]), else the
 /// hover's in its own ([`crate::viewport::hover_tint`]), else the maker's (`makers`, in
-/// `tint`).
+/// `tint`). The viewport's makers are disjoint from the others already
+/// (`crate::viewport::tinted_faces`); the groups' order, the renderer's first-wins, says the
+/// same should they meet.
 fn tint_groups<'a>(
     selected: &'a [(u32, Element)],
     hovered: &'a [(u32, Element)],
@@ -618,6 +628,7 @@ mod tests {
             highlights: highlights.to_vec(),
             hovered: Vec::new(),
             outlines: Outlines::DEFAULT,
+            hover_outlined: false,
             tinted: Vec::new(),
             tint: Tint::NONE,
             picking: None,
@@ -813,6 +824,21 @@ mod tests {
                 vec![edge6],
                 groups(vec![face2], vec![face3], vec![face4], maker)
             )]
+        );
+        // A candidate lit as the hover: outlined whole, its face too, and no hover's tint.
+        let candidate = FrameData {
+            hover_outlined: true,
+            ..frame.clone()
+        };
+        prepared(Some(&mut renderer), &shared, &candidate);
+        assert_eq!(
+            renderer.frames.last(),
+            Some(&(
+                vec![1],
+                vec![edge5, vertex1],
+                vec![face3, edge6],
+                groups(vec![face2], vec![], vec![face4], maker)
+            ))
         );
         // The tints by hand from the prototype's viewport.js.
         assert_eq!(

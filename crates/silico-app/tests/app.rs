@@ -12728,6 +12728,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     highlights: Vec::new(),
                     hovered: Vec::new(),
                     outlines: silico_app::renderer::Outlines::DEFAULT,
+                    hover_outlined: false,
                     tinted: Vec::new(),
                     tint: silico_app::renderer::Tint::NONE,
                     picking: None,

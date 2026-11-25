@@ -676,9 +676,11 @@ impl Default for Outlines {
 /// colour`, then lit as any face is, as a render's highlighted face is mixed with the
 /// highlight's blue ([`HIGHLIGHT_STRENGTH`]).
 ///
-/// `amount` is finite, from 0 (no tint) to 1 (the colour alone). Drawn by the face's
-/// instance: its mesh's material scaling the body's colour by `1 − amount` ([`Mixes`], the
-/// face's vertices shared, so nothing is uploaded but a material for each amount, once),
+/// `amount` is finite, from 0 (no tint) to 1 (the colour alone), one of a few a caller
+/// uses (each amount's material is made once and kept: a fade through many amounts would
+/// keep a material for each). Drawn by the face's instance: its mesh's material scaling the
+/// body's colour by `1 − amount` ([`Mixes`], the face's vertices shared, so nothing is
+/// uploaded but a material for each amount, once),
 /// and `re_renderer`'s per-instance tint adding `amount · colour`, opaque (one that isn't
 /// makes the face translucent). So any colour mixes, lighter or darker than the body's.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1074,9 +1076,9 @@ impl Renderer {
     }
 
     /// What a frame the GPU failed leaves: its picking request (`request`, its readback's
-    /// identifier) dropped, and every body's GPU meshes and the planes', which nothing
-    /// vouches for, to be uploaded again when they're next drawn; the bodies themselves kept; and the next
-    /// frames refused for a while ([`Backoff`]).
+    /// identifier) dropped, and every body's GPU meshes, the planes', and the tints'
+    /// materials, which nothing vouches for, to be made again when they're next drawn; the
+    /// bodies themselves kept; and the next frames refused for a while ([`Backoff`]).
     fn failed(&mut self, request: Option<u64>) {
         if let Some(id) = request {
             self.pending.remove(&id);
@@ -1086,6 +1088,7 @@ impl Renderer {
             body.drop_gpu_meshes();
         }
         self.plane_meshes.clear();
+        self.mixes.donors.clear();
     }
 
     /// The last frame [`Renderer::prepare`] built, composited into `pass` (egui's, in its
@@ -3816,6 +3819,9 @@ struct UploadedFace {
     placed: bool,
     plain: Option<Arc<GpuMesh>>,
     baked: Option<Arc<GpuMesh>>,
+    /// Its plain mesh drawn with a tint's material ([`Mixes::mixed`]), by the tint's
+    /// amount's bits: kept while it's tinted so, so a tint held allocates nothing a frame.
+    mixed: Option<(u32, Arc<GpuMesh>)>,
 }
 
 /// A face's number from 1, and its `count` triangles' place, from `first`, in its body's
@@ -3852,6 +3858,7 @@ impl Uploaded {
                 cut: None,
                 placed: false,
                 plain: None,
+                mixed: None,
                 baked: None,
             });
         }
@@ -3871,6 +3878,7 @@ impl Uploaded {
         for face in &mut self.faces {
             face.plain = None;
             face.baked = None;
+            face.mixed = None;
         }
     }
 
@@ -3904,6 +3912,7 @@ impl Uploaded {
                 face.cut = cut;
                 face.plain = None;
                 face.baked = None;
+                face.mixed = None;
             }
             if lit.style == Highlight::Baked && lit.face(face.span.number) {
                 face.plain = None;
@@ -3969,7 +3978,20 @@ impl Uploaded {
             // Opaque black, where it isn't tinted: re_renderer adds the tint's colour and
             // multiplies by its alpha, so this leaves the face's own colour.
             let (gpu_mesh, additive_tint) = match lit.tint(number).filter(|t| t.amount > 0.0) {
-                Some(tint) => (mixes.mixed(ctx, &gpu_mesh, tint.amount)?, tint.added()),
+                Some(tint) => {
+                    let bits = tint.amount.to_bits();
+                    let mixed = match &face.mixed {
+                        Some((held, mesh)) if *held == bits && !baked => Arc::clone(mesh),
+                        _ => {
+                            let mesh = mixes.mixed(ctx, &gpu_mesh, tint.amount)?;
+                            if !baked {
+                                face.mixed = Some((bits, Arc::clone(&mesh)));
+                            }
+                            mesh
+                        }
+                    };
+                    (mixed, tint.added())
+                }
                 None => (gpu_mesh, Color32::BLACK),
             };
             instances.push(GpuMeshInstance {

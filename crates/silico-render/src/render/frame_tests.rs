@@ -2076,6 +2076,19 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
             let camera = front();
             draw(r, &frame(&camera, &[1], &[], None));
             assert_eq!(r.uploads(), 6);
+            // A face tinted: its tint's material made, and the face's mixed mesh kept.
+            let tinted = [Tinted {
+                faces: &[(1, Element::Face(3))],
+                tint: FEATURE_TINT,
+            }];
+            draw(
+                r,
+                &Frame {
+                    tinted: &tinted,
+                    ..frame(&camera, &[1], &[], None)
+                },
+            );
+            assert_eq!(r.mixes.donors.len(), 1);
             // A frame that asks, then fails as the GPU fails one (its request the last
             // readback identifier given).
             draw(r, &frame(&camera, &[1], &[], Some(ON_THE_FACE)));
@@ -2083,6 +2096,17 @@ fn a_frame_the_gpu_failed_drops_its_request_and_every_gpu_mesh_but_keeps_the_bod
             assert!(r.pending.contains_key(&id));
             r.failed(Some(id));
             assert!(r.pending.is_empty());
+            // Nothing vouches for the tint's material either, nor the face's mixed mesh.
+            assert!(
+                r.mixes.donors.is_empty(),
+                "a failed frame kept a tint's material"
+            );
+            assert!(
+                r.bodies
+                    .values()
+                    .flat_map(|body| &body.faces)
+                    .all(|face| face.mixed.is_none())
+            );
             // The next frame is refused, backing off ([`Backoff`]); the one after it uploads
             // all six faces again, and no answer comes.
             assert!(matches!(
@@ -2841,6 +2865,45 @@ fn a_frames_values_are_checked_without_a_gpu_each_one_refused_named() {
         }),
         said("tint", "tint's amount 1.5 must be finite, from 0 to 1")
     );
+    // A later group's tint, and its faces, checked as the first's.
+    assert_eq!(
+        refused(Frame {
+            tinted: &[
+                Tinted {
+                    faces: &[(1, Element::Face(3))],
+                    tint: FEATURE_TINT,
+                },
+                Tinted {
+                    faces: &[(1, Element::Face(2))],
+                    tint: Tint {
+                        colour: [255; 3],
+                        amount: f32::NAN
+                    },
+                },
+            ],
+            ..good
+        }),
+        said("tint", "tint's amount NaN must be finite, from 0 to 1")
+    );
+    assert_eq!(
+        refused(Frame {
+            tinted: &[
+                Tinted {
+                    faces: &[(1, Element::Face(3))],
+                    tint: FEATURE_TINT,
+                },
+                Tinted {
+                    faces: &[(1, Element::Vertex(1))],
+                    tint: FEATURE_TINT,
+                },
+            ],
+            ..good
+        }),
+        said(
+            "tinted",
+            "tinted[0], Vertex(1) of body 1, isn't a face: only faces are tinted"
+        )
+    );
     assert_eq!(
         refused(Frame {
             highlights: &[(1, Element::Face(7))],
@@ -3217,10 +3280,91 @@ fn a_face_tinted_darker_than_the_body_mixes_and_a_face_in_two_groups_takes_the_f
             let first = image(r, HOVER_TINT, SELECTION_TINT);
             assert_colour(first[centre], hovered, 1.0, "the hover's first");
             assert_eq!(r.uploads(), uploaded, "a tint uploaded a mesh");
+            // One material for each amount, made once however many frames draw it.
+            for _ in 0..3 {
+                image(r, SELECTION_TINT, HOVER_TINT);
+                image(r, HOVER_TINT, SELECTION_TINT);
+            }
+            assert_eq!(r.mixes.donors.len(), 2);
             // Off the face, every pixel by 2 is the plain frame's.
             for i in 0..first.len() {
                 if into_the_front(i) <= -2.0 {
                     assert_eq!(first[i], plain[i], "pixel {i} off the face");
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn a_tinted_face_leaves_its_neighbours_plain_and_two_groups_tint_each_its_own() {
+    // Seen obliquely, Face2, Face3, and Face6 each show (`a_tinted_face_is_mixed_before_the_
+    // light_shades_it`'s lights, by hand: 0.6337, 0.2557, 1). Face6 tinted alone: Face2's and
+    // Face3's centres are the plain frame's exactly, so a tint reaches no face it isn't
+    // given. Face3 in the selection's tint and Face2 in the hover's, two groups: each its own
+    // tint's mix by hand, lit as it's lit; Face6 plain.
+    on_lavapipe(
+        "render::frame_tests::a_tinted_face_leaves_its_neighbours_plain_and_two_groups_tint_each_its_own",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = oblique();
+            let plain_frame = frame(&camera, &[1], &[], None);
+            let plain = tinted_image(r, &plain_frame, &[], FEATURE_TINT);
+            let centres: Vec<(u32, usize)> = seen_faces()
+                .into_iter()
+                .map(|(number, corners)| {
+                    let centre = oblique_px(std::array::from_fn(|k| {
+                        corners.iter().map(|c| c[k]).sum::<f64>() / 4.0
+                    }));
+                    let at = usize::try_from(centre[1] as u32 * WIDTH + centre[0] as u32).unwrap();
+                    (number, at)
+                })
+                .collect();
+            assert_eq!(
+                centres.iter().map(|&(n, _)| n).collect::<Vec<_>>(),
+                [2, 3, 6]
+            );
+            let lit = tinted_image(r, &plain_frame, &[(1, Element::Face(6))], FEATURE_TINT);
+            for &(number, at) in &centres {
+                if number == 6 {
+                    assert_ne!(lit[at], plain[at], "Face6 tinted");
+                } else {
+                    assert_eq!(lit[at], plain[at], "Face{number} plain");
+                }
+            }
+            let groups = [
+                Tinted {
+                    faces: &[(1, Element::Face(3))],
+                    tint: SELECTION_TINT,
+                },
+                Tinted {
+                    faces: &[(1, Element::Face(2))],
+                    tint: HOVER_TINT,
+                },
+            ];
+            let commands = r
+                .prepare(&Frame {
+                    tinted: &groups,
+                    ..plain_frame
+                })
+                .unwrap();
+            let both = composited(r, Some(commands));
+            let lights = [0.633_674, 0.255_71, 1.0];
+            for (&(number, at), light) in centres.iter().zip(lights) {
+                match number {
+                    2 => assert_colour(
+                        both[at],
+                        tinted_by_hand(light, HOVER_TINT.colour, 0.28),
+                        1.0,
+                        "Face2 hovered",
+                    ),
+                    3 => assert_colour(
+                        both[at],
+                        tinted_by_hand(light, SELECTION_TINT.colour, 0.55),
+                        1.0,
+                        "Face3 selected",
+                    ),
+                    _ => assert_eq!(both[at], plain[at], "Face6 plain"),
                 }
             }
         },
