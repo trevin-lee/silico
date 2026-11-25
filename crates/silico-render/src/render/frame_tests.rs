@@ -9178,3 +9178,39 @@ fn an_orthographic_frame_reaches_the_mesh_being_made_while_another_waits() {
         },
     );
 }
+
+#[test]
+fn a_mesh_uploaded_while_the_first_is_part_made_has_it_drawn_and_made_first() {
+    on_lavapipe(
+        "render::frame_tests::a_mesh_uploaded_while_the_first_is_part_made_has_it_drawn_and_made_first",
+        |r| {
+            // The body's first mesh, 100 of its 400 faces made, replaced: it's drawn in the
+            // body's place as far as it's made, and made on first, 100 a frame, the second
+            // after it; nothing waits.
+            let camera = front();
+            r.budget = tiles_a_frame(100);
+            r.upload(1, &tiles(false)).unwrap();
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!((r.uploads(), r.uploading()), (100, true));
+            r.upload(1, &tiles(true)).unwrap();
+            assert_eq!((r.outgoing.len(), r.waiting.len()), (1, 0));
+            let ids = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 200);
+            assert_eq!(faces_seen(&ids), (1..=200).collect::<Vec<u32>>());
+            assert_eq!(at_32_26(&ids), [1, 182]);
+            // Two frames finish the first, still drawn; four more make the second, drawn.
+            for _ in 0..2 {
+                draw(r, &frame(&camera, &[1], &[], None));
+            }
+            let ids = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 500);
+            assert_eq!(faces_seen(&ids), (1..=400).collect::<Vec<u32>>());
+            assert_eq!(at_32_26(&ids), [1, 182]);
+            made_whole(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 800);
+            assert!(r.outgoing.is_empty());
+            let ids = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(at_32_26(&ids), [1, 219]);
+        },
+    );
+}

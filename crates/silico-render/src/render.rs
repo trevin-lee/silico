@@ -986,10 +986,13 @@ impl Renderer {
     /// face seen close, [`View::anchor`], or one cut to the view's pyramid). The same mesh as
     /// the newest again (the same `Arc`, or an equal mesh) changes nothing. Another is made
     /// one mesh at a time:
-    /// - the body drawn whole (or never drawn), it's made, the mesh it replaces drawn in its
-    ///   place till its faces are all made (if that one has any made to draw);
-    /// - a mesh being made, it waits till that one is whole, then is made as that one is
-    ///   drawn in its place; one waiting already is dropped for it;
+    /// - none drawn in the body's place, it's made, the mesh it replaces drawn in its place
+    ///   till its faces are all made, if that one has any made to draw (one whole; or one
+    ///   part made, the body's first, still made on first, before this one, as far as each
+    ///   frame's budget goes); else, as it's made;
+    /// - one being made, drawn in place by the one before it, it waits till that one is
+    ///   whole, then is made as that one is drawn in its place; one waiting already is
+    ///   dropped for it;
     /// - the mesh being made asked for again while another waits, the one waiting is dropped;
     /// - the mesh drawn in a body's place asked for again, it's the body's again as it was
     ///   (its generation too), the ones being made and waiting dropped.
@@ -1374,8 +1377,8 @@ impl Renderer {
                     .bodies
                     .iter()
                     .flat_map(|b| {
-                        let making = self.bodies.get(b).filter(|_| self.waiting.contains_key(b));
-                        [self.outgoing.get(b), making]
+                        let own = self.bodies.get(b).filter(|_| self.waiting.contains_key(b));
+                        [self.outgoing.get(b), own]
                     })
                     .filter_map(|held| held?.bounds)
                     .map(|bounds| reach_of_box(bounds, target))
@@ -1799,12 +1802,12 @@ struct Held<'a> {
     waiting: &'a mut BTreeMap<u32, Uploaded>,
 }
 
-/// Which of a body's meshes a frame draws it by: the one in [`Renderer::bodies`], being made
-/// or whole (`Making`), or the one drawn in its place while that one's faces are made
+/// Which of a body's meshes a frame draws it by: its own, the one in [`Renderer::bodies`]
+/// (as far as it's made), or the one drawn in its place while that one's faces are made
 /// ([`Renderer::outgoing`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum By {
-    Making,
+    Own,
     Outgoing,
 }
 
@@ -1863,49 +1866,49 @@ fn schedule<'a>(
     } = held;
     let mut by = Vec::with_capacity(drawn.len());
     for &(number, lit) in drawn {
-        // While a mesh waits, the one being making isn't the newest: drawn plain.
+        // While a mesh waits, the body's own isn't the newest: drawn plain.
         let lit = if waiting.contains_key(&number) {
             plain
         } else {
             lit
         };
-        let making = bodies
+        let own = bodies
             .get_mut(&number)
             .ok_or_else(|| format!("body {number} isn't uploaded"))?;
-        settle_seen(making, view, lit, stroke);
+        settle_seen(own, view, lit, stroke);
         if let Some(before) = outgoing.get_mut(&number) {
             settle_seen(before, view, plain, stroke);
             *uploads += before.make(ctx, number, plain, view, budget, Making::Unmade)?;
         }
-        *uploads += making.make(ctx, number, lit, view, budget, Making::Unmade)?;
-        if making.left(lit).unmade > 0 {
+        *uploads += own.make(ctx, number, lit, view, budget, Making::Unmade)?;
+        if own.left(lit).unmade > 0 {
             by.push(if outgoing.contains_key(&number) {
                 (By::Outgoing, plain)
             } else {
-                (By::Making, lit)
+                (By::Own, lit)
             });
             continue;
         }
         outgoing.remove(&number);
         match waiting.remove(&number) {
-            // The one making drawn in place of the one waiting, which is making next.
+            // The one made drawn in place of the one waiting, which is made next.
             Some(next) => {
                 if let Some(done) = bodies.insert(number, next) {
                     outgoing.insert(number, done);
                 }
                 by.push((By::Outgoing, plain));
             }
-            None => by.push((By::Making, lit)),
+            None => by.push((By::Own, lit)),
         }
     }
-    let mut making: BTreeMap<u32, &'a mut Uploaded> =
+    let mut own: BTreeMap<u32, &'a mut Uploaded> =
         bodies.iter_mut().map(|(b, u)| (*b, u)).collect();
     let mut before: BTreeMap<u32, &'a mut Uploaded> =
         outgoing.iter_mut().map(|(b, u)| (*b, u)).collect();
     let mut shown = Vec::with_capacity(drawn.len());
     for (&(number, _), (by, lit)) in drawn.iter().zip(by) {
         let held = match by {
-            By::Making => making.remove(&number),
+            By::Own => own.remove(&number),
             By::Outgoing => before.remove(&number),
         };
         if let Some(uploaded) = held {
@@ -1918,7 +1921,7 @@ fn schedule<'a>(
         }
     }
     for shown in &mut shown {
-        if shown.by == By::Making {
+        if shown.by == By::Own {
             *uploads +=
                 shown
                     .uploaded
