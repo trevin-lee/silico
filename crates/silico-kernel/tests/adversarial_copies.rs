@@ -1097,3 +1097,48 @@ fn the_reach_is_where_freecad_breaks() {
     let reason = merged_unmet(&inside, fuzzy_value(&inside, 1.5)).unwrap();
     assert!(reason.contains("a corner"), "{reason}");
 }
+
+#[test]
+fn each_counterexample_moved_across_the_reach_holds_the_property() {
+    // /break-it on the reach: each counterexample moved, along the coordinate that sets its
+    // gap, from well inside the reach to well past twice it, in about 120 steps: the first's
+    // mirror plane and the fourth's axis 4.3e-5 either way (the corner's gap moves by as
+    // much); the turns' third copy 3e-4 back and 6e-4 on along x (its side's gap from the
+    // crossing moves by as much); the third's mirror plane 1.2e-2 either way (its corners'
+    // gaps move by 3.1e-3 of that). OCCT is wrong across a band round each (a corner up to
+    // the reach inside the side; the turns' third side up to 1.3 times the crossing's
+    // reach off), and the property holds on every one: wrong only where `merged_unmet` says.
+    let mut k = kernel();
+    let inputs = plate_and_tools(&mut k);
+    let t = 1.4222e-5 + 2.0 * CONFUSION;
+    let mut broken = Vec::new();
+    for (n, c) in counterexamples().into_iter().enumerate() {
+        let steps: Vec<f64> = match n {
+            1 => (-60..=120).map(|i| f64::from(i) * 5e-6).collect(),
+            2 => (-60..=60).map(|i| f64::from(i) * 2e-4).collect(),
+            _ => (-60..=60).map(|i| f64::from(i) * 0.05 * t).collect(),
+        };
+        for d in steps {
+            let mut p = c.placements.clone();
+            match (n, &mut p[..]) {
+                (0 | 2, [Placement::Mirror { origin, .. }, ..]) => origin[1] += d,
+                (1, [_, _, third]) => {
+                    *third = Placement::TurnedAndMoved {
+                        axis: Z,
+                        angle: TAU - radians(1e-9),
+                        offset: [d, 0.0, 0.0],
+                    }
+                }
+                (3, [_, Placement::Rotation { axis, .. }]) => axis.origin[1] += d,
+                _ => unreachable!("{}", c.what),
+            }
+            if silico_protocol::check_copies(&p).is_err() {
+                continue;
+            }
+            if let Err(e) = copies_are_sound(&mut k, &inputs, &p, c.cut) {
+                broken.push(format!("{} moved {d:e}: {e}", c.what));
+            }
+        }
+    }
+    assert!(broken.is_empty(), "{broken:#?}");
+}
