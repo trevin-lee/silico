@@ -1801,8 +1801,8 @@ pub(crate) fn direction_choices(tips: Option<&[String; 2]>) -> [properties::Icon
             said,
         }
     };
-    let [normal, reversed] = DIRECTION_PLACES;
-    [choice(0, normal), choice(1, reversed)]
+    let [first, second] = DIRECTION_PLACES;
+    [choice(0, first), choice(1, second)]
 }
 
 /// A pad's Direction's choices, in their order, by the `reversed` each sets: Normal first.
