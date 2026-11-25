@@ -739,7 +739,7 @@ fn of_the_request(problems: &Problems) -> bool {
 
 /// The delay before a read refused for the moment, the `tries`th in a row (from 0), is
 /// asked again.
-fn retry_after(tries: u32) -> Duration {
+pub(crate) fn retry_after(tries: u32) -> Duration {
     RETRY_FIRST
         .saturating_mul(2u32.saturating_pow(tries))
         .min(RETRY_MOST)
@@ -998,6 +998,14 @@ impl View {
         self.model = Some(of.1);
         self.last_asked = Some(picking.frame);
         self.picked = Some(picking);
+    }
+
+    /// As if its bodies had been read of `of` (a count of the models published, and its
+    /// revision): a property panel's unit tests' view.
+    #[cfg(test)]
+    pub(crate) fn read_as(&mut self, of: (u64, Revision)) {
+        self.read_published = of.0;
+        self.model = Some(of.1);
     }
 
     /// As if another table of bodies had been read, of the same model: a selection's unit
@@ -1887,7 +1895,8 @@ impl Drawing {
         }
     }
 
-    fn now(&self) -> Instant {
+    /// The time, as its clock says it.
+    pub(crate) fn now(&self) -> Instant {
         self.clock
             .as_ref()
             .map_or_else(Instant::now, |clock| clock())

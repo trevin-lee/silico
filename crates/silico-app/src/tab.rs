@@ -1478,6 +1478,9 @@ pub struct Tab {
     /// What the core says of the face the canvas's context menu is over: its entry, read as
     /// the selection view's is, for its type (Sketch on this face, `crate::canvas_menu`).
     menu_face: crate::measures::Measures,
+    /// What the core says of the published model's bodies, for the property panel's
+    /// document view (`docProps`' Volume, Area, and Faces).
+    model_measures: crate::model_measures::ModelMeasures,
     /// What toasts are to say for the tab (a box's count, or why it took nothing; an undo's,
     /// a save's), in the order said, until the app takes them.
     toasts: Vec<Toast>,
@@ -1965,6 +1968,7 @@ impl Tab {
             select_other: crate::select_other::SelectOther::default(),
             measures: crate::measures::Measures::default(),
             menu_face: crate::measures::Measures::default(),
+            model_measures: crate::model_measures::ModelMeasures::default(),
             toasts: Vec::new(),
             stop_asked: None,
             stopped: None,
@@ -2811,6 +2815,41 @@ impl Tab {
         }
         let measured = crate::measures::Measured::of(&self.selection);
         self.measures.ask(sessions, &self.id, of, measured);
+    }
+
+    /// The published model, as its measures are keyed: the tab's count of the models
+    /// published, and its revision; none while nothing is published.
+    pub fn published_model(&self) -> Option<crate::model_measures::ModelKey> {
+        self.published
+            .map(|revision| (self.published_models, revision))
+    }
+
+    /// What the core says of the published model's bodies (`docProps`' measures), as last
+    /// answered.
+    pub fn model_measures(&self) -> &crate::model_measures::ModelMeasures {
+        &self.model_measures
+    }
+
+    /// The published model's measures' reads out polled, then the measures asked at `now`,
+    /// if they're not what was asked last (a rebuild since) or a read refused is due to be
+    /// asked again: what the property panel's document view asks as it's drawn, so nothing
+    /// is read while it isn't shown.
+    pub fn measure_model<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        now: std::time::Instant,
+    ) {
+        // Polled first: a read answered this frame lets a refused one due be asked now.
+        self.model_measures.poll(now);
+        let of = self.published_model();
+        self.model_measures.ask(sessions, &self.id, of, now);
+    }
+
+    /// The model's measures, for a crate's test to answer as if read
+    /// (`ModelMeasures::answered_as`).
+    #[cfg(test)]
+    pub(crate) fn model_measures_mut(&mut self) -> &mut crate::model_measures::ModelMeasures {
+        &mut self.model_measures
     }
 
     /// The measures, for a crate's test to answer as if read (`Measures::answered_as`).

@@ -217,13 +217,13 @@ impl Measures {
         };
         if let Some(running) = self.distance.take() {
             match running.try_take() {
-                Ok(response) => self.answers.distance = taken(of, response),
+                Ok(response) => self.answers.distance = taken(of.model.1, response),
                 Err(running) => self.distance = Some(running),
             }
         }
         if let Some(running) = self.angle.take() {
             match running.try_take() {
-                Ok(response) => self.answers.angle = taken(of, response),
+                Ok(response) => self.answers.angle = taken(of.model.1, response),
                 Err(running) => self.angle = Some(running),
             }
         }
@@ -237,7 +237,7 @@ impl Measures {
                 return;
             }
         };
-        let listed = match taken(of, response) {
+        let listed = match taken(of.model.1, response) {
             None => return,
             Some(Err(problems)) => {
                 self.answers.element = Some(Err(problems));
@@ -296,13 +296,15 @@ impl Measures {
     }
 }
 
-/// `response`'s result, if it's of `of`'s model: none for one read from another revision (a
-/// model published after it was asked), which the rebuild that published it asks again.
-fn taken<T>(of: Of, response: Response<T>) -> Option<Result<T, Problems>> {
+/// `response`'s result, if it's of the model of `revision` it was asked of: none for one read
+/// from another revision (a model published after it was asked), which the rebuild that
+/// published it asks again. The selection's measures' rule, and the document's
+/// (`crate::model_measures`).
+pub(crate) fn taken<T>(revision: Revision, response: Response<T>) -> Option<Result<T, Problems>> {
     match &response.model {
-        Some(model) if model.revision != of.model.1 => {
+        Some(model) if model.revision != revision => {
             tracing::debug!(
-                asked = of.model.1.number(),
+                asked = revision.number(),
                 read = model.revision.number(),
                 "a measure read of another model: dropped"
             );

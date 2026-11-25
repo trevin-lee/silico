@@ -37775,12 +37775,165 @@ fn row_value(h: &AppHarness, key: &str) -> Option<String> {
     })
 }
 
+/// Frames stepped until the first tab's timeline is read, its panes drawn.
+fn timeline_read(h: &mut AppHarness) {
+    step_until(h, "the timeline read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    step(h);
+}
+
 /// Frames stepped until row `key` shows `value`.
 #[track_caller]
 fn row_until(h: &mut AppHarness, key: &str, value: &str) {
     step_until(h, &format!("{key}: {value}"), |h| {
         row_value(h, key).as_deref() == Some(value)
     });
+}
+
+#[test]
+fn the_documents_model_shows_its_bodies_volume_area_and_faces_added_and_the_box_around_them() {
+    // `docProps`' MODEL section, with nothing selected. By hand, from BLOCK_AND_PLATE: the
+    // block 40 × 20 × 10 at the origin, 8000 mm³ and 2·(800 + 400 + 200) = 2800 mm²; the
+    // plate 10 × 10 × 2 from x = 50, 200 mm³ and 2·(100 + 20 + 20) = 280 mm². Together
+    // 8200 mm³ and 3080 mm², 6 faces each, and the box around both from (0, 0, 0) to
+    // (60, 20, 10).
+    let f = fixture();
+    let (mut h, _) = f.drawn("blocks.silico", BLOCK_AND_PLATE);
+    timeline_read(&mut h);
+    row_until(&mut h, "Volume", "8,200.00 mm³");
+    row_until(&mut h, "Area", "3,080.00 mm²");
+    row_until(&mut h, "Size", "60 × 20 × 10 mm");
+    row_until(&mut h, "Faces", "12");
+    assert_eq!(row_value(&h, "Bodies").as_deref(), Some("2"));
+    let reads = h.state().tabs()[0].model_measures().reads();
+    // Another client moves the plate to x = 70 and makes the block 45 long: 9000 + 200 =
+    // 9200 mm³, 2·(900 + 450 + 200) + 280 = 3380 mm², and the box from x = 0 to 80.
+    let id = h.state().tabs()[0].id;
+    let plate = silico_core::document::FeatureId::new("p2t8wn4c").unwrap();
+    let block = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+    let revision = h.state().tabs()[0].revision;
+    let moved = f.sessions.set_field(
+        &id,
+        revision,
+        plate,
+        "position".to_owned(),
+        json::read(b"[70, 0, 0]").unwrap(),
+    );
+    let moved = moved.wait();
+    moved.result.unwrap();
+    f.sessions
+        .set_field(
+            &id,
+            moved.session.unwrap().revision,
+            block,
+            "length".to_owned(),
+            json::read(b"45").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    row_until(&mut h, "Volume", "9,200.00 mm³");
+    row_until(&mut h, "Area", "3,380.00 mm²");
+    row_until(&mut h, "Size", "80 × 20 × 10 mm");
+    row_until(&mut h, "Faces", "12");
+    assert!(h.state().tabs()[0].model_measures().reads() > reads);
+    // With an element selected, the selection's view shows, and the model isn't read again
+    // when it changes.
+    select_in_box(&mut h, &["Face6"]);
+    let reads = h.state().tabs()[0].model_measures().reads();
+    let revision = h.state().tabs()[0].revision;
+    f.sessions
+        .set_field(
+            &id,
+            revision,
+            silico_core::document::FeatureId::new("p2t8wn4c").unwrap(),
+            "height".to_owned(),
+            json::read(b"3").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    settled_with_model(&mut h);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].model_measures().reads(), reads);
+    // Cleared: the document's view reads the new model. The plate 3 high: 300 mm³ and
+    // 2·(100 + 30 + 30) = 320 mm², with the block's 9000 and 2700.
+    h.state_mut().tabs_mut()[0].selection_mut().clear();
+    row_until(&mut h, "Volume", "9,300.00 mm³");
+    row_until(&mut h, "Area", "3,420.00 mm²");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_body_the_kernel_couldnt_box_has_no_size_row() {
+    // Every summary answered with no box: the block measured (8000 mm³, 2400 mm²) but
+    // never boxed, so its Size row is left out, never said to be coming.
+    let f = fixture();
+    unmeasured(&f);
+    let (mut h, _) = f.drawn("unmeasured.silico", UNMEASURED);
+    timeline_read(&mut h);
+    row_until(&mut h, "Volume", "8,000.00 mm³");
+    row_until(&mut h, "Area", "2,400.00 mm²");
+    row_until(&mut h, "Faces", "6");
+    step_until(&mut h, "the viewport's read of the model", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.view.bodies_of() == tab.published_model()
+    });
+    step(&mut h);
+    assert_eq!(row_value(&h, "Size"), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_refused_document_measure_asks_a_frame_for_when_its_read_is_asked_again() {
+    // The kernel measures the block past what a measure holds: `mass_properties` is refused
+    // (Volume and Area left out), `query` answers (Faces 6). The viewport's clock stopped,
+    // so the refused read is due 250 ms (`RETRY_FIRST`) from the frame that took its
+    // refusal, and the panel asks for a frame no later than that.
+    use silico_app::viewport::RETRY_FIRST;
+    let f = fixture();
+    f.kernel.answer_instead(|op| {
+        matches!(op, Op::Summarize { .. }).then(|| {
+            silico_protocol::Reply::Summary(silico_protocol::ShapeSummary {
+                volume: 1e300,
+                area: 2800.0,
+                center: [20.0, 10.0, 5.0],
+                faces: 6,
+                edges: 12,
+                vertices: 8,
+                bounds: Some([[0.0; 3], [40.0, 20.0, 10.0]]),
+                valid: true,
+            })
+        })
+    });
+    let (time, clock) = hand_clock();
+    let (mut h, _) = f.drawn_clocked("box.silico", A_BOX, clock);
+    timeline_read(&mut h);
+    row_until(&mut h, "Faces", "6");
+    step_until(&mut h, "the volume's refusal taken", |h| {
+        h.state().tabs()[0].model_measures().retry_at().is_some()
+    });
+    step(&mut h);
+    assert_eq!(row_value(&h, "Volume"), None);
+    // Then: nothing else asks for a frame sooner, the clock stopped (without the panel's
+    // ask, the next frame is the idle one, 1.1 s off), and never at once. egui gives the
+    // delay from the frame's own time, a frame (1/60 s) on from the clock's.
+    let delay = repaint_delay(&h).unwrap();
+    let frame = Duration::from_secs_f64(1.0 / 60.0);
+    assert!(
+        delay <= RETRY_FIRST && delay > RETRY_FIRST - 2 * frame,
+        "{delay:?}"
+    );
+    // Due: its read asked again, at the next frame.
+    let reads = h.state().tabs()[0].model_measures().reads();
+    advance(&time, RETRY_FIRST);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].model_measures().reads(), reads + 1);
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
