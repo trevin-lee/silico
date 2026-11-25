@@ -2247,20 +2247,19 @@ impl Tab {
         self.paint_arrows(painter, shown);
     }
 
-    /// The ways a pad on `sketch` sweeps, Normal then Reversed, by the core's rule
-    /// (`sweep::prism_direction`), each as a signed axis where it's one (`−Y`) or its
-    /// components (`crate::parameters::way_words`): what its dialog's Direction's tooltips
-    /// say. None before the sketch's read has come, or for a sketch whose plane it doesn't
-    /// give.
-    pub fn pad_ways(&self, sketch: &FeatureId) -> Option<[String; 2]> {
+    /// A pad on `sketch`'s Direction's tooltips, Normal's then Reversed's: each its word and
+    /// the way the core's rule sweeps it (`crate::parameters::way_said`, `Normal (−Y)`), as
+    /// the parameters pane's Direction row says them. None before the sketch's read has
+    /// come, or for a sketch whose plane it doesn't give.
+    pub fn pad_tips(&self, sketch: &FeatureId) -> Option<[String; 2]> {
         let read = &self.sketch_reads.held(sketch)?.read;
         let normal = read.plane.as_ref().ok()?.normal();
-        Some([false, true].map(|reversed| {
-            crate::parameters::way_words(silico_core::sweep::prism_direction(
+        Some(crate::dialog::DIRECTION_PLACES.map(|reversed| {
+            crate::parameters::way_said(
                 silico_core::document::SweepFeature::Pad,
                 reversed,
-                normal,
-            ))
+                Some(normal),
+            )
         }))
     }
 

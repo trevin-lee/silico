@@ -7362,6 +7362,12 @@ fn a_pads_direction_is_the_prototypes_segmented_normal_and_reversed_each_saying_
             .hover();
         step_until(&mut h, said, |h| tooltip_shown(h, said));
     }
+    // Normal clicked, chosen already: nothing changes, nothing is sent.
+    let edits = h.state().tabs()[0].edits.sent;
+    direction(&mut h, "Normal");
+    settled(&mut h);
+    assert_eq!(toggled(&h, "Normal"), Some(Toggled::True));
+    assert_eq!(h.state().tabs()[0].edits.sent, edits);
     direction(&mut h, "Reversed");
     settled(&mut h);
     assert_eq!(toggled(&h, "Reversed"), Some(Toggled::True));
@@ -7398,6 +7404,50 @@ fn a_pads_direction_is_the_prototypes_segmented_normal_and_reversed_each_saying_
             .query_by_role_and_label(Role::RadioButton, "Reversed")
             .is_none()
     );
+    // So does a revolve.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    open_sweep_on_triangle(&mut h, "Revolve");
+    added(&mut h);
+    step_until(&mut h, "its Reversed", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::CheckBox, "Reversed")
+            .is_some()
+    });
+    assert!(
+        dialog(&h)
+            .query_by_role_and_label(Role::RadioButton, "Reversed")
+            .is_none()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pad_on_xz_says_its_direction_normal_minus_y_and_reversed_plus_y() {
+    // The prototype's own example: a pad on XZ, whose normal is −Y (by hand: XZ's x is +X
+    // and its y +Z, so x × y is −Y). Its dialog (Edit Feature of the parameters part's pad)
+    // says Normal (−Y) and Reversed (+Y), as its Direction row in the parameters pane does.
+    let f = fixture();
+    let (mut h, _) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    double_click(&mut h, "Timeline", "Plate pad");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
+    });
+    settled(&mut h);
+    for (way, said) in [
+        ("Normal", "Normal (\u{2212}Y)"),
+        ("Reversed", "Reversed (+Y)"),
+    ] {
+        pointer_away(&mut h);
+        dialog(&h)
+            .get_by_role_and_label(Role::RadioButton, way)
+            .hover();
+        step_until(&mut h, said, |h| tooltip_shown(h, said));
+    }
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -7952,6 +8002,16 @@ fn a_dialog_and_create_are_off_while_the_tab_closes() {
             .accesskit_node()
             .is_disabled()
     );
+    // Its Direction's choices off too.
+    for way in ["Normal", "Reversed"] {
+        assert!(
+            dialog(&h)
+                .get_by_role_and_label(Role::RadioButton, way)
+                .accesskit_node()
+                .is_disabled(),
+            "{way}"
+        );
+    }
     hold.release();
     check.wait();
     assert_eq!(never_waits::waits(), 0);

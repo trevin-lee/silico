@@ -476,11 +476,10 @@ pub struct Dialog {
     /// that boolean as consuming): nothing is sent for that sketch, OK is off, and the
     /// dialog says it.
     pub base_refused: Option<BaseRefused>,
-    /// The ways a pad's Direction sweeps, Normal then Reversed, each as a signed axis or its
-    /// components (`crate::parameters::way_words`), once its sketch's plane is read: its
-    /// choices' tooltips (`Normal (−Y)`), set by the tab. None for any other dialog, or
-    /// before the plane is read.
-    pub ways: Option<[String; 2]>,
+    /// A pad's Direction's tooltips, Normal's then Reversed's, each its word and its way
+    /// (`Normal (−Y)`, `crate::parameters::way_said`), once its sketch's plane is read: set
+    /// by the tab (`Tab::pad_tips`). None for any other dialog, or before the plane is read.
+    pub tips: Option<[String; 2]>,
 }
 
 /// Why a new sweep's base is refused ([`Dialog::base_refused`]): the sketch it's refused
@@ -700,7 +699,7 @@ impl Dialog {
             unpicked: Vec::new(),
             base: None,
             base_refused: None,
-            ways: None,
+            tips: None,
         }
     }
 
@@ -1654,7 +1653,7 @@ impl Dialog {
         let active = self.active;
         let serial = self.serial;
         // A pad's Direction, as the prototype draws it.
-        let direction = (self.kind == Kind::Pad).then(|| direction_choices(self.ways.as_ref()));
+        let direction = (self.kind == Kind::Pad).then(|| direction_choices(self.tips.as_ref()));
         let mut unpicked: Option<(usize, usize)> = None;
         let mut activated: Option<usize> = None;
         let inputs = &mut self.inputs;
@@ -1785,22 +1784,29 @@ impl Dialog {
 
 /// A pad's Direction, as the prototype's `renderDialog` draws it (`.seg`, `dlgRev`): Normal,
 /// the pad's icon, then Reversed, the same icon upside down (`transform: scaleY(-1)`), each
-/// with its way (`ways`, Normal's then Reversed's) in its tooltip once it's known.
-pub(crate) fn direction_choices(ways: Option<&[String; 2]>) -> [properties::IconChoice; 2] {
-    let choice = |said: &str, flipped: bool, way: Option<&String>| properties::IconChoice {
-        icon: Icon::Pad,
-        flipped,
-        said: said.to_owned(),
-        tip: match way {
-            Some(way) => format!("{said} ({way})"),
-            None => said.to_owned(),
-        },
+/// with its way in its tooltip once it's known (`tips`, Normal's then Reversed's, as
+/// `crate::parameters::way_said` says them, the parameters pane's Direction row's words),
+/// else its word alone. Its place is the pad's `reversed` ([`DIRECTION_PLACES`]).
+pub(crate) fn direction_choices(tips: Option<&[String; 2]>) -> [properties::IconChoice; 2] {
+    let pad = silico_core::document::SweepFeature::Pad;
+    let choice = |at: usize, reversed: bool| {
+        let said = crate::parameters::direction_word(pad, reversed).to_owned();
+        properties::IconChoice {
+            icon: Icon::Pad,
+            flipped: reversed,
+            tip: tips
+                .and_then(|tips| tips.get(at))
+                .cloned()
+                .unwrap_or_else(|| said.clone()),
+            said,
+        }
     };
-    [
-        choice(NORMAL, false, ways.map(|ways| &ways[0])),
-        choice(REVERSED, true, ways.map(|ways| &ways[1])),
-    ]
+    let [normal, reversed] = DIRECTION_PLACES;
+    [choice(0, normal), choice(1, reversed)]
 }
+
+/// A pad's Direction's choices, in their order, by the `reversed` each sets: Normal first.
+pub(crate) const DIRECTION_PLACES: [bool; 2] = [false, true];
 
 /// How an input's row is drawn: red (refused, or not readable), as the active box, on or
 /// off, and, for a pad's Direction, as its segmented choice.
@@ -1812,12 +1818,8 @@ struct Look<'a> {
     direction: Option<&'a [properties::IconChoice; 2]>,
 }
 
-/// A pad's Direction's label, and its two choices' words, as the prototype has them.
-pub const DIRECTION: &str = "Direction";
-/// The pad's Direction's choice along its sketch's normal.
-pub const NORMAL: &str = "Normal";
-/// The pad's Direction's choice against its sketch's normal.
-pub const REVERSED: &str = "Reversed";
+/// A pad's Direction's label, as the prototype has it.
+pub(crate) const DIRECTION: &str = "Direction";
 
 /// `input`'s value in its row, labelled by `label` (its key's): a field with its unit, a
 /// toggle (a pad's Direction, as `direction`'s segmented choice, if given), a choice's
@@ -1866,11 +1868,15 @@ fn input_ui(
                 .labelled_by(label);
             properties::unit(ui, field.rect, unit);
         }
-        Value::Toggle(on) if direction.is_some() => {
-            let choices = direction.map_or(&[][..], |choices| &choices[..]);
-            if let Some(place) = properties::segmented_icons(ui, choices, usize::from(*on), enabled)
+        Value::Toggle(on) if let Some(choices) = direction => {
+            let chosen = DIRECTION_PLACES
+                .iter()
+                .position(|reversed| reversed == on)
+                .unwrap_or_default();
+            if let Some(reversed) = properties::segmented_icons(ui, choices, chosen, enabled)
+                .and_then(|place| DIRECTION_PLACES.get(place))
             {
-                *on = place == 1;
+                *on = *reversed;
             }
         }
         Value::Toggle(on) => {

@@ -2089,10 +2089,10 @@ pub(crate) struct IconChoice {
     pub tip: String,
 }
 
-/// A choice of a few drawn as icons (`.seg` with `role="radiogroup"`, each `role="radio"`):
-/// each of `choices`, the `chosen` one on and checked, each a radio button named by its
-/// words, its tooltip its `tip`, sharing the width; the one clicked, if one was. Off unless
-/// `enabled`.
+/// A choice of a few drawn as icons (`.seg`, each button `role="radio"`): each of
+/// `choices`, the `chosen` one on and checked, each a radio button named by its words, its
+/// tooltip its `tip`, sharing the width; the one clicked, if one was (the one on, too).
+/// Off unless `enabled`.
 pub(crate) fn segmented_icons(
     ui: &mut Ui,
     choices: &[IconChoice],
@@ -2304,8 +2304,8 @@ mod tests {
         // seg 167 by 22, each button (165 − 1) / 2 = 82 wide, the second 1 after the first.
         // app.js's `dlgRev`: Normal the pad icon, Reversed the same upside down
         // (`transform: scaleY(-1)`), each `data-tip` its words and its way.
-        let ways = ["\u{2212}Y".to_owned(), "+Y".to_owned()];
-        let choices = crate::dialog::direction_choices(Some(&ways));
+        let tips = ["Normal (\u{2212}Y)".to_owned(), "Reversed (+Y)".to_owned()];
+        let choices = crate::dialog::direction_choices(Some(&tips));
         assert_eq!(
             choices
                 .iter()
@@ -2406,6 +2406,11 @@ mod tests {
             (icons[0].2, icons[1].2),
             (theme::SEGMENTED_ON_TEXT, theme::SEGMENTED_TEXT)
         );
+        // Normal clicked, chosen already: still chosen.
+        h.get_by_role_and_label(Role::RadioButton, "Normal").click();
+        h.run();
+        assert_eq!(*h.state(), 0);
+        assert_eq!(toggled(&h, "Normal"), Some(Toggled::True));
         // Reversed clicked: chosen, and filled in Normal's place.
         h.get_by_role_and_label(Role::RadioButton, "Reversed")
             .click();
