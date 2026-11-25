@@ -138,7 +138,8 @@
           "render",
           "timeline",
           "meshes",
-          "sketch"
+          "sketch",
+          "pattern"
         ],
         "type": "string"
       },
@@ -271,6 +272,7 @@
           "undo",
           "redo",
           "diff",
+          "pattern",
           "reload"
         ],
         "type": "string"

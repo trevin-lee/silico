@@ -58,11 +58,26 @@ pub(crate) fn counts(operation: &Operation) -> Vec<u32> {
 /// order, direction 1's offset first, each in its one spelling (N10). None for the identity:
 /// a count of 1 in every direction, or every copy skipped (section 2.4).
 pub(crate) fn placed(operation: &Operation) -> Vec<Instance> {
-    let counts = counts(operation);
-    let skipped: BTreeSet<&[u32]> = skipped_in_range(operation.skip(), &counts)
+    let skipped = skipped(operation);
+    instances(operation)
+        .into_iter()
+        .filter(|instance| !skipped.contains(instance.offsets()))
+        .collect()
+}
+
+/// The instances `skip` leaves out that the pattern's counts reach (`skipped_in_range`), by
+/// their offsets.
+pub(crate) fn skipped(operation: &Operation) -> BTreeSet<&[u32]> {
+    skipped_in_range(operation.skip(), &counts(operation))
         .into_iter()
         .map(|instance| instance.offsets())
-        .collect();
+        .collect()
+}
+
+/// Every instance of a pattern but the original, skipped or not, in `skip`'s order,
+/// direction 1's offset first, each in its one spelling (N10).
+pub(crate) fn instances(operation: &Operation) -> Vec<Instance> {
+    let counts = counts(operation);
     // Every instance by its offsets, a direction at a time, direction 1 outer: (i) and
     // (i, 0) are one instance, written `i`, before (i, 1), so the order is the one `skip`
     // is written in. Built for as many directions as the pattern has (the gate allows two).
@@ -81,7 +96,6 @@ pub(crate) fn placed(operation: &Operation) -> Vec<Instance> {
     }
     all.iter()
         .filter_map(|offsets| Instance::new(offsets))
-        .filter(|instance| !skipped.contains(instance.offsets()))
         .collect()
 }
 
@@ -427,7 +441,7 @@ pub(crate) fn resolve(
 /// How far a linear direction moves instance offset `i`, in millimetres: `i · L / (count −
 /// 1)` for an extent, `i · L` taken exactly in nanometres and divided once, or `i · S` for a
 /// spacing (section 2.4).
-fn linear_step(distribution: LinearDistribution, count: u32, i: u32) -> f64 {
+pub(crate) fn linear_step(distribution: LinearDistribution, count: u32, i: u32) -> f64 {
     let (length, divisor) = match distribution {
         LinearDistribution::Extent { length } => (length, i128::from(count.saturating_sub(1))),
         LinearDistribution::Spacing { length } => (length, 1),
@@ -472,57 +486,65 @@ pub(crate) fn placements(
     instances
         .iter()
         .map(|instance| {
-            let offsets = instance.offsets();
-            let offset = |d: usize| offsets.get(d).copied().unwrap_or(0);
-            let placement = match (operation, resolved) {
-                (Operation::LinearPattern { directions, .. }, Resolved::Linear(along)) => {
-                    let mut moved = [0.0; 3];
-                    for (d, (direction, unit)) in directions.iter().zip(along).enumerate() {
-                        let step = linear_step(direction.distribution, direction.count, offset(d));
-                        for (m, u) in moved.iter_mut().zip(unit) {
-                            *m += u * step;
-                        }
-                    }
-                    Placement::Translation {
-                        offset: moved.map(|c| c + 0.0),
-                    }
-                }
-                (
-                    Operation::PolarPattern {
-                        distribution,
-                        count,
-                        ..
-                    },
-                    Resolved::Polar(axis),
-                ) => Placement::Rotation {
-                    axis: *axis,
-                    angle: silico_protocol::radians(polar_degrees(
-                        *distribution,
-                        *count,
-                        offset(0),
-                    )),
-                },
-                (Operation::Mirror { .. }, Resolved::Mirror { origin, normal }) => {
-                    Placement::Mirror {
-                        origin: *origin,
-                        normal: *normal,
-                    }
-                }
-                _ => {
-                    return Err(Error::new(
-                        ErrorCode::Internal,
-                        "a pattern's references were resolved as another type's",
-                    )
-                    .with_feature(id.as_str())
-                    .with_suggestion(crate::worker::SILICO_BUG));
-                }
-            };
+            let placement = placement(operation, resolved, instance).ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Internal,
+                    "a pattern's references were resolved as another type's",
+                )
+                .with_feature(id.as_str())
+                .with_suggestion(crate::worker::SILICO_BUG)
+            })?;
             placement
                 .check()
                 .map(|()| placement)
                 .map_err(|invalid| unplaceable(id, kind, instance, &placement, &invalid.message))
         })
         .collect()
+}
+
+/// Instance `instance`'s placement, of `operation` with its references `resolved`: a linear
+/// instance's move, i · s₁ · d₁ + j · s₂ · d₂; a polar instance's turn about the axis; a
+/// mirror's reflection in its plane (section 2.4). Unchecked: [`placements`] checks each by
+/// the kernel's rules. None where `resolved` is another type's than `operation`.
+pub(crate) fn placement(
+    operation: &Operation,
+    resolved: &Resolved,
+    instance: &Instance,
+) -> Option<Placement> {
+    let offsets = instance.offsets();
+    let offset = |d: usize| offsets.get(d).copied().unwrap_or(0);
+    match (operation, resolved) {
+        (Operation::LinearPattern { directions, .. }, Resolved::Linear(along)) => {
+            let mut moved = [0.0; 3];
+            for (d, (direction, unit)) in directions.iter().zip(along).enumerate() {
+                let step = linear_step(direction.distribution, direction.count, offset(d));
+                for (m, u) in moved.iter_mut().zip(unit) {
+                    *m += u * step;
+                }
+            }
+            Some(Placement::Translation {
+                offset: moved.map(|c| c + 0.0),
+            })
+        }
+        (
+            Operation::PolarPattern {
+                distribution,
+                count,
+                ..
+            },
+            Resolved::Polar(axis),
+        ) => Some(Placement::Rotation {
+            axis: *axis,
+            angle: silico_protocol::radians(polar_degrees(*distribution, *count, offset(0))),
+        }),
+        (Operation::Mirror { .. }, Resolved::Mirror { origin, normal }) => {
+            Some(Placement::Mirror {
+                origin: *origin,
+                normal: *normal,
+            })
+        }
+        _ => None,
+    }
 }
 
 /// A placement the kernel's rules refuse, worded for its instance (section 4.2): one moved

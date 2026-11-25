@@ -747,6 +747,24 @@ impl Model {
         self.patterns.get(id).map(|verdicts| &**verdicts)
     }
 
+    /// The feature whose solid the feature `id` builds on, its `base` as its rebuild took it:
+    /// the base, or, where that's suppressed, the nearest unsuppressed feature up its chain
+    /// (`document::suppression::standing`); none for a feature with no base, or whose chain
+    /// up from it is suppressed whole. A pattern's references are found in this feature's
+    /// map, as its steps find them (docs/design/m6.0-patterns.md, section 2.4).
+    pub(crate) fn standing_base(&self, id: &FeatureId) -> Option<&FeatureId> {
+        let features = &self.document().features;
+        let place = |f: &FeatureId| self.source.place(f);
+        let at = place(id)?;
+        let standing = crate::document::suppression::standing(features, &place);
+        crate::document::suppression::effective_inputs(features, &standing, &place, at)
+            .into_iter()
+            .find(|(field, _)| *field == "base")
+            .and_then(|(_, stands)| stands)
+            .and_then(|stands| features.get(stands))
+            .map(|feature| &feature.id)
+    }
+
     /// The document it was built from.
     pub fn document(&self) -> &Document {
         self.source.document()

@@ -1,0 +1,13 @@
+{
+  "pattern": "m0000001",
+  "type": "mirror",
+  "directions": null,
+  "axis": null,
+  "plane": {"origin": [0, 0, 0], "normal": [1, 0, 0]},
+  "anchor": [47, 0, 0],
+  "instances": [
+    {"index": [1], "offset": null, "angle": null, "anchor": [-47, 0, 0], "state": "built"}
+  ],
+  "problems": [],
+  "problems_total": 0
+}

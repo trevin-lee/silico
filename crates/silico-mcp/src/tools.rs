@@ -162,7 +162,8 @@ fn effect(command: Command) -> Effect {
         | Command::Angle
         | Command::Timeline
         | Command::Meshes
-        | Command::Sketch => Effect::Reads,
+        | Command::Sketch
+        | Command::Pattern => Effect::Reads,
         // An edit outside a transaction saves at once; commit and format save the file.
         Command::Commit
         | Command::Format
@@ -213,6 +214,10 @@ pub const UNTITLED: &str = "For a part with no file yet, open with `path: null` 
 /// of 2026-11-09, that the app makes solids sketch-first, as SolidWorks does), said in
 /// `initialize`'s instructions and in `add_feature`'s description.
 pub const SKETCH_FIRST: &str = "Build solids from sketches, as a person does in the app: a sketch on a plane or a face, then a pad, pocket, revolve, or groove of it, and fillets and chamfers on the result. The primitives (box, cylinder, sphere, cone, torus) are still read, but a part built from sketches is one a person can edit the way they'd have built it.";
+/// How to repeat or mirror what's built (docs/design/m6.0-patterns.md, section 8), extending
+/// [`SKETCH_FIRST`]: said after it in `initialize`'s instructions, and in `add_feature`'s and
+/// `pattern`'s descriptions.
+pub const PATTERNS: &str = "To repeat or mirror what's built, add a `linear_pattern`, `polar_pattern`, or `mirror` whose `copies` names the pads, pockets, revolves, or grooves to copy (or is `solid`, the whole base), rather than sketching each copy again; a count includes the original. A copy's faces and edges are named with `C` and its instance for a feature's copy, `S` for a whole solid's, the instance its steps from the original along each direction (`C2`, `C2,1`, `S1`), and `pattern` says where each instance lies.";
 
 /// `command`'s title and description, for an agent: every command matched.
 fn words(command: Command) -> (&'static str, String) {
@@ -385,6 +390,10 @@ fn words(command: Command) -> (&'static str, String) {
             "Export",
             "Write the current model's bodies, or the features named, to `path` in the workspace: as a printable 3MF, each solid meshed at the tolerance (FreeCAD's default is 0.1 mm), or as STEP, exact, with `tolerance: null`. A file already at `path` is replaced only with `replace: true`.",
         ),
+        Command::Pattern => (
+            "Read a pattern",
+            "A pattern as the model built it: a `linear_pattern`'s directions, a `polar_pattern`'s axis, or a `mirror`'s plane, resolved in 3D; where the original sits (`anchor`); and every other instance by its `index`, the offsets its copies' names carry after `C` (a feature's copy) or `S` (a whole solid's) and `skip` takes, with its `offset` or `angle`, its `anchor` (where the copied profile's centre lands, or a whole solid's centre of mass), and its `state`: `built`, `skipped`, `changed_nothing` (its copy adds or removes nothing), `off_base` (its copy misses the base, which refuses the pattern), or `null` where the rebuild gave none; and the pattern's problems.",
+        ),
         Command::Sketch => (
             "Read a sketch",
             "A sketch as the model solved it: its plane in 3D, its state (under, fully, or over defined, no solution, or invalid) and degrees of freedom, each point, curve, and constraint as the document writes it, at its solved values, with its own state, the regions its profile makes or why it makes none, and why it wasn't solved.",
@@ -399,7 +408,8 @@ fn words(command: Command) -> (&'static str, String) {
         ),
     };
     let tips: &[&str] = match command {
-        Command::AddFeature => &[SKETCH_FIRST, IN_A_TRANSACTION, READ_CURRENT],
+        Command::AddFeature => &[SKETCH_FIRST, PATTERNS, IN_A_TRANSACTION, READ_CURRENT],
+        Command::Pattern => &[PATTERNS, READ_CURRENT],
         Command::Begin
         | Command::Commit
         | Command::SetField

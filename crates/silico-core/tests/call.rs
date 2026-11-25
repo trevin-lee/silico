@@ -58,7 +58,7 @@ fn the_commands_are_one_list_in_one_order() {
     assert_eq!(names, listed);
     // The design's section 7, in its order, written out by hand (read_logs comes with its
     // command), then M5.0's section 7's, in its order (M5.1's, M5.3's, M5.5's, then M5.10's), then
-    // `diff` (Fable's decision of 2026-11-04).
+    // `diff` (Fable's decision of 2026-11-04), then M6.5's `pattern`.
     assert_eq!(
         names,
         [
@@ -107,6 +107,7 @@ fn the_commands_are_one_list_in_one_order() {
             "undo",
             "redo",
             "diff",
+            "pattern",
         ]
     );
     for command in Command::ALL {

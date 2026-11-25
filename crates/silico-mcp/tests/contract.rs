@@ -120,6 +120,7 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
         "timeline",
         "meshes",
         "sketch",
+        "pattern",
     ];
     let destructive = [
         "commit",
@@ -188,6 +189,12 @@ fn the_tools_are_the_commands_in_their_order_each_with_mcps_fields() {
     assert!(said("sketch_remove", "`model: \"current\"`"));
     assert!(said("drag_end", "Edit inside a transaction"));
     assert!(said("drag_begin", "One drag is open in a session at once"));
+    // How to repeat or mirror, where an agent adds a feature and where it reads a pattern.
+    for name in ["add_feature", "pattern"] {
+        assert!(said(name, "To repeat or mirror what's built"), "{name}");
+        assert!(said(name, "`C2,1`"), "{name}");
+    }
+    assert!(said("pattern", "`model: \"current\"`"));
     for name in [
         "sketch_split",
         "sketch_trim",
@@ -389,8 +396,9 @@ fn every_example_holds_to_its_tools_schemas() {
     // diff's 3: its request, its result, and its refusal of a revision not held; and text's
     // request of a revision (Fable's restore, 2026-11-04); and diff's request and result of
     // the file on disk (Fable's 6d decision, the same day); and M6.3's warning,
-    // `instances_changed_nothing`.
-    assert_eq!(seen, 198);
+    // `instances_changed_nothing`; and M6.5's 6, pattern's: its request, its three results
+    // (a linear pattern, a polar pattern, and a mirror), and its two refusals.
+    assert_eq!(seen, 204);
 }
 
 #[test]

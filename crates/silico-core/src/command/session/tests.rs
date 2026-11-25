@@ -4176,6 +4176,10 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
                 ReadCommand::Sketch,
                 Box::new(move || erased(s.sketch(at, model, id("k7f2qx3m")))),
             ),
+            (
+                ReadCommand::Pattern,
+                Box::new(move || erased(s.pattern(at, model, id("k7f2qx3m")))),
+            ),
         ]
     };
     let mut queued: Vec<(SessionCommand, Start<'_>)> = vec![
@@ -4225,7 +4229,10 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
             .partition(|(read, _)| {
                 !matches!(
                     read,
-                    ReadCommand::Timeline | ReadCommand::Meshes | ReadCommand::Sketch
+                    ReadCommand::Timeline
+                        | ReadCommand::Meshes
+                        | ReadCommand::Sketch
+                        | ReadCommand::Pattern
                 )
             });
     queued.extend(
@@ -4259,6 +4266,10 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         SessionCommand::SuppressFeature,
         Box::new(|| erased(s.suppress_feature(at, Revision::OPENED, id("k7f2qx3m"), true))),
     ));
+    // M6.5's `pattern`, after `diff`, last.
+    let (m6_reads, m5_reads): (Vec<_>, Vec<_>) = m5_reads
+        .into_iter()
+        .partition(|(read, _)| *read == ReadCommand::Pattern);
     queued.extend(
         m5_reads
             .into_iter()
@@ -4371,6 +4382,11 @@ fn status_names_each_command_running_and_cancel_by_that_name_stops_it() {
         SessionCommand::Diff,
         Box::new(|| erased(s.diff(at, None, None))),
     ));
+    queued.extend(
+        m6_reads
+            .into_iter()
+            .map(|(read, start)| (SessionCommand::from(read), start)),
+    );
     // M5.3's queued drag commands, after `timeline`, as the design lists them: `drag_move`
     // runs beside the queue, on the drag, and its cancel is the drag's tests'.
     let after_timeline = queued

@@ -1,0 +1,1 @@
+{"code": "invalid_input", "message": "q0000002 is a pocket, not a pattern", "feature": null, "elements": [], "elements_total": 0, "parameter": "pattern", "cause": null, "suggestion": "name a pattern of the document (a linear_pattern, polar_pattern, or mirror), by its ID", "candidates": ["m0000001", "t0000001", "t0000002"], "ranking": [], "advice": null}

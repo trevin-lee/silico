@@ -43,6 +43,7 @@
           "undo",
           "redo",
           "diff",
+          "pattern",
           "rebuild"
         ],
         "type": "string"
@@ -113,6 +114,7 @@
           "undo",
           "redo",
           "diff",
+          "pattern",
           "rebuild"
         ],
         "type": "string"

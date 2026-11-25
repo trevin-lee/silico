@@ -28,6 +28,7 @@ pub mod logs;
 pub(crate) mod lookup;
 pub mod measure;
 pub mod meshes;
+pub mod pattern;
 pub mod render;
 pub mod schema;
 mod session;

@@ -1010,7 +1010,8 @@ fn schema_answers_the_document_and_each_command_as_committed() {
                 "sketch_join",
                 "undo",
                 "redo",
-                "diff"
+                "diff",
+                "pattern"
             ]
         );
     }
@@ -2604,8 +2605,8 @@ fn every_examples_error_ranks_all_its_candidates_or_none() {
             }
         }
     }
-    // 78 errors and the two warnings' examples.
-    assert_eq!(errors, 80);
+    // 78 errors and the two warnings' examples, and M6.5's pattern's two refusals.
+    assert_eq!(errors, 82);
     assert_eq!(
         ranked,
         [
