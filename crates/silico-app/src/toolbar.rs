@@ -168,8 +168,8 @@ enum Does {
 }
 
 /// A button as the toolbar offers it: its name (its label and its tooltip's title), its
-/// icon, its line, what it does, and the registry's command whose keys its tooltip names, if
-/// it has one. A command of the registry's (`crate::shortcuts`) takes its name, its icon, and
+/// icon, its line, what it does, the registry's command it is, if it's one, and the registry's
+/// command whose keys its tooltip names, if it has one. A command of the registry's (`crate::shortcuts`) takes its name, its icon, and
 /// its line from it ([`registered`]), as the prototype's `tbBtn` takes them from its `CMD`;
 /// only what the prototype draws outside `CMD` has words of its own here ([`own`]): the
 /// constraints, and the drawing tools' variants in SKETCH CREATE's drop-down.
@@ -179,6 +179,10 @@ struct Button {
     icon: Icon,
     description: Option<&'static str>,
     does: Does,
+    /// The registry's command it is ([`registered`]); none for one with words of its own.
+    command: Option<shortcuts::Command>,
+    /// The registry's command whose keys reach it: its own, or, for a variant, its row
+    /// button's ([`keyed`]).
     key: Option<shortcuts::Command>,
 }
 
@@ -194,6 +198,7 @@ const fn registered(command: shortcuts::Command, does: Does) -> Button {
         },
         description: entry.description,
         does,
+        command: Some(command),
         key: Some(command),
     }
 }
@@ -210,6 +215,7 @@ const fn own(
         icon,
         description,
         does,
+        command: None,
         key: None,
     }
 }
@@ -525,7 +531,7 @@ fn button_of(command: shortcuts::Command) -> Option<&'static Button> {
         .iter()
         .chain(SKETCH)
         .flat_map(|panel| panel.row)
-        .find(|button| button.key == Some(command) && button.label == command.label())
+        .find(|button| button.command == Some(command))
 }
 
 /// The registry's `command` as the command search runs it, if the toolbar has a button for
@@ -2201,7 +2207,7 @@ mod tests {
         // their row button's keys.
         let own: Vec<(&str, Option<shortcuts::Command>)> = every_button()
             .into_iter()
-            .filter(|button| button.key.is_none_or(|key| key.label() != button.label))
+            .filter(|button| button.command.is_none())
             .map(|button| (button.label, button.key))
             .collect();
         assert_eq!(
@@ -2239,14 +2245,16 @@ mod tests {
         // The rest: each the registry's command, every word of it the registry's.
         let mut registered: Vec<shortcuts::Command> = Vec::new();
         for button in every_button() {
-            let Some(key) = button.key.filter(|key| key.label() == button.label) else {
+            let Some(command) = button.command else {
                 continue;
             };
-            let entry = key.entry();
+            let entry = command.entry();
+            assert_eq!(button.label, entry.label);
             assert_eq!(button.description, entry.description, "{}", button.label);
             assert_eq!(Some(button.icon), entry.icon, "{}", button.label);
-            if !registered.contains(&key) {
-                registered.push(key);
+            assert_eq!(button.key, Some(command), "{}", button.label);
+            if !registered.contains(&command) {
+                registered.push(command);
             }
         }
         // Each of the prototype's toolbar commands (`renderToolbar`'s `tbBtn`s), once.

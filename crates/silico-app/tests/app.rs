@@ -25152,6 +25152,35 @@ fn enter_alone_in_a_dialog_asks_for_the_next_frame_at_once() {
 }
 
 #[test]
+fn a_toolbar_click_that_starts_something_asks_for_the_next_frame_at_once() {
+    // CREATE's Create Sketch begins its pick (`toolbar_act`'s `true`): the frame its click is
+    // taken in asks for the next at once, as a key that acts does. SELECT's Edges toggles a
+    // filter, which starts nothing: no frame asked for it.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    settled(&mut h);
+    step_until(&mut h, "sketch mode can open", |h| {
+        h.state().tabs()[0].can_sketch()
+    });
+    let edges = h
+        .get_by_role_and_label(Role::Toolbar, "SELECT")
+        .get_by_label("Edges")
+        .rect()
+        .center();
+    assert!(!asks_at_once_after_click(&mut h, edges));
+    assert!(!h.state().tabs()[0].selection().filter.edges);
+    let create = h
+        .get_by_role_and_label(Role::Toolbar, "CREATE")
+        .get_by_label("Create Sketch")
+        .rect()
+        .center();
+    assert!(asks_at_once_after_click(&mut h, create));
+    assert!(h.state().tabs()[0].plane_pick.is_some());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn ctrl_b_alone_asks_for_the_next_frame_at_once() {
     let f = fixture();
     let (mut h, hold) = first_rebuild_stopped(&f);
