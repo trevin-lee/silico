@@ -27,6 +27,20 @@ fn fixture() -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
 }
 
+/// The document saved under scheme 6 (M6.4, protected, with the maintainer), by `silico
+/// fmt` on the real kernel, fingerprints and all: a linear pattern with a skip, a grid, a
+/// polar pattern, a mirror, a whole-solid mirror of a solid holding a pattern, and fillets on
+/// a `C2` edge, a `C2,1` edge, a mirror's `C1` edge, and a whole-solid mirror's `S1` edge.
+/// That every name finds its edge, and every feature rebuilds to its fingerprint, is
+/// silico-cli's tests/golden.rs, on the real kernel.
+fn fixture_6() -> String {
+    let path = format!(
+        "{}/tests/contract/naming-scheme-6.silico",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"))
+}
+
 /// One line: the header with `naming` written as `value`, and no features.
 fn with_naming(value: &str) -> String {
     format!(
@@ -317,4 +331,51 @@ fn the_schema_requires_naming_and_takes_5_or_6() {
     let old = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "features": []}"#;
     assert!(!valid(old));
     assert!(read(old.as_bytes()).is_ok());
+}
+
+#[test]
+fn the_scheme_6_fixture_reads_and_writes_back_byte_for_byte_and_passes_the_gate_and_the_schema() {
+    // Saved under 6 and read under 6: written back, no byte moves. Its four copy names, as
+    // N10 writes them (written here by hand), each parse under the gate (a copy of a pad's
+    // tool `C`, a grid's instance `C2,1`, a whole solid's `S` around a pattern's `C`), and
+    // the schema takes it.
+    let text = fixture_6();
+    assert_eq!(text.matches("\n  \"naming\": 6,\n").count(), 1);
+    let document = read(text.as_bytes()).unwrap();
+    assert_eq!(document.features.len(), 30);
+    assert_eq!(write(&document).unwrap(), text);
+    for name in [
+        "t0000001.linear_pattern.Edge(C2 p0000002.pad.Edge(G s0000002.sketch.Edge.na000002))",
+        "t0000002.linear_pattern.Edge(C2,1 p0000004.pad.Edge(G s0000004.sketch.Edge.na000002))",
+        "m0000001.mirror.Edge(C1 p0000008.pad.Edge(G s0000008.sketch.Edge.na000002))",
+        "m0000002.mirror.Edge(S1 t0000004.linear_pattern.Edge(C1 p0000010.pad.Edge(G s0000010.sketch.Edge.na000002)))",
+    ] {
+        assert_eq!(
+            text.matches(&format!("\n        \"{name}\"\n")).count(),
+            1,
+            "{name}"
+        );
+    }
+    for (kind, count) in [
+        ("linear_pattern", 3),
+        ("polar_pattern", 1),
+        ("mirror", 2),
+        ("fillet", 4),
+    ] {
+        assert_eq!(
+            document
+                .features
+                .iter()
+                .filter(|f| f.operation.type_name() == kind)
+                .count(),
+            count,
+            "{kind}"
+        );
+    }
+    assert!(text.contains("\"skip\": [\n        [1]\n      ],"));
+    assert!(text.contains("\"copies\": {\"type\": \"solid\"},"));
+    Checked::new(document).unwrap();
+    let schema: serde_json::Value = serde_json::from_str(&schema().unwrap()).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    assert!(validator.is_valid(&serde_json::from_str(&text).unwrap()));
 }
