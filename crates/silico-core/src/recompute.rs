@@ -2146,18 +2146,26 @@ const OFFERED_KEPT: usize = 8;
 
 impl EngineState {
     /// The solve kept for `key`: a recompute's, or else one offered
-    /// ([`Recompute::offer_solve`]), which from now on is kept as a recompute's own solve,
-    /// as long as a plan uses its key.
-    fn solution(&mut self, key: &Key) -> Option<SketchResult> {
+    /// ([`Recompute::offer_solve`]), and whether it was offered.
+    fn kept_solution(&self, key: &Key) -> Option<(&SketchResult, bool)> {
         if let Some(kept) = self.solutions.get(key) {
-            return Some(kept.clone());
+            return Some((kept, false));
         }
-        let offered = self
-            .offered
+        self.offered
             .iter()
-            .find_map(|(offered, result)| (offered == key).then(|| result.clone()))?;
-        self.solutions.insert(*key, offered.clone());
-        Some(offered)
+            .find_map(|(offered, result)| (offered == key).then_some((result, true)))
+    }
+
+    /// [`kept_solution`](Self::kept_solution), an offered one kept from now on as a
+    /// recompute's own solve, as long as a plan uses its key: for a recompute whose plan
+    /// holds the key already, so no trim before it's planned drops it.
+    fn solution(&mut self, key: &Key) -> Option<SketchResult> {
+        let (result, offered) = self.kept_solution(key)?;
+        let result = result.clone();
+        if offered {
+            self.solutions.insert(*key, result.clone());
+        }
+        Some(result)
     }
 
     /// Lets go of every result no plan worth keeping uses.
@@ -5029,10 +5037,12 @@ impl<K: Kernel + 'static> Engine<K> {
         let mut solutions = SketchResults::new();
         let mut profiles = BTreeMap::<Key, ProfileResult>::new();
         if reads != Reads::Nothing {
-            let mut state = lock(&self.state);
+            let state = lock(&self.state);
             for (_, key) in &used {
-                if let Some(result) = state.solution(key) {
-                    solutions.insert(*key, result);
+                // An offered solve is kept as this recompute's own once its plan holds the
+                // key (`build_round` takes it again then): kept sooner, a trim drops it.
+                if let Some((result, _)) = state.kept_solution(key) {
+                    solutions.insert(*key, result.clone());
                 }
                 if let Some(profile) = state.profiles.get(key) {
                     profiles.insert(*key, profile.clone());
@@ -9873,16 +9883,17 @@ mod tests {
     #[test]
     fn a_solve_a_recompute_wouldnt_keep_or_of_no_such_sketch_is_no_offer() {
         // A reply the core can't read (a solution called unbuildable, every piece of which
-        // can be built): the recompute
-        // keeps no such solve, as the worker may answer otherwise next time, so it's no
-        // offer, and the recompute solves the text itself. A document whose feature isn't
-        // the sketch: no offer. A solve it keeps: an offer.
+        // can be built): a recompute keeps no such solve of its own, as the worker may
+        // answer otherwise next time, so it's no offer. A feature that isn't a sketch (the
+        // pad), or isn't there: no offer. A solve a recompute keeps: an offer.
         let sketches = crate::fake::FakeSketches::new();
-        let a = triangle(10, false);
+        let a = triangle(10, true);
         let good = edit_solve(&a, &mut sketches.clone());
         assert!(SolveOffer::of(&a, &s1(), &good).is_some());
-        let other = FeatureId::new("s0000002").unwrap();
-        assert!(SolveOffer::of(&a, &other, &good).is_none());
+        for other in ["p0000001", "s0000002"] {
+            let other = FeatureId::new(other).unwrap();
+            assert!(SolveOffer::of(&a, &other, &good).is_none(), "{other}");
+        }
         sketches.answer(|system| {
             let mut solved = crate::fake::FakeSketches::as_sent(system);
             solved.status = silico_protocol::SolveStatus::SolvedInvalid;
