@@ -7769,9 +7769,11 @@ mod tests {
         ]
     }
 
-    /// `run`'s failure, which must be a look ahead's panic, caught: not a hang.
+    /// `run`'s failure, which must be a look ahead's panic, caught: not a hang; and, as
+    /// `look_ahead_caught` says, no feature marked faulted for it.
     #[track_caller]
     fn failed_by_the_looks_panic(run: Run) {
+        let progress = run.progress();
         let Ok(outcome) = run.wait_timeout(Duration::from_secs(60)) else {
             panic!("the rebuild hung on the look ahead's panic");
         };
@@ -7781,6 +7783,15 @@ mod tests {
         assert_eq!(error.code(), ErrorCode::Internal);
         assert_eq!(error.message(), "a look ahead at sketches' faces panicked");
         assert_eq!(error.cause(), Some("a look ahead's test panic"));
+        let count = progress.now();
+        assert!(count.ended, "{count:?}");
+        assert!(
+            count
+                .features
+                .iter()
+                .all(|(_, state)| state != StepState::Faulted),
+            "{count:?}"
+        );
     }
 
     #[test]
