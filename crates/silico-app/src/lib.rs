@@ -28,6 +28,7 @@ pub mod measures;
 mod menu;
 pub mod missing;
 mod modal;
+pub mod model_measures;
 pub mod navigate;
 pub mod pane_widths;
 mod panes;

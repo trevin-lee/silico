@@ -191,6 +191,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             background: None,
                             lines: &[],
                             planes: &[],
+                            dim: 1.0,
                         })
                         .map_err(|f| f.to_string())?;
                     queue.submit([commands]);
@@ -322,6 +323,7 @@ fn edge_batch(
                     background: Some([0x00, 0x00, 0x00]),
                     lines: &[],
                     planes: &[],
+                    dim: 1.0,
                 })
                 .map_err(|f| f.to_string())?;
             let placed = renderer.placed();
@@ -458,6 +460,7 @@ fn sketch_lines(
                     background: None,
                     lines: if drawn { &sets } else { &[] },
                     planes: &[],
+                    dim: 1.0,
                 })
                 .map_err(|f| f.to_string())?;
             let placed = renderer.placed();
