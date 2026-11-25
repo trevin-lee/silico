@@ -3395,6 +3395,7 @@ fn a_face_tinted_and_highlighted_is_both_and_a_tint_of_none_or_white_is_exact() 
             );
             let plain_frame = frame(&camera, &[1], &[], None);
             let plain = tinted_image(r, &plain_frame, &[], FEATURE_TINT);
+            let materials = r.mixes.donors.len();
             for colour in [[0xd4, 0xdb, 0xff], [0, 0, 0], [255, 0, 255]] {
                 let none = Tint {
                     colour,
@@ -3406,6 +3407,8 @@ fn a_face_tinted_and_highlighted_is_both_and_a_tint_of_none_or_white_is_exact() 
                     "{colour:?}"
                 );
             }
+            // Drawn as no tint, its face's own mesh: no tint's material made for it.
+            assert_eq!(r.mixes.donors.len(), materials);
             let white = Tint {
                 colour: [255; 3],
                 amount: 1.0,
