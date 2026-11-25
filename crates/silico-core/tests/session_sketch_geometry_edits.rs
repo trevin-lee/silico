@@ -3160,7 +3160,8 @@ fn a_join_that_would_hold_the_joined_lines_own_point_off_itself_is_refused_the_s
 }
 
 /// Each edit that writes geometry, by name, after the edits it needs made first, each at
-/// the revision it's made against counted from the first, `at`: what review A13-M2 runs.
+/// the revision it's made against counted from the first, `at`: what review A13-M2 runs. A
+/// drag's end writes geometry too, judged as the edits are.
 fn each_writing_edit(at: u64) -> Vec<(&'static str, Vec<(&'static str, String)>)> {
     let split_base = || {
         (
@@ -3220,6 +3221,17 @@ fn each_writing_edit(at: u64) -> Vec<(&'static str, Vec<(&'static str, String)>)
                 ("sketch_join", join(at + 1, "s0000001", "pa000007")),
             ],
         ),
+        (
+            "drag_end",
+            vec![
+                (
+                    "drag_begin",
+                    r#"{"session": "s1", "sketch": "s0000001", "point": "pa000003", "curve": null, "press": null}"#
+                        .to_owned(),
+                ),
+                ("drag_end", r#"{"session": "s1", "to": [61, 6]}"#.to_owned()),
+            ],
+        ),
     ]
 }
 
@@ -3227,9 +3239,10 @@ fn each_writing_edit(at: u64) -> Vec<(&'static str, Vec<(&'static str, String)>)
 fn the_rebuild_after_an_edit_that_writes_geometry_takes_the_edits_solve_and_never_sends_it_again() {
     // Review A13-M2: an edit's solve of the text it wrote judges it, and the rebuild of that
     // text then solved it again, the same system sent twice (on PlaneGCS's dense SQP, tens
-    // of seconds each for a large sketch). The edit's solve is now the rebuild's: after the
-    // edit and the rebuild it's read for, every system the fake was sent is sent once, and,
-    // inside a transaction, where the rebuild waits for the read, the read sends nothing.
+    // of seconds each for a large sketch). The edit's solve is now the rebuild's: the edit
+    // sends only its own solves, counted by hand below, and the rebuild nothing, whether it
+    // runs in the edit's commit (outside a transaction) or for the read after (inside one,
+    // where it waits for the read).
     // What's published is what a fresh solve gives (a fresh check solves every sketch
     // again): the sketch read, its states and freedom, and the text, the same before it and
     // after it; and the fresh check sends the edit's own system, so the solve the rebuild
@@ -3251,20 +3264,22 @@ fn the_rebuild_after_an_edit_that_writes_geometry_takes_the_edits_solve_and_neve
             let (command, request) = last;
             let made = f.ran(command, request);
             assert_eq!(made["changed"], true, "{what}: {made}");
+            // What the edit solves, its judging solve of the text it wrote last, clean, so the
+            // text before it isn't solved after it. An extend solves the text before it
+            // first, to write its solve back, as a drag begins; a drag's end solves the moved
+            // sketch whole on release, then as a load does, before the judging solve, each
+            // the same system on this fake. Outside a transaction the commit's rebuild runs
+            // inside the edit: none of these counts holds a solve of the rebuild's.
+            let solves = match edit {
+                "sketch_extend" => 2,
+                "drag_end" => 3,
+                _ => 1,
+            };
             let by_edit = f.sketches.requests()[sent..].to_vec();
-            assert!(!by_edit.is_empty(), "{what}: the edit solved nothing");
+            assert_eq!(by_edit.len(), solves, "{what}: the edit's solves");
             f.checked();
             let new = f.sketches.requests()[sent..].to_vec();
-            for (i, system) in new.iter().enumerate() {
-                assert!(
-                    !new[..i].contains(system),
-                    "{what}: request {i} of {} since the edit sent a system already sent",
-                    new.len()
-                );
-            }
-            if inside {
-                assert_eq!(new, by_edit, "{what}: the read's rebuild solved again");
-            }
+            assert_eq!(new, by_edit, "{what}: the read's rebuild solved again");
             let read = r#"{"session": "s1", "model": "current", "sketch": "s0000001"}"#;
             let published = f.ran("sketch", read);
             let text = f.text();

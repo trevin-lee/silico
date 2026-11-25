@@ -2145,11 +2145,19 @@ const PUBLISHED_KEPT: usize = 2;
 const OFFERED_KEPT: usize = 8;
 
 impl EngineState {
-    /// The solve offered for `key`, if one is ([`Recompute::offer_solve`]).
-    fn offered(&self, key: &Key) -> Option<&SketchResult> {
-        self.offered
+    /// The solve kept for `key`: a recompute's, or else one offered
+    /// ([`Recompute::offer_solve`]), which from now on is kept as a recompute's own solve,
+    /// as long as a plan uses its key.
+    fn solution(&mut self, key: &Key) -> Option<SketchResult> {
+        if let Some(kept) = self.solutions.get(key) {
+            return Some(kept.clone());
+        }
+        let offered = self
+            .offered
             .iter()
-            .find_map(|(offered, result)| (offered == key).then_some(result))
+            .find_map(|(offered, result)| (offered == key).then(|| result.clone()))?;
+        self.solutions.insert(*key, offered.clone());
+        Some(offered)
     }
 
     /// Lets go of every result no plan worth keeping uses.
@@ -2289,6 +2297,35 @@ impl SketchResult {
     }
 }
 
+/// A sketch's solve made outside any recompute, as a recompute would keep its own, under the
+/// key it would look it up by: what [`Recompute::offer_solve`] offers.
+pub(crate) struct SolveOffer {
+    key: Key,
+    result: SketchResult,
+}
+
+impl SolveOffer {
+    /// `answer`, a solve of `document`'s sketch `sketch`, keyed as a recompute keys its own
+    /// ([`sketch_key`]: the sketch's ID and its text as written), read as it reads its own
+    /// ([`SketchResult::of`]); none for a document with no such sketch, and for a solve a
+    /// recompute wouldn't keep ([`SketchResult::worth_keeping`]: a failure that might not
+    /// happen again).
+    pub(crate) fn of(document: &Checked, sketch: &FeatureId, answer: &Answer) -> Option<Self> {
+        let Ok(Feature {
+            operation: Operation::Sketch(drawn),
+            ..
+        }) = document.feature(sketch)
+        else {
+            return None;
+        };
+        let result = SketchResult::of(answer, sketch);
+        result.worth_keeping().then(|| SolveOffer {
+            key: sketch_key(sketch, drawn),
+            result,
+        })
+    }
+}
+
 /// A sketch's result in a recompute: its solve's, or the solver's failure, not the
 /// sketch's (a worker that couldn't start), which isn't kept, so the next recompute tries
 /// again.
@@ -2311,10 +2348,10 @@ impl SketchOutcome {
 type SketchRun = BTreeMap<Key, SketchOutcome>;
 
 /// The sketches a recompute's features sweep, solved before its plan: each one's solve and
-/// profile (`swept`, those that solved), every solve's result by key, the solves made now or
-/// taken from an offer ([`Recompute::offer_solve`]) (`fresh`) and the profiles made now,
-/// which the recompute keeps once its plan's keys say they're worth keeping (kept sooner, a
-/// trim drops them: the review found every swept sketch solved twice a recompute).
+/// profile (`swept`, those that solved), every solve's result by key, the solves made now
+/// (`fresh`) and the profiles made now, which the recompute keeps once its plan's keys say
+/// they're worth keeping (kept sooner, a trim drops them: the review found every swept
+/// sketch solved twice a recompute).
 #[derive(Default)]
 struct SolvedFirst {
     swept: BTreeMap<FeatureId, Swept>,
@@ -2412,37 +2449,17 @@ impl<K: Kernel + 'static> Recompute<K> {
         self.engine.cache.get()
     }
 
-    /// Offers the engine `answer`, a solve of `document`'s sketch `sketch` made outside any
-    /// recompute on one of `solvers` (a sketch edit's judging solve of the text it wrote,
-    /// M5.10): the next recompute that solves the sketch's text takes it, keyed as it keys
-    /// its own ([`sketch_key`]), rather than solving the same text again, since a solve on
+    /// Offers the engine `offer`, a solve made outside any recompute on one of `solvers` (a
+    /// sketch edit's judging solve of the text it wrote, M5.10): the next recompute that
+    /// solves that text takes it rather than solving the same text again, since a solve on
     /// the same solvers is deterministic. Taken only where the engine solves on `solvers`
-    /// too, and only what a recompute would keep of its own solve ([`SketchResult`]): an
-    /// engine solving elsewhere, a document with no such sketch, and a failure that might
-    /// not happen again are let go. At most [`OFFERED_KEPT`] are kept, the oldest let go
-    /// first.
-    pub(crate) fn offer_solve(
-        &self,
-        solvers: &SketchSolvers,
-        document: &Checked,
-        sketch: &FeatureId,
-        answer: &Answer,
-    ) {
+    /// too: one solving elsewhere lets it go. At most [`OFFERED_KEPT`] are kept, the oldest
+    /// let go first.
+    pub(crate) fn offer_solve(&self, solvers: &SketchSolvers, offer: SolveOffer) {
         if !lock(&self.engine.solvers).same(solvers) {
             return;
         }
-        let Ok(Feature {
-            operation: Operation::Sketch(drawn),
-            ..
-        }) = document.feature(sketch)
-        else {
-            return;
-        };
-        let result = SketchResult::of(answer, sketch);
-        if !result.worth_keeping() {
-            return;
-        }
-        let key = sketch_key(sketch, drawn);
+        let SolveOffer { key, result } = offer;
         let mut state = lock(&self.engine.state);
         state.offered.retain(|(offered, _)| *offered != key);
         state.offered.push_front((key, result));
@@ -4810,14 +4827,9 @@ impl<K: Kernel + 'static> Engine<K> {
                     }
                 }
                 for (_, key) in &plan.sketches {
-                    if solutions.contains_key(key) {
-                        continue;
-                    }
-                    if let Some(result) = state.solutions.get(key) {
-                        solutions.insert(*key, result.clone());
-                    } else if let Some(result) = state.offered(key).cloned() {
-                        // Kept from now as this recompute's own solve: its plan holds the key.
-                        state.solutions.insert(*key, result.clone());
+                    if !solutions.contains_key(key)
+                        && let Some(result) = state.solution(key)
+                    {
                         solutions.insert(*key, result);
                     }
                 }
@@ -5016,16 +5028,11 @@ impl<K: Kernel + 'static> Engine<K> {
         let _span = tracing::debug_span!("solve_swept", sketches = used.len()).entered();
         let mut solutions = SketchResults::new();
         let mut profiles = BTreeMap::<Key, ProfileResult>::new();
-        // Those taken from an offer, kept with the solves made now once the plan holds them.
-        let mut fresh = SketchRun::new();
         if reads != Reads::Nothing {
-            let state = lock(&self.state);
+            let mut state = lock(&self.state);
             for (_, key) in &used {
-                if let Some(result) = state.solutions.get(key) {
-                    solutions.insert(*key, result.clone());
-                } else if let Some(result) = state.offered(key) {
-                    solutions.insert(*key, result.clone());
-                    fresh.insert(*key, SketchOutcome::Solved(result.clone()));
+                if let Some(result) = state.solution(key) {
+                    solutions.insert(*key, result);
                 }
                 if let Some(profile) = state.profiles.get(key) {
                     profiles.insert(*key, profile.clone());
@@ -5037,6 +5044,7 @@ impl<K: Kernel + 'static> Engine<K> {
             .filter(|(_, key)| !solutions.contains_key(key))
             .cloned()
             .collect();
+        let mut fresh = SketchRun::new();
         if !to_solve.is_empty() {
             // A panic under a solve is a bug in Silico, as under a step.
             let solved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -5057,7 +5065,7 @@ impl<K: Kernel + 'static> Engine<K> {
                 return Ok(None);
             };
             solutions.extend(solved.iter().map(|(key, s)| (*key, s.clone().result())));
-            fresh.extend(solved);
+            fresh = solved;
         }
         let mut swept_sketches = BTreeMap::new();
         let mut made = Vec::new();
@@ -9800,8 +9808,8 @@ mod tests {
         }
     }
 
-    /// `document`'s sketch's diagnosis as `model` has it, written out: the solve's outcome,
-    /// its solution, and its diagnosis.
+    /// The sketch `s0000001`'s diagnosis as `model` has it, written out: the solve's
+    /// outcome, its solution, and its diagnosis.
     fn diagnosed_text(model: &Model) -> String {
         format!("{:?}", model.diagnosed(&s1()))
     }
@@ -9821,7 +9829,7 @@ mod tests {
             let sent = || sketches.requests().len();
             let offer = |document: &Arc<Checked>, on: &SketchSolvers| {
                 let answer = edit_solve(document, &mut sketches.clone());
-                engine.offer_solve(on, document, &s1(), &answer);
+                engine.offer_solve(on, SolveOffer::of(document, &s1(), &answer).unwrap());
             };
             // Its own text: taken, the edit's solve the only one sent.
             let a = triangle(10, padded);
@@ -9863,6 +9871,29 @@ mod tests {
     }
 
     #[test]
+    fn a_solve_a_recompute_wouldnt_keep_or_of_no_such_sketch_is_no_offer() {
+        // A reply the core can't read (a solution called unbuildable, every piece of which
+        // can be built): the recompute
+        // keeps no such solve, as the worker may answer otherwise next time, so it's no
+        // offer, and the recompute solves the text itself. A document whose feature isn't
+        // the sketch: no offer. A solve it keeps: an offer.
+        let sketches = crate::fake::FakeSketches::new();
+        let a = triangle(10, false);
+        let good = edit_solve(&a, &mut sketches.clone());
+        assert!(SolveOffer::of(&a, &s1(), &good).is_some());
+        let other = FeatureId::new("s0000002").unwrap();
+        assert!(SolveOffer::of(&a, &other, &good).is_none());
+        sketches.answer(|system| {
+            let mut solved = crate::fake::FakeSketches::as_sent(system);
+            solved.status = silico_protocol::SolveStatus::SolvedInvalid;
+            Ok(solved)
+        });
+        let unread = edit_solve(&a, &mut sketches.clone());
+        assert!(unread.diagnosed().is_err());
+        assert!(SolveOffer::of(&a, &s1(), &unread).is_none());
+    }
+
+    #[test]
     fn offers_past_their_bound_go_oldest_first_and_one_taken_is_kept_as_the_recomputes_own() {
         // OFFERED_KEPT (8) offers of texts 1 to 8, then a ninth: text 1's is let go, so its
         // recompute solves it; text 2's is kept, so its recompute doesn't. The same text
@@ -9878,7 +9909,7 @@ mod tests {
             let offer = |x: u32| {
                 let document = triangle(x, padded);
                 let answer = edit_solve(&document, &mut sketches.clone());
-                engine.offer_solve(&solvers, &document, &s1(), &answer);
+                engine.offer_solve(&solvers, SolveOffer::of(&document, &s1(), &answer).unwrap());
             };
             for x in 1..=9 {
                 offer(x);

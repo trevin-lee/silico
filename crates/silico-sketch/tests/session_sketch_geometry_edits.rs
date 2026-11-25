@@ -596,7 +596,10 @@ fn what_the_rebuild_publishes_after_each_edit_that_writes_geometry_is_a_fresh_so
     // file the edit's commit saved, its solve written back, is the text after the fresh
     // check, byte for byte. Each edit is made after those it needs: a merge of what an
     // unjoin pulled apart, a join of what a split made, and an extend of na000002 once
-    // ka00000a, which holds its length, is removed.
+    // ka00000a, which holds its length, is removed. And, over-defined first (the base line's
+    // second length, in conflict with its first), a split, a trim, and an unjoin, each made
+    // though its solve still conflicts, so judged against the solve before it too: what's
+    // published is still the solve of the text the edit wrote, not the text before it.
     let read = r#"{"session": "s1", "model": "current", "sketch": "s0000001"}"#;
     let edits: [&[(&str, Value)]; 6] = [
         &[(
@@ -642,14 +645,36 @@ fn what_the_rebuild_publishes_after_each_edit_that_writes_geometry_is_a_fresh_so
             ),
         ],
     ];
+    let over_defined: [(&str, Value); 3] = [
+        (
+            "sketch_split",
+            json!({"sketch": "s0000001", "curve": "na000003", "at": [[30, 5]], "ids": null}),
+        ),
+        (
+            "sketch_trim",
+            json!({"sketch": "s0000001", "curve": "na000004", "pick": [5, 30], "ids": null}),
+        ),
+        (
+            "sketch_unjoin",
+            json!({"sketch": "s0000001", "point": "pa000004", "curve": "na000004", "ids": null}),
+        ),
+    ];
+    let cases = edits.iter().map(|steps| (false, *steps)).chain(
+        over_defined
+            .iter()
+            .map(|step| (true, std::slice::from_ref(step))),
+    );
     for inside in [true, false] {
-        for steps in edits {
+        for (conflicting, steps) in cases.clone() {
             let f = bracket();
             if inside {
                 f.ran("begin", r#"{"session": "s1"}"#);
             }
+            if conflicting {
+                f.over_define();
+            }
             let command = steps.last().unwrap().0;
-            let what = format!("{command}, inside: {inside}");
+            let what = format!("{command}, inside: {inside}, over-defined: {conflicting}");
             for (command, request) in steps {
                 let mut request = request.clone();
                 request["session"] = json!("s1");
@@ -658,6 +683,15 @@ fn what_the_rebuild_publishes_after_each_edit_that_writes_geometry_is_a_fresh_so
                 assert_eq!(made["changed"], true, "{what}: {made}");
             }
             let published = (f.ran("sketch", read), f.problems(), f.text());
+            if conflicting {
+                assert!(
+                    published
+                        .1
+                        .contains(&("over_constrained".to_owned(), Some("s0000001".to_owned()))),
+                    "{what}: {:?}",
+                    published.1
+                );
+            }
             let saved = std::fs::read_to_string(f.path()).unwrap();
             f.ran(
                 "check",

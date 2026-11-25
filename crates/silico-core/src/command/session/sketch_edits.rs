@@ -40,7 +40,7 @@ use crate::document::{Checked, ElementId, FeatureId, Operation, Reference};
 use crate::drag::DragStop;
 use crate::extend::End;
 use crate::kernel::{Clients, Kernel};
-use crate::recompute::SketchSolvers;
+use crate::recompute::{SketchSolvers, SolveOffer};
 use crate::sketch::{Answer, Translation};
 use crate::sketch_judge::{
     EXTEND, JOIN, Judged, MERGE, SPLIT, TRIM, UNBUILDABLE, UNJOIN, WritingEdit, judge, severity,
@@ -550,10 +550,9 @@ pub(super) fn judged<C: Kernel + 'static, T>(
     if let Some(error) = refusal {
         return Err(Problems::from(error.with_feature(sketch.as_str())));
     }
-    if let Some(answer) = answer {
-        lock(&session.rebuilds)
-            .engine
-            .offer_solve(solvers, written, sketch, &answer);
+    // Made outside the session's locks: the key and the result are the sketch's size.
+    if let Some(offer) = answer.and_then(|answer| SolveOffer::of(written, sketch, &answer)) {
+        lock(&session.rebuilds).engine.offer_solve(solvers, offer);
     }
     Ok(made)
 }
@@ -633,8 +632,8 @@ fn solved(
         Err(error) => return Err(Problems::from(named(error))),
         Ok(answer) => answer,
     };
-    let diagnosis = answer.diagnosed().ok().map(|d| d.diagnosis().clone());
-    match answer.outcome().cloned().map_err(Error::clone) {
+    let Judged { outcome, diagnosis } = Judged::read(&answer);
+    match outcome {
         Err(error) if error.code().is_kernel_fault() => Err(Problems::from(named(error))),
         outcome => {
             let judged = Judged {

@@ -71,10 +71,14 @@ impl Judged {
     /// A solve's answer as the judgment reads it: its outcome, and its diagnosis, where the
     /// core could read one.
     pub fn of(answer: Answer) -> Judged {
-        let diagnosis = answer.diagnosed().ok().map(|d| d.diagnosis().clone());
+        Self::read(&answer)
+    }
+
+    /// [`of`](Self::of), the answer kept: for an edit, which offers it to the rebuild after.
+    pub fn read(answer: &Answer) -> Judged {
         Judged {
-            outcome: answer.into_outcome(),
-            diagnosis,
+            outcome: answer.outcome().cloned().map_err(Error::clone),
+            diagnosis: answer.diagnosed().ok().map(|d| d.diagnosis().clone()),
         }
     }
 }
