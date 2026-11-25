@@ -641,17 +641,7 @@ fn sketch_mode(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
             edit: None,
             show: false,
         };
-        // Off while the tab closes, whose queue takes no edit.
-        let driven = mode.make_driven().map(|driven| crate::sketch::MakeDriven {
-            target: driven.target.and_then(|id| {
-                if tab.closing() {
-                    Err(crate::sketch::CLOSING)
-                } else {
-                    Ok(id)
-                }
-            }),
-            ..driven
-        });
+        let driven = tab.sketch_make_driven_offer();
         asked = ui
             .push_id("sketch-card", |ui| {
                 properties::driven_card(ui, &said, Some(&name), offer, driven.as_ref())

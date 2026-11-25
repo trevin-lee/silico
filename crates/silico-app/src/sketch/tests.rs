@@ -95,7 +95,7 @@ pub(crate) fn rectangle(constraints: Vec<SketchConstraint>) -> Sketch {
 
 /// `sketch` read as solved, in state `state`, every point and curve `members`, and each
 /// constraint `satisfied` but those `flagged` says.
-fn read(
+pub(crate) fn read(
     sketch: Sketch,
     state: SketchState,
     members: MemberState,
@@ -306,7 +306,7 @@ fn a_sketch_with_no_solution_or_an_invalid_one_colours_every_member_its_way() {
     }
 }
 
-fn length(name: &str, side: &str, value: &str, driving: bool) -> SketchConstraint {
+pub(crate) fn length(name: &str, side: &str, value: &str, driving: bool) -> SketchConstraint {
     constraint(
         name,
         Form::Length {
@@ -8216,4 +8216,58 @@ fn make_it_driven_asks_its_driving_false_at_the_reads_revision_and_nothing_for_a
     mode.sketch = None;
     assert!(!mode.ask_driven(&id("ka000002")));
     assert!(mode.take_asks().is_empty());
+}
+
+#[test]
+fn make_it_driven_passes_over_a_dimension_left_driving_but_since_made_driven_when_unsolvable() {
+    // No solution flags nothing, so whether the dimension left driving still drives is what
+    // decides: ka000002 left driving, since made driven, means nothing; with ka000003 left
+    // driving before it, ka000003.
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", true),
+        length("ka000002", "na000002", "20", false),
+        length("ka000003", "na000001", "40", true),
+        horizontal("kb000001", "na000001"),
+    ]);
+    let mut mode = mode_at(read(
+        sketch,
+        SketchState::NoSolution,
+        MemberState::OverDefined,
+        &[],
+    ));
+    mode.left_driving = vec![id("ka000002")];
+    assert_eq!(mode.make_driven(), None);
+    mode.left_driving = vec![id("ka000003"), id("ka000002")];
+    assert_eq!(target(&mode), Some(Ok("ka000003".to_owned())));
+}
+
+#[test]
+fn leave_it_driving_at_an_edits_prompt_makes_the_card_mean_the_edited_dimension() {
+    // The right side's length edited (ka000002) into a conflict with the bottom's (both
+    // flagged): with nothing known and nothing selected, off; once the edit's prompt is
+    // answered Leave it driving, the edited one (the prompt's "this dimension").
+    let both = read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Conflicting),
+            ("ka000002", ConstraintState::Conflicting),
+        ],
+    );
+    let two = Revision::OPENED.next().unwrap().next().unwrap();
+    let offered = edited_right()
+        .judged(&two_lengths_over(), two)
+        .unwrap()
+        .unwrap();
+    assert_eq!(offered.constraint, id("ka000002"));
+    let mut mode = mode_at(both);
+    mode.edit_offer = Some((offered, two));
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert!(mode.take_asks().is_empty());
+    assert_eq!(target(&mode), Some(Ok("ka000002".to_owned())));
 }

@@ -32980,6 +32980,71 @@ fn after_leave_it_driving_make_it_driven_means_the_dimension_just_placed_though_
 }
 
 #[test]
+fn opened_over_defined_by_several_make_it_driven_is_off_saying_why_until_one_is_selected() {
+    // The third length left driving, then the sketch finished and opened again: sketch mode
+    // knows no dimension left driving, and all three lengths conflict (`counting`), so the
+    // card's Make it driven is off, its reason its description. A click on the top's length's
+    // label (well clear of the right side's two) selects it (SolidWorks' Driven acts on the
+    // selection): on, naming it.
+    use silico_app::sketch::PointerAction::{Press, Release};
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (id, _, top) = fully_defined(&f, &mut h);
+    over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+        .get_by_role_and_label(Role::Button, "Finish Sketch")
+        .click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    double_click(&mut h, "Browser", "Sketch1");
+    step_until(&mut h, "sketch mode again", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.as_ref().map(|s| s.as_str()) == Some(&id))
+    });
+    sketch_read(&mut h);
+    step_until(&mut h, "the card's button", |h| make_it_driven(h).is_some());
+    let button = make_it_driven(&h).unwrap();
+    assert!(!is_on(&button));
+    assert_eq!(
+        button.accesskit_node().description().as_deref(),
+        Some("Several dimensions over-define the sketch: select the one to make driven")
+    );
+    // The top's length's label clicked: selected, the button on for it.
+    let top_length = lengths(&sketch_of_text(&f, &h, &id))
+        .into_iter()
+        .find(|(_, line, _, _)| *line == top)
+        .map(|(constraint, ..)| constraint)
+        .unwrap();
+    sketch_events(&f, &mut h, &[]);
+    let at = label_of_dimension(&h, &top_length);
+    let click: Vec<silico_app::sketch::PointerEvent> = [Press, Release]
+        .into_iter()
+        .map(|action| silico_app::sketch::PointerEvent {
+            action,
+            at,
+            shift: false,
+            ctrl: false,
+        })
+        .collect();
+    sketch_events(&f, &mut h, &click);
+    step_until(&mut h, "the button on", |h| {
+        make_it_driven(h).is_some_and(|button| is_on(&button))
+    });
+    assert_eq!(
+        make_it_driven(&h)
+            .unwrap()
+            .accesskit_node()
+            .description()
+            .unwrap_or_default(),
+        format!(
+            "Makes the 40 mm dimension, {top_length}, driven: it shows its measured value in parentheses, and constrains nothing."
+        )
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_dimension_edited_to_0_is_sent_and_the_gates_refusal_said_in_its_box() {
     let f = fixture();
     counting(&f);

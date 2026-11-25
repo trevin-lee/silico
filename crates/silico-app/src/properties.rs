@@ -856,7 +856,7 @@ pub(crate) fn repair_card(
     offer: Offer,
     repair: Option<&Repair>,
 ) -> CardOut {
-    card_with(ui, said, name, offer, repair, None)
+    card_with(ui, said, name, offer, repair.map(Mend::Repair))
 }
 
 /// Sketch mode's card ([`card`]), with the prototype's Make it driven (sketch.js's
@@ -869,7 +869,7 @@ pub(crate) fn driven_card(
     offer: Offer,
     driven: Option<&crate::sketch::MakeDriven>,
 ) -> Option<CardAct> {
-    card_with(ui, said, name, offer, None, driven).asked
+    card_with(ui, said, name, offer, driven.map(Mend::Driven)).asked
 }
 
 /// [`repair_card`], or [`driven_card`].
@@ -878,8 +878,7 @@ fn card_with(
     said: &Said,
     name: Option<&str>,
     offer: Offer,
-    repair: Option<&Repair>,
-    driven: Option<&crate::sketch::MakeDriven>,
+    mend: Option<Mend<'_>>,
 ) -> CardOut {
     let look = CardLook::of(said.warning);
     let (title, message) = card_title(said, name);
@@ -917,8 +916,7 @@ fn card_with(
                 .inner_margin(theme::ERROR_CARD_BODY_PADDING)
                 .show(&mut content, |ui| {
                     ui.set_width(ui.available_width());
-                    let mends = Mends { repair, driven };
-                    asked = card_body(ui, said, message, name, offer, &look, mends);
+                    asked = card_body(ui, said, message, name, offer, &look, mend);
                 });
             let used = content.min_rect();
             ui.advance_cursor_after_rect(Rect::from_min_size(used.min, vec2(width, used.height())));
@@ -1051,7 +1049,7 @@ fn card_body(
     name: Option<&str>,
     offer: Offer,
     look: &CardLook,
-    mends: Mends<'_>,
+    mend: Option<Mend<'_>>,
 ) -> CardOut {
     for paragraph in message.into_iter().chain(said.cause.as_deref()) {
         ui.add(
@@ -1078,8 +1076,12 @@ fn card_body(
         });
         ui.add_space(theme::ERROR_CARD_FIX_MARGIN);
     }
-    let mut out = candidates(ui, said.candidates(), said.ranking(), mends.repair);
-    out.asked = card_buttons(ui, said, name, offer, mends).or(out.asked);
+    let repair = match mend {
+        Some(Mend::Repair(repair)) => Some(repair),
+        _ => None,
+    };
+    let mut out = candidates(ui, said.candidates(), said.ranking(), repair);
+    out.asked = card_buttons(ui, said, name, offer, mend).or(out.asked);
     out
 }
 
@@ -1529,24 +1531,23 @@ enum Which {
 
 /// What a card offers to mend what it says: a broken reference's candidates and Remove the
 /// edge ([`Repair`]), or sketch mode's Make it driven.
-#[derive(Debug, Clone, Copy, Default)]
-struct Mends<'a> {
-    repair: Option<&'a Repair>,
-    driven: Option<&'a crate::sketch::MakeDriven>,
+#[derive(Debug, Clone, Copy)]
+enum Mend<'a> {
+    Repair(&'a Repair),
+    Driven(&'a crate::sketch::MakeDriven),
 }
 
 /// The card's Make it driven, as the prototype's card words it.
 pub(crate) const MAKE_IT_DRIVEN: &str = "Make it driven";
 
-/// What Make it driven's tooltip says of the dimension `id` it makes driven: which, by its
-/// value and ID, and what driven does (the over-define prompt's words for its choice).
-fn driven_tip(
-    id: &silico_core::document::ElementId,
-    driven: Option<&crate::sketch::MakeDriven>,
-) -> String {
+/// What Make it driven's tooltip says of the dimension it makes driven: which, by its value
+/// and ID, and what driven does (the over-define prompt's words for its choice).
+fn driven_tip(driven: &crate::sketch::MakeDriven) -> String {
     let value = driven
-        .and_then(|driven| driven.value.as_deref())
+        .value
+        .as_deref()
         .map_or_else(String::new, |value| format!("the {value} dimension, "));
+    let id = driven.target.as_ref().map_or("", |id| id.as_str());
     format!(
         "Makes {value}{id}, driven: it shows its measured value in parentheses, and constrains nothing."
     )
@@ -1562,9 +1563,13 @@ fn card_buttons(
     said: &Said,
     name: Option<&str>,
     offer: Offer,
-    mends: Mends<'_>,
+    mend: Option<Mend<'_>>,
 ) -> Option<CardAct> {
-    let Mends { repair, driven } = mends;
+    let (repair, driven) = match mend {
+        Some(Mend::Repair(repair)) => (Some(repair), None),
+        Some(Mend::Driven(driven)) => (None, Some(driven)),
+        None => (None, None),
+    };
     let feature = said.feature().and_then(FeatureId::new);
     let json = said.json();
     let edit_words = match name {
@@ -1629,20 +1634,23 @@ fn card_buttons(
             },
             // What it makes driven, or why it's off: its tooltip, and its description in the
             // accessibility tree, as an off button's reason is.
-            Which::Driven => match driven.map(|driven| &driven.target) {
-                Some(Ok(id)) => {
-                    let tip = driven_tip(id, driven);
+            Which::Driven => match driven {
+                Some(driven @ crate::sketch::MakeDriven { target: Ok(_), .. }) => {
+                    let tip = driven_tip(driven);
                     ui.ctx().accesskit_node_builder(response.id, |node| {
                         node.set_description(tip.as_str());
                     });
                     response.on_hover_text(tip).clicked()
                 }
-                Some(Err(why)) => {
+                Some(crate::sketch::MakeDriven {
+                    target: Err(why), ..
+                }) => {
                     ui.ctx().accesskit_node_builder(response.id, |node| {
                         node.set_description(*why);
                     });
                     response.on_disabled_hover_text(*why).clicked()
                 }
+                // Never: it's pushed only with an offer.
                 None => false,
             },
             Which::Edit | Which::Show => response.clicked(),

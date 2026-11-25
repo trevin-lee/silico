@@ -154,9 +154,6 @@ pub fn problem_card(read: &SketchRead, name: &str) -> Option<Said> {
 pub const SELECT_ONE_TO_MAKE_DRIVEN: &str =
     "Several dimensions over-define the sketch: select the one to make driven";
 
-/// Why the card's Make it driven is off while the tab closes, as the feature menu says it.
-pub const CLOSING: &str = "The document is closing";
-
 /// What the card's Make it driven would make driven ([`SketchMode::make_driven`]): the
 /// dimension, or why it's off; and its value, as the property panel writes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1194,15 +1191,8 @@ impl SketchMode {
             return false;
         }
         self.driven_at = Some(model);
-        self.asks.push(Ask::Offer(OfferRequest::SetField {
-            revision: model,
-            feature: sketch,
-            field: format!("constraints.{constraint}.driving"),
-            value: silico_core::document::json::Node {
-                at: silico_core::document::json::At::UNPLACED,
-                value: silico_core::document::json::Value::Bool(false),
-            },
-        }));
+        self.asks
+            .push(Ask::Offer(OfferRequest::driven(model, sketch, constraint)));
         true
     }
 
