@@ -174,15 +174,15 @@ impl Shown {
 }
 
 /// What's under the pointer at the right click, as the menu says it: the element a click
-/// there would select, by its words ("Face6"), its kind ("Face"), what it is in its body's
-/// mesh (Fillet's for an edge alone), and its own name, as the element map gives it; the feature that made it, by its ID and its name, and whether it's
-/// built from a sketch; its body, by the feature that ends its chain and its name; and, for
-/// a face `elements` has said is a plane, what Sketch on this face and Look At need of it
-/// (none for another face, an edge, a vertex, or a face not read yet). None over nothing.
+/// there would select, by what it is in its body's mesh (its words, "Face6", and its kind,
+/// "Face", [`Under::label`] and [`Under::kind`]; Fillet's for an edge alone) and its own
+/// name, as the element map gives it; the feature that made it, by its ID and its name, and
+/// whether it's built from a sketch; its body, by the feature that ends its chain and its
+/// name; and, for a face `elements` has said is a plane, what Sketch on this face and Look
+/// At need of it (none for another face, an edge, a vertex, or a face not read yet). None
+/// over nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Under {
-    pub label: String,
-    pub kind: &'static str,
     pub element: Element,
     pub name: Arc<Name>,
     pub maker: FeatureId,
@@ -193,6 +193,28 @@ pub struct Under {
     pub body: FeatureId,
     pub body_name: String,
     pub plane: Option<Planar>,
+}
+
+impl Under {
+    /// Its kind, as the menu's head and the list's rows say it ("Face").
+    pub fn kind(&self) -> &'static str {
+        kind_of(self.element).0
+    }
+
+    /// Its words: its kind and its number in its body's mesh ("Face6").
+    pub fn label(&self) -> String {
+        let (kind, number) = kind_of(self.element);
+        format!("{kind}{number}")
+    }
+}
+
+/// `element`'s kind, as the rows and the context menu's head say it, and its number.
+pub fn kind_of(element: Element) -> (&'static str, u32) {
+    match element {
+        Element::Face(n) => ("Face", n),
+        Element::Edge(n) => ("Edge", n),
+        Element::Vertex(n) => ("Vertex", n),
+    }
 }
 
 /// A planar face under the pointer: the name a store writes for it (`Selected::stored`), or,
@@ -311,7 +333,7 @@ impl CanvasMenu {
                     format!("Hide {}", under.body_name),
                 );
                 CanvasMenu {
-                    head: Some(format!("{} · {}", under.label, under.kind)),
+                    head: Some(format!("{} · {}", under.label(), under.kind())),
                     items: [
                         Some(select_other),
                         Some(edit),
@@ -448,8 +470,6 @@ mod tests {
 
     fn under() -> Under {
         Under {
-            label: "Face6".to_owned(),
-            kind: "Face",
             element: Element::Face(6),
             name: block_element(silico_protocol::ElementKind::Face, 6),
             maker: fid("k7f2qx3m"),
@@ -878,8 +898,6 @@ mod tests {
         let ctx = egui::Context::default();
         ctx.set_os(egui::os::OperatingSystem::Nix);
         let edge = Under {
-            label: "Edge12".to_owned(),
-            kind: "Edge",
             element: Element::Edge(12),
             name: block_element(silico_protocol::ElementKind::Edge, 12),
             ..under()
@@ -933,8 +951,6 @@ mod tests {
         assert_eq!(off.step(Some(1), 1), Some(3), "a step passes Fillet off");
         // A face and a vertex: no Fillet, Copy name all the same, of their own names.
         let vertex = Under {
-            label: "Vertex8".to_owned(),
-            kind: "Vertex",
             element: Element::Vertex(8),
             name: block_element(silico_protocol::ElementKind::Vertex, 8),
             ..under()
@@ -944,7 +960,7 @@ mod tests {
             assert!(
                 menu.items.iter().all(|shown| shown.label != FILLET),
                 "{}",
-                under.label
+                under.label()
             );
             assert!(menu.items.contains(&Shown {
                 item: CanvasItem::Act(CanvasAct::CopyName(Arc::clone(&under.name))),

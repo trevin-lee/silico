@@ -1206,15 +1206,6 @@ fn menu_id() -> Id {
     Id::new("select_other_menu")
 }
 
-/// An element's kind, as the rows and the context menu's head say it, and its number.
-fn kind_of(element: Element) -> (&'static str, u32) {
-    match element {
-        Element::Face(n) => ("Face", n),
-        Element::Edge(n) => ("Edge", n),
-        Element::Vertex(n) => ("Vertex", n),
-    }
-}
-
 /// A feature's name, as `names` gives it, or its ID.
 fn named(names: &dyn Fn(&FeatureId) -> Option<String>, id: &FeatureId) -> String {
     names(id).unwrap_or_else(|| id.as_str().to_owned())
@@ -1230,11 +1221,8 @@ fn under_of(
     name: &Arc<Name>,
 ) -> Option<Under> {
     let body = view.bodies().get(&body)?;
-    let (kind, number) = kind_of(element);
     let maker = name.feature().clone();
     Some(Under {
-        label: format!("{kind}{number}"),
-        kind,
         element,
         name: Arc::clone(name),
         maker_name: named(facts.names, &maker),
@@ -1273,7 +1261,7 @@ fn rows_of<'a>(
 /// `hit` as a row: named `named_as`, its note its kind, the feature that made it (by its
 /// name, as `names` gives it, or its ID), and whether it's hidden.
 fn row_of(hit: &Hit, named_as: &MeshElement, names: &dyn Fn(&FeatureId) -> Option<String>) -> Row {
-    let (kind, number) = kind_of(hit.element);
+    let (kind, number) = crate::canvas_menu::kind_of(hit.element);
     let made_by = named(names, named_as.name.feature());
     let mut note = format!("{kind} · {made_by}");
     if hit.hidden {
@@ -1627,8 +1615,6 @@ mod tests {
     fn over_the_top(of: Of, phase: Phase) -> Menu {
         let block = FeatureId::new("k7f2qx3m").unwrap();
         let under = Under {
-            label: "Face6".to_owned(),
-            kind: "Face",
             element: Element::Face(6),
             name: Arc::new(Name::Element {
                 feature: block.clone(),

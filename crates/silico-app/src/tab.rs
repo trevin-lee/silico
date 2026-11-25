@@ -2436,9 +2436,9 @@ impl Tab {
     /// Look At as Ctrl+8 turns to the face selected ([`look_at_face`](Self::look_at_face)),
     /// Fillet as MODIFY's Fillet opens its dialog with `remembered` (its edge selected first
     /// as a click selects it, unless it's selected already), Copy name onto `ctx`'s
-    /// clipboard (the name the selection would hold it by), Hide as H hides a body, Fit and Home view as F6 and Home, Clear selection
-    /// as Esc clears it, and a plane of Create Sketch's as the toolbar's
-    /// ([`create_sketch`](Self::create_sketch)).
+    /// clipboard (the name the selection would hold it by), Hide as H hides a body, Fit
+    /// and Home view as F6 and Home, Clear selection as Esc clears it, and a plane of
+    /// Create Sketch's as the toolbar's ([`create_sketch`](Self::create_sketch)).
     fn canvas_act<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,

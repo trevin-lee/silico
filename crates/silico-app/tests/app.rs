@@ -46837,6 +46837,40 @@ fn the_context_menus_fillet_opens_at_the_radius_last_okd_as_modifys_does() {
 }
 
 #[test]
+fn the_context_menus_fillet_after_the_gate_refused_the_document_says_why_and_leaves_the_selection()
+{
+    // The menu open over Edge12 with Fillet on, Edge3 selected; then another program writes
+    // the file as a document the gate refuses (a box −40 long), which the tab reloads and
+    // which publishes no model, so the menu stays open. Fillet chosen: its dialog can't open
+    // now, so it says the feature menus' reason, and neither selects the edge nor opens a
+    // dialog.
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    select_in_box(&mut h, &["Edge3"]);
+    context_over_edge(&mut h, &record, at, 12);
+    assert_eq!(context_said(&h)[2], ("Fillet".to_owned(), None, true));
+    f.file(
+        "box.silico",
+        &A_BOX.replace(r#""length": 40"#, r#""length": -40"#),
+    );
+    step_until(&mut h, "the gate's refusal read", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0)
+    });
+    assert!(select_other(&h).is_open(), "the menu still open");
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    toasted(&mut h, silico_app::tab::UNMENDED);
+    assert!(!h.state().tabs()[0].in_dialog());
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn the_context_menus_fillet_over_a_held_edge_with_a_face_selected_takes_the_edge_and_says_the_face()
 {
     // /break-it: the selection holds the top and Edge12, and Fillet is chosen over Edge12,

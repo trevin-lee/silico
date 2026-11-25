@@ -1019,12 +1019,7 @@ impl Selection {
             How::Replace => Vec::new(),
             How::Toggle | How::Add => self.items.clone(),
         };
-        let mut index = Index::default();
-        for (at, item) in items.iter().enumerate() {
-            if let Item::Element(each) = item {
-                index.add(at, each);
-            }
-        }
+        let index = Index::of(&items);
         let boxed = how == How::Toggle && self.taking.is_some();
         match index.find(&picked) {
             Some(at) if how == How::Toggle => {
@@ -1069,13 +1064,7 @@ impl Selection {
     /// rule a pick finds it there by (`Index`): the same element of the same solid, or, for
     /// one not found, the same name.
     fn holds(&self, name: &str) -> bool {
-        let mut index = Index::default();
-        for (at, item) in self.items.iter().enumerate() {
-            if let Item::Element(each) = item {
-                index.add(at, each);
-            }
-        }
-        index
+        Index::of(&self.items)
             .find(&self.picked(name, self.resolve_one(name)))
             .is_some()
     }
@@ -2070,6 +2059,17 @@ struct Index {
 }
 
 impl Index {
+    /// The elements of `items`, each where it stands.
+    fn of(items: &[Item]) -> Index {
+        let mut index = Index::default();
+        for (at, item) in items.iter().enumerate() {
+            if let Item::Element(each) = item {
+                index.add(at, each);
+            }
+        }
+        index
+    }
+
     /// `picked`, standing `at`: the first of each key kept.
     fn add(&mut self, at: usize, picked: &Picked) {
         match picked.found() {
@@ -3178,6 +3178,29 @@ pub(crate) mod tests {
         }
         selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.click, None);
+    }
+
+    #[test]
+    fn a_held_name_is_the_stable_alias_or_the_name_itself_where_nothing_is_found() {
+        // The face of `fused(3, 4)` the text `rrrrrrrr.fuse.Face1` names has the stable alias
+        // `cccccccc.box.Face1`: what Copy name copies, as a pick holds it. With no model, or
+        // for a name the model doesn't find, the name as written.
+        let name = "rrrrrrrr.fuse.Face1";
+        let mut selection = Selection::default();
+        assert_eq!(selection.held_name(name), name);
+        selection.published(Some((fused(3, 4), Revision::from_number(1).unwrap())), 1);
+        assert_eq!(selection.held_name(name), "cccccccc.box.Face1");
+        assert_eq!(
+            selection.held_name("aaaaaaaa.box.Face99"),
+            "aaaaaaaa.box.Face99"
+        );
+        // Picked by its own name, the selection holds it by the alias, and holds it by
+        // either.
+        selection.pick(name, How::Replace);
+        assert_eq!(selection.names(), ["cccccccc.box.Face1"]);
+        assert!(selection.pick_unless_held(name));
+        assert!(selection.pick_unless_held("cccccccc.box.Face1"));
+        assert_eq!(selection.names(), ["cccccccc.box.Face1"]);
     }
 
     #[test]
