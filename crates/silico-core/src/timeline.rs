@@ -307,11 +307,16 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
                     }
                 }
             }
-            // Blocked: an error if any failure upstream is the document's, whichever of
-            // its inputs names it first; unknown if every one is a kernel fault.
-            FeatureOutcome::Blocked { .. } => {
+            // Blocked: an error if any failure upstream is the document's, the one the
+            // rebuild blocked it on (`on`: its first input's root, or, for a sketch on a
+            // face, the root of the solid it looked for its face in, which needn't be any
+            // feature it names) or another input's; unknown if every one is a kernel fault.
+            FeatureOutcome::Blocked { on } => {
                 let inputs = uses.get(id).map(Vec::as_slice).unwrap_or_default();
-                let root = if inputs.iter().any(|i| roots.get(i) == Some(&Root::Document)) {
+                let root = if std::iter::once(on)
+                    .chain(inputs.iter().copied())
+                    .any(|i| roots.get(i) == Some(&Root::Document))
+                {
                     Root::Document
                 } else {
                     Root::Fault

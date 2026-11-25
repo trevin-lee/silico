@@ -30,6 +30,7 @@ use silico_core::kernel::{Generation, Kernel, KernelRequest, Op};
 use silico_core::pool::Pending;
 use silico_core::recompute::{FeatureOutcome, Model, Recompute, RunOutcome};
 use silico_core::sketch::SketchSolver;
+use silico_core::timeline::{Excepted, Health, timeline};
 use silico_core::{Error, ErrorCode};
 
 fn face(name: &str, x: &str, reversed: bool) -> String {
@@ -844,6 +845,146 @@ fn the_sketch_read_of_a_face_sketch_blocked_upstream_answers_naming_the_root_not
     assert_ne!(read["errors"][0]["code"], "internal", "{read}");
     let status = call(&sessions, "status", &json!({"session": "s1"}).to_string());
     assert_eq!(status["ok"], true, "{status}");
+}
+
+// ---- the timeline's health ----
+
+/// Each feature's health, problems, and warnings in the timeline of `model`'s own document,
+/// by ID.
+fn healths(model: &Model) -> std::collections::BTreeMap<String, (Health, u64)> {
+    timeline(model.document(), Some(model), &Excepted::default())
+        .features
+        .into_iter()
+        .map(|e| (e.id.as_str().to_owned(), (e.health, e.problems)))
+        .collect()
+}
+
+#[test]
+fn a_face_sketch_blocked_by_the_documents_failure_up_its_chain_is_an_error_in_the_timeline() {
+    // Found by the M5 review (R8-M): s1's face is refused (the fake types no plane), a
+    // problem of the document's; every sketch after it is on the pad before it, so each is
+    // blocked on s1, as is each pad. The timeline's doc and Fusion's error (a feature that
+    // fails to compute): a feature blocked by the document's own failure upstream is an
+    // error with no problem of its own; the timeline marked s2 and s3 unknown, the faces'
+    // features not among what they use.
+    let features = chain(3);
+    let model = publish(&engine(), checked_document(&strs(&features)));
+    assert!(matches!(
+        model.outcome(&id("s0000001")),
+        Some(FeatureOutcome::Broken { total: 1, .. })
+    ));
+    for blocked in ["p0000001", "s0000002", "p0000002", "s0000003", "p0000003"] {
+        assert_eq!(
+            model.outcome(&id(blocked)),
+            Some(&FeatureOutcome::Blocked { on: id("s0000001") }),
+            "{blocked}"
+        );
+    }
+    let got = healths(&model);
+    assert_eq!(got["s0000001"], (Health::Error, 1));
+    for blocked in ["p0000001", "s0000002", "p0000002", "s0000003", "p0000003"] {
+        assert_eq!(got[blocked], (Health::Error, 0), "{blocked}");
+    }
+}
+
+#[test]
+fn a_new_body_padded_from_a_face_sketch_blocked_by_the_documents_failure_is_an_error() {
+    // p2 is a body of its own: its only input is s2, on p1's top, blocked through p1 on s1
+    // (its face refused). s2 and p2 are both blocked by the document's failure: errors.
+    let features = [
+        cube(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("b0000001"), "s0000001", &one_side("1")),
+        on_face(
+            "s0000002",
+            &face("p0000001.pad.Face(G s0000001.sketch.Face1)", "+x", false),
+        ),
+        pad("p0000002", None, "s0000002", &one_side("1")),
+    ];
+    let model = publish(&engine(), checked_document(&strs(&features)));
+    for blocked in ["s0000002", "p0000002"] {
+        assert_eq!(
+            model.outcome(&id(blocked)),
+            Some(&FeatureOutcome::Blocked { on: id("s0000001") }),
+            "{blocked}"
+        );
+    }
+    let got = healths(&model);
+    assert_eq!(got["s0000001"], (Health::Error, 1));
+    for blocked in ["p0000001", "s0000002", "p0000002"] {
+        assert_eq!(got[blocked], (Health::Error, 0), "{blocked}");
+    }
+}
+
+/// A box, a fillet of it with an edge the box hasn't (`Edge40`, of its 12), then a sketch
+/// on the box's top, looked for in the fillet, which consumes the box, and a new body padded
+/// from the sketch.
+fn after_a_fillet() -> Vec<String> {
+    let fillet = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "b0000001", "edges": ["b0000001.box.Edge40"], "radius": 1}"#;
+    vec![
+        cube(),
+        fillet.to_owned(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", None, "s0000001", &one_side("1")),
+    ]
+}
+
+#[test]
+fn a_face_sketch_blocked_by_what_consumes_its_faces_feature_failing_is_an_error() {
+    // The box, the face's own feature, builds; the fillet that consumes it is broken (its
+    // edge isn't the box's), so the sketch, looked for only in the fillet, is blocked on the
+    // fillet: by the document's failure, an error, though no feature it names failed. So is
+    // the pad from it.
+    let model = publish(&engine(), checked_document(&strs(&after_a_fillet())));
+    assert!(matches!(
+        model.outcome(&id("b0000001")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    for blocked in ["s0000001", "p0000001"] {
+        assert_eq!(
+            model.outcome(&id(blocked)),
+            Some(&FeatureOutcome::Blocked { on: id("f0000001") }),
+            "{blocked}"
+        );
+    }
+    let got = healths(&model);
+    assert_eq!(got["f0000001"], (Health::Error, 1));
+    for blocked in ["s0000001", "p0000001"] {
+        assert_eq!(got[blocked], (Health::Error, 0), "{blocked}");
+    }
+}
+
+#[test]
+fn a_face_sketch_blocked_only_by_a_kernel_fault_stays_unknown() {
+    // The same, but every fillet ends in the worker's crash, a kernel fault, which says
+    // nothing of the document (decision 32): the fillet, the sketch blocked on it, and the
+    // pad from the sketch are unknown, each with no problem.
+    let kernel = FakeKernel::new(2).unwrap();
+    kernel.refuse(|op| {
+        matches!(op, Op::Fillet { .. })
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let engine = Recompute::new(kernel).with_sketches(FakeSketches::new());
+    let features = after_a_fillet()
+        .into_iter()
+        .map(|f| f.replace("Edge40", "Edge1"))
+        .collect::<Vec<_>>();
+    let model = publish(&engine, checked_document(&strs(&features)));
+    assert!(matches!(
+        model.outcome(&id("f0000001")),
+        Some(FeatureOutcome::Failed(e)) if e.code() == ErrorCode::WorkerCrashed
+    ));
+    for blocked in ["s0000001", "p0000001"] {
+        assert_eq!(
+            model.outcome(&id(blocked)),
+            Some(&FeatureOutcome::Blocked { on: id("f0000001") }),
+            "{blocked}"
+        );
+    }
+    let got = healths(&model);
+    for unknown in ["f0000001", "s0000001", "p0000001"] {
+        assert_eq!(got[unknown], (Health::Unknown, 0), "{unknown}");
+    }
 }
 
 /// The fake's description of `shape` with each face's surface as `surface` gives it, by

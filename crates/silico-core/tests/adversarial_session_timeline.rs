@@ -1086,7 +1086,10 @@ fn opened_sketched(text: &str) -> (Fixture, silico_core::fake::FakeSketches) {
 /// to be of the same model, every feature's problems and warnings the check's on it (but
 /// for one the model hasn't built since, unknown), its health as its counts say, a feature
 /// the check finds a problem on an error, and, of the session's revision's model, the
-/// totals the check's. The timeline's answer and the check's.
+/// totals the check's, and a feature with no problem of its own an error exactly when it's
+/// blocked by the document's failure: when a feature it names (its base, tool, sketch, or
+/// face's feature) didn't build for a problem the check finds on it, or is itself so
+/// blocked. The timeline's answer and the check's.
 #[track_caller]
 fn agrees_with_check(f: &Fixture, choice: ModelChoice) -> (TimelineAnswer, CheckAnswer) {
     let response = f.timeline(choice);
@@ -1110,8 +1113,37 @@ fn agrees_with_check(f: &Fixture, choice: ModelChoice) -> (TimelineAnswer, Check
     let latest = t.model == Some(t.revision);
     let all_problems_listed = c.problems.errors().len() as u64 == c.problems.total();
     let all_warnings_listed = c.warnings.listed().len() as u64 == c.warnings.total();
+    // The features that didn't build for a problem of the document's, as the check says:
+    // one with a problem other than drift (a failure, or broken names), which a built
+    // feature never has here (the fake refuses no measure in this file); and, in timeline
+    // order, those blocked by one of them, each an error with no problem of its own.
+    let failed: std::collections::BTreeSet<&str> = c
+        .problems
+        .errors()
+        .iter()
+        .filter(|e| e.code() != ErrorCode::Drift)
+        .filter_map(|e| e.feature())
+        .collect();
+    let mut blocked_by_document: std::collections::BTreeSet<&str> =
+        std::collections::BTreeSet::new();
     for e in t.features.iter().flatten() {
         let id = e.id.as_str();
+        if latest && all_problems_listed && e.problems == 0 {
+            let blocked = e
+                .inputs
+                .iter()
+                .any(|i| failed.contains(i.as_str()) || blocked_by_document.contains(i.as_str()));
+            assert_eq!(
+                e.health == Health::Error,
+                blocked,
+                "{choice:?}: {id} is an error with no problem of its own exactly when the \
+                 document's failure blocks it: {e:?}, {:?}",
+                c.problems.errors()
+            );
+            if blocked {
+                blocked_by_document.insert(id);
+            }
+        }
         match e.health {
             Health::Healthy => assert_eq!((e.problems, e.warnings), (0, 0), "{e:?}"),
             Health::Warning => assert!(e.problems == 0 && e.warnings > 0, "{e:?}"),
@@ -1300,6 +1332,64 @@ fn a_sketch_solved_otherwise_than_its_file_is_an_error_as_check_has_it() {
         "{:#?}",
         c.problems.errors()
     );
+}
+
+#[test]
+fn a_pad_blocked_by_its_sketchs_own_failure_is_an_error_not_unknown() {
+    // Found by the M5 review (T5-M): the sketch doesn't solve, a problem of the
+    // document's, so the pad from it is blocked by the document: an error with no problem
+    // of its own (the timeline's doc, Fusion's error), not unknown, which says a kernel
+    // fault. Unpinned while the sketch the pad sweeps was left out of what it uses.
+    let (f, sketches) = opened_sketched(&document(&mixed()));
+    sketches.answer(|_| {
+        Err(Error::new(
+            ErrorCode::SolveFailed,
+            "the sketch doesn't solve",
+        ))
+    });
+    let (t, c) = agrees_with_check(&f, ModelChoice::Current);
+    let m = marks_by_id(&t);
+    assert_eq!(m["s0000001"], (Health::Error, 1, 0));
+    assert_eq!(m["p0000001"], (Health::Error, 0, 0));
+    assert_eq!(
+        c.problems
+            .errors()
+            .iter()
+            .filter(|e| e.feature() == Some("s0000001"))
+            .map(|e| e.code())
+            .collect::<Vec<_>>(),
+        [ErrorCode::SolveFailed],
+        "{:?}",
+        c.problems.errors()
+    );
+}
+
+#[test]
+fn a_pad_whose_base_faulted_and_whose_sketch_failed_is_an_error() {
+    // The pad's base crashes the worker (a kernel fault), and its sketch doesn't solve (the
+    // document's): blocked on its base, the first of its inputs, but by the document's
+    // failure too, through its sketch, so an error, as the timeline's doc has it (any
+    // failure upstream the document's), not unknown.
+    let (f, sketches) = opened_sketched(&document(&[
+        cube("aaaaaaaa", 0, 1),
+        crate::sweeps::rectangle("s0000001", "xy", [20.0, 0.0], 4.0, 2.0),
+        crate::sweeps::pad("p0000001", Some("aaaaaaaa"), "s0000001", crate::sweeps::TEN),
+    ]));
+    f.kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(Primitive::Box { .. }))
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the box crashed the worker"))
+    });
+    sketches.answer(|_| {
+        Err(Error::new(
+            ErrorCode::SolveFailed,
+            "the sketch doesn't solve",
+        ))
+    });
+    let (t, _) = agrees_with_check(&f, ModelChoice::Current);
+    let m = marks_by_id(&t);
+    assert_eq!(m["aaaaaaaa"], (Health::Unknown, 0, 0));
+    assert_eq!(m["s0000001"], (Health::Error, 1, 0));
+    assert_eq!(m["p0000001"], (Health::Error, 0, 0));
 }
 
 #[test]
