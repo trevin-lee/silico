@@ -723,7 +723,21 @@ fn a_workspace_is_refused_once_an_open_was_asked_for_its_thread_ended() {
         .wait_timeout(WAIT)
         .ok()
         .unwrap();
-    assert!(refused.result.is_err());
+    // Refused as open refuses a file that isn't there (tests/session.rs's
+    // `a_missing_file_or_a_directory_or_a_pipe_isnt_opened`).
+    let Err(problems) = &refused.result else {
+        panic!("a file that isn't there was opened");
+    };
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (problems.total(), e.code(), e.message(), e.parameter()),
+        (
+            1,
+            crate::ErrorCode::IoFailed,
+            "couldn't be read: No such file or directory (os error 2)",
+            Some("path")
+        )
+    );
     let threads = std::mem::replace(&mut lock(&sessions.registry.book).threads, Threads::new());
     threads.join();
     assert_eq!(Arc::strong_count(&sessions.registry), 1);

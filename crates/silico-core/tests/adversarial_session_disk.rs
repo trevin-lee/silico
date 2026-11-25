@@ -16,14 +16,14 @@ use std::time::{Duration, Instant};
 
 use silico_core::ErrorCode;
 use silico_core::cache::Cache;
-use silico_core::command::{Revision, SessionId, Sessions};
+use silico_core::command::{NOT_RELOADED, Response, Revision, SessionId, Sessions};
 use silico_core::disk::Disk;
 use silico_core::document::json::{MAX_INPUT_LEN, Node};
 use silico_core::fake::FakeKernel;
 use silico_core::kernel::{Op, Primitive};
 use tempfile::TempDir;
 
-use crate::sessions::{answer, id};
+use crate::sessions::{answer, id, refusal};
 
 /// A block, 40 × 20 × 10, on one line: not canonical form.
 const BLOCK: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 40, "width": 20, "height": 10, "fingerprint": {"volume": 8000, "area": 2800, "center": [20, 10, 5], "bbox": [0, 0, 0, 40, 20, 10], "faces": 6, "edges": 12, "vertices": 8}}]}"#;
@@ -51,6 +51,26 @@ fn sessions(dir: &Path, kernel: &Arc<FakeKernel>) -> Sessions<Arc<FakeKernel>> {
 }
 
 /// Sessions on a fake kernel, with `text` in `a.silico` open.
+/// `response`'s one refusal, of the session's file: `code`, naming `path`, its message
+/// saying `says`, its cause `cause`, and a suggestion.
+#[track_caller]
+fn refused_over_the_file<T: std::fmt::Debug>(
+    response: &Response<T>,
+    code: ErrorCode,
+    says: &str,
+    cause: Option<&str>,
+) {
+    let (got, message, parameter, suggestion) = refusal(response);
+    let error = &response.result.as_ref().unwrap_err().errors()[0];
+    assert_eq!(
+        (got, parameter.as_deref(), error.cause()),
+        (code, Some("path"), cause),
+        "{message}"
+    );
+    assert!(message.contains(says), "{message}");
+    assert!(suggestion.is_some(), "{message}");
+}
+
 fn opened(text: &str) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let kernel = Arc::new(FakeKernel::new(2).unwrap());
@@ -417,7 +437,12 @@ fn a_file_past_the_limit_is_unreadable_and_the_refused_reload_leaves_it_so() {
     std::fs::write(&f.path, vec![b' '; MAX_INPUT_LEN + 1]).unwrap();
     f.reaches(Disk::Unreadable);
     let text = answer(f.sessions.text(&f.id, None));
-    assert!(text.result.is_err());
+    refused_over_the_file(
+        &text,
+        ErrorCode::InvalidInput,
+        &format!("is more than the {MAX_INPUT_LEN} bytes Silico reads of a document"),
+        Some(NOT_RELOADED),
+    );
     assert!(!text.session.unwrap().reloaded);
     f.stays(TWO_COMPARISONS, |found| found == Some(Disk::Unreadable));
     std::fs::write(&f.path, BLOCK).unwrap();
@@ -449,7 +474,12 @@ fn a_directory_at_the_path_is_unreadable_and_the_next_command_refused() {
     std::fs::remove_file(&f.path).unwrap();
     std::fs::create_dir(&f.path).unwrap();
     f.reaches(Disk::Unreadable);
-    assert!(answer(f.sessions.text(&f.id, None)).result.is_err());
+    refused_over_the_file(
+        &answer(f.sessions.text(&f.id, None)),
+        ErrorCode::IoFailed,
+        "couldn't be read: it isn't a regular file",
+        Some(NOT_RELOADED),
+    );
     f.stays(TWO_COMPARISONS, |found| found == Some(Disk::Unreadable));
     std::fs::remove_dir(&f.path).unwrap();
     f.reaches(Disk::Gone);
@@ -477,7 +507,12 @@ fn a_pipe_at_the_path_is_unreadable_and_neither_disk_nor_the_command_waits_on_it
         assert!(Instant::now() < deadline, "never unreadable: {found:?}");
         std::thread::sleep(Duration::from_millis(5));
     }
-    assert!(answer(f.sessions.text(&f.id, None)).result.is_err());
+    refused_over_the_file(
+        &answer(f.sessions.text(&f.id, None)),
+        ErrorCode::IoFailed,
+        "couldn't be read: it isn't a regular file",
+        Some(NOT_RELOADED),
+    );
     std::fs::remove_file(&f.path).unwrap();
     std::fs::write(&f.path, BLOCK).unwrap();
     f.reaches(Disk::Unchanged);
@@ -489,7 +524,12 @@ fn a_file_gone_and_its_directory_gone_are_gone_until_put_back() {
     f.reaches(Disk::Unchanged);
     std::fs::remove_file(&f.path).unwrap();
     f.reaches(Disk::Gone);
-    assert!(answer(f.sessions.text(&f.id, None)).result.is_err());
+    refused_over_the_file(
+        &answer(f.sessions.text(&f.id, None)),
+        ErrorCode::IoFailed,
+        "couldn't be read: No such file or directory (os error 2)",
+        Some(NOT_RELOADED),
+    );
     f.stays(TWO_COMPARISONS, |found| found == Some(Disk::Gone));
     std::fs::write(&f.path, BLOCK).unwrap();
     f.reaches(Disk::Unchanged);
@@ -512,7 +552,12 @@ fn a_file_this_user_cant_read_is_unreadable_and_a_save_over_it_leaves_it_so() {
     f.set_length(Revision::OPENED, "41").result.unwrap();
     let unreadable = Mode::of(&f.path, 0o000);
     f.reaches(Disk::Unreadable);
-    assert!(answer(f.sessions.commit(&f.id)).result.is_err());
+    refused_over_the_file(
+        &answer(f.sessions.commit(&f.id)),
+        ErrorCode::IoFailed,
+        "couldn't be read: Permission denied (os error 13)",
+        None,
+    );
     // Not stuck unknown: compared again, as it is.
     f.reaches(Disk::Unreadable);
     drop(unreadable);
@@ -533,7 +578,12 @@ fn a_save_that_cant_be_written_is_unknown_then_unchanged_and_the_next_save_its_o
     answer(f.sessions.begin(&f.id)).result.unwrap();
     f.set_length(Revision::OPENED, "41").result.unwrap();
     let read_only = Mode::of(f.dir.path(), 0o555);
-    assert!(answer(f.sessions.commit(&f.id)).result.is_err());
+    refused_over_the_file(
+        &answer(f.sessions.commit(&f.id)),
+        ErrorCode::IoFailed,
+        "couldn't be written: couldn't create a file in",
+        None,
+    );
     assert_eq!(f.file(), BLOCK.as_bytes());
     f.reaches(Disk::Unchanged);
     f.stays(TWO_COMPARISONS, unchanged);
@@ -690,7 +740,14 @@ fn in_a_workspace_a_link_out_to_the_same_bytes_is_unreadable_never_unchanged() {
     std::fs::remove_file(&path).unwrap();
     std::os::unix::fs::symlink(&outside, &path).unwrap();
     reach(Disk::Unreadable);
-    assert!(answer(sessions.text(&session, None)).result.is_err());
+    refused_over_the_file(
+        &answer(sessions.text(&session, None)),
+        ErrorCode::InvalidInput,
+        "is outside the workspace this server was started in",
+        Some(
+            "it was inside the workspace when it was opened, and leads out of it now, through a link put on its path",
+        ),
+    );
     // Its directory, the workspace's root, swapped for a link out: the same.
     std::fs::remove_file(&path).unwrap();
     std::fs::write(&path, BLOCK).unwrap();
