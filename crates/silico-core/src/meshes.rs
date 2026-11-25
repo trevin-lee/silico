@@ -307,9 +307,10 @@ mod tests {
     }
 
     /// A mesh of `triangles` triangles on three positions, with an edge of two points and
-    /// its two vertices, its size by hand: 3 × (24 + 12) for the positions and normals, 12t
-    /// for the triangles, 4 for the face's count, 2 × 24 + 4 for the edge's points and count,
-    /// and 2 × 24 for the vertices' points.
+    /// three vertices (so its vertices' points and its edges' aren't the same size), its size
+    /// by hand: 3 × (24 + 12) for the positions and normals, 12t for the triangles, 4 for the
+    /// face's count, 2 × 24 + 4 for the edge's points and count, and 3 × 24 for the vertices'
+    /// points.
     fn mesh(triangles: usize) -> Mesh {
         Mesh {
             positions: vec![[0.0; 3]; 3],
@@ -318,7 +319,7 @@ mod tests {
             face_triangles: vec![u32::try_from(triangles).unwrap()],
             edge_points: vec![[0.0; 3], [1.0, 0.0, 0.0]],
             edge_point_counts: vec![2],
-            vertex_points: vec![[0.0; 3], [1.0, 0.0, 0.0]],
+            vertex_points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             valid: None,
         }
     }
@@ -365,7 +366,7 @@ mod tests {
         assert_eq!(cache.get(&1, 0.25).as_deref(), Some(&mesh(2)));
         assert!(cache.get(&1, 0.5).is_none());
         assert!(cache.get(&2, 0.25).is_none());
-        assert_eq!(cache.bytes(), 3 * 36 + 2 * 12 + 4 + (2 * 24 + 4) + 2 * 24);
+        assert_eq!(cache.bytes(), 3 * 36 + 2 * 12 + 4 + (2 * 24 + 4) + 3 * 24);
         assert_eq!(cache.bytes(), mesh_bytes(&mesh(2)));
     }
 
@@ -387,7 +388,7 @@ mod tests {
 
     #[test]
     fn past_its_bound_the_least_recently_used_mesh_is_dropped() {
-        // Room for three 224-byte meshes (108 + 12 + 4 + 52 + 48).
+        // Room for three 248-byte meshes (108 + 12 + 4 + 52 + 72).
         let size = mesh_bytes(&mesh(1));
         let cache = MeshCache::new(3 * size);
         for key in 1u32..=3 {
