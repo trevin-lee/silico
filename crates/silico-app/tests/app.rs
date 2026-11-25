@@ -29805,6 +29805,20 @@ fn label_of_dimension(h: &AppHarness, id: &str) -> eframe::egui::Pos2 {
         .unwrap()
 }
 
+/// A click at `at` on the screen, as the pane gives one.
+fn clicked_at(at: eframe::egui::Pos2) -> Vec<silico_app::sketch::PointerEvent> {
+    use silico_app::sketch::PointerAction::{Press, Release};
+    [Press, Release]
+        .into_iter()
+        .map(|action| silico_app::sketch::PointerEvent {
+            action,
+            at,
+            shift: false,
+            ctrl: false,
+        })
+        .collect()
+}
+
 /// A double-click at `at` on the screen, as the pane gives one.
 fn double_clicked_at(at: eframe::egui::Pos2) -> Vec<silico_app::sketch::PointerEvent> {
     use silico_app::sketch::PointerAction::{DoubleClick, Press, Release};
@@ -30190,6 +30204,57 @@ fn a_placed_dimension_double_clicked_is_set_as_typed_and_an_over_defining_edit_o
     assert_eq!(
         length_parts(&constraint_of(&sketch_of_text(&f, &h, &id), &length).form),
         Some((right, "99".to_owned(), false))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_a_dimensions_value_selects_the_dimension_drawn_there_on_top() {
+    // Issue #599. The right side's two lengths, its 20 and a 30 left driving: a placed
+    // dimension stores no place, so their values stand at one place, one drawn after the
+    // other (in the order `last_drawn` paints in, the constraints' order, which their drawn
+    // IDs decide), on top of it. A click there selects the one on top, the value that
+    // shows, never the one beneath it.
+    use silico_app::sketch::draw::Drawn;
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (id, right, _) = fully_defined(&f, &mut h);
+    let third = over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    settled(&mut h);
+    // Smart Dimension left, so a click selects.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), None);
+    let first = lengths(&sketch_of_text(&f, &h, &id))
+        .into_iter()
+        .find(|(_, line, value, _)| *line == right && value == "20")
+        .map(|(constraint, ..)| constraint)
+        .unwrap();
+    assert_ne!(first, third);
+    sketch_events(&f, &mut h, &[]);
+    let drawn = sketch_mode(&h).unwrap().last_drawn();
+    let labels: Vec<(String, eframe::egui::Pos2)> = drawn
+        .iter()
+        .filter_map(|d| match d {
+            Drawn::Label {
+                of: Some(of), at, ..
+            } if [first.as_str(), third.as_str()].contains(&of.as_str()) => {
+                Some((of.as_str().to_owned(), *at))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels.len(), 2, "{labels:?}");
+    assert_ne!(labels[0].0, labels[1].0);
+    assert!(labels[0].1.distance(labels[1].1) < 0.01, "{labels:?}");
+    let (on_top, at) = labels[1].clone();
+    sketch_events(&f, &mut h, &clicked_at(at));
+    let on_top = silico_core::document::ElementId::new(&on_top).unwrap();
+    assert_eq!(
+        sketch_mode(&h).unwrap().selected_ids(),
+        std::collections::BTreeSet::from([on_top])
     );
     assert_eq!(never_waits::waits(), 0);
 }
