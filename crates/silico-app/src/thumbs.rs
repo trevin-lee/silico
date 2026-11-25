@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use eframe::egui::{self, Color32, ColorImage, TextureHandle, TextureOptions};
 use sha2::{Digest as _, Sha256};
@@ -71,8 +71,8 @@ pub const MAX_SIDE: u32 = 1024;
 pub const SPARE: usize = crate::recent::KEPT;
 
 /// How old a file left by a write that never finished (`<key>.png.<pid>.<n>.new`, a quit
-/// mid-write) is before it's removed: far longer than any write takes.
-pub const LEFT_OVER_AGE: Duration = Duration::from_secs(60 * 60);
+/// mid-write) is before it's removed: the app's files' rule (`app_data::LEFT_OVER_AGE`).
+pub use crate::app_data::LEFT_OVER_AGE;
 
 /// How many of a picture's pixels a point of the cell has, each way: a Retina display's 2
 /// shows it pixel for pixel, a display of 1 at half (egui's wgpu textures have no mipmaps,
@@ -139,15 +139,7 @@ fn key_named(name: &str) -> Option<&str> {
 /// Whether a file in the folder named `name` is one a write of a picture left
 /// (`app_data::write_bytes`'s `<key>.png.<pid>.<n>.new`), and nothing else.
 fn left_by_a_write(name: &str) -> bool {
-    let Some(rest) = name.strip_suffix(".new") else {
-        return false;
-    };
-    let mut parts = rest.rsplitn(3, '.');
-    let (Some(n), Some(pid), Some(picture)) = (parts.next(), parts.next(), parts.next()) else {
-        return false;
-    };
-    let number = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
-    number(n) && number(pid) && key_named(picture).is_some()
+    crate::app_data::left_by_a_write(name, |picture| key_named(picture).is_some())
 }
 
 /// The key of the document at `path`, as its bytes are now: none if it isn't a regular file
@@ -947,11 +939,7 @@ fn prune(folder: &Path, keys: Option<&BTreeSet<String>>, now: SystemTime) {
             if keys.is_some_and(|keys| !keys.contains(key)) {
                 others.push((modified, name.to_owned()));
             }
-        } else if left_by_a_write(name)
-            && now
-                .duration_since(modified)
-                .is_ok_and(|age| age > LEFT_OVER_AGE)
-        {
+        } else if left_by_a_write(name) && crate::app_data::left_over_long(modified, now) {
             remove(&folder.join(name));
         }
     }
@@ -988,6 +976,8 @@ pub(crate) fn paint(painter: &egui::Painter, thumb: egui::Rect, texture: &Textur
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
     /// A PNG of `width` by `height` pixels of `color_type`, its samples `data`, encoded by the

@@ -1447,7 +1447,8 @@ fn revert_restores_the_files_text_byte_for_byte() {
     });
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Revert").click();
+    h.get_by_role_and_label(Role::Button, "Revert to saved")
+        .click();
     step_until(&mut h, "reverted", |h| {
         !anywhere(h, "example.silico *") && shows(h, "Timeline", "Hole")
     });
@@ -1758,7 +1759,8 @@ fn a_reload_the_person_asked_for_shows_no_info_banner() {
     step_until(&mut h, "kept", |h| !anywhere(h, changed));
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Revert").click();
+    h.get_by_role_and_label(Role::Button, "Revert to saved")
+        .click();
     step_until(&mut h, "reverted", |h| {
         shows(h, "Timeline", "Bit") && !anywhere(h, "example.silico *")
     });
@@ -3918,7 +3920,8 @@ fn revert_drops_an_edit_still_waiting_so_nothing_is_saved_after_it() {
     type_name(&mut h, "z");
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Revert").click();
+    h.get_by_role_and_label(Role::Button, "Revert to saved")
+        .click();
     step(&mut h);
     hold.release();
     let _ = check.wait();
@@ -4273,7 +4276,8 @@ fn typing_while_a_revert_runs_comes_after_it_in_a_new_transaction() {
     let (hold, check) = hold_queue(&f, &h, 0);
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Revert").click();
+    h.get_by_role_and_label(Role::Button, "Revert to saved")
+        .click();
     step(&mut h);
     step(&mut h);
     type_name(&mut h, "r");
@@ -4322,7 +4326,8 @@ fn a_revert_after_a_quits_save_waits_behind_it_and_the_quit_closes() {
     step(&mut h);
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Revert").click();
+    h.get_by_role_and_label(Role::Button, "Revert to saved")
+        .click();
     step(&mut h);
     hold.release();
     let _ = check.wait();
@@ -4398,7 +4403,8 @@ fn revert_to_a_name_the_field_typed_before_shows_that_name() {
     saved_then_typed(&mut h);
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Revert").click();
+    h.get_by_role_and_label(Role::Button, "Revert to saved")
+        .click();
     step_until(&mut h, "reverted", |h| {
         !anywhere(h, "example.silico *") && shows(h, "Timeline", "Pinx")
     });
@@ -4456,7 +4462,8 @@ fn a_revert_after_a_queued_save_keeps_the_save_and_has_nothing_left_to_revert() 
     step(&mut h);
     h.get_by_label("File").click();
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Revert").click();
+    h.get_by_role_and_label(Role::Button, "Revert to saved")
+        .click();
     step(&mut h);
     hold.release();
     let _ = check.wait();
@@ -4595,7 +4602,7 @@ fn a_revert_after_dont_save_on_a_quit_still_closes_the_tab() {
     step(&mut h);
     step(&mut h);
     assert!(
-        h.get_by_role_and_label(Role::Button, "Revert")
+        h.get_by_role_and_label(Role::Button, "Revert to saved")
             .accesskit_node()
             .is_disabled()
     );
@@ -6226,7 +6233,8 @@ fn a_revert_after_a_queued_save_as_keeps_it_and_has_nothing_left_to_revert() {
     h.get_by_label("File").click();
     step(&mut h);
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Revert").click();
+    h.get_by_role_and_label(Role::Button, "Revert to saved")
+        .click();
     step(&mut h);
     hold.release();
     let _ = check.wait();
@@ -7935,7 +7943,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
     h.get_by_label("File").click();
     step(&mut h);
     step(&mut h);
-    h.get_by_label("Revert").click();
+    h.get_by_label("Revert to saved").click();
     step_until(&mut h, "reverted", |h| {
         !h.state().tabs()[0].transaction && !h.state().tabs()[0].unsettled()
     });
@@ -8115,7 +8123,7 @@ fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
     h.get_by_label("File").click();
     step(&mut h);
     step(&mut h);
-    h.get_by_label("Revert").click();
+    h.get_by_label("Revert to saved").click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f.sessions, &h), SKETCHED_EXAMPLE);
@@ -23127,16 +23135,50 @@ fn under_the_sheet_no_shortcut_acts() {
 }
 
 #[test]
+fn the_status_bar_says_the_sessions_own_reload_by_its_files_name() {
+    // status.rs's `of`: while `status.running` is the session's own reload (a file changed
+    // on disk, reloaded with no command), the bar says "Reloading <name> from disk", whatever
+    // the rebuild's state, in place of it.
+    use silico_app::tab::Tab;
+    use silico_core::command::{RebuildState, RunningCommand};
+    let f = fixture();
+    let path = f.file("example.silico", EXAMPLE);
+    let opened = f.sessions.open(&path, false).wait();
+    let id = opened.session.unwrap().id;
+    let mut tab = Tab::opened(
+        id,
+        path.to_str().unwrap().to_owned(),
+        &opened.result.unwrap().problems,
+    );
+    let mut status = f.sessions.status(&id).result.unwrap();
+    status.rebuild.state = RebuildState::Done;
+    status.running = Some(RunningCommand::Reload);
+    tab.status = Some(status);
+    let bar = silico_app::status::of(&tab, None);
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(eframe::egui::vec2(1200.0, 40.0))
+        .build_ui(move |ui| {
+            silico_app::status::bar(ui, &bar);
+        });
+    h.run_steps(2);
+    assert!(
+        h.query_by_label("Reloading example.silico from disk")
+            .is_some()
+    );
+    assert!(h.query_by_label_contains("Rebuilt").is_none());
+}
+
+#[test]
 fn every_command_the_search_lists_runs_from_it_as_its_keys_and_its_button_do() {
-    // Each command the search lists (the registry's but OK, Cancel, the pointer's three, and
-    // Sketch without relations: 43, the three past its first 40 among them, found by name),
-    // run from the search in a state where it can run: what its keys and its button do, by
-    // the same checks.
+    // Each command the search lists (the registry's 64 but OK, Cancel, the pointer's three,
+    // Sketch without relations, and Select Other: 57, those past its first 40 among them,
+    // found by name), run from the search in a state where it can run: what its keys and its
+    // button do, by the same checks. Measure, which isn't built, is listed off, saying so.
     let listed: Vec<&silico_app::shortcuts::Entry> = REGISTRY
         .iter()
         .filter(|entry| !silico_app::search::LEFT_OUT.contains(&entry.command))
         .collect();
-    assert_eq!(listed.len(), 43);
+    assert_eq!(listed.len(), 57);
     for entry in listed {
         same_every_way(entry, true);
     }
@@ -24683,6 +24725,155 @@ fn same_every_way(entry: &silico_app::shortcuts::Entry, search: bool) {
                 }
             }
         }
+        Command::Revert => {
+            // No keys, as the prototype gives none (`CMD.revert`): the File menu's item,
+            // labelled as the registry names the command, and the search: an edit dropped,
+            // the file's features back.
+            assert!(entry.keys.is_empty());
+            let f = fixture();
+            let (mut h, path) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+            select(&mut h, "Pin");
+            renamed(&mut h, "K", "PinK");
+            assert!(h.state().tabs()[0].transaction);
+            if search {
+                by_way(&mut h, Way::Search(command));
+            } else {
+                from_file_menu(&mut h, entry.label);
+            }
+            step_until(&mut h, "reverted", |h| {
+                !h.state().tabs()[0].transaction && shows(h, "Timeline", "Pin")
+            });
+            assert!(!shows(&h, "Timeline", "PinK"));
+            assert_eq!(names_in(&path), ["Block", "Pin", "Hole"]);
+        }
+        Command::CreateSketch => {
+            // No keys: CREATE's button, labelled as the registry names the command, and the
+            // search, each beginning the pick of a plane or a flat face.
+            assert!(entry.keys.is_empty());
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+            step_until(&mut h, "sketch mode can open", |h| {
+                h.state().tabs()[0].can_sketch()
+            });
+            if search {
+                by_way(&mut h, Way::Search(command));
+            } else {
+                h.get_by_role_and_label(Role::Toolbar, "CREATE")
+                    .get_by_label(entry.label)
+                    .click();
+            }
+            step_until(&mut h, "the pick begun", |h| {
+                h.state().tabs()[0].plane_pick.is_some()
+            });
+        }
+        Command::Pad
+        | Command::Pocket
+        | Command::Revolve
+        | Command::Groove
+        | Command::Fillet
+        | Command::Chamfer
+        | Command::Union
+        | Command::Subtract
+        | Command::Intersect => {
+            // No keys, as the prototype gives none: CREATE's or MODIFY's button, labelled as
+            // the registry names the command, and the search, each opening its dialog (a
+            // sweep on the sketch Triangle, chosen in the browser first; a boolean on
+            // SKETCHED's two bodies; a dressing on its tip).
+            use silico_app::shortcuts::Group;
+            assert!(entry.keys.is_empty());
+            let f = fixture();
+            let (mut h, _) = f.opened("sketched.silico", SKETCHED);
+            step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+            settled(&mut h);
+            let panel = if entry.group == Group::Create {
+                h.get_by_role_and_label(Role::Pane, "Browser")
+                    .get_by_label("Triangle")
+                    .click();
+                step(&mut h);
+                "CREATE"
+            } else {
+                "MODIFY"
+            };
+            if search {
+                by_way(&mut h, Way::Search(command));
+            } else {
+                h.get_by_role_and_label(Role::Toolbar, panel)
+                    .get_by_label(entry.label)
+                    .click();
+            }
+            step_until(&mut h, "its dialog", |h| {
+                h.query_by_role_and_label(Role::Dialog, entry.label)
+                    .is_some()
+            });
+        }
+        Command::Measure => {
+            // Not built yet: INSPECT's button off, and the search's row off, saying so;
+            // neither runs.
+            assert!(entry.keys.is_empty());
+            let f = fixture();
+            let (mut h, _) = f.opened("example.silico", EXAMPLE);
+            step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+            settled(&mut h);
+            if search {
+                open_search(&mut h);
+                search_for(&mut h, "measure", "Measure Inspect");
+                assert_eq!(
+                    search_off(&h, "Measure Inspect"),
+                    (true, Some("Not built yet".to_owned()))
+                );
+                search_row(&h, "Measure Inspect").click();
+                for _ in 0..3 {
+                    step(&mut h);
+                }
+                assert!(search_open(&h));
+            } else {
+                assert!(
+                    h.get_by_role_and_label(Role::Toolbar, "INSPECT")
+                        .get_by_label(entry.label)
+                        .accesskit_node()
+                        .is_disabled()
+                );
+            }
+        }
+        Command::SelectOther => {
+            // The canvas's right click (the prototype's `selectOther`, 'Right-click'):
+            // descriptive only, as the pointer's three are, and left out of the search, as
+            // `paletteItems` leaves it out (Select Other's own tests cover the menu).
+            assert!(!search, "the search leaves {command:?} out");
+            assert_eq!(entry.keys, [Chord::Pointer(Modifiers::NONE, "Right-click")]);
+        }
+        Command::Extend | Command::Split => {
+            // No keys, as the prototype gives none: SKETCH MODIFY's button, labelled as the
+            // registry names the command, and the search, each choosing its tool, or
+            // leaving it if it's on.
+            use silico_app::sketch::tools::Choice;
+            assert!(entry.keys.is_empty());
+            let choice = if command == Command::Extend {
+                Choice::Extend
+            } else {
+                Choice::Split
+            };
+            let f = fixture();
+            let mut h = triangle_opened(&f);
+            let tool = |h: &AppHarness| sketch_mode(h).unwrap().tools.choice();
+            if search {
+                same_toggle(&mut h, entry.label, ways_of(command, true), |h| {
+                    tool(h)
+                        .map(|chosen| assert_eq!(chosen, choice, "{command:?}"))
+                        .is_some()
+                });
+            } else {
+                for want in [Some(choice), None] {
+                    sketch_button(&h, entry.label).click();
+                    step(&mut h);
+                    step(&mut h);
+                    assert_eq!(tool(&h), want, "{command:?}");
+                }
+            }
+            assert_eq!(never_waits::waits(), 0);
+        }
         Command::Shortcuts => {
             let f = fixture();
             let (mut h, _) = f.opened("example.silico", EXAMPLE);
@@ -24769,6 +24960,10 @@ fn ctrl_shift_b_after_a_kept_fault_shows_the_model_it_built() {
         view(&h).bodies().is_empty(),
         "the fault's model has no body"
     );
+    // The status bar says so (status.rs's `Said::Faulted`), in its words.
+    step_until(&mut h, "the fault said", |h| {
+        in_status_bar(h, "The kernel faulted")
+    });
     let revision = h.state().tabs()[0].published;
     // Ctrl+Shift+B tries the box again: a new model of the same revision, its block a
     // body, which the view reads.
@@ -47437,6 +47632,96 @@ fn copy_name_over_an_edge_unstable_by_its_own_name_copies_the_stable_alias_the_s
     assert_eq!(never_waits::waits(), 0);
 }
 
+/// A fuse that keeps every element of its base, and its tool's Face1 as the result's Face1:
+/// one face, two derivations ([`aliasing_edge_fuse`]'s, of a face).
+fn aliasing_face_fuse() -> silico_core::kernel::History {
+    let mut history = aliasing_edge_fuse();
+    let tool = &mut history.inputs[1];
+    tool.faces[0] = tool.edges[0].clone();
+    tool.edges[0] = silico_core::kernel::ElementFate::default();
+    history
+}
+
+#[test]
+fn copy_name_over_a_face_unstable_by_its_own_name_copies_the_stable_alias_the_selection_holds() {
+    // As over an edge: [`ALIASED`]'s Capped, its Face1 named by its own name,
+    // `rrrrrrrr.fuse.Face1` (unstable: Fused's numbering fuse kept no name for it), and by
+    // the Cap's Face1, `cccccccc.box.Face1`, the stable alias a store takes: Copy name puts
+    // the alias on the clipboard, never the name the pointer found.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    fusing(&f, |tool| {
+        if tool.contains("box(2,") {
+            aliasing_face_fuse()
+        } else {
+            numbering_fuse()
+        }
+    });
+    let (mut h, record) = from_above_made(&f, "aliased.silico", ALIASED, None);
+    boxes_made(&mut h);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "Face1 hovered", |h| {
+        hover_name(h).as_deref() == Some("rrrrrrrr.fuse.Face1")
+    });
+    context_at(&mut h, at);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Copy name as agents write it")
+        .click();
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("cccccccc.box.Face1"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_status_bar_says_a_hovered_name_unstable_or_not_and_else_how_many_are_selected() {
+    // status.rs's `selection_words`, through the bar: the name the pointer is over, as an
+    // agent writes it, with "· Unstable" after one a store wouldn't take (FUSED's Face1,
+    // its number: the numbering fuse kept no name for it), bare for a stable one (its Face2,
+    // the base's kept); with nothing hovered, how many elements are selected.
+    use silico_app::renderer::Element::Face;
+    let f = fixture();
+    fusing(&f, |_| numbering_fuse());
+    let (mut h, record) = from_above_made(&f, "fused.silico", FUSED, None);
+    boxes_made(&mut h);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, Some((1, Face(1), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "Face1's words", |h| {
+        in_status_bar(h, "rrrrrrrr.fuse.Face1 · Unstable")
+    });
+    let next = above_at(&h, 30.0, 10.0, [2.0, 0.0]);
+    answering(&record, Some((1, Face(2), pixel_at(&h, next))), None);
+    h.hover_at(next);
+    step_until(&mut h, "Face2's words", |h| {
+        in_status_bar(h, "aaaaaaaa.box.Face2")
+    });
+    assert!(!in_status_bar(&h, "aaaaaaaa.box.Face2 · Unstable"));
+    // Nothing hovered: one selected, then three.
+    answering(&record, None, None);
+    pointer_away(&mut h);
+    let pick = |h: &mut AppHarness, names: &[&str]| {
+        let names: Vec<String> = names.iter().map(|name| (*name).to_owned()).collect();
+        h.state_mut().tabs_mut()[0]
+            .selection_mut()
+            .pick_all(&names, silico_app::selection::How::Replace);
+    };
+    pick(&mut h, &["aaaaaaaa.box.Face2"]);
+    step_until(&mut h, "one selected", |h| in_status_bar(h, "1 selected"));
+    pick(
+        &mut h,
+        &[
+            "aaaaaaaa.box.Face2",
+            "aaaaaaaa.box.Face3",
+            "aaaaaaaa.box.Face4",
+        ],
+    );
+    step_until(&mut h, "three selected", |h| in_status_bar(h, "3 selected"));
+    assert!(!in_status_bar(&h, "1 selected"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
 #[test]
 fn the_context_menus_fillet_over_an_edge_held_by_its_alias_keeps_the_selection() {
     // The selection holds Capped's Edge1 by its stable alias, and Base's Edge2: Fillet over
@@ -55763,14 +56048,20 @@ fn an_egui_menu_open_as_a_question_comes_closes_with_none_of_its_items_left() {
     h.get_by_label("File").click();
     step(&mut h);
     step(&mut h);
-    assert!(h.query_by_role_and_label(Role::Button, "Revert").is_some());
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Revert to saved")
+            .is_some()
+    );
     close_window(&mut h);
     let asked = "Save changes before quitting?";
     step_until(&mut h, "the question", |h| {
         h.query_by_label_contains(asked).is_some()
     });
     step(&mut h);
-    assert!(h.query_by_role_and_label(Role::Button, "Revert").is_none());
+    assert!(
+        h.query_by_role_and_label(Role::Button, "Revert to saved")
+            .is_none()
+    );
     assert!(h.query_by_role_and_label(Role::Button, "Export…").is_none());
     assert_eq!(never_waits::waits(), 0);
 }
@@ -61297,7 +61588,8 @@ fn the_search_lists_the_registry_narrowed_by_name_group_or_description() {
     step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
     open_search(&mut h);
     // Nothing typed: the registry's first 40 but OK, Cancel, Orbit, Pan, and Zoom, each
-    // its name and its group (app.js's CMD order, the app's registry's).
+    // its name and its group (app.js's CMD order, the app's registry's): File's six, Revert
+    // to saved among them, ...; Create's from the 20th, and Look At, View's last, the 40th.
     let all = search_words(&h);
     assert_eq!(all.len(), 40, "{all:?}");
     assert_eq!(
@@ -61307,13 +61599,15 @@ fn the_search_lists_the_registry_narrowed_by_name_group_or_description() {
             "Open… File",
             "Save File",
             "Save As… File",
+            "Revert to saved File",
             "Close File",
             "Undo Edit",
             "Redo Edit",
-            "Search commands Edit",
         ]
     );
-    assert_eq!(all[39], "Smart Dimension Sketch");
+    assert_eq!(all[19], "Create Sketch Create");
+    assert_eq!(all[20], "Pad Create");
+    assert_eq!(all[39], "Look At View");
     for left_out in ["OK Dialogs", "Cancel Dialogs", "Orbit View", "Pan View"] {
         assert!(!all.iter().any(|words| words == left_out), "{left_out}");
     }
@@ -61343,7 +61637,11 @@ fn the_search_lists_the_registry_narrowed_by_name_group_or_description() {
     step_until(&mut h, "by group", |h| {
         search_words(h) == ["Keyboard shortcuts Help"]
     });
-    // Past the 40: Finish Sketch is found by name.
+    // Past the 40: Finish Sketch is found by name, and Smart Dimension.
+    retype(&mut h, In::Window, "Search commands", "smart");
+    step_until(&mut h, "smart", |h| {
+        search_words(h) == ["Smart Dimension Sketch"]
+    });
     retype(&mut h, In::Window, "Search commands", "finish");
     step_until(&mut h, "finish", |h| {
         search_words(h) == ["Finish Sketch Sketch"]
@@ -61379,19 +61677,23 @@ fn the_arrows_move_the_highlight_held_to_the_list_and_typing_puts_it_back_on_the
     h.key_press(Key::ArrowUp);
     step(&mut h);
     assert_eq!(search_lit(&h).as_deref(), Some("Save File"));
-    // Typing: the first again. "save" lists Save and Save As…; ↓ past the last stays on it.
+    // Typing: the first again. "save" lists Save, Save As…, and Revert to saved; ↓ past the
+    // last stays on it.
     search_for(&mut h, "save", "Save File");
-    assert_eq!(search_words(&h), ["Save File", "Save As… File"]);
+    assert_eq!(
+        search_words(&h),
+        ["Save File", "Save As… File", "Revert to saved File"]
+    );
     assert_eq!(search_lit(&h).as_deref(), Some("Save File"));
     for _ in 0..4 {
         h.key_press(Key::ArrowDown);
         step(&mut h);
     }
-    assert_eq!(search_lit(&h).as_deref(), Some("Save As… File"));
-    // Held there, so ↑ goes straight back to the first.
+    assert_eq!(search_lit(&h).as_deref(), Some("Revert to saved File"));
+    // Held there (not counted on past it), so ↑ goes straight back to the one before it.
     h.key_press(Key::ArrowUp);
     step(&mut h);
-    assert_eq!(search_lit(&h).as_deref(), Some("Save File"));
+    assert_eq!(search_lit(&h).as_deref(), Some("Save As… File"));
     // The field kept the keyboard throughout.
     assert!(search_focused(&h));
     assert_eq!(never_waits::waits(), 0);
@@ -61526,18 +61828,21 @@ fn a_command_that_cant_run_is_listed_off_and_runs_neither_by_enter_nor_by_a_clic
     }
     assert!(search_open(&h));
     assert_eq!(h.state().tabs()[0].selected_in, selected_in);
-    // "line": Find in timeline's name, Line's, and Smart Dimension's description ("Pick a
-    // line"); the sketch's two off with no sketch open.
+    // "line": Find in timeline's name, Line's, Smart Dimension's description ("Pick a
+    // line"), and Extend's ("Extends a line or arc"); the sketch's three off with no sketch
+    // open.
     retype(&mut h, In::Window, "Search commands", "line");
     step_until(&mut h, "Line", |h| {
         search_words(h)
             == [
                 "Find in timeline Edit",
                 "Line Sketch",
+                "Extend Sketch",
                 "Smart Dimension Sketch",
             ]
     });
     assert!(off(&h, "Line Sketch"));
+    assert!(off(&h, "Extend Sketch"));
     assert!(off(&h, "Smart Dimension Sketch"));
     assert_eq!(never_waits::waits(), 0);
 }
