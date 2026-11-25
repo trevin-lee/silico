@@ -50,7 +50,6 @@ fn sessions(dir: &Path, kernel: &Arc<FakeKernel>) -> Sessions<Arc<FakeKernel>> {
     })
 }
 
-/// Sessions on a fake kernel, with `text` in `a.silico` open.
 /// `response`'s one refusal, of the session's file: `code`, naming `path`, its message
 /// saying `says`, its cause `cause`, and a suggestion.
 #[track_caller]
@@ -71,6 +70,7 @@ fn refused_over_the_file<T: std::fmt::Debug>(
     assert!(suggestion.is_some(), "{message}");
 }
 
+/// Sessions on a fake kernel, with `text` in `a.silico` open.
 fn opened(text: &str) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let kernel = Arc::new(FakeKernel::new(2).unwrap());

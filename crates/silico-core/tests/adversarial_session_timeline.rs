@@ -1087,9 +1087,12 @@ fn opened_sketched(text: &str) -> (Fixture, silico_core::fake::FakeSketches) {
 /// for one the model hasn't built since, unknown), its health as its counts say, a feature
 /// the check finds a problem on an error, and, of the session's revision's model, the
 /// totals the check's, and a feature with no problem of its own an error exactly when it's
-/// blocked by the document's failure: when a feature it names (its base, tool, sketch, or
-/// face's feature) didn't build for a problem the check finds on it, or is itself so
-/// blocked. The timeline's answer and the check's.
+/// blocked by the document's failure: when a feature it names (its base, tool, or sketch)
+/// didn't build for a problem the check finds on it, or is itself so blocked. A sketch on a
+/// face is blocked through the solids its face is looked for in, which can be what consumes
+/// the feature it names, so its own mark isn't judged by names (the face-plane tests pin
+/// it), but taken for what it names to judge its dependents. The timeline's answer and the
+/// check's.
 #[track_caller]
 fn agrees_with_check(f: &Fixture, choice: ModelChoice) -> (TimelineAnswer, CheckAnswer) {
     let response = f.timeline(choice);
@@ -1128,7 +1131,11 @@ fn agrees_with_check(f: &Fixture, choice: ModelChoice) -> (TimelineAnswer, Check
         std::collections::BTreeSet::new();
     for e in t.features.iter().flatten() {
         let id = e.id.as_str();
-        if latest && all_problems_listed && e.problems == 0 {
+        // A sketch's only input is its face's feature, if it's on a face.
+        let on_a_face = e.kind == "sketch" && !e.inputs.is_empty();
+        if on_a_face && e.health == Health::Error && e.problems == 0 {
+            blocked_by_document.insert(id);
+        } else if latest && all_problems_listed && e.problems == 0 {
             let blocked = e
                 .inputs
                 .iter()
@@ -1390,6 +1397,37 @@ fn a_pad_whose_base_faulted_and_whose_sketch_failed_is_an_error() {
     assert_eq!(m["aaaaaaaa"], (Health::Unknown, 0, 0));
     assert_eq!(m["s0000001"], (Health::Error, 1, 0));
     assert_eq!(m["p0000001"], (Health::Error, 0, 0));
+}
+
+#[test]
+fn a_face_sketch_blocked_by_what_consumes_its_faces_feature_is_an_error_as_check_has_it() {
+    // Found by the PR's review (round 1): the sketch is on the cube's top, looked for in
+    // the fillet that consumes the cube, which is broken (an edge the cube hasn't, the
+    // document's): blocked on the fillet, though it names only the cube, which built. An
+    // error, with no problem of its own, and so is the body padded from it; the check has
+    // the fillet's one problem.
+    let face = r#"{"face": "aaaaaaaa.box.Face6", "x": "+x", "reversed": false}"#;
+    let sketch = crate::sweeps::rectangle("s0000001", "xy", [0.2, 0.2], 0.4, 0.4)
+        .replace(r#""plane": "xy""#, &format!(r#""plane": {face}"#));
+    let (f, _sketches) = opened_sketched(&document(&[
+        cube("aaaaaaaa", 0, 1),
+        fillet("f0000001", "aaaaaaaa", &["aaaaaaaa.box.Edge40"]),
+        sketch,
+        crate::sweeps::pad("p0000001", None, "s0000001", crate::sweeps::TEN),
+    ]));
+    let (t, c) = agrees_with_check(&f, ModelChoice::Current);
+    let m = marks_by_id(&t);
+    assert_eq!(m["f0000001"], (Health::Error, 1, 0));
+    assert_eq!(m["s0000001"], (Health::Error, 0, 0));
+    assert_eq!(m["p0000001"], (Health::Error, 0, 0));
+    assert_eq!(
+        c.problems
+            .errors()
+            .iter()
+            .map(|e| (e.code(), e.feature()))
+            .collect::<Vec<_>>(),
+        [(ErrorCode::ReferenceBroken, Some("f0000001"))]
+    );
 }
 
 #[test]

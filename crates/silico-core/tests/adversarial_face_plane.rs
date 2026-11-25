@@ -849,8 +849,7 @@ fn the_sketch_read_of_a_face_sketch_blocked_upstream_answers_naming_the_root_not
 
 // ---- the timeline's health ----
 
-/// Each feature's health, problems, and warnings in the timeline of `model`'s own document,
-/// by ID.
+/// Each feature's health and problems in the timeline of `model`'s own document, by ID.
 fn healths(model: &Model) -> std::collections::BTreeMap<String, (Health, u64)> {
     timeline(model.document(), Some(model), &Excepted::default())
         .features
@@ -984,6 +983,46 @@ fn a_face_sketch_blocked_only_by_a_kernel_fault_stays_unknown() {
     let got = healths(&model);
     for unknown in ["f0000001", "s0000001", "p0000001"] {
         assert_eq!(got[unknown], (Health::Unknown, 0), "{unknown}");
+    }
+}
+
+#[test]
+fn a_face_sketch_blocked_through_a_fuse_whose_tool_failed_for_the_document_is_an_error() {
+    // Found by the PR's review (round 1): the fuse j1 is blocked on its base, the cube,
+    // which crashes the worker (a fault), though its tool, the fillet f1 of the second box,
+    // failed for the document (an edge the box hasn't): j1 is an error. s1, on the second
+    // box's top, is looked for in j1, which consumes the fillet: blocked on j1's root, the
+    // cube's fault, yet through j1, the document's failure: an error, as j1 is, and so is
+    // the body padded from it. Marked unknown while only the root it was blocked on was read.
+    let kernel = FakeKernel::new(2).unwrap();
+    kernel.refuse(|op| {
+        matches!(op, Op::MakePrimitive(silico_core::kernel::Primitive::Box { dx, .. }) if *dx == 10.0)
+            .then(|| Error::new(ErrorCode::WorkerCrashed, "the kernel worker crashed"))
+    });
+    let engine = Recompute::new(kernel).with_sketches(FakeSketches::new());
+    let fillet = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "b0000002", "edges": ["b0000002.box.Edge40"], "radius": 1}"#;
+    let fuse = r#"{"id": "j0000001", "type": "fuse", "v": 1, "name": "Both", "base": "b0000001", "tool": "f0000001"}"#;
+    let features = [
+        cube(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+        fillet.to_owned(),
+        fuse.to_owned(),
+        on_face("s0000001", &face("b0000002.box.Face6", "+x", false)),
+        pad("p0000001", None, "s0000001", &one_side("1")),
+    ];
+    let model = publish(&engine, checked_document(&strs(&features)));
+    for blocked in ["j0000001", "s0000001", "p0000001"] {
+        assert_eq!(
+            model.outcome(&id(blocked)),
+            Some(&FeatureOutcome::Blocked { on: id("b0000001") }),
+            "{blocked}"
+        );
+    }
+    let got = healths(&model);
+    assert_eq!(got["b0000001"], (Health::Unknown, 0));
+    assert_eq!(got["f0000001"], (Health::Error, 1));
+    for blocked in ["j0000001", "s0000001", "p0000001"] {
+        assert_eq!(got[blocked], (Health::Error, 0), "{blocked}");
     }
 }
 

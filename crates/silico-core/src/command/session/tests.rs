@@ -702,6 +702,25 @@ fn a_document_made_for_a_session_the_sessions_closing_refuse_is_removed() {
     assert!(book.paths.is_empty());
 }
 
+/// `refused`, an open of a file that isn't there, refused as open refuses one
+/// (tests/session.rs's `a_missing_file_or_a_directory_or_a_pipe_isnt_opened`).
+#[track_caller]
+fn refused_as_missing(refused: &Response<Opened>) {
+    let Err(problems) = &refused.result else {
+        panic!("a file that isn't there was opened");
+    };
+    let e = &problems.errors()[0];
+    assert_eq!(
+        (problems.total(), e.code(), e.message(), e.parameter()),
+        (
+            1,
+            crate::ErrorCode::IoFailed,
+            "couldn't be read: No such file or directory (os error 2)",
+            Some("path")
+        )
+    );
+}
+
 #[test]
 fn a_workspace_is_refused_once_an_open_was_asked_for_its_thread_ended() {
     // Found by the review: the integration test's refused open may still have its thread,
@@ -723,21 +742,7 @@ fn a_workspace_is_refused_once_an_open_was_asked_for_its_thread_ended() {
         .wait_timeout(WAIT)
         .ok()
         .unwrap();
-    // Refused as open refuses a file that isn't there (tests/session.rs's
-    // `a_missing_file_or_a_directory_or_a_pipe_isnt_opened`).
-    let Err(problems) = &refused.result else {
-        panic!("a file that isn't there was opened");
-    };
-    let e = &problems.errors()[0];
-    assert_eq!(
-        (problems.total(), e.code(), e.message(), e.parameter()),
-        (
-            1,
-            crate::ErrorCode::IoFailed,
-            "couldn't be read: No such file or directory (os error 2)",
-            Some("path")
-        )
-    );
+    refused_as_missing(&refused);
     let threads = std::mem::replace(&mut lock(&sessions.registry.book).threads, Threads::new());
     threads.join();
     assert_eq!(Arc::strong_count(&sessions.registry), 1);

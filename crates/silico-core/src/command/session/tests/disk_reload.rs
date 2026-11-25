@@ -1110,21 +1110,7 @@ fn an_open_wakes_the_client_as_it_answers_and_so_does_one_refused() {
         assert_eq!(settled_in(&sessions, &id, &count), 2 * n + 2);
     }
     let refused = sessions.open(dir.path().join("none.silico"), false).wait();
-    // Refused as open refuses a file that isn't there (tests/session.rs's
-    // `a_missing_file_or_a_directory_or_a_pipe_isnt_opened`).
-    let Err(problems) = &refused.result else {
-        panic!("a file that isn't there was opened");
-    };
-    let e = &problems.errors()[0];
-    assert_eq!(
-        (problems.total(), e.code(), e.message(), e.parameter()),
-        (
-            1,
-            crate::ErrorCode::IoFailed,
-            "couldn't be read: No such file or directory (os error 2)",
-            Some("path")
-        )
-    );
+    refused_as_missing(&refused);
     woken(&count, 5);
     drop(sessions);
     // One wake an open, the refused one's too, and none besides.

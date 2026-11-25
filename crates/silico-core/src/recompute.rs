@@ -279,8 +279,11 @@ pub enum FeatureOutcome {
     /// (N6: every one, at once), the first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED)
     /// of them, and how many there are, listed or not. Its step isn't run.
     Broken { errors: Vec<Error>, total: u64 },
-    /// Not built, since it uses a feature that failed: that feature (the first failure
-    /// along its base, then its tool).
+    /// Not built, since it uses a feature that failed: the feature whose failure is at the
+    /// root of the first that failed or was blocked along its base, then its tool (or a
+    /// pattern's originals), then the sketch it sweeps; for a sketch on a face, of the first
+    /// solid its face was looked for in that failed or was blocked (each such solid's
+    /// feature [`Model::blocked_through`]). One root only: what it uses may come to others.
     Blocked { on: FeatureId },
     /// A sketch, solved: it makes no solid. One that didn't solve is `Failed`, with why.
     Sketch(Arc<SketchSolution>),
@@ -355,6 +358,9 @@ pub struct Model {
     /// Each sketch on a face whose face was resolved, by its ID: its frame
     /// ([`Model::frame`]).
     frames: Arc<BTreeMap<FeatureId, silico_protocol::FaceFrame>>,
+    /// Each sketch on a face blocked by the solids its face was looked for in, by its ID:
+    /// their features ([`Model::blocked_through`]).
+    blocked_through: Arc<BTreeMap<FeatureId, Vec<FeatureId>>>,
     /// What each pattern's steps' histories say of its copies, by its ID, each step that
     /// built in order ([`Model::pattern_verdicts`]).
     patterns: Arc<BTreeMap<FeatureId, Arc<[StepVerdict]>>>,
@@ -785,6 +791,14 @@ impl Model {
     /// whose face couldn't be resolved, and a feature that isn't a sketch.
     pub fn frame(&self, id: &FeatureId) -> Option<&silico_protocol::FaceFrame> {
         self.frames.get(id)
+    }
+
+    /// For the sketch on a face `id`, blocked by the solids live at its place that its face
+    /// could be in (each failed or blocked), their features, in the order they were looked
+    /// in: what it was blocked through, as a feature is through what it uses. Its outcome's
+    /// `on` is the first one's root alone. None for any other feature.
+    pub(crate) fn blocked_through(&self, id: &FeatureId) -> &[FeatureId] {
+        self.blocked_through.get(id).map_or(&[], Vec::as_slice)
     }
 
     /// This model as `source`'s: the same steps and outcomes, its document `source`. For a
@@ -3915,7 +3929,7 @@ impl Plan {
                     (OnFace::Waits, _) => StepState::Queued,
                     (OnFace::Placed(Placed::Broken(_)), _) => StepState::Failed,
                     (OnFace::Placed(Placed::Failed(error)), _) => StepState::failed(error),
-                    (OnFace::Placed(Placed::Blocked(_)), _) => StepState::Blocked,
+                    (OnFace::Placed(Placed::Blocked { .. }), _) => StepState::Blocked,
                     (OnFace::No | OnFace::Placed(Placed::Frame(_)), Some(solved)) => {
                         match &solved.result {
                             Ok(_) => StepState::Built,
@@ -4605,11 +4619,15 @@ impl<K: Kernel + 'static> Engine<K> {
                 // Nothing new, yet some still wait: none ever will be placed (every round
                 // places the first that waits, so this is a bug's), and each is blocked,
                 // naming the feature it waits for, in one round more.
-                frames.extend(
-                    waiting
-                        .into_iter()
-                        .map(|(id, on)| (id, Placed::Blocked(on))),
-                );
+                frames.extend(waiting.into_iter().map(|(id, on)| {
+                    (
+                        id,
+                        Placed::Blocked {
+                            on,
+                            through: Vec::new(),
+                        },
+                    )
+                }));
             } else {
                 progress.concluded(&model);
                 break (model, keys);
@@ -6101,10 +6119,14 @@ fn faces_at<'m, R>(
                 };
                 Some(Ok(Live::Built { map, description }))
             }
-            FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. } => {
-                Some(Ok(Live::Failed(feature.id.clone())))
-            }
-            FeatureOutcome::Blocked { on } => Some(Ok(Live::Failed(on.clone()))),
+            FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. } => Some(Ok(Live::Failed {
+                root: feature.id.clone(),
+                solid: feature.id.clone(),
+            })),
+            FeatureOutcome::Blocked { on } => Some(Ok(Live::Failed {
+                root: on.clone(),
+                solid: feature.id.clone(),
+            })),
             // Not live: a sketch makes no solid, and a suppressed feature is left out.
             FeatureOutcome::Sketch(_) | FeatureOutcome::Suppressed => None,
         }
@@ -6345,7 +6367,7 @@ fn model(
                         errors: vec![error.clone()],
                         total: 1,
                     },
-                    (OnFace::Placed(Placed::Blocked(on)), _) => {
+                    (OnFace::Placed(Placed::Blocked { on, .. }), _) => {
                         FeatureOutcome::Blocked { on: on.clone() }
                     }
                     (OnFace::Placed(Placed::Failed(error)), _) => {
@@ -6428,6 +6450,17 @@ fn model(
             OnFace::No | OnFace::Waits | OnFace::Placed(_) => None,
         })
         .collect();
+    let blocked_through = plan
+        .features
+        .iter()
+        .filter(|planned| !planned.suppressed)
+        .filter_map(|planned| match &planned.on_face {
+            OnFace::Placed(Placed::Blocked { through, .. }) if !through.is_empty() => {
+                Some((planned.id.clone(), through.clone()))
+            }
+            OnFace::No | OnFace::Waits | OnFace::Placed(_) => None,
+        })
+        .collect();
     // Every verdict kept (section 4.2): each pattern's copies, step by step, as far as its
     // steps built, whatever its own outcome.
     let patterns = plan
@@ -6465,6 +6498,7 @@ fn model(
         known,
         diagnoses: Arc::new(diagnoses),
         frames: Arc::new(frames),
+        blocked_through: Arc::new(blocked_through),
         patterns: Arc::new(patterns),
     }
 }

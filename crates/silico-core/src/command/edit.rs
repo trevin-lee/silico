@@ -1109,7 +1109,7 @@ fn no_default(placed: Placed, model: &Model, sketch: &FeatureId, face: &str) -> 
     match placed {
         Placed::Broken(error) => error.into(),
         Placed::Failed(error) => worded(&error).into(),
-        Placed::Blocked(root) => {
+        Placed::Blocked { on: root, .. } => {
             // Stopped by a kernel fault, which isn't the document's: refused with the fault
             // itself, naming the root whose outcome holds it, as a read of the solid is
             // (`elements`).
