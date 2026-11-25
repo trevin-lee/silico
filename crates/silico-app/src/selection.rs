@@ -49,8 +49,10 @@
 //! mode claims the canvas ([`Selection::canvas_claimed`]), or the selection is cleared or
 //! set from elsewhere; and once no meshes are coming: their read refused
 //! ([`View::refused_of`]), or no model built. A read in flight that never answers is let go
-//! after [`CLICK_WAIT`], a backstop. Each let go the person didn't do is said, in its
-//! cause's words, never over what a rebuild left gone from the same model.
+//! after [`CLICK_WAIT`], a backstop; so is a click whose answers pass over a body the
+//! renderer still draws by its mesh before its newest ([`CLICK_UNDRAWN`]), frames it waits
+//! so uncounted. Each let go the person didn't do is said, in its cause's words, never over
+//! what a rebuild left gone from the same model.
 //!
 //! A click acts on what was on the screen when it was made (#568). One on the bodies of
 //! the selection's model is picked on that table of them ([`View::table`]) or not at all:
@@ -412,7 +414,8 @@ struct Click {
     /// The newest frame that carried a pick before the click: its answer is to a frame
     /// after it.
     after: Option<u64>,
-    /// The frames it has asked its pick in.
+    /// The frames it has asked its pick in since it was made, or since an answer last passed
+    /// over a body drawn otherwise than it is now ([`Picking::stale`]).
     frames: u32,
     /// The filter it was made under: it picks by it, or not at all.
     filter: Filter,
@@ -3749,7 +3752,16 @@ pub(crate) mod tests {
         selection.pick("aaaaaaaa.box.Face1", How::Replace);
         selection.overlay(&mut view, &click, &ctx, &no_face);
         let made = selection.click.unwrap().at;
+        // Half the wait on, still waiting: the wait is from the click, not from its last
+        // answer.
         view.answered_as(of, nothing(101, true));
+        let half = ViewFrame {
+            now: made + CLICK_WAIT / 2,
+            ..frame_of(Vec::new())
+        };
+        selection.overlay(&mut view, &half, &ctx, &no_face);
+        assert_eq!(selection.click.map(|c| c.after), Some(Some(101)));
+        view.answered_as(of, nothing(102, true));
         let late = ViewFrame {
             now: made + CLICK_WAIT,
             ..frame_of(Vec::new())
