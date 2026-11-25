@@ -91,7 +91,21 @@ fn asked_of_a_newer_model_before_the_first_answers_only_the_newest_is_held() {
         );
     }
     assert_eq!(measures.reads(), 20);
-    settled(&mut measures);
+    // The reads let go may still be running, holding the session's published reads: the
+    // newest model's may be refused for the moment, and are asked again once their delay is
+    // up, till they're answered.
+    let newest = (10, opened.of.1);
+    let mut now = Instant::now();
+    settled_at(&mut measures, now);
+    for _ in 0..20 {
+        if measures.answers(newest).unwrap().refused().is_none() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        now += silico_app::viewport::RETRY_MOST;
+        measures.ask(&opened.sessions, &opened.id, Some(newest), now);
+        settled_at(&mut measures, now);
+    }
     for count in 1..10 {
         assert!(measures.answers((count, opened.of.1)).is_none(), "{count}");
     }
