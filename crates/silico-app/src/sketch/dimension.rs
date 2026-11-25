@@ -31,7 +31,8 @@ use crate::icons::{self, Icon};
 
 /// What sketch mode asks of the core besides its tools' requests, in the order it asks: a
 /// placed dimension's value (`set_field` of its `value`), its text as the core's reader read
-/// it, whole; and an offer's choice.
+/// it, whole; and an offer's choice, or a dimension made driven by the over-defined card's
+/// Make it driven, which sends what the prompt's Driven does.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ask {
     Value {
