@@ -531,6 +531,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
         let Some(mut dialog) = tab.dialog.take() else {
             return;
         };
+        // A pad's ways, for its Direction's tooltips, as its sketch's plane is read.
+        dialog.ways = (dialog.kind == crate::dialog::Kind::Pad)
+            .then(|| dialog.sketch().and_then(|sketch| tab.pad_ways(sketch)))
+            .flatten();
         let enabled = !tab.closing();
         let title = dialog.kind.title();
         // A feature's name as the timeline lists it: a sweep's sketch, a boolean's body (one

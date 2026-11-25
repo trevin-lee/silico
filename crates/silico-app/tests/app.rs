@@ -39,17 +39,17 @@ use ui::{
     added, advance, animation_time, answer_question, anywhere, apply_look, arrow_dots,
     arrow_shafts, begin_sketch_on, body_of, boxed, button_event, choose, chosen, click_as_a_person,
     click_in_one_frame, click_over_two_frames, close_window, create, create_sketch, cursor, dialog,
-    dialog_length, dialog_open, double_click, drag, edit_plates_pad, every_face, everything,
-    f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front, hand_clock,
-    hover_item, image_centre, in_status_bar, is_settled, lavapipe_render_state, leave_sketch,
-    leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
-    modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
-    pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front, pointer_away,
-    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
-    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
-    stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
-    tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
-    view_label, view_label_node, view_mut, wheel, window_told, written,
+    dialog_length, dialog_open, direction, double_click, drag, edit_plates_pad, every_face,
+    everything, f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front,
+    hand_clock, hover_item, image_centre, in_status_bar, is_settled, lavapipe_render_state,
+    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
+    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
+    open_export, pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front,
+    pointer_away, press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked,
+    save_as_of, select, selected_names, settled, shapes_painted, sketch_mode, sketch_read,
+    sorted_fields, stand_in_sessions, step, step_until, tab_named, tessellated, text_of,
+    the_viewport, tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view,
+    view_direction, view_label, view_label_node, view_mut, wheel, window_told, written,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -7313,6 +7313,95 @@ fn enter_is_ok_and_esc_is_cancel() {
 }
 
 #[test]
+fn a_pads_direction_is_the_prototypes_segmented_normal_and_reversed_each_saying_its_way() {
+    // app.js's `renderDialog` for a pad: Direction, a `.seg` `role="radiogroup"` of two
+    // `role="radio"` buttons, Normal on and Reversed off at first, each with its way in its
+    // tooltip (`data-tip`, `Normal (−Y)` for the prototype's sketch on XZ). The triangle is
+    // on XY, whose normal is +Z: Normal sweeps +Z, Reversed −Z (by hand, the core's rule).
+    // No Reversed check box. Each chosen writes `reversed`, as the flip arrow does.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    open_pad_on_triangle(&mut h);
+    added(&mut h);
+    settled(&mut h);
+    let toggled = |h: &AppHarness, way: &str| {
+        dialog(h)
+            .get_by_role_and_label(Role::RadioButton, way)
+            .accesskit_node()
+            .toggled()
+    };
+    use eframe::egui::accesskit::Toggled;
+    assert_eq!(toggled(&h, "Normal"), Some(Toggled::True));
+    assert_eq!(toggled(&h, "Reversed"), Some(Toggled::False));
+    assert!(
+        dialog(&h)
+            .query_by_role_and_label(Role::CheckBox, "Reversed")
+            .is_none()
+    );
+    assert!(dialog(&h).query_by_label("Direction").is_some());
+    // Side by side, Normal left of Reversed, on the Direction row's line.
+    let (normal, reversed) = (
+        dialog(&h)
+            .get_by_role_and_label(Role::RadioButton, "Normal")
+            .rect(),
+        dialog(&h)
+            .get_by_role_and_label(Role::RadioButton, "Reversed")
+            .rect(),
+    );
+    assert!(normal.right() < reversed.left(), "{normal:?} {reversed:?}");
+    assert_eq!(normal.height(), 20.0);
+    assert_eq!(normal.width(), reversed.width());
+    for (way, said) in [
+        ("Normal", "Normal (+Z)"),
+        ("Reversed", "Reversed (\u{2212}Z)"),
+    ] {
+        pointer_away(&mut h);
+        dialog(&h)
+            .get_by_role_and_label(Role::RadioButton, way)
+            .hover();
+        step_until(&mut h, said, |h| tooltip_shown(h, said));
+    }
+    direction(&mut h, "Reversed");
+    settled(&mut h);
+    assert_eq!(toggled(&h, "Reversed"), Some(Toggled::True));
+    assert_eq!(toggled(&h, "Normal"), Some(Toggled::False));
+    assert_eq!(
+        written(&f.sessions, &h, "Pad", "extent"),
+        Some(Plain::of(
+            &json::read(br#"{"type": "one_side", "length": 10, "reversed": true}"#).unwrap()
+        ))
+    );
+    direction(&mut h, "Normal");
+    settled(&mut h);
+    assert_eq!(toggled(&h, "Normal"), Some(Toggled::True));
+    assert_eq!(
+        written(&f.sessions, &h, "Pad", "extent"),
+        Some(Plain::of(
+            &json::read(br#"{"type": "one_side", "length": 10, "reversed": false}"#).unwrap()
+        ))
+    );
+    // A pocket keeps its Reversed toggle: the prototype draws no direction for one.
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    open_sweep_on_triangle(&mut h, "Pocket");
+    added(&mut h);
+    choose(&mut h, "Extent", "Through all");
+    step_until(&mut h, "its Reversed", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::CheckBox, "Reversed")
+            .is_some()
+    });
+    assert!(
+        dialog(&h)
+            .query_by_role_and_label(Role::RadioButton, "Reversed")
+            .is_none()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
@@ -7328,10 +7417,7 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     type_in(&mut h, In::Dialog, "Length", "1");
     settled(&mut h);
     let edits = h.state().tabs()[0].edits.sent;
-    dialog(&h)
-        .get_by_role_and_label(Role::CheckBox, "Reversed")
-        .click();
-    step(&mut h);
+    direction(&mut h, "Reversed");
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].edits.sent, edits + 1);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
@@ -9061,10 +9147,10 @@ fn edit_feature_of_a_reversed_pad_loads_it_reversed_and_sends_nothing() {
     step_until(&mut h, "its dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
     });
-    // The box found by its own name, its row's key (Main's N3).
+    // Its Direction's Reversed found by its own words, on (Main's N3).
     assert_eq!(
         dialog(&h)
-            .get_by_role_and_label(Role::CheckBox, "Reversed")
+            .get_by_role_and_label(Role::RadioButton, "Reversed")
             .accesskit_node()
             .toggled(),
         Some(eframe::egui::accesskit::Toggled::True)

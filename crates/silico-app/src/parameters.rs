@@ -593,7 +593,7 @@ fn direction_words(kind: SweepFeature, extent: Extent, normal: Option<[f64; 3]>)
 }
 
 /// `way` as a signed axis (`+X`, `−Y`) if it's one exactly, else its components.
-fn way_words(way: [f64; 3]) -> String {
+pub(crate) fn way_words(way: [f64; 3]) -> String {
     let axes = ["X", "Y", "Z"];
     let along: Vec<usize> = (0..3).filter(|&at| way[at] != 0.0).collect();
     match along.as_slice() {

@@ -476,6 +476,11 @@ pub struct Dialog {
     /// that boolean as consuming): nothing is sent for that sketch, OK is off, and the
     /// dialog says it.
     pub base_refused: Option<BaseRefused>,
+    /// The ways a pad's Direction sweeps, Normal then Reversed, each as a signed axis or its
+    /// components (`crate::parameters::way_words`), once its sketch's plane is read: its
+    /// choices' tooltips (`Normal (−Y)`), set by the tab. None for any other dialog, or
+    /// before the plane is read.
+    pub ways: Option<[String; 2]>,
 }
 
 /// Why a new sweep's base is refused ([`Dialog::base_refused`]): the sketch it's refused
@@ -558,11 +563,15 @@ impl Dialog {
             part: Part::Sketch,
             value: Value::Selection(sketch),
         };
-        // SEAM: the prototype draws Pad's direction as a segmented Direction, Normal (−Y) and
-        // Reversed (+Y) (app.js's `renderDialog`, `.seg`, `dlgRev`); a Reversed toggle until
-        // it's ported.
+        // A pad's is its Direction, Normal or Reversed, drawn as the prototype's segmented
+        // choice (app.js's `renderDialog`, `.seg`, `dlgRev`; [`direction_choices`]); the
+        // others' a Reversed toggle, which the prototype doesn't draw.
         let reversed = Input {
-            label: "Reversed",
+            label: if kind == Kind::Pad {
+                DIRECTION
+            } else {
+                "Reversed"
+            },
             part: Part::Reversed,
             value: Value::Toggle(false),
         };
@@ -691,6 +700,7 @@ impl Dialog {
             unpicked: Vec::new(),
             base: None,
             base_refused: None,
+            ways: None,
         }
     }
 
@@ -1643,6 +1653,8 @@ impl Dialog {
             .collect();
         let active = self.active;
         let serial = self.serial;
+        // A pad's Direction, as the prototype draws it.
+        let direction = (self.kind == Kind::Pad).then(|| direction_choices(self.ways.as_ref()));
         let mut unpicked: Option<(usize, usize)> = None;
         let mut activated: Option<usize> = None;
         let inputs = &mut self.inputs;
@@ -1661,16 +1673,17 @@ impl Dialog {
                             readable.get(at).copied().unwrap_or(true),
                             refused(input.part.field()),
                         );
+                        let direction = (input.part == Part::Reversed)
+                            .then_some(direction.as_ref())
+                            .flatten();
                         properties::row(ui, input.label, |ui, label| {
-                            if input_ui(
-                                ui,
-                                input,
-                                label,
+                            let look = Look {
                                 red,
-                                highlighted(active, at),
-                                named,
+                                active: highlighted(active, at),
                                 enabled,
-                            ) {
+                                direction,
+                            };
+                            if input_ui(ui, input, label, named, look) {
                                 activated = Some(at);
                             }
                         });
@@ -1770,19 +1783,60 @@ impl Dialog {
     }
 }
 
+/// A pad's Direction, as the prototype's `renderDialog` draws it (`.seg`, `dlgRev`): Normal,
+/// the pad's icon, then Reversed, the same icon upside down (`transform: scaleY(-1)`), each
+/// with its way (`ways`, Normal's then Reversed's) in its tooltip once it's known.
+pub(crate) fn direction_choices(ways: Option<&[String; 2]>) -> [properties::IconChoice; 2] {
+    let choice = |said: &str, flipped: bool, way: Option<&String>| properties::IconChoice {
+        icon: Icon::Pad,
+        flipped,
+        said: said.to_owned(),
+        tip: match way {
+            Some(way) => format!("{said} ({way})"),
+            None => said.to_owned(),
+        },
+    };
+    [
+        choice(NORMAL, false, ways.map(|ways| &ways[0])),
+        choice(REVERSED, true, ways.map(|ways| &ways[1])),
+    ]
+}
+
+/// How an input's row is drawn: red (refused, or not readable), as the active box, on or
+/// off, and, for a pad's Direction, as its segmented choice.
+#[derive(Clone, Copy)]
+struct Look<'a> {
+    red: bool,
+    active: bool,
+    enabled: bool,
+    direction: Option<&'a [properties::IconChoice; 2]>,
+}
+
+/// A pad's Direction's label, and its two choices' words, as the prototype has them.
+pub const DIRECTION: &str = "Direction";
+/// The pad's Direction's choice along its sketch's normal.
+pub const NORMAL: &str = "Normal";
+/// The pad's Direction's choice against its sketch's normal.
+pub const REVERSED: &str = "Reversed";
+
 /// `input`'s value in its row, labelled by `label` (its key's): a field with its unit, a
-/// toggle, a choice's drop-down, or a selection box (highlighted if it's the active one).
-/// Whether it was clicked to be made the active box: a box of one body, of which a dialog
-/// has two, is (the prototype's `activateBox`).
+/// toggle (a pad's Direction, as `direction`'s segmented choice, if given), a choice's
+/// drop-down, or a selection box (highlighted if it's the active one). Whether it was
+/// clicked to be made the active box: a box of one body, of which a dialog has two, is
+/// (the prototype's `activateBox`).
 fn input_ui(
     ui: &mut Ui,
     input: &mut Input,
     label: egui::Id,
-    red: bool,
-    active: bool,
     named: &dyn Fn(&FeatureId) -> Option<String>,
-    enabled: bool,
+    look: Look<'_>,
 ) -> bool {
+    let Look {
+        red,
+        active,
+        enabled,
+        direction,
+    } = look;
     let unit = match input.value {
         Value::Length(_) => "mm",
         Value::Angle(_) => "°",
@@ -1811,6 +1865,13 @@ fn input_ui(
                 .inner
                 .labelled_by(label);
             properties::unit(ui, field.rect, unit);
+        }
+        Value::Toggle(on) if direction.is_some() => {
+            let choices = direction.map_or(&[][..], |choices| &choices[..]);
+            if let Some(place) = properties::segmented_icons(ui, choices, usize::from(*on), enabled)
+            {
+                *on = place == 1;
+            }
         }
         Value::Toggle(on) => {
             let toggle = ui

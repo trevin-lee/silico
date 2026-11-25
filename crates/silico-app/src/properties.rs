@@ -2056,6 +2056,92 @@ pub(crate) fn segmented(
     chosen: usize,
     enabled: bool,
 ) -> Option<usize> {
+    segments(
+        ui,
+        options.len(),
+        chosen,
+        enabled,
+        |place| {
+            (
+                WidgetType::SelectableLabel,
+                options.get(place).map_or("", String::as_str),
+                None,
+            )
+        },
+        |ui, place, rect, ink| {
+            if let Some(shown) = options.get(place) {
+                let galley = ui.painter().layout_job(body(shown, ink));
+                ui.painter()
+                    .galley(rect.center() - galley.size() / 2.0, galley, ink);
+            }
+        },
+    )
+}
+
+/// One of a [`segmented_icons`] choice's buttons (`.seg button` holding an `icon()`): its
+/// icon, drawn upside down if `flipped` (the prototype's `transform: scaleY(-1)`), what a
+/// screen reader names it by, and its tooltip.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct IconChoice {
+    pub icon: Icon,
+    pub flipped: bool,
+    pub said: String,
+    pub tip: String,
+}
+
+/// A choice of a few drawn as icons (`.seg` with `role="radiogroup"`, each `role="radio"`):
+/// each of `choices`, the `chosen` one on and checked, each a radio button named by its
+/// words, its tooltip its `tip`, sharing the width; the one clicked, if one was. Off unless
+/// `enabled`.
+pub(crate) fn segmented_icons(
+    ui: &mut Ui,
+    choices: &[IconChoice],
+    chosen: usize,
+    enabled: bool,
+) -> Option<usize> {
+    segments(
+        ui,
+        choices.len(),
+        chosen,
+        enabled,
+        |place| {
+            (
+                WidgetType::RadioButton,
+                choices.get(place).map_or("", |choice| choice.said.as_str()),
+                choices.get(place).map(|choice| choice.tip.as_str()),
+            )
+        },
+        |ui, place, rect, ink| {
+            if let Some(choice) = choices.get(place) {
+                let side = IconSize::Small.points();
+                let at = Rect::from_center_size(rect.center(), Vec2::splat(side));
+                let uv = if choice.flipped {
+                    Rect::from_min_max(pos2(0.0, 1.0), pos2(1.0, 0.0))
+                } else {
+                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0))
+                };
+                choice
+                    .icon
+                    .image(IconSize::Small)
+                    .uv(uv)
+                    .tint(ink)
+                    .paint_at(ui, at);
+            }
+        },
+    )
+}
+
+/// `.seg`: `count` buttons sharing the width in Gray.200 (`SEGMENTED_BG`), the `chosen` one
+/// on (`SEGMENTED_ON_BG`), each named as `named` says and painted by `paint` in its ink;
+/// the one clicked, if one was. Off unless `enabled`.
+fn segments<'a>(
+    ui: &mut Ui,
+    count: usize,
+    chosen: usize,
+    enabled: bool,
+    named: impl Fn(usize) -> (WidgetType, &'a str, Option<&'a str>),
+    paint: impl Fn(&mut Ui, usize, Rect, Color32),
+) -> Option<usize> {
     let (rect, _) = ui.allocate_exact_size(
         vec2(
             ui.available_width(),
@@ -2066,10 +2152,10 @@ pub(crate) fn segmented(
     ui.painter()
         .rect_filled(rect, theme::SMALL_CORNER_RADIUS, theme::SEGMENTED_BG);
     let inner = rect.shrink(theme::SEGMENTED_PADDING);
-    let count = options.len().max(1) as f32;
-    let width = (inner.width() - (count - 1.0) * theme::SEGMENTED_PADDING) / count;
+    let shares = count.max(1) as f32;
+    let width = (inner.width() - (shares - 1.0) * theme::SEGMENTED_PADDING) / shares;
     let mut clicked = None;
-    for (place, shown) in options.iter().enumerate() {
+    for place in 0..count {
         let at = Rect::from_min_size(
             pos2(
                 inner.left() + place as f32 * (width + theme::SEGMENTED_PADDING),
@@ -2078,14 +2164,13 @@ pub(crate) fn segmented(
             vec2(width, theme::SEGMENTED_HEIGHT),
         );
         let on = place == chosen;
+        let (kind, said, tip) = named(place);
         let response = ui
             .scope_builder(UiBuilder::new().max_rect(at), |ui| {
                 ui.add_enabled_ui(enabled, |ui| {
                     let (rect, response) = ui.allocate_exact_size(at.size(), Sense::click());
                     let enabled = ui.is_enabled();
-                    response.widget_info(|| {
-                        WidgetInfo::selected(WidgetType::SelectableLabel, enabled, on, shown)
-                    });
+                    response.widget_info(|| WidgetInfo::selected(kind, enabled, on, said));
                     let ink = if on {
                         ui.painter().rect_filled(
                             rect,
@@ -2105,10 +2190,11 @@ pub(crate) fn segmented(
                         theme::SEGMENTED_CORNER_RADIUS,
                         StrokeKind::Outside,
                     );
-                    let galley = ui.painter().layout_job(body(shown, ink));
-                    ui.painter()
-                        .galley(rect.center() - galley.size() / 2.0, galley, ink);
-                    response
+                    paint(ui, place, rect, ink);
+                    match tip {
+                        Some(tip) => crate::bar::tooltip(response, tip, None, None),
+                        None => response,
+                    }
                 })
                 .inner
             })
@@ -2207,6 +2293,135 @@ mod tests {
         });
         crate::modal::tests::drawn_alike_behind(|ui, on| {
             segmented(ui, &options, 1, on);
+        });
+    }
+
+    #[test]
+    fn a_pads_direction_is_two_radios_in_a_seg_the_chosen_one_filled_reversed_upside_down() {
+        // styles.css: `.seg { background: var(--g200); border-radius: var(--r-sm); padding:
+        // 1px; gap: 1px }`; `.seg button { flex: 1; height: 20px; border-radius: 3px }`;
+        // `.seg button.on { background: var(--g350) }`. In a 167 wide column, by hand: the
+        // seg 167 by 22, each button (165 − 1) / 2 = 82 wide, the second 1 after the first.
+        // app.js's `dlgRev`: Normal the pad icon, Reversed the same upside down
+        // (`transform: scaleY(-1)`), each `data-tip` its words and its way.
+        let ways = ["\u{2212}Y".to_owned(), "+Y".to_owned()];
+        let choices = crate::dialog::direction_choices(Some(&ways));
+        assert_eq!(
+            choices
+                .iter()
+                .map(|choice| (
+                    choice.icon,
+                    choice.flipped,
+                    choice.said.as_str(),
+                    choice.tip.as_str()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                (Icon::Pad, false, "Normal", "Normal (\u{2212}Y)"),
+                (Icon::Pad, true, "Reversed", "Reversed (+Y)"),
+            ]
+        );
+        // Its ways not known yet: its words alone.
+        let unknown = crate::dialog::direction_choices(None);
+        assert_eq!(
+            (unknown[0].tip.as_str(), unknown[1].tip.as_str()),
+            ("Normal", "Reversed")
+        );
+        let top = Pos2::new(10.0, 10.0);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(200.0, 60.0))
+            .build_ui_state(
+                move |ui, chosen: &mut usize| {
+                    let column = Rect::from_min_size(top, Vec2::new(167.0, 40.0));
+                    ui.scope_builder(UiBuilder::new().max_rect(column), |ui| {
+                        if let Some(place) = segmented_icons(ui, &choices, *chosen, true) {
+                            *chosen = place;
+                        }
+                    });
+                },
+                0_usize,
+            );
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let seg = Rect::from_min_size(top, Vec2::new(167.0, 22.0));
+        let first = Rect::from_min_size(top + Vec2::splat(1.0), Vec2::new(82.0, 20.0));
+        let second = first.translate(Vec2::new(83.0, 0.0));
+        sized(widget(&h, Role::RadioButton, "Normal"), first, "Normal");
+        sized(
+            widget(&h, Role::RadioButton, "Reversed"),
+            second,
+            "Reversed",
+        );
+        use egui_kittest::kittest::NodeT;
+        let toggled = |h: &Harness<'_, usize>, way: &str| {
+            h.get_by_role_and_label(Role::RadioButton, way)
+                .accesskit_node()
+                .toggled()
+        };
+        use egui::accesskit::Toggled;
+        assert_eq!(toggled(&h, "Normal"), Some(Toggled::True));
+        assert_eq!(toggled(&h, "Reversed"), Some(Toggled::False));
+        assert_eq!(
+            fills_at(&h, seg),
+            [(
+                theme::SEGMENTED_BG,
+                CornerRadius::same(theme::SMALL_CORNER_RADIUS)
+            )]
+        );
+        assert_eq!(
+            fills_at(&h, first),
+            [(
+                theme::SEGMENTED_ON_BG,
+                CornerRadius::same(theme::SEGMENTED_CORNER_RADIUS)
+            )]
+        );
+        assert!(fills_at(&h, second).is_empty());
+        // Each icon at its button's centre, Small; Reversed's drawn upside down (its image's
+        // rows read from the bottom).
+        let icons: Vec<(Rect, Rect, Color32)> = rects(&h)
+            .into_iter()
+            .filter_map(|shape| {
+                let brush = shape.brush.as_ref()?;
+                Some((shape.rect, brush.uv, shape.fill))
+            })
+            .collect();
+        let side = IconSize::Small.points();
+        let at = |button: Rect| Rect::from_center_size(button.center(), Vec2::splat(side));
+        assert_eq!(icons.len(), 2, "{icons:?}");
+        sized(icons[0].0, at(first), "Normal's icon");
+        sized(icons[1].0, at(second), "Reversed's icon");
+        // Normal's image read top to bottom; Reversed's bottom to top (its top edge reads
+        // the image's bottom row).
+        assert_eq!(
+            (
+                icons[0].1.min.y,
+                icons[0].1.max.y,
+                icons[1].1.min.y,
+                icons[1].1.max.y
+            ),
+            (0.0, 1.0, 1.0, 0.0)
+        );
+        // Each in its ink: the one on Gray.1000's strong text, the other subdued.
+        assert_eq!(
+            (icons[0].2, icons[1].2),
+            (theme::SEGMENTED_ON_TEXT, theme::SEGMENTED_TEXT)
+        );
+        // Reversed clicked: chosen, and filled in Normal's place.
+        h.get_by_role_and_label(Role::RadioButton, "Reversed")
+            .click();
+        h.run();
+        assert_eq!(*h.state(), 1);
+        assert_eq!(toggled(&h, "Reversed"), Some(Toggled::True));
+        assert!(fills_at(&h, first).is_empty());
+        assert_eq!(
+            fills_at(&h, second),
+            [(
+                theme::SEGMENTED_ON_BG,
+                CornerRadius::same(theme::SEGMENTED_CORNER_RADIUS)
+            )]
+        );
+        crate::modal::tests::drawn_alike_behind(|ui, on| {
+            segmented_icons(ui, &crate::dialog::direction_choices(None), 0, on);
         });
     }
 
