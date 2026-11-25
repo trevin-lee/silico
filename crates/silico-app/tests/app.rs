@@ -39,17 +39,17 @@ use ui::{
     added, advance, animation_time, answer_question, anywhere, apply_look, arrow_dots,
     arrow_shafts, begin_sketch_on, body_of, boxed, button_event, choose, chosen, click_as_a_person,
     click_in_one_frame, click_over_two_frames, close_window, create, create_sketch, cursor, dialog,
-    dialog_length, dialog_open, double_click, drag, edit_plates_pad, every_face, everything,
-    f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front, hand_clock,
-    hover_item, image_centre, in_status_bar, is_settled, lavapipe_render_state, leave_sketch,
-    leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled, modify,
-    modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe, open_export,
-    pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front, pointer_away,
-    press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked, save_as_of,
-    select, selected_names, settled, shapes_painted, sketch_mode, sketch_read, sorted_fields,
-    stand_in_sessions, step, step_until, tab_named, tessellated, text_of, the_viewport,
-    tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view, view_direction,
-    view_label, view_label_node, view_mut, wheel, window_told, written,
+    dialog_length, dialog_open, direction, double_click, drag, edit_plates_pad, every_face,
+    everything, f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front,
+    hand_clock, hover_item, image_centre, in_status_bar, is_settled, lavapipe_render_state,
+    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
+    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
+    open_export, pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front,
+    pointer_away, press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked,
+    save_as_of, select, selected_names, settled, shapes_painted, sketch_mode, sketch_read,
+    sorted_fields, stand_in_sessions, step, step_until, tab_named, tessellated, text_of,
+    the_viewport, tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view,
+    view_direction, view_label, view_label_node, view_mut, wheel, window_told, written,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -7313,6 +7313,151 @@ fn enter_is_ok_and_esc_is_cancel() {
 }
 
 #[test]
+fn a_pads_direction_is_the_prototypes_segmented_normal_and_reversed_each_saying_its_way() {
+    // app.js's `renderDialog` for a pad: Direction, a `.seg` `role="radiogroup"` of two
+    // `role="radio"` buttons, Normal on and Reversed off at first, each with its way in its
+    // tooltip (`data-tip`, `Normal (−Y)` for the prototype's sketch on XZ). The triangle is
+    // on XY, whose normal is +Z: Normal sweeps +Z, Reversed −Z (by hand, the core's rule).
+    // No Reversed check box. Each chosen writes `reversed`, as the flip arrow does.
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    open_pad_on_triangle(&mut h);
+    added(&mut h);
+    settled(&mut h);
+    let toggled = |h: &AppHarness, way: &str| {
+        dialog(h)
+            .get_by_role_and_label(Role::RadioButton, way)
+            .accesskit_node()
+            .toggled()
+    };
+    use eframe::egui::accesskit::Toggled;
+    assert_eq!(toggled(&h, "Normal"), Some(Toggled::True));
+    assert_eq!(toggled(&h, "Reversed"), Some(Toggled::False));
+    assert!(
+        dialog(&h)
+            .query_by_role_and_label(Role::CheckBox, "Reversed")
+            .is_none()
+    );
+    assert!(dialog(&h).query_by_label("Direction").is_some());
+    // Side by side, Normal left of Reversed, on the Direction row's line.
+    let (normal, reversed) = (
+        dialog(&h)
+            .get_by_role_and_label(Role::RadioButton, "Normal")
+            .rect(),
+        dialog(&h)
+            .get_by_role_and_label(Role::RadioButton, "Reversed")
+            .rect(),
+    );
+    assert!(normal.right() < reversed.left(), "{normal:?} {reversed:?}");
+    assert_eq!(normal.height(), 20.0);
+    assert_eq!(normal.width(), reversed.width());
+    for (way, said) in [
+        ("Normal", "Normal (+Z)"),
+        ("Reversed", "Reversed (\u{2212}Z)"),
+    ] {
+        pointer_away(&mut h);
+        dialog(&h)
+            .get_by_role_and_label(Role::RadioButton, way)
+            .hover();
+        step_until(&mut h, said, |h| tooltip_shown(h, said));
+    }
+    // Normal clicked, chosen already: nothing changes, nothing is sent.
+    let edits = h.state().tabs()[0].edits.sent;
+    direction(&mut h, "Normal");
+    settled(&mut h);
+    assert_eq!(toggled(&h, "Normal"), Some(Toggled::True));
+    assert_eq!(h.state().tabs()[0].edits.sent, edits);
+    direction(&mut h, "Reversed");
+    settled(&mut h);
+    assert_eq!(toggled(&h, "Reversed"), Some(Toggled::True));
+    assert_eq!(toggled(&h, "Normal"), Some(Toggled::False));
+    assert_eq!(
+        written(&f.sessions, &h, "Pad", "extent"),
+        Some(Plain::of(
+            &json::read(br#"{"type": "one_side", "length": 10, "reversed": true}"#).unwrap()
+        ))
+    );
+    direction(&mut h, "Normal");
+    settled(&mut h);
+    assert_eq!(toggled(&h, "Normal"), Some(Toggled::True));
+    assert_eq!(
+        written(&f.sessions, &h, "Pad", "extent"),
+        Some(Plain::of(
+            &json::read(br#"{"type": "one_side", "length": 10, "reversed": false}"#).unwrap()
+        ))
+    );
+    // A pocket keeps its Reversed toggle: the prototype draws no direction for one.
+    // Cancel, not Esc: Esc stops a preview's rebuild first, if one runs.
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    open_sweep_on_triangle(&mut h, "Pocket");
+    added(&mut h);
+    choose(&mut h, "Extent", "Through all");
+    step_until(&mut h, "its Reversed", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::CheckBox, "Reversed")
+            .is_some()
+    });
+    assert!(
+        dialog(&h)
+            .query_by_role_and_label(Role::RadioButton, "Reversed")
+            .is_none()
+    );
+    // So does a revolve.
+    // Cancel, not Esc: Esc stops a preview's rebuild first, if one runs.
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    open_sweep_on_triangle(&mut h, "Revolve");
+    added(&mut h);
+    step_until(&mut h, "its Reversed", |h| {
+        dialog(h)
+            .query_by_role_and_label(Role::CheckBox, "Reversed")
+            .is_some()
+    });
+    assert!(
+        dialog(&h)
+            .query_by_role_and_label(Role::RadioButton, "Reversed")
+            .is_none()
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_pad_on_xz_says_its_direction_normal_minus_y_and_reversed_plus_y() {
+    // The prototype's own example: a pad on XZ, whose normal is −Y (by hand: XZ's x is +X
+    // and its y +Z, so x × y is −Y). Its dialog (Edit Feature of the parameters part's pad)
+    // says Normal (−Y) and Reversed (+Y), as its Direction row in the parameters pane does.
+    let f = fixture();
+    let (mut h, _) = f.opened("parameters.silico", PARAMETERS_PART);
+    step_until(&mut h, "its features", |h| {
+        shows(h, "Timeline", "Plate pad")
+    });
+    double_click(&mut h, "Timeline", "Plate pad");
+    step_until(&mut h, "its dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
+    });
+    settled(&mut h);
+    for (way, said) in [
+        ("Normal", "Normal (\u{2212}Y)"),
+        ("Reversed", "Reversed (+Y)"),
+    ] {
+        pointer_away(&mut h);
+        dialog(&h)
+            .get_by_role_and_label(Role::RadioButton, way)
+            .hover();
+        step_until(&mut h, said, |h| tooltip_shown(h, said));
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back() {
     let f = fixture();
     let (mut h, _) = f.opened("example.silico", SKETCHED_EXAMPLE);
@@ -7328,10 +7473,7 @@ fn after_ok_one_undo_takes_back_the_dialogs_edits_and_one_redo_gives_them_back()
     type_in(&mut h, In::Dialog, "Length", "1");
     settled(&mut h);
     let edits = h.state().tabs()[0].edits.sent;
-    dialog(&h)
-        .get_by_role_and_label(Role::CheckBox, "Reversed")
-        .click();
-    step(&mut h);
+    direction(&mut h, "Reversed");
     settled(&mut h);
     assert_eq!(h.state().tabs()[0].edits.sent, edits + 1);
     dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
@@ -7866,6 +8008,16 @@ fn a_dialog_and_create_are_off_while_the_tab_closes() {
             .accesskit_node()
             .is_disabled()
     );
+    // Its Direction's choices off too.
+    for way in ["Normal", "Reversed"] {
+        assert!(
+            dialog(&h)
+                .get_by_role_and_label(Role::RadioButton, way)
+                .accesskit_node()
+                .is_disabled(),
+            "{way}"
+        );
+    }
     hold.release();
     check.wait();
     assert_eq!(never_waits::waits(), 0);
@@ -9061,10 +9213,10 @@ fn edit_feature_of_a_reversed_pad_loads_it_reversed_and_sends_nothing() {
     step_until(&mut h, "its dialog", |h| {
         h.query_by_role_and_label(Role::Dialog, "Pad").is_some()
     });
-    // The box found by its own name, its row's key (Main's N3).
+    // Its Direction's Reversed found by its own words, on (Main's N3).
     assert_eq!(
         dialog(&h)
-            .get_by_role_and_label(Role::CheckBox, "Reversed")
+            .get_by_role_and_label(Role::RadioButton, "Reversed")
             .accesskit_node()
             .toggled(),
         Some(eframe::egui::accesskit::Toggled::True)
@@ -37782,12 +37934,165 @@ fn row_value(h: &AppHarness, key: &str) -> Option<String> {
     })
 }
 
+/// Frames stepped until the first tab's timeline is read, its panes drawn.
+fn timeline_read(h: &mut AppHarness) {
+    step_until(h, "the timeline read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    step(h);
+}
+
 /// Frames stepped until row `key` shows `value`.
 #[track_caller]
 fn row_until(h: &mut AppHarness, key: &str, value: &str) {
     step_until(h, &format!("{key}: {value}"), |h| {
         row_value(h, key).as_deref() == Some(value)
     });
+}
+
+#[test]
+fn the_documents_model_shows_its_bodies_volume_area_and_faces_added_and_the_box_around_them() {
+    // `docProps`' MODEL section, with nothing selected. By hand, from BLOCK_AND_PLATE: the
+    // block 40 × 20 × 10 at the origin, 8000 mm³ and 2·(800 + 400 + 200) = 2800 mm²; the
+    // plate 10 × 10 × 2 from x = 50, 200 mm³ and 2·(100 + 20 + 20) = 280 mm². Together
+    // 8200 mm³ and 3080 mm², 6 faces each, and the box around both from (0, 0, 0) to
+    // (60, 20, 10).
+    let f = fixture();
+    let (mut h, _) = f.drawn("blocks.silico", BLOCK_AND_PLATE);
+    timeline_read(&mut h);
+    row_until(&mut h, "Volume", "8,200.00 mm³");
+    row_until(&mut h, "Area", "3,080.00 mm²");
+    row_until(&mut h, "Size", "60 × 20 × 10 mm");
+    row_until(&mut h, "Faces", "12");
+    assert_eq!(row_value(&h, "Bodies").as_deref(), Some("2"));
+    let reads = h.state().tabs()[0].model_measures().reads();
+    // Another client moves the plate to x = 70 and makes the block 45 long: 9000 + 200 =
+    // 9200 mm³, 2·(900 + 450 + 200) + 280 = 3380 mm², and the box from x = 0 to 80.
+    let id = h.state().tabs()[0].id;
+    let plate = silico_core::document::FeatureId::new("p2t8wn4c").unwrap();
+    let block = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+    let revision = h.state().tabs()[0].revision;
+    let moved = f.sessions.set_field(
+        &id,
+        revision,
+        plate,
+        "position".to_owned(),
+        json::read(b"[70, 0, 0]").unwrap(),
+    );
+    let moved = moved.wait();
+    moved.result.unwrap();
+    f.sessions
+        .set_field(
+            &id,
+            moved.session.unwrap().revision,
+            block,
+            "length".to_owned(),
+            json::read(b"45").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    row_until(&mut h, "Volume", "9,200.00 mm³");
+    row_until(&mut h, "Area", "3,380.00 mm²");
+    row_until(&mut h, "Size", "80 × 20 × 10 mm");
+    row_until(&mut h, "Faces", "12");
+    assert!(h.state().tabs()[0].model_measures().reads() > reads);
+    // With an element selected, the selection's view shows, and the model isn't read again
+    // when it changes.
+    select_in_box(&mut h, &["Face6"]);
+    let reads = h.state().tabs()[0].model_measures().reads();
+    let revision = h.state().tabs()[0].revision;
+    f.sessions
+        .set_field(
+            &id,
+            revision,
+            silico_core::document::FeatureId::new("p2t8wn4c").unwrap(),
+            "height".to_owned(),
+            json::read(b"3").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    settled_with_model(&mut h);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].model_measures().reads(), reads);
+    // Cleared: the document's view reads the new model. The plate 3 high: 300 mm³ and
+    // 2·(100 + 30 + 30) = 320 mm², with the block's 9000 and 2700.
+    h.state_mut().tabs_mut()[0].selection_mut().clear();
+    row_until(&mut h, "Volume", "9,300.00 mm³");
+    row_until(&mut h, "Area", "3,420.00 mm²");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_body_the_kernel_couldnt_box_has_no_size_row() {
+    // Every summary answered with no box: the block measured (8000 mm³, 2400 mm²) but
+    // never boxed, so its Size row is left out, never said to be coming.
+    let f = fixture();
+    unmeasured(&f);
+    let (mut h, _) = f.drawn("unmeasured.silico", UNMEASURED);
+    timeline_read(&mut h);
+    row_until(&mut h, "Volume", "8,000.00 mm³");
+    row_until(&mut h, "Area", "2,400.00 mm²");
+    row_until(&mut h, "Faces", "6");
+    step_until(&mut h, "the viewport's read of the model", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.view.bodies_of() == tab.published_model()
+    });
+    step(&mut h);
+    assert_eq!(row_value(&h, "Size"), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_refused_document_measure_asks_a_frame_for_when_its_read_is_asked_again() {
+    // The kernel measures the block past what a measure holds: `mass_properties` is refused
+    // (Volume and Area left out), `query` answers (Faces 6). The viewport's clock stopped,
+    // so the refused read is due 250 ms (`RETRY_FIRST`) from the frame that took its
+    // refusal, and the panel asks for a frame no later than that.
+    use silico_app::viewport::RETRY_FIRST;
+    let f = fixture();
+    f.kernel.answer_instead(|op| {
+        matches!(op, Op::Summarize { .. }).then(|| {
+            silico_protocol::Reply::Summary(silico_protocol::ShapeSummary {
+                volume: 1e300,
+                area: 2800.0,
+                center: [20.0, 10.0, 5.0],
+                faces: 6,
+                edges: 12,
+                vertices: 8,
+                bounds: Some([[0.0; 3], [40.0, 20.0, 10.0]]),
+                valid: true,
+            })
+        })
+    });
+    let (time, clock) = hand_clock();
+    let (mut h, _) = f.drawn_clocked("box.silico", A_BOX, clock);
+    timeline_read(&mut h);
+    row_until(&mut h, "Faces", "6");
+    step_until(&mut h, "the volume's refusal taken", |h| {
+        h.state().tabs()[0].model_measures().retry_at().is_some()
+    });
+    step(&mut h);
+    assert_eq!(row_value(&h, "Volume"), None);
+    // Then: nothing else asks for a frame sooner, the clock stopped (without the panel's
+    // ask, the next frame is the idle one, 1.1 s off), and never at once. egui gives the
+    // delay from the frame's own time, a frame (1/60 s) on from the clock's.
+    let delay = repaint_delay(&h).unwrap();
+    let frame = Duration::from_secs_f64(1.0 / 60.0);
+    assert!(
+        delay <= RETRY_FIRST && delay > RETRY_FIRST - 2 * frame,
+        "{delay:?}"
+    );
+    // Due: its read asked again, at the next frame.
+    let reads = h.state().tabs()[0].model_measures().reads();
+    advance(&time, RETRY_FIRST);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].model_measures().reads(), reads + 1);
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
@@ -46904,6 +47209,7 @@ fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_with_no_k
         [
             ("Select Other… 2 under the pointer".to_owned(), None, true),
             ("Edit Block".to_owned(), None, true),
+            ("Copy name as agents write it".to_owned(), None, true),
             ("Hide Block".to_owned(), None, true),
         ]
     );
@@ -46920,6 +47226,376 @@ fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_with_no_k
         ))
     });
     assert!(!select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Edge `n` of the block hovered at `at` and right-clicked there, its context menu open.
+fn context_over_edge(h: &mut AppHarness, record: &Record, at: eframe::egui::Pos2, n: u32) {
+    use silico_app::renderer::Element::Edge;
+    answering(record, None, Some((1, Edge(n), pixel_at(h, at))));
+    h.hover_at(at);
+    let name = format!("k7f2qx3m.box.Edge{n}");
+    step_until(h, &format!("{name} hovered"), |h| {
+        hover_name(h).as_deref() == Some(name.as_str())
+    });
+    context_at(h, at);
+}
+
+#[test]
+fn over_an_edge_the_context_menu_has_fillet_then_copy_name_which_copies_its_name() {
+    // js/interact.js's `onContext` over an edge: Edit and its maker, Fillet, the separator,
+    // Copy name ("as agents write it"), and Hide. Copy name puts the edge's name, as an
+    // agent writes a fillet's edges, on the clipboard, and closes the menu.
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    context_over_edge(&mut h, &record, at, 12);
+    let menu = select_other(&h).context().unwrap();
+    assert_eq!(menu.head.as_deref(), Some("Edge12 · Edge"));
+    assert_eq!(
+        context_said(&h)[1..],
+        [
+            ("Edit Block".to_owned(), None, true),
+            ("Fillet".to_owned(), None, true),
+            ("Copy name as agents write it".to_owned(), None, true),
+            ("Hide Block".to_owned(), None, true),
+        ]
+    );
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Copy name as agents write it")
+        .click();
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("k7f2qx3m.box.Edge12"));
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    // Nothing selected, nothing opened.
+    assert!(selected_names(&h).is_empty());
+    assert!(!h.state().tabs()[0].in_dialog());
+    // Over a face, Copy name copies the face's name, and there's no Fillet.
+    use silico_app::renderer::Element::Face;
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    context_at(&mut h, at);
+    assert!(context_said(&h).iter().all(|(said, _, _)| said != "Fillet"));
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Copy name as agents write it")
+        .click();
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("k7f2qx3m.box.Face6"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_fillet_opens_the_fillet_dialog_with_the_edge_selected_or_the_selection_holding_it()
+ {
+    // MODIFY's Fillet, of the edge under the pointer: not selected, it's selected in place of
+    // the selection (as a click there selects it) and the dialog's Edges box takes it alone;
+    // selected already, the selection is kept, and the box takes every edge of it, in the
+    // order picked. With the dialog open, Fillet is off, saying why, as MODIFY's is.
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    let fillet = |h: &mut AppHarness| {
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Fillet")
+            .click();
+        step_until(h, "the fillet dialog", |h| {
+            h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+        });
+        assert!(!select_other(h).is_open());
+    };
+    // Edge3 selected; Fillet over Edge12, not selected: Edge12 alone.
+    select_in_box(&mut h, &["Edge3"]);
+    context_over_edge(&mut h, &record, at, 12);
+    fillet(&mut h);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge12"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge12"]);
+    // Open, Fillet is off, saying why.
+    context_over_edge(&mut h, &record, at, 5);
+    let item = select_other(&h).context().unwrap().items[2].clone();
+    assert_eq!(item.label, "Fillet");
+    assert_eq!(item.off.as_deref(), Some("Close the open dialog first"));
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Fillet")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    // Edge3 and Edge12 selected; Fillet over Edge12, held: both, in the order picked.
+    select_in_box(&mut h, &["Edge3", "Edge12"]);
+    context_over_edge(&mut h, &record, at, 12);
+    fillet(&mut h);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge12"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// [`FUSED`], then a 2 mm cube, Cap, fused onto Fused as Capped: the cube's Edge1 the same
+/// edge as Fused's (`aliasing_edge_fuse`), so Capped's Edge1 is named by its own name,
+/// `rrrrrrrr.fuse.Edge1` (unstable: Fused's numbering fuse kept no name for it), with the
+/// stable alias `cccccccc.box.Edge1`.
+const ALIASED: &str = r#"{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 6,
+  "features": [
+    {"id": "aaaaaaaa", "type": "box", "v": 1, "name": "Base", "position": [0, 0, 0], "length": 1, "width": 1, "height": 1},
+    {"id": "bbbbbbbb", "type": "box", "v": 1, "name": "Tool", "position": [5, 0, 0], "length": 1, "width": 1, "height": 1},
+    {"id": "rrrrrrrr", "type": "fuse", "v": 1, "name": "Fused", "base": "aaaaaaaa", "tool": "bbbbbbbb"},
+    {"id": "cccccccc", "type": "box", "v": 1, "name": "Cap", "position": [9, 0, 0], "length": 2, "width": 2, "height": 2},
+    {"id": "ssssssss", "type": "fuse", "v": 1, "name": "Capped", "base": "rrrrrrrr", "tool": "cccccccc"}
+  ]
+}
+"#;
+
+/// A fuse that keeps every element of its base, and its tool's Edge1 as the result's Edge1:
+/// one edge, two derivations.
+fn aliasing_edge_fuse() -> silico_core::kernel::History {
+    use silico_core::kernel::{ElementCounts, ElementFate, History, InputHistory, Topology};
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        ..ElementFate::default()
+    };
+    let mut tool_edges = vec![ElementFate::default(); 12];
+    tool_edges[0] = kept(1);
+    History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: (1..=12).map(kept).collect(),
+                vertices: (1..=8).map(kept).collect(),
+            },
+            InputHistory {
+                faces: vec![ElementFate::default(); 6],
+                edges: tool_edges,
+                vertices: vec![ElementFate::default(); 8],
+            },
+        ],
+        result: ElementCounts {
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            solids: 1,
+        },
+        ends: Default::default(),
+        topology: Topology {
+            face_edges: vec![vec![]; 6],
+            outer_edges: vec![vec![]; 6],
+            edge_vertices: vec![vec![]; 12],
+            solid_faces: vec![(1..=6).collect()],
+        },
+    }
+}
+
+/// [`ALIASED`] seen from above, its one body meshed as the box is, Capped's Edge1 hovered at
+/// the point returned.
+fn aliased_edge_hovered(f: &Fixture) -> (AppHarness, Record, eframe::egui::Pos2) {
+    use silico_app::renderer::Element::Edge;
+    fusing(f, |tool| {
+        if tool.contains("box(2,") {
+            aliasing_edge_fuse()
+        } else {
+            numbering_fuse()
+        }
+    });
+    let (mut h, record) = from_above_made(f, "aliased.silico", ALIASED, None);
+    boxes_made(&mut h);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    answering(&record, None, Some((1, Edge(1), pixel_at(&h, at))));
+    h.hover_at(at);
+    step_until(&mut h, "Edge1 hovered", |h| {
+        hover_name(h).as_deref() == Some("rrrrrrrr.fuse.Edge1")
+    });
+    (h, record, at)
+}
+
+#[test]
+fn copy_name_over_an_edge_unstable_by_its_own_name_copies_the_stable_alias_the_selection_holds() {
+    // The prototype's `ref.stable || h.id`, as the selection view's Stable name: an edge
+    // whose own name is unstable is copied by its stable alias, which a store takes, as a
+    // click on it is held by it.
+    let f = fixture();
+    let (mut h, _record, at) = aliased_edge_hovered(&f);
+    context_at(&mut h, at);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Copy name as agents write it")
+        .click();
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("cccccccc.box.Edge1"));
+    // As a click on it holds it.
+    h.state_mut().tabs_mut()[0]
+        .selection_mut()
+        .pick("rrrrrrrr.fuse.Edge1", silico_app::selection::How::Replace);
+    selected_until(&mut h, &["cccccccc.box.Edge1"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_fillet_over_an_edge_held_by_its_alias_keeps_the_selection() {
+    // The selection holds Capped's Edge1 by its stable alias, and Base's Edge2: Fillet over
+    // the edge, hovered by its own name, finds it held (the same element of the same solid),
+    // so the selection is kept and the box takes both.
+    use silico_app::selection::How;
+    let f = fixture();
+    let (mut h, _record, at) = aliased_edge_hovered(&f);
+    {
+        let selection = h.state_mut().tabs_mut()[0].selection_mut();
+        selection.pick("cccccccc.box.Edge1", How::Replace);
+        selection.pick("aaaaaaaa.box.Edge2", How::Toggle);
+    }
+    selected_until(&mut h, &["cccccccc.box.Edge1", "aaaaaaaa.box.Edge2"]);
+    h.hover_at(at);
+    step_until(&mut h, "Edge1 hovered", |h| {
+        hover_name(h).as_deref() == Some("rrrrrrrr.fuse.Edge1")
+    });
+    context_at(&mut h, at);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    step_until(&mut h, "the fillet dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+    });
+    boxed_until(&mut h, &["cccccccc.box.Edge1", "aaaaaaaa.box.Edge2"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_fillet_opens_at_the_radius_last_okd_as_modifys_does() {
+    // The app's remembered inputs: a fillet OK'd at 2.5 mm, then Fillet from the menu over
+    // another edge opens at 2.5, not the first 1.
+    use silico_app::renderer::Element::Edge;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    context_over_edge(&mut h, &record, at, 12);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    step_until(&mut h, "the fillet dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+    });
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge12"]);
+    added(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("1")
+    );
+    retype(&mut h, In::Dialog, "Radius", "2.5");
+    settled(&mut h);
+    dialog(&h).get_by_role_and_label(Role::Button, "OK").click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    settled(&mut h);
+    step_until(&mut h, "the meshes read", |h| {
+        !view(h).reading() && meshes_current(h)
+    });
+    boxes_made(&mut h);
+    let body = *view(&h).bodies().keys().next().unwrap();
+    answering(&record, None, Some((body, Edge(5), pixel_at(&h, at))));
+    h.hover_at(at);
+    step_until(&mut h, "Edge5 hovered", |h| {
+        hover_name(h).is_some_and(|name| name.ends_with("Edge5"))
+    });
+    context_at(&mut h, at);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    step_until(&mut h, "the fillet dialog", |h| {
+        h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+    });
+    assert_eq!(
+        field(&h, In::Dialog, "Radius").value().as_deref(),
+        Some("2.5")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_fillet_after_the_gate_refused_the_document_says_why_and_leaves_the_selection()
+{
+    // The menu open over Edge12 with Fillet on, Edge3 selected; then another program writes
+    // the file as a document the gate refuses (a box −40 long), which the tab reloads and
+    // which publishes no model, so the menu stays open. Fillet chosen: its dialog can't open
+    // now, so it says the feature menus' reason, and neither selects the edge nor opens a
+    // dialog.
+    let f = fixture_reading(Some(Arc::new(plain_read)));
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    select_in_box(&mut h, &["Edge3"]);
+    context_over_edge(&mut h, &record, at, 12);
+    assert_eq!(context_said(&h)[2], ("Fillet".to_owned(), None, true));
+    f.file(
+        "box.silico",
+        &A_BOX.replace(r#""length": 40"#, r#""length": -40"#),
+    );
+    step_until(&mut h, "the gate's refusal read", |h| {
+        h.state().tabs()[0]
+            .timeline
+            .as_ref()
+            .is_some_and(|timeline| timeline.problems > 0)
+    });
+    assert!(select_other(&h).is_open(), "the menu still open");
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    toasted(&mut h, silico_app::tab::UNMENDED);
+    assert!(!h.state().tabs()[0].in_dialog());
+    assert_eq!(selected_names(&h), ["k7f2qx3m.box.Edge3"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_fillet_over_a_held_edge_with_a_face_selected_takes_the_edge_and_says_the_face()
+{
+    // /break-it: the selection holds the top and Edge12, and Fillet is chosen over Edge12,
+    // held: the selection is kept, and the Edges box takes the edge alone, saying the face
+    // isn't taken, as MODIFY's Fillet does with the same selection.
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    select_in_box(&mut h, &["Face6", "Edge12"]);
+    context_over_edge(&mut h, &record, at, 12);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge12"]);
+    assert_eq!(
+        box_said(&h).as_deref(),
+        Some("1 face left out: a fillet takes edges")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_copy_name_chosen_by_its_keys_copies_as_its_click_does() {
+    // /break-it: down from none lit steps Select Other…, Edit Block, Fillet, and Copy name;
+    // Enter chooses it: the edge's name copied, the menu closed.
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    context_over_edge(&mut h, &record, at, 7);
+    for _ in 0..4 {
+        h.key_press(Key::ArrowDown);
+        step(&mut h);
+    }
+    assert_eq!(select_other(&h).lit(), Some(3));
+    // Its press alone, in a frame of its own (the harness's step gives each event queued a
+    // frame, and keeps the last's output): that frame copies.
+    h.key_down(Key::Enter);
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("k7f2qx3m.box.Edge7"));
+    h.key_up(Key::Enter);
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    assert!(!h.state().tabs()[0].in_dialog());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -47181,6 +47857,7 @@ fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selec
                     Some(silico_app::shortcuts::Command::LookAt.keys_text(&h.ctx)),
                     true
                 ),
+                ("Copy name as agents write it".to_owned(), None, true),
                 ("Hide Block".to_owned(), None, true),
             ]
         );

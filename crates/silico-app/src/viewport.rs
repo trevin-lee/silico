@@ -740,7 +740,7 @@ fn of_the_request(problems: &Problems) -> bool {
 
 /// The delay before a read refused for the moment, the `tries`th in a row (from 0), is
 /// asked again.
-fn retry_after(tries: u32) -> Duration {
+pub(crate) fn retry_after(tries: u32) -> Duration {
     RETRY_FIRST
         .saturating_mul(2u32.saturating_pow(tries))
         .min(RETRY_MOST)
@@ -999,6 +999,14 @@ impl View {
         self.model = Some(of.1);
         self.last_asked = Some(picking.frame);
         self.picked = Some(picking);
+    }
+
+    /// As if its bodies had been read of `of` (a count of the models published, and its
+    /// revision): a property panel's unit tests' view.
+    #[cfg(test)]
+    pub(crate) fn read_as(&mut self, of: (u64, Revision)) {
+        self.read_published = of.0;
+        self.model = Some(of.1);
     }
 
     /// As if another table of bodies had been read, of the same model: a selection's unit
@@ -1888,7 +1896,8 @@ impl Drawing {
         }
     }
 
-    fn now(&self) -> Instant {
+    /// The time, as its clock says it.
+    pub(crate) fn now(&self) -> Instant {
         self.clock
             .as_ref()
             .map_or_else(Instant::now, |clock| clock())
@@ -2056,6 +2065,7 @@ pub fn show<P: Clients + 'static>(
     tab: Option<&mut Tab>,
     sessions: &Arc<Sessions<P>>,
     drawing: &mut Drawing,
+    remembered: &crate::dialog::Remembered,
 ) {
     let rect = ui.available_rect_before_wrap();
     ui.painter().add(canvas_background(rect));
@@ -2357,7 +2367,7 @@ pub fn show<P: Clients + 'static>(
     // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
     // the bar's, registered after, come first. A camera they change is drawn next frame.
     if let Some(mut frame) = view.frame.take() {
-        overlaid(tab, sessions, &painter, &frame);
+        overlaid(tab, sessions, &painter, &frame, remembered);
         // Handed on once: what reads the frame after reads no event again.
         frame.left.clear();
         frame.secondary.clear();
@@ -2487,8 +2497,9 @@ fn overlaid<P: Clients + 'static>(
     sessions: &Arc<Sessions<P>>,
     painter: &egui::Painter,
     frame: &ViewFrame,
+    remembered: &crate::dialog::Remembered,
 ) {
-    tab.overlay(sessions, painter, frame);
+    tab.overlay(sessions, painter, frame, remembered);
     if let Some(watch) = &mut tab.watch {
         watch(painter, frame);
     }
@@ -2508,6 +2519,7 @@ pub fn end_unshown<P: Clients + 'static>(
     drawing: &mut Drawing,
     shown: Option<SessionId>,
     tabs: &mut [Tab],
+    remembered: &crate::dialog::Remembered,
 ) {
     let Some(held) = drawing.left.held.filter(|held| Some(held.session) != shown) else {
         return;
@@ -2558,7 +2570,7 @@ pub fn end_unshown<P: Clients + 'static>(
     // This frame, unshown, takes no table: the release was made on the one its last frame
     // drew, which is the one it holds (`View::table_taken`).
     tab.view.begin_frame();
-    overlaid(tab, sessions, &painter, &frame);
+    overlaid(tab, sessions, &painter, &frame, remembered);
 }
 
 /// A face of the ViewCube: its named view, its outward normal, and the way its label's

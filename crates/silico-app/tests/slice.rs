@@ -735,7 +735,7 @@ fn the_bracket_built_in_the_app_exports_a_printable_3mf_and_a_step_the_oracle_re
         // --- The pad: Length 40, Reversed (+Y: XZ's normal is −Y).
         sweep(h, "Pad", "Bracket profile");
         type_over(h, In::Dialog, "Length", "40");
-        tick(h, "Reversed");
+        direction(h, "Reversed");
         ok(h);
         healthy(h, 2);
         rename(h, "Pad", "Legs");
