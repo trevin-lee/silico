@@ -7576,6 +7576,44 @@ fn a_value_over_a_glyph_is_taken_whatever_their_ids() {
     );
 }
 
+#[test]
+fn every_glyph_is_drawn_under_every_dimensions_value_as_hit_takes_them() {
+    // `hit` lists the glyphs' boxes before the values', taking the last drawn of those as
+    // near: the drawing paints them in that order, whatever their IDs.
+    for read in [
+        dimensioned(),
+        under(rectangle(vec![
+            length("ka000002", "na000001", "40", true),
+            horizontal("ka000003", "na000001"),
+        ])),
+    ] {
+        let drawn = drawn(&read);
+        let last_glyph = drawn
+            .iter()
+            .rposition(|d| matches!(d, Drawn::Glyph { .. }))
+            .unwrap();
+        let first_value = drawn
+            .iter()
+            .position(|d| matches!(d, Drawn::Label { of: Some(_), .. }))
+            .unwrap();
+        assert!(last_glyph < first_value, "{drawn:?}");
+    }
+}
+
+#[test]
+fn of_two_values_at_one_place_the_one_drawn_last_is_hit_with_the_lower_id() {
+    // An edit appends what it adds, so a read's constraints needn't be in their IDs' order:
+    // the 40's value, ka000002, listed and drawn after the 30's at (20, −2.6), is on top.
+    let read = under(rectangle(vec![
+        length("ka000003", "na000001", "30", true),
+        length("ka000002", "na000001", "40", true),
+    ]));
+    assert_eq!(
+        hit(&read, [20.0, -2.6], 0.0, HAND, Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+}
+
 // The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
 // the legend, and the state's dot, each against the prototype (docs/design/m5-ui/:
 // styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's palette). The status
