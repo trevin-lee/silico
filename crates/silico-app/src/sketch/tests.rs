@@ -95,7 +95,7 @@ pub(crate) fn rectangle(constraints: Vec<SketchConstraint>) -> Sketch {
 
 /// `sketch` read as solved, in state `state`, every point and curve `members`, and each
 /// constraint `satisfied` but those `flagged` says.
-fn read(
+pub(crate) fn read(
     sketch: Sketch,
     state: SketchState,
     members: MemberState,
@@ -306,7 +306,7 @@ fn a_sketch_with_no_solution_or_an_invalid_one_colours_every_member_its_way() {
     }
 }
 
-fn length(name: &str, side: &str, value: &str, driving: bool) -> SketchConstraint {
+pub(crate) fn length(name: &str, side: &str, value: &str, driving: bool) -> SketchConstraint {
     constraint(
         name,
         Form::Length {
@@ -8078,6 +8078,177 @@ fn a_glyphs_and_a_values_boxes_are_hit_to_their_edges_and_not_past_them() {
     assert_eq!(found([20.0, -1.6], 0.05), None);
 }
 
+#[test]
+fn values_that_overlap_are_hit_as_drawn_the_one_on_top_taken() {
+    // Issue #599. Two lengths of the bottom side, ka000002's 40 and ka000003's 30: a placed
+    // dimension stores no place, so both values stand at (20, −2.6), as the test above works
+    // out, in boxes of the same size (two characters each), 1.16011 mm either way across and
+    // 0.9 up. They're drawn in the constraints' order, so ka000003's is on top: a click
+    // anywhere inside the two takes it, never the one beneath, and so does a click on their
+    // lines, which coincide as well. The relation's glyph, drawn under both values, is still
+    // taken in its own box, clear of theirs.
+    let read = under(rectangle(vec![
+        horizontal("ka000001", "na000001"),
+        length("ka000002", "na000001", "40", true),
+        length("ka000003", "na000001", "30", true),
+    ]));
+    // The order they're drawn in: the glyph, then the 40's value, then the 30's, at one place.
+    let drawn = drawn(&read);
+    let labels: Vec<(&str, Pos2)> = drawn
+        .iter()
+        .filter_map(|d| match d {
+            Drawn::Label {
+                of: Some(of), at, ..
+            } => Some((of.as_str(), *at)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels.len(), 2);
+    assert_eq!(
+        (labels[0].0, labels[1].0, labels[0].1),
+        ("ka000002", "ka000003", labels[1].1)
+    );
+    let found = |at: [f64; 2], tolerance: f64| {
+        hit(&read, at, tolerance, HAND, Axes::BOTH).map(|h| h.reference())
+    };
+    // At the middle, off it, near each corner: the 30's.
+    for at in [
+        [20.0, -2.6],
+        [21.1, -1.75],
+        [18.9, -3.45],
+        [21.1, -3.45],
+        [18.9, -1.75],
+    ] {
+        assert_eq!(found(at, 0.05), Some(element("ka000003")), "{at:?}");
+    }
+    // Just outside, within the reach: as near to both, the 30's too; 0.1 outside, and 0.85
+    // off their lines, nothing.
+    assert_eq!(found([21.2, -1.75], 0.05), Some(element("ka000003")));
+    assert_eq!(found([21.26, -1.75], 0.05), None);
+    // Their dimension lines, at the values' height from 0 to 40, lie one on the other too:
+    // on them, clear of the boxes and 2.6 from the side, the 30's line, drawn on top.
+    assert_eq!(found([30.0, -2.6], 0.05), Some(element("ka000003")));
+    // The glyph, in its own box: its own.
+    assert_eq!(found([11.7, -1.8], 0.1), Some(element("ka000001")));
+}
+
+#[test]
+fn of_three_values_at_one_place_the_last_drawn_is_hit_inside_and_just_outside() {
+    // Three lengths of the bottom side, their values at one place, (20, −2.6), as above:
+    // ka000004's, drawn last, is taken just inside the box's edge (1.16011 across) with no
+    // reach at all, and from 0.5 under the boxes (0.9 down), all three as far, 1.4 from
+    // their lines and 4 from the side, within a 0.6 reach.
+    let read = under(rectangle(vec![
+        length("ka000002", "na000001", "40", true),
+        length("ka000003", "na000001", "30", true),
+        length("ka000004", "na000001", "50", true),
+    ]));
+    let found = |at: [f64; 2], tolerance: f64| {
+        hit(&read, at, tolerance, HAND, Axes::BOTH).map(|h| h.reference())
+    };
+    assert_eq!(found([18.84, -1.75], 0.0), Some(element("ka000004")));
+    assert_eq!(found([20.0, -4.0], 0.6), Some(element("ka000004")));
+}
+
+#[test]
+fn a_nearer_box_drawn_first_is_taken_over_a_farther_one_drawn_after_it() {
+    // The bottom's horizontal glyph's box about (11.2, −1.3), 0.8 either way, and its
+    // length's value's about (20, −2.6), 1.16011 across and 0.9 up, drawn after it.
+    // (12.5, −1.5): 0.5 right of the glyph's box, hypot(6.33989, 0.2) = 6.343 from the
+    // value's; the corner and the origin 12.59 off, past the 7: the glyph, the nearer.
+    let read = dimensioned();
+    assert_eq!(
+        hit(&read, [12.5, -1.5], 7.0, HAND, Axes::BOTH),
+        constraint_pick("ka000001")
+    );
+}
+
+#[test]
+fn a_nearer_dimension_line_drawn_first_is_taken_over_a_farther_one_drawn_after_it() {
+    // The bottom's length, its extension lines from 0.4 to 3.1 under the corners, and the
+    // left side's, drawn after it, 2.6 left of the side, its extension lines from 0.4 to 3.1
+    // left of them. (−1.5, −2.5): 1.5 from the bottom's left extension line, 2.5 from the
+    // left's lower one, 2.731 from its dimension line; the corner, the origin, and both
+    // sides 2.915 off, past the 2.8; the values far: the bottom's, the nearer.
+    let read = under(rectangle(vec![
+        length("ka000002", "na000001", "40", true),
+        length("ka000003", "na000004", "20", true),
+    ]));
+    assert_eq!(
+        hit(&read, [-1.5, -2.5], 2.8, HAND, Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+}
+
+#[test]
+fn a_value_over_a_glyph_is_taken_whatever_their_ids() {
+    // At a millimetre a point: the bottom's horizontal glyph about (11.2, −13), 8 either
+    // way; its length's value "40" about (20, −26), 11.6011 across (two characters of
+    // 0.574 × 11.5, and 5 a side) and 9 up. (15, −19) is inside both, with no reach: the
+    // value, drawn over the glyph, whether the glyph's ID is the lower or the higher.
+    let at = [15.0, -19.0];
+    let lower_glyph = under(rectangle(vec![
+        horizontal("ka000001", "na000001"),
+        length("ka000002", "na000001", "40", true),
+    ]));
+    assert_eq!(
+        hit(&lower_glyph, at, 0.0, Scale(1.0), Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+    let higher_glyph = under(rectangle(vec![
+        length("ka000002", "na000001", "40", true),
+        horizontal("ka000003", "na000001"),
+    ]));
+    assert_eq!(
+        hit(&higher_glyph, at, 0.0, Scale(1.0), Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+}
+
+#[test]
+fn every_glyph_is_drawn_under_every_dimensions_value_as_hit_takes_them() {
+    // `hit` lists the glyphs' boxes before the values', taking the last drawn of those as
+    // near: the drawing paints them in that order, whatever their IDs.
+    for read in [
+        dimensioned(),
+        under(rectangle(vec![
+            length("ka000002", "na000001", "40", true),
+            horizontal("ka000003", "na000001"),
+        ])),
+    ] {
+        let drawn = drawn(&read);
+        let last_glyph = drawn
+            .iter()
+            .rposition(|d| matches!(d, Drawn::Glyph { .. }))
+            .unwrap();
+        let first_value = drawn
+            .iter()
+            .position(|d| matches!(d, Drawn::Label { of: Some(_), .. }))
+            .unwrap();
+        assert!(last_glyph < first_value, "{drawn:?}");
+    }
+}
+
+#[test]
+fn of_two_values_at_one_place_the_one_drawn_last_is_hit_with_the_lower_id() {
+    // An edit appends what it adds, so a read's constraints needn't be in their IDs' order:
+    // the 40's value, ka000002, listed and drawn after the 30's at (20, −2.6), is on top.
+    let read = under(rectangle(vec![
+        length("ka000003", "na000001", "30", true),
+        length("ka000002", "na000001", "40", true),
+    ]));
+    assert_eq!(
+        hit(&read, [20.0, -2.6], 0.0, HAND, Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+    // And on their lines, which lie one on the other: at (30, −2.6), 8.8 from the boxes,
+    // 2.6 from the side, and 10 from the extension lines, within 0.05 of the lines alone.
+    assert_eq!(
+        hit(&read, [30.0, -2.6], 0.05, HAND, Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+}
+
 // The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
 // the legend, and the state's dot, each against the prototype (docs/design/m5-ui/:
 // styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's palette). The status
@@ -8706,4 +8877,232 @@ fn sketch_modes_card_marks_a_radius_and_a_diameter_as_the_dimensions_row_does() 
         let said = problem_card(&over, "Sketch1").unwrap();
         assert_eq!(said.cause.as_deref(), Some(words));
     }
+}
+
+/// The rectangle with the right side's length twice (ka000001, ka000002, both 20) and the
+/// bottom's (ka000003, 40), all driving, read at a published revision in `state` with
+/// `flagged`; the sketch s0000001 open.
+fn twice_measured(state: SketchState, flagged: &[(&str, ConstraintState)]) -> SketchMode {
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", true),
+        length("ka000002", "na000002", "20", true),
+        length("ka000003", "na000001", "40", true),
+        horizontal("kb000001", "na000001"),
+    ]);
+    let mut mode = SketchMode::new(
+        1,
+        Some(silico_core::document::FeatureId::new("s0000001").unwrap()),
+    );
+    mode.read = Some(Read {
+        model: silico_core::command::Revision::from_number(3),
+        result: Ok(read(sketch, state, MemberState::OverDefined, flagged)),
+    });
+    mode
+}
+
+fn target(mode: &SketchMode) -> Option<Result<String, &'static str>> {
+    mode.make_driven()
+        .map(|driven| driven.target.map(|id| id.as_str().to_owned()))
+}
+
+fn select_constraint(mode: &mut SketchMode, name: &str) {
+    mode.selection
+        .click(member(name, ElementKind::Constraint), true);
+}
+
+#[test]
+fn make_it_driven_means_the_dimension_left_driving_else_the_one_over_defining_else_the_one_selected()
+ {
+    use ConstraintState::{Conflicting, Redundant};
+    // One over-defining driving dimension: it, with its value as the panel writes it.
+    let mode = twice_measured(SketchState::OverDefined, &[("ka000002", Redundant)]);
+    assert_eq!(
+        mode.make_driven(),
+        Some(MakeDriven {
+            target: Ok(id("ka000002")),
+            value: Some("20 mm".to_owned()),
+        })
+    );
+    // Both lengths in conflict, the relation too: none known, none selected, off, saying why.
+    let flagged = [
+        ("ka000001", Conflicting),
+        ("ka000002", Conflicting),
+        ("kb000001", Conflicting),
+    ];
+    let mut mode = twice_measured(SketchState::OverDefined, &flagged);
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    // The relation selected, or the bottom's length (which over-defines nothing): still off.
+    select_constraint(&mut mode, "kb000001");
+    select_constraint(&mut mode, "ka000003");
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    // One of the two selected: it (SolidWorks' right-click Driven acts on the selection).
+    select_constraint(&mut mode, "ka000001");
+    assert_eq!(target(&mode), Some(Ok("ka000001".to_owned())));
+    // Both selected: off again.
+    select_constraint(&mut mode, "ka000002");
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    // Left driving at its prompt: it, whatever's selected (the prompt's "this dimension").
+    mode.left_driving = vec![id("ka000002")];
+    assert_eq!(target(&mode), Some(Ok("ka000002".to_owned())));
+    // The newest left driving that still over-defines; one that doesn't (ka000003) passed.
+    mode.left_driving = vec![id("ka000002"), id("ka000001"), id("ka000003")];
+    assert_eq!(target(&mode), Some(Ok("ka000001".to_owned())));
+}
+
+#[test]
+fn make_it_driven_is_offered_only_over_defined_or_unsolvable_at_a_published_read_for_a_driving_dimension()
+ {
+    use ConstraintState::{Conflicting, Redundant};
+    // Fully or under defined, or invalid: none.
+    for state in [
+        SketchState::FullyDefined,
+        SketchState::UnderDefined,
+        SketchState::Invalid,
+    ] {
+        let mode = twice_measured(state, &[("ka000002", Redundant)]);
+        assert_eq!(mode.make_driven(), None, "{state:?}");
+    }
+    // A read of no published revision: none.
+    let mut mode = twice_measured(SketchState::OverDefined, &[("ka000002", Redundant)]);
+    if let Some(read) = mode.read.as_mut() {
+        read.model = None;
+    }
+    assert_eq!(mode.make_driven(), None);
+    // A conflict of relations alone: no dimension to make driven.
+    let mode = twice_measured(SketchState::OverDefined, &[("kb000001", Conflicting)]);
+    assert_eq!(mode.make_driven(), None);
+    // No solution, which flags nothing: none, unless one was left driving at its prompt,
+    // which still drives (SolidWorks' driven repairs "the over defined or unsolvable state").
+    let mut mode = twice_measured(SketchState::NoSolution, &[]);
+    assert_eq!(mode.make_driven(), None);
+    mode.left_driving = vec![id("ka000003")];
+    assert_eq!(target(&mode), Some(Ok("ka000003".to_owned())));
+}
+
+#[test]
+fn make_it_driven_asks_its_driving_false_at_the_reads_revision_and_nothing_for_another_dimension() {
+    use ConstraintState::Redundant;
+    let mut mode = twice_measured(SketchState::OverDefined, &[("ka000002", Redundant)]);
+    // Not the one offered: nothing asked.
+    assert!(!mode.ask_driven(&id("ka000001")));
+    assert!(mode.take_asks().is_empty());
+    assert!(mode.ask_driven(&id("ka000002")));
+    let asks = mode.take_asks();
+    let [
+        Ask::Offer(OfferRequest::SetField {
+            revision,
+            feature,
+            field,
+            value,
+        }),
+    ] = asks.as_slice()
+    else {
+        panic!("{asks:?}");
+    };
+    assert_eq!(revision.number(), 3);
+    assert_eq!(feature.as_str(), "s0000001");
+    assert_eq!(field, "constraints.ka000002.driving");
+    assert_eq!(value.value, silico_core::document::json::Value::Bool(false));
+    // Asked again on the same read (a double-click before its edit's read comes): nothing.
+    assert!(!mode.ask_driven(&id("ka000002")));
+    assert!(mode.take_asks().is_empty());
+    // On a newer read still offering it (the edit refused, say): asked again.
+    if let Some(read) = mode.read.as_mut() {
+        read.model = silico_core::command::Revision::from_number(4);
+    }
+    assert!(mode.ask_driven(&id("ka000002")));
+    assert_eq!(mode.take_asks().len(), 1);
+    // With no sketch known (Create Sketch's add unanswered): nothing.
+    mode.sketch = None;
+    assert!(!mode.ask_driven(&id("ka000002")));
+    assert!(mode.take_asks().is_empty());
+}
+
+#[test]
+fn make_it_driven_passes_over_a_dimension_left_driving_but_since_made_driven_when_unsolvable() {
+    // No solution flags nothing, so whether the dimension left driving still drives is what
+    // decides: ka000002 left driving, since made driven, means nothing; with ka000003 left
+    // driving before it, ka000003.
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", true),
+        length("ka000002", "na000002", "20", false),
+        length("ka000003", "na000001", "40", true),
+        horizontal("kb000001", "na000001"),
+    ]);
+    let mut mode = mode_at(read(
+        sketch,
+        SketchState::NoSolution,
+        MemberState::OverDefined,
+        &[],
+    ));
+    mode.left_driving = vec![id("ka000002")];
+    assert_eq!(mode.make_driven(), None);
+    mode.left_driving = vec![id("ka000003"), id("ka000002")];
+    assert_eq!(target(&mode), Some(Ok("ka000003".to_owned())));
+}
+
+#[test]
+fn leave_it_driving_at_an_edits_prompt_makes_the_card_mean_the_edited_dimension() {
+    // The right side's length edited (ka000002) into a conflict with the bottom's (both
+    // flagged): with nothing known and nothing selected, off; once the edit's prompt is
+    // answered Leave it driving, the edited one (the prompt's "this dimension").
+    let both = read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Conflicting),
+            ("ka000002", ConstraintState::Conflicting),
+        ],
+    );
+    let two = Revision::OPENED.next().unwrap().next().unwrap();
+    let offered = edited_right()
+        .judged(&two_lengths_over(), two)
+        .unwrap()
+        .unwrap();
+    assert_eq!(offered.constraint, id("ka000002"));
+    let mut mode = mode_at(both);
+    mode.edit_offer = Some((offered, two));
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert!(mode.take_asks().is_empty());
+    assert_eq!(target(&mode), Some(Ok("ka000002".to_owned())));
+}
+
+#[test]
+fn leave_it_driving_keeps_the_dimensions_left_before_it_each_once_the_newest_last() {
+    // One left driving before (ka000001); the edit's prompt for ka000002 answered Leave:
+    // both kept, ka000002 newest. Left again for ka000001: once, now the newest.
+    let both = read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Conflicting),
+            ("ka000002", ConstraintState::Conflicting),
+        ],
+    );
+    let two = Revision::OPENED.next().unwrap().next().unwrap();
+    let offered = edited_right()
+        .judged(&two_lengths_over(), two)
+        .unwrap()
+        .unwrap();
+    let mut mode = mode_at(both);
+    mode.left_driving = vec![id("ka000001")];
+    mode.edit_offer = Some((offered.clone(), two));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert_eq!(mode.left_driving, [id("ka000001"), id("ka000002")]);
+    // ka000001 left again (an offer for it, judged from the same edit's shape): once.
+    mode.left_driving = vec![id("ka000001"), id("ka000002")];
+    let mut again = offered;
+    again.constraint = id("ka000001");
+    mode.edit_offer = Some((again, two));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert_eq!(mode.left_driving, [id("ka000002"), id("ka000001")]);
 }

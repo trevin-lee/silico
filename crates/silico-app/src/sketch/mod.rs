@@ -40,7 +40,9 @@ use silico_core::command::{ModelChoice, Problems, Revision, Running, SessionId, 
 use silico_core::document::{ElementId, ElementKind, FeatureId, Reference};
 use silico_core::kernel::{Clients, SketchPlane};
 use silico_core::sketch_states::{MemberState, SketchState};
-use silico_core::sketch_tools::{Axes, DimensionEvent, Event, Modifiers, Offer, OfferChoice};
+use silico_core::sketch_tools::{
+    Axes, DimensionEvent, Event, Modifiers, Offer, OfferChoice, OfferRequest,
+};
 
 use crate::selection::How;
 use crate::tab::{Row, Said, said};
@@ -149,6 +151,19 @@ pub fn problem_card(read: &SketchRead, name: &str) -> Option<Said> {
         suggestion: Some(suggestion.to_owned()),
         source: None,
     })
+}
+
+/// Why the card's Make it driven is off: several driving dimensions over-define the sketch,
+/// none of them left driving at its prompt here, and none of them selected.
+pub const SELECT_ONE_TO_MAKE_DRIVEN: &str =
+    "Several dimensions over-define the sketch: select the one to make driven";
+
+/// What the card's Make it driven would make driven ([`SketchMode::make_driven`]): the
+/// dimension, or why it's off; and its value, as the property panel writes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MakeDriven {
+    pub target: Result<ElementId, &'static str>,
+    pub value: Option<String>,
 }
 
 /// A plane's name, as the sketch bar says it, and its axes' letters, as the status bar's
@@ -421,6 +436,13 @@ pub struct SketchMode {
     edit_boxes: u64,
     pub edited: Option<Edited>,
     edit_offer: Option<(Offer, Revision)>,
+    /// The dimensions whose over-define prompt was answered "Leave it driving", the newest
+    /// last: which one the card's Make it driven means (SolidWorks' prompt is about "this
+    /// dimension", the one just placed or edited).
+    left_driving: Vec<ElementId>,
+    /// The revision of the read the card's Make it driven was last asked on: a second click
+    /// before the read of its edit comes asks nothing (it would be refused as overtaken).
+    driven_at: Option<Revision>,
     /// What it asks of the core besides its tools' requests, until the tab takes it.
     asks: Vec<Ask>,
     /// Where the canvas's right-click menu (End chain, Finish Sketch, Cancel sketch) is open,
@@ -473,6 +495,8 @@ impl SketchMode {
             edit_boxes: 0,
             edited: None,
             edit_offer: None,
+            left_driving: Vec::new(),
+            driven_at: None,
             asks: Vec::new(),
             modify_screen: None,
             tolerance: 0.0,
@@ -1114,16 +1138,105 @@ impl SketchMode {
     /// nothing), and the offer let go, so the next dimension may be placed. Whether one was
     /// open to answer.
     pub fn answer_offer(&mut self, choice: OfferChoice) -> bool {
-        let request = if let Some((offer, _)) = self.edit_offer.take() {
-            offer.request(choice)
+        let (request, constraint) = if let Some((offer, _)) = self.edit_offer.take() {
+            (offer.request(choice), offer.constraint)
         } else if let Some(offer) = self.tools.open_offer() {
-            let request = offer.request(choice);
+            let answered = (offer.request(choice), offer.constraint.clone());
             self.tools.dismiss_offer();
-            request
+            answered
         } else {
             return false;
         };
+        if choice == OfferChoice::Leave {
+            // The newest last, once: the card's Make it driven means it while it over-defines.
+            self.left_driving.retain(|left| *left != constraint);
+            self.left_driving.push(constraint);
+        }
         self.asks.extend(request.map(Ask::Offer));
+        true
+    }
+
+    /// What the card's Make it driven (sketch.js's `skMakeDriven`) would make driven, on the
+    /// newest read, if the card offers it: only on a read of a published revision, for a
+    /// sketch over defined or with no solution (SolidWorks' prompt repairs "the over
+    /// defined or unsolvable state"), and only for a driving dimension. Which one, as
+    /// SolidWorks has it (docs/ux/solidworks.md, §2; its prompt is about the dimension just
+    /// placed, its right-click Driven about the one selected):
+    /// - the newest dimension whose prompt was answered "Leave it driving" that still drives
+    ///   and still over-defines (or the sketch has no solution, which flags nothing);
+    /// - else the one driving dimension that over-defines, if there's one;
+    /// - else the one of those selected, if one is;
+    /// - else none: off, saying to select one.
+    ///
+    /// None where there's no driving dimension to offer (a conflict of relations alone).
+    ///
+    /// SEAM: a driven dimension made driving again (SolidWorks' right-click Driven toggle,
+    /// Fusion's right-click) has no control in the approved prototype; waiting on Trevin.
+    pub fn make_driven(&self) -> Option<MakeDriven> {
+        let read = self.drawable()?;
+        self.read.as_ref()?.model?;
+        let state = read.states.state;
+        if !matches!(state, SketchState::OverDefined | SketchState::NoSolution) {
+            return None;
+        }
+        let constraints = &read.members.constraints;
+        let over: Vec<&ElementId> = read
+            .states
+            .over_defining(&read.members)
+            .filter(|c| c.form.driving() == Some(true))
+            .map(|c| &c.id)
+            .collect();
+        let driving = |id: &ElementId| {
+            constraints
+                .iter()
+                .any(|c| &c.id == id && c.form.driving() == Some(true))
+        };
+        let left = self.left_driving.iter().rev().find(|left| {
+            driving(left) && (over.contains(left) || state == SketchState::NoSolution)
+        });
+        if left.is_none() && over.is_empty() {
+            return None;
+        }
+        let selected: Vec<&ElementId> = self
+            .selection
+            .members()
+            .map(|hit| &hit.id)
+            .filter(|id| over.contains(id))
+            .collect();
+        let target = match (left, over.as_slice(), selected.as_slice()) {
+            (Some(left), _, _) => Ok(left.clone()),
+            (None, [one], _) | (None, _, [one]) => Ok((*one).clone()),
+            (None, _, _) => Err(SELECT_ONE_TO_MAKE_DRIVEN),
+        };
+        let value = target.as_ref().ok().and_then(|id| {
+            constraints
+                .iter()
+                .find(|c| &c.id == id)
+                .and_then(|c| crate::parameters::dimension_value(&c.form))
+        });
+        Some(MakeDriven { target, value })
+    }
+
+    /// The card's Make it driven asked for `constraint`: a `set_field` of its `driving` to
+    /// false asked, against the revision of the read the card was drawn from, if the newest
+    /// read still offers it for that dimension and none was asked on that read already.
+    /// Whether it was asked.
+    pub fn ask_driven(&mut self, constraint: &ElementId) -> bool {
+        let offered = self
+            .make_driven()
+            .is_some_and(|driven| driven.target.as_ref() == Ok(constraint));
+        let (Some(sketch), Some(model)) = (
+            self.sketch.clone(),
+            self.read.as_ref().and_then(|read| read.model),
+        ) else {
+            return false;
+        };
+        if !offered || self.driven_at == Some(model) {
+            return false;
+        }
+        self.driven_at = Some(model);
+        self.asks
+            .push(Ask::Offer(OfferRequest::driven(model, sketch, constraint)));
         true
     }
 

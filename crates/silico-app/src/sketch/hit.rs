@@ -98,7 +98,9 @@ impl From<Hit> for SketchPick {
 /// core's rule; or else the nearest dimension's line; or else an axis, anywhere along it
 /// (where the core's rule takes it: not where a curve of the sketch is as near, nor where a
 /// line of the sketch lies along it), of the axes `axes` allows: one it doesn't is no
-/// candidate, so the nearest of the rest is taken. Other ties go to the lower ID. None for
+/// candidate, so the nearest of the rest is taken. Of boxes or dimensions' lines as near (a
+/// place inside boxes that overlap, or on lines that do), the one drawn on top: the values
+/// over the glyphs, and each over those before it in the constraints' order. None for
 /// nothing that near, a tolerance below zero, or a place that isn't one.
 pub fn hit(
     read: &SketchRead,
@@ -111,18 +113,6 @@ pub fn hit(
         return None;
     }
     let geometry = Geometry::of(read);
-    let near = |found: Vec<(f64, &ElementId, ElementKind)>| {
-        found
-            .into_iter()
-            .filter(|(d, ..)| *d <= tolerance)
-            .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)))
-            .map(|(_, id, kind)| {
-                SketchPick::Member(Hit {
-                    id: id.clone(),
-                    kind,
-                })
-            })
-    };
     // A point or the origin, if one is near, else a curve or an axis, if one is: the curve
     // after the boxes, the axis after the dimensions' lines too.
     let picked = sketch_tools::pick(&read.members, at, tolerance, axes)
@@ -158,7 +148,7 @@ pub fn hit(
             ElementKind::Constraint,
         ));
     }
-    if let Some(hit) = near(boxes) {
+    if let Some(hit) = topmost(boxes, tolerance) {
         return Some(hit);
     }
     if curve.is_some() {
@@ -177,7 +167,24 @@ pub fn hit(
             (d, &dimension.of, ElementKind::Constraint)
         })
         .collect();
-    near(lines).or(axis)
+    topmost(lines, tolerance).or(axis)
+}
+
+/// The nearest of `found` within `tolerance`, given in the order they're drawn: of those as
+/// near, the last drawn, on top of the others, so a click inside boxes that overlap (two
+/// dimensions of one line, whose values stand at one place) takes the one that shows there.
+fn topmost(found: Vec<(f64, &ElementId, ElementKind)>, tolerance: f64) -> Option<SketchPick> {
+    found
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (d, ..))| *d <= tolerance)
+        .min_by(|(i, a), (j, b)| a.0.total_cmp(&b.0).then_with(|| j.cmp(i)))
+        .map(|(_, (_, id, kind))| {
+            SketchPick::Member(Hit {
+                id: id.clone(),
+                kind,
+            })
+        })
 }
 
 /// How far `at` is from the box about `centre` reaching `half` either way: none inside it.
