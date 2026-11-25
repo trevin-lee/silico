@@ -1039,18 +1039,20 @@ fn a_face_is_looked_for_in_its_box_when_what_consumes_the_box_comes_after_the_sk
 }
 
 #[test]
-fn a_step_never_run_in_two_rounds_is_counted_once_so_done_stays_under_steps_while_one_is_held() {
+fn a_step_never_run_is_counted_once_so_done_stays_under_steps_while_a_pad_placed_ahead_is_held() {
     // From #344's review. A pocket that removes nothing (its box above the sketch's plane)
     // is refused, and kept so by a first rebuild. A second, on the same engine, adds a cut
     // of that pocket (made from a refused feature, so never run: settled without a result)
-    // and a sketch on the 10 mm box's top, padded onto it: a second round. That round plans
-    // the cut unsettled again (it has no result) and settles it again. Its pad's last
-    // step, the fuse onto the box, is held: while it is, one step is still to settle, so
-    // `done` is under `steps`. Counted twice, the cut made them equal. Since M5's milestone
-    // review (A13-M1) the sketch is placed ahead of the first round's end, once the box is
-    // built and described, so the pad's steps run, and are counted, in the first round,
-    // and the fuse is held there: `done` is under `steps` by it alone, the pad's other steps
-    // counted, and the second round, which plans the cut again, follows its release.
+    // and a sketch on the 10 mm box's top, padded onto it. The sketch is placed ahead of the
+    // first round's end, once the box is built and described (M5's milestone review,
+    // A13-M1), so the pad's steps run, and are counted, in the first round, beside the new
+    // 1 mm box's. Its last step, the fuse onto the box, is held: while it is, `done` is under
+    // `steps` by it alone, the cut settled once and every other step of the pad counted.
+    // The second round, placing the sketch and planning the cut unsettled again (it has no
+    // result), follows the fuse's release, with nothing left to run; a cut counted twice
+    // there would be clamped to `steps` (`done` is never more), so that case is the
+    // count's own unit test's (recompute's
+    // a_step_settled_in_two_rounds_is_counted_once_so_done_stays_under_steps_while_one_runs).
     let engine = engine_with_a_planar_box();
     let refused_pocket = [
         cube(),

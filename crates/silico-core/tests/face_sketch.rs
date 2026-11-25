@@ -996,3 +996,122 @@ fn while_an_unrelated_branch_is_held_the_rebuild_says_the_sketches_placed_ahead_
         "{done:?}"
     );
 }
+
+#[test]
+fn a_fresh_rebuild_asks_again_for_the_steps_a_face_sketch_placed_ahead_makes() {
+    // PR #614's review (tests): a rebuild reading nothing kept builds every step again,
+    // those it runs ahead of their rounds too. After a rebuild on the same engine, a fresh
+    // one asks for the pad's prism again, while b2 is held.
+    let features = beside_a_small_box();
+    let (while_held, _, _, engine) = rebuilt_holding_the_small_box(&features, 1);
+    assert!(while_held);
+    assert_eq!(asked_count(&engine, is_prism), 1);
+    let hold = engine.kernel().hold(is_small_box);
+    let run = engine.start_fresh(checked_document(&strs(&features)));
+    let asked_ahead = within_wait(|| asked_count(&engine, is_prism) >= 2);
+    hold.release();
+    match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(_))) => {}
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    }
+    assert!(
+        asked_ahead,
+        "the fresh rebuild's prism wasn't asked while b2 was held"
+    );
+    assert_eq!(asked_count(&engine, is_prism), 2);
+}
+
+#[test]
+fn a_sketch_on_a_face_is_placed_ahead_only_from_its_own_solid_once_built_never_from_its_maker() {
+    // PR #614's review (tests): s1 names b1's top, but b1 is consumed by a fillet before s1,
+    // so its face is looked for in the fillet's solid, not the box's. The fake describes each
+    // solid's faces as planes through a height of its own (its expression's length), so a
+    // frame taken from the box would be another than the fillet's. The fillet's step is
+    // held: the pad's prism isn't asked for while it is, though the box is built and
+    // described; once it's let go, s1's frame is the fillet's top, through the fillet's
+    // height, and the model is the one a rebuild with nothing held publishes.
+    use std::sync::{Arc, Mutex};
+    fn by_solid(engine: &Recompute<FakeKernel>, heights: &Arc<Mutex<Vec<(String, f64)>>>) {
+        let heights = Arc::clone(heights);
+        engine.kernel().answer_instead(move |op| {
+            let Op::DescribeAll { shape } = op else {
+                return None;
+            };
+            let made = FakeKernel::describe(shape)?;
+            let height = made.len() as f64;
+            heights.lock().unwrap().push((made.clone(), height));
+            let mut description = FakeKernel::described(shape)?;
+            for face in &mut description.faces {
+                face.surface = Surface::Plane {
+                    normal: [0.0, 0.0, 1.0],
+                    location: [0.0, 0.0, height],
+                };
+            }
+            Some(Reply::DescribedAll(description))
+        });
+    }
+    let fillet = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1}"#;
+    let features = [
+        cube(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+        fillet.to_owned(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("f0000001"), "s0000001", &one_side("3")),
+    ];
+    let is_fillet = |op: &Op| matches!(op, Op::Fillet { .. });
+    let heights = Arc::new(Mutex::new(Vec::new()));
+    let held = engine();
+    by_solid(&held, &heights);
+    let hold = held.kernel().hold(is_fillet);
+    let run = held.start(checked_document(&strs(&features)));
+    // The fillet held, and both boxes built and described: all the look ahead could see.
+    let boxes_described = || {
+        heights
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(made, _)| !made.contains("fillet"))
+            .count()
+            >= 2
+    };
+    assert!(within_wait(
+        || asked_count(&held, is_fillet) == 1 && boxes_described()
+    ));
+    assert_eq!(
+        asked_count(&held, is_prism),
+        0,
+        "the pad's prism was asked for while the fillet its sketch's face is in was held"
+    );
+    hold.release();
+    let model = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    };
+    assert!(matches!(
+        model.outcome(&id("p0000001")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    let fillet_height = heights
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(made, _)| made.starts_with("fillet"))
+        .map(|(_, height)| *height)
+        .unwrap();
+    let box_height = heights
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(made, _)| made.starts_with("box"))
+        .map(|(_, height)| *height)
+        .unwrap();
+    assert_ne!(fillet_height, box_height);
+    let frame = model.frame(&id("s0000001")).unwrap();
+    assert_eq!(frame.origin, [0.0, 0.0, fillet_height], "{frame:?}");
+    let unheld = engine();
+    by_solid(&unheld, &Arc::new(Mutex::new(Vec::new())));
+    assert_eq!(
+        saved_text(&model),
+        saved_text(&published(&unheld, &strs(&features)))
+    );
+}
