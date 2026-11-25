@@ -159,5 +159,121 @@
     return new THREE.ExtrudeGeometry(s, { depth: 26, bevelEnabled: true, bevelThickness: 2, bevelSize: 2, bevelSegments: 1 });
   }
 
-  window.Geo = { buildBracket, plateGeometry, chamferBoxGeometry, rectShape };
+  // ───────── The plate of docs/design/m6.0-patterns.md section 2.2, face by face ─────────
+  // g: what the stand-in core built (patterns.js's solve), in timeline order:
+  //   rects:   [{x0, x1, y0, y1, maker, names: {x0, x1, y0, y1}}]  through-all cuts (notches)
+  //   circles: [{cx, cy, r, maker, stable}]                        through-all cuts (holes)
+  //   bosses:  [{cx, cy, r, z0, z1, maker, side, top}]              fused cylinders on the top face
+  // The plate itself is 100 × 60 × 5, centred on the origin, as Plate outline and Plate give it.
+  // Prototype limit: a hole across the plate's edge is cut by the core but not drawn here.
+  function buildPlate(g) {
+    const T = 5, X0 = -50, X1 = 50, Y0 = -30, Y1 = 30;
+    const X = V3(1, 0, 0), Y = V3(0, 1, 0), Z = V3(0, 0, 1);
+    const TOP = 'p0000001.pad.Face(G s0000001.sketch.Face1)', BOTTOM = 'p0000001.pad.Face(M s0000001.sketch.Face1)';
+    const PLATE_SIDE = { x0: 'na000004', x1: 'na000002', y0: 'na000001', y1: 'na000003' };
+    const rects = g.rects || [], circles = g.circles || [], bosses = g.bosses || [];
+    const inPlate = (x, y) => x > X0 && x < X1 && y > Y0 && y < Y1;
+    const cutBy = (x, y) => rects.find((r) => x > r.x0 && x < r.x1 && y > r.y0 && y < r.y1);
+    const filledAt = (x, y) => inPlate(x, y) && !cutBy(x, y);
+    // The region: the plate's rectangle less the notches, on the grid of every x and y they use.
+    const xs = [...new Set([X0, X1, ...rects.flatMap((r) => [r.x0, r.x1])].map((v) => Math.max(X0, Math.min(X1, v))))].sort((a, b) => a - b);
+    const ys = [...new Set([Y0, Y1, ...rects.flatMap((r) => [r.y0, r.y1])].map((v) => Math.max(Y0, Math.min(Y1, v))))].sort((a, b) => a - b);
+    const fill = (i, j) => i >= 0 && j >= 0 && i < xs.length - 1 && j < ys.length - 1 && filledAt((xs[i] + xs[i + 1]) / 2, (ys[j] + ys[j + 1]) / 2);
+    const tagOf = (nx, ny, side) => {
+      // What's beyond a boundary: outside the plate (one of its sides) or inside a notch (one of the notch's walls).
+      if (!inPlate(nx, ny)) return { maker: 'p0000001', stable: `p0000001.pad.Face(G s0000001.sketch.Edge.${PLATE_SIDE[side]})` };
+      const r = cutBy(nx, ny);
+      const opp = { x0: 'x1', x1: 'x0', y0: 'y1', y1: 'y0' }[side];
+      return { maker: r.maker, stable: r.names[opp] };
+    };
+    const segs = [];
+    for (let i = 0; i < xs.length - 1; i++) for (let j = 0; j < ys.length - 1; j++) {
+      if (!fill(i, j)) continue;
+      const a = xs[i], b = xs[i + 1], c = ys[j], d = ys[j + 1], mx = (a + b) / 2, my = (c + d) / 2;
+      if (!fill(i, j - 1)) segs.push({ p: [a, c], q: [b, c], tag: tagOf(mx, c - 1e-6, 'y0') });
+      if (!fill(i + 1, j)) segs.push({ p: [b, c], q: [b, d], tag: tagOf(b + 1e-6, my, 'x1') });
+      if (!fill(i, j + 1)) segs.push({ p: [b, d], q: [a, d], tag: tagOf(mx, d + 1e-6, 'y1') });
+      if (!fill(i - 1, j)) segs.push({ p: [a, d], q: [a, c], tag: tagOf(a - 1e-6, my, 'x0') });
+    }
+    const k = (p) => p[0].toFixed(6) + ',' + p[1].toFixed(6);
+    const from = new Map(); segs.forEach((s) => { const key = k(s.p); (from.get(key) || from.set(key, []).get(key)).push(s); });
+    const used = new Set(); const loops = [];
+    for (const s0 of segs) {
+      if (used.has(s0)) continue;
+      const loop = []; let s = s0;
+      while (s && !used.has(s)) { used.add(s); loop.push(s); s = (from.get(k(s.q)) || []).find((x) => !used.has(x)); }
+      // Merge runs along one line with one maker into a single wall.
+      const merged = [];
+      for (const x of loop) {
+        const L = merged[merged.length - 1];
+        const col = L && L.tag.stable === x.tag.stable && Math.abs((L.q[0] - L.p[0]) * (x.q[1] - x.p[1]) - (L.q[1] - L.p[1]) * (x.q[0] - x.p[0])) < 1e-9;
+        if (col) L.q = x.q; else merged.push({ p: x.p, q: x.q, tag: x.tag });
+      }
+      if (merged.length > 1) { const F = merged[0], L = merged[merged.length - 1]; if (F.tag.stable === L.tag.stable && Math.abs((L.q[0] - L.p[0]) * (F.q[1] - F.p[1]) - (L.q[1] - L.p[1]) * (F.q[0] - F.p[0])) < 1e-9) { F.p = L.p; merged.pop(); } }
+      let ar = 0; merged.forEach((m) => { ar += m.p[0] * m.q[1] - m.q[0] * m.p[1]; });
+      loops.push({ segs: merged, area: ar / 2 });
+    }
+    const outers = loops.filter((l) => l.area > 0), inners = loops.filter((l) => l.area < 0);
+    const ptIn = (pt, l) => { let c = false; for (const s of l.segs) { const [x1, y1] = s.p, [x2, y2] = s.q; if ((y1 > pt[1]) !== (y2 > pt[1]) && pt[0] < ((x2 - x1) * (pt[1] - y1)) / (y2 - y1) + x1) c = !c; } return c; };
+    const regionHolds = (cx, cy, r) => { for (let i = 0; i < 24; i++) { const t = (i / 24) * Math.PI * 2; if (!filledAt(cx + Math.cos(t) * (r + 0.01), cy + Math.sin(t) * (r + 0.01))) return false; } return filledAt(cx, cy); };
+    const inDisk = (c, b) => Math.hypot(c.cx - b.cx, c.cy - b.cy) + c.r <= b.r + 1e-9;
+    const drawnBosses = bosses.filter((b) => regionHolds(b.cx, b.cy, b.r));
+    const drawnHoles = circles.filter((c) => regionHolds(c.cx, c.cy, c.r));
+
+    const faces = [], edges = [], verts = [];
+    let fi = 1, ei = 1, vi = 1;
+    const addFace = (stable, maker, kind, built, extra) => { const f = Object.assign({ id: 'Face' + fi++, stable, maker, kind, geom: built.geom, frame: built.frame, area: area(built.geom) }, extra || {}); faces.push(f); return f; };
+    const prefix = (stable) => stable.slice(0, stable.indexOf('.Face('));
+    const addEdge = (pts, kind, maker, stable, extra) => { const e = Object.assign({ id: 'Edge' + ei++, pts, kind, maker, stable, length: polyLength(pts) }, extra || {}); edges.push(e); return e; };
+    const holePath = (c) => { const p = new THREE.Path(); p.absarc(c.cx, c.cy, c.r, 0, Math.PI * 2, true); return p; };
+    const loopShape = (l, reverse) => { const pts = l.segs.map((s) => new THREE.Vector2(s.p[0], s.p[1])); if (reverse) pts.reverse(); return pts; };
+    for (const o of outers) {
+      for (const [z, stable, top] of [[T, TOP, true], [0, BOTTOM, false]]) {
+        const sh = new THREE.Shape(loopShape(o));
+        for (const h of inners.filter((h) => ptIn(h.segs[0].p, o))) sh.holes.push(new THREE.Path(loopShape(h, true)));
+        for (const c of drawnHoles) if (ptIn([c.cx, c.cy], o) && !(top && drawnBosses.some((b) => inDisk(c, b)))) sh.holes.push(holePath(c));
+        if (top) for (const b of drawnBosses) if (ptIn([b.cx, b.cy], o)) sh.holes.push(holePath(b));
+        addFace(stable, 'p0000001', 'plane', planeFace(sh, V3(0, 0, z), X, Y), { normal: [0, 0, top ? 1 : -1] });
+      }
+    }
+    for (const l of loops) {
+      const walls = l.segs.map((s) => {
+        const a = V3(s.p[0], s.p[1], 0), b = V3(s.q[0], s.q[1], 0); const len = a.distanceTo(b); const U = b.clone().sub(a).normalize();
+        const w = addFace(s.tag.stable, s.tag.maker, 'plane', planeFace(rectShape(0, 0, len, T), a, U, Z), { normal: [U.y, -U.x, 0].map((v) => Math.round(v * 1e9) / 1e9 + 0) });
+        for (const [z, cap] of [[T, TOP], [0, BOTTOM]]) addEdge([V3(s.p[0], s.p[1], z), V3(s.q[0], s.q[1], z)], 'line', s.tag.maker, `${prefix(s.tag.stable)}.Edge(G ${cap}, G ${s.tag.stable})`);
+        return w;
+      });
+      l.segs.forEach((s, i) => {
+        const prev = walls[(i - 1 + walls.length) % walls.length], cur = walls[i];
+        addEdge([V3(s.p[0], s.p[1], 0), V3(s.p[0], s.p[1], T)], 'line', cur.maker, `${prefix(cur.stable)}.Edge(G ${prev.stable}, G ${cur.stable})`);
+        for (const z of [0, T]) verts.push({ id: 'Vertex' + vi++, p: V3(s.p[0], s.p[1], z), maker: cur.maker });
+      });
+    }
+    const cylinder = (c, z0, z1, stable, maker) => {
+      const geo = new THREE.CylinderGeometry(c.r, c.r, z1 - z0, 48, 1, true); geo.rotateX(Math.PI / 2); geo.translate(c.cx, c.cy, (z0 + z1) / 2);
+      return addFace(stable, maker, 'cylinder', { geom: geo, frame: null }, { radius: c.r, axis: [0, 0, 1], center: [c.cx, c.cy] });
+    };
+    for (const b of drawnBosses) {
+      const side = cylinder(b, b.z0, b.z1, b.side, b.maker);
+      const sh = new THREE.Shape(); sh.absarc(b.cx, b.cy, b.r, 0, Math.PI * 2, false);
+      for (const c of drawnHoles) if (inDisk(c, b)) sh.holes.push(holePath(c));
+      addFace(b.top, b.maker, 'plane', planeFace(sh, V3(0, 0, b.z1), X, Y), { normal: [0, 0, 1] });
+      for (const [z, cap] of [[b.z0, TOP], [b.z1, b.top]]) addEdge(circlePts(V3(b.cx, b.cy, z), X, Y, b.r, 64), 'circle', b.maker, `${prefix(b.side)}.Edge(G ${cap}, G ${side.stable})`, { radius: b.r, center: [b.cx, b.cy, z] });
+    }
+    for (const c of drawnHoles) {
+      const boss = drawnBosses.find((b) => inDisk(c, b));
+      const z1 = boss ? boss.z1 : T;
+      const w = cylinder(c, 0, z1, c.stable, c.maker);
+      for (const [z, cap] of [[0, BOTTOM], [z1, boss ? boss.top : TOP]]) addEdge(circlePts(V3(c.cx, c.cy, z), X, Y, c.r), 'circle', c.maker, `${prefix(c.stable)}.Edge(G ${cap}, G ${w.stable})`, { radius: c.r, center: [c.cx, c.cy, z] });
+    }
+    const regionArea = outers.reduce((s, l) => s + l.area, 0) + inners.reduce((s, l) => s + l.area, 0);
+    let vol = regionArea * T;
+    for (const b of drawnBosses) vol += Math.PI * b.r * b.r * (b.z1 - b.z0);
+    for (const c of drawnHoles) { const boss = drawnBosses.find((b) => inDisk(c, b)); vol -= Math.PI * c.r * c.r * (boss ? boss.z1 : T); }
+    const totalArea = faces.reduce((s, f) => s + f.area, 0);
+    const zTop = Math.max(T, ...drawnBosses.map((b) => b.z1));
+    return { faces, edges, verts, volume: vol, area: totalArea, bbox: [X1 - X0, Y1 - Y0, zTop], hasFillet: false, holes: drawnHoles.length, undrawn: circles.length - drawnHoles.length };
+  }
+
+  window.Geo = { buildBracket, buildPlate, plateGeometry, chamferBoxGeometry, rectShape };
 })();

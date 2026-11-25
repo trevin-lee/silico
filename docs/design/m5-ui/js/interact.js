@@ -69,7 +69,10 @@
       case 'pocket': case 'revolve': case 'groove': case 'chamfer': case 'union': case 'subtract': case 'intersect':
         A.toast(A.CMD[id].label + ' opens its dialog here, docked at the right, like Pad.'); return;
       case 'fillet': if (d && d.kind === 'bracket') A.openDialog('fillet', 'f0000001'); return;
-      case 'measure': A.toast('Measure: select two faces. The Properties panel shows their distance or angle.'); return;
+      case 'rectPattern': PAT.open('linear_pattern', null); return;
+      case 'circPattern': PAT.open('polar_pattern', null); return;
+      case 'mirror': PAT.open('mirror', null); return;
+      case 'measure': if (S.sketch) { SK.measure(); return; } A.toast('Measure: select two faces. The Properties panel shows their distance or angle.'); return;
       case 'filterFace': toggleFilter('face'); return;
       case 'filterEdge': toggleFilter('edge'); return;
       case 'filterVertex': toggleFilter('vertex'); return;
@@ -183,7 +186,9 @@
     },
     // Trevin's decision of 2026-11-09: solids are made sketch-first, as SolidWorks makes them, so
     // CREATE holds no primitives; a primitive a file holds is edited (editFeature), never made here.
-    createMenu(el) { const r = el.getBoundingClientRect(); menu(r.left, r.bottom + 2, ['createSketch', 'sep', 'pad', 'pocket', 'revolve', 'groove'].map(cmdItem)); },
+    // Fusion's CREATE holds Pattern › Rectangular Pattern and Circular Pattern, and Mirror (m6.0 section 7), drawn
+    // as MODIFY's Combine group is: a group head, its commands under it.
+    createMenu(el) { createMenu(el.getBoundingClientRect()); },
     modifyMenu(el) { const r = el.getBoundingClientRect(); menu(r.left, r.bottom + 2, ['fillet', 'chamfer', 'sep', { head: 'Combine' }, 'union', 'subtract', 'intersect'].map(cmdItem)); },
     selectMenu(el) {
       const r = el.getBoundingClientRect();
@@ -194,11 +199,11 @@
         'sep', { label: 'Select all filters', run: () => { S.filter = { face: true, edge: true, vertex: true }; VP.filter = S.filter; A.render(); } },
         { label: 'Clear selection', keys: ['Esc'], run: () => A.setSel([]) }]);
     },
-    row(el) { S.selRow = el.dataset.id; S.sel = []; S.selFeature = null; A.syncHighlight(); A.render(); },
+    row(el) { if (S.dialog && S.dialog.pattern && /^o-[XYZ]$/.test(el.dataset.id)) { PAT.pick({ word: el.dataset.id.slice(2).toLowerCase() }); return; } S.selRow = el.dataset.id; S.sel = []; S.selFeature = null; A.syncHighlight(); A.render(); },
     rootRow() { const d = doc(); if (d && d.problems.length) runCmd('whatsWrong'); else { S.selRow = 'root'; S.sel = []; S.selFeature = null; A.render(); } },
-    planeRow(el) { const pl = el.dataset.id.slice(3); S.selRow = S.selRow === el.dataset.id ? null : el.dataset.id; VP.setPlanes({ ...S.vis.planes, [pl]: S.vis.planes[pl] || S.selRow === el.dataset.id }, S.selRow ? pl : null); A.render(); },
+    planeRow(el) { if (S.dialog && S.dialog.pattern) { PAT.pick({ word: el.dataset.id.slice(3).toLowerCase() }); return; } const pl = el.dataset.id.slice(3); S.selRow = S.selRow === el.dataset.id ? null : el.dataset.id; VP.setPlanes({ ...S.vis.planes, [pl]: S.vis.planes[pl] || S.selRow === el.dataset.id }, S.selRow ? pl : null); A.render(); },
     bodyRow() { S.selRow = 'body1'; S.sel = []; S.selFeature = null; VP.setHighlight({ maker: '*', sel: [], hover: null }); A.render(); },
-    featureRow(el) { selectFeature(el.dataset.feature); },
+    featureRow(el) { if (S.dialog && S.dialog.pattern) { PAT.pick({ feature: el.dataset.feature }); return; } selectFeature(el.dataset.feature); },
     selectFeature(el) { selectFeature(el.dataset.id); },
     expand(el, e) { e.stopPropagation(); S.expanded[el.dataset.id] = !S.expanded[el.dataset.id]; A.renderBrowser(); },
     eye(el, e) {
@@ -213,6 +218,7 @@
     // Trevin's ask of 2026-11-09: ⌘/Ctrl-click on the selected item takes it out; a click on the track's
     // empty space clears the selection (tlTrack); neither while a dialog's boxes hold the selection.
     tlItem(el, e) {
+      if (S.dialog && S.dialog.pattern) { PAT.pick({ feature: el.dataset.id }); return; }
       if (e && isMod(e) && S.selFeature === el.dataset.id && !S.dialog) { S.selFeature = null; A.syncHighlight(); A.render(); return; }
       selectFeature(el.dataset.id);
     },
@@ -250,6 +256,7 @@
       const k = el.dataset.k;
       if (e.target.closest('[data-act="removeRecent"]')) { A.toast('Removed vise-jaw.silico from Recent'); el.remove(); return; }
       if (k === 'bracket') openBracket();
+      else if (k === 'plate') PAT.openPlate();
       else if (k === 'missing') A.toast("vise-jaw.silico isn't at ~/Git/fixtures any more. Find it with Open…, or remove it from the list.", 'warn', 'err');
       else A.toast('This prototype models bracket.silico only. ' + (k === 'plate' ? 'plate-with-holes' : 'chamfered-box') + '.silico would open here.');
     },
@@ -257,7 +264,13 @@
     protoToggle() { S.proto.collapsed = !S.proto.collapsed; A.render(); },
     proto(el) { S.proto.collapsed = true; proto(el.dataset.k); },
     protoSlow() { S.slow = !S.slow; A.render(); },
-    activateBox(el) { if (S.dialog) { S.dialog.activeBox = el.dataset.box; A.render(); } },
+    activateBox(el, e) { if (e.target.closest('[data-act="patClear"],[data-act="patRemoveObj"]')) return; if (S.dialog) { S.dialog.activeBox = el.dataset.box; A.render(); } },
+    patDrop(el) { PAT.dropMenu(el, el.dataset.k); },
+    patFlip(el) { PAT.flip(el.dataset.k); },
+    patClear(el, e) { e.stopPropagation(); PAT.clearBox(el.dataset.k); },
+    patRemoveObj(el, e) { e.stopPropagation(); PAT.removeObj(el.dataset.id); },
+    patSuppression() { PAT.toggleSuppression(); },
+    skipThem(el) { PAT.skipThem(el.dataset.id); },
     clearProfile(el, e) { e.stopPropagation(); S.dialog.profile = null; S.dialog.activeBox = 'profile'; A.render(); },
     dlgRev(el) { const v = el.dataset.v === '1'; S.dialog.rev = v; A.edit((d) => { d.p.rev = v; }, { noUndo: true, preview: true }); },
     cancelDialog() { A.cancelDialog(); }, okDialog() { A.okDialog(); },
@@ -269,6 +282,14 @@
     skDemoOver() { SK.demoOver(); },
     skModOk() { SK.modifyAccept(); }, skModCancel() { SK.cancelModify(); },
     skMakeDriven() { SK.makeDriven(); },
+    skDriven(el) { SK.setDriven(el.dataset.id, !el.classList.contains('on')); },
+    skUnjoin(el) { SK.unjoin(el.dataset.p, el.dataset.c); },
+    skJoin() { SK.join(); },
+    skSelPoint(el) { SK.K.sel = [{ kind: 'point', id: el.dataset.p }]; A.render(); },
+    skDelSel() { SK.del(); },
+    skClearSel() { SK.K.sel = []; A.render(); },
+    skMeasureClose() { SK.closeMeasure(); },
+    skMeasureClear() { SK.clearMeasure(); },
     lookAtSketch() { SK.lookAt(); },
     constraint() { A.toast('Select the curves or points first; the relation applies to them.'); },
   };
@@ -282,6 +303,8 @@
     const d = doc(); const f = d && d.features.find((x) => x.id === id); if (!f) return;
     S.modal = null;
     if (f.type === 'sketch') { if (id === 's0000001') SK.enter({ featureId: id, plane: 'XZ', mode: 'edit' }); else if (d.newSketches[id]) SK.enter({ plane: d.newSketches[id].plane in SK.FRAMES ? d.newSketches[id].plane : 'XY', name: f.name }); else A.toast('This prototype edits Bracket profile; ' + f.name + ' would open the same way.'); return; }
+    if (PAT.isPattern(f.type)) { PAT.open(f.type, id); return; }
+    if (d.kind === 'plate') { A.toast('This prototype edits the plate\'s patterns and mirror; ' + f.name + ' opens its dialog as the bracket\'s do.'); return; }
     if (f.type === 'pad') A.openDialog('pad', id);
     else if (f.type === 'fillet') A.openDialog('fillet', id);
     else if (f.type === 'pocket') A.openDialog('pocket', id);
@@ -299,6 +322,7 @@
   document.addEventListener('input', (e) => {
     const k = e.target.dataset.input; if (!k) return;
     if (k === 'dist' || k === 'rad' || k === 'name') A.dialogInput(k, e.target.value);
+    else if (k === 'pat') PAT.input(e.target.dataset.k, e.target.value);
     else if (k === 'scq') { S.modal.q = e.target.value; A.render(); }
     else if (k === 'palq') { S.palette.q = e.target.value; S.palette.idx = 0; A.render(); }
     else if (k === 'skmod') SK.modifyInput(e.target.value);
@@ -314,6 +338,10 @@
     if (hf !== S.hoverFeature) { S.hoverFeature = hf; A.syncHighlight(); }
     const mh = e.target.closest('[data-hover]');
     if (S.menu && S.menu.cls === 'select-other') { const i = mh ? +mh.dataset.hover : null; if (i != null && S.menu.kfocus !== i) { S.menu.kfocus = i; soHighlight(); A.renderFloating(); } }
+    if (S.sketch && SK.K) {
+      const it = S.menu && mh ? S.menu.items[+mh.dataset.hover] : null; SK.menuHover(it && it.hl);
+      const r = e.target.closest('[data-mhl]'); SK.measureHot(r ? r.dataset.mhl.replace(/^\d/, '') : null);
+    }
     tooltip(e);
   });
 
@@ -341,7 +369,7 @@
 
   // ───────── Menus ─────────
   function menu(x, y, items, extra) { S.menu = Object.assign({ x, y, items, kfocus: null }, extra || {}); A.renderFloating(); }
-  function closeMenu() { if (S.menu && S.menu.cls === 'select-other') { S.hover = null; A.syncHighlight(); } S.menu = null; A.renderFloating(); }
+  function closeMenu() { if (S.menu && S.menu.cls === 'select-other') { S.hover = null; A.syncHighlight(); } if (S.sketch && SK.K) SK.menuHover(null); S.menu = null; A.renderFloating(); }
   function displayMenu(x, y, above) {
     const items = [{ head: 'Visual style' },
       { label: '✓ Shaded with visible edges', run: () => {} },
@@ -395,7 +423,7 @@
       document.querySelectorAll('.tl-item.hovered-from-canvas').forEach((x) => x.classList.remove('hovered-from-canvas'));
       if (h) { const ref = h.ref; const t = document.querySelector(`.tl-item[data-id="${ref.maker}"]`); t && t.classList.add('hovered-from-canvas'); }
     }
-    $('#canvas-wrap').style.cursor = arrowHit(e) ? 'grab' : '';
+    $('#canvas-wrap').style.cursor = arrowHit(e) ? 'grab' : PAT.overHit(e) ? 'pointer' : '';
   };
   VP.hooks.onLeave = () => { if (S.sketch) { SK.K && (SK.K.cursor = null); A.renderStatus(); VP.request(); } };
   VP.hooks.onClick = function (e) {
@@ -403,6 +431,7 @@
     if (S.sketch) { SK.onClick(e); return; }
     if (S.pickPlane) { const t = VP.pickPlane(e.clientX, e.clientY); if (t) sketchOn(t); return; }
     const h = VP.pick(e.clientX, e.clientY);
+    if (S.dialog && S.dialog.pattern) { if (h) PAT.pick({ kind: h.kind, id: h.id, ref: h.ref, feature: h.kind === 'face' ? h.ref.maker : null }); return; }
     if (S.dialog) { if (h && S.dialog.type === 'fillet' && h.kind === 'edge') A.toast('Prototype: the edge would join the Edges box.'); return; }
     if (!h) { if (S.sel.length || S.selFeature || S.selRow) A.setSel([]); return; }
     const it = { kind: h.kind, id: h.id };
@@ -422,7 +451,7 @@
     A.toast(`${o.crossing ? 'Crossing' : 'Window'} selection: ${list.length} edge${list.length === 1 ? '' : 's'}`);
   };
   VP.hooks.onContext = function (e) {
-    if (S.sketch) { menu(e.clientX, e.clientY, [{ label: 'End chain', keys: ['Esc'], disabled: !(SK.K && SK.K.chain), run: () => SK.esc() }, { label: 'Smart Dimension', icon: 'dimension', keys: ['D'], run: () => SK.setTool('dimension') }, 'sep', { label: 'Finish Sketch', icon: 'check', keys: ['Mod', 'Enter'], run: () => SK.finish() }, { label: 'Cancel sketch', run: () => SK.cancel() }]); return; }
+    if (S.sketch) { menu(e.clientX, e.clientY, SK.contextItems(e)); return; }
     const d = doc(); if (!d) return;
     const h = VP.pick(e.clientX, e.clientY); const all = VP.pickAll(e.clientX, e.clientY);
     if (h) {
@@ -473,6 +502,8 @@
   }
   function segD(p, a, b) { const dx = b.x - a.x, dy = b.y - a.y, L = dx * dx + dy * dy; let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / L; t = Math.max(0, Math.min(1, t)); return Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy); }
   VP.hooks.onPointerDown = function (e) {
+    if (S.sketch && SK.pointerDown && SK.pointerDown(e)) return true;
+    if (PAT.pointerDown(e)) return true;
     if (arrowHit(e)) { const g = arrowGeom(); dragArrow = { x: e.clientX, y: e.clientY, D0: doc().p.D, g }; return true; }
     return false;
   };
@@ -503,6 +534,7 @@
       const lbl = A.fmt(doc().p.D) + ' mm';
       s += `<rect x="${lx}" y="${ly - 10}" width="${lbl.length * 6.6 + 12}" height="20" rx="4" fill="#212121" stroke="${col}"/><text x="${lx + 6}" y="${ly + 4}" fill="#fff" font-size="11.5" font-family="Inter Silico, Inter">${lbl}</text>`;
     }
+    s += PAT.overlay();
     return s;
   };
 
@@ -563,6 +595,7 @@
     if (key === 'F5') { e.preventDefault(); A.toast('F5 shows the selection filters. They live in the toolbar, under SELECT.'); return; }
     if (key === 's' || key === 'S') { e.preventDefault(); runCmd('search'); return; }
     if (S.sketch) {
+      if ((key === 'Delete' || key === 'Backspace') && SK.K && SK.K.sel && SK.K.sel.length) { e.preventDefault(); SK.del(); return; }
       const m = { l: 'sLine', r: 'sRect', c: 'sCircle', a: 'sArc', p: 'sPoint', t: 'sTrim', d: 'sDim', x: 'sConstruction' }[key.toLowerCase()];
       if (m) { e.preventDefault(); runCmd(m); }
       return;
@@ -673,10 +706,15 @@
       case '6c': openBracket(true); setTimeout(() => agentEdit('radius'), 300); break;
       case '6d': openBracket(true); setTimeout(() => { A.edit((d) => { d.p.D = 45; }, { label: 'Legs: 40 mm → 45 mm' }); A.edit((d) => { d.p.r = 4; }, { label: 'Inside corner: 5 mm → 4 mm' }); setTimeout(() => agentEdit('radius'), 600); }, 300); break;
       case '7': openBracket(true); setTimeout(() => runCmd('shortcuts'), 300); break;
+      default: if (!PAT.protoState(k)) SK.protoState(k, openBracket);
     }
     A.render();
   }
-  window.PROTO = { proto, agentEdit };
+  function createMenu(r) {
+    menu(r.left, r.bottom + 2, ['createSketch', 'sep', 'pad', 'pocket', 'revolve', 'groove', 'sep', { head: 'Pattern' }, 'rectPattern', 'circPattern', 'sep', 'mirror'].map(cmdItem));
+  }
+  PAT.setMenu((x, y, items) => menu(x, y, items));
+  window.PROTO = { proto, agentEdit, activate, createMenu, menu, editFeature, runCmd };
 
   // ───────── Start ─────────
   VP.init($('#canvas-wrap'), $('#gl'), $('#overlay'));
