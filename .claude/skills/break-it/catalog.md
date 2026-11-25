@@ -65,6 +65,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - Near-tangent contacts reported at the perpendicular's foot: a line that joins an arc at a shared point within g of tangent has its foot √(2rg) from the joint (4.5 µm at g = 1e-12, r = 10), so "the next curve past the end" is the curve it already joins, microns on
 - Collinear neighbours as crossings: a line chained straight into another (a shared end) is offered the other's far end, an overlap no edit can take
 - A fixed reference (`origin`, an axis) where a rule reads only the sketch's own elements (`reference.element()` is none): an edit's rewrite "while the point stays" (a removed line's `midpoint` made a `symmetric` of its ends) skips the origin, which always stays, and drops the constraint; give each rewrite's every reference the origin and the axes in turn
+- A profile's centre or area summed from a measure that runs a lone circle counter-clockwise whatever its role (`area_moments`): a circle that's a hole adds its area instead of taking it away; centre a square with a round hole off its middle, by hand
+- Several outlines read as one (a pattern's originals' anchor, Σ Aᵢcᵢ / Σ Aᵢ): pin it with two of different areas far apart, so an unweighted mean or a lost one shows
 
 ## Sketch solver
 

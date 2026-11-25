@@ -1051,7 +1051,8 @@ fn schema_refuses_names_that_arent_names_safely_and_briefly() {
                 "sketch_join",
                 "undo",
                 "redo",
-                "diff"
+                "diff",
+                "pattern"
             ]
         );
         assert!(printable(error.message()), "{of:?}: {:?}", error.message());

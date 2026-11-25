@@ -13,7 +13,7 @@ use silico_core::command::elements::Entry as ElementEntry;
 use silico_core::command::{SessionId, Sessions};
 use silico_core::disk::Disk;
 use silico_core::document::FeatureId;
-use silico_core::document::{Length, Units};
+use silico_core::document::{Length, Measure, Units};
 use silico_core::kernel::Clients;
 use silico_core::timeline::{Entry, Health};
 use silico_protocol::ElementKind;
@@ -21,6 +21,7 @@ use silico_protocol::ElementKind;
 use crate::dialog::Action;
 use crate::icons::{self, Icon, IconSize};
 use crate::measures::Answers;
+use crate::model_measures::Answers as ModelAnswers;
 use crate::properties;
 use crate::selection::{Picked, SelectedAs};
 use crate::shortcuts::Command;
@@ -160,7 +161,13 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
         });
         if *pane == Pane::Viewport {
             // The canvas reaches the pane's edges.
-            crate::viewport::show(ui, self.tab.as_deref_mut(), self.sessions, self.drawing);
+            crate::viewport::show(
+                ui,
+                self.tab.as_deref_mut(),
+                self.sessions,
+                self.drawing,
+                self.remembered,
+            );
             return UiResponse::None;
         }
         if *pane == Pane::Browser {
@@ -456,6 +463,14 @@ impl<P: Clients + 'static> Panes<'_, P> {
             // A pick made this frame (the canvas is drawn before this pane) is measured from
             // this frame, not the next.
             tab.measure(sessions);
+        } else if entry.is_none() {
+            // The document's view: its model's measures read, if they're not yet.
+            let now = self.drawing.now();
+            tab.measure_model(sessions, now);
+            // A read refused is asked again when its delay is up: a frame then.
+            if let Some(wait) = tab.model_measures().wake_in(now) {
+                ui.ctx().request_repaint_after(wait);
+            }
         }
         let mut viewed = None;
         let out = egui::ScrollArea::vertical()
@@ -531,6 +546,10 @@ impl<P: Clients + 'static> Panes<'_, P> {
         let Some(mut dialog) = tab.dialog.take() else {
             return;
         };
+        // A pad's Direction's tooltips, as its sketch's plane is read.
+        dialog.tips = (dialog.kind == crate::dialog::Kind::Pad)
+            .then(|| dialog.sketch().and_then(|sketch| tab.pad_tips(sketch)))
+            .flatten();
         let enabled = !tab.closing();
         let title = dialog.kind.title();
         // A feature's name as the timeline lists it: a sweep's sketch, a boolean's body (one
@@ -1405,8 +1424,7 @@ fn problems(ui: &mut Ui, tab: &Tab) -> properties::CardOut {
 /// over its path, or an untitled part's name over its having no file yet), its problems,
 /// its revision, units, features, save state, and file on disk, and its model.
 ///
-/// SEAM: the model's measures (`docProps`' Volume, Area, Size, and Faces), which need a
-/// `mass_properties` read of its bodies the app doesn't make yet; its bodies are counted.
+/// The model's section counts its bodies and gives its measures ([`model_rows`]).
 fn document(ui: &mut Ui, tab: &Tab) -> properties::CardOut {
     properties::head(
         ui,
@@ -1469,11 +1487,16 @@ fn document(ui: &mut Ui, tab: &Tab) -> properties::CardOut {
         .filter(|timeline| timeline.model.is_some())
         .map(|timeline| timeline.bodies.len());
     match (bodies, features) {
-        (Some(bodies), _) => properties::text_row(
-            ui,
-            "Bodies",
-            properties::body(&bodies.to_string(), theme::PROPERTY_VALUE),
-        ),
+        (Some(bodies), _) => {
+            properties::text_row(
+                ui,
+                "Bodies",
+                properties::body(&bodies.to_string(), theme::PROPERTY_VALUE),
+            );
+            if bodies > 0 {
+                model_rows(ui, tab);
+            }
+        }
         (None, Some(0)) => properties::hint(
             ui,
             &[
@@ -1489,6 +1512,77 @@ fn document(ui: &mut Ui, tab: &Tab) -> properties::CardOut {
         &[("Double-click a feature in the timeline to edit it.", false)],
     );
     asked
+}
+
+/// The model's measures (`docProps`): Volume and Area, its bodies' added, as
+/// `mass_properties` gives each (to two decimals, `fmtF`); Size, the box around its bodies'
+/// tight boxes, as the viewport's `meshes` read gives each (each side to at most two
+/// decimals, `fmt`), once that read is of the same model and the same bodies (left out if
+/// one has no box: the kernel couldn't measure it); and Faces, as many as `query` matches.
+/// Each not answered yet [`NOT_MEASURED`]; a read refused leaves its rows out, and its
+/// refusal is said as a card.
+fn model_rows(ui: &mut Ui, tab: &Tab) {
+    let of = tab.published_model();
+    let answers = of.and_then(|of| tab.model_measures().answers(of));
+    let value = |text: String| properties::body(&text, theme::PROPERTY_VALUE);
+    let waiting = || properties::body(NOT_MEASURED, theme::TEXT_SUBDUED);
+    let measure = |measure: Option<Measure>, unit: &str| {
+        measure.map_or_else(waiting, |measure| {
+            let written = properties::fixed(measure.millionths(), MILLIONTHS);
+            value(format!("{written} {unit}"))
+        })
+    };
+    if !answers.is_some_and(ModelAnswers::bodies_refused) {
+        properties::text_row(
+            ui,
+            "Volume",
+            measure(answers.and_then(ModelAnswers::volume), "mm³"),
+        );
+        properties::text_row(
+            ui,
+            "Area",
+            measure(answers.and_then(ModelAnswers::area), "mm²"),
+        );
+    }
+    // The view's bodies, if they're of this model and are the bodies measured.
+    let measured = answers.and_then(ModelAnswers::measured_features);
+    let view = tab.view.bodies();
+    let same = measured.is_some_and(|measured| {
+        tab.view.bodies_of() == of
+            && view.len() == measured.len()
+            && view.values().map(|body| &body.feature).eq(measured)
+    });
+    // Of this model's bodies: their box, or, for a body the kernel couldn't measure, none
+    // ever (its row left out, never said to be coming).
+    let boxes = same.then(|| {
+        view.values()
+            .map(|body| body.bounds)
+            .collect::<Option<Vec<_>>>()
+    });
+    match boxes.map(|boxes| boxes.and_then(crate::model_measures::size)) {
+        Some(None) => {}
+        Some(Some(sides)) => {
+            let [x, y, z] =
+                sides.map(|side| properties::trimmed(side.nm().into(), properties::NM_PER_MM));
+            properties::text_row(ui, "Size", value(format!("{x} × {y} × {z} mm")));
+        }
+        None => properties::text_row(ui, "Size", waiting()),
+    }
+    if !answers.is_some_and(ModelAnswers::faces_refused) {
+        let faces = answers.and_then(ModelAnswers::face_count);
+        properties::text_row(
+            ui,
+            "Faces",
+            faces.map_or_else(waiting, |faces| value(faces.to_string())),
+        );
+    }
+    if let Some(error) = answers
+        .and_then(ModelAnswers::refused)
+        .and_then(|problems| problems.errors().first())
+    {
+        let said = crate::tab::Said::of(error);
+        properties::card(ui, &said, None, properties::Offer::default());
+    }
 }
 
 /// The document's units, as its header holds them: `mm · 1 nm resolution`.
@@ -4222,6 +4316,41 @@ mod property_panel_drawn {
         boxed.bottom() + css::HINT_MARGIN
     }
 
+    /// How many times `text` is painted.
+    fn painted_times<S>(h: &Harness<'_, S>, text: &str) -> usize {
+        painted(h)
+            .into_iter()
+            .filter(|shape| matches!(shape, Shape::Text(shown) if shown.galley.text() == text))
+            .count()
+    }
+
+    /// [`part`]'s document view drawn in `h` checked down to its Bodies row, as
+    /// [`the_documents_properties_are_drawn_as_doc_props`] checks it: the bottom of that row.
+    #[track_caller]
+    fn part_down_to_bodies<S>(h: &Harness<'_, S>) -> f32 {
+        let mut y = title_and_head(h, "Part.silico", "/models/Part.silico", mono());
+        y = section_at(h, "DOCUMENT", y);
+        let value = body(css::FS);
+        for (key, said) in [
+            ("Revision", "1"),
+            ("Units", "mm · 1 nm resolution"),
+            ("Features", "2"),
+            ("Saved", "Yes"),
+        ] {
+            y = row_at(h, key, said, y, value.clone(), css::G800);
+        }
+        y = row_at(
+            h,
+            "File on disk",
+            "Not compared yet",
+            y,
+            value.clone(),
+            css::G550,
+        );
+        y = section_at(h, "MODEL", y);
+        row_at(h, "Bodies", "1", y, value, css::G800)
+    }
+
     #[test]
     fn the_documents_properties_are_drawn_as_doc_props() {
         let h = drawn(part());
@@ -4248,8 +4377,226 @@ mod property_panel_drawn {
             css::G550,
         );
         y = section_at(&h, "MODEL", y);
-        y = row_at(&h, "Bodies", "1", y, value, css::G800);
+        y = row_at(&h, "Bodies", "1", y, value.clone(), css::G800);
+        // Nothing published, so nothing measured: each measure's row says so, subdued.
+        for key in ["Volume", "Area", "Size", "Faces"] {
+            y = row_at(&h, key, NOT_MEASURED, y, value.clone(), css::G550);
+        }
         hint_at(&h, "Double-click a feature in the timeline to edit it.", y);
+    }
+
+    /// [`part`], its model published (the first seen), and measured as `answers` say.
+    fn measured_part(answers: crate::model_measures::Answers) -> Tab {
+        let mut tab = part();
+        tab.published = Some(Revision::OPENED);
+        tab.published_models = 1;
+        tab.model_measures_mut()
+            .answered_as((1, Revision::OPENED), answers);
+        tab
+    }
+
+    /// The block's mass properties, as `mass_properties` gives them: `volume` and `area` in
+    /// millionths.
+    fn block_measured(volume: i128, area: i128) -> silico_core::command::measure::Bodies {
+        use silico_core::document::{Length, Measure};
+        silico_core::command::measure::Bodies {
+            bodies: vec![silico_core::command::measure::MassProperties {
+                feature: fid("b0000001"),
+                volume: Measure::from_millionths(volume),
+                area: Measure::from_millionths(area),
+                center_of_mass: [Length::from_nm(0); 3],
+            }],
+        }
+    }
+
+    #[test]
+    fn the_models_measures_are_drawn_as_doc_props_writes_them() {
+        // `fmtF(g.volume, 2) + ' mm³'` and `fmtF(g.area, 2) + ' mm²'` (`toLocaleString`
+        // en-US: grouped by threes, two decimals, half away from zero), and `g.faces.length`
+        // as a plain integer. By hand: 1234567.891 mm³ → 1,234,567.89; 2800.005 mm² →
+        // 2,800.01.
+        let faces = silico_core::command::elements::Queried {
+            entries: Vec::new(),
+            matched: 1234,
+            tied: None,
+        };
+        let h = drawn(measured_part(crate::model_measures::Answers {
+            bodies: Some(Ok(block_measured(1_234_567_891_000, 2_800_005_000))),
+            faces: Some(Ok(faces)),
+        }));
+        let value = body(css::FS);
+        let mut y = part_down_to_bodies(&h);
+        y = row_at(
+            &h,
+            "Volume",
+            "1,234,567.89 mm³",
+            y,
+            value.clone(),
+            css::G800,
+        );
+        y = row_at(&h, "Area", "2,800.01 mm²", y, value.clone(), css::G800);
+        // The viewport's bodies aren't of this model: its box not read yet.
+        y = row_at(&h, "Size", NOT_MEASURED, y, value.clone(), css::G550);
+        y = row_at(&h, "Faces", "1234", y, value, css::G800);
+        hint_at(&h, "Double-click a feature in the timeline to edit it.", y);
+    }
+
+    /// A view of one body, the block, boxed from (0, 0, 0) to (40, 20, 10), read of no model.
+    fn viewing_the_block() -> crate::viewport::View {
+        let body = crate::viewport::ViewBody {
+            feature: fid("b0000001"),
+            key: silico_core::recompute::Key::parse(&"01".repeat(32)).unwrap(),
+            level: 1.0,
+            deflection: 1.0,
+            bounds: Some([[0.0; 3], [40.0, 20.0, 10.0]]),
+            serves: [0.0, 1.0],
+            held: false,
+            mesh: Arc::new(silico_protocol::Mesh {
+                positions: Vec::new(),
+                normals: Vec::new(),
+                triangles: Vec::new(),
+                face_triangles: Vec::new(),
+                valid: None,
+                edge_points: Vec::new(),
+                edge_point_counts: Vec::new(),
+                vertex_points: Vec::new(),
+            }),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            vertices: Vec::new(),
+        };
+        crate::viewport::View::holding(std::collections::BTreeMap::from([(1, body)]))
+    }
+
+    #[test]
+    fn the_size_is_the_views_box_only_once_the_view_is_of_the_model_measured() {
+        let measured = || crate::model_measures::Answers {
+            bodies: Some(Ok(block_measured(8_000_000_000, 2_800_000_000))),
+            faces: None,
+        };
+        // The view's block, read of no model: its box isn't this model's.
+        let mut tab = measured_part(measured());
+        tab.view = viewing_the_block();
+        let h = drawn(tab);
+        assert_eq!(
+            painted_times(&h, "40 × 20 × 10 mm"),
+            0,
+            "another model's box"
+        );
+        assert_eq!(painted_times(&h, NOT_MEASURED), 2, "Size and Faces waiting");
+        // Read of another model published at the same revision: still not this one's.
+        let mut tab = measured_part(measured());
+        tab.view = viewing_the_block();
+        tab.view.read_as((2, Revision::OPENED));
+        let h = drawn(tab);
+        assert_eq!(
+            painted_times(&h, "40 × 20 × 10 mm"),
+            0,
+            "another model's box"
+        );
+        // Read of this model: its box.
+        let mut tab = measured_part(measured());
+        tab.view = viewing_the_block();
+        tab.view.read_as((1, Revision::OPENED));
+        let h = drawn(tab);
+        let value = body(css::FS);
+        let mut y = part_down_to_bodies(&h);
+        y = row_at(&h, "Volume", "8,000.00 mm³", y, value.clone(), css::G800);
+        y = row_at(&h, "Area", "2,800.00 mm²", y, value.clone(), css::G800);
+        y = row_at(&h, "Size", "40 × 20 × 10 mm", y, value.clone(), css::G800);
+        row_at(&h, "Faces", NOT_MEASURED, y, value, css::G550);
+        // Of this model, but the measures name another body: not the same bodies.
+        let mut answers = measured();
+        if let Some(Ok(bodies)) = answers.bodies.as_mut() {
+            bodies.bodies[0].feature = fid("c0000001");
+        }
+        let mut tab = measured_part(answers);
+        tab.view = viewing_the_block();
+        tab.view.read_as((1, Revision::OPENED));
+        let h = drawn(tab);
+        assert_eq!(
+            painted_times(&h, "40 × 20 × 10 mm"),
+            0,
+            "another body's box"
+        );
+    }
+
+    #[test]
+    fn a_model_of_no_body_has_no_measures() {
+        let mut tab = measured_part(crate::model_measures::Answers {
+            bodies: Some(Ok(silico_core::command::measure::Bodies {
+                bodies: Vec::new(),
+            })),
+            faces: None,
+        });
+        if let Some(timeline) = tab.timeline.as_mut() {
+            timeline.bodies.clear();
+        }
+        let h = drawn(tab);
+        let value = body(css::FS);
+        let mut y = title_and_head(&h, "Part.silico", "/models/Part.silico", mono());
+        y = section_at(&h, "DOCUMENT", y);
+        for _ in 0..5 {
+            y += css::ROW_H;
+        }
+        y = section_at(&h, "MODEL", y);
+        y = row_at(&h, "Bodies", "0", y, value, css::G800);
+        for key in ["Volume", "Area", "Size", "Faces"] {
+            assert_eq!(painted_times(&h, key), 0, "{key}");
+        }
+        hint_at(&h, "Double-click a feature in the timeline to edit it.", y);
+    }
+
+    #[test]
+    fn a_refused_model_measure_leaves_its_rows_out_and_says_why() {
+        let refusal = Problems::from(
+            silico_core::Error::new(
+                silico_core::ErrorCode::KernelFailed,
+                "b0000001's solid couldn't be described, so its elements aren't known",
+            )
+            .with_suggestion("check the document again"),
+        );
+        let h = drawn(measured_part(crate::model_measures::Answers {
+            bodies: Some(Ok(block_measured(8_000_000_000, 2_800_000_000))),
+            faces: Some(Err(refusal.clone())),
+        }));
+        assert_eq!(painted_times(&h, "Faces"), 0, "Faces left out");
+        assert_eq!(painted_times(&h, "8,000.00 mm³"), 1);
+        assert_eq!(
+            painted_times(
+                &h,
+                "b0000001's solid couldn't be described, so its elements aren't known"
+            ),
+            1,
+            "its refusal said"
+        );
+        // The volume's read refused too: Volume and Area out, one card, the first refusal
+        // (the mass properties').
+        let bodies_refusal = Problems::from(silico_core::Error::new(
+            silico_core::ErrorCode::KernelFailed,
+            "b0000001's solid couldn't be measured",
+        ));
+        let h = drawn(measured_part(crate::model_measures::Answers {
+            bodies: Some(Err(bodies_refusal)),
+            faces: Some(Err(refusal)),
+        }));
+        assert_eq!(
+            painted_times(&h, "b0000001's solid couldn't be measured"),
+            1,
+            "the first refusal said"
+        );
+        for key in ["Volume", "Area", "Faces"] {
+            assert_eq!(painted_times(&h, key), 0, "{key} left out");
+        }
+        assert_eq!(painted_times(&h, "Size"), 1);
+        assert_eq!(
+            painted_times(
+                &h,
+                "b0000001's solid couldn't be described, so its elements aren't known"
+            ),
+            0,
+            "the second refusal not said"
+        );
     }
 
     #[test]

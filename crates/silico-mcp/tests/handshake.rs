@@ -35,7 +35,8 @@ fn initialize_answers_with_the_pinned_revision_whatever_the_client_asks() {
         "{line}"
     );
     // The workspace, as relative paths resolve against it, how to make a solid (from
-    // sketches, as a person does in the app), and the three things an agent most needs.
+    // sketches, as a person does in the app), how to repeat or mirror it, and the three
+    // things an agent most needs.
     let instructions = result["instructions"].as_str().unwrap();
     let root = c.work.display().to_string();
     for said in [
@@ -48,6 +49,21 @@ fn initialize_answers_with_the_pinned_revision_whatever_the_client_asks() {
     ] {
         assert!(instructions.contains(&said), "{said}: {instructions}");
     }
+    // How to repeat or mirror, said right after how to make a solid, which it extends
+    // (docs/design/m6.0-patterns.md, section 8).
+    let sketch_first = instructions.find("Build solids from sketches").unwrap();
+    let patterns = instructions
+        .find("To repeat or mirror what's built")
+        .unwrap();
+    let transaction = instructions.find("Edit inside a transaction").unwrap();
+    assert!(
+        sketch_first < patterns && patterns < transaction,
+        "{instructions}"
+    );
+    assert!(
+        instructions.contains("`C2`, `C2,1`, `S1`"),
+        "{instructions}"
+    );
     // A second initialize is answered as the first was.
     let again = c.request(2, "initialize", "{}");
     assert_eq!(again["result"], *result);

@@ -62,7 +62,7 @@ use std::time::{Duration, Instant};
 
 use silico_core::kernel::{Blob, KernelWorker, ShapeData};
 use silico_protocol::{Camera, Mesh, Projection};
-use silico_render::render::{Element, Frame, Outlines, Pickable, PixelRect, Renderer, Tint, hits};
+use silico_render::render::{Element, Frame, Outlines, Pickable, PixelRect, Renderer, hits};
 use silico_render::worker::RenderAdapter;
 
 /// The frames timed in each run, after the frames that upload the part's faces.
@@ -180,7 +180,6 @@ fn main() -> Result<(), Box<dyn Error>> {
                             hovered: hover,
                             outlines: Outlines::DEFAULT,
                             tinted: &[],
-                            tint: Tint::NONE,
                             picking: asking.then_some(picking),
                             // The edges picked, as the selection's filter starts (N5: each
                             // near the square drawn again toward the eye).
@@ -191,6 +190,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             background: None,
                             lines: &[],
                             planes: &[],
+                            dim: 1.0,
                         })
                         .map_err(|f| f.to_string())?;
                     queue.submit([commands]);
@@ -315,13 +315,13 @@ fn edge_batch(
                     hovered: &[],
                     outlines: Outlines::DEFAULT,
                     tinted: &[],
-                    tint: Tint::NONE,
                     picking: Some(picking),
                     edges,
                     vertices: None,
                     background: Some([0x00, 0x00, 0x00]),
                     lines: &[],
                     planes: &[],
+                    dim: 1.0,
                 })
                 .map_err(|f| f.to_string())?;
             let placed = renderer.placed();
@@ -450,7 +450,6 @@ fn sketch_lines(
                     hovered: &[],
                     outlines: Outlines::DEFAULT,
                     tinted: &[],
-                    tint: Tint::NONE,
                     picking: Some(picking),
                     edges: true,
                     vertices: None,
@@ -458,6 +457,7 @@ fn sketch_lines(
                     background: None,
                     lines: if drawn { &sets } else { &[] },
                     planes: &[],
+                    dim: 1.0,
                 })
                 .map_err(|f| f.to_string())?;
             let placed = renderer.placed();

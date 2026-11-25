@@ -1,0 +1,20 @@
+{
+  "pattern": "t0000001",
+  "type": "linear_pattern",
+  "directions": [
+    {"direction": [1, 0, 0], "step": 40},
+    {"direction": [0, 1, 0], "step": 40}
+  ],
+  "axis": null,
+  "plane": null,
+  "anchor": [-40, -20, 0],
+  "instances": [
+    {"index": [0, 1], "offset": [0, 40, 0], "angle": null, "anchor": [-40, 20, 0], "state": "built"},
+    {"index": [1], "offset": [40, 0, 0], "angle": null, "anchor": [0, -20, 0], "state": "built"},
+    {"index": [1, 1], "offset": [40, 40, 0], "angle": null, "anchor": [0, 20, 0], "state": "built"},
+    {"index": [2], "offset": [80, 0, 0], "angle": null, "anchor": [40, -20, 0], "state": "built"},
+    {"index": [2, 1], "offset": [80, 40, 0], "angle": null, "anchor": [40, 20, 0], "state": "built"}
+  ],
+  "problems": [],
+  "problems_total": 0
+}

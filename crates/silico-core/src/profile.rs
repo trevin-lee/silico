@@ -1819,7 +1819,62 @@ fn regions(
     Ok(Profile { plane, regions })
 }
 
+/// A loop's part in its region: the outline, whose area counts, or a hole, whose area is
+/// taken away.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoopRole {
+    Outer,
+    Hole,
+}
+
+/// The area and the centre of area of a profile's loops, each its curves as the faces request
+/// takes them ([`Edge::sent`], or [`sent`] of a read's curves) and its part in its region:
+/// each measured exactly by the request's own measure (`silico_protocol::area_moments`), about
+/// a point of its own, then all about the first's, so a profile far from its sketch's origin,
+/// or a loop far from the others, keeps the precision its own size has. However the measure
+/// runs a loop (a lone circle counter-clockwise, a hole or not), it counts by its part: an
+/// outline's area added, a hole's taken away. None where the area isn't above 0 or the
+/// centre isn't finite. What the pattern read's anchor and the app's pad arrows are both
+/// placed at.
+pub fn area_centre<C: AsRef<[silico_protocol::Curve]>>(
+    loops: impl IntoIterator<Item = (C, LoopRole)>,
+) -> Option<(f64, [f64; 2])> {
+    let mut about: Option<[f64; 2]> = None;
+    let (mut area, mut moment) = (0.0, [0.0, 0.0]);
+    for (curves, role) in loops {
+        let measured = silico_protocol::area_moments(curves.as_ref());
+        let here = *about.get_or_insert(measured.about);
+        let shift = [measured.about[0] - here[0], measured.about[1] - here[1]];
+        let role = match role {
+            LoopRole::Outer => 1.0,
+            LoopRole::Hole => -1.0,
+        };
+        let sense = role * measured.area.signum();
+        area += sense * measured.area;
+        moment = [
+            moment[0] + sense * (measured.moment[0] + shift[0] * measured.area),
+            moment[1] + sense * (measured.moment[1] + shift[1] * measured.area),
+        ];
+    }
+    let about = about?;
+    let centre = [about[0] + moment[0] / area, about[1] + moment[1] / area];
+    (area > 0.0 && centre.iter().all(|c| c.is_finite())).then_some((area, centre))
+}
+
 impl Profile {
+    /// Its area and centre of area ([`area_centre`]), each region's outline counted and its
+    /// holes taken away; none for a profile of no area.
+    pub fn area_centre(&self) -> Option<(f64, [f64; 2])> {
+        area_centre(self.regions.iter().flat_map(|region| {
+            std::iter::once((region.outer.sent(), LoopRole::Outer)).chain(
+                region
+                    .holes
+                    .iter()
+                    .map(|hole| (hole.sent(), LoopRole::Hole)),
+            )
+        }))
+    }
+
     /// The profile as the kernel's faces request takes it (`KernelRequest::make_faces`), on
     /// `plane`, the sketch's plane as the rebuild resolved it (an origin plane's, or a face's
     /// frame): its regions in order, each loop's curves as walked ([`Edge::sent`]), outer

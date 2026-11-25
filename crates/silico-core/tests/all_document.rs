@@ -144,6 +144,8 @@ mod measures;
 mod meshes_read;
 #[path = "meshes_read_worker_faults.rs"]
 mod meshes_read_worker_faults;
+#[path = "pattern_read.rs"]
+mod pattern_read;
 #[path = "patterns.rs"]
 mod patterns;
 #[path = "reach.rs"]

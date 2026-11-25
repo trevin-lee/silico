@@ -50,12 +50,13 @@ pub enum SessionCommand {
     Undo,
     Redo,
     Diff,
+    Pattern,
 }
 
 impl SessionCommand {
     /// Every command that runs in a session, in the design's order (M4.1's, then M5.0's, then
-    /// `diff`, Fable's of 2026-11-04).
-    pub const ALL: [SessionCommand; 39] = [
+    /// `diff`, Fable's of 2026-11-04, then `pattern`, M6.5's).
+    pub const ALL: [SessionCommand; 40] = [
         SessionCommand::Close,
         SessionCommand::Begin,
         SessionCommand::Commit,
@@ -95,6 +96,7 @@ impl SessionCommand {
         SessionCommand::Undo,
         SessionCommand::Redo,
         SessionCommand::Diff,
+        SessionCommand::Pattern,
     ];
 
     /// The command it is, of every command ([`Command`]).
@@ -139,6 +141,7 @@ impl SessionCommand {
             SessionCommand::Undo => Command::Undo,
             SessionCommand::Redo => Command::Redo,
             SessionCommand::Diff => Command::Diff,
+            SessionCommand::Pattern => Command::Pattern,
         }
     }
 
@@ -257,12 +260,13 @@ pub enum ReadCommand {
     Meshes,
     Sketch,
     Timeline,
+    Pattern,
 }
 
 impl ReadCommand {
     /// Every command that reads a model, in the design's order (that of
     /// [`SessionCommand::ALL`]).
-    pub const ALL: [ReadCommand; 10] = [
+    pub const ALL: [ReadCommand; 11] = [
         ReadCommand::Check,
         ReadCommand::Elements,
         ReadCommand::Query,
@@ -273,6 +277,7 @@ impl ReadCommand {
         ReadCommand::Timeline,
         ReadCommand::Meshes,
         ReadCommand::Sketch,
+        ReadCommand::Pattern,
     ];
 
     /// The session command it is.
@@ -288,6 +293,7 @@ impl ReadCommand {
             ReadCommand::Meshes => SessionCommand::Meshes,
             ReadCommand::Sketch => SessionCommand::Sketch,
             ReadCommand::Timeline => SessionCommand::Timeline,
+            ReadCommand::Pattern => SessionCommand::Pattern,
         }
     }
 

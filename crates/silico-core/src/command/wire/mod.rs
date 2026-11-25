@@ -39,7 +39,7 @@
 //! `distance`, and `angle`; [`render`]; [`export`]; [`drag`], for `drag_begin`,
 //! `drag_move`, and `drag_end`; [`meshes`]; [`sketch`]; and [`sketch_edits`], for `sketch_add`,
 //! `sketch_remove`, `sketch_split`, `sketch_trim`, `sketch_unjoin`, `sketch_merge`,
-//! `sketch_extend`, and `sketch_join`).
+//! `sketch_extend`, and `sketch_join`; and [`pattern`]).
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -2054,6 +2054,9 @@ const fn snapshot_of(command: Command) -> MakeSnapshot {
             command_schema::<transaction::RedoRequestSchema, transaction::RedoResultSchema>
         }
         Command::Diff => command_schema::<reads::DiffRequestSchema, reads::DiffResultSchema>,
+        Command::Pattern => {
+            command_schema::<pattern::PatternRequestSchema, pattern::PatternResultSchema>
+        }
     }
 }
 
@@ -2150,6 +2153,7 @@ pub mod export;
 pub mod logs;
 pub mod measure;
 pub mod meshes;
+pub mod pattern;
 pub mod reads;
 pub mod render;
 pub mod schema;

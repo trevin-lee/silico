@@ -531,7 +531,8 @@ pub struct View {
     /// face cast under it). On, as the selection's filter starts.
     pub edges: bool,
     /// The broken reference's candidate whose card row the pointer is over (flow 6b), set
-    /// from outside: drawn with the hover, in [`theme::VIEWPORT_CANDIDATE`] for that frame.
+    /// from outside: drawn with the hover, outlined (a face too, not tinted), in
+    /// [`theme::VIEWPORT_CANDIDATE`] for that frame.
     ///
     /// SEAM: the prototype lights every candidate while its card shows, in
     /// [`theme::VIEWPORT_CANDIDATE`] [`theme::VIEWPORT_CANDIDATE_WIDTH`] wide, and the hovered
@@ -739,7 +740,7 @@ fn of_the_request(problems: &Problems) -> bool {
 
 /// The delay before a read refused for the moment, the `tries`th in a row (from 0), is
 /// asked again.
-fn retry_after(tries: u32) -> Duration {
+pub(crate) fn retry_after(tries: u32) -> Duration {
     RETRY_FIRST
         .saturating_mul(2u32.saturating_pow(tries))
         .min(RETRY_MOST)
@@ -998,6 +999,14 @@ impl View {
         self.model = Some(of.1);
         self.last_asked = Some(picking.frame);
         self.picked = Some(picking);
+    }
+
+    /// As if its bodies had been read of `of` (a count of the models published, and its
+    /// revision): a property panel's unit tests' view.
+    #[cfg(test)]
+    pub(crate) fn read_as(&mut self, of: (u64, Revision)) {
+        self.read_published = of.0;
+        self.model = Some(of.1);
     }
 
     /// As if another table of bodies had been read, of the same model: a selection's unit
@@ -1887,7 +1896,8 @@ impl Drawing {
         }
     }
 
-    fn now(&self) -> Instant {
+    /// The time, as its clock says it.
+    pub(crate) fn now(&self) -> Instant {
         self.clock
             .as_ref()
             .map_or_else(Instant::now, |clock| clock())
@@ -2055,6 +2065,7 @@ pub fn show<P: Clients + 'static>(
     tab: Option<&mut Tab>,
     sessions: &Arc<Sessions<P>>,
     drawing: &mut Drawing,
+    remembered: &crate::dialog::Remembered,
 ) {
     let rect = ui.available_rect_before_wrap();
     ui.painter().add(canvas_background(rect));
@@ -2255,7 +2266,8 @@ pub fn show<P: Clients + 'static>(
                 .is_some_and(|body| body.has(*element))
     };
     let highlights: Vec<(u32, Element)> = view.highlights.iter().copied().filter(drawn).collect();
-    // A candidate lit takes the hover's layer, in its own colour: the pointer is over its
+    // A candidate lit takes the hover's layer, in its own colour, outlined whole (a face
+    // too, never tinted as a hover is: `FrameData::hover_outlined`): the pointer is over its
     // card's row, not the canvas.
     let candidate = view.candidate.filter(drawn);
     let hovered: Vec<(u32, Element)> = view
@@ -2270,11 +2282,7 @@ pub fn show<P: Clients + 'static>(
     let tinted = tinted_faces(makers, &highlights, &hovered, drawn);
     // The vertices among them, drawn over the bodies by the pane (the renderer draws none).
     let dots = vertex_dots(&view.bodies, &highlights, &hovered);
-    let mut outlines = crate::selection::outlines();
-    if candidate.is_some() {
-        let [r, g, b, _] = theme::VIEWPORT_CANDIDATE;
-        outlines.hovered = [r, g, b];
-    }
+    let (outlines, hover_outlined) = hover_look(candidate.is_some());
     let picking = view.picking.take();
     let serial = match picking {
         Some(_) => {
@@ -2316,6 +2324,7 @@ pub fn show<P: Clients + 'static>(
         highlights,
         hovered,
         outlines,
+        hover_outlined,
         tinted,
         tint: feature_tint(),
         picking,
@@ -2323,6 +2332,11 @@ pub fn show<P: Clients + 'static>(
         vertices: view.vertices,
         lines,
         planes,
+        dim: if sketching {
+            crate::theme::SKETCH_MODEL_DIM
+        } else {
+            1.0
+        },
     };
     if view.grid && !sketching {
         let shapes = crate::grid::shapes(&view.camera, size_px, ppp, rect);
@@ -2353,7 +2367,7 @@ pub fn show<P: Clients + 'static>(
     // tab's mode draws (a sketch, a selection's marks). It takes no input; the cube's and
     // the bar's, registered after, come first. A camera they change is drawn next frame.
     if let Some(mut frame) = view.frame.take() {
-        overlaid(tab, sessions, &painter, &frame);
+        overlaid(tab, sessions, &painter, &frame, remembered);
         // Handed on once: what reads the frame after reads no event again.
         frame.left.clear();
         frame.secondary.clear();
@@ -2413,10 +2427,48 @@ pub fn faces_of(
 /// The tint of the faces a feature hovered in the timeline made, from the theme, as plain
 /// values for the renderer: the prototype's `MAKER` (DESIGN.md's Blue.800) at 0.4.
 pub fn feature_tint() -> Tint {
-    let [r, g, b, _] = theme::VIEWPORT_FEATURE_HOVER_TINT;
+    tint_of(
+        theme::VIEWPORT_FEATURE_HOVER_TINT,
+        theme::VIEWPORT_FEATURE_HOVER_TINT_AMOUNT,
+    )
+}
+
+/// How a frame draws its hover, as one rule: the selection's outlines, a hovered face
+/// tinted; or, with a broken reference's `candidate` lit, the hover outlined whole (a face
+/// too, not tinted) in the candidate's colour ([`theme::VIEWPORT_CANDIDATE`]). The outlines,
+/// and whether the hover is outlined whole (`FrameData::hover_outlined`).
+fn hover_look(candidate: bool) -> (crate::renderer::Outlines, bool) {
+    let mut outlines = crate::selection::outlines();
+    if candidate {
+        let [r, g, b, _] = theme::VIEWPORT_CANDIDATE;
+        outlines.hovered = [r, g, b];
+    }
+    (outlines, candidate)
+}
+
+/// A selected face's tint, the prototype's (`SELECT` at 0.55): the theme's, as the renderer
+/// takes it.
+pub fn selection_tint() -> Tint {
+    tint_of(
+        theme::VIEWPORT_SELECTION_TINT,
+        theme::VIEWPORT_SELECTION_TINT_AMOUNT,
+    )
+}
+
+/// A hovered face's tint, the prototype's (`HOVER` at 0.28): the theme's, as the renderer
+/// takes it.
+pub fn hover_tint() -> Tint {
+    tint_of(
+        theme::VIEWPORT_HOVER_TINT,
+        theme::VIEWPORT_HOVER_TINT_AMOUNT,
+    )
+}
+
+/// The theme's `colour` at `amount`, as the renderer takes a tint.
+fn tint_of([r, g, b, _]: theme::Rgba8, amount: f32) -> Tint {
     Tint {
         colour: [r, g, b],
-        amount: theme::VIEWPORT_FEATURE_HOVER_TINT_AMOUNT,
+        amount,
     }
 }
 
@@ -2445,8 +2497,9 @@ fn overlaid<P: Clients + 'static>(
     sessions: &Arc<Sessions<P>>,
     painter: &egui::Painter,
     frame: &ViewFrame,
+    remembered: &crate::dialog::Remembered,
 ) {
-    tab.overlay(sessions, painter, frame);
+    tab.overlay(sessions, painter, frame, remembered);
     if let Some(watch) = &mut tab.watch {
         watch(painter, frame);
     }
@@ -2466,6 +2519,7 @@ pub fn end_unshown<P: Clients + 'static>(
     drawing: &mut Drawing,
     shown: Option<SessionId>,
     tabs: &mut [Tab],
+    remembered: &crate::dialog::Remembered,
 ) {
     let Some(held) = drawing.left.held.filter(|held| Some(held.session) != shown) else {
         return;
@@ -2516,7 +2570,7 @@ pub fn end_unshown<P: Clients + 'static>(
     // This frame, unshown, takes no table: the release was made on the one its last frame
     // drew, which is the one it holds (`View::table_taken`).
     tab.view.begin_frame();
-    overlaid(tab, sessions, &painter, &frame);
+    overlaid(tab, sessions, &painter, &frame, remembered);
 }
 
 /// A face of the ViewCube: its named view, its outward normal, and the way its label's
@@ -4294,6 +4348,18 @@ mod tests {
                 view_height: view_height * 2.0
             }
         );
+    }
+
+    #[test]
+    fn a_lit_candidate_is_outlined_whole_in_its_colour_and_a_hover_else_tinted() {
+        // flow 6b's candidate, lit from its card's row: the hover's outline in the
+        // candidate's orange (#ff7a0c), a face of it outlined, not tinted; no candidate: the
+        // hover's white outline, its faces tinted.
+        let (outlines, whole) = hover_look(true);
+        assert_eq!((outlines.hovered, whole), ([0xff, 0x7a, 0x0c], true));
+        assert_eq!(outlines.selected, crate::selection::outlines().selected);
+        let (outlines, whole) = hover_look(false);
+        assert_eq!((outlines.hovered, whole), ([0xff, 0xff, 0xff], false));
     }
 
     #[test]
