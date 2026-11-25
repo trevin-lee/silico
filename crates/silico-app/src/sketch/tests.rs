@@ -7503,6 +7503,24 @@ fn values_that_overlap_are_hit_as_drawn_the_one_on_top_taken() {
     assert_eq!(found([11.7, -1.8], 0.1), Some(element("ka000001")));
 }
 
+#[test]
+fn of_three_values_at_one_place_the_last_drawn_is_hit_inside_and_just_outside() {
+    // Three lengths of the bottom side, their values at one place, (20, −2.6), as above:
+    // ka000004's, drawn last, is taken just inside the box's edge (1.16011 across) with no
+    // reach at all, and from 0.5 under the boxes (0.9 down), all three as far, 1.4 from
+    // their lines and 4 from the side, within a 0.6 reach.
+    let read = under(rectangle(vec![
+        length("ka000002", "na000001", "40", true),
+        length("ka000003", "na000001", "30", true),
+        length("ka000004", "na000001", "50", true),
+    ]));
+    let found = |at: [f64; 2], tolerance: f64| {
+        hit(&read, at, tolerance, HAND, Axes::BOTH).map(|h| h.reference())
+    };
+    assert_eq!(found([18.84, -1.75], 0.0), Some(element("ka000004")));
+    assert_eq!(found([20.0, -4.0], 0.6), Some(element("ka000004")));
+}
+
 // The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
 // the legend, and the state's dot, each against the prototype (docs/design/m5-ui/:
 // styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's palette). The status
