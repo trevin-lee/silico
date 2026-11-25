@@ -119,6 +119,8 @@ mod export;
 mod extruded_bsplines;
 #[path = "face_frames.rs"]
 mod face_frames;
+#[path = "face_orientation.rs"]
+mod face_orientation;
 #[path = "faces.rs"]
 mod faces;
 #[path = "fillet.rs"]

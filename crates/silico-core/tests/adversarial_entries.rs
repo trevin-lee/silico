@@ -41,6 +41,7 @@ fn plane(normal: [f64; 3]) -> FaceDescription {
         },
         area: 1.0,
         centroid: [0.0; 3],
+        orientation: silico_protocol::FaceOrientation::Forward,
     }
 }
 
@@ -53,6 +54,7 @@ fn cone(origin: [f64; 3], direction: [f64; 3], radius: f64, half_angle: f64) -> 
         },
         area: 1.0,
         centroid: [0.0; 3],
+        orientation: silico_protocol::FaceOrientation::Forward,
     }
 }
 
@@ -150,6 +152,7 @@ fn a_normal_and_an_axis_with_negative_zeros_are_written_with_positive_ones() {
         },
         area: 1.0,
         centroid: [-0.0, -0.0, -0.0],
+        orientation: silico_protocol::FaceOrientation::Forward,
     });
     faces.extend((0..4).map(|_| plane([1.0, 0.0, 0.0])));
     let model = forged_box(faces, None);
@@ -335,6 +338,7 @@ fn lengths_round_once_to_the_nanometre_and_a_tiny_negative_is_zero() {
         surface: Surface::Other,
         area: 0.0000004,
         centroid: [-4e-10, 1.5e-6, 2.4999999e-6],
+        orientation: silico_protocol::FaceOrientation::Forward,
     }];
     faces.extend((0..5).map(|_| plane([0.0, 0.0, 1.0])));
     let model = forged_box(faces, None);
@@ -355,6 +359,7 @@ fn a_value_past_what_a_length_holds_refuses_the_read_naming_the_feature() {
             surface: Surface::Other,
             area: 1.0,
             centroid,
+            orientation: silico_protocol::FaceOrientation::Forward,
         }];
         faces.extend((0..5).map(|_| plane([0.0, 0.0, 1.0])));
         let model = forged_box(faces, None);
@@ -375,6 +380,7 @@ fn a_value_past_what_a_length_holds_refuses_the_read_naming_the_feature() {
         },
         area: 1.0,
         centroid: [0.0; 3],
+        orientation: silico_protocol::FaceOrientation::Forward,
     }];
     faces.extend((0..5).map(|_| plane([0.0, 0.0, 1.0])));
     let model = forged_box(faces, None);
@@ -872,6 +878,7 @@ fn tie_model() -> Arc<Model> {
             _ => 5.0,
         },
         centroid: [0.0; 3],
+        orientation: silico_protocol::FaceOrientation::Forward,
     };
     engine.kernel().answer_instead(move |op| match op {
         Op::Describe {
@@ -1152,6 +1159,7 @@ fn a_type_keeps_only_its_own_and_facing_needs_a_plane() {
         },
         area: 1.0,
         centroid: [0.0; 3],
+        orientation: silico_protocol::FaceOrientation::Forward,
     }];
     faces.extend((0..5).map(|_| plane([0.0, 0.0, 1.0])));
     let model = forged_box(faces, None);
@@ -1208,6 +1216,7 @@ fn a_range_of_a_measure_an_entry_hasnt_leaves_it_out() {
         },
         area: 1.0,
         centroid: [0.0; 3],
+        orientation: silico_protocol::FaceOrientation::Forward,
     }];
     faces.extend((0..5).map(|_| plane([0.0, 0.0, 1.0])));
     let model = forged_box(faces, None);

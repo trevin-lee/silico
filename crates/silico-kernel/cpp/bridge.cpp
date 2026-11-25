@@ -286,6 +286,21 @@ void put_axis(const gp_Ax1 &axis, Point3 &origin, Point3 &direction) {
 
 FaceOut describe_face(const TopoDS_Face &face, double precision) {
   FaceOut out{};
+  // Its orientation as the map holds it: a raw fact, the core reads its outside from it.
+  switch (face.Orientation()) {
+  case TopAbs_FORWARD:
+    out.orientation = Orientation::Forward;
+    break;
+  case TopAbs_REVERSED:
+    out.orientation = Orientation::Reversed;
+    break;
+  case TopAbs_INTERNAL:
+    out.orientation = Orientation::Internal;
+    break;
+  case TopAbs_EXTERNAL:
+    out.orientation = Orientation::External;
+    break;
+  }
   GProp_GProps props;
   BRepGProp::SurfaceProperties(face, props, precision);
   out.area = props.Mass();

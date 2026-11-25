@@ -249,7 +249,8 @@
               "constraints_redundant",
               "fingerprint_missing",
               "constraints_partially_redundant",
-              "fingerprint_incomplete"
+              "fingerprint_incomplete",
+              "instances_changed_nothing"
             ],
             "type": "string"
           },

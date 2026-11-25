@@ -1299,6 +1299,7 @@ fn described(
                 surface: Surface::Other,
                 area: 1.0,
                 centroid: at(n, 0.0),
+                orientation: silico_protocol::FaceOrientation::Forward,
             }),
             ElementKind::Edge => description.edges.push(EdgeDescription {
                 curve: EdgeCurve::Other,
