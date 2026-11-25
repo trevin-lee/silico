@@ -8271,3 +8271,53 @@ fn leave_it_driving_at_an_edits_prompt_makes_the_card_mean_the_edited_dimension(
     assert!(mode.take_asks().is_empty());
     assert_eq!(target(&mode), Some(Ok("ka000002".to_owned())));
 }
+
+#[test]
+fn leave_it_driving_keeps_the_dimensions_left_before_it_each_once_the_newest_last() {
+    // One left driving before (ka000001); the edit's prompt for ka000002 answered Leave:
+    // both kept, ka000002 newest. Left again for ka000001: once, now the newest.
+    let both = read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Conflicting),
+            ("ka000002", ConstraintState::Conflicting),
+        ],
+    );
+    let two = Revision::OPENED.next().unwrap().next().unwrap();
+    let offered = edited_right()
+        .judged(&two_lengths_over(), two)
+        .unwrap()
+        .unwrap();
+    let mut mode = mode_at(both);
+    mode.left_driving = vec![id("ka000001")];
+    mode.edit_offer = Some((offered.clone(), two));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert_eq!(mode.left_driving, [id("ka000001"), id("ka000002")]);
+    // ka000002 made driven since: the one before it, ka000001, is what the card means.
+    if let Some(Read {
+        result: Ok(read), ..
+    }) = mode.read.as_mut()
+    {
+        read.members.constraints[1].form = Form::Length {
+            line: element("na000002"),
+            value: mm("20"),
+            driving: false,
+        };
+        read.states
+            .constraints
+            .insert(id("ka000002"), ConstraintState::Unsolved);
+    }
+    assert_eq!(target(&mode), Some(Ok("ka000001".to_owned())));
+    // ka000001 left again (an offer for it, judged from the same edit's shape): once.
+    mode.left_driving = vec![id("ka000001"), id("ka000002")];
+    let mut again = offered;
+    again.constraint = id("ka000001");
+    mode.edit_offer = Some((again, two));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert_eq!(mode.left_driving, [id("ka000002"), id("ka000001")]);
+}

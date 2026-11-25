@@ -5998,6 +5998,36 @@ mod property_panel_drawn {
         assert!(h.state().next_frame, "the suppression sent, never polled");
     }
 
+    #[test]
+    fn the_sketch_cards_make_it_driven_asks_the_next_frame_to_poll_what_it_sent() {
+        // Sketch mode over defined by the right side's second length (ka000002), read at a
+        // published revision: the card's Make it driven, from a frame that asked nothing,
+        // asks the next one, to poll the `set_field` it queued.
+        use crate::sketch::tests::{length, read, rectangle};
+        use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
+        let mut tab = part();
+        let mut mode = crate::sketch::SketchMode::new(1, Some(fid("s0000001")));
+        mode.read = Some(crate::sketch::Read {
+            model: Some(Revision::OPENED),
+            result: Ok(read(
+                rectangle(vec![
+                    length("ka000001", "na000002", "20", true),
+                    length("ka000002", "na000002", "20", true),
+                ]),
+                SketchState::OverDefined,
+                MemberState::OverDefined,
+                &[("ka000002", ConstraintState::Redundant)],
+            )),
+        });
+        tab.sketch = Some(mode);
+        let mut h = drawn(tab);
+        assert!(!h.state().next_frame, "nothing sent yet");
+        h.get_by_role_and_label(Role::Button, "Make it driven")
+            .click();
+        h.run_steps(2);
+        assert!(h.state().next_frame, "the driven edit queued, never polled");
+    }
+
     /// `part()` with a sketch, Profile, listed before its features, selected, its read not
     /// held (as a suppressed sketch's, never read), after a sketch's PARAMETERS last showed
     /// four rows.
