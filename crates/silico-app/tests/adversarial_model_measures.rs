@@ -97,10 +97,16 @@ fn asked_of_a_newer_model_before_the_first_answers_only_the_newest_is_held() {
     let newest = (10, opened.of.1);
     let mut now = Instant::now();
     settled_at(&mut measures, now);
-    for _ in 0..20 {
-        if measures.answers(newest).unwrap().refused().is_none() {
-            break;
-        }
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while let Some(refused) = measures.answers(newest).unwrap().refused() {
+        // Only that refusal: any other fails here, saying it.
+        assert!(
+            refused.errors()[0]
+                .message()
+                .contains("published reads are running"),
+            "{refused:?}"
+        );
+        assert!(Instant::now() < deadline, "still refused: {refused:?}");
         std::thread::sleep(Duration::from_millis(50));
         now += silico_app::viewport::RETRY_MOST;
         measures.ask(&opened.sessions, &opened.id, Some(newest), now);
