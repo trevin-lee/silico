@@ -14,7 +14,7 @@ use silico_protocol::{Description, Failure};
 use crate::cache::secret_of;
 
 /// The first bytes of every entry, naming its format.
-pub const MAGIC: &[u8] = b"silico cache 9\n";
+pub const MAGIC: &[u8] = b"silico cache 10\n";
 
 /// This platform's name, as the cache spells it.
 pub fn platform() -> String {

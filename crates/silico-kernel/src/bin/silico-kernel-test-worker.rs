@@ -96,6 +96,7 @@ fn endless(kind: ElementKind, first: u32, count: u32) -> Description {
                     surface: Surface::Other,
                     area: 1.0,
                     centroid: at(n, 0.0),
+                    orientation: silico_protocol::FaceOrientation::Forward,
                 })
                 .collect();
         }

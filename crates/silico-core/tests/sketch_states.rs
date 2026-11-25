@@ -387,6 +387,58 @@ fn a_conflict_is_over_defined_its_dofs_as_given_and_a_constraint_listed_twice_re
 }
 
 #[test]
+fn the_over_defining_constraints_are_those_in_conflict_and_the_flagged_dimensions_in_the_sketchs_order()
+ {
+    // The conflict above: both lengths conflicting over-define; the partially redundant
+    // horizontal, a relation, doesn't (addendum 2); the placing dimensions, unsolved, don't.
+    let sketch = ten_long(
+        r#"{"id": "k0000005", "type": "length", "line": "n0000001", "value": 12, "driving": true}"#,
+    );
+    let (_, _, _, got) = solved_by(&sketch, |system| Solved {
+        dofs: -1,
+        conflicting: vec![Tag(4), Tag(5)],
+        redundant: vec![Tag(5)],
+        partially_redundant: vec![Tag(3)],
+        ..FakeSketches::as_sent(system)
+    });
+    let over: Vec<&str> = got.over_defining(&sketch).map(|c| c.id.as_str()).collect();
+    assert_eq!(over, ["k0000004", "k0000005"]);
+    // The horizontal in conflict, a relation, over-defines; the first length partially
+    // redundant, a dimension, does too; the second length, unsolved (the solve refused), doesn't.
+    let (_, _, _, got) = solved_by(&sketch, |system| Solved {
+        dofs: -1,
+        conflicting: vec![Tag(3)],
+        partially_redundant: vec![Tag(4)],
+        ..FakeSketches::as_sent(system)
+    });
+    assert_eq!(got.constraints[&id("k0000004")], PartiallyRedundant);
+    assert_eq!(got.constraints[&id("k0000005")], Unsolved);
+    let over: Vec<&str> = got.over_defining(&sketch).map(|c| c.id.as_str()).collect();
+    assert_eq!(over, ["k0000003", "k0000004"]);
+    // Solved, the second length repeating the first and agreeing (redundant), and the
+    // horizontal partially redundant: the length alone, as the state says over defined.
+    let sketch = ten_long(
+        r#"{"id": "k0000005", "type": "length", "line": "n0000001", "value": 10, "driving": true}"#,
+    );
+    let (_, _, _, got) = solved_by(&sketch, |system| Solved {
+        redundant: vec![Tag(5)],
+        partially_redundant: vec![Tag(3)],
+        ..FakeSketches::as_sent(system)
+    });
+    assert_eq!(got.state, SketchState::OverDefined);
+    let over: Vec<&str> = got.over_defining(&sketch).map(|c| c.id.as_str()).collect();
+    assert_eq!(over, ["k0000005"]);
+    // A reference length is never sent, so never flagged: nothing over-defines, and the
+    // sketch isn't over defined.
+    let sketch = ten_long(
+        r#"{"id": "k0000005", "type": "length", "line": "n0000001", "value": 10, "driving": false}"#,
+    );
+    let (_, _, _, got) = solved_by(&sketch, FakeSketches::as_sent);
+    assert_eq!(got.over_defining(&sketch).count(), 0);
+    assert_ne!(got.state, SketchState::OverDefined);
+}
+
+#[test]
 fn decision_5s_disagreeing_redundancy_goes_into_the_conflicting_list_the_read_unchanged() {
     // A distance_x of 10.5 between the line's ends, which the fake calls redundant (tag 5)
     // and leaves at 10 apart: a gap of 0.5 mm, past decision 5's 1e-8, so the read refuses

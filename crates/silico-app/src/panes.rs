@@ -393,7 +393,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
     }
 
     /// The property panel (DESIGN.md, *Layout*: one right panel, four jobs): the feature
-    /// dialog, if one is open; else the selection's faces, edges, and vertices, if it has
+    /// dialog, if one is open; else, while a sketch is open, sketch mode's own
+    /// ([`sketch_mode`]); else the selection's faces, edges, and vertices, if it has
     /// any, with their measures (`selectionProps`, [`selected_elements`]), and what its link
     /// and buttons ask done; else the selected feature's properties; else the document's,
     /// never an empty state.
@@ -417,6 +418,18 @@ impl<P: Clients + 'static> Panes<'_, P> {
         if self.dialog_key == Some(egui::Key::Escape) && tab.in_dialog() {
             // A dialog still being read (Edit Feature): Esc cancels it.
             tab.close_dialog(self.sessions, false);
+        }
+        if tab.sketch.is_some() {
+            // Sketch mode's own (app.js's `renderRight`: `S.sketch` before the selection).
+            properties::title(ui, None, "Properties", None);
+            egui::ScrollArea::vertical()
+                .id_salt("properties")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = Vec2::ZERO;
+                    sketch_mode(ui, tab);
+                });
+            return;
         }
         // The selection's views close with Clear selection (`selectionProps`' `clearSel`).
         let selecting = tab.selection().elements().next().is_some();
@@ -575,6 +588,105 @@ impl<P: Clients + 'static> Panes<'_, P> {
             Action::Cancel => tab.close_dialog(sessions, false),
         }
         *self.next_frame |= action != Action::None;
+    }
+}
+
+/// Sketch mode's property panel (sketch.js's `renderProps`): its head, the sketch's icon,
+/// its name as the sketch bar gives it, and `Sketch · ` its ID, or `new` until its add
+/// answers; the SKETCH section's rows, once it's read ([`sketch_mode_rows`]); the card for
+/// a sketch over defined, or one whose solve was refused ([`sketch::problem_card`]); and
+/// the prototype's two hints, on dragging and on Finish and Cancel. The head's lines are
+/// labels in the accessibility tree, as the selection's are.
+///
+/// [`sketch_mode_rows`]: crate::parameters::sketch_mode_rows
+/// [`sketch::problem_card`]: crate::sketch::problem_card
+fn sketch_mode(ui: &mut Ui, tab: &Tab) {
+    let Some(mode) = tab.sketch.as_ref() else {
+        return;
+    };
+    let name = tab.sketch_name();
+    let id = mode
+        .sketch
+        .as_ref()
+        .map_or_else(|| "new".to_owned(), |id| id.as_str().to_owned());
+    let mut job = properties::body("Sketch · ", theme::PROPERTY_HEAD_SUB);
+    job.sections.iter_mut().for_each(|section| {
+        section.format.font_id.size = theme::HEADER_SIZE;
+    });
+    // The ID in the monospace type (`.mono`); `new` in the sub-line's own.
+    let id_format = match mode.sketch {
+        Some(_) => properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_HEAD_SUB, true),
+        None => properties::format(theme::HEADER_SIZE, theme::PROPERTY_HEAD_SUB, false),
+    };
+    job.append(&id, 0.0, id_format);
+    let sub = format!("Sketch · {id}");
+    let lines = properties::head(ui, Icon::Sketch, &name, job);
+    for (line, said) in lines.into_iter().zip([name.as_str(), sub.as_str()]) {
+        let response = ui.interact(line, ui.id().with(("sketch-head", said)), Sense::hover());
+        response.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, said));
+    }
+    let read = mode.drawable();
+    if let Some(read) = read {
+        properties::section(ui, "Sketch");
+        for row in crate::parameters::sketch_mode_rows(read) {
+            // No row of a sketch's is a link.
+            let _ = draw_row(ui, row);
+        }
+    }
+    if let Some(said) = read.and_then(|read| crate::sketch::problem_card(read, &name)) {
+        let offer = properties::Offer {
+            edit: None,
+            show: false,
+        };
+        ui.push_id("sketch-card", |ui| {
+            properties::card(ui, &said, Some(&name), offer)
+        });
+    }
+    properties::hint(
+        ui,
+        &[(
+            "Drag a blue point or curve to move it: what's fully defined stays put. Double-click a dimension to change it.",
+            false,
+        )],
+    );
+    let keys = Command::FinishSketch.keys_text(ui.ctx());
+    properties::hint(
+        ui,
+        &[
+            ("Finish Sketch", true),
+            (&format!(" {keys} keeps your changes and rebuilds. "), false),
+            ("Cancel", true),
+            (" drops them.", false),
+        ],
+    );
+}
+
+/// A row of PARAMETERS, or of sketch mode's SKETCH, drawn: words in their colour, an ID in
+/// the monospace type, or a link to a feature with words after it. The feature its link
+/// asked selected, if it was clicked.
+fn draw_row(ui: &mut Ui, row: crate::parameters::Row) -> Option<FeatureId> {
+    use crate::parameters::Shown;
+    match row.value {
+        Shown::Text(words, colour) => {
+            properties::text_row(ui, row.key, properties::body(&words, colour));
+            None
+        }
+        Shown::Id(id) => {
+            properties::text_row(
+                ui,
+                row.key,
+                egui::text::LayoutJob::single_section(
+                    id,
+                    properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
+                ),
+            );
+            None
+        }
+        Shown::Link {
+            feature,
+            name,
+            after,
+        } => properties::link_row_then(ui, row.key, &name, after.as_deref()).then_some(feature),
     }
 }
 
@@ -761,7 +873,7 @@ fn parameters<P: Clients + 'static>(
     entry: &Entry,
     sessions: &Arc<Sessions<P>>,
 ) -> Option<FeatureId> {
-    use crate::parameters::{Context, Shown, feature_rows, has_parameters, sketch_rows};
+    use crate::parameters::{Context, feature_rows, has_parameters, sketch_rows};
     if !has_parameters(entry.kind) {
         return None;
     }
@@ -807,28 +919,7 @@ fn parameters<P: Clients + 'static>(
     properties::section(ui, "Parameters");
     let mut asked = None;
     for row in rows {
-        match row.value {
-            Shown::Text(words, colour) => {
-                properties::text_row(ui, row.key, properties::body(&words, colour));
-            }
-            Shown::Id(id) => properties::text_row(
-                ui,
-                row.key,
-                egui::text::LayoutJob::single_section(
-                    id,
-                    properties::format(theme::MONOSPACE_SIZE, theme::PROPERTY_VALUE, true),
-                ),
-            ),
-            Shown::Link {
-                feature,
-                name,
-                after,
-            } => {
-                if properties::link_row_then(ui, row.key, &name, after.as_deref()) {
-                    asked = Some(feature);
-                }
-            }
-        }
+        asked = draw_row(ui, row).or(asked);
     }
     asked
 }

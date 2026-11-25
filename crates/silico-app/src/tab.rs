@@ -2907,7 +2907,11 @@ impl Tab {
     /// In sketch mode, as SolidWorks allows, but never past the state it opened at.
     /// Never while a dialog's or sketch mode's close is still to be taken (Create Sketch's
     /// Finish being judged among them), whose undo or rollback, if it's a Cancel's, a step
-    /// queued now would go past.
+    /// queued now would go past. And with the tab ahead of its status (not
+    /// [`synced`](Self::synced): an answer taken in the frame after that frame's status was
+    /// read), whose counts are of the state before: the step is queued and judged by the
+    /// counts once the status has caught up, never let go unsaid, as SolidWorks' Undo always
+    /// takes back the edit that has just answered.
     pub fn undoable(&self) -> bool {
         (self.transaction || self.beginning)
             && !self.in_dialog()
@@ -2916,14 +2920,27 @@ impl Tab {
             && self.sketch_lets_undo()
             && !self.stepping()
             && (self.change_under_way()
-                || (self.synced()
-                    && self
-                        .transaction()
-                        .is_some_and(|transaction| transaction.undo > 0)))
+                || !self.synced()
+                || self
+                    .transaction()
+                    .is_some_and(|transaction| transaction.undo > 0))
+    }
+
+    /// The next state on the tab's own redo branch ([`steps`](Self::steps)), by its first
+    /// revision, with the step that made it: past the state the session stands at (its
+    /// undos came back to), none dropped by an edit since. What Redo's tooltip names, and
+    /// what Redo has to give back ahead of a status of the tab's revision, known from the
+    /// tab's own answers.
+    fn next_redo(&self) -> Option<(&Revision, &Step)> {
+        let at = self.state_of(self.revision);
+        self.steps.range(at..).find(|(state, _)| **state != at)
     }
 
     /// Whether Redo can step: an edit undone, and none made since, as the status of the
-    /// tab's newest revision counts them; never while a step is under way, nor while a
+    /// tab's newest revision counts them; or, with the tab ahead of its status (a step's
+    /// answer taken after the frame's status read), its own redo branch holding a state
+    /// after the one it's at ([`next_redo`](Self::next_redo)): queued, and judged once
+    /// the status has caught up, as Undo's is. Never while a step is under way, nor while a
     /// dialog is open or a drag is under way. In sketch mode, only what it undid itself;
     /// never at a state Redo is fenced off at (a sketch mode's Finish or Cancel, or an
     /// over-defining dimension's Cancel, which leave nothing to redo), nor while a close is
@@ -2939,10 +2956,11 @@ impl Tab {
                 .is_none_or(|fence| fence != self.state_of(self.revision))
             && self.edits.idle()
             && !self.stepping()
-            && self.synced()
-            && self
-                .transaction()
-                .is_some_and(|transaction| transaction.redo > 0)
+            && ((!self.synced() && self.next_redo().is_some())
+                || (self.synced()
+                    && self
+                        .transaction()
+                        .is_some_and(|transaction| transaction.redo > 0)))
     }
 
     /// The step Undo would take back, as its tooltip names it after "Undo: " (the prototype's
@@ -2990,7 +3008,7 @@ impl Tab {
                 self.step_text(&step.words, step.from, at)
             }
             (None, false) => {
-                let (made, step) = self.steps.range(at..).find(|(state, _)| **state != at)?;
+                let (made, step) = self.next_redo()?;
                 self.step_text(&step.words, step.from, *made)
             }
         }
@@ -4699,6 +4717,18 @@ impl Tab {
             }
         }
         while !self.blocked() {
+            // An undo or a redo asked with the tab ahead of its status, nothing answered
+            // since, is judged by the session's counts at that revision: it waits for the next
+            // frame's status. One asked behind a change goes when the change has answered,
+            // judged as it always was.
+            if !self.synced()
+                && matches!(
+                    self.edits.queue.front(),
+                    Some(Queued::Step { asked_at, .. }) if *asked_at == self.revision
+                )
+            {
+                return;
+            }
             let Some(queued) = self.edits.queue.pop_front() else {
                 return;
             };
@@ -9950,23 +9980,53 @@ mod tests {
     }
 
     #[test]
-    fn undo_and_redo_are_off_while_an_answer_is_newer_than_the_status() {
-        // A status of revision 2 counts one edit to undo and one to redo; an answer since
-        // (a step's, say) brought the tab to revision 3: those counts aren't its own, so
-        // neither is offered until a status of revision 3 is read.
-        let two = Revision::from_number(2).unwrap();
-        let three = Revision::from_number(3).unwrap();
+    fn undo_is_on_while_an_answer_is_newer_than_the_status_and_redo_while_its_branch_holds_more() {
+        // Worked by hand. Pin renamed (2), renamed again (3), suppressed (4), each a state of
+        // the tab's own; a status of 3 counts two to undo, none to redo. The suppression's
+        // answer brought the tab to 4 ahead of its status: that edit is there to undo, so
+        // Undo is on (its step waits for the status), and nothing past 4 is there to redo.
+        let one = Revision::OPENED;
         let mut tab = tab();
-        tab.status = Some(counted(two, true, 1, 1));
-        tab.status_revision = two;
-        tab.revision = two;
-        assert!(tab.undoable() && tab.redoable());
-        tab.revision = three;
-        assert!(!tab.undoable());
-        assert!(!tab.redoable());
-        tab.status = Some(counted(three, true, 1, 1));
-        tab.status_revision = three;
-        assert!(tab.undoable() && tab.redoable());
+        apply(&mut tab, one, one, "Rename Pin", rev(2));
+        apply(&mut tab, rev(2), rev(2), "Rename PinA", rev(3));
+        stood_at(&mut tab, rev(3), 2, 0);
+        assert!(tab.undoable() && !tab.redoable());
+        apply(&mut tab, rev(3), rev(3), "Suppress Pin", rev(4));
+        // Its answer's session, taken as `took_session` takes it.
+        tab.revision = rev(4);
+        assert!(tab.undoable());
+        assert!(!tab.redoable(), "an edit's answer: nothing to redo");
+        // Two undos (5 restores 3's state, 6 restores 2's), the status read at 5: 6 is ahead
+        // of it, and its redo branch holds 3 and 4.
+        stood_at(&mut tab, rev(4), 3, 0);
+        tab.restored.insert(rev(5), rev(3));
+        stood_at(&mut tab, rev(5), 2, 1);
+        tab.restored.insert(rev(6), rev(2));
+        tab.revision = rev(6);
+        assert!(tab.undoable() && tab.redoable(), "an undo's answer");
+        // A redo (7 gives 3's state back) ahead of a status of 6: 4 is still there to redo.
+        stood_at(&mut tab, rev(6), 1, 2);
+        tab.restored.insert(rev(7), rev(3));
+        tab.revision = rev(7);
+        assert!(tab.redoable(), "a redo's answer, one more to redo");
+        // Another (8 gives 4's back) ahead of a status of 7: the branch's end, nothing more.
+        stood_at(&mut tab, rev(7), 2, 1);
+        tab.restored.insert(rev(8), rev(4));
+        tab.revision = rev(8);
+        assert!(tab.undoable());
+        assert!(!tab.redoable(), "the branch's end");
+        // Once a status of 8 is read, its counts decide either way.
+        stood_at(&mut tab, rev(8), 3, 0);
+        assert!(tab.undoable() && !tab.redoable());
+        stood_at(&mut tab, rev(8), 0, 0);
+        assert!(!tab.undoable() && !tab.redoable());
+        // Synced, the counts decide where the tab's branch says otherwise: at its end with
+        // one counted to redo, and holding more (9 restores 2's state) with none counted.
+        stood_at(&mut tab, rev(8), 3, 1);
+        assert!(tab.redoable(), "the status's count, not the branch");
+        tab.restored.insert(rev(9), rev(2));
+        stood_at(&mut tab, rev(9), 1, 0);
+        assert!(!tab.redoable(), "the status's count, not the branch");
     }
 
     #[test]

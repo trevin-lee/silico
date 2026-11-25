@@ -833,6 +833,7 @@ mod tests {
                     },
                     area: 100.0,
                     centroid: [origin[0] + 5.0, origin[1] + 6.0, origin[2] + 7.0],
+                    orientation: silico_protocol::FaceOrientation::Forward,
                 })
                 .collect(),
             edges: Vec::new(),
@@ -1199,6 +1200,7 @@ mod tests {
             },
             area: 1.0,
             centroid: [0.0, 0.0, z],
+            orientation: silico_protocol::FaceOrientation::Forward,
         };
         let described = Description {
             faces: vec![plane(1.0), plane(2.0), plane(3.0)],

@@ -70,7 +70,7 @@ pub(crate) use at::{open_dir, path_of};
 
 /// The first bytes of every entry, naming its format: a change to the format changes it.
 /// It's part of every entry's key too, so an entry of another format is never looked for.
-const MAGIC: &[u8] = b"silico cache 9\n";
+const MAGIC: &[u8] = b"silico cache 10\n";
 
 /// What the cache's directory holds besides its entries: it ignores itself.
 const GITIGNORE: &[u8] =

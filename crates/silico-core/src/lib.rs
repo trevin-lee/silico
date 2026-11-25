@@ -35,6 +35,7 @@ pub mod logging;
 pub mod meshes;
 pub mod naming;
 pub mod notify;
+pub mod pattern;
 pub mod pool;
 pub mod profile;
 pub mod recompute;

@@ -149,6 +149,11 @@ codes! {
         /// don't hold), so a change there isn't caught as drift (Fable's decision of
         /// 2026-11-09): compared once `format` or a commit writes it in.
         FingerprintIncomplete = "fingerprint_incomplete",
+        /// A pattern's or mirror's copies of some instances add or remove nothing: none of
+        /// their faces is in the result (docs/design/m6.0-patterns.md, section 4.3). Built
+        /// exactly as asked, as a perforated plate's holes past its edge are: the instances
+        /// paste into `skip`.
+        InstancesChangedNothing = "instances_changed_nothing",
     }
 }
 
@@ -415,6 +420,14 @@ pub(crate) fn listed_first(first: &[String], total: usize) -> String {
         (Some(more), [one]) if more > 0 => format!("{one} and {more} more"),
         (Some(more), [_, ..]) if more > 0 => format!("{}, and {more} more", first.join(", ")),
         _ => listed(first),
+    }
+}
+
+/// `word` with its article: `a circle`, `an ellipse`, `an offset`.
+pub(crate) fn article(word: &str) -> String {
+    match word.chars().next() {
+        Some('a' | 'e' | 'i' | 'o' | 'u') => format!("an {word}"),
+        _ => format!("a {word}"),
     }
 }
 

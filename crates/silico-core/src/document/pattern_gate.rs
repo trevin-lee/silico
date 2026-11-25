@@ -22,7 +22,7 @@ use crate::naming::Instance;
 const KILOMETRE_NM: i64 = (MAX_LENGTH * 1e6) as i64;
 
 /// A whole turn in nanodegrees.
-const TURN_NDEG: i64 = 360 * 1_000_000_000;
+pub(crate) const TURN_NDEG: i64 = 360 * 1_000_000_000;
 
 /// OCCT's angular tolerance, in radians: a turn within it of none leaves a copy on the one
 /// before it (`check_copies`).

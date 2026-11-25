@@ -590,9 +590,10 @@ fn a_pattern_is_a_child_of_each_original_in_the_designs_edits() {
 }
 
 #[test]
-fn each_patterns_rebuild_is_refused_naming_it_until_m6_3_builds_them() {
-    // M6.2 reads and checks the three types; M6.3 builds them. Until then each fails at
-    // the rebuild, naming itself, and what's built on it waits on it.
+fn each_pattern_builds_and_what_is_built_on_it_builds_too() {
+    // M6.2 read and checked the three types, each refused at the rebuild; M6.3 builds them
+    // (the copies' names and requests are pattern_rebuild.rs's, their geometry the real
+    // kernel's): each builds, and the chamfer on it builds on its solid.
     let engine =
         silico_core::recompute::Recompute::new(silico_core::fake::FakeKernel::new(2).unwrap())
             .with_sketches(silico_core::fake::FakeSketches::new());
@@ -626,25 +627,17 @@ fn each_patterns_rebuild_is_refused_naming_it_until_m6_3_builds_them() {
             panic!("not published");
         };
         let errors: Vec<&silico_core::Error> = model.errors().collect();
-        assert_eq!(errors.len(), 1, "{word}: {errors:?}");
-        let error = errors[0];
-        assert_eq!(error.code(), silico_core::ErrorCode::InvalidInput);
-        assert_eq!(error.feature(), Some("m0000001"));
-        assert_eq!(
-            error.message(),
-            format!(
-                "{word} m0000001 isn't built yet: this Silico reads and checks a {word}, and builds none"
-            )
-        );
-        // The pocket under it built; the chamfer on it waits on it.
-        assert!(matches!(
-            model.outcome(&id("q0000001")),
-            Some(silico_core::recompute::FeatureOutcome::Built { .. })
-        ));
-        assert!(matches!(
-            model.outcome(&id("c0000001")),
-            Some(silico_core::recompute::FeatureOutcome::Blocked { .. })
-        ));
+        assert!(errors.is_empty(), "{word}: {errors:?}");
+        for feature in ["q0000001", "m0000001", "c0000001"] {
+            assert!(
+                matches!(
+                    model.outcome(&id(feature)),
+                    Some(silico_core::recompute::FeatureOutcome::Built { .. })
+                ),
+                "{word}: {feature} {:?}",
+                model.outcome(&id(feature))
+            );
+        }
     }
 }
 
@@ -1664,4 +1657,19 @@ fn a_mirrors_originals_are_a_set_in_any_order() {
     assert!(sorted.canonically_eq(&shuffled));
     assert!(shuffled.canonically_eq(&sorted));
     assert!(!sorted.canonically_eq(&listed("\"q0000001\"")));
+}
+
+#[test]
+fn the_warnings_example_is_the_designs_own_text() {
+    // Section 4.3's example, as the contract's example file holds it.
+    let block = blocks(
+        &section("### 4.3 The warning", "## 5. The `pattern` read"),
+        "json",
+    );
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/contract/commands/examples/warning/instances-changed-nothing.json");
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        format!("{}\n", block[0])
+    );
 }

@@ -14,6 +14,8 @@ mod imports;
 mod numbers;
 #[path = "common/oracle.rs"]
 mod oracle;
+#[path = "../../silico-core/tests/common/patterns.rs"]
+mod pattern_docs;
 #[path = "common/planes.rs"]
 mod planes;
 #[path = "../../silico-core/tests/common/share.rs"]
@@ -27,6 +29,8 @@ mod wait;
 mod adversarial_face_plane_rounds;
 #[path = "adversarial_naming.rs"]
 mod adversarial_naming;
+#[path = "adversarial_patterns.rs"]
+mod adversarial_patterns;
 #[path = "adversarial_references.rs"]
 mod adversarial_references;
 #[path = "adversarial_sweep_faces.rs"]
@@ -43,6 +47,8 @@ mod history_fixtures;
 mod name_collisions;
 #[path = "naming.rs"]
 mod naming;
+#[path = "patterns.rs"]
+mod patterns;
 #[path = "references.rs"]
 mod references;
 #[path = "sketch_edit_references.rs"]

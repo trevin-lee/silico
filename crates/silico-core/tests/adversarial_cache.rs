@@ -1331,8 +1331,8 @@ fn an_entry_of_the_format_before_is_never_looked_for_and_a_name_of_this_one_hold
     assert!(std::fs::read(&new).unwrap().starts_with(MAGIC));
     // An entry of this format's name holding the format before's bytes doesn't hold
     // together: rebuilt, and written over in this format.
-    let mut text = std::fs::read(&new).unwrap();
-    text[..MAGIC.len()].copy_from_slice(b"silico cache 7\n");
+    let text = std::fs::read(&new).unwrap();
+    let text = [b"silico cache 7\n".as_slice(), &text[MAGIC.len()..]].concat();
     std::fs::write(&new, &text).unwrap();
     let third = session(&dir.0);
     published(&third, checked(EXAMPLE));

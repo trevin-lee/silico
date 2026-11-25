@@ -24,13 +24,36 @@ pub struct Description {
     pub vertices: Vec<[f64; 3]>,
 }
 
-/// A face: its surface, and its area and centre of area (to the relative
-/// [`MEASURE_PRECISION`](crate::MEASURE_PRECISION)).
+/// A face: its surface, its area and centre of area (to the relative
+/// [`MEASURE_PRECISION`](crate::MEASURE_PRECISION)), and its orientation in the shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FaceDescription {
     pub surface: Surface,
     pub area: f64,
     pub centroid: [f64; 3],
+    pub orientation: FaceOrientation,
+}
+
+/// A face's orientation in its shape, as OCCT holds it (`TopAbs_Orientation`, the face as
+/// `TopExp::MapShapes` first meets it, its parents' orientations composed): a raw fact,
+/// which the core reads a face's outside from (docs/design/m6.0-patterns.md, section 4.2).
+/// A forward face's outward normal is its surface's, a reversed one's the opposite; an
+/// internal or external face bounds no change of material, so it has no outside (a
+/// membrane a general fuse leaves inside a solid, say).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum FaceOrientation {
+    Forward,
+    Reversed,
+    Internal,
+    External,
+}
+
+impl FaceOrientation {
+    /// Whether the face has an outside: forward or reversed, so it bounds material on one
+    /// side.
+    pub fn has_outside(self) -> bool {
+        matches!(self, FaceOrientation::Forward | FaceOrientation::Reversed)
+    }
 }
 
 /// A face's surface, as OCCT's `GeomAbs_SurfaceType` says, with what each kind is about.
@@ -503,6 +526,7 @@ mod tests {
             surface,
             area: 1.0,
             centroid: [0.5, 0.5, 1.0],
+            orientation: FaceOrientation::Forward,
         }
     }
 

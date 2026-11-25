@@ -1875,6 +1875,7 @@ mod tests {
             },
             area: 1.0,
             centroid: [0.5, 0.5, 0.0],
+            orientation: silico_protocol::FaceOrientation::Forward,
         };
         let edge = EdgeDescription {
             curve: EdgeCurve::Line,
@@ -2576,6 +2577,7 @@ mod tests {
                     surface: silico_protocol::Surface::Other,
                     area: 1.0,
                     centroid: [0.0; 3],
+                    orientation: silico_protocol::FaceOrientation::Forward,
                 };
                 faces
             ],
