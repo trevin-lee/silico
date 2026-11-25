@@ -322,8 +322,9 @@ enum Queued {
         constraint: ElementId,
         value: Node,
     },
-    /// An over-defining dimension's choice (SD7), of sketch mode numbered `serial`: its
-    /// request, sent against the revision it names, never the tab's.
+    /// An over-defining dimension's choice (SD7), or the over-defined card's Make it driven,
+    /// of sketch mode numbered `serial`: its request, sent against the revision it names,
+    /// never the tab's.
     Offer {
         serial: u64,
         request: OfferRequest,
@@ -1051,7 +1052,8 @@ enum Under {
         sending: Sending,
         running: Running<FieldSet>,
     },
-    /// An over-defining dimension's Driven (SD7), as it was sent.
+    /// A dimension made driven, by the over-define prompt's Driven (SD7) or the over-defined
+    /// card's Make it driven, as it was sent.
     OfferField {
         sending: Sending,
         running: Running<FieldSet>,
@@ -5165,6 +5167,10 @@ impl Tab {
                             field,
                             value,
                         } => {
+                            // The prompt's Driven always follows an edit that began the
+                            // transaction; the card's Make it driven may be sketch mode's
+                            // first edit, so it begins one if none is open.
+                            self.begin_if_none(sessions);
                             self.record(Sent::Edit(field.clone()));
                             let sending = Sending {
                                 against: revision,
@@ -7498,8 +7504,8 @@ impl Tab {
         self.timeline_scroll = None;
     }
 
-    /// What an error card asked (`errCard`'s Edit and Show in timeline), done through
-    /// `sessions`: whether a command was started.
+    /// What an error card asked (`errCard`'s Edit and Show in timeline, sketch mode's card's
+    /// Make it driven), done through `sessions`: whether a command was started.
     pub(crate) fn card_asked<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
@@ -7519,6 +7525,10 @@ impl Tab {
                 self.use_candidate(sessions, &broken, &candidate)
             }
             crate::properties::CardAct::Remove(broken) => self.remove_reference(sessions, &broken),
+            crate::properties::CardAct::MakeDriven(constraint) => {
+                self.sketch_make_driven(sessions, &constraint);
+                true
+            }
         }
     }
 
@@ -8430,6 +8440,43 @@ impl Tab {
     ) {
         if let Some(mode) = self.sketch.as_mut()
             && mode.answer_offer(choice)
+        {
+            self.message = None;
+        }
+        self.sketch_requests(sessions);
+    }
+
+    /// What sketch mode's over-defined card's Make it driven offers
+    /// ([`SketchMode::make_driven`]), off while the tab closes, as the feature menu's edits
+    /// are.
+    pub fn sketch_make_driven_offer(&self) -> Option<crate::sketch::MakeDriven> {
+        let driven = self.sketch.as_ref()?.make_driven()?;
+        Some(crate::sketch::MakeDriven {
+            target: driven.target.and_then(|id| {
+                if self.closing() {
+                    Err(crate::feature_menu::DOCUMENT_CLOSING)
+                } else {
+                    Ok(id)
+                }
+            }),
+            ..driven
+        })
+    }
+
+    /// Sketch mode's card's Make it driven for `constraint` ([`SketchMode::ask_driven`]):
+    /// its `set_field` queued, against the revision of the read the card was drawn from,
+    /// if the newest read still offers it. Nothing while the tab closes, whose queue takes no
+    /// edit.
+    pub fn sketch_make_driven<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        constraint: &ElementId,
+    ) {
+        if self.closing() {
+            return;
+        }
+        if let Some(mode) = self.sketch.as_mut()
+            && mode.ask_driven(constraint)
         {
             self.message = None;
         }
@@ -13172,6 +13219,58 @@ mod tests {
     const BLOCK: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "k7f2qx3m", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 4, "width": 2, "height": 1}, {"id": "a91cw0de", "type": "cylinder", "v": 1, "name": "Pin", "position": [2, 1, -1], "radius": 0.5, "height": 3}, {"id": "m3tq8v0z", "type": "cut", "v": 1, "name": "Hole", "base": "k7f2qx3m", "tool": "a91cw0de"}]}"#;
 
     type FakeSessions = Arc<Sessions<Arc<silico_core::fake::FakeKernel>>>;
+
+    #[test]
+    fn the_cards_make_it_driven_is_off_while_the_tab_closes_and_its_click_queues_nothing() {
+        use crate::sketch::tests::{length, read, rectangle};
+        use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
+        let (_dir, sessions, mut tab) = opened_on(BLOCK, |_| {});
+        // Sketch mode over defined by the right side's second length, read at a published
+        // revision: Make it driven on, for it.
+        let mut mode = SketchMode::new(1, Some(FeatureId::new("s0000001").unwrap()));
+        mode.read = Some(crate::sketch::Read {
+            model: Some(tab.revision),
+            result: Ok(read(
+                rectangle(vec![
+                    length("ka000001", "na000002", "20", true),
+                    length("ka000002", "na000002", "20", true),
+                ]),
+                SketchState::OverDefined,
+                MemberState::OverDefined,
+                &[("ka000002", ConstraintState::Redundant)],
+            )),
+        });
+        tab.sketch = Some(mode);
+        let constraint = ElementId::new("ka000002").unwrap();
+        assert_eq!(
+            tab.sketch_make_driven_offer().map(|driven| driven.target),
+            Some(Ok(constraint.clone()))
+        );
+        // The tab closing: off, saying so, as the feature menu's edits; a click queues and
+        // sends nothing.
+        tab.edits.queue.push_back(Queued::Save { then_close: true });
+        assert_eq!(
+            tab.sketch_make_driven_offer().map(|driven| driven.target),
+            Some(Err(crate::feature_menu::DOCUMENT_CLOSING))
+        );
+        let sent = tab.sent.clone();
+        tab.sketch_make_driven(&sessions, &constraint);
+        assert_eq!(tab.sent, sent);
+        assert!(
+            !tab.edits
+                .queue
+                .iter()
+                .any(|queued| matches!(queued, Queued::Offer { .. }))
+        );
+        tab.edits.queue.clear();
+        // Not closing: its click queues the prompt's Driven, for it.
+        tab.sketch_make_driven(&sessions, &constraint);
+        let field = "constraints.ka000002.driving".to_owned();
+        let queued = tab.edits.queue.iter().any(|queued| {
+            matches!(queued, Queued::Offer { request: OfferRequest::SetField { field: f, .. }, .. } if *f == field)
+        });
+        assert!(queued || tab.sent.contains(&Sent::Edit(field)));
+    }
 
     /// Sessions on a fake kernel, `kernel` first told what to do, and `text` opened in a
     /// tab: its directory (kept for the session's file), the sessions, and the tab.

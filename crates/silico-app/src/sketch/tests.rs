@@ -95,7 +95,7 @@ pub(crate) fn rectangle(constraints: Vec<SketchConstraint>) -> Sketch {
 
 /// `sketch` read as solved, in state `state`, every point and curve `members`, and each
 /// constraint `satisfied` but those `flagged` says.
-fn read(
+pub(crate) fn read(
     sketch: Sketch,
     state: SketchState,
     members: MemberState,
@@ -306,7 +306,7 @@ fn a_sketch_with_no_solution_or_an_invalid_one_colours_every_member_its_way() {
     }
 }
 
-fn length(name: &str, side: &str, value: &str, driving: bool) -> SketchConstraint {
+pub(crate) fn length(name: &str, side: &str, value: &str, driving: bool) -> SketchConstraint {
     constraint(
         name,
         Form::Length {
@@ -8248,4 +8248,232 @@ fn sketch_modes_card_marks_a_radius_and_a_diameter_as_the_dimensions_row_does() 
         let said = problem_card(&over, "Sketch1").unwrap();
         assert_eq!(said.cause.as_deref(), Some(words));
     }
+}
+
+/// The rectangle with the right side's length twice (ka000001, ka000002, both 20) and the
+/// bottom's (ka000003, 40), all driving, read at a published revision in `state` with
+/// `flagged`; the sketch s0000001 open.
+fn twice_measured(state: SketchState, flagged: &[(&str, ConstraintState)]) -> SketchMode {
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", true),
+        length("ka000002", "na000002", "20", true),
+        length("ka000003", "na000001", "40", true),
+        horizontal("kb000001", "na000001"),
+    ]);
+    let mut mode = SketchMode::new(
+        1,
+        Some(silico_core::document::FeatureId::new("s0000001").unwrap()),
+    );
+    mode.read = Some(Read {
+        model: silico_core::command::Revision::from_number(3),
+        result: Ok(read(sketch, state, MemberState::OverDefined, flagged)),
+    });
+    mode
+}
+
+fn target(mode: &SketchMode) -> Option<Result<String, &'static str>> {
+    mode.make_driven()
+        .map(|driven| driven.target.map(|id| id.as_str().to_owned()))
+}
+
+fn select_constraint(mode: &mut SketchMode, name: &str) {
+    mode.selection
+        .click(member(name, ElementKind::Constraint), true);
+}
+
+#[test]
+fn make_it_driven_means_the_dimension_left_driving_else_the_one_over_defining_else_the_one_selected()
+ {
+    use ConstraintState::{Conflicting, Redundant};
+    // One over-defining driving dimension: it, with its value as the panel writes it.
+    let mode = twice_measured(SketchState::OverDefined, &[("ka000002", Redundant)]);
+    assert_eq!(
+        mode.make_driven(),
+        Some(MakeDriven {
+            target: Ok(id("ka000002")),
+            value: Some("20 mm".to_owned()),
+        })
+    );
+    // Both lengths in conflict, the relation too: none known, none selected, off, saying why.
+    let flagged = [
+        ("ka000001", Conflicting),
+        ("ka000002", Conflicting),
+        ("kb000001", Conflicting),
+    ];
+    let mut mode = twice_measured(SketchState::OverDefined, &flagged);
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    // The relation selected, or the bottom's length (which over-defines nothing): still off.
+    select_constraint(&mut mode, "kb000001");
+    select_constraint(&mut mode, "ka000003");
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    // One of the two selected: it (SolidWorks' right-click Driven acts on the selection).
+    select_constraint(&mut mode, "ka000001");
+    assert_eq!(target(&mode), Some(Ok("ka000001".to_owned())));
+    // Both selected: off again.
+    select_constraint(&mut mode, "ka000002");
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    // Left driving at its prompt: it, whatever's selected (the prompt's "this dimension").
+    mode.left_driving = vec![id("ka000002")];
+    assert_eq!(target(&mode), Some(Ok("ka000002".to_owned())));
+    // The newest left driving that still over-defines; one that doesn't (ka000003) passed.
+    mode.left_driving = vec![id("ka000002"), id("ka000001"), id("ka000003")];
+    assert_eq!(target(&mode), Some(Ok("ka000001".to_owned())));
+}
+
+#[test]
+fn make_it_driven_is_offered_only_over_defined_or_unsolvable_at_a_published_read_for_a_driving_dimension()
+ {
+    use ConstraintState::{Conflicting, Redundant};
+    // Fully or under defined, or invalid: none.
+    for state in [
+        SketchState::FullyDefined,
+        SketchState::UnderDefined,
+        SketchState::Invalid,
+    ] {
+        let mode = twice_measured(state, &[("ka000002", Redundant)]);
+        assert_eq!(mode.make_driven(), None, "{state:?}");
+    }
+    // A read of no published revision: none.
+    let mut mode = twice_measured(SketchState::OverDefined, &[("ka000002", Redundant)]);
+    if let Some(read) = mode.read.as_mut() {
+        read.model = None;
+    }
+    assert_eq!(mode.make_driven(), None);
+    // A conflict of relations alone: no dimension to make driven.
+    let mode = twice_measured(SketchState::OverDefined, &[("kb000001", Conflicting)]);
+    assert_eq!(mode.make_driven(), None);
+    // No solution, which flags nothing: none, unless one was left driving at its prompt,
+    // which still drives (SolidWorks' driven repairs "the over defined or unsolvable state").
+    let mut mode = twice_measured(SketchState::NoSolution, &[]);
+    assert_eq!(mode.make_driven(), None);
+    mode.left_driving = vec![id("ka000003")];
+    assert_eq!(target(&mode), Some(Ok("ka000003".to_owned())));
+}
+
+#[test]
+fn make_it_driven_asks_its_driving_false_at_the_reads_revision_and_nothing_for_another_dimension() {
+    use ConstraintState::Redundant;
+    let mut mode = twice_measured(SketchState::OverDefined, &[("ka000002", Redundant)]);
+    // Not the one offered: nothing asked.
+    assert!(!mode.ask_driven(&id("ka000001")));
+    assert!(mode.take_asks().is_empty());
+    assert!(mode.ask_driven(&id("ka000002")));
+    let asks = mode.take_asks();
+    let [
+        Ask::Offer(OfferRequest::SetField {
+            revision,
+            feature,
+            field,
+            value,
+        }),
+    ] = asks.as_slice()
+    else {
+        panic!("{asks:?}");
+    };
+    assert_eq!(revision.number(), 3);
+    assert_eq!(feature.as_str(), "s0000001");
+    assert_eq!(field, "constraints.ka000002.driving");
+    assert_eq!(value.value, silico_core::document::json::Value::Bool(false));
+    // Asked again on the same read (a double-click before its edit's read comes): nothing.
+    assert!(!mode.ask_driven(&id("ka000002")));
+    assert!(mode.take_asks().is_empty());
+    // On a newer read still offering it (the edit refused, say): asked again.
+    if let Some(read) = mode.read.as_mut() {
+        read.model = silico_core::command::Revision::from_number(4);
+    }
+    assert!(mode.ask_driven(&id("ka000002")));
+    assert_eq!(mode.take_asks().len(), 1);
+    // With no sketch known (Create Sketch's add unanswered): nothing.
+    mode.sketch = None;
+    assert!(!mode.ask_driven(&id("ka000002")));
+    assert!(mode.take_asks().is_empty());
+}
+
+#[test]
+fn make_it_driven_passes_over_a_dimension_left_driving_but_since_made_driven_when_unsolvable() {
+    // No solution flags nothing, so whether the dimension left driving still drives is what
+    // decides: ka000002 left driving, since made driven, means nothing; with ka000003 left
+    // driving before it, ka000003.
+    let sketch = rectangle(vec![
+        length("ka000001", "na000002", "20", true),
+        length("ka000002", "na000002", "20", false),
+        length("ka000003", "na000001", "40", true),
+        horizontal("kb000001", "na000001"),
+    ]);
+    let mut mode = mode_at(read(
+        sketch,
+        SketchState::NoSolution,
+        MemberState::OverDefined,
+        &[],
+    ));
+    mode.left_driving = vec![id("ka000002")];
+    assert_eq!(mode.make_driven(), None);
+    mode.left_driving = vec![id("ka000003"), id("ka000002")];
+    assert_eq!(target(&mode), Some(Ok("ka000003".to_owned())));
+}
+
+#[test]
+fn leave_it_driving_at_an_edits_prompt_makes_the_card_mean_the_edited_dimension() {
+    // The right side's length edited (ka000002) into a conflict with the bottom's (both
+    // flagged): with nothing known and nothing selected, off; once the edit's prompt is
+    // answered Leave it driving, the edited one (the prompt's "this dimension").
+    let both = read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Conflicting),
+            ("ka000002", ConstraintState::Conflicting),
+        ],
+    );
+    let two = Revision::OPENED.next().unwrap().next().unwrap();
+    let offered = edited_right()
+        .judged(&two_lengths_over(), two)
+        .unwrap()
+        .unwrap();
+    assert_eq!(offered.constraint, id("ka000002"));
+    let mut mode = mode_at(both);
+    mode.edit_offer = Some((offered, two));
+    assert_eq!(target(&mode), Some(Err(SELECT_ONE_TO_MAKE_DRIVEN)));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert!(mode.take_asks().is_empty());
+    assert_eq!(target(&mode), Some(Ok("ka000002".to_owned())));
+}
+
+#[test]
+fn leave_it_driving_keeps_the_dimensions_left_before_it_each_once_the_newest_last() {
+    // One left driving before (ka000001); the edit's prompt for ka000002 answered Leave:
+    // both kept, ka000002 newest. Left again for ka000001: once, now the newest.
+    let both = read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            length("ka000002", "na000002", "20", true),
+        ]),
+        SketchState::OverDefined,
+        MemberState::OverDefined,
+        &[
+            ("ka000001", ConstraintState::Conflicting),
+            ("ka000002", ConstraintState::Conflicting),
+        ],
+    );
+    let two = Revision::OPENED.next().unwrap().next().unwrap();
+    let offered = edited_right()
+        .judged(&two_lengths_over(), two)
+        .unwrap()
+        .unwrap();
+    let mut mode = mode_at(both);
+    mode.left_driving = vec![id("ka000001")];
+    mode.edit_offer = Some((offered.clone(), two));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert_eq!(mode.left_driving, [id("ka000001"), id("ka000002")]);
+    // ka000001 left again (an offer for it, judged from the same edit's shape): once.
+    mode.left_driving = vec![id("ka000001"), id("ka000002")];
+    let mut again = offered;
+    again.constraint = id("ka000001");
+    mode.edit_offer = Some((again, two));
+    assert!(mode.answer_offer(OfferChoice::Leave));
+    assert_eq!(mode.left_driving, [id("ka000002"), id("ka000001")]);
 }

@@ -22693,6 +22693,7 @@ fn press_chord(h: &mut AppHarness, chord: Chord) {
             h.key_press_modifiers(shortcut.modifiers, shortcut.logical_key);
         }
         Chord::Pointer(..) => panic!("{chord:?} is the pointer's"),
+        Chord::Held(..) => panic!("{chord:?} is held as the pointer acts, never pressed"),
     }
 }
 
@@ -22788,6 +22789,7 @@ fn question_mark_opens_the_sheet_its_filter_narrows_it_and_esc_closes_it() {
         ("Orbit", "Shift+Middle-drag"),
         ("Hide or show", "H"),
         ("OK", "↵"),
+        ("Sketch without relations", "Ctrl+hold"),
         ("Keyboard shortcuts", "?"),
     ] {
         assert!(sheet_shows(&h, label), "{label}");
@@ -22944,9 +22946,10 @@ fn under_the_sheet_no_shortcut_acts() {
 
 #[test]
 fn every_command_the_search_lists_runs_from_it_as_its_keys_and_its_button_do() {
-    // Each command the search lists (the registry's but OK, Cancel, and the pointer's three:
-    // 43, the three past its first 40 among them, found by name), run from the search in a
-    // state where it can run: what its keys and its button do, by the same checks.
+    // Each command the search lists (the registry's but OK, Cancel, the pointer's three, and
+    // Sketch without relations: 43, the three past its first 40 among them, found by name),
+    // run from the search in a state where it can run: what its keys and its button do, by
+    // the same checks.
     let listed: Vec<&silico_app::shortcuts::Entry> = REGISTRY
         .iter()
         .filter(|entry| !silico_app::search::LEFT_OUT.contains(&entry.command))
@@ -24343,6 +24346,42 @@ fn same_every_way(entry: &silico_app::shortcuts::Entry, search: bool) {
                 sketch_mode(h).unwrap().settings.construction
             });
             assert_eq!(never_waits::waits(), 0);
+        }
+        Command::NoRelations => {
+            // Ctrl held as the pointer acts (the prototype's `['Mod', 'hold']`): no key to
+            // press, and left out of the search, as the prototype's `paletteItems` leaves
+            // `sNoRel` out. What it says is what the canvas does, through the window's own
+            // events: the Line tool clicked at (30, 30) then (50, 30.3), 0.86° off level,
+            // within the 2° the pointer infers `horizontal` at, is put level, at (50, 30),
+            // and made `horizontal`; the same clicks with Ctrl held add the line as clicked,
+            // with no relation.
+            assert!(!search, "the search leaves {command:?} out");
+            assert_eq!(entry.keys, [Chord::Held(Modifiers::COMMAND)]);
+            for held in [Modifiers::NONE, Modifiers::COMMAND] {
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                hand_camera(&mut h);
+                step(&mut h);
+                h.key_press(Key::L);
+                step(&mut h);
+                for at in [[30.0, 30.0], [50.0, 30.3]] {
+                    click_as_a_person(&mut h, to_screen(at).unwrap(), held);
+                }
+                settled(&mut h);
+                // Each click lands within a ten-thousandth of a millimetre of where it's
+                // made, through the pane's f32 projection.
+                let sketch = sketch_of_text(&f, &h, "s0000001");
+                let start = point_near(&sketch, 30.0, 30.0, THROUGH_THE_PANE);
+                let level = held == Modifiers::NONE;
+                let y = if level { 30.0 } else { 30.3 };
+                let end = point_near(&sketch, 50.0, y, THROUGH_THE_PANE);
+                let line = line_between(&sketch, &start, &end).unwrap();
+                assert_eq!(holds_direction(&sketch, &line, true), level, "{held:?}");
+                // The triangle's three and the one line: nothing else added.
+                assert_eq!(sketch.lines.len(), 4, "{held:?}");
+                assert_eq!(sketch.constraints.len(), usize::from(level), "{held:?}");
+                assert_eq!(never_waits::waits(), 0);
+            }
         }
         Command::FinishSketch => {
             use silico_app::sketch::tools::Choice;
@@ -32917,6 +32956,195 @@ fn a_new_sketchs_property_panel_counts_nothing_and_its_conflict_is_the_cores_car
     );
     assert_eq!(rows(&h)[3..], ["4", "3", "6"]);
     assert_eq!(rows(&h)[1], "Over defined");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Sketch mode's card's Make it driven, in the Properties pane.
+fn make_it_driven(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .query_by_role_and_label(Role::Button, "Make it driven")
+}
+
+#[test]
+fn the_cards_make_it_driven_makes_the_one_repeating_dimension_driven_and_undo_puts_it_back() {
+    // sketch.js's card and its `skMakeDriven`: BOXED_LENGTH's bottom, 40, repeats the others
+    // (`counting_redundant_40`), the one dimension over-defining it, so the button means it,
+    // its tooltip saying so. A click sets its `driving` to false; the sketch, solved again
+    // without it, isn't over defined (eight unknowns less four relations: four freedoms),
+    // the card gone. Undo puts it back driving, the card again.
+    let f = fixture();
+    counting_redundant_40(&f);
+    let mut h = boxed_length(&f);
+    let opened = text_of(&f.sessions, &h);
+    step_until(&mut h, "the card's button", |h| make_it_driven(h).is_some());
+    let button = make_it_driven(&h).unwrap();
+    assert!(is_on(&button));
+    assert_eq!(
+        button.accesskit_node().description().as_deref(),
+        Some(
+            "Makes the 40 mm dimension, ka000005, driven: it shows its measured value in parentheses, and constrains nothing."
+        )
+    );
+    button.click();
+    step(&mut h);
+    settled(&mut h);
+    let field = "constraints.ka000005.driving".to_owned();
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Edit(field)));
+    let length = |f: &Fixture, h: &AppHarness| {
+        length_parts(&constraint_of(&sketch_of_text(f, h, "s0000001"), "ka000005").form)
+    };
+    assert_eq!(
+        length(&f, &h),
+        Some(("na000001".to_owned(), "40".to_owned(), false))
+    );
+    step_until(&mut h, "the sketch no longer over defined", |h| {
+        sketch_state(h) == Some((silico_core::sketch_states::SketchState::UnderDefined, 4))
+    });
+    step_until(&mut h, "the card gone", |h| {
+        showing(h, "Properties", "is over defined").is_none() && make_it_driven(h).is_none()
+    });
+    assert_eq!(
+        property(&h, "Definition").as_deref(),
+        Some("Under defined · 4 DOF")
+    );
+    // Undo: driving again, over defined, the card and its button back.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the length driving again", |h| {
+        length(&f, h) == Some(("na000001".to_owned(), "40".to_owned(), true))
+    });
+    step_until(&mut h, "the card back", |h| make_it_driven(h).is_some());
+    // Made driven again, then the sketch's Cancel: the file's text as it opened, byte for
+    // byte (the edit, the first since sketch mode opened, began the transaction Cancel
+    // rolls back).
+    make_it_driven(&h).unwrap().click();
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "driven again", |h| {
+        length(&f, h) == Some(("na000001".to_owned(), "40".to_owned(), false))
+    });
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), opened);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn after_leave_it_driving_make_it_driven_means_the_dimension_just_placed_though_all_three_conflict()
+{
+    // SolidWorks' prompt is about the dimension just placed (docs/ux/solidworks.md, §2):
+    // left driving, the card's Make it driven means it, though the solve flags all three
+    // lengths of the right side in conflict (`counting`) and nothing is selected. A click
+    // makes it driven, and the sketch is fully defined again, its first two lengths driving.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (id, right, top) = fully_defined(&f, &mut h);
+    let third = over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the card's button", |h| make_it_driven(h).is_some());
+    let button = make_it_driven(&h).unwrap();
+    assert!(is_on(&button));
+    let described = button.accesskit_node().description().unwrap_or_default();
+    assert_eq!(
+        described,
+        format!(
+            "Makes the 30 mm dimension, {third}, driven: it shows its measured value in parentheses, and constrains nothing."
+        )
+    );
+    button.click();
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit(format!("constraints.{third}.driving")))
+    );
+    step_until(&mut h, "fully defined again", |h| {
+        sketch_state(h) == Some((silico_core::sketch_states::SketchState::FullyDefined, 0))
+    });
+    let sketch = sketch_of_text(&f, &h, &id);
+    let mut driving: Vec<(String, String, bool)> = lengths(&sketch)
+        .into_iter()
+        .map(|(_, line, value, driving)| (line, value, driving))
+        .collect();
+    driving.sort();
+    let mut expected = vec![
+        (right.clone(), "20".to_owned(), true),
+        (right, "30".to_owned(), false),
+        (top, "40".to_owned(), true),
+    ];
+    expected.sort();
+    assert_eq!(driving, expected);
+    step_until(&mut h, "the card gone", |h| make_it_driven(h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn opened_over_defined_by_several_make_it_driven_is_off_saying_why_until_one_is_selected() {
+    // The third length left driving, then the sketch finished and opened again: sketch mode
+    // knows no dimension left driving, and all three lengths conflict (`counting`), so the
+    // card's Make it driven is off, its reason its description. A click on the top's length's
+    // label (well clear of the right side's two) selects it (SolidWorks' Driven acts on the
+    // selection): on, naming it.
+    use silico_app::sketch::PointerAction::{Press, Release};
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (id, _, top) = fully_defined(&f, &mut h);
+    over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+        .get_by_role_and_label(Role::Button, "Finish Sketch")
+        .click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    double_click(&mut h, "Browser", "Sketch1");
+    step_until(&mut h, "sketch mode again", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.as_ref().map(|s| s.as_str()) == Some(&id))
+    });
+    sketch_read(&mut h);
+    step_until(&mut h, "the card's button", |h| make_it_driven(h).is_some());
+    let button = make_it_driven(&h).unwrap();
+    assert!(!is_on(&button));
+    assert_eq!(
+        button.accesskit_node().description().as_deref(),
+        Some("Several dimensions over-define the sketch: select the one to make driven")
+    );
+    // The top's length's label clicked: selected, the button on for it.
+    let top_length = lengths(&sketch_of_text(&f, &h, &id))
+        .into_iter()
+        .find(|(_, line, _, _)| *line == top)
+        .map(|(constraint, ..)| constraint)
+        .unwrap();
+    sketch_events(&f, &mut h, &[]);
+    let at = label_of_dimension(&h, &top_length);
+    let click: Vec<silico_app::sketch::PointerEvent> = [Press, Release]
+        .into_iter()
+        .map(|action| silico_app::sketch::PointerEvent {
+            action,
+            at,
+            shift: false,
+            ctrl: false,
+        })
+        .collect();
+    sketch_events(&f, &mut h, &click);
+    step_until(&mut h, "the button on", |h| {
+        make_it_driven(h).is_some_and(|button| is_on(&button))
+    });
+    assert_eq!(
+        make_it_driven(&h)
+            .unwrap()
+            .accesskit_node()
+            .description()
+            .unwrap_or_default(),
+        format!(
+            "Makes the 40 mm dimension, {top_length}, driven: it shows its measured value in parentheses, and constrains nothing."
+        )
+    );
     assert_eq!(never_waits::waits(), 0);
 }
 

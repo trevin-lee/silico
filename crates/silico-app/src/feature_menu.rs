@@ -40,6 +40,10 @@ use crate::shortcuts::Command;
 use crate::tab::Tab;
 use crate::theme;
 
+/// Why an edit is off while the tab closes (a save, a revert, or its close queued, which
+/// takes no edit): the feature menu's, and sketch mode's card's Make it driven.
+pub const DOCUMENT_CLOSING: &str = "The document is closing";
+
 /// Where a feature is shown: its item in the timeline, or its row in the browser.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
@@ -209,7 +213,7 @@ pub fn label(item: Item, entry: &Entry, place: Place) -> &'static str {
 /// refused, which takes no edit but of its text.
 fn unchangeable(tab: &Tab) -> Option<String> {
     if tab.closing() {
-        return Some("The document is closing".to_owned());
+        return Some(DOCUMENT_CLOSING.to_owned());
     }
     if tab.in_dialog() {
         return Some("Close the open dialog first".to_owned());

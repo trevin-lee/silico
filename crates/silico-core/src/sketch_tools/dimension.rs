@@ -1513,7 +1513,8 @@ impl OfferChoice {
 
 /// What a choice sends, each made against the revision the add made (decision 12), so a
 /// session that has moved on since refuses it as a `conflict` rather than change something
-/// else.
+/// else; or, for a dimension made driven later (a client's own control, such as the app's
+/// over-defined card), the revision of the read it was offered on, to the same end.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OfferRequest {
     /// `set_field`: the sketch's `constraints.ID.driving` set to `false`.
@@ -1540,20 +1541,32 @@ pub struct Offer {
     placement: Placement,
 }
 
+impl OfferRequest {
+    /// The dimension `constraint` of the sketch `sketch` made driven, against `revision`: a
+    /// `set_field` of its `driving` to `false`, as the prompt's Driven sends it.
+    pub fn driven(revision: Revision, sketch: FeatureId, constraint: &ElementId) -> Self {
+        OfferRequest::SetField {
+            revision,
+            feature: sketch,
+            field: format!("constraints.{constraint}.driving"),
+            value: Node {
+                at: At::UNPLACED,
+                value: Value::Bool(false),
+            },
+        }
+    }
+}
+
 impl Offer {
     /// What `choice` sends: none for leaving it.
     pub fn request(&self, choice: OfferChoice) -> Option<OfferRequest> {
         let revision = self.placement.revision;
         match choice {
-            OfferChoice::Driven => Some(OfferRequest::SetField {
+            OfferChoice::Driven => Some(OfferRequest::driven(
                 revision,
-                feature: self.placement.sketch.clone(),
-                field: format!("constraints.{}.driving", self.placement.constraint),
-                value: Node {
-                    at: At::UNPLACED,
-                    value: Value::Bool(false),
-                },
-            }),
+                self.placement.sketch.clone(),
+                &self.placement.constraint,
+            )),
             OfferChoice::Leave => None,
             OfferChoice::Cancel => Some(OfferRequest::Undo { revision, to: None }),
         }
