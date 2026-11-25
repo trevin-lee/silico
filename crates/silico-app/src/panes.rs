@@ -160,7 +160,13 @@ impl<P: Clients + 'static> egui_tiles::Behavior<Pane> for Panes<'_, P> {
         });
         if *pane == Pane::Viewport {
             // The canvas reaches the pane's edges.
-            crate::viewport::show(ui, self.tab.as_deref_mut(), self.sessions, self.drawing);
+            crate::viewport::show(
+                ui,
+                self.tab.as_deref_mut(),
+                self.sessions,
+                self.drawing,
+                self.remembered,
+            );
             return UiResponse::None;
         }
         if *pane == Pane::Browser {

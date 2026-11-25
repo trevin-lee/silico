@@ -4,7 +4,8 @@
 //! click there would select (the selection's hover): headed by it and its kind ("Face6 ·
 //! Face"), then *Select Other…* with how many are under the pointer, Edit and the feature
 //! that made it, Edit Sketch for a feature built from a sketch, Sketch on this face and Look
-//! At for a planar face, a separator, and Hide and its body.
+//! At for a planar face, Fillet for an edge, a separator, Copy name ("as agents write it"),
+//! and Hide and its body.
 //! Over nothing: Fit (F6), Home view (Home), *Select Other…*, a separator, Clear selection
 //! (Esc), and Create Sketch. Where each item's action goes:
 //! - *Select Other…* opens the list of what's under the pointer (`crate::select_other`,
@@ -31,6 +32,15 @@
 //!   face selected (`Tab::look_at_face`, the one rule), without selecting it (the prototype
 //!   selects it first, to look at the selection; the menu already has the face). It's never
 //!   off;
+//! - Fillet, for an edge, is MODIFY's Fillet (`crate::toolbar`): the fillet dialog opened
+//!   with the app's remembered inputs, its Edges box taking the selection's edges
+//!   (`Tab::open_dialog`). The edge under the pointer is among them: if it isn't selected,
+//!   it's selected first as a click there selects it (in place of the selection), as a right
+//!   click on a timeline item selects it unless it's selected already, and as SolidWorks'
+//!   shortcut menu acts on the entity right-clicked. Off as MODIFY's Fillet is, with the
+//!   feature menus' reason (`crate::feature_menu::fillet_off`);
+//! - Copy name copies the element's name as the selection holds it and an agent writes it
+//!   (the selection view's Stable name, `crate::panes`), never off;
 //! - Hide is as a body's eye in the browser hides it (with no key's cap: H, the registry's
 //!   Hide, hides the feature selected, not the body under the pointer);
 //! - Create Sketch is the toolbar's: chosen, it closes the menu and begins the pick of a
@@ -38,10 +48,7 @@
 //!   prototype's item runs its command; on and off as the toolbar's is (`Tab::can_sketch`),
 //!   off with sketch mode's reason.
 //!
-//! Left out of the prototype's items, none a command the app has yet:
-//! - SEAM: Fillet, an edge's, whose dialog opens from MODIFY (`crate::toolbar`, through the
-//!   app's remembered inputs), not from a command of the registry;
-//! - SEAM: Copy name ("as agents write it"), no command of the registry copies a name.
+//! The prototype's Hide has H's cap; here it has none (above).
 
 use std::sync::Arc;
 
@@ -55,6 +62,14 @@ use crate::shortcuts::Command;
 
 /// *Select Other…*, as the prototype labels it.
 pub const SELECT_OTHER: &str = "Select Other…";
+
+/// Fillet, and Copy name and its dim words, as the prototype's `onContext` labels them.
+pub const FILLET: &str = "Fillet";
+pub const COPY_NAME: &str = "Copy name";
+pub const COPY_NAME_SUB: &str = "as agents write it";
+
+/// An edge's kind, as [`Under::kind`] says it.
+pub const EDGE: &str = "Edge";
 
 /// What *Select Other…* says while the view's meshes aren't of the model the selection is
 /// read against: nothing was cast.
@@ -90,6 +105,11 @@ pub enum CanvasAct {
     /// Look At: the view square to the planar face under the pointer, from its outward unit
     /// normal (its `elements` entry's).
     LookAt([f64; 3]),
+    /// Fillet, of the edge under the pointer, by its name: the fillet dialog opened with
+    /// the selection's edges, the edge selected first if it isn't.
+    Fillet(Arc<Name>),
+    /// Copy name: the name of the element under the pointer put on the clipboard.
+    CopyName(Arc<Name>),
     /// Hide, of the body under the pointer (by the feature that ends its chain).
     Hide(FeatureId),
     Fit,
@@ -153,15 +173,16 @@ impl Shown {
 }
 
 /// What's under the pointer at the right click, as the menu says it: the element a click
-/// there would select, by its words ("Face6") and its kind ("Face"); the feature that made
-/// it, by its ID and its name, and whether it's built from a sketch; its body, by the
-/// feature that ends its chain and its name; and, for a face `elements` has said is a plane,
-/// what Sketch on this face and Look At need of it (none for another face, an edge, a
-/// vertex, or a face not read yet). None over nothing.
+/// there would select, by its words ("Face6"), its kind ("Face"), and its name, as the
+/// selection holds it; the feature that made it, by its ID and its name, and whether it's
+/// built from a sketch; its body, by the feature that ends its chain and its name; and, for
+/// a face `elements` has said is a plane, what Sketch on this face and Look At need of it
+/// (none for another face, an edge, a vertex, or a face not read yet). None over nothing.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Under {
     pub label: String,
     pub kind: &'static str,
+    pub name: Arc<Name>,
     pub maker: FeatureId,
     pub maker_name: String,
     /// Whether the maker is built from a sketch (`Tab::sketch_of`): Edit Sketch is there
@@ -183,13 +204,14 @@ pub struct Planar {
 
 /// What the menu says of the rest: how many are under the pointer (*Select Other…*'s dim
 /// words) and whether there's any to list; why Edit can't open the maker's dialog, if it
-/// can't; whether anything is selected; and why sketch mode can't open, if it can't (Sketch
-/// on this face's and Create Sketch's reason).
+/// can't; why Fillet's dialog can't open, if it can't; whether anything is selected; and why
+/// sketch mode can't open, if it can't (Sketch on this face's and Create Sketch's reason).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Context {
     pub count: String,
     pub listable: bool,
     pub edit_off: Option<String>,
+    pub fillet_off: Option<String>,
     pub selected: bool,
     pub sketch_off: Option<String>,
 }
@@ -262,6 +284,23 @@ impl CanvasMenu {
                     )
                     .keys(Command::LookAt, ctx)
                 });
+                // An edge's alone, as the prototype has it.
+                let fillet = (under.kind == EDGE).then(|| {
+                    let mut fillet = Shown::of(
+                        CanvasItem::Act(CanvasAct::Fillet(Arc::clone(&under.name))),
+                        Some(Icon::Fillet),
+                        FILLET,
+                    );
+                    fillet.off = context.fillet_off.clone();
+                    fillet
+                });
+                // Never off: the name is the element's own.
+                let mut copy = Shown::of(
+                    CanvasItem::Act(CanvasAct::CopyName(Arc::clone(&under.name))),
+                    Some(Icon::Copy),
+                    COPY_NAME,
+                );
+                copy.sub = Some(COPY_NAME_SUB.to_owned());
                 // No key's cap: H hides the feature selected, not the body under the
                 // pointer this hides.
                 let hide = Shown::of(
@@ -277,6 +316,8 @@ impl CanvasMenu {
                         edit_sketch,
                         sketch,
                         look,
+                        fillet,
+                        Some(copy),
                         Some(hide),
                     ]
                     .into_iter()
@@ -320,13 +361,13 @@ impl CanvasMenu {
         }
     }
 
-    /// Whether a separator comes before its item `at` (the prototype's `'sep'`: before Hide,
-    /// and before Clear selection).
+    /// Whether a separator comes before its item `at` (the prototype's `'sep'`: before Copy
+    /// name, and before Clear selection).
     fn separated(&self, at: usize) -> bool {
         self.items.get(at).is_some_and(|shown| {
             matches!(
                 shown.item,
-                CanvasItem::Act(CanvasAct::Hide(_) | CanvasAct::ClearSelection)
+                CanvasItem::Act(CanvasAct::CopyName(_) | CanvasAct::ClearSelection)
             )
         })
     }
@@ -394,10 +435,20 @@ mod tests {
         FeatureId::new(id).unwrap()
     }
 
+    /// The block's element `kind` `index`, by its own name (`k7f2qx3m.box.Face6`).
+    fn block_element(kind: silico_protocol::ElementKind, index: u32) -> Arc<Name> {
+        Arc::new(Name::Element {
+            feature: fid("k7f2qx3m"),
+            made: silico_core::naming::TypeWord::Primitive(silico_core::naming::PrimitiveKind::Box),
+            element: silico_protocol::ElementRef { kind, index },
+        })
+    }
+
     fn under() -> Under {
         Under {
             label: "Face6".to_owned(),
             kind: "Face",
+            name: block_element(silico_protocol::ElementKind::Face, 6),
             maker: fid("k7f2qx3m"),
             maker_name: "Block".to_owned(),
             sketched: false,
@@ -418,6 +469,7 @@ mod tests {
             },
             listable,
             edit_off: None,
+            fillet_off: None,
             selected,
             sketch_off: None,
         }
@@ -465,6 +517,7 @@ mod tests {
             [
                 item("Select Other… 4 under the pointer", None, true),
                 item("Edit Block", None, true),
+                item("Copy name as agents write it", None, true),
                 item("Hide Plate", None, true),
             ]
         );
@@ -476,11 +529,13 @@ mod tests {
             [
                 CanvasItem::SelectOther,
                 CanvasItem::Act(CanvasAct::Edit(fid("k7f2qx3m"))),
+                CanvasItem::Act(CanvasAct::CopyName(under().name)),
                 CanvasItem::Act(CanvasAct::Hide(fid("p0000001"))),
             ]
         );
-        assert!(over.items[2].caps.is_empty(), "{:?}", over.items[2]);
-        assert!(!over.separated(1) && over.separated(2));
+        assert!(over.items[3].caps.is_empty(), "{:?}", over.items[3]);
+        // The separator before Copy name, as the prototype's 'sep', none before Hide.
+        assert!(!over.separated(1) && over.separated(2) && !over.separated(3));
         let off = CanvasMenu::new(None, &context(false, false), &ctx);
         assert_eq!(off.head, None);
         assert_eq!(
@@ -642,6 +697,7 @@ mod tests {
                 item("Edit Sketch", None, true),
                 item("Sketch on this face", None, false),
                 item("Look At", Some("Ctrl+8"), true),
+                item("Copy name as agents write it", None, true),
                 item("Hide Plate", None, true),
             ]
         );
@@ -712,6 +768,7 @@ mod tests {
                 item("Edit Block", None, true),
                 item("Sketch on this face", None, true),
                 item("Look At", Some("Ctrl+8"), true),
+                item("Copy name as agents write it", None, true),
                 item("Hide Plate", None, true),
             ]
         );
@@ -724,6 +781,7 @@ mod tests {
         );
         assert_eq!(over.items[3].icon, Some(Icon::LookAt));
         assert!(!over.separated(2) && !over.separated(3) && over.separated(4));
+        assert!(!over.separated(5));
         // Look At on while Sketch on this face is off, for either reason, the rest as they
         // were.
         for (under, context) in [
@@ -738,6 +796,7 @@ mod tests {
                     item("Edit Block", None, true),
                     item("Sketch on this face", None, false),
                     item("Look At", Some("Ctrl+8"), true),
+                    item("Copy name as agents write it", None, true),
                     item("Hide Plate", None, true),
                 ]
             );
@@ -805,5 +864,91 @@ mod tests {
             off.items[4].off.as_deref(),
             Some("Close the open dialog first")
         );
+    }
+
+    #[test]
+    fn over_an_edge_fillet_follows_edit_and_copy_name_its_separator_each_acting_on_the_edge() {
+        // js/interact.js's `onContext` over an edge: Select Other…, Edit and the maker, Fillet
+        // with its icon and no keys, the separator, Copy name with the copy icon and "as
+        // agents write it", and Hide. Fillet acts on the edge under the pointer, by its name,
+        // and Copy name copies that name; Fillet is off, saying why, as MODIFY's is.
+        let ctx = egui::Context::default();
+        ctx.set_os(egui::os::OperatingSystem::Nix);
+        let edge = Under {
+            label: "Edge12".to_owned(),
+            kind: EDGE,
+            name: block_element(silico_protocol::ElementKind::Edge, 12),
+            ..under()
+        };
+        let over = CanvasMenu::new(Some(&edge), &context(true, false), &ctx);
+        assert_eq!(over.head.as_deref(), Some("Edge12 · Edge"));
+        assert_eq!(
+            said(&over, &ctx),
+            [
+                item("Select Other… 4 under the pointer", None, true),
+                item("Edit Block", None, true),
+                item("Fillet", None, true),
+                item("Copy name as agents write it", None, true),
+                item("Hide Plate", None, true),
+            ]
+        );
+        let name = block_element(silico_protocol::ElementKind::Edge, 12);
+        assert_eq!(name.to_string(), "k7f2qx3m.box.Edge12");
+        assert_eq!(
+            (over.items[2].item.clone(), over.items[2].icon),
+            (
+                CanvasItem::Act(CanvasAct::Fillet(Arc::clone(&name))),
+                Some(Icon::Fillet)
+            )
+        );
+        assert_eq!(
+            (
+                over.items[3].item.clone(),
+                over.items[3].icon,
+                over.items[3].label.as_str(),
+                over.items[3].sub.as_deref()
+            ),
+            (
+                CanvasItem::Act(CanvasAct::CopyName(name)),
+                Some(Icon::Copy),
+                "Copy name",
+                Some("as agents write it")
+            )
+        );
+        assert!(over.items[2].caps.is_empty() && over.items[3].caps.is_empty());
+        assert!(!over.separated(2) && over.separated(3) && !over.separated(4));
+        // Off as MODIFY's Fillet is, saying why; Copy name never off.
+        let mut busy = context(true, false);
+        busy.fillet_off = Some("Close the open dialog first".to_owned());
+        let off = CanvasMenu::new(Some(&edge), &busy, &ctx);
+        assert_eq!(
+            off.items[2].off.as_deref(),
+            Some("Close the open dialog first")
+        );
+        assert!(off.on(3));
+        assert_eq!(off.step(Some(1), 1), Some(3), "a step passes Fillet off");
+        // A face and a vertex: no Fillet, Copy name all the same, of their own names.
+        let vertex = Under {
+            label: "Vertex8".to_owned(),
+            kind: "Vertex",
+            name: block_element(silico_protocol::ElementKind::Vertex, 8),
+            ..under()
+        };
+        for under in [under(), vertex] {
+            let menu = CanvasMenu::new(Some(&under), &busy, &ctx);
+            assert!(
+                menu.items.iter().all(|shown| shown.label != FILLET),
+                "{}",
+                under.label
+            );
+            assert!(menu.items.contains(&Shown {
+                item: CanvasItem::Act(CanvasAct::CopyName(Arc::clone(&under.name))),
+                icon: Some(Icon::Copy),
+                label: COPY_NAME.to_owned(),
+                sub: Some(COPY_NAME_SUB.to_owned()),
+                caps: Vec::new(),
+                off: None,
+            }));
+        }
     }
 }

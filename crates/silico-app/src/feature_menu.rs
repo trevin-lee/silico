@@ -239,6 +239,16 @@ pub(crate) fn sketch_off(tab: &Tab) -> Option<String> {
     }
 }
 
+/// Why MODIFY's Fillet can't open its dialog in `tab` now ([`Tab::can_create`]), if it
+/// can't: what the canvas's Fillet says (`crate::canvas_menu`).
+pub(crate) fn fillet_off(tab: &Tab) -> Option<String> {
+    if tab.can_create(crate::dialog::Kind::Fillet) {
+        None
+    } else {
+        Some(unchangeable(tab).unwrap_or_else(|| "The fillet can't open now".to_owned()))
+    }
+}
+
 /// Why `item` is off for the feature `entry` of `tab`, at `place`, if it is.
 pub fn off(tab: &Tab, entry: &Entry, item: Item, place: Place) -> Option<String> {
     match item {

@@ -2066,6 +2066,7 @@ impl Tab {
         sessions: &Arc<Sessions<P>>,
         painter: &eframe::egui::Painter,
         frame: &crate::viewport::ViewFrame,
+        remembered: &crate::dialog::Remembered,
     ) {
         // Create Sketch's pick ends once sketch mode can't open: a dialog or a sketch opened
         // another way (Edit Sketch, a feature's dialog), or the tab closing.
@@ -2169,6 +2170,7 @@ impl Tab {
             names: &names,
             edit_off: &edit,
             sketched: &built_from_sketch,
+            fillet_off: crate::feature_menu::fillet_off(self),
             sketch_off: crate::feature_menu::sketch_off(self),
         };
         let (left, asked, said) = self.select_other.overlay(
@@ -2239,7 +2241,7 @@ impl Tab {
             painter.ctx().request_repaint();
         }
         if let Some(asked) = asked {
-            self.canvas_act(sessions, asked);
+            self.canvas_act(sessions, asked, remembered, painter.ctx());
             painter.ctx().request_repaint();
         }
         self.paint_arrows(painter, shown);
@@ -2432,13 +2434,17 @@ impl Tab {
     /// feature menus' Edit feature (`crate::feature_menu::act`), Sketch on this face as the
     /// selection view's button ([`create_sketch_on_face`](Self::create_sketch_on_face)),
     /// Look At as Ctrl+8 turns to the face selected ([`look_at_face`](Self::look_at_face)),
-    /// Hide as H hides a body, Fit and Home view as F6 and Home, Clear selection as Esc
-    /// clears it, and a plane of Create Sketch's as the toolbar's
+    /// Fillet as MODIFY's Fillet opens its dialog with `remembered` (its edge selected first
+    /// as a click selects it, unless it's selected already), Copy name onto `ctx`'s
+    /// clipboard, Hide as H hides a body, Fit and Home view as F6 and Home, Clear selection
+    /// as Esc clears it, and a plane of Create Sketch's as the toolbar's
     /// ([`create_sketch`](Self::create_sketch)).
     fn canvas_act<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         asked: crate::canvas_menu::CanvasAct,
+        remembered: &crate::dialog::Remembered,
+        ctx: &eframe::egui::Context,
     ) {
         use crate::canvas_menu::CanvasAct;
         use crate::viewport::ViewAsk;
@@ -2453,6 +2459,11 @@ impl Tab {
                 self.create_sketch_on_face(sessions, &face.to_string());
             }
             CanvasAct::LookAt(toward) => self.look_at_face(toward),
+            CanvasAct::Fillet(edge) => {
+                self.selection.pick_unless_held(&edge.to_string());
+                self.open_dialog(sessions, Kind::Fillet, remembered);
+            }
+            CanvasAct::CopyName(name) => ctx.copy_text(name.to_string()),
             CanvasAct::Hide(id) => self.toggle_shown(Hideable::Feature(id)),
             CanvasAct::Fit => self.view.ask(ViewAsk::Fit),
             CanvasAct::Home => self.view.ask(ViewAsk::Named(crate::navigate::HOME)),

@@ -1070,6 +1070,33 @@ impl Selection {
         }
     }
 
+    /// `name` selected as a right click's menu acts on it (the canvas's Fillet, of the edge
+    /// under the pointer): the selection kept as it is if it holds the element already (by
+    /// any of its names), else `name` picked in place of it, as a click picks it.
+    pub fn pick_unless_held(&mut self, name: &str) {
+        if !self.holds(name) {
+            self.pick(name, How::Replace);
+        }
+    }
+
+    /// Whether the selection holds the element `name` names in the published model: one
+    /// found there as the same element of the same solid, or one by that very name.
+    fn holds(&self, name: &str) -> bool {
+        let found = self.model.as_ref().and_then(|model| {
+            rules::resolve(model, &[name], PARAMETER)
+                .ok()
+                .and_then(|answer| answer.kept.into_iter().next())
+        });
+        self.elements().any(|picked| {
+            picked.name == name
+                || found.as_ref().is_some_and(|found| {
+                    picked.found().is_some_and(|held| {
+                        held.feature == found.feature && held.element == found.element
+                    })
+                })
+        })
+    }
+
     /// `names` picked together, `how` (a box's elements, by their names as the element map
     /// gives them): read at once against the published model in one read, and the
     /// selection changed once, so it's one change, one notice, and one revision of the

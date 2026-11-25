@@ -1215,6 +1215,7 @@ impl<P: Clients + 'static> App<P> {
                 &mut self.drawing,
                 shown,
                 &mut self.tabs,
+                &self.remembered,
             );
             let App {
                 tree,

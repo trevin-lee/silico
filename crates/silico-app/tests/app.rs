@@ -46528,6 +46528,7 @@ fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_with_no_k
         [
             ("Select Other… 2 under the pointer".to_owned(), None, true),
             ("Edit Block".to_owned(), None, true),
+            ("Copy name as agents write it".to_owned(), None, true),
             ("Hide Block".to_owned(), None, true),
         ]
     );
@@ -46544,6 +46545,162 @@ fn over_an_element_the_context_menu_is_headed_by_it_and_hides_its_body_with_no_k
         ))
     });
     assert!(!select_other(&h).is_open());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Edge `n` of the block hovered at `at` and right-clicked there, its context menu open.
+fn context_over_edge(h: &mut AppHarness, record: &Record, at: eframe::egui::Pos2, n: u32) {
+    use silico_app::renderer::Element::Edge;
+    answering(record, None, Some((1, Edge(n), pixel_at(h, at))));
+    h.hover_at(at);
+    let name = format!("k7f2qx3m.box.Edge{n}");
+    step_until(h, &format!("{name} hovered"), |h| {
+        hover_name(h).as_deref() == Some(name.as_str())
+    });
+    context_at(h, at);
+}
+
+#[test]
+fn over_an_edge_the_context_menu_has_fillet_then_copy_name_which_copies_its_name() {
+    // js/interact.js's `onContext` over an edge: Edit and its maker, Fillet, the separator,
+    // Copy name ("as agents write it"), and Hide. Copy name puts the edge's name, as an
+    // agent writes a fillet's edges, on the clipboard, and closes the menu.
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    context_over_edge(&mut h, &record, at, 12);
+    let menu = select_other(&h).context().unwrap();
+    assert_eq!(menu.head.as_deref(), Some("Edge12 · Edge"));
+    assert_eq!(
+        context_said(&h)[1..],
+        [
+            ("Edit Block".to_owned(), None, true),
+            ("Fillet".to_owned(), None, true),
+            ("Copy name as agents write it".to_owned(), None, true),
+            ("Hide Block".to_owned(), None, true),
+        ]
+    );
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Copy name as agents write it")
+        .click();
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("k7f2qx3m.box.Edge12"));
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    // Nothing selected, nothing opened.
+    assert!(selected_names(&h).is_empty());
+    assert!(!h.state().tabs()[0].in_dialog());
+    // Over a face, Copy name copies the face's name, and there's no Fillet.
+    use silico_app::renderer::Element::Face;
+    answering(&record, Some((1, Face(6), pixel_at(&h, at))), None);
+    h.hover_at(at);
+    step_until(&mut h, "the top hovered", |h| {
+        hover_name(h).as_deref() == Some("k7f2qx3m.box.Face6")
+    });
+    context_at(&mut h, at);
+    assert!(context_said(&h).iter().all(|(said, _, _)| said != "Fillet"));
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Copy name as agents write it")
+        .click();
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("k7f2qx3m.box.Face6"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_fillet_opens_the_fillet_dialog_with_the_edge_selected_or_the_selection_holding_it()
+ {
+    // MODIFY's Fillet, of the edge under the pointer: not selected, it's selected in place of
+    // the selection (as a click there selects it) and the dialog's Edges box takes it alone;
+    // selected already, the selection is kept, and the box takes every edge of it, in the
+    // order picked. With the dialog open, Fillet is off, saying why, as MODIFY's is.
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    let fillet = |h: &mut AppHarness| {
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Fillet")
+            .click();
+        step_until(h, "the fillet dialog", |h| {
+            h.query_by_role_and_label(Role::Dialog, "Fillet").is_some()
+        });
+        assert!(!select_other(h).is_open());
+    };
+    // Edge3 selected; Fillet over Edge12, not selected: Edge12 alone.
+    select_in_box(&mut h, &["Edge3"]);
+    context_over_edge(&mut h, &record, at, 12);
+    fillet(&mut h);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge12"]);
+    selected_until(&mut h, &["k7f2qx3m.box.Edge12"]);
+    // Open, Fillet is off, saying why.
+    context_over_edge(&mut h, &record, at, 5);
+    let item = select_other(&h).context().unwrap().items[2].clone();
+    assert_eq!(item.label, "Fillet");
+    assert_eq!(item.off.as_deref(), Some("Close the open dialog first"));
+    assert!(
+        h.get_by_role_and_label(Role::Menu, "Canvas")
+            .get_by_label("Fillet")
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the menu closed", |h| !select_other(h).is_open());
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
+    // Edge3 and Edge12 selected; Fillet over Edge12, held: both, in the order picked.
+    select_in_box(&mut h, &["Edge3", "Edge12"]);
+    context_over_edge(&mut h, &record, at, 12);
+    fillet(&mut h);
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge3", "k7f2qx3m.box.Edge12"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_fillet_over_a_held_edge_with_a_face_selected_takes_the_edge_and_says_the_face()
+{
+    // /break-it: the selection holds the top and Edge12, and Fillet is chosen over Edge12,
+    // held: the selection is kept, and the Edges box takes the edge alone, saying the face
+    // isn't taken, as MODIFY's Fillet does with the same selection.
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    select_in_box(&mut h, &["Face6", "Edge12"]);
+    context_over_edge(&mut h, &record, at, 12);
+    h.get_by_role_and_label(Role::Menu, "Canvas")
+        .get_by_label("Fillet")
+        .click();
+    boxed_until(&mut h, &["k7f2qx3m.box.Edge12"]);
+    assert_eq!(
+        box_said(&h).as_deref(),
+        Some("1 face left out: a fillet takes edges")
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn the_context_menus_copy_name_chosen_by_its_keys_copies_as_its_click_does() {
+    // /break-it: down from none lit steps Select Other…, Edit Block, Fillet, and Copy name;
+    // Enter chooses it: the edge's name copied, the menu closed.
+    use eframe::egui::Key;
+    let f = fixture();
+    let (mut h, record) = box_from_above(&f);
+    let at = above_at(&h, 30.0, 10.0, [0.0, 0.0]);
+    context_over_edge(&mut h, &record, at, 7);
+    for _ in 0..4 {
+        h.key_press(Key::ArrowDown);
+        step(&mut h);
+    }
+    assert_eq!(select_other(&h).lit(), Some(3));
+    // Its press alone, in a frame of its own (the harness's step gives each event queued a
+    // frame, and keeps the last's output): that frame copies.
+    h.key_down(Key::Enter);
+    step(&mut h);
+    assert_eq!(copied(&h).as_deref(), Some("k7f2qx3m.box.Edge7"));
+    h.key_up(Key::Enter);
+    step(&mut h);
+    assert!(!select_other(&h).is_open());
+    assert!(!h.state().tabs()[0].in_dialog());
     assert_eq!(never_waits::waits(), 0);
 }
 
@@ -46805,6 +46962,7 @@ fn over_a_planar_face_the_context_menus_sketch_on_this_face_sends_what_the_selec
                     Some(silico_app::shortcuts::Command::LookAt.keys_text(&h.ctx)),
                     true
                 ),
+                ("Copy name as agents write it".to_owned(), None, true),
                 ("Hide Block".to_owned(), None, true),
             ]
         );
