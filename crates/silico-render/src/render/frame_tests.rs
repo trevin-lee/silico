@@ -9027,11 +9027,11 @@ fn meshes_coming_faster_than_theyre_made_move_the_body_on_one_at_a_time() {
             // drawn_ids' second frames make nothing: each mesh takes four of its first
             // frames. Mesh 1 is made by frames 1 to 4 (of meshes 1 and 2), drawn from the 4th;
             // mesh 2 waited and is replaced by mesh 3 waiting, ... the body moves on.
-            assert_eq!(drawn[..3], [[1, 182]; 3]);
-            assert!(
-                drawn.iter().filter(|id| **id == [1, 219]).count() >= 12,
-                "the body never moved on: {drawn:?}"
-            );
+            // So the first mesh is drawn for three frames, then always a whole one of the
+            // stream, never nothing.
+            let mut whole = vec![[1, 182]; 3];
+            whole.extend([[1, 219]; 21]);
+            assert_eq!(drawn, whole, "drawn otherwise than whole, old or new");
             // The stream stops: the last mesh is drawn, whole, and picked.
             made_whole(r, &frame(&camera, &[1], &[], None));
             let found = pick(r, &frame(&camera, &[1], &[], at)).hit.unwrap();
@@ -9099,6 +9099,82 @@ fn a_mesh_waiting_goes_when_the_one_being_made_is_asked_for_again_or_the_body_is
             setup(r);
             r.forget(1);
             assert!(r.bodies.is_empty() && r.outgoing.is_empty() && r.waiting.is_empty());
+        },
+    );
+}
+
+/// [`tiles`] numbered the other way, and a square of one face (Face401) `y` mm from them,
+/// over x 15 to 30 and z 0 to 10, so over pixel (32, 26).
+fn tiles_and_a_square(y: f64) -> Arc<Mesh> {
+    let mut mesh = (*tiles(true)).clone();
+    let base = u32::try_from(mesh.positions.len()).unwrap();
+    mesh.positions.extend([
+        [15.0, y, 0.0],
+        [30.0, y, 0.0],
+        [30.0, y, 10.0],
+        [15.0, y, 10.0],
+    ]);
+    mesh.normals.extend([[0.0, -1.0, 0.0]; 4]);
+    mesh.triangles
+        .extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+    mesh.face_triangles.push(2);
+    Arc::new(mesh)
+}
+
+#[test]
+fn a_frames_highlights_are_of_the_mesh_waiting_and_light_it_once_its_drawn() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_highlights_are_of_the_mesh_waiting_and_light_it_once_its_drawn",
+        |r| {
+            // The tiles drawn, replaced by the tiles reversed (400 faces, being made), and then
+            // by them with a square in front (401 faces, waiting): the pane numbers faces by
+            // the newest, so a frame lighting Face401 is the newest's, and is drawn.
+            let camera = front();
+            r.upload(1, &tiles(false)).unwrap();
+            made_whole(r, &frame(&camera, &[1], &[], None));
+            r.budget = 0;
+            r.upload(1, &tiles(true)).unwrap();
+            r.upload(1, &tiles_and_a_square(-1.0)).unwrap();
+            assert_eq!((r.outgoing.len(), r.waiting.len()), (1, 1));
+            let square = [(1, Element::Face(401))];
+            let lit = Frame {
+                hovered: &square,
+                ..frame(&camera, &[1], &square, None)
+            };
+            draw(r, &lit);
+            // Made whole, the newest drawn and its square lit.
+            r.budget = UPLOAD_BUDGET;
+            made_whole(r, &lit);
+            assert!(r.waiting.is_empty() && r.outgoing.is_empty());
+            let plain = image(r, &frame(&camera, &[1], &[], None));
+            let tinted = tinted_image(r, &frame(&camera, &[1], &[], None), &square, FEATURE_TINT);
+            let at = 26 * WIDTH as usize + 32;
+            assert_ne!(tinted[at], plain[at], "the square isn't tinted");
+        },
+    );
+}
+
+#[test]
+fn an_orthographic_frame_reaches_the_mesh_being_made_while_another_waits() {
+    on_lavapipe(
+        "render::frame_tests::an_orthographic_frame_reaches_the_mesh_being_made_while_another_waits",
+        |r| {
+            // Being made: the tiles with a square 300 mm toward the eye; waiting: the tiles
+            // alone. The frame that makes the first whole draws it in the tiles' place, the
+            // square over (32, 26), though the newest, which the view is checked for, reaches
+            // 22 mm.
+            let camera = front();
+            r.upload(1, &tiles(false)).unwrap();
+            made_whole(r, &frame(&camera, &[1], &[], None));
+            r.budget = 0;
+            r.upload(1, &tiles_and_a_square(-300.0)).unwrap();
+            r.upload(1, &tiles(true)).unwrap();
+            assert_eq!((r.outgoing.len(), r.waiting.len()), (1, 1));
+            r.budget = tiles_a_frame(401);
+            let ids = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 400 + 401);
+            assert_eq!(at_32_26(&ids), [1, 401]);
+            assert!(r.waiting.is_empty());
         },
     );
 }

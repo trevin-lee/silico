@@ -980,13 +980,21 @@ impl Renderer {
         self.placed
     }
 
-    /// `mesh` as body `body`'s (a number from 1), for frames to draw: kept until it's
-    /// forgotten or replaced, and its faces uploaded to the GPU the first time a frame
-    /// draws them (so many a frame, [`UPLOAD_BUDGET`]), never again for another view (but a
-    /// large face seen close, [`View::anchor`]). The same mesh again (the same `Arc`, or an
-    /// equal mesh) changes nothing; another replaces the body's, so its faces are uploaded
-    /// again, the mesh replaced drawn in its place till they all are; and the mesh drawn so,
-    /// asked for again before then, is the body's again as it was. A mesh that
+    /// `mesh` as body `body`'s newest (a number from 1), for frames to draw: kept until it's
+    /// forgotten or replaced, and its faces made into GPU meshes by the frames that draw
+    /// them (so many a frame, [`UPLOAD_BUDGET`]), never again for another view (but a large
+    /// face seen close, [`View::anchor`], or one cut to the view's pyramid). The same mesh as
+    /// the newest again (the same `Arc`, or an equal mesh) changes nothing. Another is made
+    /// one mesh at a time:
+    /// - the body drawn whole (or never drawn), it's made, the mesh it replaces drawn in its
+    ///   place till its faces are all made (if that one has any made to draw);
+    /// - a mesh being made, it waits till that one is whole, then is made as that one is
+    ///   drawn in its place; one waiting already is dropped for it;
+    /// - the mesh being made asked for again while another waits, the one waiting is dropped;
+    /// - the mesh drawn in a body's place asked for again, it's the body's again as it was
+    ///   (its generation too), the ones being made and waiting dropped.
+    ///
+    /// Its pickings and highlights are always of the newest. A mesh that
     /// fails [`check_render_mesh`], or a body numbered 0 (the background's), is refused,
     /// and the body is as it was. A new mesh taken has the next frame tried, through a
     /// backoff ([`Renderer::prepare`]), but keeps its doubling: if that frame fails too,
@@ -1067,12 +1075,21 @@ impl Renderer {
         self.waiting.get(&body).or_else(|| self.bodies.get(&body))
     }
 
-    /// Body `body` left to be drawn by its newest mesh alone: none drawn in its place, and a
-    /// mesh waiting made the body's (the one it waited on dropped).
-    fn newest_alone(&mut self, body: u32) {
-        self.outgoing.remove(&body);
-        if let Some(newest) = self.waiting.remove(&body) {
-            self.bodies.insert(body, newest);
+    /// Every body but those `keep` takes left to be drawn by its newest mesh alone: none
+    /// drawn in its place, and a mesh waiting made the body's (the one it waited on dropped).
+    fn newest_alone_but(&mut self, keep: impl Fn(u32) -> bool) {
+        let replaced: Vec<u32> = self
+            .outgoing
+            .keys()
+            .chain(self.waiting.keys())
+            .copied()
+            .filter(|&body| !keep(body))
+            .collect();
+        for body in replaced {
+            self.outgoing.remove(&body);
+            if let Some(newest) = self.waiting.remove(&body) {
+                self.bodies.insert(body, newest);
+            }
         }
     }
 
@@ -1140,16 +1157,7 @@ impl Renderer {
             self.check_frame(frame).map_err(RenderFailure::Invalid)?;
         // A body this frame doesn't draw is left to its newest mesh alone: what's made of it
         // when it's drawn again is drawn then.
-        let undrawn: Vec<u32> = self
-            .outgoing
-            .keys()
-            .chain(self.waiting.keys())
-            .filter(|body| frame.bodies.binary_search(body).is_err())
-            .copied()
-            .collect();
-        for body in undrawn {
-            self.newest_alone(body);
-        }
+        self.newest_alone_but(|body| frame.bodies.binary_search(&body).is_ok());
         let device = self.ctx.device.clone();
         let memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let validity = device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -1254,15 +1262,7 @@ impl Renderer {
             self.pending.remove(&id);
         }
         self.backoff.failed();
-        let replaced: Vec<u32> = self
-            .outgoing
-            .keys()
-            .chain(self.waiting.keys())
-            .copied()
-            .collect();
-        for body in replaced {
-            self.newest_alone(body);
-        }
+        self.newest_alone_but(|_| false);
         for body in self.bodies.values_mut() {
             body.drop_gpu_meshes();
         }
@@ -1374,8 +1374,8 @@ impl Renderer {
                     .bodies
                     .iter()
                     .flat_map(|b| {
-                        let made = self.bodies.get(b).filter(|_| self.waiting.contains_key(b));
-                        [self.outgoing.get(b), made]
+                        let making = self.bodies.get(b).filter(|_| self.waiting.contains_key(b));
+                        [self.outgoing.get(b), making]
                     })
                     .filter_map(|held| held?.bounds)
                     .map(|bounds| reach_of_box(bounds, target))
@@ -1481,15 +1481,7 @@ impl Renderer {
         // drops each face's mesh in the other colour, and makes again each about another
         // point). So the GPU holds about one scene's meshes. A render draws each body by its
         // newest mesh, whole: none by a mesh before it.
-        let replaced: Vec<u32> = self
-            .outgoing
-            .keys()
-            .chain(self.waiting.keys())
-            .copied()
-            .collect();
-        for body in replaced {
-            self.newest_alone(body);
-        }
+        self.newest_alone_but(|_| false);
         self.bodies.retain(|number, uploaded| {
             scene
                 .bodies
@@ -1807,11 +1799,12 @@ struct Held<'a> {
     waiting: &'a mut BTreeMap<u32, Uploaded>,
 }
 
-/// Which of a body's meshes a frame draws it by: the one in [`Renderer::bodies`], or the one
-/// drawn in its place while that one's faces are made ([`Renderer::outgoing`]).
+/// Which of a body's meshes a frame draws it by: the one in [`Renderer::bodies`], being made
+/// or whole (`Making`), or the one drawn in its place while that one's faces are made
+/// ([`Renderer::outgoing`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum By {
-    Bodies,
+    Making,
     Outgoing,
 }
 
@@ -1870,49 +1863,49 @@ fn schedule<'a>(
     } = held;
     let mut by = Vec::with_capacity(drawn.len());
     for &(number, lit) in drawn {
-        // While a mesh waits, the one being made isn't the newest: drawn plain.
+        // While a mesh waits, the one being making isn't the newest: drawn plain.
         let lit = if waiting.contains_key(&number) {
             plain
         } else {
             lit
         };
-        let made = bodies
+        let making = bodies
             .get_mut(&number)
             .ok_or_else(|| format!("body {number} isn't uploaded"))?;
-        settle_seen(made, view, lit, stroke);
+        settle_seen(making, view, lit, stroke);
         if let Some(before) = outgoing.get_mut(&number) {
             settle_seen(before, view, plain, stroke);
             *uploads += before.make(ctx, number, plain, view, budget, Making::Unmade)?;
         }
-        *uploads += made.make(ctx, number, lit, view, budget, Making::Unmade)?;
-        if made.left(lit).unmade > 0 {
+        *uploads += making.make(ctx, number, lit, view, budget, Making::Unmade)?;
+        if making.left(lit).unmade > 0 {
             by.push(if outgoing.contains_key(&number) {
                 (By::Outgoing, plain)
             } else {
-                (By::Bodies, lit)
+                (By::Making, lit)
             });
             continue;
         }
         outgoing.remove(&number);
         match waiting.remove(&number) {
-            // The one made drawn in place of the one waiting, which is made next.
+            // The one making drawn in place of the one waiting, which is making next.
             Some(next) => {
                 if let Some(done) = bodies.insert(number, next) {
                     outgoing.insert(number, done);
                 }
                 by.push((By::Outgoing, plain));
             }
-            None => by.push((By::Bodies, lit)),
+            None => by.push((By::Making, lit)),
         }
     }
-    let mut made: BTreeMap<u32, &'a mut Uploaded> =
+    let mut making: BTreeMap<u32, &'a mut Uploaded> =
         bodies.iter_mut().map(|(b, u)| (*b, u)).collect();
     let mut before: BTreeMap<u32, &'a mut Uploaded> =
         outgoing.iter_mut().map(|(b, u)| (*b, u)).collect();
     let mut shown = Vec::with_capacity(drawn.len());
     for (&(number, _), (by, lit)) in drawn.iter().zip(by) {
         let held = match by {
-            By::Bodies => made.remove(&number),
+            By::Making => making.remove(&number),
             By::Outgoing => before.remove(&number),
         };
         if let Some(uploaded) = held {
@@ -1925,7 +1918,7 @@ fn schedule<'a>(
         }
     }
     for shown in &mut shown {
-        if shown.by == By::Bodies {
+        if shown.by == By::Making {
             *uploads +=
                 shown
                     .uploaded
