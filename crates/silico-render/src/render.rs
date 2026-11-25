@@ -708,12 +708,13 @@ impl Default for Outlines {
 /// highlight's blue ([`HIGHLIGHT_STRENGTH`]).
 ///
 /// `amount` is finite, from 0 (no tint) to 1 (the colour alone), one of a few a caller
-/// uses (each amount's material is made once and kept: a fade through many amounts would
-/// keep a material for each). Drawn by the face's instance: its mesh's material scaling the
-/// body's colour by `1 − amount` ([`Mixes`], the face's vertices shared, so nothing is
-/// uploaded but a material for each amount, once),
-/// and `re_renderer`'s per-instance tint adding `amount · colour`, opaque (one that isn't
-/// makes the face translucent). So any colour mixes, lighter or darker than the body's.
+/// uses, as a frame's dim is ([`Frame::dim`]): a material is made once for each amount at
+/// each dim and kept, so a fade through many amounts or dims would keep one for each. Drawn
+/// by the face's instance: its mesh's material scaling the body's colour by `(1 − amount)`
+/// times the dim ([`Mixes`], the face's vertices shared, so nothing is uploaded but those
+/// materials), and `re_renderer`'s per-instance tint adding `amount · colour`, dimmed,
+/// opaque (one that isn't makes the face translucent). So any colour mixes, lighter or
+/// darker than the body's.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tint {
     pub colour: [u8; 3],
@@ -4175,10 +4176,10 @@ impl Uploaded {
     }
 }
 
-/// The materials tinted faces are drawn with ([`Tint`]): for each tint's amount `a` (and
-/// the frame's dim `d`), one scaling a face's colour by `(1 − a) · d`, made once (as a material of a one-triangle mesh,
-/// which `re_renderer` builds a material's bind group for) and given to a face's mesh, its
-/// vertices and indices shared, so a tint uploads no face.
+/// The materials tinted faces are drawn with ([`Tint`]): for each tint's amount `a` at each
+/// frame's dim `d`, one scaling a face's colour by `(1 − a) · d`, made once and kept (as a
+/// material of a one-triangle mesh, which `re_renderer` builds a material's bind group for)
+/// and given to a face's mesh, its vertices and indices shared, so a tint uploads no face.
 #[derive(Default)]
 struct Mixes {
     /// By the scale's bits, the material's donor mesh.
