@@ -553,18 +553,9 @@ fn instances(
                 Placement::Translation { offset } => Some(rounded(*offset)?),
                 _ => None,
             };
-            let angle_of = match operation {
-                Operation::PolarPattern {
-                    distribution,
-                    count,
-                    ..
-                } => Some(angle(crate::pattern::polar_degrees(
-                    *distribution,
-                    *count,
-                    index.offsets().first().copied().unwrap_or(0),
-                ))?),
-                _ => None,
-            };
+            let angle_of = crate::pattern::polar_turn(operation, &index)
+                .map(angle)
+                .transpose()?;
             let anchor = anchor
                 .map(|point| rounded(placed(&placement, point)))
                 .transpose()?;

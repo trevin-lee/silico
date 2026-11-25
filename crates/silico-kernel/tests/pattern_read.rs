@@ -424,12 +424,7 @@ fn two_directions_and_a_mirror_plane_by_faces_names_read_as_the_origins_words() 
     let model = rebuilt(&pattern_docs::document(&[
         rectangle("s0000001", "xy", [-50.0, -30.0], 100.0, 60.0),
         pad("p0000001", None, "s0000001", pattern_docs::FIVE),
-        pattern_docs::mirror(
-            "m0000001",
-            "p0000001",
-            pattern_docs::SOLID,
-            "p0000001.pad.Face(G s0000001.sketch.Edge.na000002)",
-        ),
+        pattern_docs::mirror("m0000001", "p0000001", pattern_docs::SOLID, right),
     ]));
     let read = read_of(&model, "m0000001");
     let plane = read.plane.as_ref().unwrap();

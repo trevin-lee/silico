@@ -473,6 +473,23 @@ pub(crate) fn linear_step(distribution: LinearDistribution, count: u32, i: u32) 
     along as f64 / (divisor as f64 * NM_PER_MM)
 }
 
+/// How far a polar pattern turns `instance`, in degrees ([`polar_degrees`] of its one
+/// offset); none for another type's. What its placement turns by, and the read says.
+pub(crate) fn polar_turn(operation: &Operation, instance: &Instance) -> Option<f64> {
+    match operation {
+        Operation::PolarPattern {
+            distribution,
+            count,
+            ..
+        } => Some(polar_degrees(
+            *distribution,
+            *count,
+            instance.offsets().first().copied().unwrap_or(0),
+        )),
+        _ => None,
+    }
+}
+
 /// How far a polar pattern turns instance `k`, in degrees: `k · A / count` for an extent of
 /// exactly 360°, `k · A / (count − 1)` for any other extent, or `k · A` for a spacing, `k · A`
 /// exact in nanodegrees and divided once (section 2.4, decision 5).
@@ -545,16 +562,9 @@ pub(crate) fn placement(
                 offset: moved.map(|c| c + 0.0),
             })
         }
-        (
-            Operation::PolarPattern {
-                distribution,
-                count,
-                ..
-            },
-            Resolved::Polar(axis),
-        ) => Some(Placement::Rotation {
+        (Operation::PolarPattern { .. }, Resolved::Polar(axis)) => Some(Placement::Rotation {
             axis: *axis,
-            angle: silico_protocol::radians(polar_degrees(*distribution, *count, offset(0))),
+            angle: silico_protocol::radians(polar_turn(operation, instance)?),
         }),
         (Operation::Mirror { .. }, Resolved::Mirror { origin, normal }) => {
             Some(Placement::Mirror {

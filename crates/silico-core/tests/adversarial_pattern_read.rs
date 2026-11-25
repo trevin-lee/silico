@@ -1,9 +1,9 @@
 //! /break-it on M6.5's `pattern` read, on the fake kernel: references that break, name the
 //! wrong kind of element, or run parallel, each said once among the problems and never
 //! twice; the identity, and every copy skipped; a skip past a count; the cap's thousand instances; a base whose description was
-//! refused; a base suppressed, read up its chain as the rebuild built it; and a copies step
-//! that failed, or that never ran. Every expected value is worked by hand from the
-//! document's integers.
+//! refused; a turn a nanodegree short of whole, rounded once; a base suppressed, read up its
+//! chain as the rebuild built it; and a copies step refused, alone or the second of two.
+//! Every expected value is worked by hand from the document's integers.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -305,7 +305,7 @@ fn a_pattern_whose_base_is_suppressed_is_read_on_the_base_up_its_chain() {
 }
 
 #[test]
-fn a_copies_step_that_failed_or_never_ran_gives_its_copies_no_state() {
+fn a_copies_step_refused_whole_or_one_of_two_gives_its_copies_no_state() {
     // The kernel refuses the copies: no step's verdict, so no copy has a state, and the
     // refusal is the problem.
     let engine = engine();
@@ -366,16 +366,16 @@ fn a_copies_step_that_failed_or_never_ran_gives_its_copies_no_state() {
         Some(1)
     );
     let read = read_of(&model);
-    assert!(
-        read.instances.iter().all(|i| i.state.is_none()),
-        "{:?}",
-        read.instances
-    );
-    assert!(
-        read.problems
-            .iter()
-            .any(|e| e.message().contains("OCCT couldn't copy the second")),
-        "{:?}",
-        read.problems
-    );
+    let states: Vec<(String, Option<InstanceState>)> = read
+        .instances
+        .iter()
+        .map(|i| (i.index.to_string(), i.state))
+        .collect();
+    assert_eq!(states, [("1".to_owned(), None), ("2".to_owned(), None)]);
+    let said = read
+        .problems
+        .iter()
+        .filter(|e| e.message().contains("OCCT couldn't copy the second"))
+        .count();
+    assert_eq!(said, 1, "{:?}", read.problems);
 }
