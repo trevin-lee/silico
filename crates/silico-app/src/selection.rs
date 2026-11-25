@@ -143,8 +143,9 @@ pub(crate) fn no_face(_: &View, _: &ViewFrame, _: [u32; 2]) -> Cast {
 /// How many frames a click waits for its pick's answer, asking again each frame: past
 /// this (a second at 60 Hz: a renderer that answers none, or none installed), it's let go,
 /// so the frames asked for while it waits stop. A frame is the unit: each frame drawn is
-/// what answers a pick. Frames waited for the meshes of the selection's model aren't
-/// counted (that wait goes by what changes, and by [`CLICK_WAIT`]).
+/// what answers a pick. Frames waited for the meshes of the selection's model, or for the
+/// renderer to draw a body by its newest mesh ([`Picking::stale`]), aren't counted (those
+/// waits go by what changes, and by [`CLICK_WAIT`]).
 pub const CLICK_FRAMES: u32 = 60;
 
 /// The backstop of a click's wait for the meshes of the selection's model, from the click,
@@ -156,6 +157,11 @@ pub const CLICK_WAIT: Duration = Duration::from_secs(10);
 /// What the status bar says of a click let go at [`CLICK_WAIT`], its meshes still unread.
 pub const CLICK_STALE: &str = "The click was let go: the model's meshes took too long to read; \
                                click again once they're shown";
+
+/// What the status bar says of a click let go at [`CLICK_WAIT`], the bodies under it still
+/// drawn by their meshes before their newest (whose faces the renderer is still making).
+pub const CLICK_UNDRAWN: &str = "The click was let go: the model's faces took too long to \
+                                 draw; click again once they're shown";
 
 /// What the status bar says of a click let go as another model was published before the
 /// meshes it waited for came: what it would be picked on isn't what it was aimed at.
@@ -1545,17 +1551,25 @@ impl Selection {
                 // Of a frame that drew a body otherwise than it is now (its mesh replaced, and
                 // drawn by the one before while the new one's faces are made): what's under
                 // the click isn't known yet, so it asks again, of a frame after this one,
-                // clearing nothing.
+                // clearing nothing. The frames it waits so aren't counted (the renderer makes
+                // the faces at its own pace); [`CLICK_WAIT`] from the click, it's let go, said.
                 Some(click)
                     if picking.stale
                         && click.answered.is_none()
                         && click.after.is_none_or(|after| picking.frame > after) =>
                 {
-                    tracing::debug!("a click's answer passed over a body redrawn: asked again");
-                    self.click = Some(Click {
-                        after: Some(picking.frame),
-                        ..click
-                    });
+                    if frame.now.saturating_duration_since(click.at) >= CLICK_WAIT {
+                        tracing::debug!("a click's answers passed over bodies redrawn: let go");
+                        self.click = None;
+                        self.say_let_go(CLICK_UNDRAWN);
+                    } else {
+                        tracing::debug!("a click's answer passed over a body redrawn: asked again");
+                        self.click = Some(Click {
+                            after: Some(picking.frame),
+                            frames: 0,
+                            ..click
+                        });
+                    }
                 }
                 Some(click)
                     if click.answered.is_none()
@@ -3716,10 +3730,34 @@ pub(crate) mod tests {
         selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.click.map(|c| c.after), Some(Some(7)));
         assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
-        view.answered_as(of, nothing(8, false));
+        // Its frames asked meanwhile aren't counted: past CLICK_FRAMES of them, answered
+        // past the body each, it still waits.
+        for n in 0..CLICK_FRAMES + 5 {
+            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
+            view.answered_as(of, nothing(10 + u64::from(n), true));
+        }
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
+        // Its count started again by the last answer, and the frame's ask counted.
+        assert_eq!(selection.click.map(|c| c.frames), Some(1));
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
+        view.answered_as(of, nothing(100, false));
         selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.click, None);
         assert!(selection.is_empty());
+        // One answered past it CLICK_WAIT after it was made is let go, said, clearing
+        // nothing.
+        selection.pick("aaaaaaaa.box.Face1", How::Replace);
+        selection.overlay(&mut view, &click, &ctx, &no_face);
+        let made = selection.click.unwrap().at;
+        view.answered_as(of, nothing(101, true));
+        let late = ViewFrame {
+            now: made + CLICK_WAIT,
+            ..frame_of(Vec::new())
+        };
+        selection.overlay(&mut view, &late, &ctx, &no_face);
+        assert_eq!(selection.click, None);
+        assert_eq!(selection.said(), Some(CLICK_UNDRAWN));
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
     }
 
     #[test]
