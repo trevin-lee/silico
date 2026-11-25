@@ -1750,7 +1750,7 @@
       "distribution": {"type": "extent", "angle": 90},
       "count": 2,
       "skip": [],
-      "note": "The whole block turned a quarter turn about the top edge of its slot's right arc, drawn counter-clockwise about (12, 10) but walked clockwise in the hole, so its axis points down (-z) in Silico and up as FreeCAD draws it (the harness turns Reversed round): (x, y) to (y + 2, 22 - x), over y = -18 to 22. The slots' union 28 + 5 pi (their common part the square x, y = 10 to 12 and three quarter discs r 2), so 2 (8000 - 10 (16 + 4 pi)) - 10 (400 - (28 + 5 pi)) = 11960 - 30 pi. About +z it would lie over y = -2 to 38. Expected: volume 11865.752220392; box 0 -18 0 40 22 10."
+      "note": "The whole block turned a quarter turn about the top edge of its slot's right arc, drawn counter-clockwise about (12, 10) but walked clockwise in the hole, so its axis points down (-z) in Silico and up as FreeCAD draws it (the harness turns Reversed round): (x, y) to (y + 2, 22 - x), over y = -18 to 22. The slots' union 28 + 5 pi (their common part the square x, y = 10 to 12 and three quarter discs r 2), so 2 (8000 - 10 (16 + 4 pi)) - 10 (400 - (28 + 5 pi)) = 11960 - 30 pi. About +z it would lie over y = -2 to 38. Expected: volume 11865.752220392; box 0 -18 0 40 22 10; center 17.394797746 4.605202254 5."
     }
   ]
 }
