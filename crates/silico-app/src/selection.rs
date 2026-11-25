@@ -150,10 +150,12 @@ pub(crate) fn no_face(_: &View, _: &ViewFrame, _: [u32; 2]) -> Cast {
 /// waits go by what changes, and by [`CLICK_WAIT`]).
 pub const CLICK_FRAMES: u32 = 60;
 
-/// The backstop of a click's wait for the meshes of the selection's model, from the click,
-/// by the viewport's clock: a read in flight that never answers. Never reached in normal
-/// use, where the read answers, is refused, or is overtaken by another model first (each
-/// of which ends the wait as it happens).
+/// The backstop of a click's wait, from the click, by the viewport's clock: for the meshes
+/// of the selection's model (a read in flight that never answers; never reached in normal
+/// use, where the read answers, is refused, or is overtaken by another model first, each
+/// of which ends the wait as it happens), and for the renderer to draw the bodies under it
+/// by their newest meshes ([`Picking::stale`]; reached if it takes that long to make their
+/// faces, [`CLICK_UNDRAWN`]).
 pub const CLICK_WAIT: Duration = Duration::from_secs(10);
 
 /// What the status bar says of a click let go at [`CLICK_WAIT`], its meshes still unread.
@@ -414,8 +416,10 @@ struct Click {
     /// The newest frame that carried a pick before the click: its answer is to a frame
     /// after it.
     after: Option<u64>,
-    /// The frames it has asked its pick in since it was made, or since an answer last passed
-    /// over a body drawn otherwise than it is now ([`Picking::stale`]).
+    /// The frames it has asked its pick in since it was made, or since what it's asked of
+    /// last changed: a model published under it, the bodies changed under it while it waits
+    /// for boxes, or an answer that passed over a body drawn otherwise than it is now
+    /// ([`Picking::stale`]).
     frames: u32,
     /// The filter it was made under: it picks by it, or not at all.
     filter: Filter,
@@ -3770,6 +3774,17 @@ pub(crate) mod tests {
         assert_eq!(selection.click, None);
         assert_eq!(selection.said(), Some(CLICK_UNDRAWN));
         assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
+        // The wait bounds stale answers alone: one past nothing, CLICK_WAIT on, decides.
+        selection.overlay(&mut view, &click, &ctx, &no_face);
+        let made = selection.click.unwrap().at;
+        view.answered_as(of, nothing(103, false));
+        let late = ViewFrame {
+            now: made + CLICK_WAIT,
+            ..frame_of(Vec::new())
+        };
+        selection.overlay(&mut view, &late, &ctx, &no_face);
+        assert_eq!(selection.click, None);
+        assert!(selection.is_empty(), "let go, not decided");
     }
 
     #[test]

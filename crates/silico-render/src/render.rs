@@ -843,8 +843,10 @@ pub struct Renderer {
     bodies: BTreeMap<u32, Uploaded>,
     /// The mesh a body had before the one in `bodies` ([`Renderer::upload`]), drawn in its
     /// place by the frames until that one's faces are all made: so a body replaced is drawn
-    /// whole, old or new, never part of each. Dropped once the one in `bodies` is drawn, or
-    /// by a frame that doesn't draw the body.
+    /// by one mesh, old or new, never part of each. It's whole, unless it was part made when
+    /// it was replaced (a body's first, still being made): then it's drawn as far as it's
+    /// made, and made on first. Dropped once the one in `bodies` is drawn, or by a frame that
+    /// doesn't draw the body.
     outgoing: BTreeMap<u32, Uploaded>,
     /// A body's newest mesh, uploaded while the one in `bodies` was being made (drawn in its
     /// place by its `outgoing`): it waits till that one is whole, then is made as that one is
@@ -988,8 +990,8 @@ impl Renderer {
     /// one mesh at a time:
     /// - none drawn in the body's place, it's made, the mesh it replaces drawn in its place
     ///   till its faces are all made, if that one has any made to draw (one whole; or one
-    ///   part made, the body's first, still made on first, before this one, as far as each
-    ///   frame's budget goes); else, as it's made;
+    ///   part made, as a body's first is, still made on first, before this one, as far as
+    ///   each frame's budget goes); else, as it's made;
     /// - one being made, drawn in place by the one before it, it waits till that one is
     ///   whole, then is made as that one is drawn in its place; one waiting already is
     ///   dropped for it;
@@ -1366,8 +1368,8 @@ impl Renderer {
         let target = frame.camera.target;
         let mut exact = |_: u32, mesh: &Mesh| reach_of_points(mesh, target);
         let in_view = check_bodies_in_view(frame.camera, height, drawn, &mut exact)?;
-        // A body drawn by a mesh before its newest is drawn whole: an orthographic view's
-        // reach takes the box of each such mesh too, the one drawn in its place and the one
+        // A body may be drawn by a mesh before its newest: an orthographic view's reach takes
+        // the box of each such mesh too, whole or not, the one drawn in its place and the one
         // being made while another waits (by its farthest corner, never refusing: the rule
         // passed the newest, which the frame is checked for).
         let in_view = match in_view {
@@ -1377,8 +1379,8 @@ impl Renderer {
                     .bodies
                     .iter()
                     .flat_map(|b| {
-                        let own = self.bodies.get(b).filter(|_| self.waiting.contains_key(b));
-                        [self.outgoing.get(b), own]
+                        let making = self.bodies.get(b).filter(|_| self.waiting.contains_key(b));
+                        [self.outgoing.get(b), making]
                     })
                     .filter_map(|held| held?.bounds)
                     .map(|bounds| reach_of_box(bounds, target))
