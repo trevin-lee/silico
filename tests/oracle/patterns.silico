@@ -1,0 +1,1756 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 6,
+  "features": [
+    {
+      "id": "s0000001",
+      "type": "sketch",
+      "v": 1,
+      "name": "linear_x_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 10, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000001",
+      "type": "pad",
+      "v": 1,
+      "name": "linear_x_cube",
+      "sketch": "s0000001",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "TestLinearPattern.py testXAxisLinearPattern's seed: a 10 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1000; faces 6; edges 12; vertices 8; box 0 0 0 10 10 10; center 5 5 5."
+    },
+    {
+      "id": "t0000001",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "linear_x",
+      "base": "p0000001",
+      "copies": {"type": "features", "features": ["p0000001"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": false,
+          "distribution": {"type": "extent", "length": 90},
+          "count": 10
+        }
+      ],
+      "skip": [],
+      "note": "TestLinearPattern.py testXAxisLinearPattern: 10 cubes over 90 along x, touching face to face: 10 x 1000; unrefined, 10 tops, bottoms, fronts, and backs and the 2 ends, as FreeCAD 1.1.3 counts them (patterns.md, section 5). Expected: volume 10000; faces 42; edges 84; vertices 44; box 0 0 0 100 10 10; center 50 5 5."
+    },
+    {
+      "id": "s0000002",
+      "type": "sketch",
+      "v": 1,
+      "name": "linear_y_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 10, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000002",
+      "type": "pad",
+      "v": 1,
+      "name": "linear_y_cube",
+      "sketch": "s0000002",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "TestLinearPattern.py testYAxisLinearPattern's seed: a 10 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1000; faces 6; edges 12; vertices 8; box 0 0 0 10 10 10; center 5 5 5."
+    },
+    {
+      "id": "t0000002",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "linear_y",
+      "base": "p0000002",
+      "copies": {"type": "features", "features": ["p0000002"]},
+      "directions": [
+        {
+          "along": "y",
+          "reversed": false,
+          "distribution": {"type": "extent", "length": 90},
+          "count": 10
+        }
+      ],
+      "skip": [],
+      "note": "TestLinearPattern.py testYAxisLinearPattern: 10 cubes over 90 along y, touching face to face: 10 x 1000; unrefined, 10 tops, bottoms, fronts, and backs and the 2 ends, as FreeCAD 1.1.3 counts them (patterns.md, section 5). Expected: volume 10000; faces 42; edges 84; vertices 44; box 0 0 0 10 100 10; center 5 50 5."
+    },
+    {
+      "id": "s0000003",
+      "type": "sketch",
+      "v": 1,
+      "name": "linear_z_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 10, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000003",
+      "type": "pad",
+      "v": 1,
+      "name": "linear_z_cube",
+      "sketch": "s0000003",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "TestLinearPattern.py testZAxisLinearPattern's seed: a 10 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1000; faces 6; edges 12; vertices 8; box 0 0 0 10 10 10; center 5 5 5."
+    },
+    {
+      "id": "t0000003",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "linear_z",
+      "base": "p0000003",
+      "copies": {"type": "features", "features": ["p0000003"]},
+      "directions": [
+        {
+          "along": "z",
+          "reversed": false,
+          "distribution": {"type": "extent", "length": 90},
+          "count": 10
+        }
+      ],
+      "skip": [],
+      "note": "TestLinearPattern.py testZAxisLinearPattern: 10 cubes over 90 along z, touching face to face: 10 x 1000; unrefined, 10 tops, bottoms, fronts, and backs and the 2 ends, as FreeCAD 1.1.3 counts them (patterns.md, section 5). Expected: volume 10000; faces 42; edges 84; vertices 44; box 0 0 0 10 10 100; center 5 5 50."
+    },
+    {
+      "id": "s0000004",
+      "type": "sketch",
+      "v": 1,
+      "name": "polar_z_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 10, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000004",
+      "type": "pad",
+      "v": 1,
+      "name": "polar_z_cube",
+      "sketch": "s0000004",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "TestPolarPattern.py's seed, about z: a 10 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1000; faces 6; edges 12; vertices 8; box 0 0 0 10 10 10; center 5 5 5."
+    },
+    {
+      "id": "t0000004",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "polar_z",
+      "base": "p0000004",
+      "copies": {"type": "features", "features": ["p0000004"]},
+      "axis": "z",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 360},
+      "count": 4,
+      "skip": [],
+      "note": "TestPolarPattern.py: the cube turned 4 times over a whole turn about z, a quarter turn apart, the four meeting along the axis: 4 x 1000; unrefined 16, 32, 18 (patterns.md, section 5). Expected: volume 4000; faces 16; edges 32; vertices 18; box -10 -10 0 10 10 10; center 0 0 5."
+    },
+    {
+      "id": "s0000005",
+      "type": "sketch",
+      "v": 1,
+      "name": "polar_x_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 10, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000005",
+      "type": "pad",
+      "v": 1,
+      "name": "polar_x_cube",
+      "sketch": "s0000005",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "TestPolarPattern.py's seed, about x: a 10 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1000; faces 6; edges 12; vertices 8; box 0 0 0 10 10 10; center 5 5 5."
+    },
+    {
+      "id": "t0000005",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "polar_x",
+      "base": "p0000005",
+      "copies": {"type": "features", "features": ["p0000005"]},
+      "axis": "x",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 360},
+      "count": 4,
+      "skip": [],
+      "note": "TestPolarPattern.py: the cube turned 4 times over a whole turn about x, a quarter turn apart, the four meeting along the axis: 4 x 1000; unrefined 16, 32, 18 (patterns.md, section 5). Expected: volume 4000; faces 16; edges 32; vertices 18; box 0 -10 -10 10 10 10; center 5 0 0."
+    },
+    {
+      "id": "s0000006",
+      "type": "sketch",
+      "v": 1,
+      "name": "polar_y_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 10, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000006",
+      "type": "pad",
+      "v": 1,
+      "name": "polar_y_cube",
+      "sketch": "s0000006",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "TestPolarPattern.py's seed, about y: a 10 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1000; faces 6; edges 12; vertices 8; box 0 0 0 10 10 10; center 5 5 5."
+    },
+    {
+      "id": "t0000006",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "polar_y",
+      "base": "p0000006",
+      "copies": {"type": "features", "features": ["p0000006"]},
+      "axis": "y",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 360},
+      "count": 4,
+      "skip": [],
+      "note": "TestPolarPattern.py: the cube turned 4 times over a whole turn about y, a quarter turn apart, the four meeting along the axis: 4 x 1000; unrefined 16, 32, 18 (patterns.md, section 5). Expected: volume 4000; faces 16; edges 32; vertices 18; box -10 0 -10 10 10 10; center 0 5 0."
+    },
+    {
+      "id": "s0000007",
+      "type": "sketch",
+      "v": 1,
+      "name": "mirror_xy_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 10, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000007",
+      "type": "pad",
+      "v": 1,
+      "name": "mirror_xy_cube",
+      "sketch": "s0000007",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "TestMirrored.py's seed, as patterns.md section 5 has it: a 10 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1000; faces 6; edges 12; vertices 8; box 0 0 0 10 10 10; center 5 5 5."
+    },
+    {
+      "id": "m0000001",
+      "type": "mirror",
+      "v": 1,
+      "name": "mirror_xy",
+      "base": "p0000007",
+      "copies": {"type": "features", "features": ["p0000007"]},
+      "plane": "xy",
+      "note": "TestMirrored.py testMirroredSketchCase, at 10 mm: the cube's copy mirrored in xy, under it, face to face: 2 x 1000; unrefined 10, 20, 12. Expected: volume 2000; faces 10; edges 20; vertices 12; box 0 0 -10 10 10 10; center 5 5 0."
+    },
+    {
+      "id": "s0000008",
+      "type": "sketch",
+      "v": 1,
+      "name": "mirror_whole_xy_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 1, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 1, "y": 1, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 1, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000008",
+      "type": "pad",
+      "v": 1,
+      "name": "mirror_whole_xy_cube",
+      "sketch": "s0000008",
+      "extent": {"type": "one_side", "length": 1, "reversed": false},
+      "note": "TestMirrored.py testMirroredPrimitiveCase's unit cube: a 1 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1; faces 6; edges 12; vertices 8; box 0 0 0 1 1 1; center 0.5 0.5 0.5."
+    },
+    {
+      "id": "m0000002",
+      "type": "mirror",
+      "v": 1,
+      "name": "mirror_whole_xy",
+      "base": "p0000008",
+      "copies": {"type": "solid"},
+      "plane": "xy",
+      "note": "TestMirrored.py testMirroredPrimitiveCase: the whole unit cube mirrored in xy: 2. Expected: volume 2; faces 10; edges 20; vertices 12; box 0 0 -1 1 1 1; center 0.5 0.5 0."
+    },
+    {
+      "id": "s0000009",
+      "type": "sketch",
+      "v": 1,
+      "name": "three_cylinders_box_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 100, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 100, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000009",
+      "type": "pad",
+      "v": 1,
+      "name": "three_cylinders_box",
+      "sketch": "s0000009",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 100 x 20 box 10 tall. Expected: volume 20000; faces 6; edges 12; vertices 8; box 0 0 0 100 20 10; center 50 10 5."
+    },
+    {
+      "id": "s0000010",
+      "type": "sketch",
+      "v": 1,
+      "name": "three_cylinders_boss_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 10, "y": 10, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000010",
+      "type": "pad",
+      "v": 1,
+      "name": "three_cylinders_boss",
+      "base": "p0000009",
+      "sketch": "s0000010",
+      "extent": {"type": "one_side", "length": 15, "reversed": false},
+      "note": "A cylinder r 3 padded 15 from xy, 5 above the box: 20000 + 45 pi. Expected: volume 20141.371669412; box 0 0 0 100 20 15; center 49.719241228 10 5.05264227."
+    },
+    {
+      "id": "t0000007",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "three_cylinders",
+      "base": "p0000010",
+      "copies": {"type": "features", "features": ["p0000010"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": false,
+          "distribution": {"type": "extent", "length": 40},
+          "count": 3
+        }
+      ],
+      "skip": [],
+      "note": "patterns.md's probe: three cylinders over 40 along x, at x = 10, 30, 50: 20000 + 3 pi 9 5 = 20424.115008. Expected: volume 20424.115008235; box 0 0 0 100 20 15; center 49.584691911 10 5.155740533."
+    },
+    {
+      "id": "s0000011",
+      "type": "sketch",
+      "v": 1,
+      "name": "three_holes_box_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 100, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 100, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000011",
+      "type": "pad",
+      "v": 1,
+      "name": "three_holes_box",
+      "sketch": "s0000011",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 100 x 20 box 10 tall. Expected: volume 20000; faces 6; edges 12; vertices 8; box 0 0 0 100 20 10; center 50 10 5."
+    },
+    {
+      "id": "s0000012",
+      "type": "sketch",
+      "v": 1,
+      "name": "three_holes_hole_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 20, "y": 10, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "q0000001",
+      "type": "pocket",
+      "v": 1,
+      "name": "three_holes_hole",
+      "base": "p0000011",
+      "sketch": "s0000012",
+      "extent": {"type": "through_all", "reversed": true},
+      "note": "A hole r 3 at (20, 10) up through the box: 20000 - 90 pi. Expected: volume 19717.256661177; box 0 0 0 100 20 10; center 50.430196772 10 5."
+    },
+    {
+      "id": "t0000008",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "three_holes",
+      "base": "q0000001",
+      "copies": {"type": "features", "features": ["q0000001"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 2},
+          "count": 3
+        }
+      ],
+      "skip": [],
+      "note": "patterns.md's probe: three holes r 3, 2 apart, each a tool of one cut: the union of three circles in a row, 27 pi less twice the lens of two circles r 3 2 apart, 2 r^2 acos(d / 2r) - (d / 2) sqrt(4 r^2 - d^2), times 10, is 518.221711 removed; its centre the middle hole's by symmetry. Expected: volume 19481.778288784; box 0 0 0 100 20 10; center 50.744809211 10 5."
+    },
+    {
+      "id": "s0000013",
+      "type": "sketch",
+      "v": 1,
+      "name": "mirror_off_axis_box_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": -50, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 50, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 50, "y": 20, "construction": false},
+        {"id": "pa000004", "x": -50, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000012",
+      "type": "pad",
+      "v": 1,
+      "name": "mirror_off_axis_box",
+      "sketch": "s0000013",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 100 x 20 box 10 tall. Expected: volume 20000; faces 6; edges 12; vertices 8; box -50 0 0 50 20 10; center 0 10 5."
+    },
+    {
+      "id": "s0000014",
+      "type": "sketch",
+      "v": 1,
+      "name": "mirror_off_axis_boss_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 1, "y": 10, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000013",
+      "type": "pad",
+      "v": 1,
+      "name": "mirror_off_axis_boss",
+      "base": "p0000012",
+      "sketch": "s0000014",
+      "extent": {"type": "one_side", "length": 15, "reversed": false},
+      "note": "A cylinder r 3 at (1, 10), 5 above the box. Expected: volume 20141.371669412; box -50 0 0 50 20 15; center 0.007018969 10 5.05264227."
+    },
+    {
+      "id": "m0000003",
+      "type": "mirror",
+      "v": 1,
+      "name": "mirror_off_axis",
+      "base": "p0000013",
+      "copies": {"type": "features", "features": ["p0000013"]},
+      "plane": "yz",
+      "note": "patterns.md's probe: the cylinder's axis 1 mm from yz, its mirror overlapping it in a lens: 20000 + 5 (18 pi - lens(3, 2)) = 20200.241263, the centre on yz by symmetry. Expected: volume 20200.24126251; box -50 0 0 50 20 15; center 0 10 5.074346115."
+    },
+    {
+      "id": "s0000015",
+      "type": "sketch",
+      "v": 1,
+      "name": "bottom_face_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000014",
+      "type": "pad",
+      "v": 1,
+      "name": "bottom_face_block",
+      "sketch": "s0000015",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 40 x 20 block 10 tall. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 0 40 20 10; center 20 10 5."
+    },
+    {
+      "id": "t0000009",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "bottom_face",
+      "base": "p0000014",
+      "copies": {"type": "solid"},
+      "directions": [
+        {
+          "along": "p0000014.pad.Face(M s0000015.sketch.Face1)",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 10},
+          "count": 2
+        }
+      ],
+      "skip": [],
+      "note": "Decision 3: the block's bottom face points down, its outward normal, so the whole block copied 10 along it lies under it, face to face; FreeCAD's surface axis points up, which the harness turns round with Reversed. Expected: volume 16000; faces 10; edges 20; vertices 12; box 0 0 -10 40 20 10; center 20 10 0."
+    },
+    {
+      "id": "s0000016",
+      "type": "sketch",
+      "v": 1,
+      "name": "side_face_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000015",
+      "type": "pad",
+      "v": 1,
+      "name": "side_face_block",
+      "sketch": "s0000016",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 40 x 20 block 10 tall. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 0 40 20 10; center 20 10 5."
+    },
+    {
+      "id": "t0000010",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "side_face",
+      "base": "p0000015",
+      "copies": {"type": "solid"},
+      "directions": [
+        {
+          "along": "p0000015.pad.Face(G s0000016.sketch.Edge.na000002)",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 40},
+          "count": 2
+        }
+      ],
+      "skip": [],
+      "note": "Decision 3: the block's side at x = 40, made from the sketch's line from (40, 0) to (40, 20), points along +x, its outward normal: the whole block copied 40 along it lies beside it, face to face. Expected: volume 16000; faces 10; edges 20; vertices 12; box 0 0 0 80 20 10; center 40 10 5."
+    },
+    {
+      "id": "s0000017",
+      "type": "sketch",
+      "v": 1,
+      "name": "edge_axis_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 10, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000016",
+      "type": "pad",
+      "v": 1,
+      "name": "edge_axis_cube",
+      "sketch": "s0000017",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 10 mm cube: a 10 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1000; faces 6; edges 12; vertices 8; box 0 0 0 10 10 10; center 5 5 5."
+    },
+    {
+      "id": "t0000011",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "edge_axis",
+      "base": "p0000016",
+      "copies": {"type": "solid"},
+      "axis": "p0000016.pad.Edge(G s0000017.sketch.Vertex.pa000002)",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 90},
+      "count": 2,
+      "skip": [],
+      "note": "Decision 3: the cube's side edge at (10, 0), made by the pad from the sketch's point there, runs up, from its start to its end, so the whole cube turned a quarter turn right-handed about it lies over x = 0 to 10, y = -10 to 0, face to face. Expected: volume 2000; faces 10; edges 20; vertices 12; box 0 -10 0 10 10 10; center 5 0 5."
+    },
+    {
+      "id": "s0000018",
+      "type": "sketch",
+      "v": 1,
+      "name": "edge_direction_plate_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": -50, "y": -30, "construction": false},
+        {"id": "pa000002", "x": 50, "y": -30, "construction": false},
+        {"id": "pa000003", "x": 50, "y": 30, "construction": false},
+        {"id": "pa000004", "x": -50, "y": 30, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000017",
+      "type": "pad",
+      "v": 1,
+      "name": "edge_direction_plate",
+      "sketch": "s0000018",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "A 100 x 60 plate 5 thick, centred on the origin. Expected: volume 30000; faces 6; edges 12; vertices 8; box -50 -30 0 50 30 5; center 0 0 2.5."
+    },
+    {
+      "id": "s0000019",
+      "type": "sketch",
+      "v": 1,
+      "name": "edge_direction_hole_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": -20, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 2.75, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "q0000002",
+      "type": "pocket",
+      "v": 1,
+      "name": "edge_direction_hole",
+      "base": "p0000017",
+      "sketch": "s0000019",
+      "extent": {"type": "through_all", "reversed": true},
+      "note": "A hole r 2.75 at (0, -20) up through the plate. Expected: volume 29881.208527786; box -50 -30 0 50 30 5; center 0 0.079509148 2.5."
+    },
+    {
+      "id": "s0000020",
+      "type": "sketch",
+      "v": 1,
+      "name": "edge_direction_pocket_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 1.5, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "q0000003",
+      "type": "pocket",
+      "v": 1,
+      "name": "edge_direction_pocket",
+      "base": "q0000002",
+      "sketch": "s0000020",
+      "extent": {"type": "one_side", "length": 4, "reversed": true},
+      "note": "A pocket r 1.5 at the origin 4 up into the plate. Expected: volume 29852.934193904; box -50 -30 0 50 30 5; center 0 0.079584453 2.50047356."
+    },
+    {
+      "id": "t0000012",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "edge_direction",
+      "base": "q0000003",
+      "copies": {"type": "features", "features": ["q0000002", "q0000003"]},
+      "directions": [
+        {
+          "along": "p0000017.pad.Edge(M s0000018.sketch.Edge.na000001)",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 20},
+          "count": 2
+        }
+      ],
+      "skip": [],
+      "note": "Two originals, the hole and the pocket, each copied 20 along the plate's front bottom edge, from its start at (-50, -30) to its end at (50, -30), along +x. Expected: volume 29705.868387808; box -50 -30 0 50 30 5; center -0.099014649 0.159956909 2.50095181."
+    },
+    {
+      "id": "s0000021",
+      "type": "sketch",
+      "v": 1,
+      "name": "rim_axis_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000018",
+      "type": "pad",
+      "v": 1,
+      "name": "rim_axis_block",
+      "sketch": "s0000021",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 40 x 20 block 10 tall. Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 0 40 20 10; center 20 10 5."
+    },
+    {
+      "id": "s0000022",
+      "type": "sketch",
+      "v": 1,
+      "name": "rim_axis_hole_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 10, "y": 10, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 2.5, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "q0000004",
+      "type": "pocket",
+      "v": 1,
+      "name": "rim_axis_hole",
+      "base": "p0000018",
+      "sketch": "s0000022",
+      "extent": {"type": "through_all", "reversed": true},
+      "note": "A hole r 2.5 up through the block at (10, 10). Expected: volume 7803.650459151; box 0 0 0 40 20 10; center 20.251612424 10 5."
+    },
+    {
+      "id": "t0000013",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "rim_axis",
+      "base": "q0000004",
+      "copies": {"type": "solid"},
+      "axis": "q0000004.pocket.Edge(G p0000018.pad.Face(G s0000021.sketch.Face1), G q0000004.pocket.Face(G s0000022.sketch.Edge.ca000001))",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 90},
+      "count": 2,
+      "skip": [],
+      "note": "Section 4.2's example, off centre: the hole's top rim, a circle, is the axis, its axis pointing down (-z) as the cut's section of the hole and the block's top leaves it, in FreeCAD 1.1.3 (adapt.Circle().Axis(), PP:243-245) as in Silico; the block turned a quarter turn right-handed about it, (x, y) to (y, 20 - x), lies over x = 0 to 20, y = -20 to 20, crossing itself in 20 x 20 x 10: two blocks less the hole, overlapping in that less the hole, 2 (8000 - hole) - (4000 - hole) = 12000 - 62.5 pi. About +z it would lie over y = 0 to 40. Expected: volume 11803.650459151; box 0 -20 0 40 20 10; center 16.777564303 3.222435697 5."
+    },
+    {
+      "id": "s0000023",
+      "type": "sketch",
+      "v": 1,
+      "name": "half_turn_disc_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 25, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000019",
+      "type": "pad",
+      "v": 1,
+      "name": "half_turn_disc",
+      "sketch": "s0000023",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "A disc r 25 5 thick. Expected: volume 9817.477042468; box -25 -25 0 25 25 5; center 0 0 2.5."
+    },
+    {
+      "id": "s0000024",
+      "type": "sketch",
+      "v": 1,
+      "name": "half_turn_boss_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 20, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000020",
+      "type": "pad",
+      "v": 1,
+      "name": "half_turn_boss",
+      "base": "p0000019",
+      "sketch": "s0000024",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A boss r 3 at (20, 0) padded 10 from xy, 5 above the disc. Expected: volume 9958.84871188; box -25 -25 0 25 25 10; center 0.283911672 0 2.570977918."
+    },
+    {
+      "id": "t0000014",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "half_turn",
+      "base": "p0000020",
+      "copies": {"type": "features", "features": ["p0000020"]},
+      "axis": "z",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 180},
+      "count": 4,
+      "skip": [],
+      "note": "patterns.md's table: 4 over 180 degrees, not a whole turn, so 180 / 3 apart: at 0, 60, 120, 180. Expected: volume 10382.963720114; box -25 -25 0 25 25 10; center 0 0.471662852 2.772314675."
+    },
+    {
+      "id": "s0000025",
+      "type": "sketch",
+      "v": 1,
+      "name": "reversed_quarter_disc_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 25, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000021",
+      "type": "pad",
+      "v": 1,
+      "name": "reversed_quarter_disc",
+      "sketch": "s0000025",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "A disc r 25 5 thick. Expected: volume 9817.477042468; box -25 -25 0 25 25 5; center 0 0 2.5."
+    },
+    {
+      "id": "s0000026",
+      "type": "sketch",
+      "v": 1,
+      "name": "reversed_quarter_boss_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 20, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000022",
+      "type": "pad",
+      "v": 1,
+      "name": "reversed_quarter_boss",
+      "base": "p0000021",
+      "sketch": "s0000026",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A boss r 3 at (20, 0) padded 10 from xy, 5 above the disc. Expected: volume 9958.84871188; box -25 -25 0 25 25 10; center 0.283911672 0 2.570977918."
+    },
+    {
+      "id": "t0000015",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "reversed_quarter",
+      "base": "p0000022",
+      "copies": {"type": "features", "features": ["p0000022"]},
+      "axis": "z",
+      "reversed": true,
+      "distribution": {"type": "extent", "angle": 90},
+      "count": 4,
+      "skip": [],
+      "note": "patterns.md's table's -90 as Silico writes it: 4 over 90 degrees reversed, left-handed about z: at 0, -30, -60, -90. Expected: volume 10382.963720114; box -25 -25 0 25 25 10; center 0.644303438 -0.644303438 2.772314675."
+    },
+    {
+      "id": "s0000027",
+      "type": "sketch",
+      "v": 1,
+      "name": "spacing_45_disc_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 25, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000023",
+      "type": "pad",
+      "v": 1,
+      "name": "spacing_45_disc",
+      "sketch": "s0000027",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "A disc r 25 5 thick. Expected: volume 9817.477042468; box -25 -25 0 25 25 5; center 0 0 2.5."
+    },
+    {
+      "id": "s0000028",
+      "type": "sketch",
+      "v": 1,
+      "name": "spacing_45_boss_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 20, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000024",
+      "type": "pad",
+      "v": 1,
+      "name": "spacing_45_boss",
+      "base": "p0000023",
+      "sketch": "s0000028",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A boss r 3 at (20, 0) padded 10 from xy, 5 above the disc. Expected: volume 9958.84871188; box -25 -25 0 25 25 10; center 0.283911672 0 2.570977918."
+    },
+    {
+      "id": "t0000016",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "spacing_45",
+      "base": "p0000024",
+      "copies": {"type": "features", "features": ["p0000024"]},
+      "axis": "z",
+      "reversed": false,
+      "distribution": {"type": "spacing", "angle": 45},
+      "count": 3,
+      "skip": [],
+      "note": "3 instances 45 degrees apart: at 0, 45, 90. Expected: volume 10241.592050703; box -25 -25 0 25 25 10; center 0.471287148 0.471287148 2.707055215."
+    },
+    {
+      "id": "s0000029",
+      "type": "sketch",
+      "v": 1,
+      "name": "one_instance_disc_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 25, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000025",
+      "type": "pad",
+      "v": 1,
+      "name": "one_instance_disc",
+      "sketch": "s0000029",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "A disc r 25 5 thick. Expected: volume 9817.477042468; box -25 -25 0 25 25 5; center 0 0 2.5."
+    },
+    {
+      "id": "s0000030",
+      "type": "sketch",
+      "v": 1,
+      "name": "one_instance_boss_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 20, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000026",
+      "type": "pad",
+      "v": 1,
+      "name": "one_instance_boss",
+      "base": "p0000025",
+      "sketch": "s0000030",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A boss r 3 at (20, 0) padded 10 from xy, 5 above the disc. Expected: volume 9958.84871188; box -25 -25 0 25 25 10; center 0.283911672 0 2.570977918."
+    },
+    {
+      "id": "t0000017",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "one_instance",
+      "base": "p0000026",
+      "copies": {"type": "features", "features": ["p0000026"]},
+      "axis": "z",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 360},
+      "count": 1,
+      "skip": [],
+      "note": "A count of 1 places nothing: the base, as it is. Expected: volume 9958.84871188; box -25 -25 0 25 25 10; center 0.283911672 0 2.570977918."
+    },
+    {
+      "id": "s0000031",
+      "type": "sketch",
+      "v": 1,
+      "name": "grid_plate_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 100, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 100, "y": 60, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 60, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000027",
+      "type": "pad",
+      "v": 1,
+      "name": "grid_plate",
+      "sketch": "s0000031",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "A 100 x 60 plate 5 thick. Expected: volume 30000; faces 6; edges 12; vertices 8; box 0 0 0 100 60 5; center 50 30 2.5."
+    },
+    {
+      "id": "s0000032",
+      "type": "sketch",
+      "v": 1,
+      "name": "grid_hole_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 10, "y": 10, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "q0000005",
+      "type": "pocket",
+      "v": 1,
+      "name": "grid_hole",
+      "base": "p0000027",
+      "sketch": "s0000032",
+      "extent": {"type": "through_all", "reversed": true},
+      "note": "A hole r 3 at (10, 10) up through the plate. Expected: volume 29858.628330588; box 0 0 0 100 60 5; center 50.189388029 30.094694015 2.5."
+    },
+    {
+      "id": "t0000018",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "grid",
+      "base": "q0000005",
+      "copies": {"type": "features", "features": ["q0000005"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": false,
+          "distribution": {"type": "extent", "length": 80},
+          "count": 3
+        },
+        {
+          "along": "y",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 20},
+          "count": 3
+        }
+      ],
+      "skip": [],
+      "note": "A 3 x 3 grid of holes, 80 from first to last along x and 20 apart along y: at x = 10, 50, 90 and y = 10, 30, 50. Expected: volume 28727.654975296; box 0 0 0 100 60 5; center 50.0 30.0 2.5."
+    },
+    {
+      "id": "s0000033",
+      "type": "sketch",
+      "v": 1,
+      "name": "reversed_x_box_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 100, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 100, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000028",
+      "type": "pad",
+      "v": 1,
+      "name": "reversed_x_box",
+      "sketch": "s0000033",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 100 x 20 box 10 tall. Expected: volume 20000; faces 6; edges 12; vertices 8; box 0 0 0 100 20 10; center 50 10 5."
+    },
+    {
+      "id": "s0000034",
+      "type": "sketch",
+      "v": 1,
+      "name": "reversed_x_boss_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 90, "y": 10, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 3, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000029",
+      "type": "pad",
+      "v": 1,
+      "name": "reversed_x_boss",
+      "base": "p0000028",
+      "sketch": "s0000034",
+      "extent": {"type": "one_side", "length": 15, "reversed": false},
+      "note": "A cylinder r 3 at (90, 10), 5 above the box. Expected: volume 20141.371669412; box 0 0 0 100 20 15; center 50.280758772 10 5.05264227."
+    },
+    {
+      "id": "t0000019",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "reversed_x",
+      "base": "p0000029",
+      "copies": {"type": "features", "features": ["p0000029"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": true,
+          "distribution": {"type": "spacing", "length": 30},
+          "count": 3
+        }
+      ],
+      "skip": [],
+      "note": "3 cylinders 30 apart along x reversed: at x = 90, 60, 30. Expected: volume 20424.115008235; box 0 0 0 100 20 15; center 50.207654044 10 5.155740533."
+    },
+    {
+      "id": "s0000035",
+      "type": "sketch",
+      "v": 1,
+      "name": "mirror_notch_plate_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": -50, "y": -30, "construction": false},
+        {"id": "pa000002", "x": 50, "y": -30, "construction": false},
+        {"id": "pa000003", "x": 50, "y": 30, "construction": false},
+        {"id": "pa000004", "x": -50, "y": 30, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000030",
+      "type": "pad",
+      "v": 1,
+      "name": "mirror_notch_plate",
+      "sketch": "s0000035",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "A 100 x 60 plate 5 thick, centred on the origin. Expected: volume 30000; faces 6; edges 12; vertices 8; box -50 -30 0 50 30 5; center 0 0 2.5."
+    },
+    {
+      "id": "s0000036",
+      "type": "sketch",
+      "v": 1,
+      "name": "mirror_notch_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 44, "y": -5, "construction": false},
+        {"id": "pa000002", "x": 50, "y": -5, "construction": false},
+        {"id": "pa000003", "x": 50, "y": 5, "construction": false},
+        {"id": "pa000004", "x": 44, "y": 5, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "q0000006",
+      "type": "pocket",
+      "v": 1,
+      "name": "mirror_notch_cut",
+      "base": "p0000030",
+      "sketch": "s0000036",
+      "extent": {"type": "through_all", "reversed": true},
+      "note": "A notch 6 x 10 cut up through the plate's +x end. Expected: volume 29700; box -50 -30 0 50 30 5; center -0.474747475 0 2.5."
+    },
+    {
+      "id": "m0000004",
+      "type": "mirror",
+      "v": 1,
+      "name": "mirror_notch",
+      "base": "q0000006",
+      "copies": {"type": "features", "features": ["q0000006"]},
+      "plane": "yz",
+      "note": "The notch mirrored in yz, cut from the -x end: 30000 - 2 x 300, the centre the origin's by symmetry. Expected: volume 29400; box -50 -30 0 50 30 5; center 0 0 2.5."
+    },
+    {
+      "id": "s0000037",
+      "type": "sketch",
+      "v": 1,
+      "name": "face_plane_cube_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 10, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000031",
+      "type": "pad",
+      "v": 1,
+      "name": "face_plane_cube",
+      "sketch": "s0000037",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 10 mm cube: a 10 mm cube from the origin, a square sketched on xy and padded. Expected: volume 1000; faces 6; edges 12; vertices 8; box 0 0 0 10 10 10; center 5 5 5."
+    },
+    {
+      "id": "m0000005",
+      "type": "mirror",
+      "v": 1,
+      "name": "face_plane",
+      "base": "p0000031",
+      "copies": {"type": "solid"},
+      "plane": "p0000031.pad.Face(G s0000037.sketch.Edge.na000002)",
+      "note": "The whole cube mirrored in its own side at x = 10: the two fuse face to face. Expected: volume 2000; faces 10; edges 20; vertices 12; box 0 0 0 20 10 10; center 10 5 5."
+    },
+    {
+      "id": "s0000038",
+      "type": "sketch",
+      "v": 1,
+      "name": "nested_plate_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000032",
+      "type": "pad",
+      "v": 1,
+      "name": "nested_plate",
+      "sketch": "s0000038",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "A 40 x 20 plate 5 thick. Expected: volume 4000; faces 6; edges 12; vertices 8; box 0 0 0 40 20 5; center 20 10 2.5."
+    },
+    {
+      "id": "s0000039",
+      "type": "sketch",
+      "v": 1,
+      "name": "nested_boss_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 5, "y": 10, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 2, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000033",
+      "type": "pad",
+      "v": 1,
+      "name": "nested_boss",
+      "base": "p0000032",
+      "sketch": "s0000039",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A pin r 2 at (5, 10), 5 above the plate. Expected: volume 4062.831853072; box 0 0 0 40 20 10; center 19.768024415 10 2.577325195."
+    },
+    {
+      "id": "t0000020",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "nested_pattern",
+      "base": "p0000033",
+      "copies": {"type": "features", "features": ["p0000033"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 10},
+          "count": 3
+        }
+      ],
+      "skip": [],
+      "note": "3 pins 10 apart along x: at x = 5, 15, 25. Expected: volume 4188.495559215; box 0 0 0 40 20 10; center 19.774984172 10 2.725015828."
+    },
+    {
+      "id": "m0000006",
+      "type": "mirror",
+      "v": 1,
+      "name": "nested",
+      "base": "t0000020",
+      "copies": {"type": "solid"},
+      "plane": "yz",
+      "note": "The whole plate and its pins mirrored in yz, face to face at x = 0: twice 4000 + 60 pi, the centre on yz by symmetry. Expected: volume 8376.991118431; box -40 0 0 40 20 10; center 0 10 2.725015828."
+    },
+    {
+      "id": "s0000040",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_copies_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": -10, "construction": false},
+        {"id": "pa000002", "x": 60, "y": -10, "construction": false},
+        {"id": "pa000003", "x": 60, "y": 10, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000034",
+      "type": "pad",
+      "v": 1,
+      "name": "groove_copies_block",
+      "sketch": "s0000040",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 60 x 20 block 10 tall, from y = -10. Expected: volume 12000; faces 6; edges 12; vertices 8; box 0 -10 0 60 10 10; center 30 0 5."
+    },
+    {
+      "id": "s0000041",
+      "type": "sketch",
+      "v": 1,
+      "name": "groove_copies_profile",
+      "plane": "xz",
+      "points": [
+        {"id": "pa000001", "x": 10, "y": 7, "construction": false},
+        {"id": "pa000002", "x": 12, "y": 7, "construction": false},
+        {"id": "pa000003", "x": 12, "y": 13, "construction": false},
+        {"id": "pa000004", "x": 10, "y": 13, "construction": false},
+        {"id": "pa000005", "x": 10, "y": 0, "construction": false},
+        {"id": "pa000006", "x": 10, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+        {"id": "na000005", "from": "pa000005", "to": "pa000006", "construction": true}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "g0000001",
+      "type": "groove",
+      "v": 1,
+      "name": "groove_copies_groove",
+      "base": "p0000034",
+      "sketch": "s0000041",
+      "axis": "na000005",
+      "extent": {"type": "one_side", "angle": 360, "reversed": false},
+      "note": "A 2 x 6 rectangle on xz from x = 10, z = 7 turned a whole turn about the vertical line x = 10: a cylinder r 2 from z = 7 to 13, cutting a hole r 2 3 deep into the block's top at (10, 0). Expected: volume 11962.300888157; box 0 -10 0 60 10 10; center 30.063029867 0 4.988969773."
+    },
+    {
+      "id": "t0000021",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "groove_copies",
+      "base": "g0000001",
+      "copies": {"type": "features", "features": ["g0000001"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 20},
+          "count": 3
+        }
+      ],
+      "skip": [],
+      "note": "The groove copied 20 apart along x: holes r 2 3 deep at x = 10, 30, 50. Expected: volume 11886.902664471; box 0 -10 0 60 10 10; center 30.0 0 4.966699427."
+    },
+    {
+      "id": "s0000042",
+      "type": "sketch",
+      "v": 1,
+      "name": "drawn_back_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000002", "to": "pa000001", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000035",
+      "type": "pad",
+      "v": 1,
+      "name": "drawn_back_block",
+      "sketch": "s0000042",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 40 x 20 block 10 tall, its front line drawn from (40, 0) to (0, 0). Expected: volume 8000; faces 6; edges 12; vertices 8; box 0 0 0 40 20 10; center 20 10 5."
+    },
+    {
+      "id": "t0000022",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "drawn_back",
+      "base": "p0000035",
+      "copies": {"type": "solid"},
+      "directions": [
+        {
+          "along": "p0000035.pad.Edge(M s0000042.sketch.Edge.na000001)",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 40},
+          "count": 2
+        }
+      ],
+      "skip": [],
+      "note": "The whole block copied 40 along its front bottom edge, which runs +x as the profile walks it (from (0, 0) to (40, 0)), though its line is drawn the other way: the copy beside it, face to face. FreeCAD's edge runs as drawn, -x, which the harness turns round with Reversed. Expected: volume 16000; faces 10; edges 20; vertices 12; box 0 0 0 80 20 10; center 40 10 5."
+    },
+    {
+      "id": "s0000043",
+      "type": "sketch",
+      "v": 1,
+      "name": "hole_circle_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false},
+        {"id": "pa000005", "x": 10, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [
+        {"id": "ca000001", "center": "pa000005", "radius": 2, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000036",
+      "type": "pad",
+      "v": 1,
+      "name": "hole_circle_block",
+      "sketch": "s0000043",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 40 x 20 block 10 tall with a hole r 2 at (10, 10) in its profile: 8000 - 40 pi. Expected: volume 7874.336293856; box 0 0 0 40 20 10; center 20.15958641 10 5."
+    },
+    {
+      "id": "t0000023",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "hole_circle",
+      "base": "p0000036",
+      "copies": {"type": "solid"},
+      "axis": "p0000036.pad.Edge(G s0000043.sketch.Edge.ca000001)",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 90},
+      "count": 2,
+      "skip": [],
+      "note": "The whole block turned a quarter turn about the top edge of its hole, a circle the profile walks clockwise, so its axis points down (-z) in Silico, though the sketch draws it about +z, as FreeCAD's edge keeps it (the harness turns Reversed round): (x, y) to (y, 20 - x), over x = 0 to 20, y = -20 to 20, crossing itself in 20 x 20 x 10: 2 (8000 - 40 pi) - (4000 - 40 pi) = 12000 - 40 pi. Expected: volume 11874.336293856; box 0 -20 0 40 20 10; center 16.737218655 3.262781345 5."
+    },
+    {
+      "id": "s0000044",
+      "type": "sketch",
+      "v": 1,
+      "name": "slot_arc_block_profile",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false},
+        {"id": "pa000005", "x": 8, "y": 8, "construction": false},
+        {"id": "pa000006", "x": 12, "y": 8, "construction": false},
+        {"id": "pa000007", "x": 12, "y": 12, "construction": false},
+        {"id": "pa000008", "x": 8, "y": 12, "construction": false},
+        {"id": "pa000009", "x": 12, "y": 10, "construction": false},
+        {"id": "pa000010", "x": 8, "y": 10, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false},
+        {"id": "na000005", "from": "pa000005", "to": "pa000006", "construction": false},
+        {"id": "na000006", "from": "pa000007", "to": "pa000008", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [
+        {"id": "ra000001", "center": "pa000009", "start": "pa000006", "end": "pa000007", "construction": false},
+        {"id": "ra000002", "center": "pa000010", "start": "pa000008", "end": "pa000005", "construction": false}
+      ],
+      "constraints": []
+    },
+    {
+      "id": "p0000037",
+      "type": "pad",
+      "v": 1,
+      "name": "slot_arc_block",
+      "sketch": "s0000044",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 40 x 20 block 10 tall with a slot hole in its profile, 4 between its arcs' centres (8, 10) and (12, 10), r 2: 8000 - 10 (16 + 4 pi). Expected: volume 7714.336293856; box 0 0 0 40 20 10; center 20.370302376 10 5."
+    },
+    {
+      "id": "t0000024",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "slot_arc",
+      "base": "p0000037",
+      "copies": {"type": "solid"},
+      "axis": "p0000037.pad.Edge(G s0000044.sketch.Edge.ra000001)",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 90},
+      "count": 2,
+      "skip": [],
+      "note": "The whole block turned a quarter turn about the top edge of its slot's right arc, drawn counter-clockwise about (12, 10) but walked clockwise in the hole, so its axis points down (-z) in Silico and up as FreeCAD draws it (the harness turns Reversed round): (x, y) to (y + 2, 22 - x), over y = -18 to 22. The slots' union 28 + 5 pi (their common part the square x, y = 10 to 12 and three quarter discs r 2), so 2 (8000 - 10 (16 + 4 pi)) - 10 (400 - (28 + 5 pi)) = 11960 - 30 pi. About +z it would lie over y = -2 to 38. Expected: volume 11865.752220392; box 0 -18 0 40 22 10; center 17.394797746 4.605202254 5."
+    }
+  ]
+}

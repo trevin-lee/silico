@@ -162,6 +162,7 @@ FreeCAD's result depends on which point comes first in a wire, on where a circle
 - **Nesting doesn't depend on size or on the sketch's order.** A hole belongs to the loop at depth one less than its own among the loops around it, by the crossings' parity. FreeCAD's Bullseye nests by sorting on box size with a tie tolerance, so nested loops more than 1e-7 apart can tie when their box's width plus height is under about 0.25 mm (a square under about 0.12 mm), and loops closer than Silico allows at any size, and then the order of the sketch's geometry decides whether the hole survives (*Edge cases*).
 - **The order is exact.** Regions and loops are ordered by a key with no tolerance, ties broken by ID (open question 2). FreeCAD sorts by squared diagonal with a tie tolerance, then by the sketch's geometry order.
 - **Direction comes from the signed area**: outer loops counter-clockwise about the sketch's normal, holes clockwise.
+- **Each curve is built in its loop's walk**, a line walked against its drawing from its end, a hole's circle and an arc walked clockwise (in a hole, or concave in an outer loop) about −n, where FreeCAD builds each curve as drawn and reverses wires, never curves (`FaceMakerBullseye`). So an edge a pad makes from such a curve runs the other way in FreeCAD, which a pattern along it shows (docs/ports/patterns.md, decision 3, *Edges*; Fable, 2026-11-24).
 - **No fix-up.** No ShapeFix on wires or faces. A face OCCT calls invalid is an `invalid_result`, not a warning.
 
 ## What the core computes

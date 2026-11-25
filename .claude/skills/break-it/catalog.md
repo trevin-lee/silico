@@ -343,6 +343,8 @@ Inputs that break CAD code. `break-it` tries every category that applies to its 
 - No cases at all (an empty directory, `--count 0`): a harness that compared nothing must not exit 0
 - Answers claimed symmetric in their arguments from a solver that isn't (OCCT's `BRepExtrema_DistShapeShape` on two spheres, two conics, two faces of a real part): call with the arguments swapped and compare bits; a witness picked as the first of whatever pairs the solver found moves 47 mm on NIST CTC 01, and the distance by an ulp
 - Measures of a pair defined by an order ("the second's point to the first's carrier"): a line and a plane parallel to it measure the plane's centre from the line one way round and the line from the plane the other; call every mixed pair (line and plane, point and line) both ways
+- A reference program's default that isn't what its docs say (FreeCAD 1.1.3's `LinearPattern.Spacings2` is one 0.0, not empty, so a second direction's first copy sits on the original): read back every property the harness doesn't set, or set them all
+- A case the reference side builds from the other side's answer (an element described by Silico, found by geometry in FreeCAD) when that side refused it: the case must come back a difference, not abort the batch
 - Bounded point-to-face distances where the foot lands off the face (a hole's centre, in the hole): check OCCT's extrema against the point's distance from that face's mesh triangles, an independent answer to the mesh's deflection, for every hole centre against every flat face of a real part
 
 ## Import

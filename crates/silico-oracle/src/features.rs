@@ -7,6 +7,13 @@
 //! of Silico. Silico rebuilds the document through the core's commands ([`silico`]), and its
 //! measures are compared with FreeCAD's ([`compare`]) and with the expected values
 //! ([`run`], which `silico-oracle run` reports).
+//!
+//! Pattern cases (M6.4, docs/design/m6.0-patterns.md, section 11) are a second document,
+//! [`PATTERNS`], read the same way: each linear pattern, polar pattern, and mirror is a case
+//! too, built by FreeCAD as PartDesign's `LinearPattern`, `PolarPattern`, and `Mirrored`
+//! (`Refine = False`). A direction, axis, or plane that's an element's name is found in
+//! FreeCAD's build by its geometry, as Silico's rebuild describes it ([`describe`]), as a
+//! measure case's elements are.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -15,19 +22,26 @@ use serde::Serialize;
 use silico_core::Error;
 use silico_core::command::rebuild;
 use silico_core::document::{
-    Axis, Checked, Feature, FeatureId, Operation, OriginPlane, PadExtent, Plane, PocketExtent,
-    Position, Sketch, TurnExtent, read,
+    Axis, Checked, Copies, Feature, FeatureId, LinearDistribution, Operation, OriginAxis,
+    OriginOrName, OriginPlane, PadExtent, Plane, PocketExtent, PolarDistribution, Position, Sketch,
+    TurnExtent, read, skipped_in_range,
 };
 use silico_core::kernel::KernelWorker;
 use silico_core::pool::KernelPool;
-use silico_core::recompute::{FeatureOutcome, Recompute};
+use silico_core::recompute::{FeatureOutcome, Model, Recompute};
 use silico_protocol::arc_from_points;
 
 use crate::compare::{Measured, Outcome, Tolerance, boxes_close, close, differences, size};
 use crate::freecad;
+use crate::measures::{self, Element};
 
 /// The file of sketch-feature cases in an oracle directory: a Silico document.
 pub const FILE: &str = "sketch-features.silico";
+
+/// The file of pattern cases in an oracle directory (M6.4): a Silico document, whose linear
+/// patterns, polar patterns, and mirrors are cases as its pads, pockets, revolves, and
+/// grooves are.
+pub const PATTERNS: &str = "patterns.silico";
 
 /// What a case's note says its feature's solid measures, after `Expected: `: `volume V`,
 /// and as the source gives them `faces F`, `edges E`, `vertices N`, `box X0 Y0 Z0 X1 Y1 Z1`
@@ -140,7 +154,18 @@ pub struct Cases {
 /// groove is a case and says what it's expected to measure; every solid is one of them or
 /// is used by a later feature, so no solid goes unchecked.
 pub fn load(dir: &Path) -> Result<Option<Cases>, String> {
-    let path = dir.join(FILE);
+    load_file(dir, FILE)
+}
+
+/// The cases in `dir`'s [`PATTERNS`], as [`load`] reads [`FILE`]'s, each linear pattern,
+/// polar pattern, and mirror a case too; none if it has none.
+pub fn load_patterns(dir: &Path) -> Result<Option<Cases>, String> {
+    load_file(dir, PATTERNS)
+}
+
+/// The cases in `dir`'s `file`; none if it has none.
+fn load_file(dir: &Path, file: &str) -> Result<Option<Cases>, String> {
+    let path = dir.join(file);
     let bytes = match std::fs::read(&path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -175,10 +200,10 @@ fn cases(features: &[Feature]) -> Result<Vec<FeatureCase>, String> {
     for feature in features {
         let id = &feature.id;
         let note = feature.note.clone().unwrap_or_default();
-        if feature.operation.sketch().is_none() {
+        if !is_case(&feature.operation) {
             if note.contains(EXPECTED) {
                 return Err(format!(
-                    "{id} isn't a pad, pocket, revolve, or groove, so it isn't a case, but its note says what it's expected to measure"
+                    "{id} isn't a pad, pocket, revolve, or groove, nor a pattern or mirror, so it isn't a case, but its note says what it's expected to measure"
                 ));
             }
             if feature.operation.makes_solid() && !used.contains(id) {
@@ -211,8 +236,21 @@ fn cases(features: &[Feature]) -> Result<Vec<FeatureCase>, String> {
     Ok(found)
 }
 
-/// The PartDesign body FreeCAD builds the pad, pocket, revolve, or groove `id` of
-/// `features` (a gated document's) as, as a case's model is: its chain, in FreeCAD's terms.
+/// A pad, pocket, revolve, or groove, or a linear pattern, polar pattern, or mirror: what
+/// a case is.
+fn is_case(operation: &Operation) -> bool {
+    operation.sketch().is_some()
+        || matches!(
+            operation,
+            Operation::LinearPattern { .. }
+                | Operation::PolarPattern { .. }
+                | Operation::Mirror { .. }
+        )
+}
+
+/// The PartDesign body FreeCAD builds the pad, pocket, revolve, groove, or pattern `id` of
+/// `features` (a gated document's) as, as a case's model is: its chain, in FreeCAD's terms,
+/// its references by name not yet described ([`describe_model`]).
 pub(crate) fn part_design_model(
     features: &[Feature],
     id: &FeatureId,
@@ -254,7 +292,12 @@ fn chain<'a>(
             Operation::Pad { base, .. } | Operation::Revolve { base, .. } => {
                 base.as_ref().map(place).transpose()?
             }
-            Operation::Pocket { base, .. } | Operation::Groove { base, .. } => Some(place(base)?),
+            // A pattern's originals are in its base's chain (the gate's rule), so reached.
+            Operation::Pocket { base, .. }
+            | Operation::Groove { base, .. }
+            | Operation::LinearPattern { base, .. }
+            | Operation::PolarPattern { base, .. }
+            | Operation::Mirror { base, .. } => Some(place(base)?),
             Operation::Box { .. }
             | Operation::Cylinder { .. }
             | Operation::Sphere { .. }
@@ -262,7 +305,7 @@ fn chain<'a>(
             | Operation::Torus { .. } => None,
             other => {
                 return Err(format!(
-                    "{} is a {}, which a sketch-feature case doesn't build",
+                    "{} is a {}, which a feature case doesn't build",
                     feature.id,
                     other.type_name()
                 ));
@@ -294,6 +337,11 @@ fn tolerance(
             Operation::Pad { sketch, .. } | Operation::Pocket { sketch, .. } => {
                 curved_sketch(sketch)
             }
+            // A pattern's copies are of what's in its chain, already counted; the boolean
+            // they're fused or cut in is, as any based feature's.
+            Operation::LinearPattern { .. }
+            | Operation::PolarPattern { .. }
+            | Operation::Mirror { .. } => false,
             _ => true,
         };
         let based = !feature.operation.inputs().is_empty();
@@ -336,6 +384,91 @@ pub enum PartDesignFeature {
     /// (`Type` Angle, `Midplane`, `Reversed`).
     Revolution(Revolution),
     Groove(Revolution),
+    /// A LinearPattern, PolarPattern, or Mirrored (PartDesign's `Transformed`), unrefined.
+    LinearPattern(LinearPattern),
+    PolarPattern(PolarPattern),
+    Mirrored(Mirrored),
+}
+
+/// A LinearPattern: its originals, and `Direction`'s properties, then `Direction2`'s where
+/// there's a second direction.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LinearPattern {
+    pub id: String,
+    pub originals: Originals,
+    pub directions: Vec<PatternDirection>,
+}
+
+/// What a pattern copies: its originals' tools, by ID in timeline order (the order FreeCAD
+/// fuses and cuts them in, and Silico's steps run in), or `TransformMode` "Whole shape",
+/// the base's whole solid.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Originals {
+    Features(Vec<String>),
+    WholeShape,
+}
+
+/// One direction of a LinearPattern, in FreeCAD's terms.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PatternDirection {
+    pub reference: Reference,
+    pub reversed: bool,
+    /// `Mode`: `Extent` or `Spacing`.
+    pub mode: &'static str,
+    /// `Length` in Extent mode, from the first instance to the last, or `Offset` in Spacing
+    /// mode, between neighbours, in mm.
+    pub length: f64,
+    pub occurrences: u32,
+}
+
+/// A PolarPattern, in FreeCAD's terms.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PolarPattern {
+    pub id: String,
+    pub originals: Originals,
+    pub axis: Reference,
+    pub reversed: bool,
+    /// `Mode`: `Extent` or `Spacing`.
+    pub mode: &'static str,
+    /// `Angle` in Extent mode, or `Offset` in Spacing mode, in degrees.
+    pub angle: f64,
+    pub occurrences: u32,
+}
+
+/// A Mirrored, in FreeCAD's terms.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Mirrored {
+    pub id: String,
+    pub originals: Originals,
+    pub plane: Reference,
+}
+
+/// What a pattern's direction, axis, or plane refers to, in FreeCAD's terms.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Reference {
+    /// One of the body's origin features, by its role (`X_Axis`, `XY_Plane`).
+    Origin { role: &'static str },
+    /// An element of the solid of the feature `of` (the pattern's base), by its name in the
+    /// document. FreeCAD finds it in its own build of `of` by its geometry, as Silico's
+    /// rebuild describes it (`element`, which [`describe`] gives), never by its number,
+    /// which the two builds needn't share.
+    ///
+    /// Where the two programs give it opposite senses, the harness turns FreeCAD's
+    /// `Reversed` round (`corrected`), as a FreeCAD import corrects each once
+    /// (docs/ports/patterns.md, decision 3): a face's direction is its outward normal in
+    /// Silico and its surface's axis in FreeCAD; an edge's is `sense`, as Silico's
+    /// `describe` gives it (a line from its start to its end, a circle's axis, which follow
+    /// the way the profile walks its loop, M3.5), and its curve's own in FreeCAD (as the
+    /// sketch drew it). Only a test that shows the difference turns `corrected` off.
+    Element {
+        of: String,
+        name: String,
+        element: Option<Element>,
+        sense: Option<[f64; 3]>,
+        corrected: bool,
+    },
 }
 
 /// A sketch's curve in FreeCAD's terms, by its ID in the document.
@@ -448,9 +581,7 @@ fn part_design(
         Operation::Sketch(sketch) => Ok(PartDesignFeature::Sketch {
             id,
             plane: match &sketch.plane {
-                Plane::Origin(OriginPlane::Xy) => "XY_Plane",
-                Plane::Origin(OriginPlane::Xz) => "XZ_Plane",
-                Plane::Origin(OriginPlane::Yz) => "YZ_Plane",
+                Plane::Origin(plane) => origin_plane(*plane),
                 // FreeCAD's FlatFace attachment, with the AttachmentOffset that turns its x onto
                 // the token's (docs/ports/attacher.md, *Tests to port*), isn't in the harness yet.
                 Plane::Face(_) => {
@@ -547,12 +678,238 @@ fn part_design(
                 _ => PartDesignFeature::Groove(revolution),
             })
         }
+        Operation::LinearPattern {
+            base,
+            copies,
+            directions,
+            skip,
+        } => {
+            let counts: Vec<u32> = directions.iter().map(|d| d.count).collect();
+            unskipped(feature, skip, &counts)?;
+            let directions = directions
+                .iter()
+                .map(|d| {
+                    let (mode, length) = match d.distribution {
+                        LinearDistribution::Extent { length } => ("Extent", length),
+                        LinearDistribution::Spacing { length } => ("Spacing", length),
+                    };
+                    PatternDirection {
+                        reference: match &d.along {
+                            OriginOrName::Origin(axis) => origin_axis(*axis),
+                            OriginOrName::Name(name) => element(base, name.as_str()),
+                        },
+                        reversed: d.reversed,
+                        mode,
+                        length: length.mm(),
+                        occurrences: d.count,
+                    }
+                })
+                .collect();
+            Ok(PartDesignFeature::LinearPattern(LinearPattern {
+                id,
+                originals: originals(copies, index)?,
+                directions,
+            }))
+        }
+        Operation::PolarPattern {
+            base,
+            copies,
+            axis,
+            reversed,
+            distribution,
+            count,
+            skip,
+        } => {
+            unskipped(feature, skip, &[*count])?;
+            let (mode, angle) = match *distribution {
+                PolarDistribution::Extent { angle } => {
+                    let degrees = angle.degrees();
+                    // PolarPattern takes an extent within Precision::Confusion() of 360 as a
+                    // whole turn (PP:270-280); Silico takes exactly 360 alone (decision 5).
+                    if degrees != 360.0 && (degrees - 360.0).abs() < 1e-7 {
+                        return Err(format!(
+                            "{} turns {degrees} degrees, which FreeCAD 1.1.3 takes as a whole turn and Silico doesn't (docs/ports/patterns.md, decision 5)",
+                            feature.id
+                        ));
+                    }
+                    ("Extent", degrees)
+                }
+                PolarDistribution::Spacing { angle } => ("Spacing", angle.degrees()),
+            };
+            Ok(PartDesignFeature::PolarPattern(PolarPattern {
+                id,
+                originals: originals(copies, index)?,
+                axis: match axis {
+                    OriginOrName::Origin(axis) => origin_axis(*axis),
+                    OriginOrName::Name(name) => element(base, name.as_str()),
+                },
+                reversed: *reversed,
+                mode,
+                angle,
+                occurrences: *count,
+            }))
+        }
+        Operation::Mirror {
+            base,
+            copies,
+            plane,
+        } => Ok(PartDesignFeature::Mirrored(Mirrored {
+            id,
+            originals: originals(copies, index)?,
+            plane: match plane {
+                OriginOrName::Origin(plane) => Reference::Origin {
+                    role: origin_plane(*plane),
+                },
+                OriginOrName::Name(name) => element(base, name.as_str()),
+            },
+        })),
         other => Err(format!(
-            "{} is a {}, which a sketch-feature case doesn't build",
+            "{} is a {}, which a feature case doesn't build",
             feature.id,
             other.type_name()
         )),
     }
+}
+
+/// The body's origin feature for `axis`.
+fn origin_axis(axis: OriginAxis) -> Reference {
+    Reference::Origin {
+        role: match axis {
+            OriginAxis::X => "X_Axis",
+            OriginAxis::Y => "Y_Axis",
+            OriginAxis::Z => "Z_Axis",
+        },
+    }
+}
+
+/// The body's origin feature for `plane`, as a sketch is attached to it.
+fn origin_plane(plane: OriginPlane) -> &'static str {
+    match plane {
+        OriginPlane::Xy => "XY_Plane",
+        OriginPlane::Xz => "XZ_Plane",
+        OriginPlane::Yz => "YZ_Plane",
+    }
+}
+
+/// The element `name` of `base`'s solid, not yet described.
+fn element(base: &FeatureId, name: &str) -> Reference {
+    Reference::Element {
+        of: base.as_str().to_owned(),
+        name: name.to_owned(),
+        element: None,
+        sense: None,
+        corrected: true,
+    }
+}
+
+/// What `copies` copies, in FreeCAD's terms: its features in timeline order.
+fn originals(copies: &Copies, index: &BTreeMap<&FeatureId, usize>) -> Result<Originals, String> {
+    match copies {
+        Copies::Solid => Ok(Originals::WholeShape),
+        Copies::Features { features } => {
+            let mut placed = features
+                .iter()
+                .map(|id| {
+                    index
+                        .get(id)
+                        .map(|&i| (i, id.as_str().to_owned()))
+                        .ok_or_else(|| format!("{id} isn't a feature"))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            placed.sort();
+            Ok(Originals::Features(
+                placed.into_iter().map(|(_, id)| id).collect(),
+            ))
+        }
+    }
+}
+
+/// Refuses a pattern that skips an instance it has: FreeCAD 1.1.3 has no instances to skip
+/// (main's `SuppressedIndices` came after it). A skip past a count takes nothing out.
+fn unskipped(
+    feature: &Feature,
+    skip: &[silico_core::document::Skipped],
+    counts: &[u32],
+) -> Result<(), String> {
+    match skipped_in_range(skip, counts).first() {
+        None => Ok(()),
+        Some(instance) => Err(format!(
+            "{} skips instance {instance}, which FreeCAD 1.1.3's patterns can't",
+            feature.id
+        )),
+    }
+}
+
+/// Each of `cases` with its references by name described as Silico's rebuild `model` found
+/// them, so FreeCAD can find each in its own build by its geometry ([`measures::resolve`],
+/// as a measure case's elements are); or why a case's can't be, in its words.
+pub fn describe(cases: &[FeatureCase], model: &Model) -> Vec<Result<FeatureCase, String>> {
+    cases
+        .iter()
+        .map(|case| {
+            let mut case = case.clone();
+            describe_model(&mut case.model, model).map_err(|e| format!("{}: {e}", case.name))?;
+            Ok(case)
+        })
+        .collect()
+}
+
+/// The references by name of a body's `features`, each described as [`describe`] does a
+/// case's.
+pub(crate) fn describe_model(
+    features: &mut [PartDesignFeature],
+    model: &Model,
+) -> Result<(), String> {
+    for feature in features {
+        for reference in feature.references_mut() {
+            if let Reference::Element {
+                of,
+                name,
+                element,
+                sense,
+                ..
+            } = reference
+            {
+                let of = FeatureId::new(of.as_str())
+                    .ok_or_else(|| format!("{of} isn't a feature's ID"))?;
+                *element = Some(measures::resolve(model, std::slice::from_ref(&of), name)?.element);
+                *sense = measures::sense(model, &of, name)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+impl PartDesignFeature {
+    /// A pattern's direction, axis, or plane references; none for any other feature.
+    pub fn references(&self) -> Vec<&Reference> {
+        match self {
+            PartDesignFeature::LinearPattern(p) => {
+                p.directions.iter().map(|d| &d.reference).collect()
+            }
+            PartDesignFeature::PolarPattern(p) => vec![&p.axis],
+            PartDesignFeature::Mirrored(m) => vec![&m.plane],
+            _ => Vec::new(),
+        }
+    }
+
+    fn references_mut(&mut self) -> Vec<&mut Reference> {
+        match self {
+            PartDesignFeature::LinearPattern(p) => {
+                p.directions.iter_mut().map(|d| &mut d.reference).collect()
+            }
+            PartDesignFeature::PolarPattern(p) => vec![&mut p.axis],
+            PartDesignFeature::Mirrored(m) => vec![&mut m.plane],
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// `cases` with their references by name described ([`describe`]) by Silico's rebuild of
+/// their document, ready for [`freecad`]; the first that can't be, why.
+pub fn described(cases: &Cases) -> Result<Vec<FeatureCase>, String> {
+    let model = rebuilt(cases)?;
+    describe(&cases.cases, &model).into_iter().collect()
 }
 
 /// `sketch`'s curves in FreeCAD's terms, at the coordinates it stores.
@@ -615,7 +972,25 @@ enum FreecadShape<'a> {
 
 /// What FreeCAD builds and measures for each of `cases`, in order.
 pub fn freecad(cases: &[FeatureCase]) -> Result<Vec<Outcome>, String> {
-    let _span = tracing::info_span!("freecad_sketch_features", cases = cases.len()).entered();
+    let _span = tracing::info_span!("freecad_feature_cases", cases = cases.len()).entered();
+    for case in cases {
+        let undescribed = case.model.iter().find_map(|f| {
+            f.references().into_iter().find_map(|r| match r {
+                Reference::Element {
+                    name,
+                    element: None,
+                    ..
+                } => Some(name.clone()),
+                _ => None,
+            })
+        });
+        if let Some(name) = undescribed {
+            return Err(format!(
+                "{}'s reference {name} isn't described: FreeCAD finds it by its geometry as Silico's rebuild describes it (`describe`)",
+                case.name
+            ));
+        }
+    }
     let models: Vec<FreecadCase> = cases
         .iter()
         .map(|c| FreecadCase {
@@ -650,15 +1025,19 @@ impl Ours {
     }
 }
 
-/// Silico's outcome for each case: the document rebuilt through the core's commands (on a
-/// pool of kernel workers, its sketches on the sketch worker), and each case's solid
-/// measured on a kernel worker as FreeCAD measures.
-pub fn silico(cases: &Cases) -> Result<Vec<Ours>, String> {
-    let _span = tracing::info_span!("silico_sketch_features", cases = cases.cases.len()).entered();
+/// The cases' document rebuilt through the core's commands, on a pool of kernel workers,
+/// its sketches on the sketch worker.
+pub fn rebuilt(cases: &Cases) -> Result<std::sync::Arc<Model>, String> {
     let engine = Recompute::new(KernelPool::start());
-    let model = rebuild(&engine, cases.document.clone())
+    rebuild(&engine, cases.document.clone())
         .map_err(|e| e.to_string())?
-        .ok_or_else(|| "the rebuild was superseded, though nothing else ran".to_owned())?;
+        .ok_or_else(|| "the rebuild was superseded, though nothing else ran".to_owned())
+}
+
+/// Silico's outcome for each case: its solid in `model`, the cases' document rebuilt
+/// ([`rebuilt`]), measured on a kernel worker as FreeCAD measures.
+pub fn silico(cases: &Cases, model: &Model) -> Result<Vec<Ours>, String> {
+    let _span = tracing::info_span!("silico_feature_cases", cases = cases.cases.len()).entered();
     let mut kernel = KernelWorker::start().map_err(|e| e.to_string())?;
     let mut found = Vec::with_capacity(cases.cases.len());
     for case in &cases.cases {
@@ -752,20 +1131,50 @@ pub fn compare(case: &FeatureCase, ours: &Outcome, theirs: &Outcome) -> Vec<Stri
     differences(ours, theirs, case.tolerance)
 }
 
-/// Every case of `cases` that differs: Silico's rebuild of the document (M3.6, step iv)
-/// compared with FreeCAD's build of each case, and with the case's expected values (each
-/// such difference said as Silico's), for `silico-oracle run` and the test alike.
-pub fn run(cases: &Cases) -> Result<Vec<crate::Difference>, String> {
-    let ours = silico(cases)?;
-    let theirs = freecad(&cases.cases)?;
-    if ours.len() != cases.cases.len() || theirs.len() != cases.cases.len() {
+/// FreeCAD's `answered` outcomes put back in `described`'s order, one for each case it was
+/// asked (each described), and each case that couldn't be described lost, naming why;
+/// refused unless Silico gave an outcome for every case (`ours`) and FreeCAD one for each
+/// it was asked, so no case is compared with another's answer.
+fn placed(
+    described: Vec<Result<FeatureCase, String>>,
+    ours: usize,
+    answered: Vec<Outcome>,
+) -> Result<Vec<Outcome>, String> {
+    let asked = described.iter().filter(|d| d.is_ok()).count();
+    if ours != described.len() || answered.len() != asked {
         return Err(format!(
-            "{} sketch-feature cases gave {} outcomes from Silico and {} from FreeCAD",
-            cases.cases.len(),
-            ours.len(),
-            theirs.len()
+            "{} feature cases gave {ours} outcomes from Silico, and FreeCAD {} for the {asked} it was asked",
+            described.len(),
+            answered.len(),
         ));
     }
+    let mut answered = answered.into_iter();
+    Ok(described
+        .into_iter()
+        .map(|d| match d {
+            Ok(_) => answered
+                .next()
+                .unwrap_or_else(|| Outcome::Lost("unanswered".to_owned())),
+            Err(why) => Outcome::Lost(format!(
+                "not built: its reference isn't in Silico's rebuild, so FreeCAD can't be shown it: {why}"
+            )),
+        })
+        .collect())
+}
+
+/// Every case of `cases` that differs: Silico's rebuild of the document (M3.6, step iv;
+/// M6.4) compared with FreeCAD's build of each case, and with the case's expected values
+/// (each such difference said as Silico's), for `silico-oracle run` and the test alike.
+pub fn run(cases: &Cases) -> Result<Vec<crate::Difference>, String> {
+    let model = rebuilt(cases)?;
+    let ours = silico(cases, &model)?;
+    // A case whose reference by name Silico's rebuild can't give (its base refused, or the
+    // name finding nothing) isn't asked of FreeCAD: it's lost, a difference, and the rest
+    // are still compared.
+    let described = describe(&cases.cases, &model);
+    let asked: Vec<FeatureCase> = described.iter().filter_map(|d| d.clone().ok()).collect();
+    let answered = freecad(&asked)?;
+    let theirs = placed(described, ours.len(), answered)?;
     let mut found = Vec::new();
     for ((case, ours), theirs) in cases.cases.iter().zip(&ours).zip(theirs) {
         let ours = ours.outcome();
@@ -785,4 +1194,62 @@ pub fn run(cases: &Cases) -> Result<Vec<crate::Difference>, String> {
         }
     }
     Ok(found)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A case named `name`, of no feature: only its place in the list matters here.
+    fn case(name: &str) -> FeatureCase {
+        FeatureCase {
+            name: name.to_owned(),
+            note: String::new(),
+            feature: FeatureId::new("p0000001").unwrap(),
+            expected: Expected::parse("Expected: volume 1.").unwrap(),
+            model: Vec::new(),
+            tolerance: Tolerance::PLANAR,
+        }
+    }
+
+    fn answer(why: &str) -> Outcome {
+        Outcome::Failed(why.to_owned())
+    }
+
+    #[test]
+    fn each_answer_goes_back_to_its_own_case_and_the_undescribed_are_lost() {
+        // Three cases, the middle one undescribed: FreeCAD answered the other two, in turn.
+        let described = vec![
+            Ok(case("first")),
+            Err("no such face".to_owned()),
+            Ok(case("third")),
+        ];
+        let placed = placed(described, 3, vec![answer("a"), answer("c")]).unwrap();
+        assert_eq!(placed.len(), 3);
+        assert_eq!(placed[0], answer("a"));
+        assert!(
+            matches!(&placed[1], Outcome::Lost(why) if why.ends_with(": no such face")),
+            "{:?}",
+            placed[1]
+        );
+        assert_eq!(placed[2], answer("c"));
+    }
+
+    #[test]
+    fn a_count_off_on_either_side_is_refused_naming_both() {
+        // FreeCAD one answer short, Silico's count right; then Silico's count off, FreeCAD's
+        // right: either alone is refused, so no case takes another's answer.
+        let described = || vec![Ok(case("first")), Ok(case("second"))];
+        let short = placed(described(), 2, vec![answer("a")]).unwrap_err();
+        assert_eq!(
+            short,
+            "2 feature cases gave 2 outcomes from Silico, and FreeCAD 1 for the 2 it was asked"
+        );
+        let silico = placed(described(), 1, vec![answer("a"), answer("b")]).unwrap_err();
+        assert_eq!(
+            silico,
+            "2 feature cases gave 1 outcomes from Silico, and FreeCAD 2 for the 2 it was asked"
+        );
+        assert!(placed(described(), 2, vec![answer("a"), answer("b")]).is_ok());
+    }
 }
