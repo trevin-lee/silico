@@ -7388,7 +7388,10 @@ fn a_pads_direction_is_the_prototypes_segmented_normal_and_reversed_each_saying_
         ))
     );
     // A pocket keeps its Reversed toggle: the prototype draws no direction for one.
-    h.key_press(eframe::egui::Key::Escape);
+    // Cancel, not Esc: Esc stops a preview's rebuild first, if one runs.
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     open_sweep_on_triangle(&mut h, "Pocket");
@@ -7405,7 +7408,10 @@ fn a_pads_direction_is_the_prototypes_segmented_normal_and_reversed_each_saying_
             .is_none()
     );
     // So does a revolve.
-    h.key_press(eframe::egui::Key::Escape);
+    // Cancel, not Esc: Esc stops a preview's rebuild first, if one runs.
+    dialog(&h)
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     open_sweep_on_triangle(&mut h, "Revolve");

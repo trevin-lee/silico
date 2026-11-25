@@ -2297,6 +2297,35 @@ mod tests {
     }
 
     #[test]
+    fn a_segmented_choices_words_are_centred_in_their_buttons() {
+        // `.seg button { display: grid; place-items: center }`: each choice's words centred
+        // in its button, the buttons as the Direction's are laid out (82 by 20, 1 apart, in
+        // a 167 column at (10, 10), by hand).
+        let top = Pos2::new(10.0, 10.0);
+        let mut h = Harness::builder()
+            .with_size(Vec2::new(200.0, 60.0))
+            .build_ui(move |ui| {
+                let column = Rect::from_min_size(top, Vec2::new(167.0, 40.0));
+                ui.scope_builder(UiBuilder::new().max_rect(column), |ui| {
+                    let options = ["One".to_owned(), "Through all".to_owned()];
+                    segmented(ui, &options, 0, true);
+                });
+            });
+        theme::apply(&h.ctx);
+        h.run_steps(2);
+        let first = Rect::from_min_size(top + Vec2::splat(1.0), Vec2::new(82.0, 20.0));
+        let second = first.translate(Vec2::new(83.0, 0.0));
+        for (words, button) in [("One", first), ("Through all", second)] {
+            let shown = text_shape(&h, words);
+            at(
+                shown.pos,
+                button.center() - shown.galley.size() / 2.0,
+                words,
+            );
+        }
+    }
+
+    #[test]
     fn a_pads_direction_is_two_radios_in_a_seg_the_chosen_one_filled_reversed_upside_down() {
         // styles.css: `.seg { background: var(--g200); border-radius: var(--r-sm); padding:
         // 1px; gap: 1px }`; `.seg button { flex: 1; height: 20px; border-radius: 3px }`;
