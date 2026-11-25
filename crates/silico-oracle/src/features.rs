@@ -1127,9 +1127,30 @@ pub fn compare(case: &FeatureCase, ours: &Outcome, theirs: &Outcome) -> Vec<Stri
 pub fn run(cases: &Cases) -> Result<Vec<crate::Difference>, String> {
     let model = rebuilt(cases)?;
     let ours = silico_of(cases, &model)?;
-    let mut described = cases.cases.clone();
-    describe(&mut described, &model)?;
-    let theirs = freecad(&described)?;
+    // A case whose reference by name Silico's rebuild can't give (its base refused, or the
+    // name finding nothing) isn't asked of FreeCAD: it's lost, a difference, and the rest
+    // are still compared.
+    let mut asked = Vec::with_capacity(cases.cases.len());
+    let mut undescribed = BTreeMap::new();
+    for (i, case) in cases.cases.iter().enumerate() {
+        let mut case = case.clone();
+        match describe_model(&mut case.model, &model) {
+            Ok(()) => asked.push(case),
+            Err(why) => {
+                undescribed.insert(i, why);
+            }
+        }
+    }
+    let mut answered = freecad(&asked)?.into_iter();
+    let theirs: Vec<Outcome> = (0..cases.cases.len())
+        .map(|i| match undescribed.remove(&i) {
+            Some(why) => Some(Outcome::Lost(format!(
+                "not built: its reference isn't in Silico's rebuild, so FreeCAD can't be shown it: {why}"
+            ))),
+            None => answered.next(),
+        })
+        .collect::<Option<Vec<Outcome>>>()
+        .ok_or_else(|| "FreeCAD gave fewer outcomes than it was asked for".to_owned())?;
     if ours.len() != cases.cases.len() || theirs.len() != cases.cases.len() {
         return Err(format!(
             "{} sketch-feature cases gave {} outcomes from Silico and {} from FreeCAD",
