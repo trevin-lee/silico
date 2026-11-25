@@ -7647,6 +7647,41 @@ fn a_frames_lines_are_logged_by_their_sets_and_the_strips_drawn_of_them() {
     );
 }
 
+#[test]
+fn a_frames_edge_picks_are_logged_by_the_strips_drawn_again() {
+    on_lavapipe(
+        "render::frame_tests::a_frames_edge_picks_are_logged_by_the_strips_drawn_again",
+        |r| {
+            // The front view's box with three edges across its front face's middle, (10, 0,
+            // 7)–(30, 0, 7), along row 24.0 from column 20 to 41.82, and one off the frame,
+            // (1000, 0, 7)–(1020, 0, 7). A frame picking the pixel (32, 24) draws again the
+            // three, each whole in this orthographic view, one strip each: logged once, 3
+            // strips; not the box's twelve (along rows 20.73 and 31.64 and down columns 9.09
+            // and 52.73) nor the far one. A frame not picking logs none.
+            let mut mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
+            for _ in 0..3 {
+                mesh.edge_points
+                    .extend([[10.0, 0.0, 7.0], [30.0, 0.0, 7.0]]);
+                mesh.edge_point_counts.push(2);
+            }
+            mesh.edge_points
+                .extend([[1000.0, 0.0, 7.0], [1020.0, 0.0, 7.0]]);
+            mesh.edge_point_counts.push(2);
+            r.upload(1, &Arc::new(mesh)).unwrap();
+            let camera = front();
+            let centre = Some(rect([32, 24], [1, 1]));
+            let events = logged("edge picks", ["strips", "strips"], || {
+                draw(r, &frame(&camera, &[1], &[], centre));
+            });
+            assert_eq!(events, [(3, 3)]);
+            let none = logged("edge picks", ["strips", "strips"], || {
+                draw(r, &frame(&camera, &[1], &[], None));
+            });
+            assert!(none.is_empty(), "{none:?}");
+        },
+    );
+}
+
 // Planes among the bodies (Frame::planes: the app's origin planes, the approved prototype's
 // `buildPlanes`). Each expected pixel is placed by the front camera's rule, by hand: x = 21
 // + (column − 32) × 11/12 and z = 7 + (24 − row) × 11/12 (44 mm over 48 rows, about the
