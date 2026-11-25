@@ -3298,3 +3298,46 @@ fn the_rebuild_after_an_edit_that_writes_geometry_takes_the_edits_solve_and_neve
         }
     }
 }
+
+#[test]
+fn an_edit_whose_solve_the_core_cant_read_is_refused_with_the_solvers_fault_the_session_kept() {
+    // A reply the core can't trust (a solution called one that can't be built, every piece
+    // of which can be): the solver's fault, not the sketch's, so the edit is refused with it,
+    // `protocol_error`, naming the sketch, in the reader's words, as a crash or a hang would
+    // be; never judged as the sketch's solve. The session as it was, inside a transaction
+    // and out.
+    fn unreadable(system: &SketchSystem) -> Solved {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.status = SolveStatus::SolvedInvalid;
+        solved
+    }
+    for inside in [true, false] {
+        let f = opened(&bracket());
+        f.checked();
+        if inside {
+            f.begin();
+        }
+        let text = f.text();
+        let file = std::fs::read(f.path()).unwrap();
+        answering_edits(&f, unreadable);
+        let refused = f.refused(
+            "sketch_split",
+            &split(1, "s0000001", "na000001", json!([[30, 0]]), json!(null)),
+        );
+        assert_eq!(
+            (&refused[0]["code"], &refused[0]["feature"]),
+            (&json!("protocol_error"), &json!("s0000001")),
+            "inside: {inside}: {refused}"
+        );
+        // In the reader's own words: the worker's fault, not an edit's verdict ("after the
+        // split, ..."), which a sketch's own refusal of the solve would be.
+        assert_eq!(
+            refused[0]["message"],
+            "the sketch worker calls its solution one that can't be built, and every piece of it can be",
+            "{refused}"
+        );
+        assert_eq!(refused.as_array().unwrap().len(), 1, "{refused}");
+        assert_eq!((f.text(), f.revision()), (text, revision(1)));
+        assert_eq!(std::fs::read(f.path()).unwrap(), file);
+    }
+}
