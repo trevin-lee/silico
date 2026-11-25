@@ -484,8 +484,8 @@ struct FreecadElement {
 /// The solid `id` of `model`'s document as FreeCAD builds it (`oracle.py`'s `build`): a
 /// primitive by Part's `make<Kind>` at its position, a boolean of its two solids, a fillet
 /// or chamfer of its base, each edge found by its geometry in FreeCAD's base as Silico's
-/// base describes it, and a pad, pocket, revolve, or groove as a sketch-feature case's
-/// PartDesign body.
+/// base describes it, and a pad, pocket, revolve, groove, linear pattern, polar pattern, or
+/// mirror as a sketch-feature or pattern case's PartDesign body.
 pub fn body(model: &Model, id: &FeatureId) -> Result<Value, String> {
     let features: &[Feature] = &model.document().features;
     let feature = features
@@ -565,19 +565,15 @@ pub fn body(model: &Model, id: &FeatureId) -> Result<Value, String> {
         Operation::Pad { .. }
         | Operation::Pocket { .. }
         | Operation::Revolve { .. }
-        | Operation::Groove { .. } => json!({"part_design": {
-            "features": features::part_design_model(features, id)?,
-        }}),
-        Operation::Sketch(_) => return Err(format!("{id} is a sketch, which makes no solid")),
-        // The oracle's translation of a pattern or mirror to PartDesign's is M6.4's.
-        Operation::LinearPattern { .. }
+        | Operation::Groove { .. }
+        | Operation::LinearPattern { .. }
         | Operation::PolarPattern { .. }
         | Operation::Mirror { .. } => {
-            return Err(format!(
-                "{id} is a {}, which the oracle doesn't translate yet",
-                feature.operation.type_name()
-            ));
+            let mut body = features::part_design_model(features, id)?;
+            features::describe_model(&mut body, model)?;
+            json!({"part_design": {"features": body}})
         }
+        Operation::Sketch(_) => return Err(format!("{id} is a sketch, which makes no solid")),
     })
 }
 

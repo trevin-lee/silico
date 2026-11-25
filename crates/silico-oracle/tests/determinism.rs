@@ -3,7 +3,8 @@
 //! the others) gives byte-identical B-reps, histories (each result's fates, counts, and
 //! ends, and, beside them, its topology), summaries, each named view's camera fitted to its
 //! box (M4.6), FreeCAD-style measures, and meshes;
-//! and so does every sketch-feature case (M3.6), its document rebuilt twice by recompute,
+//! and so does every sketch-feature case (M3.6) and pattern case (M6.4), its document
+//! rebuilt twice by recompute,
 //! and every measure case's answer (M4.5), as the command API writes it, its witness's
 //! points included, its document rebuilt twice.
 //! Their digests match a committed reference, recorded on the Mac, so CI on Linux checks
@@ -199,11 +200,24 @@ fn run(cases: &[Case]) -> Digests {
         .collect()
 }
 
-/// Every sketch-feature case's digests (M3.6): the document rebuilt by recompute on a fresh
-/// pool and sketch worker, each case's solid as its feature built it (its last step's
-/// history), digested on a fresh worker, under the case's name.
+/// Every sketch-feature case's digests (M3.6), and every pattern case's (M6.4): each
+/// document rebuilt by recompute on a fresh pool and sketch worker, each case's solid as its
+/// feature built it (its last step's history), digested on a fresh worker, under the case's
+/// name.
 fn run_features() -> Digests {
-    let cases = features::load(Path::new(CASES)).unwrap().unwrap();
+    let dir = Path::new(CASES);
+    let mut digests = digests_of_cases(&features::load(dir).unwrap().unwrap());
+    for (name, found) in digests_of_cases(&features::load_patterns(dir).unwrap().unwrap()) {
+        assert!(
+            digests.insert(name.clone(), found).is_none(),
+            "{name} is a case twice"
+        );
+    }
+    digests
+}
+
+/// The digests of `cases`, as [`run_features`] takes them.
+fn digests_of_cases(cases: &features::Cases) -> Digests {
     let engine = Recompute::new(KernelPool::start());
     let model = rebuild(&engine, cases.document.clone()).unwrap().unwrap();
     let mut kernel = KernelWorker::start().unwrap();
@@ -264,12 +278,13 @@ fn every_oracle_case_builds_the_same_every_time_and_everywhere() {
             "{name} built differently on a fresh worker"
         );
     }
-    // The sketch-feature cases, the document rebuilt twice, each by a fresh engine.
+    // The sketch-feature and pattern cases, each document rebuilt twice, each by a fresh
+    // engine.
     let features = run_features();
     assert_eq!(
         features,
         run_features(),
-        "a sketch-feature case built differently"
+        "a sketch-feature or pattern case built differently"
     );
     for (name, digests) in features {
         assert!(

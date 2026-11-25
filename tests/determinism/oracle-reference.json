@@ -23,6 +23,24 @@
     "summary": "7884743f31c994f2",
     "topology": "c21a22a465092904"
   },
+  "bottom_face": {
+    "brep": "c322c7b0566508bb",
+    "cameras": "397ba28376f0757a",
+    "history": "0c5936954eed086b",
+    "measures": "f18c3afec27510b9",
+    "mesh": "cd903f188b487d85",
+    "summary": "9406ea2e4b5ed4ff",
+    "topology": "29738061bf6a68dd"
+  },
+  "bottom_face_block": {
+    "brep": "336aec5bb65eb5c8",
+    "cameras": "e18c5690016935d0",
+    "history": "f8233f40d30f41a9",
+    "measures": "910810dce0925486",
+    "mesh": "5358af06c0bed145",
+    "summary": "94abb00fac60e531",
+    "topology": "24e6ef92cb7923ed"
+  },
   "box_10_20_30": {
     "brep": "67208fb74b93f8bc",
     "cameras": "52c5e2cbc23ef0c0",
@@ -251,6 +269,60 @@
   "discs_overlapping": {
     "answer": "61e939da59614f75"
   },
+  "edge_axis": {
+    "brep": "3ec023b223efbd77",
+    "cameras": "5f67da3e1ad1b6d9",
+    "history": "65af9719e26b1295",
+    "measures": "a8eda2c3e0e91dbf",
+    "mesh": "e00c9f5ad80d93e5",
+    "summary": "9b0557d28a3954f9",
+    "topology": "f7da4960550b0506"
+  },
+  "edge_axis_cube": {
+    "brep": "dee32daef2b4de86",
+    "cameras": "068c6b0690e603a4",
+    "history": "f8233f40d30f41a9",
+    "measures": "9039cb085fcab921",
+    "mesh": "0492b114bbd97545",
+    "summary": "bdcc4adede74625c",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "edge_direction": {
+    "brep": "68f21e6b536b2d79",
+    "cameras": "d4ff68377e752b94",
+    "history": "702e0fbbb26f24ca",
+    "measures": "fcc0cdcc81029221",
+    "mesh": "adbada6c3ca163bf",
+    "summary": "7b9137de9a9058d1",
+    "topology": "aff3632431489972"
+  },
+  "edge_direction_hole": {
+    "brep": "12837d57085aacf6",
+    "cameras": "d4ff68377e752b94",
+    "history": "21fc549fea7f3cf8",
+    "measures": "f0fc208e51656c58",
+    "mesh": "b0f9345fbd337132",
+    "summary": "bfd2611f88c5025a",
+    "topology": "3d83d7ee33b5e956"
+  },
+  "edge_direction_plate": {
+    "brep": "3438cb5eb58758c0",
+    "cameras": "d4ff68377e752b94",
+    "history": "f8233f40d30f41a9",
+    "measures": "a4a83ae83d9af7ad",
+    "mesh": "00d4150bb83dc8c5",
+    "summary": "353c324e728966b1",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "edge_direction_pocket": {
+    "brep": "0f3672ff6afa7e8d",
+    "cameras": "d4ff68377e752b94",
+    "history": "655a04a4106d23bd",
+    "measures": "2018fbbb3986277d",
+    "mesh": "94b6d0362bcb07ed",
+    "summary": "56c4981b7cb15c86",
+    "topology": "cd5dbe0b80b75fca"
+  },
   "extrude_film": {
     "brep": "b074820d55d62d01",
     "cameras": "052b9689cb1448b3",
@@ -276,6 +348,24 @@
     "measures": "c2bfc56fd2f34516",
     "mesh": "9902b0f782cf1ec5",
     "summary": "a8157a46682b2e11",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "face_plane": {
+    "brep": "f5925d6337fefab6",
+    "cameras": "8f066a00de933108",
+    "history": "f7999682e19a7b60",
+    "measures": "6c2cb29debf57879",
+    "mesh": "d9bc1cd08b62b505",
+    "summary": "7fd1ace1485af003",
+    "topology": "56bb6f011f9e1480"
+  },
+  "face_plane_cube": {
+    "brep": "dee32daef2b4de86",
+    "cameras": "068c6b0690e603a4",
+    "history": "f8233f40d30f41a9",
+    "measures": "9039cb085fcab921",
+    "mesh": "0492b114bbd97545",
+    "summary": "bdcc4adede74625c",
     "topology": "24e6ef92cb7923ed"
   },
   "faces_a_nanometre_apart": {
@@ -696,6 +786,33 @@
     "summary": "147475302698b048",
     "topology": "2c387de5a2df2b12"
   },
+  "grid": {
+    "brep": "0f5cbd4198af9d22",
+    "cameras": "cf42c5ce1eaedea3",
+    "history": "82ae6f92934c8cb1",
+    "measures": "7b00eaffc38f5248",
+    "mesh": "5ea2e55e6c9f6eb1",
+    "summary": "35f55726d02529e7",
+    "topology": "aa62c958e36b362f"
+  },
+  "grid_hole": {
+    "brep": "0c1517f05fbaadc9",
+    "cameras": "cf42c5ce1eaedea3",
+    "history": "21fc549fea7f3cf8",
+    "measures": "e674b61b47683533",
+    "mesh": "cf9c10b36e950ef4",
+    "summary": "f2b9b7001749a1fa",
+    "topology": "3d83d7ee33b5e956"
+  },
+  "grid_plate": {
+    "brep": "735d4ac4886fbdbb",
+    "cameras": "cf42c5ce1eaedea3",
+    "history": "f8233f40d30f41a9",
+    "measures": "8d1d6893e45c3f3e",
+    "mesh": "0767cc73c6390d85",
+    "summary": "b383feebe7f47247",
+    "topology": "24e6ef92cb7923ed"
+  },
   "groove_360_one_side_xy": {
     "brep": "ae1fa2ed5b86fa3d",
     "cameras": "6d7ce5be989be848",
@@ -1020,6 +1137,60 @@
     "summary": "87e378915dccd8e5",
     "topology": "ee88d0c9fb4cf028"
   },
+  "groove_copies": {
+    "brep": "396ad944064a39c7",
+    "cameras": "ff1f939b66f30617",
+    "history": "634180ea26972bb6",
+    "measures": "78c5e8be87e57db0",
+    "mesh": "776ed8e9a17a05d5",
+    "summary": "d7bee9f2136c5081",
+    "topology": "342e2a57ea8c59f8"
+  },
+  "groove_copies_block": {
+    "brep": "10ddbb874d379b66",
+    "cameras": "ff1f939b66f30617",
+    "history": "f8233f40d30f41a9",
+    "measures": "64c46c0fde60d1b9",
+    "mesh": "ca814715f036f745",
+    "summary": "b36322f67c14a8e2",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "groove_copies_groove": {
+    "brep": "1487ded51516b95c",
+    "cameras": "ff1f939b66f30617",
+    "history": "99fe953616792d5a",
+    "measures": "bd70de1642a091a7",
+    "mesh": "9299c71657818e3a",
+    "summary": "db48ea2aec9c5436",
+    "topology": "574bb144b087e80e"
+  },
+  "half_turn": {
+    "brep": "161c3519ecc22aef",
+    "cameras": "ebf8c004c1a659d2",
+    "history": "fa7aaf56a669e5ed",
+    "measures": "0b50c592d112bf00",
+    "mesh": "b1fbcf6e6a0a3729",
+    "summary": "20021f8a37df3bfc",
+    "topology": "07d86e3a915c0942"
+  },
+  "half_turn_boss": {
+    "brep": "fe8e7d53f4a09c8b",
+    "cameras": "ebf8c004c1a659d2",
+    "history": "9d2939d7a42bc2c9",
+    "measures": "19a1441392d9b934",
+    "mesh": "c16909c93483dca1",
+    "summary": "1943de6b89362e8d",
+    "topology": "0a552fb274b5e011"
+  },
+  "half_turn_disc": {
+    "brep": "3e78f9ef8af1038f",
+    "cameras": "2e12e10fc1f957de",
+    "history": "616cc19e20092a6b",
+    "measures": "0a356040d48cb31c",
+    "mesh": "c1350b75e6e41e39",
+    "summary": "2a437fbc117aaca7",
+    "topology": "ee88d0c9fb4cf028"
+  },
   "hexagon_top_edges": {
     "answer": "57d82b5395f9fb2c"
   },
@@ -1043,6 +1214,213 @@
   },
   "line_in_a_plane": {
     "answer": "1bb44d7e1c63d581"
+  },
+  "linear_x": {
+    "brep": "b81991bf331f21ee",
+    "cameras": "8ad6ad8cbcc800b6",
+    "history": "c01de850ba527258",
+    "measures": "8ccadd586819b220",
+    "mesh": "aac28ac773529aa5",
+    "summary": "bdaf7c482551c01f",
+    "topology": "b99da253e1e7ef3a"
+  },
+  "linear_x_cube": {
+    "brep": "dee32daef2b4de86",
+    "cameras": "068c6b0690e603a4",
+    "history": "f8233f40d30f41a9",
+    "measures": "9039cb085fcab921",
+    "mesh": "0492b114bbd97545",
+    "summary": "bdcc4adede74625c",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "linear_y": {
+    "brep": "feabf422a1bfdf01",
+    "cameras": "cf3890f7a4379932",
+    "history": "0f0be11f7f1ef910",
+    "measures": "9d29632514d75f2e",
+    "mesh": "05f8a3261463add5",
+    "summary": "2bd6189fc9126bfa",
+    "topology": "e09aa382648e84d1"
+  },
+  "linear_y_cube": {
+    "brep": "dee32daef2b4de86",
+    "cameras": "068c6b0690e603a4",
+    "history": "f8233f40d30f41a9",
+    "measures": "9039cb085fcab921",
+    "mesh": "0492b114bbd97545",
+    "summary": "bdcc4adede74625c",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "linear_z": {
+    "brep": "2a978eb3a050409b",
+    "cameras": "860cc8a64b982f76",
+    "history": "78c00837f16f39ca",
+    "measures": "bbc0c93b102c3e6c",
+    "mesh": "d883a9e916ef19e5",
+    "summary": "d982ae5ab26b7ae8",
+    "topology": "8bc716305d63c0af"
+  },
+  "linear_z_cube": {
+    "brep": "dee32daef2b4de86",
+    "cameras": "068c6b0690e603a4",
+    "history": "f8233f40d30f41a9",
+    "measures": "9039cb085fcab921",
+    "mesh": "0492b114bbd97545",
+    "summary": "bdcc4adede74625c",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "mirror_notch": {
+    "brep": "e6e0952a4352aefc",
+    "cameras": "d4ff68377e752b94",
+    "history": "bc50467206504c41",
+    "measures": "82b6942305aaa0aa",
+    "mesh": "fa0c589647f9db7d",
+    "summary": "f1b678af76fe416f",
+    "topology": "19d5019b2b61333a"
+  },
+  "mirror_notch_cut": {
+    "brep": "4df98f23d46094c6",
+    "cameras": "d4ff68377e752b94",
+    "history": "d2073080cbf39d71",
+    "measures": "7d4ee76da997b05d",
+    "mesh": "7788586475866544",
+    "summary": "31667449894bbc0d",
+    "topology": "f88788d4ade4de53"
+  },
+  "mirror_notch_plate": {
+    "brep": "3438cb5eb58758c0",
+    "cameras": "d4ff68377e752b94",
+    "history": "f8233f40d30f41a9",
+    "measures": "a4a83ae83d9af7ad",
+    "mesh": "00d4150bb83dc8c5",
+    "summary": "353c324e728966b1",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "mirror_off_axis": {
+    "brep": "2680f441bf0bcd96",
+    "cameras": "adc9253eed2e2bd2",
+    "history": "6c85972f392d6d9c",
+    "measures": "840b1f4171865611",
+    "mesh": "d92f688ad4070c26",
+    "summary": "63805f16fcde3535",
+    "topology": "738f81be013256d7"
+  },
+  "mirror_off_axis_boss": {
+    "brep": "74cec1650c5e8bb9",
+    "cameras": "adc9253eed2e2bd2",
+    "history": "308641dde4b16661",
+    "measures": "8c38992bbc113907",
+    "mesh": "ae2dfcb9d6467c1e",
+    "summary": "16a45a737e38da66",
+    "topology": "4ca7bbb740175690"
+  },
+  "mirror_off_axis_box": {
+    "brep": "87da82f6cb1087f0",
+    "cameras": "80328cb302ac8a3c",
+    "history": "f8233f40d30f41a9",
+    "measures": "0aea32019097745d",
+    "mesh": "d93f5a23d2238145",
+    "summary": "c75f4a7dce585fcc",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "mirror_whole_xy": {
+    "brep": "508607bff6a8676b",
+    "cameras": "e30717eee7c0478d",
+    "history": "098be936bba1dbaf",
+    "measures": "bc79eabbc8f22538",
+    "mesh": "3920dbca8b315c85",
+    "summary": "414875669aed1bce",
+    "topology": "06e223554f4ffddf"
+  },
+  "mirror_whole_xy_cube": {
+    "brep": "bd888096f4921b23",
+    "cameras": "4dcf6f5a47a0da59",
+    "history": "f8233f40d30f41a9",
+    "measures": "5bb311e270a0e8c4",
+    "mesh": "ddd32d7ccaef8dc5",
+    "summary": "a4ceff9cc5a2354d",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "mirror_xy": {
+    "brep": "3c037e1f44f011bb",
+    "cameras": "99e19a5aa1680eb9",
+    "history": "098be936bba1dbaf",
+    "measures": "264d35ea73b76b69",
+    "mesh": "d6b786ea986d1fc5",
+    "summary": "34513df838f8cb7f",
+    "topology": "06e223554f4ffddf"
+  },
+  "mirror_xy_cube": {
+    "brep": "dee32daef2b4de86",
+    "cameras": "068c6b0690e603a4",
+    "history": "f8233f40d30f41a9",
+    "measures": "9039cb085fcab921",
+    "mesh": "0492b114bbd97545",
+    "summary": "bdcc4adede74625c",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "nested": {
+    "brep": "a7a5a5559ee16784",
+    "cameras": "0bc313fdd7aaa28d",
+    "history": "7c553787e178ab1a",
+    "measures": "f96354f2fc9d09ef",
+    "mesh": "97f3d5d9ded8a58c",
+    "summary": "a4477901f1662bd0",
+    "topology": "8d6eaa19c21b96e6"
+  },
+  "nested_boss": {
+    "brep": "36cef508f5663e29",
+    "cameras": "e18c5690016935d0",
+    "history": "308641dde4b16661",
+    "measures": "de53e968da49c8eb",
+    "mesh": "2b7f8a8b39f6d746",
+    "summary": "f86a88bb0bf2a122",
+    "topology": "4ca7bbb740175690"
+  },
+  "nested_pattern": {
+    "brep": "6c168663c6989673",
+    "cameras": "e18c5690016935d0",
+    "history": "524840cd2f55c112",
+    "measures": "d9b33f59ed71f45b",
+    "mesh": "551a78c11af42383",
+    "summary": "350a739b7cdc7945",
+    "topology": "8aa6c6c97acd0f36"
+  },
+  "nested_plate": {
+    "brep": "be6dedf862f31fbe",
+    "cameras": "8d33c0630f3afdf4",
+    "history": "f8233f40d30f41a9",
+    "measures": "16f1e80cdb3e4a02",
+    "mesh": "dae7eeee3a77fce5",
+    "summary": "5be4ac7bd73afccd",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "one_instance": {
+    "brep": "fe8e7d53f4a09c8b",
+    "cameras": "ebf8c004c1a659d2",
+    "history": "9d2939d7a42bc2c9",
+    "measures": "19a1441392d9b934",
+    "mesh": "c16909c93483dca1",
+    "summary": "1943de6b89362e8d",
+    "topology": "0a552fb274b5e011"
+  },
+  "one_instance_boss": {
+    "brep": "fe8e7d53f4a09c8b",
+    "cameras": "ebf8c004c1a659d2",
+    "history": "9d2939d7a42bc2c9",
+    "measures": "19a1441392d9b934",
+    "mesh": "c16909c93483dca1",
+    "summary": "1943de6b89362e8d",
+    "topology": "0a552fb274b5e011"
+  },
+  "one_instance_disc": {
+    "brep": "3e78f9ef8af1038f",
+    "cameras": "2e12e10fc1f957de",
+    "history": "616cc19e20092a6b",
+    "measures": "0a356040d48cb31c",
+    "mesh": "c1350b75e6e41e39",
+    "summary": "2a437fbc117aaca7",
+    "topology": "ee88d0c9fb4cf028"
   },
   "opposite_quarter_arcs": {
     "answer": "992f8ed13531cd2b"
@@ -1395,6 +1773,60 @@
     "summary": "03e62b85b669903e",
     "topology": "2cba224b9b5aa6e3"
   },
+  "polar_x": {
+    "brep": "635fe91ca0177997",
+    "cameras": "fe2359b7bbabe311",
+    "history": "9236770f5640faa2",
+    "measures": "dcdd98e7c6a9d23d",
+    "mesh": "76cfc393a96830a8",
+    "summary": "a1ee85eb6a3d030c",
+    "topology": "dbf9b732e0e82539"
+  },
+  "polar_x_cube": {
+    "brep": "dee32daef2b4de86",
+    "cameras": "068c6b0690e603a4",
+    "history": "f8233f40d30f41a9",
+    "measures": "9039cb085fcab921",
+    "mesh": "0492b114bbd97545",
+    "summary": "bdcc4adede74625c",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "polar_y": {
+    "brep": "b7d65a73722ac53a",
+    "cameras": "7b9501e327bf0ae1",
+    "history": "29dd23db06e36ad6",
+    "measures": "2d70cc86adc6435d",
+    "mesh": "88b9d021e9749f09",
+    "summary": "c5d20eec6f67db84",
+    "topology": "146687ec61496b3b"
+  },
+  "polar_y_cube": {
+    "brep": "dee32daef2b4de86",
+    "cameras": "068c6b0690e603a4",
+    "history": "f8233f40d30f41a9",
+    "measures": "9039cb085fcab921",
+    "mesh": "0492b114bbd97545",
+    "summary": "bdcc4adede74625c",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "polar_z": {
+    "brep": "f4d2142d69170f0a",
+    "cameras": "3dfb1567aac8d199",
+    "history": "2445cd38a656d098",
+    "measures": "0cfd7d2ea9399749",
+    "mesh": "d8d337ee4bc23629",
+    "summary": "8116c90ddc03f9e5",
+    "topology": "61cd716126ee53ab"
+  },
+  "polar_z_cube": {
+    "brep": "dee32daef2b4de86",
+    "cameras": "068c6b0690e603a4",
+    "history": "f8233f40d30f41a9",
+    "measures": "9039cb085fcab921",
+    "mesh": "0492b114bbd97545",
+    "summary": "bdcc4adede74625c",
+    "topology": "24e6ef92cb7923ed"
+  },
   "ramp_from_a_flat": {
     "answer": "550a561ada72e00f"
   },
@@ -1415,6 +1847,60 @@
     "mesh": "156de5767d73323a",
     "summary": "282fe580b118ab3a",
     "topology": "9fce4ba3083acf26"
+  },
+  "reversed_quarter": {
+    "brep": "d64b87eaa02da656",
+    "cameras": "ebf8c004c1a659d2",
+    "history": "46b5feb07dd99b8e",
+    "measures": "f010b7608d392812",
+    "mesh": "4cf44678f1ca95b5",
+    "summary": "1cc53836d53ef0fc",
+    "topology": "8e34e8ce6609dca2"
+  },
+  "reversed_quarter_boss": {
+    "brep": "fe8e7d53f4a09c8b",
+    "cameras": "ebf8c004c1a659d2",
+    "history": "9d2939d7a42bc2c9",
+    "measures": "19a1441392d9b934",
+    "mesh": "c16909c93483dca1",
+    "summary": "1943de6b89362e8d",
+    "topology": "0a552fb274b5e011"
+  },
+  "reversed_quarter_disc": {
+    "brep": "3e78f9ef8af1038f",
+    "cameras": "2e12e10fc1f957de",
+    "history": "616cc19e20092a6b",
+    "measures": "0a356040d48cb31c",
+    "mesh": "c1350b75e6e41e39",
+    "summary": "2a437fbc117aaca7",
+    "topology": "ee88d0c9fb4cf028"
+  },
+  "reversed_x": {
+    "brep": "d93a7a1034853355",
+    "cameras": "94af652ca4f3fa1d",
+    "history": "ee5e492057c6a6cf",
+    "measures": "d31298dea2757b7a",
+    "mesh": "a764c14bf5b926ca",
+    "summary": "fb599b3513fa89fb",
+    "topology": "8aa6c6c97acd0f36"
+  },
+  "reversed_x_boss": {
+    "brep": "2e8eb68457b94371",
+    "cameras": "94af652ca4f3fa1d",
+    "history": "308641dde4b16661",
+    "measures": "2c9be65b23bd3d51",
+    "mesh": "fcf0fb49c292df9a",
+    "summary": "351b645d126de756",
+    "topology": "4ca7bbb740175690"
+  },
+  "reversed_x_box": {
+    "brep": "c962290aca9bc765",
+    "cameras": "f1bfceba52716e0d",
+    "history": "f8233f40d30f41a9",
+    "measures": "abc924de758093d9",
+    "mesh": "099e4a734771a4c5",
+    "summary": "534346b643a486e1",
+    "topology": "24e6ef92cb7923ed"
   },
   "revolve_ring": {
     "brep": "f0cc5f9c47ea15fc",
@@ -1443,11 +1929,56 @@
     "summary": "622ddf93f8a287df",
     "topology": "20dbe33079fbc8c0"
   },
+  "rim_axis": {
+    "brep": "4da4bddc7f09fb5c",
+    "cameras": "2041c5290799dc6a",
+    "history": "4e913142c8764a86",
+    "measures": "e1dad5ebe98158f0",
+    "mesh": "be83758830c7a806",
+    "summary": "7234dfe2b61bcdeb",
+    "topology": "0b028802fd55d8d4"
+  },
+  "rim_axis_block": {
+    "brep": "336aec5bb65eb5c8",
+    "cameras": "e18c5690016935d0",
+    "history": "f8233f40d30f41a9",
+    "measures": "910810dce0925486",
+    "mesh": "5358af06c0bed145",
+    "summary": "94abb00fac60e531",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "rim_axis_hole": {
+    "brep": "139d99c945e42129",
+    "cameras": "e18c5690016935d0",
+    "history": "21fc549fea7f3cf8",
+    "measures": "04d942523fe44853",
+    "mesh": "d7d40d617e710019",
+    "summary": "ec662220346ddea4",
+    "topology": "3d83d7ee33b5e956"
+  },
   "rims_r3_r4": {
     "answer": "83e13baca05c2b11"
   },
   "segment_over_a_segment": {
     "answer": "f9c817f63d84694e"
+  },
+  "side_face": {
+    "brep": "31f26117a7c2076f",
+    "cameras": "877786fa9f332ada",
+    "history": "bde2372fc526ad46",
+    "measures": "50353fba940ab9ee",
+    "mesh": "0725504fa3187265",
+    "summary": "e6e15cb06f64e5d6",
+    "topology": "c6283ef6448cf24a"
+  },
+  "side_face_block": {
+    "brep": "336aec5bb65eb5c8",
+    "cameras": "e18c5690016935d0",
+    "history": "f8233f40d30f41a9",
+    "measures": "910810dce0925486",
+    "mesh": "5358af06c0bed145",
+    "summary": "94abb00fac60e531",
+    "topology": "24e6ef92cb7923ed"
   },
   "skew_edges": {
     "answer": "418d39cf7572b39a"
@@ -1460,6 +1991,33 @@
     "mesh": "d2c536039ef7a690",
     "summary": "395a90fc8bc9c9ce",
     "topology": "24e6ef92cb7923ed"
+  },
+  "spacing_45": {
+    "brep": "668b382ca68c0d73",
+    "cameras": "ebf8c004c1a659d2",
+    "history": "f4a750a74786454e",
+    "measures": "5c2cb421e359f22e",
+    "mesh": "8f9cf1e669c34558",
+    "summary": "f96c041f92233de5",
+    "topology": "8e21765f12113219"
+  },
+  "spacing_45_boss": {
+    "brep": "fe8e7d53f4a09c8b",
+    "cameras": "ebf8c004c1a659d2",
+    "history": "9d2939d7a42bc2c9",
+    "measures": "19a1441392d9b934",
+    "mesh": "c16909c93483dca1",
+    "summary": "1943de6b89362e8d",
+    "topology": "0a552fb274b5e011"
+  },
+  "spacing_45_disc": {
+    "brep": "3e78f9ef8af1038f",
+    "cameras": "2e12e10fc1f957de",
+    "history": "616cc19e20092a6b",
+    "measures": "0a356040d48cb31c",
+    "mesh": "c1350b75e6e41e39",
+    "summary": "2a437fbc117aaca7",
+    "topology": "ee88d0c9fb4cf028"
   },
   "sphere": {
     "brep": "ecb7ca63de7ebd3e",
@@ -1511,6 +2069,60 @@
   },
   "ten_degrees_one_and_two": {
     "answer": "c733fbaa295765d2"
+  },
+  "three_cylinders": {
+    "brep": "4095554f6c14e3ac",
+    "cameras": "94af652ca4f3fa1d",
+    "history": "524840cd2f55c112",
+    "measures": "58a8727641c9dc65",
+    "mesh": "53ec3f418f1c547c",
+    "summary": "1d70c1b1088caa35",
+    "topology": "8aa6c6c97acd0f36"
+  },
+  "three_cylinders_boss": {
+    "brep": "9658065a88571135",
+    "cameras": "94af652ca4f3fa1d",
+    "history": "308641dde4b16661",
+    "measures": "407eb9675aeae870",
+    "mesh": "0407868026fc6794",
+    "summary": "1501a5e5c7f630d8",
+    "topology": "4ca7bbb740175690"
+  },
+  "three_cylinders_box": {
+    "brep": "c962290aca9bc765",
+    "cameras": "f1bfceba52716e0d",
+    "history": "f8233f40d30f41a9",
+    "measures": "abc924de758093d9",
+    "mesh": "099e4a734771a4c5",
+    "summary": "534346b643a486e1",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "three_holes": {
+    "brep": "3a852a16fbcbfe9c",
+    "cameras": "f1bfceba52716e0d",
+    "history": "bc1e17819d88dd43",
+    "measures": "bb41cf99cbbf713d",
+    "mesh": "97c445ab85465abe",
+    "summary": "d004c8a3486d10a6",
+    "topology": "68643f5775af43a1"
+  },
+  "three_holes_box": {
+    "brep": "c962290aca9bc765",
+    "cameras": "f1bfceba52716e0d",
+    "history": "f8233f40d30f41a9",
+    "measures": "abc924de758093d9",
+    "mesh": "099e4a734771a4c5",
+    "summary": "534346b643a486e1",
+    "topology": "24e6ef92cb7923ed"
+  },
+  "three_holes_hole": {
+    "brep": "c01d1ef3ef12bbb8",
+    "cameras": "f1bfceba52716e0d",
+    "history": "21fc549fea7f3cf8",
+    "measures": "2033cba88c88035d",
+    "mesh": "acd4807a431764dc",
+    "summary": "d406ab2c1caba41d",
+    "topology": "3d83d7ee33b5e956"
   },
   "through_rim": {
     "brep": "324bb03c25e9cb47",

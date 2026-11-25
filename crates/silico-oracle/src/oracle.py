@@ -190,14 +190,88 @@ def sketch_axis(sketch, curves, line):
     raise RuntimeError("line %s isn't an edge of its sketch" % line)
 
 
+# Silico's pattern types, PartDesign's features.
+PATTERNS = {
+    "linear_pattern": "PartDesign::LinearPattern",
+    "polar_pattern": "PartDesign::PolarPattern",
+    "mirrored": "PartDesign::Mirrored",
+}
+
+
+def reference(origin, solids, r):
+    """A pattern's direction, axis, or plane as a link and its sub-element: one of the body's
+    origin features, by its role; or an element of a feature's shape, found by its geometry
+    as Silico's rebuild describes it (`element`), with the element itself."""
+    if r["kind"] == "origin":
+        return (origin[r["role"]], [""]), None
+    o = solids[r["of"]]
+    name = element(o.Shape, r["element"])
+    return (o, [name]), o.Shape.getElement(name)
+
+
+def surface_axis_inward(face):
+    """Whether a planar face's surface axis, which LinearPattern's direction is
+    (`adapt.Plane().Axis().Direction()`, LP:440), points against its outward normal, which
+    Silico's is (docs/ports/patterns.md, decision 3): normalAt turns it for a reversed
+    face."""
+    u0, u1, v0, v1 = face.ParameterRange
+    normal = face.normalAt((u0 + u1) / 2, (v0 + v1) / 2)
+    return dot(face.Surface.Axis, normal) < 0
+
+
+def pattern(body, origin, solids, f):
+    """A LinearPattern, PolarPattern, or Mirrored of `f`'s originals (by ID) or of the whole
+    shape, unrefined."""
+    # Made outside the body and added once it has its originals, as FreeCAD's own tests
+    # make one: a Transformed in Features mode with none is taken for a MultiTransform's
+    # child, which the body doesn't make its tip.
+    o = body.Document.addObject(PATTERNS[f["kind"]], f["kind"])
+    originals = f["originals"]
+    if originals == "whole_shape":
+        o.TransformMode = "Whole shape"
+    else:
+        o.Originals = [solids[i] for i in originals["features"]]
+    body.addObject(o)
+    # Not refined (design S8): its default comes from the user's preferences.
+    o.Refine = False
+    if f["kind"] == "linear_pattern":
+        for n, d in enumerate(f["directions"]):
+            suffix = "" if n == 0 else "2"
+            link, picked = reference(origin, solids, d["reference"])
+            turned = d["outward"] and picked is not None and picked.ShapeType == "Face" and surface_axis_inward(picked)
+            setattr(o, "Direction" + suffix, link)
+            setattr(o, "Reversed" + suffix, d["reversed"] != turned)
+            setattr(o, "Mode" + suffix, d["mode"])
+            setattr(o, "Occurrences" + suffix, d["occurrences"])
+            # Every gap the Offset (-1), as Silico spaces them. Spacings2's default is one
+            # gap of 0 (1.1.3 declares it `({})`, a list of one 0.0), which puts direction
+            # 2's first copy on the original unless it's set.
+            setattr(o, "Spacings" + suffix, [-1.0] * (d["occurrences"] - 1))
+            setattr(o, ("Length" if d["mode"] == "Extent" else "Offset") + suffix, d["length"])
+    elif f["kind"] == "polar_pattern":
+        o.Axis = reference(origin, solids, f["axis"])[0]
+        o.Reversed = f["reversed"]
+        o.Mode = f["mode"]
+        o.Occurrences = f["occurrences"]
+        if f["mode"] == "Extent":
+            o.Angle = f["angle"]
+        else:
+            o.Offset = f["angle"]
+    else:
+        o.MirrorPlane = reference(origin, solids, f["plane"])[0]
+    return o
+
+
 def part_design(doc, features):
-    """A sketch-feature case (silico-oracle's features.rs): its features in one PartDesign
-    body, sketches attached to the body's origin planes with their curves where the
-    document stores them, and FreeCAD's Pad, Pocket, Revolution, and Groove, each
-    unrefined. The last feature's shape."""
+    """A sketch-feature or pattern case (silico-oracle's features.rs): its features in one
+    PartDesign body, sketches attached to the body's origin planes with their curves where
+    the document stores them, and FreeCAD's Pad, Pocket, Revolution, Groove, LinearPattern,
+    PolarPattern, and Mirrored, each unrefined. The last feature's shape."""
     body = doc.addObject("PartDesign::Body", "Body")
-    planes = {o.Role: o for o in body.Origin.OriginFeatures}
+    origin = {o.Role: o for o in body.Origin.OriginFeatures}
     sketches = {}
+    # Each feature that makes a solid, by its ID: an original, or what an element is of.
+    solids = {}
     last = None
     for f in features:
         kind = f["kind"]
@@ -208,10 +282,10 @@ def part_design(doc, features):
             holder.Shape = MAKE[f["shape"]](V(*f["position"]), f["values"])
             base = body.newObject("PartDesign::FeatureBase", "Base")
             base.BaseFeature = holder
-            last = recomputed(doc, base)
+            last = solids[f["id"]] = recomputed(doc, base)
         elif kind == "sketch":
             sk = body.newObject("Sketcher::SketchObject", "Sketch")
-            sk.AttachmentSupport = (planes[f["plane"]], [""])
+            sk.AttachmentSupport = (origin[f["plane"]], [""])
             sk.MapMode = "FlatFace"
             curves = {}
             for g in f["geometry"]:
@@ -235,7 +309,7 @@ def part_design(doc, features):
             o.Length = f["length"]
             o.Length2 = f["length2"]
             o.Reversed = f["reversed"]
-            last = recomputed(doc, o)
+            last = solids[f["id"]] = recomputed(doc, o)
         elif kind in ("revolution", "groove"):
             o = body.newObject("PartDesign::Revolution" if kind == "revolution" else "PartDesign::Groove", kind)
             sk, curves = sketches[f["sketch"]]
@@ -247,7 +321,9 @@ def part_design(doc, features):
             o.Angle = f["angle"]
             o.Midplane = f["midplane"]
             o.Reversed = f["reversed"]
-            last = recomputed(doc, o)
+            last = solids[f["id"]] = recomputed(doc, o)
+        elif kind in PATTERNS:
+            last = solids[f["id"]] = recomputed(doc, pattern(body, origin, solids, f))
         else:
             raise ValueError("unknown feature " + kind)
     if last is None or body.Tip != last:
