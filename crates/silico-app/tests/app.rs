@@ -37418,6 +37418,98 @@ fn row_until(h: &mut AppHarness, key: &str, value: &str) {
 }
 
 #[test]
+fn the_documents_model_shows_its_bodies_volume_area_and_faces_added_and_the_box_around_them() {
+    // `docProps`' MODEL section, with nothing selected. By hand, from BLOCK_AND_PLATE: the
+    // block 40 × 20 × 10 at the origin, 8000 mm³ and 2·(800 + 400 + 200) = 2800 mm²; the
+    // plate 10 × 10 × 2 from x = 50, 200 mm³ and 2·(100 + 20 + 20) = 280 mm². Together
+    // 8200 mm³ and 3080 mm², 6 faces each, and the box around both from (0, 0, 0) to
+    // (60, 20, 10).
+    let f = fixture();
+    let (mut h, _) = f.drawn("blocks.silico", BLOCK_AND_PLATE);
+    row_until(&mut h, "Volume", "8,200.00 mm³");
+    row_until(&mut h, "Area", "3,080.00 mm²");
+    row_until(&mut h, "Size", "60 × 20 × 10 mm");
+    row_until(&mut h, "Faces", "12");
+    assert_eq!(row_value(&h, "Bodies").as_deref(), Some("2"));
+    let reads = h.state().tabs()[0].model_measures().reads();
+    // Another client moves the plate to x = 70 and makes the block 45 long: 9000 + 200 =
+    // 9200 mm³, 2·(900 + 450 + 200) + 280 = 3380 mm², and the box from x = 0 to 80.
+    let id = h.state().tabs()[0].id;
+    let plate = silico_core::document::FeatureId::new("p2t8wn4c").unwrap();
+    let block = silico_core::document::FeatureId::new("k7f2qx3m").unwrap();
+    let revision = h.state().tabs()[0].revision;
+    let moved = f.sessions.set_field(
+        &id,
+        revision,
+        plate,
+        "position".to_owned(),
+        json::read(b"[70, 0, 0]").unwrap(),
+    );
+    let moved = moved.wait();
+    moved.result.unwrap();
+    f.sessions
+        .set_field(
+            &id,
+            moved.session.unwrap().revision,
+            block,
+            "length".to_owned(),
+            json::read(b"45").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    row_until(&mut h, "Volume", "9,200.00 mm³");
+    row_until(&mut h, "Area", "3,380.00 mm²");
+    row_until(&mut h, "Size", "80 × 20 × 10 mm");
+    row_until(&mut h, "Faces", "12");
+    assert!(h.state().tabs()[0].model_measures().reads() > reads);
+    // With an element selected, the selection's view shows, and the model isn't read again
+    // when it changes.
+    select_in_box(&mut h, &["Face6"]);
+    let reads = h.state().tabs()[0].model_measures().reads();
+    let revision = h.state().tabs()[0].revision;
+    f.sessions
+        .set_field(
+            &id,
+            revision,
+            silico_core::document::FeatureId::new("p2t8wn4c").unwrap(),
+            "height".to_owned(),
+            json::read(b"3").unwrap(),
+        )
+        .wait()
+        .result
+        .unwrap();
+    settled_with_model(&mut h);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].model_measures().reads(), reads);
+    // Cleared: the document's view reads the new model. The plate 3 high: 300 mm³ and
+    // 2·(100 + 30 + 30) = 320 mm², with the block's 9000 and 2700.
+    h.state_mut().tabs_mut()[0].selection_mut().clear();
+    row_until(&mut h, "Volume", "9,300.00 mm³");
+    row_until(&mut h, "Area", "3,420.00 mm²");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_body_the_kernel_couldnt_box_has_no_size_row() {
+    // Every summary answered with no box: the block measured (8000 mm³, 2400 mm²) but
+    // never boxed, so its Size row is left out, never said to be coming.
+    let f = fixture();
+    unmeasured(&f);
+    let (mut h, _) = f.drawn("unmeasured.silico", UNMEASURED);
+    row_until(&mut h, "Volume", "8,000.00 mm³");
+    row_until(&mut h, "Area", "2,400.00 mm²");
+    row_until(&mut h, "Faces", "6");
+    step_until(&mut h, "the viewport's read of the model", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.view.bodies_of() == tab.published_model()
+    });
+    step(&mut h);
+    assert_eq!(row_value(&h, "Size"), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_selected_face_edge_and_vertex_show_their_kind_their_measures_and_their_name() {
     // `selectionProps` for one element: its head (its number in the block's solid over what
     // it is, on Block), MEASURES, and NAME. The values by hand from the 40 by 20 by 10
