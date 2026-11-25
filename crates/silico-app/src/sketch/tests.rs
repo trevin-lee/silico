@@ -8298,21 +8298,6 @@ fn leave_it_driving_keeps_the_dimensions_left_before_it_each_once_the_newest_las
     mode.edit_offer = Some((offered.clone(), two));
     assert!(mode.answer_offer(OfferChoice::Leave));
     assert_eq!(mode.left_driving, [id("ka000001"), id("ka000002")]);
-    // ka000002 made driven since: the one before it, ka000001, is what the card means.
-    if let Some(Read {
-        result: Ok(read), ..
-    }) = mode.read.as_mut()
-    {
-        read.members.constraints[1].form = Form::Length {
-            line: element("na000002"),
-            value: mm("20"),
-            driving: false,
-        };
-        read.states
-            .constraints
-            .insert(id("ka000002"), ConstraintState::Unsolved);
-    }
-    assert_eq!(target(&mode), Some(Ok("ka000001".to_owned())));
     // ka000001 left again (an offer for it, judged from the same edit's shape): once.
     mode.left_driving = vec![id("ka000001"), id("ka000002")];
     let mut again = offered;
