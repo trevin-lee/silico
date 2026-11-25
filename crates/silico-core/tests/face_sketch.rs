@@ -1108,6 +1108,8 @@ fn a_sketch_on_a_face_is_placed_ahead_only_from_its_own_solid_once_built_never_f
     assert_ne!(fillet_height, box_height);
     let frame = model.frame(&id("s0000001")).unwrap();
     assert_eq!(frame.origin, [0.0, 0.0, fillet_height], "{frame:?}");
+    // The prism asked for once, on the fillet's frame: none run ahead on another.
+    assert_eq!(asked_count(&held, is_prism), 1);
     let unheld = engine();
     by_solid(&unheld, &Arc::new(Mutex::new(Vec::new())));
     assert_eq!(

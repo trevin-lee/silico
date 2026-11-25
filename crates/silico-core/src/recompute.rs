@@ -1890,6 +1890,30 @@ struct Engine<K> {
     /// A test's hold on the background's naming of each model the engine publishes.
     #[cfg(test)]
     naming_hold: NamingHold,
+    /// A test's view of, and hand in, the engine's looks ahead ([`Engine::look_ahead`]).
+    #[cfg(test)]
+    looks: LookHook,
+}
+
+/// Which looks ahead a test makes panic ([`LookHook`]): a test's stand-in for a bug in
+/// Silico there.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum LookPanics {
+    #[default]
+    Never,
+    /// The look ahead a round starts with, on its own thread.
+    First,
+    /// A look ahead a round's thread starts when a feature a sketch waits on settles.
+    Watched,
+}
+
+/// A test's view of an engine's looks ahead: how many have ended, and which panic.
+#[cfg(test)]
+#[derive(Default)]
+struct LookHook {
+    state: Mutex<(LookPanics, usize)>,
+    changed: Condvar,
 }
 
 /// A test's hold on an engine's background naming ([`Recompute::hold_naming`]): while
@@ -2356,6 +2380,8 @@ impl<K: Kernel + 'static> Recompute<K> {
                 solvers: Mutex::new(SketchSolvers::workers()),
                 #[cfg(test)]
                 naming_hold: NamingHold::default(),
+                #[cfg(test)]
+                looks: LookHook::default(),
                 state: Mutex::new(EngineState {
                     generation,
                     newest_started: generation,
@@ -2407,6 +2433,31 @@ impl<K: Kernel + 'static> Recompute<K> {
     #[cfg(test)]
     pub(crate) fn hold_naming(&self) {
         lock(&self.engine.naming_hold.state).held = true;
+    }
+
+    /// Makes the looks ahead `when` says panic, from now on.
+    #[cfg(test)]
+    pub(crate) fn panic_looking(&self, when: LookPanics) {
+        lock(&self.engine.looks.state).0 = when;
+    }
+
+    /// Waits up to `timeout` until `n` looks ahead have ended, panicked or not: whether they
+    /// had.
+    #[cfg(test)]
+    pub(crate) fn wait_looks(&self, n: usize, timeout: Duration) -> bool {
+        let hook = &self.engine.looks;
+        let state = lock(&hook.state);
+        let (state, _) = hook
+            .changed
+            .wait_timeout_while(state, timeout, |(_, ended)| *ended < n)
+            .unwrap_or_else(PoisonError::into_inner);
+        state.1 >= n
+    }
+
+    /// How many looks ahead have ended, panicked or not.
+    #[cfg(test)]
+    pub(crate) fn looks_ended(&self) -> usize {
+        lock(&self.engine.looks.state).1
     }
 
     /// Lets the background's naming held by [`hold_naming`](Self::hold_naming) go on.
@@ -5306,9 +5357,14 @@ impl<K: Kernel + 'static> Engine<K> {
         scope: &'scope std::thread::Scope<'scope, 'env>,
         n: usize,
     ) -> Result<(), Error> {
+        // Reserved first, so a look ahead starting more meanwhile counts them, and names its
+        // own after them; what didn't start given back.
         let (n, first) = {
-            let s = lock(&serving.schedule);
-            (n.min(MOST_AT_ONCE.saturating_sub(s.threads)), s.threads)
+            let mut s = lock(&serving.schedule);
+            let n = n.min(MOST_AT_ONCE.saturating_sub(s.threads));
+            let first = s.threads;
+            s.threads += n;
+            (n, first)
         };
         let started = start_threads(n, |k| {
             std::thread::Builder::new()
@@ -5322,9 +5378,10 @@ impl<K: Kernel + 'static> Engine<K> {
                     self.serve(serving, scope);
                 })
                 .map(drop)
-        })?;
-        lock(&serving.schedule).threads += started;
-        Ok(())
+        });
+        let mut s = lock(&serving.schedule);
+        s.threads -= n - started.as_ref().map_or(0, |started| *started);
+        started.map(drop)
     }
 
     /// The sketches `document`'s pads, pockets, revolves, and grooves sweep, each solved
@@ -5917,7 +5974,8 @@ impl<K: Kernel + 'static> Engine<K> {
 
     /// [`look_ahead`](Self::look_ahead), a panic under it caught as a job's is: a bug in
     /// Silico, so the recompute stops, and fails with it, rather than waiting forever on a
-    /// look that will never end.
+    /// look that will never end. Its error is the rebuild's, as a sketch solve's panic's is;
+    /// no feature is marked faulted for it, as none is the look's own.
     fn look_ahead_caught<'scope, 'env: 'scope>(
         &'env self,
         serving: &'env Serving<'env>,
@@ -5926,6 +5984,11 @@ impl<K: Kernel + 'static> Engine<K> {
         let looked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.look_ahead(serving, scope);
         }));
+        #[cfg(test)]
+        {
+            lock(&self.looks.state).1 += 1;
+            self.looks.changed.notify_all();
+        }
         if let Err(panic) = looked {
             let mut s = lock(&serving.schedule);
             if s.broken.is_none() {
@@ -5970,11 +6033,20 @@ impl<K: Kernel + 'static> Engine<K> {
             ahead,
         } = serving.rebuild;
         let mut ahead = lock(ahead);
-        // A test's stand-in for a bug in Silico under a look ahead: a document with a
-        // feature of this ID.
+        // A test's stand-in for a bug in Silico under a look ahead.
         #[cfg(test)]
-        if FeatureId::new(tests::LOOK_PANICS).is_some_and(|id| document.feature(&id).is_ok()) {
-            std::panic::resume_unwind(Box::new("a look ahead's test panic"));
+        {
+            let first = std::thread::current()
+                .name()
+                .is_some_and(|name| name.ends_with("-ahead"));
+            let panics = match lock(&self.looks.state).0 {
+                LookPanics::Never => false,
+                LookPanics::First => first,
+                LookPanics::Watched => !first,
+            };
+            if panics {
+                std::panic::resume_unwind(Box::new("a look ahead's test panic"));
+            }
         }
         loop {
             // What's settled so far, and the plan the jobs run by: only a look changes it.
@@ -7685,28 +7757,21 @@ impl Model {
 mod tests {
     use super::*;
 
-    /// A feature ID whose presence in a document makes a look ahead panic
-    /// ([`Engine::look_ahead`]): a test's stand-in for a bug in Silico there.
-    pub(super) const LOOK_PANICS: &str = "zzzzpanc";
-
-    #[test]
-    fn a_look_ahead_that_panics_ends_the_rebuild_with_silicos_bug_and_never_hangs_it() {
-        // Robustness, PR #614's review: a panic under a look ahead, on its own thread,
-        // ended it with the round's job still counted as running, so no thread ever found
-        // the round finished, and the rebuild waited forever. Caught as a job's panic is, it
-        // fails the rebuild with an internal error that says so.
-        let features = vec![
+    /// A box, a sketch on its top padded onto it, and an unrelated box beside it.
+    fn padded_beside_a_box() -> Vec<String> {
+        vec![
             r#"{"id": "b0000001", "type": "box", "v": 1, "name": "B", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#
                 .to_owned(),
             face_sketch("s0000001", "b0000001.box.Face6", 1.0),
             face_pad("p0000001", "b0000001", "s0000001"),
-            format!(
-                r#"{{"id": "{LOOK_PANICS}", "type": "box", "v": 1, "name": "P", "position": [30, 0, 0], "length": 1, "width": 1, "height": 1}}"#
-            ),
-        ];
-        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
-            .with_sketches(crate::fake::FakeSketches::new());
-        let run = engine.start(checked_of(&features));
+            r#"{"id": "b0000002", "type": "box", "v": 1, "name": "C", "position": [30, 0, 0], "length": 1, "width": 1, "height": 1}"#
+                .to_owned(),
+        ]
+    }
+
+    /// `run`'s failure, which must be a look ahead's panic, caught: not a hang.
+    #[track_caller]
+    fn failed_by_the_looks_panic(run: Run) {
         let Ok(outcome) = run.wait_timeout(Duration::from_secs(60)) else {
             panic!("the rebuild hung on the look ahead's panic");
         };
@@ -7716,6 +7781,63 @@ mod tests {
         assert_eq!(error.code(), ErrorCode::Internal);
         assert_eq!(error.message(), "a look ahead at sketches' faces panicked");
         assert_eq!(error.cause(), Some("a look ahead's test panic"));
+    }
+
+    #[test]
+    fn a_look_ahead_that_panics_ends_the_rebuild_with_silicos_bug_and_never_hangs_it() {
+        // Robustness, PR #614's review: a panic under a look ahead, on its own thread,
+        // ended it with the round's job still counted as running, so no thread ever found
+        // the round finished, and the rebuild waited forever. Caught as a job's panic is, it
+        // fails the rebuild with an internal error that says so.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        engine.panic_looking(LookPanics::First);
+        failed_by_the_looks_panic(engine.start(checked_of(&padded_beside_a_box())));
+    }
+
+    #[test]
+    fn a_look_ahead_a_settled_feature_starts_that_panics_ends_the_rebuild_too() {
+        // PR #614's review, round 2: the same, for a look a round's thread starts as the
+        // box the sketch waits on settles. The box's measure is held until the round's first
+        // look has ended, having found it unsettled and watched it; let go, its settle starts
+        // the look that panics, while its job still counts as running.
+        let kernel = crate::fake::FakeKernel::new(2).unwrap();
+        let hold = kernel.hold(|op| match op {
+            crate::kernel::Op::Summarize { shape } => {
+                crate::fake::FakeKernel::describe(shape).is_some_and(|made| made.starts_with("box"))
+            }
+            _ => false,
+        });
+        let engine = Recompute::new(kernel).with_sketches(crate::fake::FakeSketches::new());
+        engine.panic_looking(LookPanics::Watched);
+        let run = engine.start(checked_of(&padded_beside_a_box()));
+        assert!(engine.wait_looks(1, Duration::from_secs(60)));
+        hold.release();
+        failed_by_the_looks_panic(run);
+        assert_eq!(engine.looks_ended(), 2);
+    }
+
+    #[test]
+    fn only_a_round_with_steps_to_run_looks_ahead_so_a_warm_rebuild_never_does() {
+        // PR #614's review, round 2: a look ahead in a round with nothing to run overlaps
+        // nothing and plans each level twice. A first rebuild, its first round with the
+        // boxes to make, looks ahead; a second of the same document, on the same engine,
+        // whose every round has nothing to run, never does.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        let publish = || match engine
+            .start(checked_of(&padded_beside_a_box()))
+            .wait_timeout(Duration::from_secs(60))
+        {
+            Ok(Ok(RunOutcome::Published(_))) => {}
+            Ok(other) => panic!("not published: {other:?}"),
+            Err(_) => panic!("the rebuild didn't finish"),
+        };
+        publish();
+        let cold = engine.looks_ended();
+        assert!(cold >= 1, "{cold}");
+        publish();
+        assert_eq!(engine.looks_ended(), cold);
     }
 
     #[test]
