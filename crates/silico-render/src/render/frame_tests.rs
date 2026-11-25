@@ -16,9 +16,10 @@ use super::tests::on_lavapipe;
 use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjection};
 
 use super::{
-    BACKGROUND, BODY, CheckedFrame, EDGE, Element, Frame, HIGHLIGHT, HIT_EDGE_POINTS,
+    BACKGROUND, BODY, CheckedFrame, EDGE, Element, FACE_COST, Frame, HIGHLIGHT, HIT_EDGE_POINTS,
     HIT_VERTEX_POINTS, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines, PendingPick,
-    Pick, Pickable, Picking, PixelRect, RenderFailure, Renderer, Tint, Tinted, hits, project, ray,
+    Pick, Pickable, Picking, PixelRect, RenderFailure, Renderer, Tint, Tinted, UPLOAD_BUDGET, hits,
+    project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -8393,6 +8394,446 @@ fn a_planes_fill_is_uploaded_once_for_its_colour_and_placed_for_every_frame() {
                 );
                 assert!(r.plane_meshes.len() <= super::planes::MAX_FILL_MESHES);
             }
+        },
+    );
+}
+
+/// A sheet of 400 faces, each a 1 mm square of two triangles, over the box's front (y = 0,
+/// x 0 to 40, z 0 to 10), facing the front camera: the face over x from `c` and z from `r`
+/// is face `40r + c + 1`, or, `reversed`, face `400 − 40r − c`. At the front camera's 12/11
+/// pixels a mm each face holds a pixel's centre at least; pixel (32, 26)'s centre, x 21.458
+/// and z 4.708 ([`CENTRE_OF_32_26`]), is face 182's (r 4, c 21), or reversed, 219's.
+fn tiles(reversed: bool) -> Arc<Mesh> {
+    let mut mesh = Mesh {
+        positions: Vec::new(),
+        normals: Vec::new(),
+        triangles: Vec::new(),
+        face_triangles: Vec::new(),
+        valid: None,
+        edge_points: Vec::new(),
+        edge_point_counts: Vec::new(),
+        vertex_points: Vec::new(),
+    };
+    let mut order: Vec<(u32, u32)> = (0..10).flat_map(|r| (0..40).map(move |c| (r, c))).collect();
+    if reversed {
+        order.reverse();
+    }
+    for (r, c) in order {
+        let base = u32::try_from(mesh.positions.len()).unwrap();
+        let (x, z) = (f64::from(c), f64::from(r));
+        mesh.positions.extend([
+            [x, 0.0, z],
+            [x + 1.0, 0.0, z],
+            [x + 1.0, 0.0, z + 1.0],
+            [x, 0.0, z + 1.0],
+        ]);
+        mesh.normals.extend([[0.0, -1.0, 0.0]; 4]);
+        mesh.triangles
+            .extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+        mesh.face_triangles.push(2);
+    }
+    Arc::new(mesh)
+}
+
+/// A budget of `faces` of [`tiles`]' faces a frame: each costs its two triangles and
+/// [`FACE_COST`], and the last takes what's left to none.
+fn tiles_a_frame(faces: u64) -> u64 {
+    faces * (2 + FACE_COST)
+}
+
+/// Every pixel's ID that `frame` drew, as its picking reads them back unjudged (a body since
+/// replaced among them), the frame after it making no face.
+fn drawn_ids(r: &mut Renderer, frame: &Frame<'_>) -> Vec<[u32; 2]> {
+    let asking = Frame {
+        picking: Some(rect([0, 0], frame.size_px)),
+        ..*frame
+    };
+    draw(r, &asking);
+    let budget = std::mem::replace(&mut r.budget, 0);
+    draw(
+        r,
+        &Frame {
+            serial: asking.serial.wrapping_add(1),
+            picking: None,
+            ..asking
+        },
+    );
+    r.budget = budget;
+    r.harvest();
+    let answer = r.picked.take().expect("no answer");
+    assert_eq!(answer.request.serial, asking.serial);
+    answer
+        .ids
+        .iter()
+        .map(|id| {
+            [
+                u32::try_from(id.object.0).unwrap(),
+                u32::try_from(id.instance.0).unwrap(),
+            ]
+        })
+        .collect()
+}
+
+/// `frame` drawn until its bodies' faces are all made, at the renderer's budget.
+fn made_whole(r: &mut Renderer, frame: &Frame<'_>) {
+    for _ in 0..100 {
+        draw(r, frame);
+        if !r.uploading() {
+            return;
+        }
+    }
+    panic!("not whole in 100 frames");
+}
+
+/// The faces of body 1 among `ids`, each once, ascending.
+fn faces_seen(ids: &[[u32; 2]]) -> Vec<u32> {
+    let seen: std::collections::BTreeSet<u32> = ids
+        .iter()
+        .filter(|[body, _]| *body == 1)
+        .map(|[_, face]| *face)
+        .collect();
+    seen.into_iter().collect()
+}
+
+/// Pixel (32, 26)'s ID among a 64 by 48 frame's `ids`.
+fn at_32_26(ids: &[[u32; 2]]) -> [u32; 2] {
+    ids[26 * WIDTH as usize + 32]
+}
+
+#[test]
+fn a_big_upload_is_made_over_frames_each_drawing_what_is_made_and_all_by_the_end() {
+    on_lavapipe(
+        "render::frame_tests::a_big_upload_is_made_over_frames_each_drawing_what_is_made_and_all_by_the_end",
+        |r| {
+            // 100 faces a frame, of 400: four frames, faces 1 to 100 the first's.
+            r.budget = tiles_a_frame(100);
+            r.upload(1, &tiles(false)).unwrap();
+            let camera = front();
+            let ids = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 100);
+            assert_eq!(faces_seen(&ids), (1..=100).collect::<Vec<u32>>());
+            // Face 182, not made yet, isn't drawn: the background there.
+            assert_eq!(at_32_26(&ids), [0, 0]);
+            assert!(r.uploading());
+            // Its answer, a frame on: nothing at the pixel.
+            let asked = Frame {
+                picking: Some(rect([32, 26], [1, 1])),
+                ..frame(&camera, &[1], &[], None)
+            };
+            r.budget = 0;
+            draw(r, &asked);
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.take_picking().map(|p| p.hit), Some(None));
+            assert!(r.uploading(), "a frame of no budget finished it");
+            r.budget = tiles_a_frame(100);
+            // Three frames more, as the pane asks for them while it's uploading.
+            let mut frames = 0;
+            while r.uploading() {
+                draw(r, &frame(&camera, &[1], &[], None));
+                frames += 1;
+                assert!(frames <= 3, "more than three frames");
+            }
+            assert_eq!((frames, r.uploads()), (3, 400));
+            let ids = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(faces_seen(&ids), (1..=400).collect::<Vec<u32>>());
+            assert_eq!(at_32_26(&ids), [1, 182]);
+            assert!(!r.uploading());
+            assert_eq!(r.uploads(), 400);
+            assert_eq!(
+                hit(r, &frame(&camera, &[1], &[], Some(rect([32, 26], [1, 1])))),
+                Some((1, Element::Face(182), [32, 26]))
+            );
+        },
+    );
+}
+
+#[test]
+fn the_shipped_budget_makes_about_40_000_triangles_of_faces_a_frame() {
+    on_lavapipe(
+        "render::frame_tests::the_shipped_budget_makes_about_40_000_triangles_of_faces_a_frame",
+        |r| {
+            // Each face 2 triangles and 100 more: 102. 392 faces take 39,984, 16 left, so a
+            // 393rd is made, leaving none: 393 a frame, of 400 all but 7.
+            assert_eq!((UPLOAD_BUDGET, FACE_COST), (40_000, 100));
+            r.upload(1, &tiles(false)).unwrap();
+            let camera = front();
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!((r.uploads(), r.uploading()), (393, true));
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!((r.uploads(), r.uploading()), (400, false));
+            // Two sheets more, 800 faces: 393, 393, then 14.
+            let behind = |by: f64| {
+                let mut mesh = (*tiles(false)).clone();
+                for p in &mut mesh.positions {
+                    p[1] += by;
+                }
+                Arc::new(mesh)
+            };
+            r.upload(2, &behind(1.0)).unwrap();
+            r.upload(3, &behind(2.0)).unwrap();
+            for (made, more) in [(393, true), (786, true), (800, false)] {
+                draw(r, &frame(&camera, &[2, 3], &[], None));
+                assert_eq!((r.uploads(), r.uploading()), (400 + made, more));
+            }
+        },
+    );
+}
+
+#[test]
+fn a_replaced_body_is_drawn_by_its_old_mesh_till_the_new_one_is_whole_and_never_picked() {
+    on_lavapipe(
+        "render::frame_tests::a_replaced_body_is_drawn_by_its_old_mesh_till_the_new_one_is_whole_and_never_picked",
+        |r| {
+            let camera = front();
+            r.upload(1, &tiles(false)).unwrap();
+            made_whole(r, &frame(&camera, &[1], &[], None));
+            let old = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!((r.uploads(), r.uploading()), (400, false));
+            assert_eq!(at_32_26(&old), [1, 182]);
+            // The same tiles numbered the other way: what's drawn tells which mesh drew it.
+            r.budget = 0;
+            r.upload(1, &tiles(true)).unwrap();
+            // None of it made: the old mesh drawn whole, every pixel as it was.
+            assert_eq!(drawn_ids(r, &frame(&camera, &[1], &[], None)), old);
+            assert!(r.uploading());
+            // Its picking passes over it, as over any body replaced since its frame: the
+            // pane numbers the body's faces by its new mesh.
+            let asked = Frame {
+                picking: Some(rect([32, 26], [1, 1])),
+                ..frame(&camera, &[1], &[], None)
+            };
+            draw(r, &asked);
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.take_picking().map(|p| p.hit), Some(None));
+            // 100 faces a frame: the old drawn whole by the frames that make the first 300,
+            // never part of each.
+            r.budget = tiles_a_frame(100);
+            for made in [100, 200] {
+                draw(r, &frame(&camera, &[1], &[], None));
+                assert_eq!((r.uploads(), r.uploading()), (400 + made, true));
+            }
+            let budget = r.budget;
+            let ids = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 700);
+            assert_eq!(ids, old, "the frame that made 300 of 400 drew the new");
+            r.budget = budget;
+            // The fourth makes the last 100 and draws the new mesh, whole, in its place.
+            let new = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!((r.uploads(), r.uploading()), (800, false));
+            assert_eq!(faces_seen(&new), (1..=400).collect::<Vec<u32>>());
+            assert_eq!(at_32_26(&new), [1, 219]);
+            assert!(r.outgoing.is_empty());
+            assert_eq!(
+                hit(r, &frame(&camera, &[1], &[], Some(rect([32, 26], [1, 1])))),
+                Some((1, Element::Face(219), [32, 26]))
+            );
+        },
+    );
+}
+
+#[test]
+fn the_old_mesh_asked_for_again_before_the_new_is_whole_is_the_bodys_again_as_it_was() {
+    on_lavapipe(
+        "render::frame_tests::the_old_mesh_asked_for_again_before_the_new_is_whole_is_the_bodys_again_as_it_was",
+        |r| {
+            let camera = front();
+            r.upload(1, &tiles(false)).unwrap();
+            made_whole(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 400);
+            r.budget = 0;
+            r.upload(1, &tiles(true)).unwrap();
+            // A frame asks while the new mesh waits: the old drawn.
+            let asked = Frame {
+                picking: Some(rect([32, 26], [1, 1])),
+                ..frame(&camera, &[1], &[], None)
+            };
+            draw(r, &asked);
+            // The old asked for again, an equal mesh: the body's again, its faces as made,
+            // and the answer of the frame that drew it stands.
+            r.upload(1, &tiles(false)).unwrap();
+            assert!(r.outgoing.is_empty());
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(
+                r.take_picking()
+                    .and_then(|p| p.hit)
+                    .map(|h| (h.body, h.hit)),
+                Some((1, Element::Face(182)))
+            );
+            assert_eq!((r.uploads(), r.uploading()), (400, false));
+            // And another mesh after it is drawn as the first replacement was: the old till
+            // it's whole.
+            r.upload(1, &tiles(true)).unwrap();
+            assert_eq!(
+                at_32_26(&drawn_ids(r, &frame(&camera, &[1], &[], None))),
+                [1, 182]
+            );
+            assert_eq!(r.uploads(), 400);
+        },
+    );
+}
+
+#[test]
+fn a_mesh_replaced_twice_before_the_first_is_whole_draws_the_one_drawn_till_the_last_is() {
+    on_lavapipe(
+        "render::frame_tests::a_mesh_replaced_twice_before_the_first_is_whole_draws_the_one_drawn_till_the_last_is",
+        |r| {
+            let camera = front();
+            r.upload(1, &tiles(false)).unwrap();
+            made_whole(r, &frame(&camera, &[1], &[], None));
+            let old = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 400);
+            // Replaced, 100 of it made, and replaced again by a third (the tiles moved 0.25
+            // mm toward the eye, numbered the other way): the first still drawn.
+            r.budget = tiles_a_frame(100);
+            r.upload(1, &tiles(true)).unwrap();
+            draw(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 500);
+            let mut third = (*tiles(true)).clone();
+            for p in &mut third.positions {
+                p[1] = -0.25;
+            }
+            r.upload(1, &Arc::new(third)).unwrap();
+            assert_eq!(drawn_ids(r, &frame(&camera, &[1], &[], None)), old);
+            assert_eq!(r.uploads(), 600);
+            // Three frames more make the third's last 300, the last drawing it.
+            for _ in 0..3 {
+                draw(r, &frame(&camera, &[1], &[], None));
+            }
+            assert_eq!((r.uploads(), r.uploading()), (900, false));
+            r.budget = 0;
+            assert_eq!(
+                at_32_26(&drawn_ids(r, &frame(&camera, &[1], &[], None))),
+                [1, 219]
+            );
+        },
+    );
+}
+
+#[test]
+fn a_body_forgotten_or_left_out_or_a_failed_frame_drops_the_mesh_drawn_in_its_place() {
+    on_lavapipe(
+        "render::frame_tests::a_body_forgotten_or_left_out_or_a_failed_frame_drops_the_mesh_drawn_in_its_place",
+        |r| {
+            let camera = front();
+            let none = vec![[0, 0]; (WIDTH * HEIGHT) as usize];
+            let whole_then_replaced = |r: &mut Renderer| {
+                r.budget = UPLOAD_BUDGET;
+                r.upload(1, &tiles(false)).unwrap();
+                made_whole(r, &frame(&camera, &[1], &[], None));
+                r.budget = 0;
+                r.upload(1, &tiles(true)).unwrap();
+                assert_eq!(r.outgoing.len(), 1);
+            };
+            // Left out of a frame: the new mesh drawn when it's drawn again, none of it made.
+            whole_then_replaced(r);
+            draw(r, &frame(&camera, &[], &[], None));
+            assert!(r.outgoing.is_empty());
+            assert_eq!(drawn_ids(r, &frame(&camera, &[1], &[], None)), none);
+            assert!(r.uploading());
+            // Forgotten, then uploaded again: nothing of the old.
+            r.forget(1);
+            whole_then_replaced(r);
+            r.forget(1);
+            assert!(r.outgoing.is_empty());
+            r.upload(1, &tiles(true)).unwrap();
+            assert_eq!(drawn_ids(r, &frame(&camera, &[1], &[], None)), none);
+            // A frame the GPU failed: nothing vouches for the old mesh's.
+            r.forget(1);
+            whole_then_replaced(r);
+            r.failed(None);
+            assert!(r.outgoing.is_empty());
+            assert!(matches!(
+                r.prepare(&frame(&camera, &[1], &[], None)),
+                Err(RenderFailure::BackingOff { frames: 1 })
+            ));
+            assert!(!r.uploading(), "a frame refused left uploading said");
+            assert_eq!(drawn_ids(r, &frame(&camera, &[1], &[], None)), none);
+        },
+    );
+}
+
+#[test]
+fn an_orthographic_frame_reaches_the_old_mesh_it_draws_in_a_bodys_place() {
+    on_lavapipe(
+        "render::frame_tests::an_orthographic_frame_reaches_the_old_mesh_it_draws_in_a_bodys_place",
+        |r| {
+            // The old mesh: the tiles and, 300 mm toward the eye, a square of one face (Face
+            // 401) over pixel (32, 26); the new, the tiles alone, which reach 22 mm from the
+            // target. Drawn for the tiles alone, the view would set its camera short of the
+            // square, cutting it away.
+            let mut old = (*tiles(false)).clone();
+            let base = u32::try_from(old.positions.len()).unwrap();
+            old.positions.extend([
+                [15.0, -300.0, 0.0],
+                [30.0, -300.0, 0.0],
+                [30.0, -300.0, 10.0],
+                [15.0, -300.0, 10.0],
+            ]);
+            old.normals.extend([[0.0, -1.0, 0.0]; 4]);
+            old.triangles
+                .extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+            old.face_triangles.push(2);
+            let camera = front();
+            r.upload(1, &Arc::new(old)).unwrap();
+            made_whole(r, &frame(&camera, &[1], &[], None));
+            let before = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(r.uploads(), 401);
+            assert_eq!(at_32_26(&before), [1, 401]);
+            r.budget = 0;
+            r.upload(1, &tiles(false)).unwrap();
+            let ids = drawn_ids(r, &frame(&camera, &[1], &[], None));
+            assert_eq!(ids, before);
+        },
+    );
+}
+
+#[test]
+fn a_face_whose_mesh_is_of_an_earlier_view_is_drawn_by_it_till_its_made_again() {
+    on_lavapipe(
+        "render::frame_tests::a_face_whose_mesh_is_of_an_earlier_view_is_drawn_by_it_till_its_made_again",
+        |r| {
+            // A floor 200 mm square about the eye, 1 mm under it, the eye looking ahead and
+            // down: its box crosses the eye's plane, so it's cut to the view's pyramid about
+            // the eye, and cut again for each eye. The image's bottom middle sees it.
+            let floor = Arc::new(Mesh {
+                positions: vec![
+                    [-100.0, -100.0, 0.0],
+                    [100.0, -100.0, 0.0],
+                    [100.0, 100.0, 0.0],
+                    [-100.0, 100.0, 0.0],
+                ],
+                normals: vec![[0.0, 0.0, 1.0]; 4],
+                triangles: vec![[0, 1, 2], [0, 2, 3]],
+                face_triangles: vec![2],
+                valid: None,
+                edge_points: Vec::new(),
+                edge_point_counts: Vec::new(),
+                vertex_points: Vec::new(),
+            });
+            let looking = |x: f64| Camera {
+                projection: Projection::Perspective {
+                    field_of_view: 60.0,
+                },
+                eye: [x, 0.0, 1.0],
+                target: [x, 10.0, 0.0],
+                up: [0.0, 0.0, 1.0],
+            };
+            r.upload(1, &floor).unwrap();
+            let first = looking(0.0);
+            draw(r, &frame(&first, &[1], &[], None));
+            assert_eq!((r.uploads(), r.uploading()), (1, false));
+            assert!(r.bodies[&1].faces[0].cut.is_some(), "not cut");
+            // The eye moved, no budget: the face drawn by its mesh cut for the first eye.
+            r.budget = 0;
+            let moved = looking(0.5);
+            let ids = drawn_ids(r, &frame(&moved, &[1], &[], None));
+            assert_eq!(ids[(HEIGHT as usize - 2) * WIDTH as usize + 32], [1, 1]);
+            assert_eq!(r.uploads(), 1);
+            assert!(r.uploading());
+            // A frame with budget makes it again, for the eye it's seen from.
+            r.budget = UPLOAD_BUDGET;
+            draw(r, &frame(&moved, &[1], &[], None));
+            assert_eq!((r.uploads(), r.uploading()), (2, false));
         },
     );
 }
