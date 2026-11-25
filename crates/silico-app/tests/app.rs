@@ -37553,9 +37553,15 @@ fn a_refused_document_measure_asks_a_frame_for_when_its_read_is_asked_again() {
     });
     step(&mut h);
     assert_eq!(row_value(&h, "Volume"), None);
-    // Exactly then: nothing else asks for a frame sooner, the clock stopped (without the
-    // panel's ask, the next frame is the idle one, 1.1 s off).
-    assert_eq!(repaint_delay(&h), Some(RETRY_FIRST));
+    // Then: nothing else asks for a frame sooner, the clock stopped (without the panel's
+    // ask, the next frame is the idle one, 1.1 s off), and never at once. egui gives the
+    // delay from the frame's own time, a frame (1/60 s) on from the clock's.
+    let delay = repaint_delay(&h).unwrap();
+    let frame = Duration::from_secs_f64(1.0 / 60.0);
+    assert!(
+        delay <= RETRY_FIRST && delay > RETRY_FIRST - 2 * frame,
+        "{delay:?}"
+    );
     // Due: its read asked again, at the next frame.
     let reads = h.state().tabs()[0].model_measures().reads();
     advance(&time, RETRY_FIRST);
