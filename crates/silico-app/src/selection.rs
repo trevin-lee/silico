@@ -272,6 +272,21 @@ pub enum How {
     Add,
 }
 
+impl How {
+    /// What a box let go with `shift` and `ctrl` held does, the canvas's and sketch mode's
+    /// alike: Shift adds, else Ctrl inverts inside it, else it replaces. With both, Shift's,
+    /// as the prototype's `onBox` takes them (`o.add` before `o.invert`).
+    pub fn of_box(shift: bool, ctrl: bool) -> How {
+        if shift {
+            How::Add
+        } else if ctrl {
+            How::Toggle
+        } else {
+            How::Replace
+        }
+    }
+}
+
 /// Which kinds of element the canvas picks (SolidWorks' selection filters: SELECT's
 /// buttons, and X, E, and V, `crate::shortcuts`), and a box takes (`crate::box_select`,
 /// which takes edges alone).

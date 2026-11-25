@@ -12735,6 +12735,7 @@ fn the_viewport_draws_through_silico_render_on_lavapipe_and_a_pick_names_the_fac
                     vertices: None,
                     lines: Vec::new(),
                     planes: Vec::new(),
+                    dim: 1.0,
                 };
                 assert!(ViewRenderer::prepare(renderer, &data.frame()).is_ok());
                 ViewRenderer::forget(renderer, 1);
@@ -12861,6 +12862,28 @@ impl Fixture {
         h.state_mut().tabs_mut()[0].watch = Some(watching(&seen));
         (h, seen)
     }
+}
+
+#[test]
+fn the_model_is_dimmed_while_a_sketch_is_open_and_drawn_as_it_is_after() {
+    // The approved prototype dims the model while a sketch is open (sketch.js's
+    // `VP.setDim(0.45)` on entering, `VP.setDim(1)` on leaving): to 0.18 in linear light,
+    // the 0.45 of its sRGB colour worked by hand (`theme::SKETCH_MODEL_DIM`).
+    let f = fixture();
+    let (mut h, record) = f.drawn("example.silico", EXAMPLE);
+    meshes_settled(&mut h);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    let last = |record: &Record| record.lock().unwrap().frames.last().map(|frame| frame.dim);
+    assert_eq!(last(&record), Some(1.0));
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    step(&mut h);
+    assert_eq!(last(&record), Some(0.18));
+    assert_eq!(silico_app::theme::SKETCH_MODEL_DIM, 0.18);
+    leave_sketch(&mut h, false);
+    step(&mut h);
+    assert_eq!(last(&record), Some(1.0));
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]
@@ -27850,6 +27873,121 @@ fn in_sketch_mode_the_status_bar_says_the_sketch_the_pointer_on_it_and_its_state
     for gone in ["Editing Triangle", state, words.as_str(), "—"] {
         assert!(!in_status_bar(&h, gone), "{gone}");
     }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn in_sketch_mode_a_drag_from_empty_space_is_a_box_of_the_sketchs_members() {
+    use eframe::egui::{PointerButton, Rect, Shape};
+    // SKETCHED with its triangle moved to pa000000 (40, 20), pb000000 (60, 20), and
+    // pc000000 (40, 30), on the canvas as `to_screen` draws them ([`hand_camera`]): (500,
+    // 300), (700, 300), and (500, 200). na000000 is pa–pb, nb000000 pb–pc, nc000000 pc–pa.
+    let text = SKETCHED
+        .replace(
+            r#""id": "pa000000", "x": 0, "y": 0"#,
+            r#""id": "pa000000", "x": 40, "y": 20"#,
+        )
+        .replace(
+            r#""id": "pb000000", "x": 20, "y": 0"#,
+            r#""id": "pb000000", "x": 60, "y": 20"#,
+        )
+        .replace(
+            r#""id": "pc000000", "x": 0, "y": 10"#,
+            r#""id": "pc000000", "x": 40, "y": 30"#,
+        );
+    assert_ne!(text, SKETCHED);
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    hand_camera(&mut h);
+    step(&mut h);
+    let picked = |ids: &[&str]| -> Vec<silico_core::document::Reference> {
+        ids.iter().map(|id| element_ref(id)).collect()
+    };
+    // The box's outline, as painted: the solid outline's one closed path, and how many
+    // dashes the crossing's dashed one is drawn in.
+    let stroke = silico_app::theme::color32(silico_app::theme::BOX_SELECT_STROKE);
+    let outline = |h: &AppHarness| -> (usize, usize) {
+        let shapes = shapes_painted(h);
+        let solid = shapes
+            .iter()
+            .filter(|shape| matches!(shape, Shape::Path(p) if p.stroke.color == eframe::epaint::ColorMode::Solid(stroke)))
+            .count();
+        let dashes = shapes
+            .iter()
+            .filter(
+                |shape| matches!(shape, Shape::LineSegment { stroke: s, .. } if s.color == stroke),
+            )
+            .count();
+        (solid, dashes)
+    };
+    // From (39, 19) to (61, 25): (490, 310) to (710, 250), on the canvas, nothing within the
+    // pick of its first corner.
+    let (low, high) = (
+        to_screen([39.0, 19.0]).unwrap(),
+        to_screen([61.0, 25.0]).unwrap(),
+    );
+    let canvas = the_viewport(&h);
+    assert!(canvas.contains(low) && canvas.contains(high), "{canvas:?}");
+    // Pressed and dragged, not yet let go: the box is drawn, the canvas's box fill over the
+    // rectangle the drag spans.
+    h.hover_at(low);
+    button_event(&h, low, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    for at in [low + (high - low) / 2.0, high] {
+        h.hover_at(at);
+        step(&mut h);
+    }
+    let fill = silico_app::theme::color32(silico_app::theme::BOX_SELECT_FILL);
+    let boxes: Vec<Rect> = shapes_painted(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Rect(r) if r.fill == fill => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(boxes, [Rect::from_two_pos(low, high)]);
+    // Left to right, a window: drawn solid, one closed outline and no dashes.
+    assert_eq!(outline(&h), (1, 0));
+    assert!(sketch_picks(&h).is_empty());
+    // Let go: left to right, a window, which takes the bottom side and its two ends, wholly
+    // inside; the other two sides reach up to pc000000 (40, 30), out of it.
+    button_event(&h, high, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_eq!(
+        sketch_picks(&h),
+        picked(&["na000000", "pa000000", "pb000000"])
+    );
+    // Drawn no more.
+    step(&mut h);
+    assert!(
+        !shapes_painted(&h)
+            .into_iter()
+            .any(|shape| matches!(shape, Shape::Rect(r) if r.fill == fill))
+    );
+    // The same box dragged right to left: a crossing, drawn dashed (its 220 by 60 outline
+    // in dashes of 4 and gaps of 3, many of them, and no solid path), which takes the two
+    // sides that cross it too.
+    h.hover_at(high);
+    button_event(&h, high, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    for at in [high + (low - high) / 2.0, low] {
+        h.hover_at(at);
+        step(&mut h);
+    }
+    let (solid, dashes) = outline(&h);
+    assert_eq!(solid, 0);
+    assert!(dashes > 60, "{dashes} dashes");
+    button_event(&h, low, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_eq!(
+        sketch_picks(&h),
+        picked(&["na000000", "nb000000", "nc000000", "pa000000", "pb000000"])
+    );
+    // Nothing sent: a box changes sketch mode's selection alone.
+    assert_eq!(text_of(&f.sessions, &h), text);
     assert_eq!(never_waits::waits(), 0);
 }
 

@@ -1649,6 +1649,635 @@ fn a_frames_presses_select_ctrl_adds_and_a_press_on_nothing_clears() {
     assert_eq!(selected(&mode), ["na000003"]);
 }
 
+/// One frame of `events` given to `mode` through [`hand`], the pointer at the last.
+fn pointer_frame(mode: &mut SketchMode, events: &[PointerEvent]) {
+    with_painter(|painter| {
+        let input = FrameInput {
+            events,
+            pointer: events.last().map(|event| event.at),
+            project: &hand,
+            to_plane: &unhand,
+        };
+        mode.frame(painter, &input, &mut None);
+    });
+}
+
+/// A left drag from `from` to `to` (each in screen points), Shift and Ctrl as given at
+/// every event: its press in one frame, a move halfway and one to `to` in the next, and its
+/// release in a third, as the viewport gives a drag over several frames.
+fn box_drag(mode: &mut SketchMode, from: Pos2, to: Pos2, shift: bool, ctrl: bool) {
+    let at = |action, at| PointerEvent {
+        action,
+        at,
+        shift,
+        ctrl,
+    };
+    pointer_frame(mode, &[at(PointerAction::Press, from)]);
+    pointer_frame(
+        mode,
+        &[
+            at(PointerAction::Move, from + (to - from) / 2.0),
+            at(PointerAction::Move, to),
+        ],
+    );
+    pointer_frame(mode, &[at(PointerAction::Release, to)]);
+}
+
+/// What's selected, in pick order, by ID (the origin and the axes by name).
+fn picked(mode: &SketchMode) -> Vec<String> {
+    mode.selection
+        .references()
+        .iter()
+        .map(|reference| match reference {
+            Reference::Element(id) => id.as_str().to_owned(),
+            other => format!("{other:?}"),
+        })
+        .collect()
+}
+
+/// The rectangle (0, 0) to (40, 20), fully defined, so a press on it drags nothing: its
+/// bottom side's 40 mm `length` (ka000001, drawn below it: its extension lines from (100,
+/// 504) to (100, 531) and from (500, 504) to (500, 531), its line at y 526, its value at
+/// (300, 526)), and its top side's `horizontal` (kb000001, a glyph by the top side).
+fn boxed_rectangle() -> SketchMode {
+    let mut mode = mode_on(read(
+        rectangle(vec![
+            length("ka000001", "na000001", "40", true),
+            horizontal("kb000001", "na000003"),
+        ]),
+        SketchState::FullyDefined,
+        MemberState::FullyDefined,
+        &[],
+    ));
+    // A first frame draws it: what a box is decided against.
+    pointer_frame(&mut mode, &[]);
+    mode
+}
+
+#[test]
+fn a_box_dragged_left_to_right_takes_what_its_wholly_inside() {
+    // On the screen the rectangle's corners are pa000001 (100, 500), pa000002 (500, 500),
+    // pa000003 (500, 300), and pa000004 (100, 300). A window from (90, 490) to (510, 540)
+    // holds the bottom side na000001 and its ends, and its dimension ka000001 whole (y 504
+    // to 531); the sides na000002 and na000004 reach up out of it. By ID.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+    // A box round everything takes every point, line, and the dimension, but never the
+    // top side's relation (its glyph inside too), the origin at (100, 500), or an axis.
+    box_drag(
+        &mut mode,
+        pos2(0.0, 100.0),
+        pos2(700.0, 700.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        [
+            "ka000001", "na000001", "na000002", "na000003", "na000004", "pa000001", "pa000002",
+            "pa000003", "pa000004"
+        ]
+    );
+    // Dragged upward and leftward the same box is a crossing; downward and rightward a
+    // window, whichever corner it starts from (a window from its bottom left).
+    box_drag(
+        &mut mode,
+        pos2(90.0, 540.0),
+        pos2(510.0, 490.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
+fn a_box_dragged_right_to_left_takes_what_it_crosses_too() {
+    // The same box, (510, 540) to (90, 490): the sides na000002 (x 500) and na000004 (x
+    // 100) cross its top, y 490, from (500, 500) and (100, 500); the top side and its ends
+    // stay out of it.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(510.0, 540.0),
+        pos2(90.0, 490.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        [
+            "ka000001", "na000001", "na000002", "na000004", "pa000001", "pa000002"
+        ]
+    );
+    // A crossing of the dimension's value alone, (310, 520) to (290, 530): ka000001 (its
+    // line at y 526 crosses it too), and nothing else.
+    box_drag(
+        &mut mode,
+        pos2(310.0, 520.0),
+        pos2(290.0, 530.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["ka000001"]);
+    // A crossing between the sides, touching nothing drawn: nothing.
+    box_drag(
+        &mut mode,
+        pos2(400.0, 350.0),
+        pos2(200.0, 450.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+}
+
+#[test]
+fn shift_with_a_box_adds_and_ctrl_inverts_inside_it_what_is_outside_staying() {
+    // SolidWorks' Box Selection: Shift adds everything inside, selected or not; Ctrl
+    // inverts the selection inside; selections outside stay. What joins comes after what's
+    // selected, by ID (C9).
+    let mut mode = boxed_rectangle();
+    pointer_frame(&mut mode, &press(pos2(100.0, 300.0), false));
+    assert_eq!(picked(&mode), ["pa000004"]);
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        true,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["pa000004", "ka000001", "na000001", "pa000001", "pa000002"]
+    );
+    // Shift again over the same box: nothing new, nothing reordered.
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        true,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["pa000004", "ka000001", "na000001", "pa000001", "pa000002"]
+    );
+    // Ctrl with a crossing about the corner pa000001, (110, 510) to (90, 490): it holds
+    // the corner and crosses the bottom side, the left side, and the dimension's left
+    // extension line (x 100, y 504 to 531). The three selected go; the left side joins.
+    box_drag(
+        &mut mode,
+        pos2(110.0, 510.0),
+        pos2(90.0, 490.0),
+        false,
+        true,
+    );
+    assert_eq!(picked(&mode), ["pa000004", "pa000002", "na000004"]);
+    // Shift and Ctrl both: Shift's adding, as the canvas's box takes them (the prototype's
+    // `onBox`, its `add` before its `invert`): the left side kept, the rest of the box
+    // joining.
+    box_drag(&mut mode, pos2(110.0, 510.0), pos2(90.0, 490.0), true, true);
+    assert_eq!(
+        picked(&mode),
+        [
+            "pa000004", "pa000002", "na000004", "ka000001", "na000001", "pa000001"
+        ]
+    );
+}
+
+#[test]
+fn a_box_is_a_press_on_empty_space_moved_past_three_points_and_takes_only_whats_drawn() {
+    let mut mode = boxed_rectangle();
+    pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
+    assert_eq!(picked(&mode), ["na000002"]);
+    // From (300, 400), nothing within the pick, Shift held: moved 3 points (no farther than
+    // a drag must go) it's a click on nothing, which clears the selection.
+    box_drag(
+        &mut mode,
+        pos2(300.0, 400.0),
+        pos2(303.0, 400.0),
+        true,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
+    // Moved 3.5 points: a box, Shift's, holding nothing, so the selection stays.
+    box_drag(
+        &mut mode,
+        pos2(300.0, 400.0),
+        pos2(303.5, 400.0),
+        true,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000002"]);
+    // A press on the bottom side, a fully defined line, dragged away: no box, and its
+    // release selects the line (a drag on geometry selects what's under the press).
+    box_drag(
+        &mut mode,
+        pos2(300.0, 500.0),
+        pos2(600.0, 560.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+    // A box cancelled (a navigation tool taking the button, a modal coming) changes
+    // nothing, and its release, should one come, selects nothing.
+    pointer_frame(
+        &mut mode,
+        &[event(PointerAction::Press, pos2(90.0, 490.0), false)],
+    );
+    pointer_frame(
+        &mut mode,
+        &[event(PointerAction::Move, pos2(510.0, 540.0), false)],
+    );
+    pointer_frame(
+        &mut mode,
+        &[event(PointerAction::Cancel, pos2(510.0, 540.0), false)],
+    );
+    pointer_frame(
+        &mut mode,
+        &[event(PointerAction::Release, pos2(510.0, 540.0), false)],
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+    // With the points hidden (the palette's Show), a window about a corner takes nothing
+    // of it: only what's drawn is taken.
+    mode.settings.show_points = false;
+    pointer_frame(&mut mode, &[]);
+    box_drag(
+        &mut mode,
+        pos2(90.0, 290.0),
+        pos2(110.0, 310.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    // And dimensions hidden: the window that held the bottom side and its dimension holds
+    // the side alone.
+    mode.settings.show_dimensions = false;
+    pointer_frame(&mut mode, &[]);
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+}
+
+#[test]
+fn a_box_let_go_after_a_read_without_a_member_never_takes_it() {
+    // Drawn with the right side na000002, then a read comes without it before the release:
+    // the box is decided against what was drawn, but takes only what the read holds.
+    let mut mode = boxed_rectangle();
+    let at = |action, at| event(action, at, false);
+    pointer_frame(&mut mode, &[at(PointerAction::Press, pos2(0.0, 100.0))]);
+    pointer_frame(&mut mode, &[at(PointerAction::Move, pos2(700.0, 700.0))]);
+    let mut fewer = rectangle(vec![length("ka000001", "na000001", "40", true)]);
+    fewer.lines.remove(1);
+    mode.took(Read {
+        model: None,
+        result: Ok(read(
+            fewer,
+            SketchState::FullyDefined,
+            MemberState::FullyDefined,
+            &[],
+        )),
+    });
+    pointer_frame(&mut mode, &[at(PointerAction::Release, pos2(700.0, 700.0))]);
+    assert_eq!(
+        picked(&mode),
+        [
+            "ka000001", "na000001", "na000003", "na000004", "pa000001", "pa000002", "pa000003",
+            "pa000004"
+        ]
+    );
+}
+
+#[test]
+fn a_box_with_a_corner_that_isnt_finite_takes_nothing_and_a_move_to_nan_is_no_move() {
+    // A move to an infinite place (a broken projection's) opens the box (the distance is
+    // infinite), but the box is its finite corner alone, of no size, which holds nothing
+    // drawn: Shift's adds nothing. Nothing panics, and the next box works.
+    let mut mode = boxed_rectangle();
+    for far in [
+        pos2(f32::INFINITY, 400.0),
+        pos2(f32::NEG_INFINITY, f32::INFINITY),
+    ] {
+        pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
+        box_drag(&mut mode, pos2(300.0, 400.0), far, true, false);
+        assert_eq!(picked(&mode), ["na000002"], "{far:?}");
+    }
+    // A move to no place at all (NaN) is no move: the press is the click on nothing it
+    // was, which clears the selection.
+    box_drag(
+        &mut mode,
+        pos2(300.0, 400.0),
+        pos2(f32::NAN, f32::NAN),
+        true,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
+fn a_crossing_over_a_sides_middle_takes_the_side_though_neither_end_is_in_it() {
+    // (310, 490) to (290, 510), right to left: across the bottom side, (100, 500) to (500,
+    // 500), at its middle, its press 10 points from it (the pick is 7); no end, no piece of
+    // the dimension (from y 504 at x 100 and 500, its line at y 526), and no glyph inside.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(310.0, 490.0),
+        pos2(290.0, 510.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+    // The same box left to right, a window: nothing is wholly in it.
+    box_drag(
+        &mut mode,
+        pos2(290.0, 490.0),
+        pos2(310.0, 510.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+}
+
+#[test]
+fn a_box_dragged_straight_down_is_a_window() {
+    // From (300, 490) straight down to (300, 510): of no width, dragged neither way, so a
+    // window, which holds nothing; the bottom side, (100, 500) to (500, 500), meets it, so a
+    // crossing would take it.
+    let mut mode = boxed_rectangle();
+    box_drag(
+        &mut mode,
+        pos2(300.0, 490.0),
+        pos2(300.0, 510.0),
+        false,
+        false,
+    );
+    assert!(picked(&mode).is_empty());
+    box_drag(
+        &mut mode,
+        pos2(300.5, 490.0),
+        pos2(300.0, 510.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000001"]);
+}
+
+#[test]
+fn a_box_takes_circles_and_arcs_as_it_takes_lines() {
+    // A circle ca000001 about pa000005 (70, 10), radius 5: on the screen about (800, 400),
+    // 50 points across each way. An arc aa000001 about pb000001 (100, 10), counter-clockwise
+    // from pb000002 (105, 10) to pb000003 (100, 15): on the screen from (1150, 400) up to
+    // (1100, 350) about (1100, 400).
+    let sketch = Sketch {
+        plane: OriginPlane::Xy.into(),
+        points: vec![
+            point("pa000005", 70.0, 10.0),
+            point("pb000001", 100.0, 10.0),
+            point("pb000002", 105.0, 10.0),
+            point("pb000003", 100.0, 15.0),
+        ],
+        lines: Vec::new(),
+        circles: vec![SketchCircle {
+            id: id("ca000001"),
+            center: id("pa000005"),
+            radius: Coordinate::new(5.0).unwrap(),
+            construction: false,
+        }],
+        arcs: vec![SketchArc {
+            id: id("aa000001"),
+            center: id("pb000001"),
+            start: id("pb000002"),
+            end: id("pb000003"),
+            construction: false,
+        }],
+        constraints: Vec::new(),
+    };
+    let mut mode = mode_on(read(
+        sketch,
+        SketchState::FullyDefined,
+        MemberState::FullyDefined,
+        &[],
+    ));
+    pointer_frame(&mut mode, &[]);
+    // Windows about each: the circle and its centre; the arc, its centre, and its ends.
+    box_drag(
+        &mut mode,
+        pos2(740.0, 340.0),
+        pos2(860.0, 460.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["ca000001", "pa000005"]);
+    box_drag(
+        &mut mode,
+        pos2(1090.0, 340.0),
+        pos2(1160.0, 410.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["aa000001", "pb000001", "pb000002", "pb000003"]
+    );
+    // A window holding the circle's left half only: nothing of it but its centre.
+    box_drag(
+        &mut mode,
+        pos2(740.0, 340.0),
+        pos2(810.0, 460.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["pa000005"]);
+    // The same box right to left: the circle too, which crosses it.
+    box_drag(
+        &mut mode,
+        pos2(810.0, 340.0),
+        pos2(740.0, 460.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["ca000001", "pa000005"]);
+    // A crossing about the arc's middle, (1135.4, 364.6), only: the arc alone.
+    box_drag(
+        &mut mode,
+        pos2(1140.0, 360.0),
+        pos2(1130.0, 370.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["aa000001"]);
+}
+
+#[test]
+fn a_box_is_clamped_to_the_canvas_its_drawing_was_made_on() {
+    // The canvas ends at x 300; the bottom side and its dimension run on to x 500, off it.
+    // A window dragged to (510, 540) is clamped to (90..300, 490..540): the corner pa000001
+    // alone is in it, though the side's far end is in the box as dragged.
+    let mode = boxed_rectangle();
+    let (_, drawn) = mode.drawn.as_ref().unwrap();
+    let read = mode.drawable().unwrap();
+    let clip = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(300.0, 1000.0));
+    let window = boxing::SketchBox {
+        from: pos2(90.0, 490.0),
+        to: pos2(510.0, 540.0),
+        open: true,
+    };
+    let taken = window.taken(drawn, read, clip);
+    let taken: Vec<&str> = taken
+        .iter()
+        .filter_map(SketchPick::member)
+        .map(|hit| hit.id.as_str())
+        .collect();
+    assert_eq!(taken, ["pa000001"]);
+    // And down: a canvas ending at y 510 cuts the window to y 490..510, which holds the
+    // bottom side and its ends, not its dimension, drawn from y 504 to 531.
+    let clip = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1000.0, 510.0));
+    let taken = window.taken(drawn, read, clip);
+    let taken: Vec<&str> = taken
+        .iter()
+        .filter_map(SketchPick::member)
+        .map(|hit| hit.id.as_str())
+        .collect();
+    assert_eq!(taken, ["na000001", "pa000001", "pa000002"]);
+}
+
+#[test]
+fn a_box_let_go_in_a_frame_its_tab_isnt_shown_in_takes_what_was_drawn() {
+    // The viewport gives a release in a frame the tab is left in through a painter clipped
+    // to nothing (`viewport::end_unshown`): the box is judged on the canvas the drawing the
+    // person saw was made on.
+    let mut mode = boxed_rectangle();
+    let (from, to) = (pos2(90.0, 490.0), pos2(510.0, 540.0));
+    pointer_frame(&mut mode, &[event(PointerAction::Press, from, false)]);
+    pointer_frame(&mut mode, &[event(PointerAction::Move, to, false)]);
+    with_painter(|painter| {
+        let unshown = egui::Painter::new(
+            painter.ctx().clone(),
+            egui::LayerId::background(),
+            egui::Rect::NOTHING,
+        );
+        let events = [event(PointerAction::Release, to, false)];
+        let input = FrameInput {
+            events: &events,
+            pointer: None,
+            project: &hand,
+            to_plane: &unhand,
+        };
+        mode.frame(&unshown, &input, &mut None);
+    });
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
+fn a_box_let_go_unshown_is_clamped_to_the_canvas_its_drawing_was_made_on() {
+    // Drawn on a canvas ending at x 300 (the bottom side and its dimension run on to x
+    // 500), then let go in a frame the tab isn't shown in, its painter clipped to nothing:
+    // the window, (90, 490) to (510, 540) as dragged, is judged on the 0 to 300 canvas the
+    // drawing was made on, which holds the corner pa000001 alone.
+    let mut mode = boxed_rectangle();
+    let canvas = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(300.0, 1000.0));
+    let on = |mode: &mut SketchMode, clip: egui::Rect, events: &[PointerEvent]| {
+        with_painter(|painter| {
+            let painter = painter.with_clip_rect(clip);
+            let input = FrameInput {
+                events,
+                pointer: events.last().map(|e| e.at),
+                project: &hand,
+                to_plane: &unhand,
+            };
+            mode.frame(&painter, &input, &mut None);
+        });
+    };
+    let (from, to) = (pos2(90.0, 490.0), pos2(510.0, 540.0));
+    on(&mut mode, canvas, &[]);
+    on(
+        &mut mode,
+        canvas,
+        &[event(PointerAction::Press, from, false)],
+    );
+    on(&mut mode, canvas, &[event(PointerAction::Move, to, false)]);
+    on(
+        &mut mode,
+        egui::Rect::NOTHING,
+        &[event(PointerAction::Release, to, false)],
+    );
+    assert_eq!(picked(&mode), ["pa000001"]);
+}
+
+#[test]
+fn a_box_takes_a_reference_dimension_as_a_driving_one() {
+    // The bottom side's 40 mm length, driven (a reference dimension, drawn "(40)"): the
+    // window that holds the side and its ends holds it too.
+    let mut mode = mode_on(read(
+        rectangle(vec![length("ka000001", "na000001", "40", false)]),
+        SketchState::FullyDefined,
+        MemberState::FullyDefined,
+        &[],
+    ));
+    pointer_frame(&mut mode, &[]);
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(
+        picked(&mode),
+        ["ka000001", "na000001", "pa000001", "pa000002"]
+    );
+}
+
+#[test]
+fn with_a_tool_on_a_drag_from_empty_space_is_the_tools_and_no_box() {
+    let mut mode = boxed_rectangle();
+    pointer_frame(&mut mode, &press(pos2(500.0, 400.0), false));
+    mode.tools.choose(Some(tools::Choice::Draw(
+        silico_core::sketch_tools::ToolKind::Line,
+    )));
+    box_drag(
+        &mut mode,
+        pos2(90.0, 490.0),
+        pos2(510.0, 540.0),
+        false,
+        false,
+    );
+    assert_eq!(picked(&mode), ["na000002"]);
+}
+
 #[test]
 fn a_selected_member_is_drawn_selected_its_state_colour_kept() {
     let read = under(rectangle(vec![horizontal("ka000001", "na000001")]));
