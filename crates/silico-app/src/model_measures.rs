@@ -4,29 +4,38 @@
 //! `mass_properties`' of every body, added (each as the body's fingerprint holds it, to a
 //! millionth); Faces is how many faces `query` matches across every body; Size is the box
 //! around every body's tight box, as the `meshes` read the viewport holds gives each
-//! (`crate::viewport::ViewBody::bounds`, the kernel's box of the solid, not of its mesh), since
-//! no element read gives a solid's box.
+//! (`crate::viewport::ViewBody::bounds`, the kernel's box of the solid, not of its mesh).
+//!
+//! SEAM: Size waits on the viewport's read of the same model, so a view the core won't mesh
+//! (an eye inside a solid) leaves it not measured. The live model's boxes come with no other
+//! read: `mass_properties` drops the box its summary holds, and `outline`'s and `text`'s are
+//! the stored fingerprints', a transaction's begin's until its commit. A box in
+//! `mass_properties`' answer would free it, a change of its contract (the maintainer's).
 //!
 //! Each read is of the published model, on a thread of the core's, polled with `try_take`
 //! and never waited on, so the UI thread never waits (invariant 4). The reads are keyed on
 //! the published model (the tab's count of the models published, and its revision), as the
 //! selection's measures are (`crate::measures`): a new model cancels the reads out and drops
 //! the answers held, and an answer read from another revision than its key's is dropped as
-//! it comes. They're asked only while the property panel shows the document's properties.
+//! it comes. A read refused is asked again after a delay that grows with each refusal in a
+//! row, as the viewport asks its meshes again (`crate::viewport::retry_after`): a refusal
+//! for the moment (the session's published reads all running) passes, and one of the model
+//! (a solid that couldn't be described) is asked of at most every
+//! [`RETRY_MOST`](crate::viewport::RETRY_MOST), its refusal shown meanwhile. They're asked
+//! only while the property panel shows the document's properties.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use silico_core::command::elements::{Queried, Query};
-use silico_core::command::measure::Bodies;
-use silico_core::command::{
-    ModelChoice, Problems, Response, Revision, Running, SessionId, Sessions,
-};
+use silico_core::command::measure::{Bodies, MassProperties};
+use silico_core::command::{ModelChoice, Problems, Revision, Running, SessionId, Sessions};
 use silico_core::document::{FeatureId, Length, Measure};
 use silico_core::kernel::{Clients, ElementKind};
 
 /// The published model a set of measures is of: the tab's count of the models published,
 /// and its revision.
-pub type Of = (u64, Revision);
+pub type ModelKey = (u64, Revision);
 
 /// The core's answers for the model, each once it has come: its bodies' mass properties, and
 /// how many faces its bodies have.
@@ -49,10 +58,7 @@ impl Answers {
 
     /// `measure` of every body, added; none until answered, or for a sum past what a measure
     /// holds.
-    fn added(
-        &self,
-        measure: impl Fn(&silico_core::command::measure::MassProperties) -> Measure,
-    ) -> Option<Measure> {
+    fn added(&self, measure: impl Fn(&MassProperties) -> Measure) -> Option<Measure> {
         let Some(Ok(bodies)) = &self.bodies else {
             return None;
         };
@@ -66,7 +72,7 @@ impl Answers {
     }
 
     /// How many faces every body has, once answered.
-    pub fn faces(&self) -> Option<u64> {
+    pub fn face_count(&self) -> Option<u64> {
         match &self.faces {
             Some(Ok(queried)) => Some(queried.matched),
             _ => None,
@@ -74,11 +80,21 @@ impl Answers {
     }
 
     /// The bodies measured, by feature, in timeline order, once answered.
-    pub fn bodies(&self) -> Option<Vec<&FeatureId>> {
+    pub fn measured_features(&self) -> Option<Vec<&FeatureId>> {
         match &self.bodies {
             Some(Ok(bodies)) => Some(bodies.bodies.iter().map(|body| &body.feature).collect()),
             _ => None,
         }
+    }
+
+    /// Whether the mass properties' read was refused.
+    pub fn bodies_refused(&self) -> bool {
+        matches!(self.bodies, Some(Err(_)))
+    }
+
+    /// Whether the faces' read was refused.
+    pub fn faces_refused(&self) -> bool {
+        matches!(self.faces, Some(Err(_)))
     }
 
     /// The first refusal of either read, if one was refused: the mass properties', then the
@@ -96,14 +112,18 @@ impl Answers {
     }
 }
 
-/// A tab's measures of its published model: what they're of, the answers held, and the
-/// reads out.
+/// A tab's measures of its published model: what they're of, the answers held, the reads
+/// out, and when a read refused is asked again.
 #[derive(Default)]
 pub struct ModelMeasures {
-    of: Option<Of>,
+    of: Option<ModelKey>,
     answers: Answers,
     bodies: Option<Running<Bodies>>,
     faces: Option<Running<Queried>>,
+    /// When the reads refused are asked again, once one is.
+    retry_at: Option<Instant>,
+    /// How many refusals came in a row for this model: what the next delay grows by.
+    refusals: u32,
     /// How many reads it has started.
     reads: u64,
 }
@@ -112,7 +132,7 @@ impl ModelMeasures {
     /// As if the model `of` had been read and answered `answers`, nothing out: a view's
     /// test's.
     #[cfg(test)]
-    pub(crate) fn answered_as(&mut self, of: Of, answers: Answers) {
+    pub(crate) fn answered_as(&mut self, of: ModelKey, answers: Answers) {
         self.cancel();
         self.of = Some(of);
         self.answers = answers;
@@ -125,7 +145,7 @@ impl ModelMeasures {
 
     /// The answers held, if they're of `of`: none for another model, so the panel never
     /// shows another's.
-    pub fn answers(&self, of: Of) -> Option<&Answers> {
+    pub fn answers(&self, of: ModelKey) -> Option<&Answers> {
         (self.of == Some(of)).then_some(&self.answers)
     }
 
@@ -134,52 +154,94 @@ impl ModelMeasures {
         self.bodies.is_some() || self.faces.is_some()
     }
 
-    /// The model `of` measured through `sessions`, of `session`'s published model, unless
-    /// that's what was asked last: the reads out cancelled and every answer dropped, then
-    /// both reads asked (nothing for no model).
+    /// When the reads refused are asked again, if one was refused.
+    pub fn retry_at(&self) -> Option<Instant> {
+        self.retry_at
+    }
+
+    /// The model `of` measured through `sessions`, of `session`'s published model, at
+    /// `now`: if it's another than was asked last, the reads out cancelled and every answer
+    /// dropped, then both reads asked (nothing for no model); if it's the same, each read
+    /// refused asked again once its delay is up, its refusal held till its answer comes.
     pub fn ask<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         session: &SessionId,
-        of: Option<Of>,
+        of: Option<ModelKey>,
+        now: Instant,
     ) {
         if self.of == of {
+            if self.retry_at.is_some_and(|at| at <= now) && !self.reading() {
+                let _span = tracing::debug_span!("model_measures_retry", ?of).entered();
+                self.retry_at = None;
+                if self.answers.bodies_refused() {
+                    self.ask_bodies(sessions, session);
+                }
+                if self.answers.faces_refused() {
+                    self.ask_faces(sessions, session);
+                }
+            }
             return;
         }
         let _span = tracing::debug_span!("model_measures_ask", ?of).entered();
         self.cancel();
         self.of = of;
         self.answers = Answers::default();
+        self.retry_at = None;
+        self.refusals = 0;
         if of.is_none() {
             return;
         }
-        self.reads += 2;
-        self.bodies = Some(sessions.mass_properties(session, ModelChoice::Published, None));
-        // One entry is enough: `matched` counts every face before the limit.
-        self.faces = Some(sessions.query(
-            session,
-            ModelChoice::Published,
-            Query::of(ElementKind::Face, 1),
-        ));
+        self.ask_bodies(sessions, session);
+        self.ask_faces(sessions, session);
     }
 
-    /// The reads out polled: each answer taken if it has come (one of another revision than
-    /// asked dropped).
-    pub fn poll(&mut self) {
+    fn ask_bodies<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, id: &SessionId) {
+        self.reads += 1;
+        self.bodies = Some(sessions.mass_properties(id, ModelChoice::Published, None));
+    }
+
+    fn ask_faces<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>, id: &SessionId) {
+        self.reads += 1;
+        // One entry is enough: `matched` counts every face before the limit.
+        self.faces =
+            Some(sessions.query(id, ModelChoice::Published, Query::of(ElementKind::Face, 1)));
+    }
+
+    /// The reads out polled at `now`: each answer taken if it has come (one of another
+    /// revision than asked dropped). A refusal taken sets when the reads refused are asked
+    /// again; both answered, the refusals in a row start again.
+    pub fn poll(&mut self, now: Instant) {
         let Some(of) = self.of else {
             return;
         };
+        let mut refused = false;
         if let Some(running) = self.bodies.take() {
             match running.try_take() {
-                Ok(response) => self.answers.bodies = taken(of, response),
+                Ok(response) => {
+                    self.answers.bodies = crate::measures::taken(of.1, response);
+                    refused |= self.answers.bodies_refused();
+                }
                 Err(running) => self.bodies = Some(running),
             }
         }
         if let Some(running) = self.faces.take() {
             match running.try_take() {
-                Ok(response) => self.answers.faces = taken(of, response),
+                Ok(response) => {
+                    self.answers.faces = crate::measures::taken(of.1, response);
+                    refused |= self.answers.faces_refused();
+                }
                 Err(running) => self.faces = Some(running),
             }
+        }
+        if refused {
+            // Once for the reads refused together: the delay grows by refusals in a row.
+            if self.retry_at.is_none() {
+                self.retry_at = Some(now + crate::viewport::retry_after(self.refusals));
+                self.refusals = self.refusals.saturating_add(1);
+            }
+        } else if !self.reading() && self.answers.refused().is_none() {
+            self.refusals = 0;
         }
     }
 
@@ -191,22 +253,6 @@ impl ModelMeasures {
         if let Some(running) = self.faces.take() {
             running.cancel();
         }
-    }
-}
-
-/// `response`'s result, if it's of `of`'s model: none for one read from another revision (a
-/// model published after it was asked), which the rebuild that published it asks again.
-fn taken<T>(of: Of, response: Response<T>) -> Option<Result<T, Problems>> {
-    match &response.model {
-        Some(model) if model.revision != of.1 => {
-            tracing::debug!(
-                asked = of.1.number(),
-                read = model.revision.number(),
-                "a model measure read of another model: dropped"
-            );
-            None
-        }
-        _ => Some(response.result),
     }
 }
 
@@ -238,7 +284,7 @@ mod tests {
         _dir: tempfile::TempDir,
         sessions: Arc<Sessions<Fake>>,
         id: SessionId,
-        of: Of,
+        of: ModelKey,
     }
 
     /// A box `id`, `length` by `width` by `height`, from (`x`, 0, 0), as a document writes it.
@@ -248,7 +294,22 @@ mod tests {
         )
     }
 
+    /// `measures` polled at `now` until neither read is out, within a minute.
+    fn polled_at(measures: &mut ModelMeasures, now: Instant) {
+        let deadline = Instant::now() + std::time::Duration::from_secs(60);
+        while measures.reading() {
+            measures.poll(now);
+            assert!(Instant::now() < deadline, "never answered");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     fn opened(features: &[String]) -> Opened {
+        opened_on(features, |_| {})
+    }
+
+    /// [`opened`], on a fake kernel `setup` prepares.
+    fn opened_on(features: &[String], setup: impl FnOnce(&FakeKernel)) -> Opened {
         let dir = tempfile::tempdir().unwrap();
         let document = dir.path().join("part.silico");
         std::fs::write(
@@ -259,7 +320,9 @@ mod tests {
             ),
         )
         .unwrap();
-        let kernel = Arc::new(FakeKernel::new(1).unwrap());
+        let fake = FakeKernel::new(1).unwrap();
+        setup(&fake);
+        let kernel = Arc::new(fake);
         let sessions = Arc::new(Sessions::with_cache_opener(kernel, |dir| {
             silico_core::cache::Cache::unsealed(dir)
         }));
@@ -282,10 +345,10 @@ mod tests {
         /// `measures` asked of the model and polled until neither read is out, within a
         /// minute.
         fn measured(&self, measures: &mut ModelMeasures) {
-            measures.ask(&self.sessions, &self.id, Some(self.of));
+            measures.ask(&self.sessions, &self.id, Some(self.of), Instant::now());
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
             while measures.reading() {
-                measures.poll();
+                measures.poll(Instant::now());
                 assert!(std::time::Instant::now() < deadline, "never answered");
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
@@ -308,10 +371,10 @@ mod tests {
             Some(Measure::from_millionths(113_000_000))
         );
         assert_eq!(answers.area(), Some(Measure::from_millionths(170_000_000)));
-        assert_eq!(answers.faces(), Some(12));
+        assert_eq!(answers.face_count(), Some(12));
         assert_eq!(
             answers
-                .bodies()
+                .measured_features()
                 .unwrap()
                 .iter()
                 .map(|id| id.as_str())
@@ -321,7 +384,12 @@ mod tests {
         assert!(answers.refused().is_none());
         assert_eq!(measures.reads(), 2);
         // Asked again of the same model: nothing more read, the answers kept.
-        measures.ask(&opened.sessions, &opened.id, Some(opened.of));
+        measures.ask(
+            &opened.sessions,
+            &opened.id,
+            Some(opened.of),
+            Instant::now(),
+        );
         assert_eq!(measures.reads(), 2);
         assert!(measures.answers(opened.of).unwrap().volume().is_some());
     }
@@ -334,17 +402,76 @@ mod tests {
         // The same revision published again (a fresh check's): another model.
         let again = (2, opened.of.1);
         assert!(measures.answers(again).is_none());
-        measures.ask(&opened.sessions, &opened.id, Some(again));
+        measures.ask(&opened.sessions, &opened.id, Some(again), Instant::now());
         assert_eq!(measures.reads(), 4);
         assert!(
             measures.answers(opened.of).is_none(),
             "the old answers dropped"
         );
         // No model: nothing asked, nothing held.
-        measures.ask(&opened.sessions, &opened.id, None);
+        measures.ask(&opened.sessions, &opened.id, None, Instant::now());
         assert!(!measures.reading());
         assert_eq!(measures.reads(), 4);
         assert!(measures.answers(again).is_none());
+    }
+
+    #[test]
+    fn a_new_model_holds_none_of_the_old_ones_answers_before_its_own_come() {
+        let opened = opened(&[block("k7f2qx3m", 0, [4, 2, 1])]);
+        let mut measures = ModelMeasures::default();
+        opened.measured(&mut measures);
+        let again = (2, opened.of.1);
+        measures.ask(&opened.sessions, &opened.id, Some(again), Instant::now());
+        // Not polled: nothing of the new model has come, and nothing of the old is given.
+        let answers = measures.answers(again).unwrap();
+        assert!(answers.bodies.is_none() && answers.faces.is_none());
+    }
+
+    #[test]
+    fn a_read_refused_is_asked_again_alone_after_a_delay_that_doubles() {
+        use crate::viewport::RETRY_FIRST;
+        // The kernel refuses to describe the block: `query` is refused every time, and
+        // `mass_properties`, which asks no description, answers.
+        let opened = opened_on(&[block("k7f2qx3m", 0, [4, 2, 1])], |kernel| {
+            kernel.refuse(|op| {
+                matches!(op, silico_core::kernel::Op::DescribeAll { .. }).then(|| {
+                    silico_core::Error::new(
+                        silico_core::ErrorCode::KernelFailed,
+                        "the worker couldn't describe it",
+                    )
+                })
+            });
+        });
+        let start = Instant::now();
+        let mut measures = ModelMeasures::default();
+        measures.ask(&opened.sessions, &opened.id, Some(opened.of), start);
+        polled_at(&mut measures, start);
+        assert_eq!(measures.reads(), 2);
+        assert_eq!(measures.retry_at(), Some(start + RETRY_FIRST));
+        // Before its delay: nothing asked.
+        let early = start + RETRY_FIRST - std::time::Duration::from_millis(1);
+        measures.ask(&opened.sessions, &opened.id, Some(opened.of), early);
+        assert!(!measures.reading());
+        assert_eq!(measures.reads(), 2);
+        // At it: the faces' read alone asked again, its refusal shown till it answers; the
+        // volume kept.
+        let due = start + RETRY_FIRST;
+        measures.ask(&opened.sessions, &opened.id, Some(opened.of), due);
+        assert_eq!(measures.reads(), 3);
+        assert!(measures.answers(opened.of).unwrap().faces_refused());
+        assert!(measures.answers(opened.of).unwrap().volume().is_some());
+        polled_at(&mut measures, due);
+        // Refused again: twice the delay.
+        assert_eq!(measures.retry_at(), Some(due + 2 * RETRY_FIRST));
+        let answers = measures.answers(opened.of).unwrap();
+        assert_eq!(answers.volume(), Some(Measure::from_millionths(8_000_000)));
+        assert!(answers.faces_refused() && !answers.bodies_refused());
+        // Another model: the refusals in a row start again.
+        let again = (2, opened.of.1);
+        let later = due + RETRY_FIRST;
+        measures.ask(&opened.sessions, &opened.id, Some(again), later);
+        polled_at(&mut measures, later);
+        assert_eq!(measures.retry_at(), Some(later + RETRY_FIRST));
     }
 
     #[test]
@@ -355,10 +482,10 @@ mod tests {
         // published one, is dropped.
         let other = (1, Revision::from_number(99).unwrap());
         assert_ne!(other.1, opened.of.1);
-        measures.ask(&opened.sessions, &opened.id, Some(other));
+        measures.ask(&opened.sessions, &opened.id, Some(other), Instant::now());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while measures.reading() {
-            measures.poll();
+            measures.poll(Instant::now());
             assert!(std::time::Instant::now() < deadline, "never answered");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
@@ -406,6 +533,6 @@ mod tests {
         };
         assert_eq!(answers.volume(), None);
         assert_eq!(answers.area(), Some(Measure::from_millionths(2)));
-        assert_eq!(answers.faces(), None);
+        assert_eq!(answers.face_count(), None);
     }
 }

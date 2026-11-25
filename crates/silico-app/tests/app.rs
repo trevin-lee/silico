@@ -37409,6 +37409,17 @@ fn row_value(h: &AppHarness, key: &str) -> Option<String> {
     })
 }
 
+/// Frames stepped until the first tab's timeline is read, its panes drawn.
+fn timeline_read(h: &mut AppHarness) {
+    step_until(h, "the timeline read", |h| {
+        h.state()
+            .tabs()
+            .first()
+            .is_some_and(|tab| tab.timeline.is_some())
+    });
+    step(h);
+}
+
 /// Frames stepped until row `key` shows `value`.
 #[track_caller]
 fn row_until(h: &mut AppHarness, key: &str, value: &str) {
@@ -37426,6 +37437,7 @@ fn the_documents_model_shows_its_bodies_volume_area_and_faces_added_and_the_box_
     // (60, 20, 10).
     let f = fixture();
     let (mut h, _) = f.drawn("blocks.silico", BLOCK_AND_PLATE);
+    timeline_read(&mut h);
     row_until(&mut h, "Volume", "8,200.00 mm³");
     row_until(&mut h, "Area", "3,080.00 mm²");
     row_until(&mut h, "Size", "60 × 20 × 10 mm");
@@ -37497,6 +37509,7 @@ fn a_body_the_kernel_couldnt_box_has_no_size_row() {
     let f = fixture();
     unmeasured(&f);
     let (mut h, _) = f.drawn("unmeasured.silico", UNMEASURED);
+    timeline_read(&mut h);
     row_until(&mut h, "Volume", "8,000.00 mm³");
     row_until(&mut h, "Area", "2,400.00 mm²");
     row_until(&mut h, "Faces", "6");

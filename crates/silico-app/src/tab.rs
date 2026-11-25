@@ -2817,7 +2817,7 @@ impl Tab {
 
     /// The published model, as its measures are keyed: the tab's count of the models
     /// published, and its revision; none while nothing is published.
-    pub fn published_model(&self) -> Option<crate::model_measures::Of> {
+    pub fn published_model(&self) -> Option<crate::model_measures::ModelKey> {
         self.published
             .map(|revision| (self.published_models, revision))
     }
@@ -2828,13 +2828,18 @@ impl Tab {
         &self.model_measures
     }
 
-    /// The published model's measures asked, if they're not what was asked last (a rebuild
-    /// since), and their reads out polled: what the property panel's document view asks as
-    /// it's drawn, so nothing is read while it isn't shown.
-    pub fn measure_model<P: Clients + 'static>(&mut self, sessions: &Arc<Sessions<P>>) {
+    /// The published model's measures asked at `now`, if they're not what was asked last (a
+    /// rebuild since) or a read refused is due to be asked again, and their reads out
+    /// polled: what the property panel's document view asks as it's drawn, so nothing is
+    /// read while it isn't shown.
+    pub fn measure_model<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        now: std::time::Instant,
+    ) {
         let of = self.published_model();
-        self.model_measures.ask(sessions, &self.id, of);
-        self.model_measures.poll();
+        self.model_measures.ask(sessions, &self.id, of, now);
+        self.model_measures.poll(now);
     }
 
     /// The model's measures, for a crate's test to answer as if read
@@ -3440,7 +3445,6 @@ impl Tab {
         self.read_sketches(sessions);
         self.retry_waiting(sessions);
         self.measure(sessions);
-        self.model_measures.poll();
         // The unsaved edits, counted while every answer of the tab's is taken: what the bar
         // holds while the next is under way.
         if self.quiet() {
