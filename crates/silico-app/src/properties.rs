@@ -1542,12 +1542,8 @@ pub(crate) const MAKE_IT_DRIVEN: &str = "Make it driven";
 
 /// What Make it driven's tooltip says of the dimension it makes driven: which, by its value
 /// and ID, and what driven does (the over-define prompt's words for its choice).
-fn driven_tip(driven: &crate::sketch::MakeDriven) -> String {
-    let value = driven
-        .value
-        .as_deref()
-        .map_or_else(String::new, |value| format!("the {value} dimension, "));
-    let id = driven.target.as_ref().map_or("", |id| id.as_str());
+fn driven_tip(id: &silico_core::document::ElementId, value: Option<&str>) -> String {
+    let value = value.map_or_else(String::new, |value| format!("the {value} dimension, "));
     format!(
         "Makes {value}{id}, driven: it shows its measured value in parentheses, and constrains nothing."
     )
@@ -1635,8 +1631,11 @@ fn card_buttons(
             // What it makes driven, or why it's off: its tooltip, and its description in the
             // accessibility tree, as an off button's reason is.
             Which::Driven => match driven {
-                Some(driven @ crate::sketch::MakeDriven { target: Ok(_), .. }) => {
-                    let tip = driven_tip(driven);
+                Some(crate::sketch::MakeDriven {
+                    target: Ok(id),
+                    value,
+                }) => {
+                    let tip = driven_tip(id, value.as_deref());
                     ui.ctx().accesskit_node_builder(response.id, |node| {
                         node.set_description(tip.as_str());
                     });

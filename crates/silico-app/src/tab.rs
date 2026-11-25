@@ -13160,8 +13160,6 @@ mod tests {
 
     type FakeSessions = Arc<Sessions<Arc<silico_core::fake::FakeKernel>>>;
 
-    /// Sessions on a fake kernel, `kernel` first told what to do, and `text` opened in a
-    /// tab: its directory (kept for the session's file), the sessions, and the tab.
     #[test]
     fn the_cards_make_it_driven_is_off_while_the_tab_closes_and_its_click_queues_nothing() {
         use crate::sketch::tests::{length, read, rectangle};
@@ -13214,6 +13212,8 @@ mod tests {
         assert!(queued || tab.sent.contains(&Sent::Edit(field)));
     }
 
+    /// Sessions on a fake kernel, `kernel` first told what to do, and `text` opened in a
+    /// tab: its directory (kept for the session's file), the sessions, and the tab.
     fn opened_on(
         text: &str,
         kernel: impl FnOnce(&silico_core::fake::FakeKernel),
