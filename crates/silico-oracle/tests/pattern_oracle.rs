@@ -157,8 +157,9 @@ fn the_harness_catches_a_freecad_pattern_built_otherwise_than_the_document_says(
     // values: the case's expected values say so. A direction reversed; extent taken as
     // spacing; an axis swapped; a polar extent as spacing (copies past a turn); a reversed
     // polar not reversed; a mirror in the wrong plane; a feature's copies as the whole
-    // shape's; a grid's second direction dropped; and, both ways for decision 3, a face's
-    // direction left as FreeCAD's surface axis, which points into the block.
+    // shape's; a grid's second direction dropped; both ways for decision 3, a face's
+    // direction left as FreeCAD's surface axis, which points into the block; and the block
+    // turned about its hole's rim the other way.
     let described = features::described(&cases()).unwrap();
     let wrong = [
         spoiled(case(&described, "linear_x"), |f| {
@@ -187,6 +188,9 @@ fn the_harness_catches_a_freecad_pattern_built_otherwise_than_the_document_says(
         }),
         spoiled(case(&described, "bottom_face"), |f| {
             linear(f).directions[0].outward = false;
+        }),
+        spoiled(case(&described, "rim_axis"), |f| {
+            polar(f).reversed = true;
         }),
     ];
     let theirs = features::freecad(&wrong).unwrap();

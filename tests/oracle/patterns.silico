@@ -866,7 +866,7 @@
       "name": "rim_axis_hole_profile",
       "plane": "xy",
       "points": [
-        {"id": "pa000001", "x": 20, "y": 10, "construction": false}
+        {"id": "pa000001", "x": 10, "y": 10, "construction": false}
       ],
       "lines": [],
       "circles": [
@@ -883,7 +883,7 @@
       "base": "p0000018",
       "sketch": "s0000022",
       "extent": {"type": "through_all", "reversed": true},
-      "note": "A hole r 2.5 up through the block's middle. Expected: volume 7803.650459151; box 0 0 0 40 20 10; center 20 10 5."
+      "note": "A hole r 2.5 up through the block at (10, 10). Expected: volume 7803.650459151; box 0 0 0 40 20 10; center 20.251612424 10 5."
     },
     {
       "id": "t0000013",
@@ -897,7 +897,7 @@
       "distribution": {"type": "extent", "angle": 90},
       "count": 2,
       "skip": [],
-      "note": "Section 4.2's example: the hole's top rim, a circle, is the axis; the block turned a quarter turn about it crosses itself there: two blocks less the hole, overlapping in 20 x 20 x 10 less the hole, 2 (8000 - hole) - (4000 - hole) = 12000 - 62.5 pi; the centre the rim's by symmetry. Expected: volume 11803.650459151; box 0 -10 0 40 30 10; center 20 10 5."
+      "note": "Section 4.2's example, off centre: the hole's top rim, a circle, is the axis, its axis pointing down (-z) as the pocket's prism builds it, in FreeCAD 1.1.3 (adapt.Circle().Axis(), PP:242-244) as in Silico; the block turned a quarter turn right-handed about it, (x, y) to (y, 20 - x), lies over x = 0 to 20, y = -20 to 20, crossing itself in 20 x 20 x 10: two blocks less the hole, overlapping in that less the hole, 2 (8000 - hole) - (4000 - hole) = 12000 - 62.5 pi. About +z it would lie over y = 0 to 40. Expected: volume 11803.650459151; box 0 -20 0 40 20 10; center 16.777564303 3.222435697 5."
     },
     {
       "id": "s0000023",

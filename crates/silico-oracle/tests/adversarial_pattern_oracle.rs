@@ -45,13 +45,19 @@ fn a_pattern_on_a_base_silico_refuses_is_reported_and_the_rest_still_compared() 
         r#"{BLOCK},
         {{"id": "s0000003", "type": "sketch", "v": 1, "name": "H", "plane": "xy", "points": [{{"id": "pa000001", "x": 100, "y": 100, "construction": false}}], "lines": [], "circles": [{{"id": "ca000001", "center": "pa000001", "radius": 2, "construction": false}}], "arcs": [], "constraints": []}},
         {{"id": "q0000001", "type": "pocket", "v": 1, "name": "missing", "base": "p0000001", "sketch": "s0000003", "extent": {{"type": "through_all", "reversed": true}}, "note": "Expected: volume 8000."}},
-        {{"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "along", "base": "q0000001", "copies": {{"type": "solid"}}, "directions": [{{"along": "p0000001.pad.Face(M s0000001.sketch.Face1)", "reversed": false, "distribution": {{"type": "spacing", "length": 10}}, "count": 2}}], "skip": [], "note": "Expected: volume 16000."}}"#
+        {{"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "along", "base": "q0000001", "copies": {{"type": "solid"}}, "directions": [{{"along": "p0000001.pad.Face(M s0000001.sketch.Face1)", "reversed": false, "distribution": {{"type": "spacing", "length": 10}}, "count": 2}}], "skip": [], "note": "Expected: volume 16000."}},
+        {{"id": "s0000009", "type": "sketch", "v": 1, "name": "D", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": 0, "construction": false}}], "lines": [], "circles": [{{"id": "ca000001", "center": "pa000001", "radius": 25, "construction": false}}], "arcs": [], "constraints": []}},
+        {{"id": "p0000009", "type": "pad", "v": 1, "name": "after", "sketch": "s0000009", "extent": {{"type": "one_side", "length": 5, "reversed": false}}, "note": "Expected: volume 9817.477042."}}"#
     );
     let cases = load(&features).unwrap().unwrap();
     let differ = features::run(&cases).unwrap();
     let names: Vec<&str> = differ.iter().map(|d| d.case.as_str()).collect();
+    // The pocket and the pattern are reported; the block before them and the disc after
+    // them each agree, each compared with its own FreeCAD answer (pi 25^2 5 by hand).
+    assert!(names.contains(&"missing"), "{differ:?}");
     assert!(names.contains(&"along"), "{differ:?}");
     assert!(!names.contains(&"block"), "{differ:?}");
+    assert!(!names.contains(&"after"), "{differ:?}");
     let along = differ.iter().find(|d| d.case == "along").unwrap();
     assert!(
         along

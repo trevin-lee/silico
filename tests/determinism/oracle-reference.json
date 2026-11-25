@@ -1930,13 +1930,13 @@
     "topology": "20dbe33079fbc8c0"
   },
   "rim_axis": {
-    "brep": "4da4bddc7f09fb5c",
-    "cameras": "2041c5290799dc6a",
-    "history": "4e913142c8764a86",
-    "measures": "e1dad5ebe98158f0",
-    "mesh": "be83758830c7a806",
-    "summary": "7234dfe2b61bcdeb",
-    "topology": "0b028802fd55d8d4"
+    "brep": "9fb014bae28c49cb",
+    "cameras": "d218f47b96c2b0e9",
+    "history": "4dced8806ddc367f",
+    "measures": "376c0b3fa5a10d48",
+    "mesh": "5b08b9566920aa1e",
+    "summary": "3726e1d964e227f4",
+    "topology": "d8b988e80ac785e5"
   },
   "rim_axis_block": {
     "brep": "336aec5bb65eb5c8",
@@ -1948,12 +1948,12 @@
     "topology": "24e6ef92cb7923ed"
   },
   "rim_axis_hole": {
-    "brep": "139d99c945e42129",
+    "brep": "eef13afee33dc441",
     "cameras": "e18c5690016935d0",
     "history": "21fc549fea7f3cf8",
-    "measures": "04d942523fe44853",
-    "mesh": "d7d40d617e710019",
-    "summary": "ec662220346ddea4",
+    "measures": "84a8d870d8ca9203",
+    "mesh": "5dcfb6acedec3741",
+    "summary": "4bb51a94fb61a155",
     "topology": "3d83d7ee33b5e956"
   },
   "rims_r3_r4": {

@@ -305,7 +305,7 @@ fn chain<'a>(
             | Operation::Torus { .. } => None,
             other => {
                 return Err(format!(
-                    "{} is a {}, which a sketch-feature case doesn't build",
+                    "{} is a {}, which a feature case doesn't build",
                     feature.id,
                     other.type_name()
                 ));
@@ -760,7 +760,7 @@ fn part_design(
             },
         })),
         other => Err(format!(
-            "{} is a {}, which a sketch-feature case doesn't build",
+            "{} is a {}, which a feature case doesn't build",
             feature.id,
             other.type_name()
         )),
@@ -834,17 +834,22 @@ fn unskipped(
     }
 }
 
-/// `cases`' references by name, each described as Silico's rebuild `model` found it, so
-/// FreeCAD can find it in its own build by its geometry ([`measures::resolve`], as a
-/// measure case's elements are).
-pub fn describe(cases: &mut [FeatureCase], model: &Model) -> Result<(), String> {
-    for case in cases {
-        describe_model(&mut case.model, model).map_err(|e| format!("{}: {e}", case.name))?;
-    }
-    Ok(())
+/// Each of `cases` with its references by name described as Silico's rebuild `model` found
+/// them, so FreeCAD can find each in its own build by its geometry ([`measures::resolve`],
+/// as a measure case's elements are); or why a case's can't be, in its words.
+pub fn describe(cases: &[FeatureCase], model: &Model) -> Vec<Result<FeatureCase, String>> {
+    cases
+        .iter()
+        .map(|case| {
+            let mut case = case.clone();
+            describe_model(&mut case.model, model).map_err(|e| format!("{}: {e}", case.name))?;
+            Ok(case)
+        })
+        .collect()
 }
 
-/// The references by name of a body's `features`, each described as [`describe`] does.
+/// The references by name of a body's `features`, each described as [`describe`] does a
+/// case's.
 pub(crate) fn describe_model(
     features: &mut [PartDesignFeature],
     model: &Model,
@@ -887,12 +892,10 @@ impl PartDesignFeature {
 }
 
 /// `cases` with their references by name described ([`describe`]) by Silico's rebuild of
-/// their document, ready for [`freecad`].
+/// their document, ready for [`freecad`]; the first that can't be, why.
 pub fn described(cases: &Cases) -> Result<Vec<FeatureCase>, String> {
     let model = rebuilt(cases)?;
-    let mut described = cases.cases.clone();
-    describe(&mut described, &model)?;
-    Ok(described)
+    describe(&cases.cases, &model).into_iter().collect()
 }
 
 /// `sketch`'s curves in FreeCAD's terms, at the coordinates it stores.
@@ -955,7 +958,7 @@ enum FreecadShape<'a> {
 
 /// What FreeCAD builds and measures for each of `cases`, in order.
 pub fn freecad(cases: &[FeatureCase]) -> Result<Vec<Outcome>, String> {
-    let _span = tracing::info_span!("freecad_sketch_features", cases = cases.len()).entered();
+    let _span = tracing::info_span!("freecad_feature_cases", cases = cases.len()).entered();
     for case in cases {
         let undescribed = case.model.iter().find_map(|f| {
             f.references().into_iter().find_map(|r| match r {
@@ -1008,14 +1011,6 @@ impl Ours {
     }
 }
 
-/// Silico's outcome for each case: the document rebuilt through the core's commands (on a
-/// pool of kernel workers, its sketches on the sketch worker), and each case's solid
-/// measured on a kernel worker as FreeCAD measures.
-pub fn silico(cases: &Cases) -> Result<Vec<Ours>, String> {
-    let model = rebuilt(cases)?;
-    silico_of(cases, &model)
-}
-
 /// The cases' document rebuilt through the core's commands, on a pool of kernel workers,
 /// its sketches on the sketch worker.
 pub fn rebuilt(cases: &Cases) -> Result<std::sync::Arc<Model>, String> {
@@ -1025,9 +1020,10 @@ pub fn rebuilt(cases: &Cases) -> Result<std::sync::Arc<Model>, String> {
         .ok_or_else(|| "the rebuild was superseded, though nothing else ran".to_owned())
 }
 
-/// Silico's outcome for each case of `model`, the cases' document rebuilt ([`rebuilt`]).
-fn silico_of(cases: &Cases, model: &Model) -> Result<Vec<Ours>, String> {
-    let _span = tracing::info_span!("silico_sketch_features", cases = cases.cases.len()).entered();
+/// Silico's outcome for each case: its solid in `model`, the cases' document rebuilt
+/// ([`rebuilt`]), measured on a kernel worker as FreeCAD measures.
+pub fn silico(cases: &Cases, model: &Model) -> Result<Vec<Ours>, String> {
+    let _span = tracing::info_span!("silico_feature_cases", cases = cases.cases.len()).entered();
     let mut kernel = KernelWorker::start().map_err(|e| e.to_string())?;
     let mut found = Vec::with_capacity(cases.cases.len());
     for case in &cases.cases {
@@ -1121,44 +1117,34 @@ pub fn compare(case: &FeatureCase, ours: &Outcome, theirs: &Outcome) -> Vec<Stri
     differences(ours, theirs, case.tolerance)
 }
 
-/// Every case of `cases` that differs: Silico's rebuild of the document (M3.6, step iv)
-/// compared with FreeCAD's build of each case, and with the case's expected values (each
-/// such difference said as Silico's), for `silico-oracle run` and the test alike.
+/// Every case of `cases` that differs: Silico's rebuild of the document (M3.6, step iv;
+/// M6.4) compared with FreeCAD's build of each case, and with the case's expected values
+/// (each such difference said as Silico's), for `silico-oracle run` and the test alike.
 pub fn run(cases: &Cases) -> Result<Vec<crate::Difference>, String> {
     let model = rebuilt(cases)?;
-    let ours = silico_of(cases, &model)?;
+    let ours = silico(cases, &model)?;
     // A case whose reference by name Silico's rebuild can't give (its base refused, or the
     // name finding nothing) isn't asked of FreeCAD: it's lost, a difference, and the rest
     // are still compared.
-    let mut asked = Vec::with_capacity(cases.cases.len());
-    let mut undescribed = BTreeMap::new();
-    for (i, case) in cases.cases.iter().enumerate() {
-        let mut case = case.clone();
-        match describe_model(&mut case.model, &model) {
-            Ok(()) => asked.push(case),
-            Err(why) => {
-                undescribed.insert(i, why);
-            }
-        }
-    }
-    let mut answered = freecad(&asked)?.into_iter();
-    let theirs: Vec<Outcome> = (0..cases.cases.len())
-        .map(|i| match undescribed.remove(&i) {
-            Some(why) => Some(Outcome::Lost(format!(
-                "not built: its reference isn't in Silico's rebuild, so FreeCAD can't be shown it: {why}"
-            ))),
-            None => answered.next(),
-        })
-        .collect::<Option<Vec<Outcome>>>()
-        .ok_or_else(|| "FreeCAD gave fewer outcomes than it was asked for".to_owned())?;
-    if ours.len() != cases.cases.len() || theirs.len() != cases.cases.len() {
+    let described = describe(&cases.cases, &model);
+    let asked: Vec<FeatureCase> = described.iter().filter_map(|d| d.clone().ok()).collect();
+    let answered = freecad(&asked)?;
+    if ours.len() != cases.cases.len() || answered.len() != asked.len() {
         return Err(format!(
-            "{} sketch-feature cases gave {} outcomes from Silico and {} from FreeCAD",
+            "{} feature cases gave {} outcomes from Silico, and FreeCAD {} for the {} it was asked",
             cases.cases.len(),
             ours.len(),
-            theirs.len()
+            answered.len(),
+            asked.len()
         ));
     }
+    let mut answered = answered.into_iter();
+    let theirs = described.into_iter().map(|d| match d {
+        Ok(_) => answered.next().unwrap_or_else(|| Outcome::Lost("unanswered".to_owned())),
+        Err(why) => Outcome::Lost(format!(
+            "not built: its reference isn't in Silico's rebuild, so FreeCAD can't be shown it: {why}"
+        )),
+    });
     let mut found = Vec::new();
     for ((case, ours), theirs) in cases.cases.iter().zip(&ours).zip(theirs) {
         let ours = ours.outcome();
