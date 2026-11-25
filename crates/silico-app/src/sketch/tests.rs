@@ -7521,6 +7521,61 @@ fn of_three_values_at_one_place_the_last_drawn_is_hit_inside_and_just_outside() 
     assert_eq!(found([20.0, -4.0], 0.6), Some(element("ka000004")));
 }
 
+#[test]
+fn a_nearer_box_drawn_first_is_taken_over_a_farther_one_drawn_after_it() {
+    // The bottom's horizontal glyph's box about (11.2, −1.3), 0.8 either way, and its
+    // length's value's about (20, −2.6), 1.16011 across and 0.9 up, drawn after it.
+    // (12.5, −1.5): 0.5 right of the glyph's box, hypot(6.33989, 0.2) = 6.343 from the
+    // value's; the corner and the origin 12.59 off, past the 7: the glyph, the nearer.
+    let read = dimensioned();
+    assert_eq!(
+        hit(&read, [12.5, -1.5], 7.0, HAND, Axes::BOTH),
+        constraint_pick("ka000001")
+    );
+}
+
+#[test]
+fn a_nearer_dimension_line_drawn_first_is_taken_over_a_farther_one_drawn_after_it() {
+    // The bottom's length, its extension lines from 0.4 to 3.1 under the corners, and the
+    // left side's, drawn after it, 2.6 left of the side, its extension lines from 0.4 to 3.1
+    // left of them. (−1.5, −2.5): 1.5 from the bottom's left extension line, 2.5 from the
+    // left's lower one, 2.731 from its dimension line; the corner, the origin, and both
+    // sides 2.915 off, past the 2.8; the values far: the bottom's, the nearer.
+    let read = under(rectangle(vec![
+        length("ka000002", "na000001", "40", true),
+        length("ka000003", "na000004", "20", true),
+    ]));
+    assert_eq!(
+        hit(&read, [-1.5, -2.5], 2.8, HAND, Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+}
+
+#[test]
+fn a_value_over_a_glyph_is_taken_whatever_their_ids() {
+    // At a millimetre a point: the bottom's horizontal glyph about (11.2, −13), 8 either
+    // way; its length's value "40" about (20, −26), 11.6011 across (two characters of
+    // 0.574 × 11.5, and 5 a side) and 9 up. (15, −19) is inside both, with no reach: the
+    // value, drawn over the glyph, whether the glyph's ID is the lower or the higher.
+    let at = [15.0, -19.0];
+    let lower_glyph = under(rectangle(vec![
+        horizontal("ka000001", "na000001"),
+        length("ka000002", "na000001", "40", true),
+    ]));
+    assert_eq!(
+        hit(&lower_glyph, at, 0.0, Scale(1.0), Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+    let higher_glyph = under(rectangle(vec![
+        length("ka000002", "na000001", "40", true),
+        horizontal("ka000003", "na000001"),
+    ]));
+    assert_eq!(
+        hit(&higher_glyph, at, 0.0, Scale(1.0), Axes::BOTH),
+        constraint_pick("ka000002")
+    );
+}
+
 // The mutants #351's run left alive in the panels (`bar`): their look, the tools' names,
 // the legend, and the state's dot, each against the prototype (docs/design/m5-ui/:
 // styles.css's `:root`, `.state-dot`, and `.legend`; sketch.js's palette). The status

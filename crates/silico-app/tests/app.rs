@@ -29805,6 +29805,20 @@ fn label_of_dimension(h: &AppHarness, id: &str) -> eframe::egui::Pos2 {
         .unwrap()
 }
 
+/// A click at `at` on the screen, as the pane gives one.
+fn clicked_at(at: eframe::egui::Pos2) -> Vec<silico_app::sketch::PointerEvent> {
+    use silico_app::sketch::PointerAction::{Press, Release};
+    [Press, Release]
+        .into_iter()
+        .map(|action| silico_app::sketch::PointerEvent {
+            action,
+            at,
+            shift: false,
+            ctrl: false,
+        })
+        .collect()
+}
+
 /// A double-click at `at` on the screen, as the pane gives one.
 fn double_clicked_at(at: eframe::egui::Pos2) -> Vec<silico_app::sketch::PointerEvent> {
     use silico_app::sketch::PointerAction::{DoubleClick, Press, Release};
@@ -30201,7 +30215,6 @@ fn a_click_on_a_dimensions_value_selects_the_dimension_drawn_there_on_top() {
     // other (in the order `last_drawn` paints in, the constraints' order, which their drawn
     // IDs decide), on top of it. A click there selects the one on top, the value that
     // shows, never the one beneath it.
-    use silico_app::sketch::PointerAction::{Press, Release};
     use silico_app::sketch::draw::Drawn;
     let f = fixture();
     counting(&f);
@@ -30237,16 +30250,7 @@ fn a_click_on_a_dimensions_value_selects_the_dimension_drawn_there_on_top() {
     assert_ne!(labels[0].0, labels[1].0);
     assert!(labels[0].1.distance(labels[1].1) < 0.01, "{labels:?}");
     let (on_top, at) = labels[1].clone();
-    let click: Vec<silico_app::sketch::PointerEvent> = [Press, Release]
-        .into_iter()
-        .map(|action| silico_app::sketch::PointerEvent {
-            action,
-            at,
-            shift: false,
-            ctrl: false,
-        })
-        .collect();
-    sketch_events(&f, &mut h, &click);
+    sketch_events(&f, &mut h, &clicked_at(at));
     let on_top = silico_core::document::ElementId::new(&on_top).unwrap();
     assert_eq!(
         sketch_mode(&h).unwrap().selected_ids(),

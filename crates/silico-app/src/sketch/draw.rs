@@ -1151,6 +1151,8 @@ pub fn drawing(
             constraint_colour(sketch, form, states.constraints.get(id).copied())
         })
     };
+    // The glyphs, then each dimension, in `placed`'s order: `hit` takes the one drawn last of
+    // those as near (`hit::topmost`), so an order changed here is changed there too.
     if shown.constraints {
         for glyph in &placed.glyphs {
             if let Some(at) = view.at(glyph.at) {
