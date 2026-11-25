@@ -19,8 +19,9 @@
 //!   `cb2780e2fa`; sketch-edit decision 10): a result the file can't hold, a solve that ranks
 //!   worse (a conflict, then over-constrained, then no solution), or one that flags a
 //!   constraint redundant or in conflict that the solve before didn't. No edit tries a
-//!   second seed, retries, snaps, or solves again: the rebuild then solves the same text the
-//!   same way.
+//!   second seed, retries, snaps, or solves again; and the rebuild then takes the edit's
+//!   solve of the text it wrote, offered to the session's engine, rather than solving it
+//!   again.
 //!
 //! [`Session::edit`]: super::Session
 
@@ -28,8 +29,8 @@ use std::sync::{Arc, Mutex, Weak};
 
 use super::cancel::{Interrupt, Ticket, Why};
 use super::{
-    ExtendBy, NewMembers, Problems, Running, SessionCommand, SessionId, Sessions, SketchCut,
-    SketchEdited, SketchJoined, not_open, reclaim,
+    ExtendBy, NewMembers, Problems, Running, Session, SessionCommand, SessionId, Sessions,
+    SketchCut, SketchEdited, SketchJoined, not_open, reclaim,
 };
 use crate::command::Gated;
 use crate::command::Revision;
@@ -38,9 +39,9 @@ use crate::document::sketch_edit::NewIds;
 use crate::document::{Checked, ElementId, FeatureId, Operation, Reference};
 use crate::drag::DragStop;
 use crate::extend::End;
-use crate::kernel::Clients;
+use crate::kernel::{Clients, Kernel};
 use crate::recompute::SketchSolvers;
-use crate::sketch::Translation;
+use crate::sketch::{Answer, Translation};
 use crate::sketch_judge::{
     EXTEND, JOIN, Judged, MERGE, SPLIT, TRIM, UNBUILDABLE, UNJOIN, WritingEdit, judge, severity,
 };
@@ -165,7 +166,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         let made = with_ids(ids.as_deref(), &drawn, |ids| {
                             edit::sketch_split(checked.document(), &sketch, &curve, &at, ids)
                         })?;
-                        judged(&solvers, stop, base.id, checked, &sketch, SPLIT, made)
+                        judged(session, &solvers, stop, checked, &sketch, SPLIT, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -214,7 +215,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         let made = with_ids(ids.as_deref(), &drawn, |ids| {
                             edit::sketch_trim(checked.document(), &sketch, &curve, pick, ids)
                         })?;
-                        judged(&solvers, stop, base.id, checked, &sketch, TRIM, made)
+                        judged(session, &solvers, stop, checked, &sketch, TRIM, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -261,7 +262,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         let made = with_ids(ids.as_deref(), &drawn, |ids| {
                             edit::sketch_unjoin(checked.document(), &sketch, &point, &curve, ids)
                         })?;
-                        judged(&solvers, stop, base.id, checked, &sketch, UNJOIN, made)
+                        judged(session, &solvers, stop, checked, &sketch, UNJOIN, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -306,7 +307,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     |base| {
                         let checked = base.checked()?;
                         let made = edit::sketch_merge(checked.document(), &sketch, &points)?;
-                        judged(&solvers, stop, base.id, checked, &sketch, MERGE, made)
+                        judged(session, &solvers, stop, checked, &sketch, MERGE, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -373,7 +374,7 @@ impl<P: Clients + 'static> Sessions<P> {
                         if stop.closed() {
                             return Err(Problems::from(not_open(base.id)));
                         }
-                        judged(&solvers, stop, base.id, checked, &sketch, EXTEND, made?)
+                        judged(session, &solvers, stop, checked, &sketch, EXTEND, made?)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -418,7 +419,7 @@ impl<P: Clients + 'static> Sessions<P> {
                     |base| {
                         let checked = base.checked()?;
                         let made = edit::sketch_join(checked.document(), &sketch, &point)?;
-                        judged(&solvers, stop, base.id, checked, &sketch, JOIN, made)
+                        judged(session, &solvers, stop, checked, &sketch, JOIN, made)
                     },
                     model,
                     &|resolved| reclaim(&registry, id, resolved),
@@ -516,11 +517,15 @@ fn with_ids<T>(
 /// and `made` given back unless that solve is worse than the solve of `before`, the document
 /// the edit was made to ([`judge`]): refused then, as `edit`'s. An edit that changes nothing
 /// isn't solved, nor is `before` where the edit's solve is clean. Its solves are stopped by
-/// the command `stop`, of the session `session` ([`solved`]).
-pub(super) fn judged<T>(
+/// the command `stop`, of the session `session` ([`solved`]). An edit made offers its solve
+/// to the session's engine, so the rebuild of the text it wrote, on the same solvers, takes
+/// it rather than solving that text again ([`Recompute::offer_solve`]).
+///
+/// [`Recompute::offer_solve`]: crate::recompute::Recompute::offer_solve
+pub(super) fn judged<C: Kernel + 'static, T>(
+    session: &Session<C>,
     solvers: &SketchSolvers,
     stop: &Ticket,
-    session: SessionId,
     before: &Checked,
     sketch: &FeatureId,
     edit: WritingEdit,
@@ -529,22 +534,28 @@ pub(super) fn judged<T>(
     let Some(candidate) = &made.1 else {
         return Ok(made);
     };
-    let after = solved(solvers, stop, session, checked_of(candidate)?, sketch)?;
+    let written = checked_of(candidate)?;
+    let (after, answer) = solved(solvers, stop, session.id, written, sketch)?;
     // A clean solve is never worse, and one the file can't hold always is: neither needs the
     // solve before.
     let refusal = match severity(&after) {
         0 => None,
         UNBUILDABLE => judge(None, &after, edit),
         _ => judge(
-            Some(&solved(solvers, stop, session, before, sketch)?),
+            Some(&solved(solvers, stop, session.id, before, sketch)?.0),
             &after,
             edit,
         ),
     };
-    match refusal {
-        Some(error) => Err(Problems::from(error.with_feature(sketch.as_str()))),
-        None => Ok(made),
+    if let Some(error) = refusal {
+        return Err(Problems::from(error.with_feature(sketch.as_str())));
     }
+    if let Some(answer) = answer {
+        lock(&session.rebuilds)
+            .engine
+            .offer_solve(solvers, written, sketch, &answer);
+    }
+    Ok(made)
 }
 
 /// The document a candidate the gate took holds.
@@ -575,7 +586,8 @@ impl Interrupt for SolveStop {
 /// The sketch `sketch` of `document` solved, as a rebuild solves it (M3.4: from the file's
 /// coordinates, FreeCAD's order), on a solver of `solvers`, given back after: the solution,
 /// or the solve's refusal of the sketch (a conflict, no solution, a result the file can't
-/// hold, or a sketch that can't be sent), and its diagnosis. Stopped by the command `stop`:
+/// hold, or a sketch that can't be sent), and its diagnosis; and the solver's answer it was
+/// read from, none for a sketch that can't be sent. Stopped by the command `stop`:
 /// refused `not_open` if `session` closed, as a session that isn't open is, since no client
 /// stopped it; a cancel answers `cancelled` whatever the edit returns, as every command
 /// cancelled before it settles does ([`Ticket::answer`]). A solver that couldn't be had, or
@@ -587,7 +599,7 @@ fn solved(
     session: SessionId,
     document: &Checked,
     sketch: &FeatureId,
-) -> Result<Judged, Problems> {
+) -> Result<(Judged, Option<Answer>), Problems> {
     let _span = tracing::info_span!("edit_solve", sketch = sketch.as_str()).entered();
     let named = |e: Error| e.with_feature(sketch.as_str());
     let found = document.feature(sketch).map_err(Problems::from)?;
@@ -600,10 +612,11 @@ fn solved(
     let translation = match Translation::new(drawn) {
         Ok(translation) => translation,
         Err(refused) => {
-            return Ok(Judged {
+            let judged = Judged {
                 outcome: Err(named(refused)),
                 diagnosis: None,
-            });
+            };
+            return Ok((judged, None));
         }
     };
     let halt = Arc::new(SolveStop(DragStop::new()));
@@ -621,11 +634,14 @@ fn solved(
         Ok(answer) => answer,
     };
     let diagnosis = answer.diagnosed().ok().map(|d| d.diagnosis().clone());
-    match answer.into_outcome() {
+    match answer.outcome().cloned().map_err(Error::clone) {
         Err(error) if error.code().is_kernel_fault() => Err(Problems::from(named(error))),
-        outcome => Ok(Judged {
-            outcome: outcome.map_err(named),
-            diagnosis,
-        }),
+        outcome => {
+            let judged = Judged {
+                outcome: outcome.map_err(named),
+                diagnosis,
+            };
+            Ok((judged, Some(answer)))
+        }
     }
 }

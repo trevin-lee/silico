@@ -3158,3 +3158,128 @@ fn a_join_that_would_hold_the_joined_lines_own_point_off_itself_is_refused_the_s
     );
     assert_eq!((f.text(), f.revision()), (text, revision(3)));
 }
+
+/// Each edit that writes geometry, by name, after the edits it needs made first, each at
+/// the revision it's made against counted from the first, `at`: what review A13-M2 runs.
+fn each_writing_edit(at: u64) -> Vec<(&'static str, Vec<(&'static str, String)>)> {
+    let split_base = || {
+        (
+            "sketch_split",
+            split(
+                at,
+                "s0000001",
+                "na000001",
+                json!([[30, 0]]),
+                json!(["pa000007", "na000007", "ka00000d"]),
+            ),
+        )
+    };
+    let unjoin_corner = || {
+        (
+            "sketch_unjoin",
+            unjoin(at, "s0000001", "pa000004", "na000004", json!(["pa000008"])),
+        )
+    };
+    vec![
+        ("sketch_split", vec![split_base()]),
+        (
+            "sketch_trim",
+            vec![(
+                "sketch_trim",
+                trim(at, "s0000001", "na000001", [30.0, 0.0], json!(null)),
+            )],
+        ),
+        ("sketch_unjoin", vec![unjoin_corner()]),
+        (
+            "sketch_merge",
+            vec![
+                unjoin_corner(),
+                (
+                    "sketch_merge",
+                    merge(at + 1, "s0000001", &["pa000004", "pa000008"]),
+                ),
+            ],
+        ),
+        (
+            "sketch_extend",
+            vec![(
+                "sketch_extend",
+                extend(
+                    at,
+                    "s0000001",
+                    "na000002",
+                    "end",
+                    json!({"type": "length", "length": 2}),
+                ),
+            )],
+        ),
+        (
+            "sketch_join",
+            vec![
+                split_base(),
+                ("sketch_join", join(at + 1, "s0000001", "pa000007")),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn the_rebuild_after_an_edit_that_writes_geometry_takes_the_edits_solve_and_never_sends_it_again() {
+    // Review A13-M2: an edit's solve of the text it wrote judges it, and the rebuild of that
+    // text then solved it again, the same system sent twice (on PlaneGCS's dense SQP, tens
+    // of seconds each for a large sketch). The edit's solve is now the rebuild's: after the
+    // edit and the rebuild it's read for, every system the fake was sent is sent once, and,
+    // inside a transaction, where the rebuild waits for the read, the read sends nothing.
+    // What's published is what a fresh solve gives (a fresh check solves every sketch
+    // again): the sketch read, its states and freedom, and the text, the same before it and
+    // after it; and the fresh check sends the edit's own system, so the solve the rebuild
+    // took was keyed to that text.
+    for inside in [true, false] {
+        for (edit, steps) in each_writing_edit(1) {
+            let what = format!("{edit}, inside: {inside}");
+            let f = opened(&bracket());
+            f.checked();
+            if inside {
+                f.begin();
+            }
+            let (last, before) = steps.split_last().unwrap();
+            for (command, request) in before {
+                f.ran(command, request);
+            }
+            f.checked();
+            let sent = f.sketches.requests().len();
+            let (command, request) = last;
+            let made = f.ran(command, request);
+            assert_eq!(made["changed"], true, "{what}: {made}");
+            let by_edit = f.sketches.requests()[sent..].to_vec();
+            assert!(!by_edit.is_empty(), "{what}: the edit solved nothing");
+            f.checked();
+            let new = f.sketches.requests()[sent..].to_vec();
+            for (i, system) in new.iter().enumerate() {
+                assert!(
+                    !new[..i].contains(system),
+                    "{what}: request {i} of {} since the edit sent a system already sent",
+                    new.len()
+                );
+            }
+            if inside {
+                assert_eq!(new, by_edit, "{what}: the read's rebuild solved again");
+            }
+            let read = r#"{"session": "s1", "model": "current", "sketch": "s0000001"}"#;
+            let published = f.ran("sketch", read);
+            let text = f.text();
+            let sent = f.sketches.requests().len();
+            f.ran(
+                "check",
+                r#"{"session": "s1", "model": "current", "fresh": true}"#,
+            );
+            let fresh = f.sketches.requests()[sent..].to_vec();
+            assert!(
+                fresh.contains(by_edit.last().unwrap()),
+                "{what}: the fresh check didn't send the edit's system"
+            );
+            assert_eq!(f.ran("sketch", read), published, "{what}");
+            assert_eq!(f.text(), text, "{what}");
+        }
+    }
+}
