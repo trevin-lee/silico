@@ -31,6 +31,7 @@ pub fn plane_z0() -> FaceDescription {
         },
         area: 1.0,
         centroid: [1.0, 0.0, 0.0],
+        orientation: silico_protocol::FaceOrientation::Forward,
     }
 }
 
@@ -43,6 +44,7 @@ pub fn cylinder(origin: [f64; 3], direction: [f64; 3]) -> FaceDescription {
         },
         area: 1.0,
         centroid: origin,
+        orientation: silico_protocol::FaceOrientation::Forward,
     }
 }
 
@@ -52,6 +54,7 @@ pub fn other_face(n: u32) -> FaceDescription {
         surface: Surface::Other,
         area: 1.0,
         centroid: [f64::from(n), 0.0, 0.0],
+        orientation: silico_protocol::FaceOrientation::Forward,
     }
 }
 

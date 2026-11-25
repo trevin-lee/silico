@@ -688,6 +688,7 @@ fn every_result() -> Vec<Result<Reply, Failure>> {
                     surface,
                     area: 0.1 + 0.2,
                     centroid: [-0.0, 1.0, f64::MIN_POSITIVE],
+                    orientation: silico_protocol::FaceOrientation::Forward,
                 })
                 .collect(),
                 edges: [

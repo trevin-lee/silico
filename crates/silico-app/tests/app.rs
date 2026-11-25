@@ -32735,6 +32735,166 @@ fn over_define_offered(
 }
 
 #[test]
+fn sketch_modes_property_panel_is_the_sketchs_own_its_rows_its_over_defined_card_and_its_hints() {
+    // sketch.js's `renderProps`, which app.js's `renderRight` shows while a sketch is open,
+    // before the selection: the head (the sketch's name, `Sketch · ` its ID), SKETCH's rows,
+    // the card for an over-defined sketch, and two hints. Values worked by hand from
+    // BOXED_LENGTH: four points, four lines, a horizontal and a vertical on each pair of
+    // sides, and a length of 40 on the bottom, which `counting_redundant_40` has repeat
+    // the others and agree: solved, over defined.
+    let f = fixture();
+    counting_redundant_40(&f);
+    let mut h = boxed_length(&f);
+    step_until(&mut h, "the sketch's own properties", |h| {
+        shows(h, "Properties", "Sketch · s0000001")
+    });
+    assert!(shows(&h, "Properties", "Box"));
+    // Not the selected feature's view (Edit Sketch selected the sketch): no Name field, no
+    // HEALTH, no ID row.
+    assert_eq!(property(&h, "ID"), None);
+    assert!(!shows(&h, "Properties", "HEALTH"));
+    assert!(shows(&h, "Properties", "SKETCH"));
+    let rows = |h: &AppHarness| {
+        [
+            "Plane",
+            "Definition",
+            "Curves",
+            "Points",
+            "Dimensions",
+            "Relations",
+        ]
+        .map(|key| property(h, key).unwrap_or_default())
+    };
+    assert_eq!(rows(&h), ["XY", "Over defined", "4 lines", "4", "1", "4"]);
+    // The prototype's card, in the app's words: the core reports this as a state, not an
+    // error, so there's no code and nothing to copy.
+    step_until(&mut h, "the card", |h| {
+        showing(h, "Properties", "is over defined").is_some()
+    });
+    assert_eq!(
+        showing(&h, "Properties", "is over defined").as_deref(),
+        Some("Box is over defined")
+    );
+    assert!(
+        showing(
+            &h,
+            "Properties",
+            "The 40 mm dimension repeats what the others already give."
+        )
+        .is_some()
+    );
+    assert!(showing(&h, "Properties", "Make it driven, or delete it.").is_some());
+    assert_eq!(
+        showing(&h, "Properties", "Elements:").as_deref(),
+        Some("Elements: ka000005")
+    );
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    assert!(
+        pane.query_by_role_and_label(Role::Button, "Copy as JSON")
+            .is_none()
+    );
+    assert!(pane.query_by_label("over_constrained").is_none());
+    // The prototype's hints, the drag's moved here from the palette, which no longer has it.
+    let drag = "Drag a blue point or curve to move it: what's fully defined stays put. Double-click a dimension to change it.";
+    assert!(showing(&h, "Properties", drag).is_some());
+    assert!(
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .query_all_by_label_contains("Drag a blue point")
+            .next()
+            .is_none()
+    );
+    // Finish Sketch's keys as the platform names them: off macOS (egui_kittest's harness
+    // says it's Linux, whatever the host), Ctrl and the prototype's ↵ for Enter, joined by `+`.
+    assert_eq!(
+        showing(&h, "Properties", "keeps your changes and rebuilds").as_deref(),
+        Some("Finish Sketch Ctrl+↵ keeps your changes and rebuilds. Cancel drops them.")
+    );
+    // Finish: the selected feature's view again, the sketch's head and hints gone.
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+        .get_by_role_and_label(Role::Button, "Finish Sketch")
+        .click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    step_until(&mut h, "the feature's view", |h| {
+        property(h, "ID").as_deref() == Some("s0000001")
+    });
+    assert!(!shows(&h, "Properties", "Sketch · s0000001"));
+    assert_eq!(showing(&h, "Properties", drag), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_new_sketchs_property_panel_counts_nothing_and_its_conflict_is_the_cores_card() {
+    // Create Sketch on XY in the example (no sketch yet: Sketch1), empty: Empty, subdued,
+    // nothing counted. Then a rectangle and its two sides' lengths, fully defined (eight
+    // unknowns, eight equations: `fully_defined`'s count), and a third length of 30 on the
+    // right side, which holds 20: in conflict, the solve refused, and the card the core's
+    // error, its code and Copy as JSON with it.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    step_until(&mut h, "the document's properties", |h| {
+        shows(h, "Properties", "DOCUMENT")
+    });
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    step_until(&mut h, "the sketch's properties", |h| {
+        shows(h, "Properties", &format!("Sketch · {id}"))
+    });
+    assert!(!shows(&h, "Properties", "DOCUMENT"));
+    let rows = |h: &AppHarness| {
+        [
+            "Plane",
+            "Definition",
+            "Curves",
+            "Points",
+            "Dimensions",
+            "Relations",
+        ]
+        .map(|key| property(h, key).unwrap_or_default())
+    };
+    assert_eq!(rows(&h), ["XY", "Empty", "None", "0", "0", "0"]);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    step_until(&mut h, "the document's properties", |h| {
+        shows(h, "Properties", "DOCUMENT")
+    });
+    fully_defined(&f, &mut h);
+    step_until(&mut h, "fully defined", |h| {
+        property(h, "Definition").as_deref() == Some("Fully defined")
+    });
+    assert!(shows(&h, "Properties", "Sketch1"));
+    // Four lines, four corners; two lengths; the rectangle's two horizontals and two
+    // verticals and the origin's corner held level and plumb with it (#278's A).
+    assert_eq!(rows(&h), ["XY", "Fully defined", "4 lines", "4", "2", "6"]);
+    assert_eq!(showing(&h, "Properties", "is over defined"), None);
+    assert_eq!(showing(&h, "Properties", "conflict"), None);
+    over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the core's card", |h| {
+        showing(h, "Properties", "the sketch's constraints conflict").is_some()
+    });
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    assert!(pane.query_by_label("over_constrained").is_some());
+    assert!(
+        pane.query_by_role_and_label(Role::Button, "Copy as JSON")
+            .is_some()
+    );
+    assert!(
+        showing(
+            &h,
+            "Properties",
+            "remove or change one of the constraints named"
+        )
+        .is_some()
+    );
+    assert_eq!(rows(&h)[3..], ["4", "3", "6"]);
+    assert_eq!(rows(&h)[1], "Over defined");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_dimension_edited_to_0_is_sent_and_the_gates_refusal_said_in_its_box() {
     let f = fixture();
     counting(&f);
@@ -34217,9 +34377,9 @@ fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_say
     double_click(&mut h, "Browser", "Box");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     sketch_read(&mut h);
-    // The sketch's properties (main's panel gives its ID, no longer "Type: sketch").
+    // Sketch mode's own properties, its head giving the sketch's ID.
     step_until(&mut h, "the sketch in Properties", |h| {
-        property(h, "ID").as_deref() == Some("s0000001")
+        shows(h, "Properties", "Sketch · s0000001")
     });
     // The block's warning marks the timeline, so a read that marks nothing never clears
     // what was said wholesale.
@@ -34252,7 +34412,7 @@ fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_say
     }
     // The block still marked: the timeline marks something, the sketch nothing.
     assert!(marks(&h, "k7f2qx3m").is_some_and(|(_, warnings)| warnings > 0));
-    assert_eq!(property(&h, "ID").as_deref(), Some("s0000001"));
+    assert!(shows(&h, "Properties", "Sketch · s0000001"));
     assert_eq!(showing(&h, "Properties", "conflict"), None);
     assert!(!h.state().tabs()[0].said.contains_key("s0000001"));
     assert_eq!(never_waits::waits(), 0);
@@ -37076,6 +37236,7 @@ fn real_box_description() -> silico_core::kernel::Description {
         },
         area,
         centroid,
+        orientation: silico_protocol::FaceOrientation::Forward,
     };
     let line = |start: [f64; 3], end: [f64; 3]| EdgeDescription {
         curve: EdgeCurve::Line,
@@ -37323,6 +37484,7 @@ fn describes_a_pin(f: &Fixture) {
         },
         area: PI * 6.25,
         centroid: [0.0, 0.0, z],
+        orientation: silico_protocol::FaceOrientation::Forward,
     };
     let rim = |z: f64| EdgeDescription {
         curve: EdgeCurve::Circle {
@@ -37343,6 +37505,7 @@ fn describes_a_pin(f: &Fixture) {
                 },
                 area: 60.0 * PI,
                 centroid: [0.0, 0.0, 6.0],
+                orientation: silico_protocol::FaceOrientation::Forward,
             },
             cap(12.0, 1.0),
             cap(0.0, -1.0),
@@ -56133,6 +56296,250 @@ fn redo_with_nothing_to_redo_by_side_of_the_release_says_so_only_before_it() {
         assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
         assert_eq!(never_waits::waits(), 0);
     }
+}
+
+/// What holds the session's command thread busy: what lets it go, and the check it holds.
+type SessionHeld = (Box<dyn FnOnce()>, Running<CheckAnswer>);
+
+/// The session's command thread held busy: every sketch solve held, and a fresh check
+/// solving the part's sketch on it, so what the tab sends next waits behind it.
+fn session_held(f: &Fixture, h: &AppHarness) -> SessionHeld {
+    let id = h.state().tabs()[0].id;
+    f.sketches.hold();
+    let check = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    assert!(f.sketches.wait_held(WAIT), "the check's solve never held");
+    let solver = f.sketches.clone();
+    (Box::new(move || solver.release()), check)
+}
+
+/// The next frame's status read before what's held runs, then, before that frame takes
+/// any answer, the session let go and every command sent before it answered (a text read
+/// sent now, behind them, answers last): the frame takes their answers ahead of its status,
+/// as a loaded machine's frame does when they land between its status read and its taking
+/// them. `keys` given in that frame, after its answers are taken, as a window's keys are.
+fn answers_after_the_status_read(
+    f: &Fixture,
+    h: &mut AppHarness,
+    held: SessionHeld,
+    keys: Vec<eframe::egui::Event>,
+) {
+    let id = h.state().tabs()[0].id;
+    let mut behind = Some(f.sessions.text(&id, None));
+    let mut held = Some(held);
+    let sessions = Arc::clone(&f.sessions);
+    let before = sessions.status(&id).session.unwrap().revision;
+    let ran = Arc::new(AtomicBool::new(false));
+    let told = Arc::clone(&ran);
+    h.state_mut().tabs_mut()[0].after_status = Some(Box::new(move || {
+        let (Some((release, _check)), Some(mut text)) = (held.take(), behind.take()) else {
+            return;
+        };
+        assert_eq!(sessions.status(&id).session.unwrap().revision, before);
+        release();
+        // Polled, not waited on: this is the frame's thread.
+        let deadline = Instant::now() + WAIT;
+        loop {
+            match text.try_take() {
+                Ok(_) => break,
+                Err(running) => text = running,
+            }
+            assert!(Instant::now() < deadline, "never answered behind the edit");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        told.store(true, Ordering::SeqCst);
+    }));
+    h.input_mut().events.extend(keys);
+    step(h);
+    assert!(ran.load(Ordering::SeqCst), "the hook never ran");
+    h.state_mut().tabs_mut()[0].after_status = None;
+}
+
+#[test]
+fn undo_in_the_frame_a_lines_add_answers_before_its_status_takes_the_line_back() {
+    // A line let go with the session busy, so its `begin` and `sketch_add` wait; ⌘Z in the
+    // frame whose status was read before they ran and that takes their answers: the tab is
+    // ahead of its status (its counts the state before the line). SolidWorks' Undo takes
+    // back the line just drawn; it's never let go unsaid. The undo waits for the next
+    // frame's status, then is sent after the add, the line gone and there to redo.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let sent = line_held(&mut h);
+    let held = session_held(&f, &h);
+    pane_release(&mut h, [30.0, 60.0]);
+    let after = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert_eq!(after, [Sent::Begin, Sent::SketchEdit("sketch_add")]);
+    let command = command_modifiers(&h);
+    answers_after_the_status_read(&f, &mut h, held, vec![key_event(Key::Z, command)]);
+    let said = said_while_settling(&mut h, NOTHING_TO_UNDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let added = tab.sent[sent.len()..].to_vec();
+    let add = added
+        .iter()
+        .position(|sent| sent == &Sent::SketchEdit("sketch_add"));
+    let undo = added.iter().position(|sent| matches!(sent, Sent::Undo(_)));
+    assert!(
+        add.is_some_and(|add| undo.is_some_and(|undo| add < undo)),
+        "{added:?}"
+    );
+    assert!(!said, "said there was nothing to undo");
+    assert!(tab.redoable());
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 4, "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_in_the_frame_an_undo_answers_before_its_status_gives_the_line_back() {
+    // A line drawn, then ⌘Z sent with the session busy; ⌘⇧Z in the frame whose status was
+    // read before the undo ran and that takes its answer: the tab is ahead of its status at
+    // the revision its undo came to. Redo gives the line back, sent after the undo, never
+    // let go unsaid.
+    use silico_app::tab::NOTHING_TO_REDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let sent = line_held(&mut h);
+    pane_release(&mut h, [30.0, 60.0]);
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    let held = session_held(&f, &h);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    assert!(
+        h.state().tabs()[0].sent[sent.len()..]
+            .iter()
+            .any(|sent| matches!(sent, Sent::Undo(_))),
+        "the undo wasn't sent"
+    );
+    answers_after_the_status_read(
+        &f,
+        &mut h,
+        held,
+        vec![key_event(Key::Z, command | Modifiers::SHIFT)],
+    );
+    let said = said_while_settling(&mut h, NOTHING_TO_REDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let after = tab.sent[sent.len()..].to_vec();
+    let undo = after.iter().position(|sent| matches!(sent, Sent::Undo(_)));
+    let redo = after.iter().position(|sent| matches!(sent, Sent::Redo(_)));
+    assert!(
+        undo.is_some_and(|undo| redo.is_some_and(|redo| undo < redo)),
+        "{after:?}"
+    );
+    assert!(!said, "said there was nothing to redo");
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_in_the_frame_the_last_undo_answers_waits_for_the_status_then_says_nothing_to_undo() {
+    // break-it: the one edit of the transaction (Hole renamed HoleS) undone with the
+    // session busy, and ⌘Z again in the frame that takes that undo's answer before its
+    // status: the tab is ahead of its status, whose counts (one to undo) are of the state
+    // before. The second undo waits for the status, which counts none, so it says "Nothing
+    // to undo" and sends nothing: one undo sent, nothing refused.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Hole");
+    type_name(&mut h, "S");
+    step_until(&mut h, "renamed", |h| {
+        h.state().tabs()[0].transaction && shows(h, "Timeline", "HoleS")
+    });
+    settled(&mut h);
+    let from = h.state().tabs()[0].sent.len();
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].sent[from..]
+            .iter()
+            .filter(|sent| matches!(sent, Sent::Undo(_)))
+            .count(),
+        1,
+        "the first undo wasn't sent"
+    );
+    answers_after_the_status_read(
+        &f,
+        &mut h,
+        (Box::new(move || hold.release()), check),
+        vec![key_event(Key::Z, command)],
+    );
+    let said = said_while_settling(&mut h, NOTHING_TO_UNDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let undos = tab.sent[from..]
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Undo(_)))
+        .count();
+    assert_eq!(undos, 1, "{:?}", &tab.sent[from..]);
+    assert!(said, "the second undo went unsaid");
+    assert!(tab.message.is_none(), "{:?}", tab.message);
+    assert!(shows(&h, "Timeline", "Hole") && !shows(&h, "Timeline", "HoleS"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_in_the_frame_a_redo_answers_before_its_status_gives_the_next_line_back_too() {
+    // Two lines drawn and both undone; ⌘⇧Z sent with the session busy, and ⌘⇧Z again in
+    // the frame that takes the first redo's answer before its status: the tab is ahead of
+    // its status, and its own redo branch still holds the second line. Both redos are sent,
+    // in turn, and both lines are back; nothing is let go unsaid.
+    use silico_app::tab::NOTHING_TO_REDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let from = h.state().tabs()[0].sent.len();
+    for (start, end) in [([10.0, 50.0], [30.0, 60.0]), ([60.0, 40.0], [80.0, 50.0])] {
+        pane_press(&mut h, start);
+        pane_move(
+            &mut h,
+            [(start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0],
+        );
+        pane_move(&mut h, end);
+        pane_release(&mut h, end);
+        settled(&mut h);
+    }
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
+    let command = command_modifiers(&h);
+    for _ in 0..2 {
+        h.input_mut().events.push(key_event(Key::Z, command));
+        step(&mut h);
+        settled(&mut h);
+    }
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    let held = session_held(&f, &h);
+    let redo = key_event(Key::Z, command | Modifiers::SHIFT);
+    h.input_mut().events.push(redo.clone());
+    step(&mut h);
+    answers_after_the_status_read(&f, &mut h, held, vec![redo]);
+    let said = said_while_settling(&mut h, NOTHING_TO_REDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let redos = tab.sent[from..]
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Redo(_)))
+        .count();
+    assert_eq!(redos, 2, "{:?}", &tab.sent[from..]);
+    assert!(!said, "said there was nothing to redo");
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert!(line_near(&sketch, [60.0, 40.0], [80.0, 50.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]

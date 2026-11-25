@@ -1113,6 +1113,7 @@ mod tests {
                 surface: Surface::Other,
                 area: 1.0,
                 centroid: [0.0; 3],
+                orientation: silico_protocol::FaceOrientation::Forward,
             }],
             edges: vec![],
             vertices: vec![],

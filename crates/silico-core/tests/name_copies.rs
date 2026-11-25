@@ -985,11 +985,163 @@ fn a_copy_counts_a_level_on_top_of_its_names_duplicates_and_under_its_own() {
 }
 
 #[test]
-fn a_pattern_steps_freecad_op_code_is_fus_until_m6_3_settles_a_cuts() {
-    // N10's open item: an `OpCode` carries no boolean, so the three write `FUS`; M6.3
-    // changes this with a test of the cut case.
+fn a_pattern_steps_freecad_op_code_is_fus_a_cut_steps_too() {
+    // N10's open item, settled by M6.3: a pattern's or mirror's every step writes `FUS` in
+    // FreeCAD's form, its cut step's too, as a sweep feature writes `XTR` for its fuse or cut
+    // (S4: one word names every step of the feature), where FreeCAD 1.1 writes `CUT` for a
+    // subtractive tool's copies (`FeatureTransformed.cpp:399` at `af2d42a4aa`). A pocket's
+    // copy cut into a base, its face split in two by the base: each piece's name, a source
+    // of the copy's face, writes `FUS`, never `CUT`.
     for op in [OpCode::LinearPattern, OpCode::PolarPattern, OpCode::Mirror] {
         assert_eq!(op.code(), "FUS", "{op:?}");
+    }
+    let base = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let wall = ElementMap::by_number(
+        id("q0000002"),
+        OpCode::Pocket,
+        ElementCounts {
+            faces: 1,
+            ..ElementCounts::default()
+        },
+    );
+    let copy = ElementMap::copy(
+        &wall,
+        id("t0000001"),
+        OpCode::LinearPattern,
+        Copied::Tool,
+        &Instance::new(&[2]).unwrap(),
+    )
+    .unwrap();
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    let piece = |n: u32, position: u32| silico_core::kernel::Reported {
+        element: face(n),
+        position,
+    };
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+            InputHistory {
+                faces: vec![ElementFate {
+                    kept: None,
+                    modified: vec![piece(7, 1), piece(8, 2)],
+                    generated: Vec::new(),
+                }],
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+        ],
+        result: ElementCounts {
+            faces: 8,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let map = ElementMap::operation(
+        id("t0000001"),
+        OpCode::LinearPattern,
+        &[&base, &copy],
+        &history,
+    );
+    for n in [7, 8] {
+        let name = map.name(face(n)).unwrap();
+        assert!(
+            name.to_string()
+                .starts_with("t0000001.linear_pattern.Face(M"),
+            "{name}"
+        );
+        let text = freecad::text(&name);
+        assert!(text.contains(";FUS") && !text.contains("CUT"), "{text}");
+    }
+}
+
+#[test]
+fn a_copys_element_past_the_bound_is_numbered_by_its_place_in_the_steps_result() {
+    // N10's open item, settled by M6.3: a copy's map leaves out an element whose every name
+    // is past the bound (above); the step's map numbers it, and what's made from it, by its
+    // place in the step's result, never by the tool's number, which every copy of it shares.
+    // A box copied 255 times as a mirror's whole solid is at the bound; its next copy has no
+    // names. The step keeps that copy's faces 1 to 5 as 7 to 11 and splits its face 6 into
+    // 12 and 13: each is named by its result's number, unstable.
+    let mut map = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let one = Instance::new(&[1]).unwrap();
+    for _ in 0..255 {
+        map = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    }
+    let past = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    assert_eq!(past.count(ElementKind::Face), 0);
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    let piece = |n: u32, position: u32| silico_core::kernel::Reported {
+        element: face(n),
+        position,
+    };
+    let mut copied: Vec<ElementFate> = (7..=11).map(kept).collect();
+    copied.push(ElementFate {
+        kept: None,
+        modified: vec![piece(12, 1), piece(13, 2)],
+        generated: Vec::new(),
+    });
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+            InputHistory {
+                faces: copied,
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+        ],
+        result: ElementCounts {
+            faces: 13,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let step = ElementMap::operation(id("m0000001"), OpCode::Mirror, &[&map, &past], &history);
+    // The base's faces keep their names.
+    for n in 1..=6 {
+        assert_eq!(step.name(face(n)), map.name(face(n)), "Face{n}");
+    }
+    // The copy's, each its own number in the result.
+    for n in 7..=13 {
+        let name = step.name(face(n)).unwrap();
+        assert_eq!(name.to_string(), format!("m0000001.mirror.Face{n}"));
+        assert!(step.is_unstable(&name), "Face{n}");
+        assert_eq!(step.names(face(n)).len(), 1, "Face{n}");
+    }
+    // None is a tool's number, as each copy of a face would share: Face1 to Face6 name the
+    // base's faces only, as the base's deep names, never a copy's.
+    for n in 1..=6 {
+        let tool = parse(&format!("m0000001.mirror.Face{n}")).unwrap();
+        assert_eq!(step.element(&tool), None, "Face{n}");
     }
 }
 
@@ -1156,4 +1308,139 @@ fn a_tools_copy_given_a_sweep_features_last_map_leaves_out_its_bases_names() {
             format!("m0000001.mirror.Face(S1 {first})")
         );
     }
+}
+
+#[test]
+fn only_a_pattern_steps_own_copies_after_its_base_are_numbered_by_their_place_in_the_result() {
+    // `Builder::is_copy`: a map leaving an element unnamed is numbered by the step's result
+    // only where it's a copy the step places, an input after its base, of a pattern's or
+    // mirror's own feature. Any other input's unnamed element keeps its own number, by its own
+    // map's feature and type, as every input's has. A box copied past the bound (255 whole
+    // copies, then one more) leaves its six faces unnamed; each step keeps them.
+    let mut map = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let one = Instance::new(&[1]).unwrap();
+    for _ in 0..255 {
+        map = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    }
+    let past = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    // Input 0's six faces kept as `first` to `first + 5`, input 1's as `second` on.
+    let history = |first: u32, second: u32| History {
+        inputs: [first, second]
+            .map(|from| InputHistory {
+                faces: (from..from + 6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            })
+            .to_vec(),
+        result: ElementCounts {
+            faces: 12,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let named = |step: &ElementMap, n: u32| step.name(face(n)).unwrap().to_string();
+    // A fuse places no copies: the unnamed faces keep the mirror's own numbers.
+    let fuse = ElementMap::operation(id("f0000001"), OpCode::Fuse, &[&map, &past], &history(1, 7));
+    assert_eq!(named(&fuse, 7), "m0000001.mirror.Face1");
+    // Another pattern's step, given the mirror's copy: not its own, so likewise.
+    let other = ElementMap::operation(
+        id("t0000009"),
+        OpCode::LinearPattern,
+        &[&map, &past],
+        &history(1, 7),
+    );
+    assert_eq!(named(&other, 7), "m0000001.mirror.Face1");
+    // The mirror's own step: its base (input 0) is no copy, so its unnamed faces keep their
+    // numbers too, kept here as 7 to 12.
+    let own = ElementMap::operation(
+        id("m0000001"),
+        OpCode::Mirror,
+        &[&past, &past],
+        &history(7, 1),
+    );
+    assert_eq!(named(&own, 7), "m0000001.mirror.Face1");
+}
+
+#[test]
+fn a_past_bound_copys_element_numbers_no_solid_and_nothing_named_already() {
+    // `Builder::derived`, of a copy's element its map leaves unnamed (past the bound): only
+    // what it made that's still unnamed, and no solid, is numbered by its place in the
+    // step's result. The box's 256th whole copy (above) has no names; the step keeps the
+    // base's faces 1 to 6 and the copy's 1 to 5 as 7 to 11, and the copy's face 6 becomes
+    // 12, a piece of the base's face 1 (named already, as the base's), and a whole solid
+    // (as an extrusion's history reports one). Face 12 is numbered; face 1 keeps the base's
+    // one name, gaining none; and the solid is named by nothing, as every step leaves it.
+    let mut map = ElementMap::primitive(
+        id("k7f2qx3m"),
+        &silico_core::kernel::Primitive::Box {
+            dx: 1.0,
+            dy: 1.0,
+            dz: 1.0,
+        },
+    );
+    let one = Instance::new(&[1]).unwrap();
+    for _ in 0..255 {
+        map = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    }
+    let past = ElementMap::copy(&map, id("m0000001"), OpCode::Mirror, Copied::Solid, &one).unwrap();
+    let kept = |n: u32| ElementFate {
+        kept: Some(n),
+        modified: Vec::new(),
+        generated: Vec::new(),
+    };
+    let made =
+        |element: ElementRef, position: u32| silico_core::kernel::Reported { element, position };
+    let solid = ElementRef {
+        kind: ElementKind::Solid,
+        index: 1,
+    };
+    let mut copied: Vec<ElementFate> = (7..=11).map(kept).collect();
+    copied.push(ElementFate {
+        kept: None,
+        modified: vec![made(face(12), 1), made(face(1), 2)],
+        generated: vec![made(solid, 1)],
+    });
+    let history = History {
+        inputs: vec![
+            InputHistory {
+                faces: (1..=6).map(kept).collect(),
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+            InputHistory {
+                faces: copied,
+                edges: Vec::new(),
+                vertices: Vec::new(),
+            },
+        ],
+        result: ElementCounts {
+            faces: 12,
+            solids: 1,
+            ..ElementCounts::default()
+        },
+        ..History::default()
+    };
+    let step = ElementMap::operation(id("m0000001"), OpCode::Mirror, &[&map, &past], &history);
+    assert_eq!(
+        step.name(face(12)).unwrap().to_string(),
+        "m0000001.mirror.Face12"
+    );
+    assert_eq!(step.names(face(1)), map.names(face(1)));
+    assert_eq!(step.names(face(1)).len(), 1);
+    let base_face = parse("m0000001.mirror.Face1").unwrap();
+    assert_eq!(step.element(&base_face), None);
+    assert_eq!(step.name(solid), None);
+    assert_eq!(step.count(ElementKind::Solid), 0);
 }

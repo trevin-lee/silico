@@ -435,6 +435,7 @@ mod tests {
                 surface,
                 area,
                 centroid: [0.0; 3],
+                orientation: silico_protocol::FaceOrientation::Forward,
             }],
             edges: Vec::new(),
             vertices: Vec::new(),
@@ -486,6 +487,7 @@ mod tests {
             },
             area,
             centroid: [0.0; 3],
+            orientation: silico_protocol::FaceOrientation::Forward,
         };
         let line = |length| EdgeDescription {
             curve: EdgeCurve::Line,

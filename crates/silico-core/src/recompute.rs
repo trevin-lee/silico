@@ -56,6 +56,7 @@ use std::time::{Duration, Instant};
 use sha2::{Digest, Sha256};
 
 use crate::cache::Cache;
+use crate::document::PatternFeature;
 use crate::document::{
     Checked, Document, ElementId, ElementName, Feature, FeatureId, FeatureIndex, Fingerprint, Made,
     Operation, SweepFeature,
@@ -66,7 +67,8 @@ use crate::kernel::{
     BooleanOp, BuiltData, DESCRIBE_BATCH, DescribedBatch, ElementKind, FaceRegions, Generation,
     History, Kernel, KernelRequest, Primitive, ShapeData, ShapeSummary, SweepKind,
 };
-use crate::naming::{ElementMap, Maker, NAMING_SCHEME, OpCode};
+use crate::naming::{Copied, ElementMap, Instance, Maker, NAMING_SCHEME, OpCode};
+use crate::pattern::StepVerdict;
 use crate::pool::{Outcome, Pending};
 use crate::profile::Profile;
 use crate::references::EdgeNames;
@@ -76,7 +78,7 @@ use crate::sketch::{
 use crate::sweep::plus_zero;
 use crate::worker::lock;
 use crate::{Error, ErrorCode};
-use silico_protocol::Description;
+use silico_protocol::{CopiesOp, Description};
 
 /// The most steps one recompute waits on at once: enough to keep a pool of workers busy
 /// (the kernel queues what it can't run yet), few enough that a document of thousands of
@@ -353,6 +355,9 @@ pub struct Model {
     /// Each sketch on a face whose face was resolved, by its ID: its frame
     /// ([`Model::frame`]).
     frames: Arc<BTreeMap<FeatureId, silico_protocol::FaceFrame>>,
+    /// What each pattern's steps' histories say of its copies, by its ID, each step that
+    /// built in order ([`Model::pattern_verdicts`]).
+    patterns: Arc<BTreeMap<FeatureId, Arc<[StepVerdict]>>>,
 }
 
 /// How many features [`Model::element_map`]'s reads have visited on this thread so far:
@@ -732,6 +737,14 @@ impl Model {
             .collect();
         let map = named_as(id, &naming.how, &inputs?, &naming.steps, &self.known)?;
         Some(kept_in(&self.known, naming.key, map))
+    }
+
+    /// What pattern `id`'s steps' histories say of its copies (docs/design/m6.0-patterns.md,
+    /// section 4.2, *Every verdict kept*): one verdict a step, each original's in timeline
+    /// order, as far as its steps built; none for a feature that isn't a pattern with a
+    /// copy placed (the identity has none).
+    pub fn pattern_verdicts(&self, id: &FeatureId) -> Option<&[StepVerdict]> {
+        self.patterns.get(id).map(|verdicts| &**verdicts)
     }
 
     /// The document it was built from.
@@ -2572,6 +2585,44 @@ enum Step {
         base: Key,
         names: [u8; 32],
     },
+    /// A linear pattern's, polar pattern's, or mirror's step (docs/design/m6.0-patterns.md,
+    /// section 2.4): `copies` copies of `tool`'s solid fused into `base`'s or cut from it as
+    /// `op` says, each placed where the step works out, when it runs, from its pattern's
+    /// references, resolved in its base feature's map and description, and integers, which
+    /// the plan holds (`Plan::patterns`). `values` is the digest of what decides the
+    /// placements: the base feature's naming key and each reference as written, the
+    /// pattern's integers, and which input it copies. No tool, and no copies, is the
+    /// identity: it resolves and checks its references and passes its base through.
+    Copies {
+        base: Key,
+        tool: Option<Key>,
+        op: CopiesOp,
+        copies: usize,
+        values: [u8; 32],
+    },
+}
+
+/// A pattern's step, as the plan holds it by its key: what it copies and where to, for the
+/// engine to resolve and place when it runs.
+#[derive(Debug, Clone)]
+struct PatternStep {
+    /// The pattern's own feature, by index.
+    feature: usize,
+    /// Its base feature (its effective base), by index: where its references are found.
+    base: usize,
+    /// The instances it places, in `skip`'s order: none for the identity.
+    instances: Arc<[Instance]>,
+}
+
+/// What a pattern's step runs with ([`Engine::copied`]): its plan's entry, its step, its
+/// inputs' results (its base, then its tool, if it has one), its base feature's solid, whose
+/// elements its references name, and what that feature's element map is named from.
+struct CopiesJob<'a> {
+    pattern: &'a PatternStep,
+    step: &'a Step,
+    inputs: &'a [Arc<Built>],
+    base: &'a Arc<Built>,
+    sources: &'a BTreeMap<usize, MapSource>,
 }
 
 /// What a fillet or chamfer does to each edge.
@@ -2654,6 +2705,20 @@ impl Step {
                     format!("chamfer {base} {}{}", crate::hex(names), bits(&[distance]))
                 }
             },
+            Step::Copies {
+                base,
+                tool,
+                op,
+                copies,
+                values,
+            } => {
+                let op = match op {
+                    CopiesOp::Fuse => "fuse",
+                    CopiesOp::Cut => "cut",
+                };
+                let tool = tool.map_or_else(|| "none".to_owned(), |tool| tool.to_string());
+                format!("copies {op} {base} {tool} {copies} {}", crate::hex(values))
+            }
         };
         let mut hash = Sha256::new();
         hash.update(b"silico recompute 1\n");
@@ -2668,6 +2733,7 @@ impl Step {
             Step::Translate { input, .. } => vec![input],
             Step::Boolean { base, tool, .. } => vec![base, tool],
             Step::Dress { base, .. } => vec![base],
+            Step::Copies { base, tool, .. } => std::iter::once(base).chain(tool).collect(),
             Step::Prism { faces, .. } | Step::Revolution { faces, .. } => vec![faces],
             // The base only sizes the prism.
             Step::PrismThroughAll { faces, base, .. } => vec![faces, base],
@@ -2681,6 +2747,9 @@ impl Step {
         match self {
             Step::Make(_) => 0,
             Step::Boolean { .. } => 2,
+            // The base, then each copy; the identity's is its base's, whatever it is
+            // (`fits`).
+            Step::Copies { copies, .. } => 1 + copies,
             Step::Translate { .. }
             | Step::Dress { .. }
             | Step::Faces(_)
@@ -2699,6 +2768,7 @@ impl Step {
             | Step::Translate { .. }
             | Step::Boolean { .. }
             | Step::Dress { .. }
+            | Step::Copies { .. }
             | Step::Faces(_) => None,
         }
     }
@@ -2782,6 +2852,8 @@ struct Plan {
     results: BTreeSet<Key>,
     /// Each fillet's or chamfer's step, by key: the edges it names, and of what.
     dresses: BTreeMap<Key, Dress>,
+    /// Each pattern's step, by key: whose it is, its base feature, and what it places.
+    patterns: BTreeMap<Key, PatternStep>,
     /// The document planned, where each feature's [`Maker`] is found by its index when a
     /// fillet's names are read back ([`Plan::maker`]), rather than kept for every feature.
     document: Arc<Checked>,
@@ -2827,6 +2899,20 @@ enum Check {
         base: FeatureId,
         tool: FeatureId,
     },
+    /// A pattern's steps, each in turn on the one before (section 4.2): one solid, its
+    /// copies on the base and its base in one piece, and a change of volume by S7's rule.
+    Pattern(Arc<PatternCheck>),
+}
+
+/// What a pattern's result is checked for, and words its refusal by.
+#[derive(Debug)]
+struct PatternCheck {
+    kind: PatternFeature,
+    feature: FeatureId,
+    base: FeatureId,
+    /// Each step's original (none for a whole solid's copies), whether it fuses, and the
+    /// instances it places, in order.
+    steps: Vec<(Option<FeatureId>, CopiesOp, Arc<[Instance]>)>,
 }
 
 /// A solid as the checks read it: its stored summary, and its solids as its last step's
@@ -2857,7 +2943,11 @@ struct Planned {
     id: FeatureId,
     /// Its own steps, in order; the last makes its solid.
     steps: Vec<Key>,
-    /// The earlier features it uses, base then tool, by index.
+    /// A pattern's originals' faces and sweep steps, two an original, in timeline order: its
+    /// copies' names are the sweeps' (N10, `ElementMap::copy`), so it's named from them too.
+    tools: Vec<Key>,
+    /// The earlier features it uses, base then tool (or a pattern's originals, in timeline
+    /// order), by index.
     uses: Vec<usize>,
     /// How its solid's elements are named; `None` for a sketch, which makes no solid.
     naming: Option<Naming>,
@@ -2890,6 +2980,15 @@ enum OnFace {
     Waits,
     /// On a face resolved: its frame, or why it has none.
     Placed(Placed),
+}
+
+/// What a pattern's plan came to ([`Plan::pattern`]).
+struct PatternPlan {
+    steps: Vec<Key>,
+    uses: Vec<usize>,
+    tools: Vec<Key>,
+    naming: Option<Naming>,
+    check: Option<Arc<PatternCheck>>,
 }
 
 /// What a sweep feature's plan came to.
@@ -3002,6 +3101,28 @@ enum Naming {
     Primitive(Primitive),
     Operation(OpCode),
     Sweep(Arc<SweepNaming>),
+    Pattern(Arc<PatternNaming>),
+}
+
+/// How a pattern's elements are named (N10): each step's copies, from the map of what it
+/// copies, wrapped once (`ElementMap::copy`), and its result from its base's map (the step
+/// before's, after the first) and theirs. No step is the identity, which passes its base's
+/// map through.
+#[derive(Debug)]
+struct PatternNaming {
+    operation: OpCode,
+    steps: Vec<CopyNaming>,
+}
+
+/// What one of a pattern's steps copies, and where: a tool's copy (`C`) of an original,
+/// named from its sweep step's map (its every element the sweep's own: N10's third item),
+/// which the original's faces and sweep steps and its own naming make; or the base's whole
+/// solid's (`S`), named from the base's map.
+#[derive(Debug)]
+struct CopyNaming {
+    copied: Copied,
+    original: Option<(FeatureId, Arc<SweepNaming>)>,
+    instances: Arc<[Instance]>,
 }
 
 /// What a pad's, pocket's, revolve's, or groove's names come from beside its steps'
@@ -3069,6 +3190,12 @@ impl Planned {
         self.steps.last().copied()
     }
 
+    /// The steps its elements are named from: its own, then a pattern's originals' faces
+    /// and sweeps.
+    fn naming_steps(&self) -> impl Iterator<Item = &Key> {
+        self.steps.iter().chain(&self.tools)
+    }
+
     /// A sketch's plane as the rebuild resolved it, `plane` as its document writes it: an
     /// origin plane's, or its face's frame; none for a sketch on a face not resolved yet, or
     /// whose face couldn't be.
@@ -3087,6 +3214,7 @@ impl Planned {
         Planned {
             id,
             steps: Vec::new(),
+            tools: Vec::new(),
             uses: Vec::new(),
             naming: None,
             naming_key: None,
@@ -3155,6 +3283,7 @@ impl Plan {
             features: Vec::with_capacity(features.len()),
             results: BTreeSet::new(),
             dresses: BTreeMap::new(),
+            patterns: BTreeMap::new(),
             document: Arc::clone(document),
             sketches: Vec::new(),
             checks_of: BTreeMap::new(),
@@ -3176,8 +3305,10 @@ impl Plan {
                 crate::document::suppression::effective_inputs(features, &standing, &place, at);
             let mut own = Vec::new();
             let mut uses = Vec::new();
+            let mut tools = Vec::new();
             let mut refused = None;
             let mut sweeps = None;
+            let mut pattern_check = None;
             let naming = match feature.operation.made() {
                 Made::Primitive(primitive) => {
                     let made = plan.add(Step::Make(primitive), &feature.id);
@@ -3222,26 +3353,13 @@ impl Plan {
                     (own, uses) = plan.dress(feature, base_of(&stands), dressing);
                     Some(Naming::Operation(OpCode::Chamfer))
                 }
-                // Built from M6.3 (docs/roadmap/m6-features.md): until then refused, naming
-                // the feature, as a type the gate reads but no step builds yet.
                 Made::Pattern(kind) => {
-                    uses = stands.iter().filter_map(|(_, stand)| *stand).collect();
-                    refused = Some(
-                        Error::new(
-                            ErrorCode::InvalidInput,
-                            format!(
-                                "{} {} isn't built yet: this Silico reads and checks a {}, and builds none",
-                                kind.word(),
-                                feature.id,
-                                kind.word()
-                            ),
-                        )
-                        .with_feature(feature.id.as_str())
-                        .with_suggestion(
-                            "a later Silico builds patterns and mirrors; suppress it to build the rest",
-                        ),
-                    );
-                    None
+                    let planned = plan.pattern(document, feature, kind, base_of(&stands));
+                    own = planned.steps;
+                    uses = planned.uses;
+                    tools = planned.tools;
+                    pattern_check = planned.check;
+                    planned.naming
                 }
                 Made::Sweep(kind) => {
                     // A pad's or revolve's base whose whole chain is suppressed stands for
@@ -3267,6 +3385,11 @@ impl Plan {
             };
             if let Some(result) = own.last() {
                 plan.results.insert(*result);
+            }
+            // Each of a pattern's steps is measured, as its check judges each on the one
+            // before (section 4.2).
+            if pattern_check.is_some() {
+                plan.results.extend(own.iter().copied());
             }
             let inputs: Option<Vec<NamingKey>> = uses
                 .iter()
@@ -3297,6 +3420,7 @@ impl Plan {
             plan.features.push(Planned {
                 id: feature.id.clone(),
                 steps: own,
+                tools,
                 uses,
                 naming,
                 naming_key,
@@ -3319,6 +3443,7 @@ impl Plan {
                         }
                         _ => None,
                     },
+                    Made::Pattern(_) => pattern_check.map(Check::Pattern),
                     _ => plan.checks_of.remove(&feature.id).map(Check::Sweep),
                 },
                 suppressed: false,
@@ -3353,7 +3478,12 @@ impl Plan {
                         .first()
                         .and_then(|&b| plan.features.get(b))
                         .and_then(Planned::key);
-                    for key in planned.key().into_iter().chain(base) {
+                    // A pattern's every step, each judged on the one before.
+                    let own: Vec<Key> = match planned.check {
+                        Some(Check::Pattern(_)) => planned.steps.clone(),
+                        _ => planned.key().into_iter().collect(),
+                    };
+                    for key in own.into_iter().chain(base) {
                         plan.judged_by.entry(key).or_default().push(index);
                     }
                 }
@@ -3462,6 +3592,183 @@ impl Plan {
         )
     }
 
+    /// The steps of `feature`, a linear pattern, polar pattern, or mirror of type `kind`
+    /// (the next feature planned), on its base at `base` (its effective base), by place
+    /// (docs/design/m6.0-patterns.md, section 2.4): one step for each original, in timeline
+    /// order, each on the one before, its tool the original's sweep step, reused, never
+    /// rebuilt; or one for the base's whole solid, its tool the base's result; or, placing
+    /// no copy, the identity, one step that passes its base through. With the features it
+    /// uses (its base, then its originals in timeline order), the originals' faces and sweep
+    /// steps its names are read from, how its elements are named, and what its result is
+    /// checked for. A base or an original that can't be planned leaves it no steps: it's
+    /// blocked on that.
+    fn pattern(
+        &mut self,
+        document: &Checked,
+        feature: &crate::document::Feature,
+        kind: PatternFeature,
+        base: Option<usize>,
+    ) -> PatternPlan {
+        let operation = &feature.operation;
+        let features = &document.document().features;
+        // The originals, in timeline order, whatever order `copies.features` lists them in.
+        let mut originals: Vec<usize> = operation
+            .originals()
+            .iter()
+            .filter_map(|id| document.place(id))
+            .collect();
+        originals.sort_unstable();
+        originals.dedup();
+        let mut planned = PatternPlan {
+            steps: Vec::new(),
+            uses: base.into_iter().chain(originals.iter().copied()).collect(),
+            tools: Vec::new(),
+            naming: None,
+            check: None,
+        };
+        // The gate has checked the base is an earlier feature with something unsuppressed up
+        // its chain, so it's planned; one whose steps couldn't be blocks this.
+        let Some(b) = base else {
+            return planned;
+        };
+        let (Some(base_key), Some(base_naming)) = (
+            self.features.get(b).and_then(Planned::key),
+            self.features.get(b).and_then(|p| p.naming_key),
+        ) else {
+            return planned;
+        };
+        // Each original's sweep (its tool) and faces, and its naming and kind.
+        let mut tools = Vec::with_capacity(originals.len());
+        for &o in &originals {
+            let (Some(original), Some(made)) = (self.features.get(o), features.get(o)) else {
+                return planned;
+            };
+            let (Some(Naming::Sweep(naming)), [faces, sweep, ..], Made::Sweep(sweeps)) = (
+                &original.naming,
+                original.steps.as_slice(),
+                made.operation.made(),
+            ) else {
+                return planned;
+            };
+            tools.push((
+                original.id.clone(),
+                Arc::clone(naming),
+                *faces,
+                *sweep,
+                if sweeps.adds() {
+                    CopiesOp::Fuse
+                } else {
+                    CopiesOp::Cut
+                },
+            ));
+        }
+        // What decides the placements, but which input is copied: the base feature's naming
+        // key and each reference as written, a word or a name alike, then the integers.
+        let mut digest = Sha256::new();
+        digest.update(base_naming.0);
+        for (field, text) in crate::pattern::references(operation) {
+            for part in [field.as_str(), text] {
+                digest.update((part.len() as u64).to_be_bytes());
+                digest.update(part.as_bytes());
+            }
+        }
+        digest.update(crate::pattern::values(operation).as_bytes());
+        let instances: Arc<[Instance]> = crate::pattern::placed(operation).into();
+        let index = self.features.len();
+        let values = |copied: &str, step: usize| -> [u8; 32] {
+            let mut digest = digest.clone();
+            digest.update(format!("\n{copied} {step}").as_bytes());
+            digest.finalize().into()
+        };
+        let pattern_step = PatternStep {
+            feature: index,
+            base: b,
+            instances: Arc::clone(&instances),
+        };
+        if instances.is_empty() {
+            // The identity: no copy placed, its references still resolved and checked.
+            let key = self.add(
+                Step::Copies {
+                    base: base_key,
+                    tool: None,
+                    op: CopiesOp::Fuse,
+                    copies: 0,
+                    values: values("identity", 0),
+                },
+                &feature.id,
+            );
+            self.patterns.insert(key, pattern_step);
+            planned.steps.push(key);
+            planned.naming = Some(Naming::Pattern(Arc::new(PatternNaming {
+                operation: kind.into(),
+                steps: Vec::new(),
+            })));
+            return planned;
+        }
+        let mut copies = Vec::new();
+        let mut checked = Vec::new();
+        let mut on = base_key;
+        if operation
+            .copies()
+            .is_some_and(|c| *c == crate::document::Copies::Solid)
+        {
+            let key = self.add(
+                Step::Copies {
+                    base: base_key,
+                    tool: Some(base_key),
+                    op: CopiesOp::Fuse,
+                    copies: instances.len(),
+                    values: values("S", 0),
+                },
+                &feature.id,
+            );
+            self.patterns.insert(key, pattern_step);
+            planned.steps.push(key);
+            copies.push(CopyNaming {
+                copied: Copied::Solid,
+                original: None,
+                instances: Arc::clone(&instances),
+            });
+            checked.push((None, CopiesOp::Fuse, Arc::clone(&instances)));
+        } else {
+            for (step, (id, naming, faces, sweep, op)) in tools.into_iter().enumerate() {
+                let key = self.add(
+                    Step::Copies {
+                        base: on,
+                        tool: Some(sweep),
+                        op,
+                        copies: instances.len(),
+                        values: values("C", step),
+                    },
+                    &feature.id,
+                );
+                self.patterns.insert(key, pattern_step.clone());
+                planned.steps.push(key);
+                planned.tools.extend([faces, sweep]);
+                copies.push(CopyNaming {
+                    copied: Copied::Tool,
+                    original: Some((id.clone(), naming)),
+                    instances: Arc::clone(&instances),
+                });
+                checked.push((Some(id), op, Arc::clone(&instances)));
+                on = key;
+            }
+        }
+        planned.naming = Some(Naming::Pattern(Arc::new(PatternNaming {
+            operation: kind.into(),
+            steps: copies,
+        })));
+        planned.check = self.feature_id(b).cloned().map(|base| {
+            Arc::new(PatternCheck {
+                kind,
+                feature: feature.id.clone(),
+                base,
+                steps: checked,
+            })
+        });
+        planned
+    }
+
     /// Whether feature `i`'s result passes its check ([`Check`]), from what `done` holds:
     /// yes, no, or not yet known (its solid, or its base's, not yet built or measured). A
     /// feature with no check: yes. The verdict is a function of the step's key alone (its
@@ -3472,6 +3779,21 @@ impl Plan {
         let Some(check) = &planned.check else {
             return Some(true);
         };
+        if let Check::Pattern(pattern) = check {
+            let base = planned
+                .uses
+                .first()
+                .and_then(|&b| self.features.get(b))
+                .and_then(Planned::key)?;
+            let steps: Option<Vec<&Built>> = std::iter::once(&base)
+                .chain(&planned.steps)
+                .map(|key| match done.get(key) {
+                    Some(Ok(built)) => Some(&**built),
+                    _ => None,
+                })
+                .collect();
+            return pattern_holds(pattern, &steps?);
+        }
         let built = match done.get(&planned.key()?) {
             Some(Ok(built)) => built,
             _ => return None,
@@ -3504,6 +3826,8 @@ impl Plan {
                 &before()?,
                 &measured_of(built)?,
             )),
+            // Judged above, every step.
+            Check::Pattern(_) => None,
         }
     }
 
@@ -3668,6 +3992,21 @@ impl Plan {
         unmeasured: &'a BTreeMap<Key, Error>,
     ) -> Option<&'a Error> {
         let planned = self.features.get(i)?;
+        if let Some(Check::Pattern(_)) = &planned.check {
+            // Any of its steps' measures refused, once built, or its base's.
+            let base = planned
+                .uses
+                .first()
+                .and_then(|&b| self.features.get(b))
+                .and_then(Planned::key);
+            return base
+                .iter()
+                .chain(&planned.steps)
+                .find_map(|key| match done.get(key) {
+                    Some(Ok(_)) => unmeasured.get(key),
+                    _ => None,
+                });
+        }
         let Some(Check::Sweep(_)) = &planned.check else {
             return None;
         };
@@ -3849,8 +4188,8 @@ impl Plan {
             // Every one of its own steps, since a sweep feature's map is named from each
             // (design S3, MA1): the first not built yet is waited for (a cache can hold the
             // last without the others, which the schedule then runs: they're planned).
-            let mut steps = Vec::with_capacity(planned.steps.len());
-            for key in &planned.steps {
+            let mut steps = Vec::with_capacity(planned.steps.len() + planned.tools.len());
+            for key in planned.naming_steps() {
                 match done.get(key) {
                     Some(Ok(built)) => steps.push(Arc::clone(built)),
                     // Not built yet, or failed (which blocks the fillet: it never runs).
@@ -3926,6 +4265,14 @@ impl Plan {
 /// only sizes it) that holds together, and, for a sweep, keeps the sweep's rule
 /// (`History::sweep_fault`).
 fn fits(step: &Step, built: &Built) -> bool {
+    // The identity passes its base through, history and all: its base's, whatever its
+    // step, which holds together.
+    if let Step::Copies { tool: None, .. } = step {
+        return built
+            .history
+            .as_ref()
+            .is_none_or(|history| history.validate(history.inputs.len()).is_ok());
+    }
     match (step.history_inputs(), &built.history) {
         (0, None) => true,
         (inputs, Some(history)) if inputs > 0 => {
@@ -3973,7 +4320,7 @@ fn replaces(kept_now: Option<&StepResult>, result: &StepResult) -> bool {
         (Some(Ok(old)), Ok(new)) => measure_known(new) >= measure_known(old),
         (_, Ok(_)) => true,
         (Some(Ok(_)), Err(_)) => false,
-        (_, Err(error)) => kept(error),
+        (_, Err(error)) => kept(error) || kept_hang(error),
     }
 }
 
@@ -3983,6 +4330,40 @@ fn kept(error: &Error) -> bool {
         error.code(),
         ErrorCode::InvalidInput | ErrorCode::KernelFailed | ErrorCode::InvalidResult
     )
+}
+
+/// Why a pattern's step whose copies hung is kept for the session (section 4.2, *A hang
+/// kept*): the advice its error says, as a description's that hung says [`HUNG_KEPT`].
+const COPIES_HUNG: &str = "making this pattern's copies, or describing what it references, hung, \
+     which a busy machine can cause as well as the shapes; the session keeps that rather than \
+     wait on it at every rebuild";
+
+/// `error`, a pattern's step's request's, kept for the session if it's a hang ([`hung`]):
+/// a copies request's or a reference's description's (section 4.2, *A hang kept*), so an
+/// edit downstream of it doesn't hold a worker for the kernel's timeout at every rebuild. Its
+/// advice says so, and to check with fresh to ask again.
+fn kept_if_hung(error: Error) -> Error {
+    if !hung(&error) {
+        return error;
+    }
+    error
+        .with_advice(crate::worker::Advice::TryAgain {
+            once_more: false,
+            why: COPIES_HUNG.to_owned(),
+        })
+        .reworded(
+            "check with fresh (silico check --fresh) to ask the kernel again; if the copies hang again, lower a count",
+        )
+}
+
+/// Whether `error` is a pattern's step's hang, kept for the session as a description's is
+/// ([`hung`]): never on disk, since a hang isn't a fact about the shape (`cache::lasting`).
+fn kept_hang(error: &Error) -> bool {
+    error.code() == ErrorCode::WorkerTimeout
+        && matches!(
+            error.advice(),
+            Some(crate::worker::Advice::TryAgain { why, .. }) if why == COPIES_HUNG
+        )
 }
 
 /// Why a description that hung is kept, and that it may not hang again: the advice a read of
@@ -4241,9 +4622,16 @@ impl<K: Kernel + 'static> Engine<K> {
             .iter()
             .flatten()
             .flat_map(|n| {
-                let faces = match &n.how {
-                    Naming::Sweep(sweep) => Some(sweep.faces),
-                    Naming::Primitive(_) | Naming::Operation(_) => None,
+                let faces: Vec<NamingKey> = match &n.how {
+                    Naming::Sweep(sweep) => vec![sweep.faces],
+                    // A pattern's copies of its originals' tools are named from their
+                    // sketches' faces too.
+                    Naming::Pattern(pattern) => pattern
+                        .steps
+                        .iter()
+                        .filter_map(|step| step.original.as_ref().map(|(_, s)| s.faces))
+                        .collect(),
+                    Naming::Primitive(_) | Naming::Operation(_) => Vec::new(),
                 };
                 std::iter::once(n.key).chain(faces)
             })
@@ -4765,9 +5153,9 @@ impl<K: Kernel + 'static> Engine<K> {
         known: &NamedMaps,
     ) {
         loop {
-            let (job, inputs, sources) = {
+            let (job, inputs, sources, named_on) = {
                 let mut s = lock(schedule);
-                let (job, sources) = loop {
+                let (job, sources, named_on) = loop {
                     if s.superseded || s.broken.is_some() || (s.ready.is_empty() && s.running == 0)
                     {
                         changed.notify_all();
@@ -4785,14 +5173,19 @@ impl<K: Kernel + 'static> Engine<K> {
                         progress.settled(key, Settled::Unrun, plan);
                         continue;
                     }
-                    // A fillet's or chamfer's base is built: what its elements are named
-                    // from. Or a solid that isn't built yet, which it waits for (and, if it
-                    // failed, waits for forever: the failure blocks it).
-                    let dress = match job {
-                        Job::Make(key) => plan.dresses.get(&key),
+                    // A fillet's, chamfer's, or pattern's base is built: what the elements
+                    // it names are named from. Or a solid that isn't built yet, which it
+                    // waits for (and, if it failed, waits for forever: the failure blocks
+                    // it). A pattern's base's solid too, whose elements it describes.
+                    let names_base = match job {
+                        Job::Make(key) => plan
+                            .dresses
+                            .get(&key)
+                            .map(|d| d.base)
+                            .or_else(|| plan.patterns.get(&key).map(|p| p.base)),
                         Job::Measure(_) => None,
                     };
-                    let sources = match dress.map(|d| plan.sources(d.base, &s.done, known)) {
+                    let sources = match names_base.map(|b| plan.sources(b, &s.done, known)) {
                         None => None,
                         Some(Ok(sources)) => Some(sources),
                         Some(Err(unbuilt)) => {
@@ -4801,7 +5194,25 @@ impl<K: Kernel + 'static> Engine<K> {
                             continue;
                         }
                     };
-                    break (job, sources);
+                    let pattern_base = match job {
+                        Job::Make(key) => plan.patterns.get(&key).map(|p| p.base),
+                        Job::Measure(_) => None,
+                    };
+                    let named_on = match pattern_base
+                        .and_then(|b| plan.features.get(b))
+                        .and_then(Planned::key)
+                    {
+                        None => None,
+                        Some(base) => match s.done.get(&base) {
+                            Some(Ok(built)) => Some(Arc::clone(built)),
+                            _ => {
+                                s.users.entry(base).or_default().push(job.key());
+                                s.waiting.insert(job.key(), 1);
+                                continue;
+                            }
+                        },
+                    };
+                    break (job, sources, named_on);
                 };
                 s.running += 1;
                 if let Job::Make(key) = job {
@@ -4819,7 +5230,7 @@ impl<K: Kernel + 'static> Engine<K> {
                         _ => None,
                     })
                     .collect();
-                (job, inputs, sources)
+                (job, inputs, sources, named_on)
             };
             let key = job.key();
             // A panic under a job is a bug in Silico: caught, so the recompute ends with an
@@ -4833,6 +5244,24 @@ impl<K: Kernel + 'static> Engine<K> {
                 )
                 .entered();
                 let ran = match job {
+                    Job::Make(key) if let Some(pattern) = plan.patterns.get(&key) => {
+                        let sources = sources.unwrap_or_default();
+                        match (plan.steps.get(&key), named_on.as_ref()) {
+                            (Some(step), Some(base)) => {
+                                let job = CopiesJob {
+                                    pattern,
+                                    step,
+                                    inputs: &inputs,
+                                    base,
+                                    sources: &sources,
+                                };
+                                self.copied(plan, &job, known, generation)
+                            }
+                            _ => Ran::Made(Outcome::Done(Err(silico_bug(
+                                "a pattern's step ran before its base was built",
+                            )))),
+                        }
+                    }
                     Job::Make(key) => match (plan.steps.get(&key), plan.dresses.get(&key)) {
                         (Some(step), Some(dress)) => {
                             let sources = sources.unwrap_or_default();
@@ -5094,6 +5523,135 @@ impl<K: Kernel + 'static> Engine<K> {
         crate::references::resolve(feature, &dress.edges, &map, &|f| plan.maker(f))
     }
 
+    /// Runs a pattern's step, `job`'s (docs/design/m6.0-patterns.md, section 2.4): its
+    /// references found in its base feature's element map (`references::find`, each broken
+    /// one `reference_broken` with candidates, as a fillet's edges are); each named element
+    /// described on the base feature's solid, and the references resolved from those
+    /// descriptions and checked; then each instance placed, the placements checked, and the
+    /// copies of the tool made on the step's base in one request, for `generation`. The
+    /// identity places nothing: it passes its base through. A request that hangs is kept for
+    /// the session ([`COPIES_HUNG`]), whether it's the copies' or a reference's description.
+    fn copied(
+        &self,
+        plan: &Plan,
+        job: &CopiesJob<'_>,
+        known: &NamedMaps,
+        generation: Generation,
+    ) -> Ran {
+        let bug = |message: &str| Ran::Made(Outcome::Done(Err(silico_bug(message))));
+        let Step::Copies { op, .. } = *job.step else {
+            return bug("a pattern's step isn't a copies step");
+        };
+        let Some(feature) = plan
+            .feature_id(job.pattern.feature)
+            .and_then(|id| plan.document.feature(id).ok())
+        else {
+            return bug("a pattern's feature wasn't planned");
+        };
+        let id = &feature.id;
+        let operation = &feature.operation;
+        let makers = |f: &FeatureId| plan.maker(f);
+        // Each name it stores, with its field's path and the kind its own word says (the
+        // gate has checked the word is one the field takes), found in its base's map.
+        let wanted: Vec<(crate::document::NameField, &ElementName, ElementKind)> = operation
+            .stored_names()
+            .map(|(field, name)| {
+                let kind = crate::naming::Name::parse(name.as_str(), &makers)
+                    .map_or(ElementKind::Edge, |parsed| parsed.kind());
+                (field, name, kind)
+            })
+            .collect();
+        let mut found: Vec<(&ElementName, crate::kernel::ElementRef)> = Vec::new();
+        if !wanted.is_empty() {
+            let _span = tracing::debug_span!("resolve", references = wanted.len()).entered();
+            let Some(map) = plan.map_of(job.pattern.base, job.sources, known) else {
+                return bug("a pattern's base was built, but its elements couldn't be named");
+            };
+            match crate::references::find(id, &wanted, &map, &makers) {
+                Ok(elements) => {
+                    found = wanted
+                        .iter()
+                        .map(|(_, name, _)| *name)
+                        .zip(elements)
+                        .collect();
+                }
+                Err(broken) => return Ran::Unresolved(broken),
+            }
+        }
+        // Each found element described alone on the base feature's solid.
+        let mut superseded = false;
+        let mut geometry = |name: &ElementName| -> Result<crate::pattern::Geometry, Error> {
+            let Some(&(_, element)) = found.iter().find(|(n, _)| *n == name) else {
+                return Err(silico_bug(
+                    "a pattern's reference wasn't found before it was described",
+                ));
+            };
+            let request = KernelRequest::describe(&job.base.shape, element.kind, element.index, 1)?;
+            match self.kernel.submit(generation, request).wait() {
+                Outcome::Done(Ok(batch)) => match element.kind {
+                    ElementKind::Face => batch
+                        .description
+                        .faces
+                        .first()
+                        .cloned()
+                        .map(crate::pattern::Geometry::Face),
+                    ElementKind::Edge => batch
+                        .description
+                        .edges
+                        .first()
+                        .cloned()
+                        .map(crate::pattern::Geometry::Edge),
+                    ElementKind::Vertex | ElementKind::Solid => None,
+                }
+                .ok_or_else(|| {
+                    silico_bug("the kernel described no element of a pattern's reference")
+                }),
+                Outcome::Done(Err(error)) => Err(kept_if_hung(error).with_feature(id.as_str())),
+                Outcome::Superseded => {
+                    superseded = true;
+                    Err(stopped())
+                }
+            }
+        };
+        let resolved = crate::pattern::resolve(id, operation, &mut geometry);
+        if superseded {
+            return Ran::Made(Outcome::Superseded);
+        }
+        let resolved = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) => return Ran::Made(Outcome::Done(Err(error))),
+        };
+        let Some(on) = job.inputs.first() else {
+            return bug("a pattern's step ran before its base was built");
+        };
+        // The identity: nothing placed, its base passed through.
+        if job.pattern.instances.is_empty() {
+            return Ran::Made(Outcome::Done(Ok((**on).clone())));
+        }
+        let placements =
+            match crate::pattern::placements(id, operation, &resolved, &job.pattern.instances) {
+                Ok(placements) => placements,
+                Err(error) => return Ran::Made(Outcome::Done(Err(error))),
+            };
+        let Some(tool) = job.inputs.get(1) else {
+            return bug("a pattern's step ran before its tool was built");
+        };
+        let request = match KernelRequest::copies(op, &on.shape, &tool.shape, &placements) {
+            Ok(request) => request,
+            Err(error) => return Ran::Made(Outcome::Done(Err(error.with_feature(id.as_str())))),
+        };
+        let _span = tracing::debug_span!("copies", copies = placements.len()).entered();
+        match self.kernel.submit(generation, request).wait() {
+            Outcome::Done(Ok(data)) => Ran::Made(Outcome::Done(Ok(Built::new(
+                data.shape,
+                Some(data.history),
+                None,
+            )))),
+            Outcome::Done(Err(error)) => Ran::Made(Outcome::Done(Err(kept_if_hung(error)))),
+            Outcome::Superseded => Ran::Made(Outcome::Superseded),
+        }
+    }
+
     /// Measures `built`, a feature's solid, on the kernel, for `generation`: a copy of it
     /// with its summary, unless it has one, and what became of its description, a batch at a
     /// time ([`Engine::describe`]), so a read of the model it's published in asks the kernel
@@ -5248,6 +5806,10 @@ impl<K: Kernel + 'static> Engine<K> {
             // Run by `dressed`, once its edges are resolved.
             Step::Dress { .. } => Outcome::Done(Err(silico_bug(
                 "a fillet's step ran without its edges resolved",
+            ))),
+            // Run by `copied`, once its references are resolved.
+            Step::Copies { .. } => Outcome::Done(Err(silico_bug(
+                "a pattern's step ran without its references resolved",
             ))),
             Step::Faces(regions) => match KernelRequest::make_faces(&regions) {
                 Ok(request) => map(self.kernel.submit(generation, request).wait(), built),
@@ -5804,6 +6366,7 @@ fn model(
                     planned,
                     feature_outcome(planned, done, &schedule.unresolved),
                     &features,
+                    done,
                     &schedule.unmeasured,
                 ),
             },
@@ -5855,6 +6418,29 @@ fn model(
             OnFace::No | OnFace::Waits | OnFace::Placed(_) => None,
         })
         .collect();
+    // Every verdict kept (section 4.2): each pattern's copies, step by step, as far as its
+    // steps built, whatever its own outcome.
+    let patterns = plan
+        .features
+        .iter()
+        .filter_map(|planned| {
+            let Some(Check::Pattern(check)) = &planned.check else {
+                return None;
+            };
+            let verdicts: Vec<StepVerdict> = check
+                .steps
+                .iter()
+                .zip(&planned.steps)
+                .map_while(|((original, op, instances), key)| match done.get(key) {
+                    Some(Ok(built)) => built.history.as_ref().map(|history| {
+                        crate::pattern::verdict(history, instances, original.clone(), *op)
+                    }),
+                    _ => None,
+                })
+                .collect();
+            Some((planned.id.clone(), verdicts.into()))
+        })
+        .collect();
     Model {
         source: Arc::clone(source),
         generation,
@@ -5869,6 +6455,7 @@ fn model(
         known,
         diagnoses: Arc::new(diagnoses),
         frames: Arc::new(frames),
+        patterns: Arc::new(patterns),
     }
 }
 
@@ -5955,8 +6542,7 @@ fn naming(
         };
         // Its own steps' results: a built feature's are all built.
         let steps: Option<Vec<Arc<Built>>> = planned
-            .steps
-            .iter()
+            .naming_steps()
             .map(|step| match done.get(step) {
                 Some(Ok(built)) => Some(Arc::clone(built)),
                 _ => None,
@@ -6004,22 +6590,7 @@ fn named_as(
             history(steps.len().checked_sub(1)?)?,
         ),
         Naming::Sweep(sweep) => {
-            let named = lock(known).get(&sweep.faces).map(Arc::clone);
-            let faces = match named {
-                Some(map) => map,
-                None => kept_in(
-                    known,
-                    sweep.faces,
-                    ElementMap::sketch(
-                        sweep.sketch.clone(),
-                        &sweep.curves,
-                        &sweep.points,
-                        &sweep.regions,
-                        history(0)?,
-                    ),
-                ),
-            };
-            let swept = ElementMap::swept(id.clone(), sweep.operation, &faces, history(1)?);
+            let swept = swept_map(id, sweep, history(0)?, history(1)?, known);
             match (inputs, steps.len()) {
                 ([], 2) => swept,
                 ([base], 3) => {
@@ -6028,7 +6599,83 @@ fn named_as(
                 _ => return None,
             }
         }
+        Naming::Pattern(pattern) => {
+            let base = inputs.first()?;
+            // The identity passes its base's map through.
+            if pattern.steps.is_empty() {
+                return Some((*base).clone());
+            }
+            // Its own steps, then its originals' faces and sweeps, two an original.
+            let (own, tools) = steps.split_at_checked(pattern.steps.len())?;
+            let mut on: Option<ElementMap> = None;
+            let mut tool = 0;
+            for (step, copies) in own.iter().zip(&pattern.steps) {
+                let copied = match (&copies.original, copies.copied) {
+                    (Some((original, sweep)), Copied::Tool) => {
+                        let faces = tools.get(tool)?.history.as_ref()?;
+                        let swept = tools.get(tool + 1)?.history.as_ref()?;
+                        tool += 2;
+                        swept_map(original, sweep, faces, swept, known)
+                    }
+                    (None, Copied::Solid) => (*base).clone(),
+                    _ => return None,
+                };
+                let placed: Option<Vec<ElementMap>> = copies
+                    .instances
+                    .iter()
+                    .map(|instance| {
+                        ElementMap::copy(
+                            &copied,
+                            id.clone(),
+                            pattern.operation,
+                            copies.copied,
+                            instance,
+                        )
+                    })
+                    .collect();
+                let placed = placed?;
+                let before = on.as_ref().unwrap_or(base);
+                let maps: Vec<&ElementMap> = std::iter::once(before).chain(placed.iter()).collect();
+                on = Some(ElementMap::operation(
+                    id.clone(),
+                    pattern.operation,
+                    &maps,
+                    step.history.as_ref()?,
+                ));
+            }
+            on?
+        }
     })
+}
+
+/// The map of feature `id`'s sweep of its sketch's profile's faces (S3's second pass): the
+/// faces' map, kept in `known` by its own key, so features sharing a sketch name it once,
+/// from `faces`, the faces step's history, then the sweep's from it by `swept`, the sweep's.
+/// A sweep feature's names pass through it, and a pattern's copies of the feature's tool
+/// are named from it (N10).
+fn swept_map(
+    id: &FeatureId,
+    sweep: &SweepNaming,
+    faces: &History,
+    swept: &History,
+    known: &NamedMaps,
+) -> ElementMap {
+    let named = lock(known).get(&sweep.faces).map(Arc::clone);
+    let faces = match named {
+        Some(map) => map,
+        None => kept_in(
+            known,
+            sweep.faces,
+            ElementMap::sketch(
+                sweep.sketch.clone(),
+                &sweep.curves,
+                &sweep.points,
+                &sweep.regions,
+                faces,
+            ),
+        ),
+    };
+    ElementMap::swept(id.clone(), sweep.operation, &faces, swept)
 }
 
 /// `map`, kept in `known` by its naming key; or the one kept there first, so a map named in
@@ -6048,11 +6695,32 @@ fn naming_key(key: Key, id: &FeatureId, how: &Naming, inputs: &[NamingKey]) -> N
         Naming::Primitive(_) => 0,
         Naming::Operation(op) => *op as u8 + 1,
         Naming::Sweep(sweep) => sweep.operation as u8 + 1,
+        Naming::Pattern(pattern) => pattern.operation as u8 + 1,
     }]);
     // A sweep feature's names come from its sketch's IDs too, which its steps' keys leave
     // out (design S3): two profiles alike but for an ID make one faces step and two maps.
     if let Naming::Sweep(sweep) = how {
         hash.update(sweep.faces.0);
+    }
+    // A pattern's names come from which input each step copies, as a tool's (with its
+    // sweep's names) or the solid's, and the instances it places (section 2.4).
+    if let Naming::Pattern(pattern) = how {
+        hash.update((pattern.steps.len() as u64).to_be_bytes());
+        for step in &pattern.steps {
+            hash.update([step.copied.letter() as u8]);
+            if let Some((original, sweep)) = &step.original {
+                hash.update((original.as_str().len() as u64).to_be_bytes());
+                hash.update(original.as_str().as_bytes());
+                hash.update(sweep.faces.0);
+            }
+            hash.update((step.instances.len() as u64).to_be_bytes());
+            for instance in step.instances.iter() {
+                hash.update((instance.offsets().len() as u64).to_be_bytes());
+                for offset in instance.offsets() {
+                    hash.update(offset.to_be_bytes());
+                }
+            }
+        }
     }
     for input in inputs {
         hash.update(input.0);
@@ -6072,11 +6740,18 @@ fn checked(
     planned: &Planned,
     outcome: FeatureOutcome,
     features: &[(FeatureId, FeatureOutcome)],
+    done: &BTreeMap<Key, StepResult>,
     unmeasured: &BTreeMap<Key, Error>,
 ) -> FeatureOutcome {
     let (FeatureOutcome::Built { key, built }, Some(check)) = (&outcome, &planned.check) else {
         return outcome;
     };
+    if let Check::Pattern(pattern) = check {
+        return match pattern_checked(pattern, planned, features, done, unmeasured) {
+            Ok(()) => outcome,
+            Err(error) => FeatureOutcome::Failed(error),
+        };
+    }
     // Its base's measures and its own, or why they couldn't be had: a sweep's and a
     // boolean's base is its first input.
     let measures = || -> Result<_, Unmeasured> {
@@ -6127,11 +6802,90 @@ fn checked(
             .and_then(|(before, after)| {
                 crate::sweep::check_result(&sweep.feature, sweep.kind, &sweep.base, &before, &after)
             }),
+        Check::Pattern(_) => Ok(()),
     };
     match decided {
         Ok(()) => outcome,
         Err(error) => FeatureOutcome::Failed(error),
     }
+}
+
+/// Whether a pattern's steps pass its check ([`PatternCheck`]), `built` its base's solid
+/// then each step's, in order: each step's result one solid, then changed from the one
+/// before by S7's rule (section 4.2). None while a measure it needs is still to come.
+fn pattern_holds(check: &PatternCheck, built: &[&Built]) -> Option<bool> {
+    let mut before = measured_of(built.first()?)?;
+    for ((_, op, _), step) in check.steps.iter().zip(built.iter().skip(1)) {
+        if step.history.as_ref().map_or(1, |h| h.result.solids) > 1 {
+            return Some(false);
+        }
+        let after = measured_of(step)?;
+        if !crate::sweep::pattern_change_holds(check.kind, *op, &before, &after) {
+            return Some(false);
+        }
+        before = after;
+    }
+    Some(true)
+}
+
+/// A pattern's check (section 4.2), from its base's solid and its steps' in `done`: the
+/// first step's refusal, in its words, or why a measure it needs couldn't be had.
+fn pattern_checked(
+    check: &PatternCheck,
+    planned: &Planned,
+    features: &[(FeatureId, FeatureOutcome)],
+    done: &BTreeMap<Key, StepResult>,
+    unmeasured: &BTreeMap<Key, Error>,
+) -> Result<(), Error> {
+    let id = &check.feature;
+    let unbuilt =
+        || silico_bug("a pattern's solid or its base's wasn't measured").with_feature(id.as_str());
+    let base = planned
+        .uses
+        .first()
+        .and_then(|&b| features.get(b))
+        .and_then(|(_, outcome)| match outcome {
+            FeatureOutcome::Built { key, .. } => Some(*key),
+            _ => None,
+        })
+        .ok_or_else(unbuilt)?;
+    let measured = |key: &Key| -> Result<crate::sweep::Measured, Error> {
+        let Some(Ok(built)) = done.get(key) else {
+            return Err(unbuilt());
+        };
+        match measured_of(built) {
+            Some(measured) => Ok(measured),
+            None => Err(match unmeasured.get(key) {
+                Some(why) => why.clone().with_feature(id.as_str()),
+                None => unbuilt(),
+            }),
+        }
+    };
+    let mut before = measured(&base)?;
+    let several = check.steps.len() > 1;
+    for ((original, op, instances), key) in check.steps.iter().zip(&planned.steps) {
+        let Some(Ok(built)) = done.get(key) else {
+            return Err(unbuilt());
+        };
+        if let Some(history) = &built.history {
+            let verdict = crate::pattern::verdict(history, instances, original.clone(), *op);
+            let bounds = built.summary().and_then(|summary| summary.bounds);
+            if let Some(error) = crate::pattern::solids_refused(
+                id,
+                check.kind.word(),
+                &check.base,
+                &verdict,
+                several,
+                bounds,
+            ) {
+                return Err(error);
+            }
+        }
+        let after = measured(key)?;
+        crate::sweep::check_pattern_change(id, check.kind, *op, &check.base, &before, &after)?;
+        before = after;
+    }
+    Ok(())
 }
 
 /// Why a checked feature's measures, or its base's, couldn't be had ([`checked`]).
@@ -8148,6 +8902,64 @@ mod tests {
         );
     }
 
+    /// A pattern's naming key, pinned as a sweep's is (M6.3's mutants: no test held its
+    /// arm's op code byte): the scheme's line, the step's key, the ID, 1 + its op code (a
+    /// linear pattern's, 10, so 11; a mirror's, 12, so 13), its steps' count, and each step's
+    /// letter, its original's ID (its length first) and faces' naming key if a tool's, and
+    /// its instances (their count, then each one's offsets, their count first), then the
+    /// inputs'. Computed by hand with Python's hashlib from bytes chosen here.
+    #[test]
+    fn a_patterns_naming_key_holds_its_op_code_its_originals_and_its_instances() {
+        let id = |text: &str| FeatureId::new(text).unwrap();
+        let instance = |offsets: &[u32]| Instance::new(offsets).unwrap();
+        let mirror = Naming::Pattern(Arc::new(PatternNaming {
+            operation: OpCode::Mirror,
+            steps: vec![CopyNaming {
+                copied: Copied::Solid,
+                original: None,
+                instances: vec![instance(&[1])].into(),
+            }],
+        }));
+        let key = naming_key(
+            Key([1; 32]),
+            &id("mmmmmmmm"),
+            &mirror,
+            &[NamingKey([3; 32])],
+        );
+        assert_eq!(
+            crate::hex(&key.0),
+            "a0631205362feeec2564c5b0f7bc10ecce61c49e3b10b081a5084239d244bd3d"
+        );
+        let linear = Naming::Pattern(Arc::new(PatternNaming {
+            operation: OpCode::LinearPattern,
+            steps: vec![CopyNaming {
+                copied: Copied::Tool,
+                original: Some((
+                    id("p0000002"),
+                    Arc::new(SweepNaming {
+                        operation: OpCode::Pad,
+                        sketch: id("ssssssss"),
+                        curves: Vec::new(),
+                        points: Vec::new(),
+                        regions: Vec::new(),
+                        faces: NamingKey([2; 32]),
+                    }),
+                )),
+                instances: vec![instance(&[1]), instance(&[0, 1])].into(),
+            }],
+        }));
+        let key = naming_key(
+            Key([1; 32]),
+            &id("tttttttt"),
+            &linear,
+            &[NamingKey([3; 32])],
+        );
+        assert_eq!(
+            crate::hex(&key.0),
+            "144414d3af073aa42ec77417651ca080e1e4dcb766a176600e462810e284bb42"
+        );
+    }
+
     /// M3.6's step kinds' keys (design S3), pinned, computed by hand with Python's hashlib
     /// from the lines their doc describes: a faces step's plane, its regions and loops
     /// marked, each curve by its kind and its values' bits; a prism's faces key, start, and
@@ -8653,6 +9465,215 @@ mod tests {
             assert_eq!(starts.load(Ordering::SeqCst), 2, "panics: {panics}");
         }
     }
+
+    /// A box, a pad and a pocket on it of one circle each, and a linear pattern of both, on
+    /// the pocket: two copies steps, the pad's (a fuse) then the pocket's (a cut).
+    fn two_originals_patterned() -> Checked {
+        let circle = |id: &str, x: u32| {
+            format!(
+                r#"{{"id": "{id}", "type": "sketch", "v": 1, "name": "Circle", "plane": "xy", "points": [{{"id": "pc000001", "x": {x}, "y": 2, "construction": false}}], "lines": [], "circles": [{{"id": "ca000001", "center": "pc000001", "radius": 1, "construction": false}}], "arcs": [], "constraints": []}}"#
+            )
+        };
+        let features = [
+            r#"{"id": "a0000001", "type": "box", "v": 1, "name": "Block", "position": [0, 0, 0], "length": 10, "width": 10, "height": 10}"#.to_owned(),
+            circle("s0000001", 2),
+            r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Boss", "base": "a0000001", "sketch": "s0000001", "extent": {"type": "one_side", "length": 12, "reversed": false}}"#.to_owned(),
+            circle("s0000002", 6),
+            r#"{"id": "q0000001", "type": "pocket", "v": 1, "name": "Hole", "base": "p0000001", "sketch": "s0000002", "extent": {"type": "through_all", "reversed": true}}"#.to_owned(),
+            r#"{"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "Pattern", "base": "q0000001", "copies": {"type": "features", "features": ["q0000001", "p0000001"]}, "directions": [{"along": "y", "reversed": false, "distribution": {"type": "spacing", "length": 4}, "count": 2}], "skip": []}"#.to_owned(),
+        ];
+        let text = format!(
+            r#"{{"silico": 1, "units": {{"length": "mm", "resolution": "1nm"}}, "naming": 6, "features": [{}]}}"#,
+            features.join(", ")
+        );
+        Checked::new(crate::document::read(text.as_bytes()).unwrap()).unwrap()
+    }
+
+    /// [`two_originals_patterned`]'s plan, its sketches solved by the fake: the plan, the
+    /// pattern's place, its base's key, and its steps' keys.
+    fn two_originals_plan() -> (Plan, usize, Key, Vec<Key>) {
+        let document = Arc::new(two_originals_patterned());
+        let engine = Recompute::new(crate::fake::FakeKernel::new(1).unwrap())
+            .with_sketches(crate::fake::FakeSketches::new());
+        let generation = lock(&engine.engine.state).generation;
+        let first = engine
+            .engine
+            .solve_swept(&document, generation, Reads::Kept, &StepCounter::default())
+            .unwrap()
+            .unwrap();
+        let plan = Plan::of(&document, &first.swept, &BTreeMap::new());
+        let at = |id: &str| document.place(&FeatureId::new(id).unwrap()).unwrap();
+        let (pattern, pocket) = (at("t0000001"), at("q0000001"));
+        let base = plan.features[pocket].key().unwrap();
+        let steps = plan.features[pattern].steps.clone();
+        (plan, pattern, base, steps)
+    }
+
+    /// A built solid of `volume`, measured (6 faces, 12 edges, 8 vertices) or not, its last
+    /// step's history counting `solids` (none: a primitive's, one).
+    fn solid_of(volume: Option<f64>, solids: Option<u32>) -> StepResult {
+        let shape = ShapeData::checked(crate::kernel::Blob::inline(b"a solid".to_vec()), true);
+        let history = solids.map(|solids| History {
+            result: crate::kernel::ElementCounts {
+                faces: 6,
+                edges: 12,
+                vertices: 8,
+                solids,
+            },
+            ..History::default()
+        });
+        let summary = volume.map(|volume| ShapeSummary {
+            volume,
+            area: 600.0,
+            center: [5.0; 3],
+            faces: 6,
+            edges: 12,
+            vertices: 8,
+            bounds: Some([[0.0; 3], [10.0; 3]]),
+            valid: true,
+        });
+        Ok(Arc::new(Built::new(shape, history, summary)))
+    }
+
+    #[test]
+    fn every_step_of_a_pattern_and_its_base_judge_it() {
+        // Section 4.2: each step is judged on the one before, so a pattern of two originals
+        // is judged when either step settles (and its base), not its last alone.
+        let (plan, pattern, base, steps) = two_originals_plan();
+        assert_eq!(steps.len(), 2);
+        assert_ne!(steps[0], steps[1]);
+        for key in steps.iter().chain([&base]) {
+            assert!(
+                plan.judged_by
+                    .get(key)
+                    .is_some_and(|f| f.contains(&pattern)),
+                "{key:?}: {:?}",
+                plan.judged_by.get(key)
+            );
+        }
+    }
+
+    #[test]
+    fn a_patterns_verdict_reads_its_base_and_every_step_in_turn() {
+        // Section 4.2, by hand: the base 1000 mm³; the pad's copies fuse to 1010 (they add),
+        // the hole's cut it to 1005 (they take away): it holds. The cut to 1010 changes
+        // nothing: it doesn't. A step whose history counts three solids is refused before its
+        // measure, which may never come. A step not built yet, or failed: not yet known.
+        let (plan, pattern, base, steps) = two_originals_plan();
+        let done = |results: [StepResult; 3]| -> BTreeMap<Key, StepResult> {
+            [base, steps[0], steps[1]]
+                .into_iter()
+                .zip(results)
+                .collect()
+        };
+        let verdict = |results| plan.verdict(pattern, &done(results));
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(Some(1010.0), Some(1)),
+                solid_of(Some(1005.0), Some(1)),
+            ]),
+            Some(true)
+        );
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(Some(1010.0), Some(1)),
+                solid_of(Some(1010.0), Some(1)),
+            ]),
+            Some(false)
+        );
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(None, Some(3)),
+                solid_of(None, Some(1)),
+            ]),
+            Some(false)
+        );
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(Some(1010.0), Some(1)),
+                solid_of(None, Some(1)),
+            ]),
+            None
+        );
+        let failed = || Err(Error::new(ErrorCode::KernelFailed, "Copies failed"));
+        assert_eq!(
+            verdict([
+                solid_of(Some(1000.0), None),
+                solid_of(Some(1010.0), Some(1)),
+                failed(),
+            ]),
+            None
+        );
+        let mut unbuilt = done([
+            solid_of(Some(1000.0), None),
+            solid_of(Some(1010.0), Some(1)),
+            solid_of(Some(1005.0), Some(1)),
+        ]);
+        unbuilt.remove(&steps[1]);
+        assert_eq!(plan.verdict(pattern, &unbuilt), None);
+    }
+
+    #[test]
+    fn a_pattern_fails_for_want_of_a_measure_only_of_a_step_built() {
+        // A measure refused of any of its steps, once built, or of its base, fails it; a
+        // refusal kept for a step not built (or failed) is no one's yet.
+        let (plan, pattern, base, steps) = two_originals_plan();
+        let refused = Error::new(ErrorCode::KernelFailed, "Summarize failed");
+        let unmeasured: BTreeMap<Key, Error> = [(steps[0], refused.clone())].into();
+        let mut done: BTreeMap<Key, StepResult> = [
+            (base, solid_of(Some(1000.0), None)),
+            (steps[0], solid_of(None, Some(1))),
+        ]
+        .into();
+        assert_eq!(
+            plan.unmeasured_failure(pattern, &done, &unmeasured),
+            Some(&refused)
+        );
+        done.insert(
+            steps[0],
+            Err(Error::new(ErrorCode::KernelFailed, "Copies failed")),
+        );
+        assert_eq!(plan.unmeasured_failure(pattern, &done, &unmeasured), None);
+        done.remove(&steps[0]);
+        assert_eq!(plan.unmeasured_failure(pattern, &done, &unmeasured), None);
+    }
+
+    #[test]
+    fn only_a_hang_of_a_patterns_request_is_kept_and_said_so() {
+        use crate::worker::Advice;
+        // Section 4.2, *A hang kept*: a copies request that hung is kept for the session,
+        // its advice and suggestion saying so; any other failure, or a worker slow to start
+        // (try again, said of the launch), is as it was, never kept.
+        let hang = kept_if_hung(Error::new(
+            ErrorCode::WorkerTimeout,
+            "the kernel worker timed out",
+        ));
+        assert!(kept_hang(&hang));
+        assert_eq!(
+            hang.suggestion(),
+            Some(
+                "check with fresh (silico check --fresh) to ask the kernel again; if the copies hang again, lower a count"
+            )
+        );
+        for other in [
+            Error::new(ErrorCode::KernelFailed, "Copies failed")
+                .with_advice(Advice::SimplifyOrWait),
+            Error::new(ErrorCode::WorkerTimeout, "the kernel worker timed out").with_advice(
+                Advice::TryAgain {
+                    once_more: true,
+                    why: "the worker was slow to start".to_owned(),
+                },
+            ),
+        ] {
+            let kept = kept_if_hung(other.clone());
+            assert_eq!(kept, other);
+            assert!(!kept_hang(&kept));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -8688,6 +9709,7 @@ mod checked_tests {
         };
         let planned = Planned {
             id: fid("kkkkkkkk"),
+            tools: Vec::new(),
             steps: vec![Key([2; 32])],
             uses: vec![0, 1],
             naming: None,
@@ -8739,7 +9761,7 @@ mod checked_tests {
             Key([2; 32]),
             Error::new(ErrorCode::KernelFailed, "the cut couldn't be measured"),
         );
-        let decided = checked(&planned, outcome, &inputs, &unmeasured);
+        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new(), &unmeasured);
         assert!(
             matches!(decided, FeatureOutcome::Built { .. }),
             "{decided:?}"
@@ -8749,7 +9771,13 @@ mod checked_tests {
     #[test]
     fn an_m2_boolean_with_no_measure_and_no_word_why_fails_as_silicos_fault() {
         let (planned, outcome, inputs) = cut(false);
-        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new());
+        let decided = checked(
+            &planned,
+            outcome,
+            &inputs,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         let FeatureOutcome::Failed(error) = decided else {
             panic!("{decided:?}");
         };
@@ -8765,14 +9793,26 @@ mod checked_tests {
     fn an_m2_boolean_measured_is_judged_by_s7s_rule() {
         // Measured, its volume half its base's: it removes something, and is built.
         let (planned, outcome, inputs) = cut(true);
-        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new());
+        let decided = checked(
+            &planned,
+            outcome,
+            &inputs,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         assert!(
             matches!(decided, FeatureOutcome::Built { .. }),
             "{decided:?}"
         );
         // Measured, its volume its base's: it removes nothing, and is refused, naming it.
         let (planned, outcome, inputs) = cut_to(1.0, true);
-        let decided = checked(&planned, outcome, &inputs, &BTreeMap::new());
+        let decided = checked(
+            &planned,
+            outcome,
+            &inputs,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         let FeatureOutcome::Failed(error) = decided else {
             panic!("{decided:?}");
         };
