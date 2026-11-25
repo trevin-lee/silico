@@ -327,8 +327,15 @@ fn a_mass_properties_refusal_alone_is_asked_again_alone() {
         start + RETRY_FIRST,
     );
     assert_eq!(measures.reads(), 3, "the mass properties asked again alone");
+    // Its refusal held, and the faces' answer kept, while it's out and once it answers.
+    let answers = measures.answers(opened.of).unwrap();
+    assert!(answers.bodies_refused());
+    assert_eq!(answers.face_count(), Some(6));
     settled_at(&mut measures, start + RETRY_FIRST);
     assert_eq!(measures.retry_at(), Some(start + 3 * RETRY_FIRST));
+    let answers = measures.answers(opened.of).unwrap();
+    assert!(answers.bodies_refused() && !answers.faces_refused());
+    assert_eq!(answers.face_count(), Some(6));
 }
 
 #[test]

@@ -2828,18 +2828,19 @@ impl Tab {
         &self.model_measures
     }
 
-    /// The published model's measures asked at `now`, if they're not what was asked last (a
-    /// rebuild since) or a read refused is due to be asked again, and their reads out
-    /// polled: what the property panel's document view asks as it's drawn, so nothing is
-    /// read while it isn't shown.
+    /// The published model's measures' reads out polled, then the measures asked at `now`,
+    /// if they're not what was asked last (a rebuild since) or a read refused is due to be
+    /// asked again: what the property panel's document view asks as it's drawn, so nothing
+    /// is read while it isn't shown.
     pub fn measure_model<P: Clients + 'static>(
         &mut self,
         sessions: &Arc<Sessions<P>>,
         now: std::time::Instant,
     ) {
+        // Polled first: a read answered this frame lets a refused one due be asked now.
+        self.model_measures.poll(now);
         let of = self.published_model();
         self.model_measures.ask(sessions, &self.id, of, now);
-        self.model_measures.poll(now);
     }
 
     /// The model's measures, for a crate's test to answer as if read

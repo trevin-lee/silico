@@ -37523,6 +37523,47 @@ fn a_body_the_kernel_couldnt_box_has_no_size_row() {
 }
 
 #[test]
+fn a_refused_document_measure_asks_a_frame_for_when_its_read_is_asked_again() {
+    // The kernel measures the block past what a measure holds: `mass_properties` is refused
+    // (Volume and Area left out), `query` answers (Faces 6). The viewport's clock stopped,
+    // so the refused read is due 250 ms (`RETRY_FIRST`) from the frame that took its
+    // refusal, and the panel asks for a frame no later than that.
+    use silico_app::viewport::RETRY_FIRST;
+    let f = fixture();
+    f.kernel.answer_instead(|op| {
+        matches!(op, Op::Summarize { .. }).then(|| {
+            silico_protocol::Reply::Summary(silico_protocol::ShapeSummary {
+                volume: 1e300,
+                area: 2800.0,
+                center: [20.0, 10.0, 5.0],
+                faces: 6,
+                edges: 12,
+                vertices: 8,
+                bounds: Some([[0.0; 3], [40.0, 20.0, 10.0]]),
+                valid: true,
+            })
+        })
+    });
+    let (time, clock) = hand_clock();
+    let (mut h, _) = f.drawn_clocked("box.silico", A_BOX, clock);
+    timeline_read(&mut h);
+    row_until(&mut h, "Faces", "6");
+    step_until(&mut h, "the volume's refusal taken", |h| {
+        h.state().tabs()[0].model_measures().retry_at().is_some()
+    });
+    step(&mut h);
+    assert_eq!(row_value(&h, "Volume"), None);
+    let delay = repaint_delay(&h);
+    assert!(delay.is_some_and(|delay| delay <= RETRY_FIRST), "{delay:?}");
+    // Due: its read asked again, at the next frame.
+    let reads = h.state().tabs()[0].model_measures().reads();
+    advance(&time, RETRY_FIRST);
+    step(&mut h);
+    assert_eq!(h.state().tabs()[0].model_measures().reads(), reads + 1);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_selected_face_edge_and_vertex_show_their_kind_their_measures_and_their_name() {
     // `selectionProps` for one element: its head (its number in the block's solid over what
     // it is, on Block), MEASURES, and NAME. The values by hand from the 40 by 20 by 10

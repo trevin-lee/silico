@@ -159,6 +159,14 @@ impl ModelMeasures {
         self.retry_at
     }
 
+    /// How long from `now` until the reads refused are asked again, for a frame then; none
+    /// with none refused, or once it's due (asked at the next frame, or, with the other read
+    /// still out, at the frame its answer wakes).
+    pub fn wake_in(&self, now: Instant) -> Option<std::time::Duration> {
+        let at = self.retry_at?;
+        (now < at).then(|| at - now)
+    }
+
     /// The model `of` measured through `sessions`, of `session`'s published model, at
     /// `now`: if it's another than was asked last, the reads out cancelled and every answer
     /// dropped, then both reads asked (nothing for no model); if it's the same, each read
@@ -441,6 +449,11 @@ mod tests {
         polled_at(&mut measures, start);
         assert_eq!(measures.reads(), 2);
         assert_eq!(measures.retry_at(), Some(start + RETRY_FIRST));
+        // A frame asked for when it's due, and none once it is.
+        assert_eq!(measures.wake_in(start), Some(RETRY_FIRST));
+        let ms = std::time::Duration::from_millis(1);
+        assert_eq!(measures.wake_in(start + ms), Some(RETRY_FIRST - ms));
+        assert_eq!(measures.wake_in(start + RETRY_FIRST), None);
         // Before its delay: nothing asked.
         let early = start + RETRY_FIRST - std::time::Duration::from_millis(1);
         measures.ask(&opened.sessions, &opened.id, Some(opened.of), early);

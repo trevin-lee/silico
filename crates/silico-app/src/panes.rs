@@ -458,8 +458,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
             let now = self.drawing.now();
             tab.measure_model(sessions, now);
             // A read refused is asked again when its delay is up: a frame then.
-            if let Some(at) = tab.model_measures().retry_at().filter(|&at| at > now) {
-                ui.ctx().request_repaint_after(at - now);
+            if let Some(wait) = tab.model_measures().wake_in(now) {
+                ui.ctx().request_repaint_after(wait);
             }
         }
         let mut viewed = None;
