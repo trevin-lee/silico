@@ -1189,12 +1189,7 @@ impl Selection {
         // Each picked matched to the item that's its element, by
         // index, so a box of thousands costs no more than a sort: the items', and those the
         // batch has added so far.
-        let mut index = Index::default();
-        for (at, item) in items.iter().enumerate() {
-            if let Item::Element(picked) = item {
-                index.add(at, picked);
-            }
-        }
+        let mut index = Index::of(&items);
         let mut removed: BTreeSet<usize> = BTreeSet::new();
         let mut scroll = None;
         // Each toggled, in the order named, by its item's index here: added, or let go.
@@ -3178,6 +3173,19 @@ pub(crate) mod tests {
         }
         selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
         assert_eq!(selection.click, None);
+    }
+
+    #[test]
+    fn a_refused_pick_unless_held_says_why_and_holds_nothing() {
+        // No model: the pick is refused, said, and nothing is held.
+        let mut selection = Selection::default();
+        assert!(!selection.pick_unless_held("rrrrrrrr.fuse.Face1"));
+        assert!(selection.names().is_empty());
+        assert!(
+            selection
+                .said()
+                .is_some_and(|said| said.contains("no model"))
+        );
     }
 
     #[test]
