@@ -699,6 +699,78 @@ pub fn boolean_change_holds(
     judged("", op, "", before, after).is_ok()
 }
 
+/// What a linear pattern's, polar pattern's, or mirror's step must be, once its result is
+/// one solid (docs/design/m6.0-patterns.md, section 4.2): a change to the volume of what it
+/// builds on (its base, or the step before), by S7's rule and in its words, as
+/// [`check_result`] judges a sketch feature's (decisions 6 and 9): a fuse step adds, a cut
+/// step removes. A mirror about its original's own plane of symmetry, or copies all inside
+/// the base or all missing it, change nothing, and are refused, `kernel_failed`, naming the
+/// feature.
+pub fn check_pattern_change(
+    feature: &FeatureId,
+    kind: crate::document::PatternFeature,
+    op: silico_protocol::CopiesOp,
+    base: &FeatureId,
+    before: &Measured,
+    after: &Measured,
+) -> Result<(), Error> {
+    judged(
+        feature.as_str(),
+        PatternChange { kind, op },
+        base.as_str(),
+        before,
+        after,
+    )
+}
+
+/// Whether [`check_pattern_change`] passes a step's result, as [`result_holds`] is for a
+/// sketch feature's.
+pub fn pattern_change_holds(
+    kind: crate::document::PatternFeature,
+    op: silico_protocol::CopiesOp,
+    before: &Measured,
+    after: &Measured,
+) -> bool {
+    judged("", PatternChange { kind, op }, "", before, after).is_ok()
+}
+
+/// A pattern's step, as S7 judges its change.
+#[derive(Debug, Clone, Copy)]
+struct PatternChange {
+    kind: crate::document::PatternFeature,
+    op: silico_protocol::CopiesOp,
+}
+
+impl Changes for PatternChange {
+    fn word(self) -> &'static str {
+        self.kind.word()
+    }
+
+    fn adds(self) -> bool {
+        self.op == silico_protocol::CopiesOp::Fuse
+    }
+
+    fn when_lost(self) -> &'static str {
+        "move or shrink the copies, so the result keeps some of its base"
+    }
+
+    fn when_parted(self) -> String {
+        "move the copies so the result is one piece".to_owned()
+    }
+
+    fn when_too_small(self) -> String {
+        format!(
+            "make what the {} copies larger, or the {} on a smaller part",
+            self.word(),
+            self.word()
+        )
+    }
+
+    fn when_unchanged(self) -> String {
+        "if every copy lies inside the base or misses it, change the direction, length, count, or plane; a mirror about the original's own plane of symmetry changes nothing".to_owned()
+    }
+}
+
 /// What changes a base's volume and is judged for it (S7): a sketch feature, or an M2
 /// boolean. Its word, whether it adds, and what to try when it changes nothing.
 trait Changes: Copy {
@@ -1442,5 +1514,68 @@ mod tests {
                 vector: [0.0, 0.0, 0.3]
             }
         );
+    }
+
+    #[test]
+    fn a_patterns_step_is_judged_by_s7s_rule_with_its_own_advice() {
+        // Section 4.2: a pattern's step changes its base's volume, by S7's rule, each
+        // refusal with a pattern's advice: no solid left, several, a change the volume
+        // can't tell, and none.
+        use crate::document::PatternFeature;
+        use silico_protocol::CopiesOp;
+        let (t, q) = (
+            FeatureId::new("t0000001").unwrap(),
+            FeatureId::new("q0000001").unwrap(),
+        );
+        let measured = |volume: f64, solids: u32| Measured {
+            volume,
+            solids,
+            faces: 10,
+            edges: 24,
+            vertices: 16,
+        };
+        let base = measured(1000.0, 1);
+        let refused = |op, after: Measured| {
+            check_pattern_change(&t, PatternFeature::Linear, op, &q, &base, &after).unwrap_err()
+        };
+        let lost = refused(CopiesOp::Cut, measured(0.0, 0));
+        assert_eq!(
+            lost.message(),
+            "linear_pattern t0000001 leaves nothing of its base q0000001: the result is no solid"
+        );
+        assert_eq!(
+            lost.suggestion(),
+            Some("move or shrink the copies, so the result keeps some of its base")
+        );
+        let parted = refused(CopiesOp::Cut, measured(900.0, 2));
+        assert_eq!(
+            parted.suggestion(),
+            Some("move the copies so the result is one piece")
+        );
+        let small = refused(CopiesOp::Fuse, measured(1000.0 + 5e-7, 1));
+        assert_eq!(
+            small.suggestion(),
+            Some(
+                "make what the linear_pattern copies larger, or the linear_pattern on a smaller part"
+            )
+        );
+        let none = refused(CopiesOp::Fuse, measured(1000.0, 1));
+        assert!(
+            none.message()
+                .starts_with("linear_pattern t0000001 adds nothing to its base q0000001")
+        );
+        // Held as it's checked: a change past the limit passes, one within it doesn't.
+        assert!(pattern_change_holds(
+            PatternFeature::Linear,
+            CopiesOp::Cut,
+            &base,
+            &measured(990.0, 1)
+        ));
+        assert!(!pattern_change_holds(
+            PatternFeature::Linear,
+            CopiesOp::Cut,
+            &base,
+            &measured(1000.0, 1)
+        ));
     }
 }

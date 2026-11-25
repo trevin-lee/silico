@@ -37386,6 +37386,7 @@ fn real_box_description() -> silico_core::kernel::Description {
         },
         area,
         centroid,
+        orientation: silico_protocol::FaceOrientation::Forward,
     };
     let line = |start: [f64; 3], end: [f64; 3]| EdgeDescription {
         curve: EdgeCurve::Line,
@@ -37633,6 +37634,7 @@ fn describes_a_pin(f: &Fixture) {
         },
         area: PI * 6.25,
         centroid: [0.0, 0.0, z],
+        orientation: silico_protocol::FaceOrientation::Forward,
     };
     let rim = |z: f64| EdgeDescription {
         curve: EdgeCurve::Circle {
@@ -37653,6 +37655,7 @@ fn describes_a_pin(f: &Fixture) {
                 },
                 area: 60.0 * PI,
                 centroid: [0.0, 0.0, 6.0],
+                orientation: silico_protocol::FaceOrientation::Forward,
             },
             cap(12.0, 1.0),
             cap(0.0, -1.0),
@@ -56443,6 +56446,250 @@ fn redo_with_nothing_to_redo_by_side_of_the_release_says_so_only_before_it() {
         assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
         assert_eq!(never_waits::waits(), 0);
     }
+}
+
+/// What holds the session's command thread busy: what lets it go, and the check it holds.
+type SessionHeld = (Box<dyn FnOnce()>, Running<CheckAnswer>);
+
+/// The session's command thread held busy: every sketch solve held, and a fresh check
+/// solving the part's sketch on it, so what the tab sends next waits behind it.
+fn session_held(f: &Fixture, h: &AppHarness) -> SessionHeld {
+    let id = h.state().tabs()[0].id;
+    f.sketches.hold();
+    let check = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    assert!(f.sketches.wait_held(WAIT), "the check's solve never held");
+    let solver = f.sketches.clone();
+    (Box::new(move || solver.release()), check)
+}
+
+/// The next frame's status read before what's held runs, then, before that frame takes
+/// any answer, the session let go and every command sent before it answered (a text read
+/// sent now, behind them, answers last): the frame takes their answers ahead of its status,
+/// as a loaded machine's frame does when they land between its status read and its taking
+/// them. `keys` given in that frame, after its answers are taken, as a window's keys are.
+fn answers_after_the_status_read(
+    f: &Fixture,
+    h: &mut AppHarness,
+    held: SessionHeld,
+    keys: Vec<eframe::egui::Event>,
+) {
+    let id = h.state().tabs()[0].id;
+    let mut behind = Some(f.sessions.text(&id, None));
+    let mut held = Some(held);
+    let sessions = Arc::clone(&f.sessions);
+    let before = sessions.status(&id).session.unwrap().revision;
+    let ran = Arc::new(AtomicBool::new(false));
+    let told = Arc::clone(&ran);
+    h.state_mut().tabs_mut()[0].after_status = Some(Box::new(move || {
+        let (Some((release, _check)), Some(mut text)) = (held.take(), behind.take()) else {
+            return;
+        };
+        assert_eq!(sessions.status(&id).session.unwrap().revision, before);
+        release();
+        // Polled, not waited on: this is the frame's thread.
+        let deadline = Instant::now() + WAIT;
+        loop {
+            match text.try_take() {
+                Ok(_) => break,
+                Err(running) => text = running,
+            }
+            assert!(Instant::now() < deadline, "never answered behind the edit");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        told.store(true, Ordering::SeqCst);
+    }));
+    h.input_mut().events.extend(keys);
+    step(h);
+    assert!(ran.load(Ordering::SeqCst), "the hook never ran");
+    h.state_mut().tabs_mut()[0].after_status = None;
+}
+
+#[test]
+fn undo_in_the_frame_a_lines_add_answers_before_its_status_takes_the_line_back() {
+    // A line let go with the session busy, so its `begin` and `sketch_add` wait; ⌘Z in the
+    // frame whose status was read before they ran and that takes their answers: the tab is
+    // ahead of its status (its counts the state before the line). SolidWorks' Undo takes
+    // back the line just drawn; it's never let go unsaid. The undo waits for the next
+    // frame's status, then is sent after the add, the line gone and there to redo.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let sent = line_held(&mut h);
+    let held = session_held(&f, &h);
+    pane_release(&mut h, [30.0, 60.0]);
+    let after = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert_eq!(after, [Sent::Begin, Sent::SketchEdit("sketch_add")]);
+    let command = command_modifiers(&h);
+    answers_after_the_status_read(&f, &mut h, held, vec![key_event(Key::Z, command)]);
+    let said = said_while_settling(&mut h, NOTHING_TO_UNDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let added = tab.sent[sent.len()..].to_vec();
+    let add = added
+        .iter()
+        .position(|sent| sent == &Sent::SketchEdit("sketch_add"));
+    let undo = added.iter().position(|sent| matches!(sent, Sent::Undo(_)));
+    assert!(
+        add.is_some_and(|add| undo.is_some_and(|undo| add < undo)),
+        "{added:?}"
+    );
+    assert!(!said, "said there was nothing to undo");
+    assert!(tab.redoable());
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 4, "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_in_the_frame_an_undo_answers_before_its_status_gives_the_line_back() {
+    // A line drawn, then ⌘Z sent with the session busy; ⌘⇧Z in the frame whose status was
+    // read before the undo ran and that takes its answer: the tab is ahead of its status at
+    // the revision its undo came to. Redo gives the line back, sent after the undo, never
+    // let go unsaid.
+    use silico_app::tab::NOTHING_TO_REDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let sent = line_held(&mut h);
+    pane_release(&mut h, [30.0, 60.0]);
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    let held = session_held(&f, &h);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    assert!(
+        h.state().tabs()[0].sent[sent.len()..]
+            .iter()
+            .any(|sent| matches!(sent, Sent::Undo(_))),
+        "the undo wasn't sent"
+    );
+    answers_after_the_status_read(
+        &f,
+        &mut h,
+        held,
+        vec![key_event(Key::Z, command | Modifiers::SHIFT)],
+    );
+    let said = said_while_settling(&mut h, NOTHING_TO_REDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let after = tab.sent[sent.len()..].to_vec();
+    let undo = after.iter().position(|sent| matches!(sent, Sent::Undo(_)));
+    let redo = after.iter().position(|sent| matches!(sent, Sent::Redo(_)));
+    assert!(
+        undo.is_some_and(|undo| redo.is_some_and(|redo| undo < redo)),
+        "{after:?}"
+    );
+    assert!(!said, "said there was nothing to redo");
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_in_the_frame_the_last_undo_answers_waits_for_the_status_then_says_nothing_to_undo() {
+    // break-it: the one edit of the transaction (Hole renamed HoleS) undone with the
+    // session busy, and ⌘Z again in the frame that takes that undo's answer before its
+    // status: the tab is ahead of its status, whose counts (one to undo) are of the state
+    // before. The second undo waits for the status, which counts none, so it says "Nothing
+    // to undo" and sends nothing: one undo sent, nothing refused.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Hole");
+    type_name(&mut h, "S");
+    step_until(&mut h, "renamed", |h| {
+        h.state().tabs()[0].transaction && shows(h, "Timeline", "HoleS")
+    });
+    settled(&mut h);
+    let from = h.state().tabs()[0].sent.len();
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].sent[from..]
+            .iter()
+            .filter(|sent| matches!(sent, Sent::Undo(_)))
+            .count(),
+        1,
+        "the first undo wasn't sent"
+    );
+    answers_after_the_status_read(
+        &f,
+        &mut h,
+        (Box::new(move || hold.release()), check),
+        vec![key_event(Key::Z, command)],
+    );
+    let said = said_while_settling(&mut h, NOTHING_TO_UNDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let undos = tab.sent[from..]
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Undo(_)))
+        .count();
+    assert_eq!(undos, 1, "{:?}", &tab.sent[from..]);
+    assert!(said, "the second undo went unsaid");
+    assert!(tab.message.is_none(), "{:?}", tab.message);
+    assert!(shows(&h, "Timeline", "Hole") && !shows(&h, "Timeline", "HoleS"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_in_the_frame_a_redo_answers_before_its_status_gives_the_next_line_back_too() {
+    // Two lines drawn and both undone; ⌘⇧Z sent with the session busy, and ⌘⇧Z again in
+    // the frame that takes the first redo's answer before its status: the tab is ahead of
+    // its status, and its own redo branch still holds the second line. Both redos are sent,
+    // in turn, and both lines are back; nothing is let go unsaid.
+    use silico_app::tab::NOTHING_TO_REDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let from = h.state().tabs()[0].sent.len();
+    for (start, end) in [([10.0, 50.0], [30.0, 60.0]), ([60.0, 40.0], [80.0, 50.0])] {
+        pane_press(&mut h, start);
+        pane_move(
+            &mut h,
+            [(start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0],
+        );
+        pane_move(&mut h, end);
+        pane_release(&mut h, end);
+        settled(&mut h);
+    }
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
+    let command = command_modifiers(&h);
+    for _ in 0..2 {
+        h.input_mut().events.push(key_event(Key::Z, command));
+        step(&mut h);
+        settled(&mut h);
+    }
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    let held = session_held(&f, &h);
+    let redo = key_event(Key::Z, command | Modifiers::SHIFT);
+    h.input_mut().events.push(redo.clone());
+    step(&mut h);
+    answers_after_the_status_read(&f, &mut h, held, vec![redo]);
+    let said = said_while_settling(&mut h, NOTHING_TO_REDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let redos = tab.sent[from..]
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Redo(_)))
+        .count();
+    assert_eq!(redos, 2, "{:?}", &tab.sent[from..]);
+    assert!(!said, "said there was nothing to redo");
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert!(line_near(&sketch, [60.0, 40.0], [80.0, 50.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]

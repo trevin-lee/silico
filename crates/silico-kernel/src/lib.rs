@@ -258,6 +258,15 @@ mod ffi {
         Other,
     }
 
+    /// A face's orientation in its shape, as OCCT's `TopAbs_Orientation` names it.
+    #[repr(u8)]
+    enum Orientation {
+        Forward,
+        Reversed,
+        Internal,
+        External,
+    }
+
     /// An edge's curve type, as OCCT's `GeomAbs_CurveType` names it.
     #[repr(u8)]
     enum CurveType {
@@ -276,9 +285,11 @@ mod ffi {
     /// and centre of area; a plane's outward `normal` and its own `location`; a cylinder's,
     /// cone's, sphere's, or torus's axis (`origin`, `direction`); a cylinder's, cone's, or
     /// sphere's `radius`, or a torus's major `radius` and minor `radius2`; and a cone's
-    /// half-angle, `angle`. Unused fields are 0.
+    /// half-angle, `angle`; and its `orientation` in the shape, as `TopExp::MapShapes`
+    /// first meets it. Unused fields are 0.
     struct FaceOut {
         surface: SurfaceType,
+        orientation: Orientation,
         area: f64,
         centroid: Point3,
         normal: Point3,
@@ -976,7 +987,9 @@ pub fn describe(
     first: u32,
     count: u32,
 ) -> Result<(u32, silico_protocol::Description), KernelError> {
-    use silico_protocol::{Axis, EdgeCurve, EdgeDescription, FaceDescription, Surface};
+    use silico_protocol::{
+        Axis, EdgeCurve, EdgeDescription, FaceDescription, FaceOrientation, Surface,
+    };
     let kind = match kind {
         ElementKind::Face => ffi::Kind::Face,
         ElementKind::Edge => ffi::Kind::Edge,
@@ -999,6 +1012,22 @@ pub fn describe(
         .faces
         .iter()
         .map(|f| {
+            let orientation = match f.orientation {
+                ffi::Orientation::Forward => FaceOrientation::Forward,
+                ffi::Orientation::Reversed => FaceOrientation::Reversed,
+                ffi::Orientation::Internal => FaceOrientation::Internal,
+                ffi::Orientation::External => FaceOrientation::External,
+                // The bridge gives only the four; any other value is the bridge's bug.
+                other => {
+                    return Err(KernelError::new(Refusal::InvalidParameter {
+                        parameter: "orientation".to_owned(),
+                        message: format!(
+                            "OCCT gave a face an orientation Silico doesn't know ({})",
+                            other.repr
+                        ),
+                    }));
+                }
+            };
             let axis = axis(&f.origin, &f.direction);
             let surface = match f.surface {
                 ffi::SurfaceType::Plane => Surface::Plane {
@@ -1030,13 +1059,14 @@ pub fn describe(
                 ffi::SurfaceType::Offset => Surface::Offset,
                 _ => Surface::Other,
             };
-            FaceDescription {
+            Ok(FaceDescription {
                 surface,
                 area: f.area,
                 centroid: point(&f.centroid),
-            }
+                orientation,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, KernelError>>()?;
     let edges = d
         .edges
         .iter()

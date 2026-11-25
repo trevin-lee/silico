@@ -21,6 +21,8 @@ mod lateness;
 mod listing;
 #[path = "common/model.rs"]
 mod model;
+#[path = "common/patterns.rs"]
+mod pattern_docs;
 #[path = "common/recompute.rs"]
 mod recompute;
 #[path = "common/refusals.rs"]
@@ -36,6 +38,8 @@ mod adversarial_described;
 mod adversarial_entries;
 #[path = "adversarial_measure_refusal.rs"]
 mod adversarial_measure_refusal;
+#[path = "adversarial_pattern_rebuild.rs"]
+mod adversarial_pattern_rebuild;
 #[path = "adversarial_rebuild_features.rs"]
 mod adversarial_rebuild_features;
 #[path = "adversarial_recompute.rs"]
@@ -60,6 +64,8 @@ mod naming;
 mod naming_header;
 #[path = "naming_scheme.rs"]
 mod naming_scheme;
+#[path = "pattern_rebuild.rs"]
+mod pattern_rebuild;
 #[path = "recompute_naming_cost.rs"]
 mod recompute_naming_cost;
 #[path = "recompute_steps.rs"]
