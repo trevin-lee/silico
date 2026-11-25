@@ -22,7 +22,6 @@ tracing.workspace = true
 # The bracket (tests/bracket.rs): its replies validated against their tools' output
 # schemas, read as written (raw_value), its mesh worked out by hand (libm), and its 3MF
 # read back by FreeCAD, the oracle.
-cpu-time.workspace = true
 jsonschema.workspace = true
 libc.workspace = true
 libm.workspace = true

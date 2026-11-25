@@ -1,6 +1,6 @@
 //! A document's features as the browser and the timeline draw them, structured, so no
 //! client parses an outline's text (docs/design/m5.0-app.md, `timeline`, M5.1; decision 33,
-//! A8, pending the maintainer). Below any command: the session's
+//! A8). Below any command: the session's
 //! ([`Sessions::timeline`](crate::command::Sessions::timeline)) adds the session's revision,
 //! the model's, and the gate's count of problems, and names the model it reads.
 //!

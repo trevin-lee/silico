@@ -1,5 +1,5 @@
 //! Whether a session's file changed on disk (docs/design/m5.0-app.md, section 4, *A file
-//! changed on disk*; `status`'s `disk`, M5.4; decisions 1 and 3, pending the maintainer).
+//! changed on disk*; `status`'s `disk`, M5.4; decisions 1 and 3).
 //! Below any command:
 //!
 //! - **Off the caller's thread.** [`DiskWatch::finding`] answers from the last comparison,

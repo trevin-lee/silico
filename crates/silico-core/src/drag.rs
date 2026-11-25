@@ -1,6 +1,6 @@
 //! A drag of a sketch's point, in the core (ARCHITECTURE.md, *Sketches solve in the sketch
-//! worker*: the pool's rules, planned for M5; docs/design/m5.0-app.md, `drag_begin`,
-//! `drag_move`, `drag_end`, decision 9, pending the maintainer). Below any command:
+//! worker*; docs/design/m5.0-app.md, `drag_begin`, `drag_move`, `drag_end`, decision 9).
+//! Below any command:
 //!
 //! - **One worker.** A drag takes a sketch solver from the solvers a session's engines share
 //!   ([`SketchSolvers`]) and holds it for as long as the drag lasts, apart from every
