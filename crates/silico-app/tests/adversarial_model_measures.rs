@@ -205,22 +205,7 @@ fn a_kernel_that_wont_describe_the_solid_refuses_the_faces_alone_in_its_words() 
 #[test]
 fn a_solid_measured_past_what_a_measure_holds_is_refused_not_added() {
     // The kernel answers a volume no measure holds (finite, past i128's millionths).
-    let opened = opened(&[BLOCK], |kernel| {
-        kernel.answer_instead(|op| {
-            matches!(op, Op::Summarize { .. }).then(|| {
-                silico_protocol::Reply::Summary(silico_protocol::ShapeSummary {
-                    volume: 1e300,
-                    area: 28.0,
-                    center: [2.0, 1.0, 0.5],
-                    faces: 6,
-                    edges: 12,
-                    vertices: 8,
-                    bounds: Some([[0.0; 3], [4.0, 2.0, 1.0]]),
-                    valid: true,
-                })
-            })
-        });
-    });
+    let opened = opened(&[BLOCK], unmeasurable);
     let mut measures = ModelMeasures::default();
     measures.ask(
         &opened.sessions,
@@ -302,4 +287,69 @@ fn a_refusal_for_the_moment_passes_once_the_reads_running_answer() {
         later + silico_app::viewport::RETRY_MOST,
     );
     assert_eq!(measures.reads(), 4);
+}
+
+/// A kernel that measures the block past what a measure holds, so `mass_properties` is
+/// refused and `query`, which reads the description, answers.
+fn unmeasurable(kernel: &FakeKernel) {
+    kernel.answer_instead(|op| {
+        matches!(op, Op::Summarize { .. }).then(|| {
+            silico_protocol::Reply::Summary(silico_protocol::ShapeSummary {
+                volume: 1e300,
+                area: 28.0,
+                center: [2.0, 1.0, 0.5],
+                faces: 6,
+                edges: 12,
+                vertices: 8,
+                bounds: Some([[0.0; 3], [4.0, 2.0, 1.0]]),
+                valid: true,
+            })
+        })
+    });
+}
+
+#[test]
+fn a_mass_properties_refusal_alone_is_asked_again_alone() {
+    use silico_app::viewport::RETRY_FIRST;
+    let opened = opened(&[BLOCK], unmeasurable);
+    let start = Instant::now();
+    let mut measures = ModelMeasures::default();
+    measures.ask(&opened.sessions, &opened.id, Some(opened.of), start);
+    settled_at(&mut measures, start);
+    let answers = measures.answers(opened.of).unwrap();
+    assert!(answers.bodies_refused() && !answers.faces_refused());
+    assert_eq!(answers.face_count(), Some(6));
+    assert_eq!(measures.retry_at(), Some(start + RETRY_FIRST));
+    measures.ask(
+        &opened.sessions,
+        &opened.id,
+        Some(opened.of),
+        start + RETRY_FIRST,
+    );
+    assert_eq!(measures.reads(), 3, "the mass properties asked again alone");
+    settled_at(&mut measures, start + RETRY_FIRST);
+    assert_eq!(measures.retry_at(), Some(start + 3 * RETRY_FIRST));
+}
+
+#[test]
+fn a_new_models_first_refusal_waits_its_own_first_delay() {
+    use silico_app::viewport::RETRY_FIRST;
+    let opened = opened(&[BLOCK], unmeasurable);
+    let start = Instant::now();
+    let mut measures = ModelMeasures::default();
+    measures.ask(&opened.sessions, &opened.id, Some(opened.of), start);
+    settled_at(&mut measures, start);
+    // Refused again, the delay doubled: due at start + 3 · RETRY_FIRST.
+    let due = start + RETRY_FIRST;
+    measures.ask(&opened.sessions, &opened.id, Some(opened.of), due);
+    settled_at(&mut measures, due);
+    assert_eq!(measures.retry_at(), Some(due + 2 * RETRY_FIRST));
+    // Another model, a moment later: its first refusal waits the first delay from then,
+    // never the old model's deadline nor its doubled delay.
+    let next = (2, opened.of.1);
+    let soon = due + Duration::from_millis(1);
+    measures.ask(&opened.sessions, &opened.id, Some(next), soon);
+    settled_at(&mut measures, soon);
+    assert!(measures.answers(next).unwrap().bodies_refused());
+    assert_eq!(measures.retry_at(), Some(soon + RETRY_FIRST));
 }

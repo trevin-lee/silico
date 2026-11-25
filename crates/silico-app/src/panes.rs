@@ -455,7 +455,12 @@ impl<P: Clients + 'static> Panes<'_, P> {
             tab.measure(sessions);
         } else if entry.is_none() {
             // The document's view: its model's measures read, if they're not yet.
-            tab.measure_model(sessions, self.drawing.now());
+            let now = self.drawing.now();
+            tab.measure_model(sessions, now);
+            // A read refused is asked again when its delay is up: a frame then.
+            if let Some(at) = tab.model_measures().retry_at().filter(|&at| at > now) {
+                ui.ctx().request_repaint_after(at - now);
+            }
         }
         let mut viewed = None;
         let out = egui::ScrollArea::vertical()

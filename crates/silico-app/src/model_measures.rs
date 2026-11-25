@@ -20,8 +20,8 @@
 //! it comes. A read refused is asked again after a delay that grows with each refusal in a
 //! row, as the viewport asks its meshes again (`crate::viewport::retry_after`): a refusal
 //! for the moment (the session's published reads all running) passes, and one of the model
-//! (a solid that couldn't be described) is asked of at most every
-//! [`RETRY_MOST`](crate::viewport::RETRY_MOST), its refusal shown meanwhile. They're asked
+//! (a solid that couldn't be described) is asked again at most
+//! [`RETRY_MOST`](crate::viewport::RETRY_MOST) apart, its refusal shown meanwhile. They're asked
 //! only while the property panel shows the document's properties.
 
 use std::sync::Arc;
@@ -210,7 +210,7 @@ impl ModelMeasures {
 
     /// The reads out polled at `now`: each answer taken if it has come (one of another
     /// revision than asked dropped). A refusal taken sets when the reads refused are asked
-    /// again; both answered, the refusals in a row start again.
+    /// again.
     pub fn poll(&mut self, now: Instant) {
         let Some(of) = self.of else {
             return;
@@ -234,14 +234,11 @@ impl ModelMeasures {
                 Err(running) => self.faces = Some(running),
             }
         }
-        if refused {
-            // Once for the reads refused together: the delay grows by refusals in a row.
-            if self.retry_at.is_none() {
-                self.retry_at = Some(now + crate::viewport::retry_after(self.refusals));
-                self.refusals = self.refusals.saturating_add(1);
-            }
-        } else if !self.reading() && self.answers.refused().is_none() {
-            self.refusals = 0;
+        // Once for the reads refused together: the delay grows by refusals in a row, which
+        // only a new model starts again (both answered, nothing more is asked of this one).
+        if refused && self.retry_at.is_none() {
+            self.retry_at = Some(now + crate::viewport::retry_after(self.refusals));
+            self.refusals = self.refusals.saturating_add(1);
         }
     }
 
@@ -345,13 +342,9 @@ mod tests {
         /// `measures` asked of the model and polled until neither read is out, within a
         /// minute.
         fn measured(&self, measures: &mut ModelMeasures) {
-            measures.ask(&self.sessions, &self.id, Some(self.of), Instant::now());
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-            while measures.reading() {
-                measures.poll(Instant::now());
-                assert!(std::time::Instant::now() < deadline, "never answered");
-                std::thread::sleep(std::time::Duration::from_millis(5));
-            }
+            let now = Instant::now();
+            measures.ask(&self.sessions, &self.id, Some(self.of), now);
+            polled_at(measures, now);
         }
     }
 
@@ -482,13 +475,9 @@ mod tests {
         // published one, is dropped.
         let other = (1, Revision::from_number(99).unwrap());
         assert_ne!(other.1, opened.of.1);
-        measures.ask(&opened.sessions, &opened.id, Some(other), Instant::now());
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-        while measures.reading() {
-            measures.poll(Instant::now());
-            assert!(std::time::Instant::now() < deadline, "never answered");
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        let now = Instant::now();
+        measures.ask(&opened.sessions, &opened.id, Some(other), now);
+        polled_at(&mut measures, now);
         let answers = measures.answers(other).unwrap();
         assert!(answers.bodies.is_none() && answers.faces.is_none());
     }
