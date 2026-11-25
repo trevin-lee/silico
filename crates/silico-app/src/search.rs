@@ -33,14 +33,15 @@ pub(crate) const MCP: &str = "Agents reach the same commands over MCP";
 pub(crate) const MOST: usize = 40;
 
 /// The registry's commands the search leaves out (`paletteItems`'s `ok`, `cancel`, `orbit`,
-/// `pan`, and `zoom`: a dialog's keys and the pointer's gestures; its `selectOther` and
-/// `sNoRel` aren't in the app's registry).
-pub const LEFT_OUT: [Command; 5] = [
+/// `pan`, `zoom`, and `sNoRel`: a dialog's keys, the pointer's gestures, and a key held as
+/// the pointer acts; its `selectOther` isn't in the app's registry).
+pub const LEFT_OUT: [Command; 6] = [
     Command::Ok,
     Command::Cancel,
     Command::Orbit,
     Command::Pan,
     Command::Zoom,
+    Command::NoRelations,
 ];
 
 /// The foot's parts: each one's caps, then its words (`.pm-foot`'s spans).
@@ -559,9 +560,9 @@ mod tests {
     }
 
     #[test]
-    fn it_leaves_out_ok_cancel_and_the_pointers_gestures() {
-        // `paletteItems`: ok, cancel, orbit, pan, zoom (and select-other and the no-relation
-        // hold, which the registry hasn't).
+    fn it_leaves_out_ok_cancel_the_pointers_gestures_and_the_no_relation_hold() {
+        // `paletteItems`: ok, cancel, orbit, pan, zoom, and sNoRel (and select-other, which
+        // the registry hasn't).
         // "ok": OK left out; Look At's name holds it ("lOOK").
         assert_eq!(commands("ok"), [Command::LookAt]);
         assert_eq!(commands("cancel"), []);
@@ -569,6 +570,9 @@ mod tests {
         assert_eq!(commands("pan"), []);
         // "zoom": Zoom to the pointer, left out.
         assert_eq!(commands("zoom"), []);
+        // "relations": Sketch without relations, left out; no other command's name or
+        // description has the word.
+        assert_eq!(commands("relations"), []);
         for left_out in LEFT_OUT {
             assert!(
                 !registry_listed("")
@@ -622,10 +626,10 @@ mod tests {
 
     #[test]
     fn at_most_forty_are_listed_the_first_in_the_registrys_order() {
-        // The registry's 48 less the five left out are 43: the first 40 listed, so the last
+        // The registry's 49 less the six left out are 43: the first 40 listed, so the last
         // three (Construction, Finish Sketch, Keyboard shortcuts) aren't until a query finds
         // them.
-        assert_eq!(REGISTRY.len(), 48);
+        assert_eq!(REGISTRY.len(), 49);
         let all = registry_listed("");
         assert_eq!(all.len(), 40);
         assert_eq!(all[0].0.command, Command::New);

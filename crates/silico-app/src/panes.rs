@@ -428,13 +428,17 @@ impl<P: Clients + 'static> Panes<'_, P> {
         if tab.sketch.is_some() {
             // Sketch mode's own (app.js's `renderRight`: `S.sketch` before the selection).
             properties::title(ui, None, "Properties", None);
-            egui::ScrollArea::vertical()
+            let asked = egui::ScrollArea::vertical()
                 .id_salt("properties")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = Vec2::ZERO;
-                    sketch_mode(ui, tab);
-                });
+                    sketch_mode(ui, tab)
+                })
+                .inner;
+            if let Some(asked) = asked {
+                *self.next_frame |= tab.card_asked(self.sessions, asked);
+            }
             return;
         }
         // The selection's views close with Clear selection (`selectionProps`' `clearSel`).
@@ -606,10 +610,8 @@ impl<P: Clients + 'static> Panes<'_, P> {
 ///
 /// [`sketch_mode_rows`]: crate::parameters::sketch_mode_rows
 /// [`sketch::problem_card`]: crate::sketch::problem_card
-fn sketch_mode(ui: &mut Ui, tab: &Tab) {
-    let Some(mode) = tab.sketch.as_ref() else {
-        return;
-    };
+fn sketch_mode(ui: &mut Ui, tab: &Tab) -> Option<properties::CardAct> {
+    let mode = tab.sketch.as_ref()?;
     let name = tab.sketch_name();
     let id = mode
         .sketch
@@ -639,14 +641,18 @@ fn sketch_mode(ui: &mut Ui, tab: &Tab) {
             let _ = draw_row(ui, row);
         }
     }
+    let mut asked = None;
     if let Some(said) = read.and_then(|read| crate::sketch::problem_card(read, &name)) {
         let offer = properties::Offer {
             edit: None,
             show: false,
         };
-        ui.push_id("sketch-card", |ui| {
-            properties::card(ui, &said, Some(&name), offer)
-        });
+        let driven = tab.sketch_make_driven_offer();
+        asked = ui
+            .push_id("sketch-card", |ui| {
+                properties::driven_card(ui, &said, Some(&name), offer, driven.as_ref())
+            })
+            .inner;
     }
     properties::hint(
         ui,
@@ -665,6 +671,7 @@ fn sketch_mode(ui: &mut Ui, tab: &Tab) {
             (" drops them.", false),
         ],
     );
+    asked
 }
 
 /// A row of PARAMETERS, or of sketch mode's SKETCH, drawn: words in their colour, an ID in
@@ -5995,6 +6002,36 @@ mod property_panel_drawn {
         h.get_by_role_and_label(Role::Button, "Suppress").click();
         h.run_steps(2);
         assert!(h.state().next_frame, "the suppression sent, never polled");
+    }
+
+    #[test]
+    fn the_sketch_cards_make_it_driven_asks_the_next_frame_to_poll_what_it_sent() {
+        // Sketch mode over defined by the right side's second length (ka000002), read at a
+        // published revision: the card's Make it driven, from a frame that asked nothing,
+        // asks the next one, to poll the `set_field` it queued.
+        use crate::sketch::tests::{length, read, rectangle};
+        use silico_core::sketch_states::{ConstraintState, MemberState, SketchState};
+        let mut tab = part();
+        let mut mode = crate::sketch::SketchMode::new(1, Some(fid("s0000001")));
+        mode.read = Some(crate::sketch::Read {
+            model: Some(Revision::OPENED),
+            result: Ok(read(
+                rectangle(vec![
+                    length("ka000001", "na000002", "20", true),
+                    length("ka000002", "na000002", "20", true),
+                ]),
+                SketchState::OverDefined,
+                MemberState::OverDefined,
+                &[("ka000002", ConstraintState::Redundant)],
+            )),
+        });
+        tab.sketch = Some(mode);
+        let mut h = drawn(tab);
+        assert!(!h.state().next_frame, "nothing sent yet");
+        h.get_by_role_and_label(Role::Button, "Make it driven")
+            .click();
+        h.run_steps(2);
+        assert!(h.state().next_frame, "the driven edit queued, never polled");
     }
 
     /// `part()` with a sketch, Profile, listed before its features, selected, its read not
