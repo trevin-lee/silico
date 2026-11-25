@@ -128,6 +128,17 @@ Read on 2026-11-09 from [rectpat], [patref], [mirref], [mirror], and [patterns],
 - Constraint glyphs: small icons beside the constrained curves (Horizontal/Vertical, Coincident, Tangent, Equal, Parallel, Perpendicular, Fix, Midpoint, Concentric, Collinear, Symmetry, Curvature) [cons] [fully] *(the example image)*. Their art isn't copied here.
 - Dimensions: drawn in the canvas, with arrows and extension lines *(the example image)*; double-click to edit; Enter accepts [dims]. Driven dimensions are toggled from the right-click menu [dims].
 - Over-constrained colour: not described in Fusion's help. (M5.11 colours by SolidWorks' states anyway.)
+- Lines sharing an end: Fusion shows no coincident constraint where two or more lines share an end. To part them, right-click the line, not the point, and choose *Delete Coincident* (Autodesk's forum, *unofficial*: [delcoinc]).
+
+## Measure
+
+Read on 2026-11-25 from [measure], for sketch mode's Measure (docs/design/m5-ui/DESIGN.md, *Under review*).
+
+- Inspect > Measure opens the Measure dialog. Select an object, and *Selection 1* expands with what fits it: an edge's Length, a face's Area and Loop Length, a circular edge's Diameter or Radius [measure].
+- A second object expands *Selection 2*, then *Results*: how the two lie, such as the distance between two parallel faces, the angle between two angled lines or faces, or for two circular objects the distance between their centres with the minimum and maximum distances [measure].
+- *XYZ Delta* sets the coordinate system of the XYZ measurements, or None. *Clear Selection* (a restart icon) clears the selections [measure].
+- Tips: *Secondary Units* shows a second unit in parentheses. A result hovered highlights its measurement in the canvas, and a value clicked is copied. *Show Snap Points* shows snap points on a face, edge, or sketch curve [measure].
+- Not documented: what a sketch line, arc, circle, or point shows on its own.
 
 ## Selection look
 
@@ -222,6 +233,8 @@ Read from Rerun's source at tag `0.38.1` (`crates/viewer_support/re_ui`: `src/de
 [fillet]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-FILLET-SOLID.htm
 [combine]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-COMBINE.htm
 [combref]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-COMBINE.htm
+[measure]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-MEASURE.htm
+[delcoinc]: https://forums.autodesk.com/t5/fusion-design-validate-document/how-do-you-delete-coincident-constraints/td-p/5638019
 [rectpat]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/GUID-9622573F-06FA-462F-AFA7-97CD0C7AA0C9.htm
 [patref]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-PATTERN.htm
 [mirref]: https://help.autodesk.com/cloudhelp/ENU/Fusion-Model/files/SLD-REF-MIRROR-DIALOG.htm

@@ -38,7 +38,10 @@
     union: { label: 'Union', keys: [], group: 'Modify', icon: 'union' },
     subtract: { label: 'Subtract', keys: [], group: 'Modify', icon: 'subtract' },
     intersect: { label: 'Intersect', keys: [], group: 'Modify', icon: 'intersect' },
-    measure: { label: 'Measure', keys: [], group: 'Inspect', icon: 'measure', desc: 'Distance, angle, and size of what you select' },
+    rectPattern: { label: 'Rectangular Pattern', keys: [], group: 'Create', icon: 'patRect', desc: 'Copies features or the body in rows and columns' },
+    circPattern: { label: 'Circular Pattern', keys: [], group: 'Create', icon: 'patCirc', desc: 'Copies features or the body round an axis' },
+    mirror: { label: 'Mirror', keys: [], group: 'Create', icon: 'mirror', desc: 'Copies features or the body across a plane' },
+    measure: { label: 'Measure', keys: [], group: 'Inspect', icon: 'measure', desc: 'Lengths, distances, and angles of what you select' },
     filterFace: { label: 'Faces', keys: ['X'], group: 'Selection', icon: 'selFace', desc: 'Toggles whether faces can be selected' },
     filterEdge: { label: 'Edges', keys: ['E'], group: 'Selection', icon: 'selEdge', desc: 'Toggles whether edges can be selected' },
     filterVertex: { label: 'Vertices', keys: ['V'], group: 'Selection', icon: 'selVertex', desc: 'Toggles whether vertices can be selected' },
@@ -76,8 +79,9 @@
   };
   // The primitives' icons and names stay for those a file holds, which edit but are never made here
   // (Trevin's decision of 2026-11-09: solids are made sketch-first).
-  const FEATURE_ICON = { sketch: 'sketch', pad: 'pad', pocket: 'pocket', fillet: 'fillet', chamfer: 'chamfer', revolve: 'revolve', groove: 'groove', box: 'box', cylinder: 'cylinder', sphere: 'sphere', cone: 'cone', torus: 'torus' };
-  const FEATURE_KIND = { sketch: 'Sketch', pad: 'Pad', pocket: 'Pocket', fillet: 'Fillet', chamfer: 'Chamfer', box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', cone: 'Cone', torus: 'Torus' };
+  const FEATURE_ICON = { sketch: 'sketch', pad: 'pad', pocket: 'pocket', fillet: 'fillet', chamfer: 'chamfer', revolve: 'revolve', groove: 'groove', box: 'box', cylinder: 'cylinder', sphere: 'sphere', cone: 'cone', torus: 'torus', linear_pattern: 'patRect', polar_pattern: 'patCirc', mirror: 'mirror' };
+  // A pattern's kind is Fusion's word for it; the document's type word (linear_pattern, polar_pattern) is the agents'.
+  const FEATURE_KIND = { sketch: 'Sketch', pad: 'Pad', pocket: 'Pocket', fillet: 'Fillet', chamfer: 'Chamfer', box: 'Box', cylinder: 'Cylinder', sphere: 'Sphere', cone: 'Cone', torus: 'Torus', linear_pattern: 'Rectangular pattern', polar_pattern: 'Circular pattern', mirror: 'Mirror' };
 
   // ───────── Documents ─────────
   function bracketFeatures() {
@@ -97,20 +101,23 @@
   function makeDoc(kind, file, path) {
     const d = {
       uid: 'd' + docSeq++, kind, file, path,
-      rev: kind === 'bracket' ? 12 : 1, modelRev: kind === 'bracket' ? 12 : 1,
+      rev: kind === 'bracket' ? 12 : kind === 'plate' ? 15 : 1, modelRev: kind === 'bracket' ? 12 : kind === 'plate' ? 15 : 1,
       p: { W: 60, H: 50, tb: 5, tu: 5, D: 40, r: 5, rev: true },
-      features: kind === 'bracket' ? bracketFeatures() : [],
+      features: kind === 'bracket' ? bracketFeatures() : kind === 'plate' ? PAT.plateFeatures() : [],
+      pat: kind === 'plate' ? PAT.platePatterns() : {},
       suppressed: {}, scenario: null, sketchState: { s0000003: 'under' }, newSketches: {},
       outside: {}, rollback: null,
       undo: [], redo: [], disk: 'unchanged', pendingDisk: null,
       health: {}, problems: [], built: null,
     };
+    if (kind === 'plate') d.features.filter((f) => f.type === 'sketch').forEach((f) => { d.sketchState[f.id] = 'under'; });
     d.saved = snap(d);
     evaluate(d); d.built = d.next; d.health = d.next.health; d.problems = d.next.problems;
     return d;
   }
-  function snap(d) { return JSON.stringify({ p: d.p, s: d.suppressed, sc: d.scenario, f: d.features.map((f) => [f.id, f.name]), ss: d.sketchState, ns: d.newSketches }); }
-  function restore(d, s) { const o = JSON.parse(s); d.p = o.p; d.suppressed = o.s; d.scenario = o.sc; d.sketchState = o.ss; d.newSketches = o.ns || {}; const names = Object.fromEntries(o.f); d.features = o.f.map(([id]) => d.features.find((f) => f.id === id) || newSketchFeature(d, id)).filter(Boolean); d.features.forEach((f) => { f.name = names[f.id]; }); }
+  // The plate's features and patterns are held whole, as a pattern is added and removed by its dialog.
+  function snap(d) { return JSON.stringify({ p: d.p, s: d.suppressed, sc: d.scenario, f: d.features.map((f) => [f.id, f.name]), ss: d.sketchState, ns: d.newSketches, ...(d.kind === 'plate' ? { ft: d.features, pat: d.pat } : {}) }); }
+  function restore(d, s) { const o = JSON.parse(s); d.p = o.p; d.suppressed = o.s; d.scenario = o.sc; d.sketchState = o.ss; d.newSketches = o.ns || {}; if (o.ft) { d.features = o.ft; d.pat = o.pat; return; } const names = Object.fromEntries(o.f); d.features = o.f.map(([id]) => d.features.find((f) => f.id === id) || newSketchFeature(d, id)).filter(Boolean); d.features.forEach((f) => { f.name = names[f.id]; }); }
   function newSketchFeature(d, id) { const ns = d.newSketches[id]; return ns ? { id, type: 'sketch', name: ns.name, plane: ns.plane, inputs: [] } : null; }
   const dirty = (d) => snap(d) !== d.saved;
 
@@ -119,13 +126,19 @@
     const health = {}, problems = [];
     const roll = d.rollback == null ? d.features.length : d.rollback;
     const supp = new Set();
-    for (const id of Object.keys(d.suppressed)) if (d.suppressed[id]) { supp.add(id); (CHILDREN[id] || []).forEach((c) => supp.add(c)); }
+    const CH = d.kind === 'plate' ? PAT.children(d) : CHILDREN;
+    for (const id of Object.keys(d.suppressed)) if (d.suppressed[id]) { supp.add(id); (CH[id] || []).forEach((c) => supp.add(c)); }
     d.features.forEach((f, i) => {
       if (i >= roll) health[f.id] = 'rolled';
       else if (supp.has(f.id)) health[f.id] = 'suppressed';
       else health[f.id] = 'healthy';
     });
     const p = d.p, ok = (id) => health[id] === 'healthy';
+    if (d.kind === 'plate') {
+      const r = PAT.evaluate(d, health, problems);
+      d.next = { health, problems, geoParams: r.geo, instances: r.instances, rev: d.rev };
+      return d.next;
+    }
     if (d.kind === 'bracket') {
       if (ok('s0000001') && d.sketchState.s0000001 === 'over') {
         health.s0000001 = 'error';
@@ -133,6 +146,16 @@
           message: 'Its dimensions conflict: the 55 mm length repeats what the 60 mm and 5 mm dimensions already give.',
           elements: ['ka00000d (55 mm)', 'ka000007 (60 mm)'], fix: 'Make the 55 mm dimension driven, or delete it.' });
         ['p0000001', 'h0000001', 'h0000002', 'f0000001'].forEach((id) => { if (ok(id)) health[id] = 'blocked'; });
+      }
+      if (ok('p0000001') && d.scenario === 'unjoined') {
+        health.p0000001 = 'error';
+        problems.push({ feature: 'p0000001', severity: 'error', code: 'invalid_input', title: 'Legs has no profile',
+          message: "Bracket profile's profile is open at pa000004: points pa000004 and pa000008 are at one place but aren't one point (ends_not_joined).",
+          elements: ['pa000004', 'pa000008'], param: 'sketch', fix: 'Edit Bracket profile and join the two points (Join them, sketch_merge), or close the profile another way.' });
+        // check's warning on the sketch itself, which the timeline marks as a warning (m5.0-app.md, M5.1's timeline).
+        problems.push({ feature: 's0000001', severity: 'warning', code: 'ends_not_joined', title: 'Ends not joined at pa000004',
+          message: "2 points that end curves are at one place but aren't one point, so the profile is open there", elements: ['pa000004', 'pa000008'], fix: 'share one point: make the curves that end at the points named end at one of them' });
+        ['h0000001', 'h0000002', 'f0000001'].forEach((id) => { if (ok(id)) health[id] = 'blocked'; });
       }
       if (ok('s0000003') && d.sketchState.s0000003 === 'under') { /* builds: SolidWorks builds from under-defined sketches */ }
       const holesMiss = p.D < 12 - 2.75;
@@ -238,7 +261,7 @@
     if (!d || doc() !== d) return;
     const gp = d.built && d.built.geoParams;
     if (S.sketch && S.sketch.rollModel) { VP.setModel(null); return; }
-    VP.setModel(gp ? Geo.buildBracket(gp) : null);
+    VP.setModel(gp ? (d.kind === 'plate' ? Geo.buildPlate(gp) : Geo.buildBracket(gp)) : null);
     VP.setBodyVisible(S.vis.body);
     syncHighlight();
     syncSketchLines();
@@ -391,7 +414,7 @@
     } else {
       const hasEdge = S.sel.some((s) => s.kind === 'edge');
       panels = `
-        <div class="tb-panel"><div class="tb-row">${tbBtn('createSketch', { on: !!S.pickPlane })}${tbBtn('pad')}${tbBtn('pocket')}${tbBtn('revolve')}${tbBtn('groove')}</div><button class="tb-label" data-act="createMenu" aria-haspopup="menu">Create ${icon('down')}</button></div>
+        <div class="tb-panel"><div class="tb-row">${tbBtn('createSketch', { on: !!S.pickPlane })}${tbBtn('pad')}${tbBtn('pocket')}${tbBtn('revolve')}${tbBtn('groove')}${tbBtn('rectPattern', { on: !!(S.dialog && S.dialog.type === 'linear_pattern') })}${tbBtn('mirror', { on: !!(S.dialog && S.dialog.type === 'mirror') })}</div><button class="tb-label" data-act="createMenu" aria-haspopup="menu">Create ${icon('down')}</button></div>
         <div class="tb-panel"><div class="tb-row">${tbBtn('fillet', { why: hasEdge ? 'Rounds the ' + S.sel.filter((s) => s.kind === 'edge').length + ' selected edge(s)' : 'Rounds edges. Select them first, or after' })}${tbBtn('chamfer')}${tbBtn('union')}${tbBtn('subtract')}${tbBtn('intersect')}</div><button class="tb-label" data-act="modifyMenu" aria-haspopup="menu">Modify ${icon('down')}</button></div>
         <div class="tb-panel"><div class="tb-row">${tbBtn('measure')}</div><button class="tb-label" data-act="noop">Inspect ${icon('down')}</button></div>
         <div class="tb-panel"><div class="tb-row">
@@ -474,7 +497,7 @@
       <div class="ec-head">${icon(pr.severity === 'warning' ? 'warn' : 'error')}<span class="t">${esc(pr.title)}</span><span class="ec-code" data-tip="The error's code, as agents receive it">${esc(pr.code)}</span></div>
       <div class="ec-body"><p>${esc(pr.message)}</p>
       <div class="ec-kv"><span class="k">Feature</span><span>${esc(f ? f.name : pr.feature)} <span class="mono" style="opacity:.7">${pr.feature}</span></span>
-      ${pr.elements ? `<span class="k">Elements</span><span>${pr.elements.map((e) => `<span class="el-chip">${esc(e.length > 34 ? e.slice(0, 32) + '…' : e)}</span>`).join(' ')}</span>` : ''}
+      ${pr.elements && pr.elements.length ? `<span class="k">Elements</span><span>${pr.elements.map((e) => `<span class="el-chip">${esc(e.length > 34 ? e.slice(0, 32) + '…' : e)}</span>`).join(' ')}</span>` : ''}
       ${pr.param ? `<span class="k">Parameter</span><span>${esc(pr.param)}</span>` : ''}</div>
       <div class="ec-fix">${esc(pr.fix)}</div>`;
     if (pr.candidates) {
@@ -486,6 +509,7 @@
     html += `<div class="ec-actions">
       ${opts.noEdit ? '' : `<button class="btn btn-secondary" data-act="editFeature" data-id="${pr.feature}">${icon('edit')} Edit ${esc(f ? f.name : '')}</button>`}
       ${pr.candidates ? `<button class="btn btn-ghost" data-act="removeRef">Remove the edge</button>` : ''}
+      ${pr.skipThem ? `<button class="btn btn-secondary" data-act="skipThem" data-id="${pr.feature}" data-tip="Skip them" data-tipd="Writes these instances into skip, as the suggestion says">Skip them</button>` : ''}
       ${opts.noShow ? '' : `<button class="btn btn-ghost" data-act="showFeature" data-id="${pr.feature}">Show in timeline</button>`}
       <button class="btn btn-ghost" data-act="copy" data-text="${esc(JSON.stringify({ code: pr.code, feature: pr.feature, elements: pr.elements, parameter: pr.param, cause: pr.message, suggestion: pr.fix }))}" data-tip="Copies the structured error an agent receives">Copy as JSON</button>
       </div></div></div>`;
@@ -530,17 +554,19 @@
     const f = d.features.find((x) => x.id === id); if (!f) return docProps(d);
     const h = d.health[id]; const p = d.p;
     const pr = d.problems.filter((x) => x.feature === id);
-    const healthTxt = { healthy: '<span class="ok-text">Healthy</span>', error: '<span class="err-text">Error</span>', suppressed: 'Suppressed', rolled: 'Rolled back', blocked: '<span class="warn-text">Not built: an earlier feature failed</span>' }[h] || h;
+    const warned = pr.some((x) => x.severity === 'warning');
+    const healthTxt = warned && h === 'healthy' ? '<span class="warn-text">Built, with a warning</span>' : { healthy: '<span class="ok-text">Healthy</span>', error: '<span class="err-text">Error</span>', suppressed: 'Suppressed', rolled: 'Rolled back', blocked: '<span class="warn-text">Not built: an earlier feature failed</span>' }[h] || h;
     let rows = '';
-    if (f.type === 'sketch') {
+    if (d.kind === 'plate') rows += PAT.isPattern(f.type) ? PAT.featureRows(d, f) : PAT.plateRows(d, f);
+    else if (f.type === 'sketch') {
       const st = sketchDefState(d, id);
       rows += prop('Plane', f.plane) + prop('Definition', st === 'under' ? '<span style="color:var(--sk-under)">Under defined</span>' : st === 'over' ? '<span class="err-text">Over defined</span>' : 'Fully defined');
       if (id === 's0000001') rows += prop('Curves', '6 lines') + prop('Dimensions', `${fmt(p.W)}, ${fmt(p.H)}, ${fmt(p.tb)}, ${fmt(p.tu)} mm`);
       else rows += prop('Curves', '2 circles, ⌀ 5.5 mm');
     }
-    if (f.type === 'pad') rows += prop('Profile', '<span class="link" data-act="selectFeature" data-id="s0000001">Bracket profile</span> · 1 region') + prop('Extent', `Distance · ${fmt(p.D)} mm`) + prop('Direction', p.rev ? 'Reversed (+Y)' : 'Normal (−Y)');
-    if (f.type === 'pocket') rows += prop('Profile', `<span class="link" data-act="selectFeature" data-id="${f.inputs[1]}">${esc(d.features.find((x) => x.id === f.inputs[1]).name)}</span> · 2 regions`) + prop('Extent', 'Through all') + prop('Base', esc(d.features.find((x) => x.id === f.inputs[0]).name));
-    if (f.type === 'fillet') rows += prop('Edges', '1 · the inside corner') + prop('Radius', fmt(p.r) + ' mm') + prop('Base', 'Upright holes');
+    if (d.kind === 'bracket' && f.type === 'pad') rows += prop('Profile', '<span class="link" data-act="selectFeature" data-id="s0000001">Bracket profile</span> · 1 region') + prop('Extent', `Distance · ${fmt(p.D)} mm`) + prop('Direction', p.rev ? 'Reversed (+Y)' : 'Normal (−Y)');
+    if (d.kind === 'bracket' && f.type === 'pocket') rows += prop('Profile', `<span class="link" data-act="selectFeature" data-id="${f.inputs[1]}">${esc(d.features.find((x) => x.id === f.inputs[1]).name)}</span> · 2 regions`) + prop('Extent', 'Through all') + prop('Base', esc(d.features.find((x) => x.id === f.inputs[0]).name));
+    if (d.kind === 'bracket' && f.type === 'fillet') rows += prop('Edges', '1 · the inside corner') + prop('Radius', fmt(p.r) + ' mm') + prop('Base', 'Upright holes');
     return `<div class="panel-title">Properties</div><div class="panel-body">
       <div class="prop-head"><div class="ph-icon">${icon(FEATURE_ICON[f.type])}</div><div><div class="ph-title">${esc(f.name)}</div><div class="ph-sub">${FEATURE_KIND[f.type]} · <span class="mono">${f.id}</span></div></div></div>
       ${pr.map((x) => errCard(x, { noShow: true })).join('')}
@@ -573,6 +599,7 @@
       return `<div class="panel-title">Properties<span class="grow"></span><button class="ab-btn" data-act="clearSel" data-tip="Clear selection" data-tipk="Esc">${icon('close')}</button></div><div class="panel-body">
         <div class="prop-head"><div class="ph-icon">${icon(ic)}</div><div><div class="ph-title">${title}</div><div class="ph-sub">${sub} · Body1</div></div></div>
         ${section('Measures')}${rows}
+        ${PAT.copyRows(ref)}
         ${section('Name')}${prop('Stable name', `<span class="mono" title="${esc(stable)}">${esc(stable)}</span>`, { copy: stable })}
         ${prop('Made by', `<span class="link" data-act="selectFeature" data-id="${ref.maker}">${esc(featName(d, ref.maker))}</span>`)}
         ${prop('Stable', '<span class="ok-text">Yes</span> · a feature may store it')}
@@ -602,6 +629,7 @@
 
   // Docked feature dialog (Fusion's look, SolidWorks' PropertyManager behavior).
   function renderDialog(d) {
+    if (S.dialog.pattern) return PAT.renderDialog(d);
     const D = S.dialog; const f = D.featureId ? d.features.find((x) => x.id === D.featureId) : null;
     const title = { pad: 'Pad', pocket: 'Pocket', fillet: 'Fillet' }[D.type];
     const running = S.rebuild.state === 'running';
@@ -674,6 +702,7 @@
   function renderRightKeepFocus() { render(); }
   function okDialog() {
     const D = S.dialog; const d = doc(); if (!D || !d) return;
+    if (D.pattern) { PAT.ok(); return; }
     if (D.bad) return;
     if (D.featureId) { const f = d.features.find((x) => x.id === D.featureId); if (f && D.name.trim()) f.name = D.name.trim(); }
     if (D.type === 'pad' && !D.featureId) { toast('Prototype: a new pad from ' + (D.profile || 'nothing') + ' would be added here.'); S.dialog = null; render(); return; }
@@ -711,10 +740,12 @@
       const h = running ? null : d.health[f.id];
       if (h === 'error') badge = '<span class="badge err" aria-hidden="true"></span>';
       else if (h === 'blocked') badge = '<span class="badge warn" aria-hidden="true"></span>';
+      else if (!running && d.problems.some((p) => p.feature === f.id && p.severity === 'warning')) badge = '<span class="badge warn" aria-hidden="true"></span>';
       else if (d.outside[f.id]) badge = '<span class="badge outside" aria-hidden="true"></span>';
       if (i === roll) items += rollBar();
       const pr = d.problems.find((p) => p.feature === f.id);
-      const healthWord = { healthy: 'Healthy', error: 'Error', suppressed: 'Suppressed', rolled: 'Rolled back', blocked: 'Not built: an earlier feature failed' }[h || nextH];
+      const warned = d.problems.find((p) => p.feature === f.id && p.severity === 'warning');
+      const healthWord = warned && h === 'healthy' ? 'Warning' : { healthy: 'Healthy', error: 'Error', suppressed: 'Suppressed', rolled: 'Rolled back', blocked: 'Not built: an earlier feature failed' }[h || nextH];
       items += `<button class="tl-item ${cls.join(' ')}" data-act="tlItem" data-id="${f.id}" aria-label="${esc(f.name)}, ${FEATURE_KIND[f.type]}, ${healthWord}"
         data-tip="${esc(f.name)}" data-tipd="${FEATURE_KIND[f.type]} · ${healthWord}${pr ? ' — ' + esc(pr.title) : ''}${d.outside[f.id] ? ' — changed on disk: ' + esc(d.outside[f.id]) : ''}. Double-click to edit.">${icon(FEATURE_ICON[f.type], 'lg')}${badge}</button>`;
     });
@@ -832,6 +863,16 @@
       return `<div class="backdrop" data-act="closeModal"><div class="modal" style="width:560px" role="dialog" aria-modal="true" aria-label="What's wrong" data-stop="1">
         <div class="m-head">${icon('error')}<span>What's wrong in ${esc(d.file)}</span><span class="grow"></span><button class="ab-btn" data-act="closeModal" aria-label="Close">${icon('close')}</button></div>
         <div class="m-body" style="padding:0 4px 8px">${d.problems.length ? d.problems.map((p) => errCard(p)).join('') : '<div class="hint-block">No problems. Every feature built.</div>'}</div></div></div>`;
+    }
+    if (M.type === 'overdefine' && M.reverse) {
+      // The reverse of the over-define prompt: a driven dimension made driving where the sketch is
+      // already defined (SolidWorks asks the same question, Make Dimension Driven?, either way).
+      return `<div class="backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Making the dimension driving over-defines the sketch" data-stop="1">
+        <div class="m-head">${icon('warn')}<span>Driving ${esc(M.dim)} over-defines ${esc(M.sketch)}</span></div>
+        <div class="m-body"><p style="margin:0 0 12px;color:var(--g750)">The sketch is already defined there: the other dimensions give this ${esc(M.value)} mm length. As a driving dimension it would repeat them.</p>
+        <button class="choice" data-act="odChoice" data-v="driven"><div><div class="c-t">Keep it driven</div><div class="c-s">Nothing changes: it stays grey, in parentheses, and constrains nothing.</div></div><span class="kbd">1</span></button>
+        <button class="choice" data-act="odChoice" data-v="driving"><div><div class="c-t">Make it driving</div><div class="c-s">The sketch is over defined, drawn red, and Legs and everything after it won't build until a dimension goes or is made driven.</div></div><span class="kbd">2</span></button>
+        <div class="hint-block" style="margin:10px 0 0">Esc keeps it driven. To have it drive, delete or make driven the dimension it repeats first.</div></div></div></div>`;
     }
     if (M.type === 'overdefine') {
       return `<div class="backdrop"><div class="modal" role="dialog" aria-modal="true" aria-label="Dimension over-defines the sketch" data-stop="1">
@@ -957,6 +998,8 @@
   const PROTO = [
     ['1', 'Start'], ['1b', 'Blank canvas'], ['2', 'Part open'], ['2r', 'Rebuilding'], ['3', 'Pad dialog'], ['3e', 'Failed preview'], ['4', 'Selection'],
     ['5', 'Sketch: dimension'], ['5n', 'New sketch'], ['6a', 'Failed feature'], ['6b', 'Broken reference'], ['6c', 'Agent edit'], ['6d', 'Agent edit + your edits'], ['7', 'Shortcuts'],
+    ['8', 'CREATE › Pattern, Mirror'], ['8a', 'Rectangular Pattern (edit)'], ['8b', 'New pattern, FreeCAD’s first values'], ['8h', 'New pattern, a copy cuts nothing'], ['8c', 'Circular Pattern, Partial'], ['8d', 'Mirror (edit)'], ['8g', 'New mirror that changes nothing'], ['8e', 'A copy selected'], ['8f', 'Pattern selected, its marks'],
+    ['9a', 'Sketch: a driven dimension'], ['9b', 'Sketch: driving again'], ['9c', 'Sketch: unjoin'], ['9d', 'Sketch: unjoined'], ['9e', 'Sketch: Measure'], ['9f', 'Sketch: selection measures'],
   ];
   function renderProto() {
     const P = S.proto; const cur = PROTO.find((x) => x[0] === P.current);
@@ -968,7 +1011,8 @@
 
   // Expose for sketch.js and interactions.
   window.APP = { S, CMD, KEYNAME, kbd, esc, fmt, fmtF, doc, render, renderStatus, renderTimeline, renderRight, renderCanvasUI, renderFloating, toast, edit, undo, redo, save, setSel, toggleSel, syncHighlight,
-    startRebuild, stopRebuild, resumeRebuild, publish, openDialog, okDialog, cancelDialog, dialogInput, makeDoc, evaluate, snap, restore, dirty, featName, paletteItems, CHILDREN, FEATURE_KIND, MAC, parseValue, renderBrowser };
+    startRebuild, stopRebuild, resumeRebuild, publish, openDialog, okDialog, cancelDialog, dialogInput, makeDoc, evaluate, snap, restore, dirty, featName, paletteItems, CHILDREN, FEATURE_KIND, MAC, parseValue, renderBrowser,
+    propHtml: prop, sectionHtml: section, errCard };
   APP.syncSketchLines = () => syncSketchLines();
   function syncSketchLines() {
     const d = doc(); if (!d) { VP.setSketchLines([]); return; }

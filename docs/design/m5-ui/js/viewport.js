@@ -600,8 +600,8 @@
     r.setPixelRatio(2); r.setSize(w, h, false); r.setClearColor(0x000000, 0);
     const sc = new T.Scene(); let geo, edgesG;
     const grp = new T.Group();
-    if (kind === 'bracket') {
-      const b = Geo.buildBracket({ W: 60, H: 50, tb: 5, tu: 5, D: 40, r: 5, baseHoles: true, uprightHoles: true });
+    if (kind === 'bracket' || kind === 'plate') {
+      const b = kind === 'plate' ? Geo.buildPlate(PAT.defaultGeo()) : Geo.buildBracket({ W: 60, H: 50, tb: 5, tu: 5, D: 40, r: 5, baseHoles: true, uprightHoles: true });
       b.faces.forEach((f) => grp.add(new T.Mesh(f.geom, faceMaterial())));
       b.edges.forEach((e) => { const m = lineMesh(e.pts, EDGE, 1.2, 1); m.material.uniforms.uRes.value.set(w * 2, h * 2); grp.add(m); });
     } else {

@@ -26,6 +26,9 @@ It follows docs/design/m5.0-app.md (§3, §4, §8, §9, §12) and the two UX stu
 | 6c | **File changed on disk**, no unsaved edits: reloaded, changes marked | Prototype ▾ › 6c |
 | 6d | **File changed on disk** while you have unsaved edits: Reload / Keep mine / Show changes, and Save held | Prototype ▾ › 6d |
 | 7 | **Shortcut sheet**, filterable | `?` anywhere, or *Shortcuts* in the status bar |
+| 8 | **CREATE › Pattern and Mirror** (under review, below) | Open `plate-with-holes.silico` from Recent, then CREATE ▾ |
+| 8a–8h | **Rectangular Pattern, Circular Pattern, Mirror**: Edit Feature, a new pattern, Suppression's boxes, the marks, a copy selected | Double-click *Corner holes*, *Boss holes*, or *Other notch* in the plate's timeline; or CREATE › a pattern |
+| 9a–9f | **Sketch: a driven dimension made driving, unjoining an end, Measure** (under review, below) | Double-click *Bracket profile*, then click or right-click a dimension, a point, or a line; INSPECT › Measure |
 
 Also built: the command search (`S`), File menu, context menus on the canvas, timeline and browser, What's Wrong (click the red status or the document's root), Save As, close-with-unsaved-edits, the over-defining-dimension prompt (sketch palette › *Try: dimension a defined line*), suppress, rename (F2), the rollback bar, Undo/Redo with named steps in their tooltips, visibility eyes, view cube faces/edges/corners, orthographic/perspective, grid toggle, Look At.
 
@@ -203,12 +206,13 @@ The sheet (`?`) is generated from the same command registry as menus, tooltips a
 - `index.html`: the shell. `styles.css`: tokens and components.
 - `js/app.js`: state, the stand-in model (health, problems, rebuild, undo), and every panel's render.
 - `js/interact.js`: actions, keyboard and the Esc chain, viewport hooks, menus, Select Other, agents' edits, the prototype's states.
-- `js/sketch.js`: sketch mode (states, glyphs, dimensions, Modify box, line tool with inference).
+- `js/sketch.js`: sketch mode (states, glyphs, dimensions, Modify box, line tool with inference; selection, Driven, Unjoin, and Measure on Bracket profile).
+- `js/patterns.js`: the plate (docs/design/m6.0-patterns.md section 2.2) and its stand-in core, the pattern and mirror dialogs, and the instances in the canvas.
 - `js/viewport.js`: three.js stand-in for `re_renderer` (lighting, edges in points, picking, view cube, triad, Fusion navigation).
-- `js/geometry.js`: the bracket from §7, face by face, with element names. `js/icons.js`: the icon set.
+- `js/geometry.js`: the bracket from §7, and the plate, face by face, with element names (a copy's in scheme 6's form). `js/icons.js`: the icon set.
 - `vendor/three.min.js` (MIT), `fonts/Inter-Medium.otf` (OFL, copied from re_ui 0.38.1, `OFL.txt` beside it).
 
-Prototype limits: only `bracket.silico` is modelled; element names are illustrative, in Silico's form; in a browser ⌘N, ⌘W and ⌘1–8 belong to the browser, so use the menus and the view cube for those; Alt-drag also orbits, for trackpads.
+Prototype limits: only `bracket.silico` and `plate-with-holes.silico` are modelled (the plate without its chamfer; its stand-in core cuts a hole that crosses the plate's edge but doesn't draw it, draws no copies turned about an axis that isn't vertical (their state is `null`, a grey ?), and doesn't draw a whole body's copies); sketch mode selects, measures, and unjoins in Bracket profile only, deletes only the 5 mm and added dimensions, and unjoins one end at a time; element names are illustrative, in Silico's form; in a browser ⌘N, ⌘W and ⌘1–8 belong to the browser, so use the menus and the view cube for those; Alt-drag also orbits, for trackpads.
 
 ## Approval (2026-11-01)
 
@@ -226,3 +230,88 @@ Trevin: "looks good, build it". The open questions are taken as recommended abov
 - *Neither is in the picking layer.* `re_renderer` draws every mesh and line into it with depth, whatever its ID, which would cover the faces and edges behind a plane from a pick (a sketch's curves cover what's under their stroke). So each is `re_renderer`'s own draw data wrapped so its renderer draws every phase but the picking layer's (`render/planes.rs`, `Unpicked`): a frame's picking is the same with planes as without, pixel for pixel, and a plane takes no click.
 
 Which show is one rule for every way a plane shows. Each plane's eye shows it; they open hidden, as the prototype's `vis.planes` and Fusion's and SolidWorks' origin planes do (m5.0-app.md's "everything shows" otherwise). The Origin folder's eye is the planes', as the prototype's folder row's: open while any shows, and a click shows all three if none shows, else hides them all; its label is "Show origin planes" or "Hide origin planes", apart from the origin point's row, also named Origin. The app's origin point and axes keep their own eyes, and draw nothing yet. The origin's rows aren't faded with their eyes closed, as the prototype's plane rows aren't. A plane's browser row under the pointer draws it hovered, eye open or not: the prototype's `planeRow` lights the plane its row selects, but the app's origin rows don't select, so the pointer lights it, as a timeline item hovered lights its faces (#485). Create Sketch's pick (from the toolbar, CREATE's drop-down, the canvas's menu, or the empty part's hint) shows all three, the one under the pointer lit, or else the one whose browser row is: the prototype's `startPickPlane` (`crate::plane_pick`). A plane its eye shows is in the reach the view is clamped by, as a shown sketch's curves are, so a view zoomed in past what it allows is raised to it; one shown for a moment (its row hovered, Create Sketch's pick on) never moves the view, and is drawn only if the view as it is holds it. Each fill colour's square is uploaded once and placed for each plane by its transform, as a body's faces are. The planes are the prototype's fixed 50 mm whatever the model's size; Fusion and SolidWorks size theirs to the model, a later change.
+
+## Under review: patterns and mirror, and three sketch items (2026-11-25)
+
+Drawn for Trevin's approval before M6.6 and M6.7 port the dialogs and the canvas's instances, and before the M5 port picks up the three sketch items it stopped on. Prototype states 8 to 9f show them. The m6.0 design's text is approved; what it leaves to the prototype is listed below, item by item, as **choices** to approve or change.
+
+### Patterns and mirror (M6.6, M6.7; docs/design/m6.0-patterns.md section 7)
+
+The plate of the m6.0 design (section 2.2) is a second part: Home › Recent, or Samples, › *plate-with-holes.silico*, with its notch and mirror, corner holes (3 × 2), boss, and boss holes (4 round Z). Its chamfer is left out of the stand-in.
+
+- **Reaching them:** CREATE ▾ holds *Pattern* (Rectangular Pattern, Circular Pattern) and *Mirror* (fusion.md, *Patterns and mirror*; m6.0 section 7, *The commands*). Each adds its pattern at the timeline's end.
+- **The dialogs** dock at the right as Pad's do: Name, INPUTS, PREVIEW with its status line and the step's cards, then Cancel and OK. Esc stops a running preview, then cancels (solidworks.md, §5). OK is off until the boxes the type needs are filled. Edit Feature (double-click in the timeline, or the feature's menu) opens on the feature's values. Rows, labels, and order are section 7's tables: Rectangular (Type, Object Type, Objects, Axis 1, Axis 2, Distribution, Quantity and Distance for each axis, Suppression), Circular (Type, Object Type, Objects, Axis, Distribution Full/Partial/Spacing, Quantity, Angle for Partial and Spacing, Suppression), and Mirror (Object Type, Objects, Mirror Plane).
+- **Picks:** a feature in the timeline or the browser, or one of its faces in the canvas, goes into Objects (a face takes the feature its name begins with), a face only while Objects is active or empty. X, Y, and Z under Origin, or an edge or a flat face, go into an axis; XY, XZ, and YZ, or a flat face, into Mirror Plane. What can't go in is refused in a toast that says why: a pattern, fillet, or sketch as an object (with "pick its original, or set Object Type to Bodies" for a pattern), a circle as a linear direction, a feature after the pattern. Two directions along one line get the gate's card (m6.0 section 4.2, "…directions are parallel…").
+- **The canvas:** flip arrows from the original's anchor along each direction, numbered 1 and 2 (a circular pattern's axis dash-dotted and its sense as an arrow tagged ↻), each flipped by a click; the mirror plane as a dashed square. With Suppression checked, a box at each instance's anchor, the original none, cleared to skip it. A copy that changes nothing has an orange ⚠ at its anchor, and one apart from the base a red mark. Their cards are the step's own words (m6.0 sections 4.2 and 4.3): `instances_changed_nothing` as a warning with *Skip them*, and `kernel_failed` when every copy changes nothing or a copy is off the base.
+- **The timeline and the browser:** each pattern is a timeline item with its type's icon, an orange badge for a warning and a red one for an error. A pattern has no browser row of its own. Selecting it shows its parameters (Objects, each axis, Instances, Skipped, and how many cut nothing), its cards, and its health, "Built, with a warning" where it warns.
+- **Copies:** a copy's face selected shows, between its measures and its name, COPY: the instance as its name writes it (`C2,1 · (2, 1)`), the pattern that copied it, and the original.
+
+**Choices:**
+
+- P1. The CREATE row gains Rectangular Pattern and Mirror buttons; Circular Pattern is in the drop-down. Fusion shows its last-used pattern there.
+- P2. CREATE ▾ shows Pattern as a group head over its two commands, as MODIFY ▾ shows Combine, not as a fly-out.
+- P3. One Distribution row, then an AXIS 1 and an AXIS 2 section, each with its Quantity and Distance. A pattern whose directions differ in form shows Distribution in each section.
+- P4. Axis 2 is optional. With it empty, its section is marked "left out" and its fields are off; a Quantity of 1 leaves it out too.
+- P5. Flip is a button beside each axis box (blue while reversed), as well as the canvas's arrow.
+- P6. New icons: four squares, the first filled (Rectangular); dots on a ring (Circular); a dashed line between two mirrored shapes (Mirror).
+- P7. In Edit Feature, Type is shown locked (a padlock), its tooltip saying why.
+- P8. A pick goes into the active box if it fits there, else into the first empty box it fits; a face goes into Objects only while Objects is active or empty, so with no box active a face picked in Edit Feature changes the axis or the plane. After the first object, Axis 1 (or Axis, or Mirror Plane) becomes active; after an axis or a plane, no box is.
+- P9. Picking an object already in Objects takes it out; each chip also has a ×.
+- P10. Suppression's boxes stand at the `pattern` read's anchors, on the original's sketch plane, so under a hole's top in the view shown. Each is the palette's checkbox (13 points, Gray.350 on Gray.150, blue with its tick when on), with its index under it in the monospace type, while the dialog is open.
+- P11. Without Suppression, a skipped instance shows a dashed ring. The marks show while the pattern's dialog is open, or while the pattern is selected or hovered in the timeline.
+- P12. A state of `null` (the stand-in's turn about a non-vertical axis) shows a grey ?.
+- P13. The flip arrows are 48 points long in the focus blue, with a numbered tag; the mirror plane is a translucent square in the selection blue.
+- P14. The status line counts instances with the original, and skips ("6 instances, 1 skipped, the original counted"); a mirror's says "The original and its mirror image".
+- P15. *Skip them* is on the warning's card in the dialog (it changes the draft) and on the selected pattern's card (one undo step, "Corner holes: skip 3; 3,1"). It's on the off-base error's card too, whose suggestion is also "add them to skip"; section 7 offers it for the warning only.
+- P16. A pattern has no browser row (Fusion's browser groups objects, not features); its warning is an orange timeline badge, as a blocked feature's is.
+- P17. The UI names kinds in Fusion's words ("Rectangular pattern"); `linear_pattern` and `polar_pattern` appear only in names, codes, and messages, which are the core's.
+- P18. First values stay FreeCAD 1.1.3's, 2 over 100 mm and 3 over 360° (m6.0 section 7, decision 13). On the 100 mm plate, 2 over 100 mm along X puts a corner hole's only copy off the plate, so the whole pattern fails as removing nothing (state 8b); with Quantity 3, one copy of two cuts nothing and warns (8h). No source offers better values; a first distance taken from the part's size would be a guess, so it isn't proposed.
+- P19. New features are named by type and count, "Rectangular Pattern2", "Circular Pattern1", "Mirror2".
+- P20. With Object Type Bodies, Objects holds Body1 at once, the part's one body.
+- P21. A new pattern joins the timeline, selected, once its required boxes are filled: before that nothing is previewed and the status line says what's missing.
+
+### Sketch: a driven dimension made driving again (state 9a, 9b)
+
+With no tool on, a dimension's label is picked as a curve is: a click selects it, drawn white over the selection's halo. Its right-click menu has *Driven* with a tick, *Edit value…* (off while driven), and *Delete*. The Properties pane shows its value, "(55 mm) · measured" while driven, what it measures, a *Driven* checkbox, and Delete. Clearing Driven makes it drive at once where nothing else defines that length. Where the sketch is already defined there, the over-define prompt asks the reverse: *Keep it driven* (1, or Esc) or *Make it driving* (2), which leaves the sketch over defined and red. To see it drive: select the 5 mm dimension, Delete, then clear Driven on (55); the sketch is fully defined again.
+
+Sources: SolidWorks toggles *Driven* from a sketch dimension's right-click menu and the Dimension PropertyManager's *Other › Options › Driven* checkbox, and asks whether to make a dimension driven when it would over-define (solidworks.md, §2, the first added with this note). Fusion toggles a driven dimension from the right-click menu (fusion.md, *Sketch mode*). The look is the prototype's: its menus, checkbox, and prompt.
+
+**Choices:**
+
+- D1. The menu item is SolidWorks' *Driven* with a tick, not "Toggle Driven".
+- D2. The reverse prompt has two choices and Esc, where the over-define prompt has three: here Cancel and *Keep it driven* would be the same.
+- D3. Driving again keeps the measured value, so nothing moves.
+- D4. A driven dimension's double-click doesn't open the Modify box; a toast says it's driven and how to make it drive.
+- D5. Dimensions, points, and curves are picked only with no tool on; Smart Dimension keeps its own picks.
+- D6. Delete (⌫) deletes a selected dimension (`sketch_remove`).
+
+### Sketch: unjoining an end (states 9c, 9d)
+
+A shared point's right-click menu offers *Unjoin na000003* and *Unjoin na000004*, one for each curve that ends there, hovering each lighting the line that would come away. A line's menu offers *Unjoin this end*, for its end nearest the pointer. The Properties pane offers the same: a point's ENDS list each curve with Unjoin, and a line's lists its two ends. Unjoining is `sketch_unjoin`: the curve's end becomes a new point at the same place. It's drawn as an open square round the kept point, with an orange ⚠. The detached curve, the kept curve, and their point turn under-defined blue (the detached curve's relations no longer hold the kept point), the sketch gains 2 DOF, the profile's fill goes, and the pane shows `ends_not_joined` as a warning card with *Join them* (`sketch_merge`). Finishing with the profile open leaves Legs failing and what follows it blocked, and the sketch carries the warning in the timeline (m5.0-app.md, M5.1's `timeline`); Edit Sketch opens it unjoined still.
+
+Sources: SolidWorks' *Detach Segment on Drag* lets a dragged segment's ends come away, deleting no relation (solidworks.md, §3), and a relation is deleted from the entity's PropertyManager (§4, *Delete, and relations*). Fusion draws nothing for a shared end, and parts lines there from the line's right-click menu, *Delete Coincident* (fusion.md, *Sketch mode*, from Autodesk's forum, unofficial). The core's edit and warning are M5.10's (m5.0-app.md section 7, `sketch_unjoin`; `ends_not_joined`).
+
+**Choices:**
+
+- U1. The command is named *Unjoin*, the core's word, rather than Fusion's "Delete Coincident": a shared end is one point in Silico, not a coincidence.
+- U2. It's on both menus: a point's, naming the curve that comes away, and a line's, taking the end nearest the pointer.
+- U3. The unjoined pair is drawn as an open square round the kept point, with check's warning glyph beside it, since two points at one place otherwise look like one.
+- U4. An unjoin is applied even though it opens the profile (as SD7 applies an edit and lets the sketch say so); the card offers *Join them*.
+- U5. *Detach Segment on Drag* isn't designed here: it belongs with the drag's release (`drag_end`), later.
+- U6. Sketch mode's Properties pane shows the `ends_not_joined` card. That reverses the as-built note in m5.0-app.md (*The property panel in sketch mode*), where the pane draws no card for check's warnings, since an unjoin's open end otherwise shows nowhere until Finish.
+
+### Sketch: Measure (states 9e, 9f)
+
+INSPECT › Measure in sketch mode, or the canvas menu's *Measure*, docks Fusion's Measure dialog at the right: SELECTION 1 and SELECTION 2, each a chip and its measures, then RESULTS, *Clear selection*, and Close (Esc). For a line: Length, Angle to the sketch's x, and Δx, Δz. For a point: its position in the sketch and in the model. For two: points give the Distance and Δ; a point and a line the shortest Distance and Δ; two lines their Angle and the Minimum distance, or for parallel lines 0° and the Distance between them. The canvas draws each result in the focus blue: a dashed line between the closest points with its value, dotted Δ legs, and an arc with its angle. Hovering a result row thickens its drawing, and clicking a value copies it. Without Measure, the selection's measures show in the Properties pane (one member, or two with ⌘/Ctrl), and the status bar gives the common one ("na000004 · Length 45 mm").
+
+Sources: Fusion's Measure dialog: Selection 1, Selection 2, Results, Clear Selection; a result hovered highlights its measurement in the canvas, and a value clicked is copied (fusion.md, *Measure*, added with this note). SolidWorks' Measure: one entity on its own, a point's coordinates, two entities' smallest distance, dX and dY, a click on a selected item removing it and one on empty space clearing, and the status bar's measure of the selection with Measure closed (solidworks.md, §7).
+
+**Choices:**
+
+- M1. Measure docks at the right as every dialog does, not Fusion's floating dialog.
+- M2. Two selections, Fusion's, not SolidWorks' six. A third pick replaces Selection 2.
+- M3. The rows above: a line's Angle and Δ and a point's model position are SolidWorks' additions to Fusion's Length.
+- M4. A value is copied with its unit ("75 mm"), as shown.
+- M5. Measure takes curves and points, not dimensions; a dimension picked says so.
+- M6. Δ is labelled with the sketch's own axes (x and z on XZ), and a negative value's minus is a true minus.
+- M7. Measure outside sketch mode isn't changed here: the selection pane's measures, and the toast.
