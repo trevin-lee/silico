@@ -3,8 +3,9 @@
 //! and chord tolerances, the drag threshold, the ghost, the Modify box, and the over-define
 //! prompt. Its colours and the sizes it shares with the rest of the app (the definition
 //! states' colours, the canvas's strokes, glyphs, and dimensions, the grid, the axes) are
-//! the theme's, in `crate::theme` alone, and re-exported here, so sketch mode's files take
-//! both from this module. The app is dark only, as the prototype is.
+//! the theme's, in `crate::theme` alone, and those sketch mode's drawing takes are
+//! re-exported here, so its files that draw with `style::*` find both in this module (others
+//! take the theme's by its own path). The app is dark only, as the prototype is.
 
 use eframe::egui::{Color32, Margin};
 

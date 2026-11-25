@@ -660,10 +660,21 @@ impl Strips {
     }
 }
 
+impl std::fmt::Debug for Strips {
+    /// Its counts and its box, not its points: a frame's refusal prints the frame.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Strips")
+            .field("strips", &self.len())
+            .field("points", &self.points())
+            .field("bounds", &self.bounds)
+            .finish()
+    }
+}
+
 /// How a renderer draws its bodies ([`Renderer::set_look`]): their colour, their edges'
 /// colour and width, and how far an outline reaches about what a frame highlights or hovers
 /// ([`Frame::highlights`], [`Frame::hovered`]), so a highlighted or hovered edge shows
-/// `edge_width + 2 · outline_width` wide in its outline's colour, the outline covering its
+/// `edge_width + 2 · outline_reach` wide in its outline's colour, the outline covering its
 /// stroke. A renderer is made with [`Look::RENDER`], the render worker's: the agents' PNGs
 /// are a product of their own (docs/design/m4.6-render.md), drawn as M4.6 decided them. The
 /// app gives its theme's, the approved prototype's viewport (docs/design/m5-ui/DESIGN.md,
@@ -682,7 +693,7 @@ pub struct Look {
     /// How far an outline reaches out from what it outlines, in points: re_renderer's
     /// outline's one radius, a frame's highlights' and its hover's alike. From 0, at most
     /// [`MAX_LINE_WIDTH`].
-    pub outline_width: f32,
+    pub outline_reach: f32,
 }
 
 impl Look {
@@ -692,7 +703,7 @@ impl Look {
         body: BODY,
         edge: EDGE,
         edge_width: EDGE_WIDTH,
-        outline_width: OUTLINE_WIDTH,
+        outline_reach: OUTLINE_WIDTH,
     };
 
     /// Why a renderer can't draw with this look, if it can't: an edge's width not above 0,
@@ -707,12 +718,12 @@ impl Look {
                 ),
             });
         }
-        let outline = self.outline_width;
+        let outline = self.outline_reach;
         if !(outline.is_finite() && (0.0..=MAX_LINE_WIDTH).contains(&outline)) {
             return Err(InvalidParameter {
-                parameter: "outline_width",
+                parameter: "outline_reach",
                 message: format!(
-                    "an outline's width {outline:?}, in points, must be from 0 to {MAX_LINE_WIDTH}"
+                    "an outline's reach {outline:?}, in points, must be from 0 to {MAX_LINE_WIDTH}"
                 ),
             });
         }
@@ -720,19 +731,8 @@ impl Look {
     }
 }
 
-impl std::fmt::Debug for Strips {
-    /// Its counts and its box, not its points: a frame's refusal prints the frame.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Strips")
-            .field("strips", &self.len())
-            .field("points", &self.points())
-            .field("bounds", &self.bounds)
-            .finish()
-    }
-}
-
 /// The colours a frame's outlines are drawn in, sRGB: its highlights' (a selection's) and
-/// its hover's. Both reach the renderer's [`Look::outline_width`] out: re_renderer's
+/// its hover's. Both reach the renderer's [`Look::outline_reach`] out: re_renderer's
 /// outline has one radius for both its layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Outlines {
@@ -1621,7 +1621,7 @@ impl Renderer {
             projection_from_view: view.projection,
             pixels_per_point,
             outline_config: highlighted.then(|| OutlineConfig {
-                outline_radius_pixel: look.outline_width * pixels_per_point,
+                outline_radius_pixel: look.outline_reach * pixels_per_point,
                 color_layer_a: srgb(outlines.selected),
                 color_layer_b: srgb(outlines.hovered),
             }),

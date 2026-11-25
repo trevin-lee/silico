@@ -788,8 +788,8 @@ impl Pointer<'_, '_> {
     }
 
     /// The curves within the tolerance of `at`: lines as drawn, circles, arcs where they're
-    /// drawn, and the axes the pointer's `axes` allows, infinite, but where a line of the
-    /// sketch lies along one ([`covers`](Self::covers)).
+    /// drawn (neither from its centre), and the axes the pointer's `axes` allows, infinite,
+    /// but where a line of the sketch lies along one ([`covers`](Self::covers)).
     fn curves_near(&self, at: Xy) -> Vec<Near> {
         let mut near = Vec::new();
         let tolerance = self.tolerance;
@@ -816,7 +816,12 @@ impl Pointer<'_, '_> {
         for (id, geo) in &self.view.curves {
             let (foot, off) = match geo {
                 Geo::Line { from, to } => to_segment(*from, *to, at),
-                Geo::Circle { .. } | Geo::Arc { .. } => {
+                Geo::Circle { center, .. } | Geo::Arc { center, .. } => {
+                    // At a round's centre every place of it is as near, and the pointer is
+                    // on none of it (its projection is the centre itself, 0 off).
+                    if at == *center {
+                        continue;
+                    }
                     let foot = geo.project(at);
                     if !geo.spans(foot) {
                         continue;

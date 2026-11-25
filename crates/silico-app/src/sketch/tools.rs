@@ -597,7 +597,8 @@ impl Tools {
 /// sketch mode's selection takes curves by (`sketch_tools::pick`): a line or an arc where
 /// it's drawn, so a place past an arc's end is on no arc, however near that end; a circle
 /// all round. Points don't stand in the way, as they do for a selection: trim, split, and
-/// extend act on curves alone. None for a tolerance below zero or not a number.
+/// extend act on curves alone. None for a tolerance below zero or not a number (which the
+/// core's rule takes as 0).
 pub(crate) fn curve_at(
     read: &SketchRead,
     at: [f64; 2],

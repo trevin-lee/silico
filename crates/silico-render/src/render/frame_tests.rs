@@ -3057,7 +3057,7 @@ fn a_look_draws_the_bodies_edges_and_outlines_in_its_colours_and_widths() {
     // edge (Edge3) runs along row 20.73 at a pixel a point. 6 points wide, its stroke covers
     // rows 17.73 to 23.73, so the pixels of rows 19 to 22 in column 32, each 1.23 or more
     // inside it, are wholly its colour; 1.5 wide (19.98 to 21.48) it leaves row 22, 1.02
-    // below it, to the face. Highlighted, its outline reaches `outline_width` out from its
+    // below it, to the face. Highlighted, its outline reaches `outline_reach` out from its
     // stroke: 4 out from 19.98, to 15.98, row 17 (2.48 above the stroke, 1.52 inside the
     // outline) is the highlight's blue, (6, 150, 215); 1 out, to 18.98, it's the black
     // behind the box. A render's look is as it was: BODY and EDGE.
@@ -3079,7 +3079,7 @@ fn a_look_draws_the_bodies_edges_and_outlines_in_its_colours_and_widths() {
                 body: [185, 192, 202],
                 edge: [16, 16, 16],
                 edge_width: 1.5,
-                outline_width: 1.0,
+                outline_reach: 1.0,
             };
             r.set_look(app).unwrap();
             assert_eq!(r.look(), app);
@@ -3105,7 +3105,7 @@ fn a_look_draws_the_bodies_edges_and_outlines_in_its_colours_and_widths() {
             let top = [(1, Element::Edge(3))];
             for (out, want) in [(4.0, [6.0, 150.0, 215.0]), (1.0, [0.0; 3])] {
                 r.set_look(Look {
-                    outline_width: out,
+                    outline_reach: out,
                     ..app
                 })
                 .unwrap();
@@ -3116,6 +3116,20 @@ fn a_look_draws_the_bodies_edges_and_outlines_in_its_colours_and_widths() {
                     2.0,
                     &format!("row 17, outlined {out} out"),
                 );
+            }
+            // The checks' bounds are taken: an outline of 0, and an edge of 64 points.
+            for edge in [
+                Look {
+                    outline_reach: 0.0,
+                    ..app
+                },
+                Look {
+                    edge_width: 64.0,
+                    ..app
+                },
+            ] {
+                r.set_look(edge).unwrap();
+                assert_eq!(r.look(), edge);
             }
             // A look the checks refuse leaves the renderer's as it was, naming its parameter.
             r.set_look(app).unwrap();
@@ -3143,17 +3157,17 @@ fn a_look_draws_the_bodies_edges_and_outlines_in_its_colours_and_widths() {
                 ),
                 (
                     Look {
-                        outline_width: -0.5,
+                        outline_reach: -0.5,
                         ..app
                     },
-                    "outline_width",
+                    "outline_reach",
                 ),
                 (
                     Look {
-                        outline_width: f32::INFINITY,
+                        outline_reach: f32::INFINITY,
                         ..app
                     },
-                    "outline_width",
+                    "outline_reach",
                 ),
             ] {
                 let refused = r.set_look(bad).unwrap_err();
@@ -3171,16 +3185,17 @@ fn a_look_draws_the_bodies_edges_and_outlines_in_its_colours_and_widths() {
 
 // ---- The dim (the app's model while a sketch is open) ----
 
-/// The app's dim while a sketch is open, typed here as the prototype's 0.45 of the body's
-/// sRGB colour worked into linear light by hand (silico-app's `theme::SKETCH_MODEL_DIM`).
+/// The app's dim while a sketch is open (silico-app's `theme::SKETCH_MODEL_DIM`, worked by
+/// hand there from the prototype's 0.45 of the app's body colour): here its arithmetic is
+/// pinned on a renderer of a render's look, [`BODY`].
 const SKETCH_DIM: f32 = 0.18;
 
 #[test]
 fn a_dimmed_frame_darkens_every_face_and_edge_by_its_dim_and_uploads_nothing() {
     // From the front the box's front face shows its colour as it is (lit at 1, clamped). Its
     // colour in linear light times 0.18, by hand: BODY (170, 175, 182), (0.4020, 0.4287,
-    // 0.4678), to (0.0724, 0.0772, 0.0842), in sRGB (76.0, 78.5, 81.9): the prototype's 0.45
-    // of the sRGB colour, (76.5, 78.75, 81.9), to half a level. An edge's core, EDGE (40, 40,
+    // 0.4678), to (0.0724, 0.0772, 0.0842), in sRGB (76.0, 78.5, 81.9): 0.45 of its sRGB
+    // colour, (76.5, 78.75, 81.9), to half a level. An edge's core, EDGE (40, 40,
     // 40), to (12.4, 12.4, 12.4). Off the body, the background as it is; at 1, the plain
     // frame exactly. Nothing is uploaded again, and a pick finds what it finds plain.
     on_lavapipe(

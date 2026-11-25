@@ -482,6 +482,19 @@ fn a_curve_is_found_by_picks_rule_with_no_point_in_its_way_and_an_arc_only_where
     let crossed = with_line(quarter, "n0000002", [10.0, -5.0], [10.0, 5.0]);
     assert_eq!(curve_at(&crossed, [10.0, 0.25], 0.5), Some(id("n0000002")));
     assert_eq!(curve_at(&crossed, [10.2, 0.0], 0.5), Some(id("a0000001")));
+    // A round's centre is on no part of it, whatever its radius: the circle c0000002 of
+    // radius 0.5 about (40, 0), and n0000003 from (40, −5) to (40, 5) through it. At (40, 0)
+    // the line, 0 off, not the circle; at (40.25, 0.2), 0.25 off the line and
+    // 0.5 − √0.1025 = 0.1798 off the circle, the circle; and with no line, at (40, 0)
+    // nothing; and the quarter arc's centre (0, 0), 10 from n0000002, on no curve within 9.9.
+    let mut ringed = with_line(empty(), "n0000003", [40.0, -5.0], [40.0, 5.0]);
+    ringed.points.push(point("p0000002", 40.0, 0.0));
+    ringed.circles.push(circle("c0000002", "p0000002", 0.5));
+    assert_eq!(curve_at(&ringed, [40.0, 0.0], 0.7), Some(id("n0000003")));
+    assert_eq!(curve_at(&ringed, [40.25, 0.2], 0.7), Some(id("c0000002")));
+    ringed.lines.clear();
+    assert_eq!(curve_at(&ringed, [40.0, 0.0], 0.7), None);
+    assert_eq!(curve_at(&crossed, [0.0, 0.0], 9.9), None);
 }
 
 #[test]

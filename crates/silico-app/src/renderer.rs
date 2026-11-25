@@ -178,14 +178,16 @@ pub fn on_eframe(render_state: &egui_wgpu::RenderState) -> Result<OnGpu<Renderer
 /// reaching half the difference out either side. The render worker's PNGs for agents keep
 /// their own look (`silico_render::render::Look::RENDER`). SEAM: `re_renderer`'s outline has
 /// one radius for the selection and the hover, so a hovered edge is drawn 3.5 wide too, where
-/// the prototype draws it 3.
+/// the prototype draws it 3. SEAM: the start page's pictures (`crate::thumbs`) are the
+/// `render` command's, so they're in the render worker's look, not this one: `render` takes
+/// no look.
 pub fn look() -> Look {
     let rgb = |[r, g, b, _]: theme::Rgba8| [r, g, b];
     Look {
         body: rgb(theme::VIEWPORT_BODY),
         edge: rgb(theme::VIEWPORT_EDGE),
         edge_width: theme::VIEWPORT_EDGE_WIDTH,
-        outline_width: (theme::VIEWPORT_SELECTION_EDGE_WIDTH - theme::VIEWPORT_EDGE_WIDTH) / 2.0,
+        outline_reach: (theme::VIEWPORT_SELECTION_EDGE_WIDTH - theme::VIEWPORT_EDGE_WIDTH) / 2.0,
     }
 }
 
@@ -791,7 +793,7 @@ mod tests {
                 body: [0xb9, 0xc0, 0xca],
                 edge: [0x10, 0x10, 0x10],
                 edge_width: 1.5,
-                outline_width: 1.0,
+                outline_reach: 1.0,
             }
         );
         assert_eq!(look.check(), Ok(()));
