@@ -21,7 +21,7 @@ use eframe::egui_wgpu;
 use eframe::wgpu;
 use silico_protocol::{Camera, Mesh};
 pub use silico_render::render::{
-    Element, Frame, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer, Tint,
+    Element, Frame, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer, Tint, Tinted,
 };
 
 /// A [`Frame`] whose values it holds: what the pane hands on, to be drawn once the paint
@@ -64,8 +64,9 @@ impl FrameData {
             highlights: &self.highlights,
             hovered: &self.hovered,
             outlines: self.outlines,
-            tinted: &self.tinted,
-            tint: self.tint,
+            // Its groups, which borrow what the frame's preparation works out
+            // ([`tint_groups`]): none here.
+            tinted: &[],
             picking: self.picking,
             edges: self.edges,
             vertices: self.vertices,
@@ -347,9 +348,10 @@ fn prepared<R: ViewRenderer>(
             .filter(|(body, _)| bodies.binary_search(body).is_ok())
             .collect()
     };
-    let highlights = drawn(&data.highlights);
-    let hovered = drawn(&data.hovered);
+    let (highlights, selected_faces) = outlined_and_tinted(drawn(&data.highlights));
+    let (hovered, hovered_faces) = outlined_and_tinted(drawn(&data.hovered));
     let tinted = drawn(&data.tinted);
+    let groups = tint_groups(&selected_faces, &hovered_faces, &tinted, data.tint);
     locked(shared).refused.extend(refused);
     let lines: Vec<silico_render::render::Lines<'_>> = data
         .lines
@@ -364,7 +366,7 @@ fn prepared<R: ViewRenderer>(
         bodies: &bodies,
         highlights: &highlights,
         hovered: &hovered,
-        tinted: &tinted,
+        tinted: &groups,
         lines: &lines,
         ..data.frame()
     };
@@ -394,6 +396,45 @@ fn prepared<R: ViewRenderer>(
         locked(shared).picked = Some(picking);
     }
     buffers
+}
+
+/// Elements of the bodies a frame draws, each by its body's number.
+type Elements = Vec<(u32, Element)>;
+
+/// `listed`, a frame's highlights or hover, as the prototype draws them (`applyHighlight`):
+/// its edges and vertices, outlined (a vertex checked, drawn by the app's dot); and its
+/// faces, tinted, never outlined.
+fn outlined_and_tinted(listed: Vec<(u32, Element)>) -> (Elements, Elements) {
+    let (faces, rest) = listed
+        .into_iter()
+        .partition(|(_, element)| matches!(element, Element::Face(_)));
+    (rest, faces)
+}
+
+/// A frame's tinted faces, as the prototype's `applyHighlight` gives each face one look:
+/// the selection's faces in its tint ([`crate::viewport::selection_tint`]), else the
+/// hover's in its own ([`crate::viewport::hover_tint`]), else the maker's (`makers`, in
+/// `tint`).
+fn tint_groups<'a>(
+    selected: &'a [(u32, Element)],
+    hovered: &'a [(u32, Element)],
+    makers: &'a [(u32, Element)],
+    tint: Tint,
+) -> [Tinted<'a>; 3] {
+    [
+        Tinted {
+            faces: selected,
+            tint: crate::viewport::selection_tint(),
+        },
+        Tinted {
+            faces: hovered,
+            tint: crate::viewport::hover_tint(),
+        },
+        Tinted {
+            faces: makers,
+            tint,
+        },
+    ]
 }
 
 /// The pane's whole rectangle in physical pixels, `[x, y, width, height]`, unclamped to the
@@ -441,12 +482,13 @@ impl<R: ViewRenderer> egui_wgpu::CallbackTrait for Callback<R> {
 mod tests {
     use super::*;
 
-    /// A frame as the renderer was given it: its bodies, highlights, hover, and tinted faces.
+    /// A frame as the renderer was given it: its bodies, highlights, hover, and tinted faces,
+    /// each group's with its tint.
     type Drawn = (
         Vec<u32>,
         Vec<(u32, Element)>,
         Vec<(u32, Element)>,
-        Vec<(u32, Element)>,
+        Vec<(Vec<(u32, Element)>, Tint)>,
     );
 
     #[derive(Default)]
@@ -476,7 +518,11 @@ mod tests {
                 frame.bodies.to_vec(),
                 frame.highlights.to_vec(),
                 frame.hovered.to_vec(),
-                frame.tinted.to_vec(),
+                frame
+                    .tinted
+                    .iter()
+                    .map(|group| (group.faces.to_vec(), group.tint))
+                    .collect(),
             ));
             if self.backing_off {
                 return Err(format!("backing off, {} frame(s)", self.frames.len()));
@@ -669,7 +715,16 @@ mod tests {
         };
         let made = prepared(Some(&mut renderer), &shared, &frame);
         assert!(made.is_empty());
-        assert_eq!(renderer.frames, [(vec![1], vec![face], vec![face], vec![])]);
+        // Body 1's face alone, tinted as selected and as hovered, outlined by neither.
+        assert_eq!(
+            renderer.frames,
+            [(
+                vec![1],
+                vec![],
+                vec![],
+                groups(vec![face], vec![face], vec![], Tint::NONE)
+            )]
+        );
         assert_eq!(
             locked(&shared).refused.iter().copied().collect::<Vec<_>>(),
             [2]
@@ -694,7 +749,86 @@ mod tests {
         };
         let mut renderer = Counting::default();
         prepared(Some(&mut renderer), &shared, &frame);
-        assert_eq!(renderer.frames, [(vec![1], vec![], vec![], vec![face(1)])]);
+        assert_eq!(
+            renderer.frames,
+            [(
+                vec![1],
+                vec![],
+                vec![],
+                groups(vec![], vec![], vec![face(1)], Tint::NONE)
+            )]
+        );
+    }
+
+    /// A frame's tint groups as the renderer is given them: the selection's faces in its
+    /// tint, the hover's in its, then the makers' in `tint`.
+    fn groups(
+        selected: Vec<(u32, Element)>,
+        hovered: Vec<(u32, Element)>,
+        makers: Vec<(u32, Element)>,
+        tint: Tint,
+    ) -> Vec<(Vec<(u32, Element)>, Tint)> {
+        vec![
+            (selected, crate::viewport::selection_tint()),
+            (hovered, crate::viewport::hover_tint()),
+            (makers, tint),
+        ]
+    }
+
+    #[test]
+    fn a_frames_selected_and_hovered_faces_are_tinted_not_outlined_and_its_edges_outlined() {
+        // The prototype's `applyHighlight`: a selected face tinted `SELECT` (#2f7bff) at
+        // 0.55, a hovered one `HOVER` (#ffffff) at 0.28, neither outlined; a selected edge,
+        // and a hovered one, outlined (the prototype's coloured, wider edge); a vertex passed
+        // on, checked, drawn by the app's dot. The makers' faces after them, in their tint.
+        let shared = Mutex::new(Shared::default());
+        locked(&shared).queue(vec![Change::Upload(1, mesh(3))]);
+        let (face2, face3, face4) = (
+            (1, Element::Face(2)),
+            (1, Element::Face(3)),
+            (1, Element::Face(4)),
+        );
+        let (edge5, edge6, vertex1) = (
+            (1, Element::Edge(5)),
+            (1, Element::Edge(6)),
+            (1, Element::Vertex(1)),
+        );
+        let maker = Tint {
+            colour: [0xd4, 0xdb, 0xff],
+            amount: 0.4,
+        };
+        let frame = FrameData {
+            hovered: vec![face3, edge6],
+            tinted: vec![face4],
+            tint: maker,
+            ..data(&[1], &[edge5, face2, vertex1])
+        };
+        let mut renderer = Counting::default();
+        prepared(Some(&mut renderer), &shared, &frame);
+        assert_eq!(
+            renderer.frames,
+            [(
+                vec![1],
+                vec![edge5, vertex1],
+                vec![edge6],
+                groups(vec![face2], vec![face3], vec![face4], maker)
+            )]
+        );
+        // The tints by hand from the prototype's viewport.js.
+        assert_eq!(
+            crate::viewport::selection_tint(),
+            Tint {
+                colour: [0x2f, 0x7b, 0xff],
+                amount: 0.55
+            }
+        );
+        assert_eq!(
+            crate::viewport::hover_tint(),
+            Tint {
+                colour: [0xff, 0xff, 0xff],
+                amount: 0.28
+            }
+        );
     }
 
     #[test]

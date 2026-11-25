@@ -2420,6 +2420,26 @@ pub fn feature_tint() -> Tint {
     }
 }
 
+/// A selected face's tint, the prototype's (`SELECT` at 0.55): the theme's, as the renderer
+/// takes it.
+pub fn selection_tint() -> Tint {
+    let [r, g, b, _] = theme::VIEWPORT_SELECTION_TINT;
+    Tint {
+        colour: [r, g, b],
+        amount: theme::VIEWPORT_SELECTION_TINT_AMOUNT,
+    }
+}
+
+/// A hovered face's tint, the prototype's (`HOVER` at 0.28): the theme's, as the renderer
+/// takes it.
+pub fn hover_tint() -> Tint {
+    let [r, g, b, _] = theme::VIEWPORT_HOVER_TINT;
+    Tint {
+        colour: [r, g, b],
+        amount: theme::VIEWPORT_HOVER_TINT_AMOUNT,
+    }
+}
+
 /// Which of `makers`, the faces tinted as their maker's ([`View::maker_faces`]), are tinted:
 /// those `drawn`, but any in `highlights` or `hovered` (the selection's, and the hover's or a
 /// candidate's), which keep their own look, as the prototype's `applyHighlight` gives a face

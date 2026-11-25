@@ -21643,8 +21643,11 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             let image = h.render().unwrap();
             let got = image.get_pixel(face.0, face.1).0;
             assert!(near(got, tinted, 2.0), "the face {got:?} tinted");
-            // The face hovered in the canvas (lavapipe's ID buffer finds it): untinted, and
-            // the block's item ringed, its inside the bar's.
+            // The face hovered in the canvas (lavapipe's ID buffer finds it): in the hover's
+            // tint, not the maker's (the prototype's `applyHighlight`: `HOVER`, white, at
+            // 0.28, by hand (0.5694, 0.5887, 0.6168) in linear light, in sRGB (198.74, 201.7,
+            // 205.94)), and the block's item ringed, its inside the bar's.
+            let hovered = [198.74, 201.7, 205.94];
             h.hover_at(on_face);
             step_until(&mut h, "the face hovered", |h| {
                 h.state().tabs()[0]
@@ -21655,7 +21658,7 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             settle(&mut h);
             let image = h.render().unwrap();
             let got = image.get_pixel(face.0, face.1).0;
-            assert!(near(got, body, 2.0), "the face {got:?}");
+            assert!(near(got, hovered, 2.0), "the face {got:?} hovered");
             for x in ring {
                 let got = image.get_pixel(x, row).0;
                 assert!(near(got, g600, 3.0), "({x}, {row}) {got:?} ringed");
@@ -21682,7 +21685,10 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
                 assert!(near(got, bar, 2.0), "({x}, {row}) {got:?} let go");
             }
             // The face selected, then the block hovered in the timeline: the face keeps the
-            // selection's look, its colour its own, not the tint.
+            // selection's look, the selection's tint, not the maker's (`SELECT`, #2f7bff, at
+            // 0.55, by hand (0.1965, 0.3018, 0.7605) in linear light, in sRGB (122.55,
+            // 149.29, 226.0)).
+            let selected = [122.55, 149.29, 226.0];
             click_over_two_frames(&mut h, on_face, Modifiers::NONE);
             step_until(&mut h, "the face selected", |h| {
                 selected_names(h) == ["k7f2qx3m.box.Face3"]
@@ -21691,7 +21697,7 @@ fn on_lavapipe_a_feature_hovered_tints_its_faces_and_a_face_hovered_rings_its_it
             settle(&mut h);
             let image = h.render().unwrap();
             let got = image.get_pixel(face.0, face.1).0;
-            assert!(near(got, body, 2.0), "the face {got:?}");
+            assert!(near(got, selected, 2.0), "the face {got:?} selected");
             assert_eq!(never_waits::waits(), 0);
         },
     );

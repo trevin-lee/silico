@@ -18,7 +18,7 @@ use re_renderer::view_builder::{OrthographicCameraMode, Projection as ViewProjec
 use super::{
     BACKGROUND, BODY, CheckedFrame, EDGE, Element, Frame, HIGHLIGHT, HIT_EDGE_POINTS,
     HIT_VERTEX_POINTS, MAX_PENDING_PICKS, MAX_PICKING_SIDE, OUTPUT_FORMAT, Outlines, PendingPick,
-    Pick, Pickable, Picking, PixelRect, RenderFailure, Renderer, Tint, hits, project, ray,
+    Pick, Pickable, Picking, PixelRect, RenderFailure, Renderer, Tint, Tinted, hits, project, ray,
 };
 use crate::bench::{box_mesh, front_of_a_box};
 
@@ -52,7 +52,6 @@ fn frame<'a>(
         hovered: &[],
         outlines: Outlines::DEFAULT,
         tinted: &[],
-        tint: Tint::NONE,
         picking,
         edges: true,
         vertices: None,
@@ -2767,10 +2766,13 @@ fn tinted_image(
     tinted: &[(u32, Element)],
     tint: Tint,
 ) -> Vec<[u8; 4]> {
+    let groups = [Tinted {
+        faces: tinted,
+        tint,
+    }];
     let commands = r
         .prepare(&Frame {
-            tinted,
-            tint,
+            tinted: &groups,
             ..*frame
         })
         .unwrap();
@@ -2785,9 +2787,12 @@ fn a_frames_values_are_checked_without_a_gpu_each_one_refused_named() {
     let mesh = box_mesh([0.0; 3], [40.0, 20.0, 10.0]);
     let held = |body: u32| (body == 1).then_some(&mesh);
     let camera = front();
-    let good = Frame {
-        tinted: &[(1, Element::Face(3))],
+    let tinted_face = [Tinted {
+        faces: &[(1, Element::Face(3))],
         tint: FEATURE_TINT,
+    }];
+    let good = Frame {
+        tinted: &tinted_face,
         ..frame(&camera, &[1], &[(1, Element::Edge(3))], Some(ON_THE_FACE))
     };
     assert_eq!(good.check(held), Ok(()));
@@ -2825,10 +2830,13 @@ fn a_frames_values_are_checked_without_a_gpu_each_one_refused_named() {
     );
     assert_eq!(
         refused(Frame {
-            tint: Tint {
-                colour: [255; 3],
-                amount: 1.5
-            },
+            tinted: &[Tinted {
+                faces: &[(1, Element::Face(3))],
+                tint: Tint {
+                    colour: [255; 3],
+                    amount: 1.5
+                },
+            }],
             ..good
         }),
         said("tint", "tint's amount 1.5 must be finite, from 0 to 1")
@@ -2845,7 +2853,10 @@ fn a_frames_values_are_checked_without_a_gpu_each_one_refused_named() {
     );
     assert_eq!(
         refused(Frame {
-            tinted: &[(1, Element::Face(3)), (1, Element::Edge(3))],
+            tinted: &[Tinted {
+                faces: &[(1, Element::Face(3)), (1, Element::Edge(3))],
+                tint: FEATURE_TINT,
+            }],
             ..good
         }),
         said(
@@ -2927,8 +2938,10 @@ fn a_tinted_face_is_the_bodys_colour_mixed_with_the_tint_and_nothing_else_change
                 let tinted = hit(
                     r,
                     &Frame {
-                        tinted: &[(1, Element::Face(3))],
-                        tint: FEATURE_TINT,
+                        tinted: &[Tinted {
+                            faces: &[(1, Element::Face(3))],
+                            tint: FEATURE_TINT,
+                        }],
                         ..frame(&camera, &[1], &[], Some(picking))
                     },
                 );
@@ -3136,6 +3149,84 @@ fn a_face_tinted_and_highlighted_is_both_and_a_tint_of_none_or_white_is_exact() 
     );
 }
 
+/// The prototype's selected face's tint, typed from viewport.js: `SELECT`, `#2f7bff`, mixed
+/// in at `uTintAmt = 0.55` (`applyHighlight`); its hovered face's, `HOVER`, `#ffffff`, at
+/// 0.28.
+const SELECTION_TINT: Tint = Tint {
+    colour: [0x2f, 0x7b, 0xff],
+    amount: 0.55,
+};
+const HOVER_TINT: Tint = Tint {
+    colour: [0xff, 0xff, 0xff],
+    amount: 0.28,
+};
+
+#[test]
+fn a_face_tinted_darker_than_the_body_mixes_and_a_face_in_two_groups_takes_the_first() {
+    // The front face (Face3), lit straight on (1), tinted with the prototype's selection
+    // blue at 0.55, below the body in red: by hand in linear light, BODY (0.4020, 0.4287,
+    // 0.4678) and #2f7bff (0.0284, 0.1981, 1) mixed (0.1965, 0.3018, 0.7605), in sRGB
+    // (122.55, 149.29, 226.0): darker than the body in red, as no added tint could make it.
+    // The hover's white at 0.28: (0.5694, 0.5887, 0.6168), in sRGB (198.74, 201.7, 205.94).
+    // Listed in both groups, the selection's first, the face takes the selection's; the
+    // hover's first, the hover's. Nothing is uploaded for any of it.
+    on_lavapipe(
+        "render::frame_tests::a_face_tinted_darker_than_the_body_mixes_and_a_face_in_two_groups_takes_the_first",
+        |r| {
+            r.upload(1, &the_box()).unwrap();
+            let camera = front();
+            let plain_frame = frame(&camera, &[1], &[], None);
+            let plain = tinted_image(r, &plain_frame, &[], SELECTION_TINT);
+            let uploaded = r.uploads();
+            let centre = usize::try_from(26 * WIDTH + 32).unwrap();
+            let face = [(1, Element::Face(3))];
+            let selected = tinted_by_hand(1.0, SELECTION_TINT.colour, 0.55);
+            for (k, hand) in [122.55, 149.29, 226.0].into_iter().enumerate() {
+                assert!((selected[k] - hand).abs() < 0.1, "{selected:?}");
+            }
+            let hovered = tinted_by_hand(1.0, HOVER_TINT.colour, 0.28);
+            for (k, hand) in [198.74, 201.7, 205.94].into_iter().enumerate() {
+                assert!((hovered[k] - hand).abs() < 0.1, "{hovered:?}");
+            }
+            let lit = tinted_image(r, &plain_frame, &face, SELECTION_TINT);
+            assert_colour(lit[centre], selected, 1.0, "selected");
+            assert!(lit[centre][0] < plain[centre][0], "darker in red");
+            let lit = tinted_image(r, &plain_frame, &face, HOVER_TINT);
+            assert_colour(lit[centre], hovered, 1.0, "hovered");
+            let image = |r: &mut Renderer, first: Tint, then: Tint| {
+                let groups = [
+                    Tinted {
+                        faces: &face,
+                        tint: first,
+                    },
+                    Tinted {
+                        faces: &face,
+                        tint: then,
+                    },
+                ];
+                let commands = r
+                    .prepare(&Frame {
+                        tinted: &groups,
+                        ..plain_frame
+                    })
+                    .unwrap();
+                composited(r, Some(commands))
+            };
+            let first = image(r, SELECTION_TINT, HOVER_TINT);
+            assert_colour(first[centre], selected, 1.0, "the selection's first");
+            let first = image(r, HOVER_TINT, SELECTION_TINT);
+            assert_colour(first[centre], hovered, 1.0, "the hover's first");
+            assert_eq!(r.uploads(), uploaded, "a tint uploaded a mesh");
+            // Off the face, every pixel by 2 is the plain frame's.
+            for i in 0..first.len() {
+                if into_the_front(i) <= -2.0 {
+                    assert_eq!(first[i], plain[i], "pixel {i} off the face");
+                }
+            }
+        },
+    );
+}
+
 #[test]
 fn a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing() {
     on_lavapipe(
@@ -3145,9 +3236,12 @@ fn a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing() {
             let camera = front();
             let plain = frame(&camera, &[1], &[], None);
             let mut refused_by = |tinted: &[(u32, Element)], tint: Tint| {
-                let asked = Frame {
-                    tinted,
+                let groups = [Tinted {
+                    faces: tinted,
                     tint,
+                }];
+                let asked = Frame {
+                    tinted: &groups,
                     ..plain
                 };
                 let said = match r.prepare(&asked) {
@@ -3224,24 +3318,18 @@ fn a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing() {
                     );
                 }
             }
-            // A colour a channel below the body's (170, 175, 182) can't be added: refused.
-            for colour in [[169, 255, 255], [255, 174, 255], [255, 255, 181], [0, 0, 0]] {
-                let tint = Tint {
-                    colour,
-                    amount: 0.4,
-                };
-                assert_eq!(
-                    refused_by(&face, tint),
-                    (
-                        "tint",
-                        format!(
-                            "tint's colour {colour:?} must be at least the body's, [170, 175, 182], in every channel: a tint is added to a face's colour, so it can make it lighter, never darker"
-                        )
-                    )
-                );
-            }
-            // At the edges it's taken: the body's own colour, and the least amount above 0.
+            // At the edges it's taken: a colour below the body's (170, 175, 182) in a channel,
+            // or in all (a tint mixes, darker or lighter), the body's own colour, and the least
+            // amount above 0.
             for tint in [
+                Tint {
+                    colour: [169, 255, 255],
+                    amount: 0.4,
+                },
+                Tint {
+                    colour: [0, 0, 0],
+                    amount: 1.0,
+                },
                 Tint {
                     colour: BODY,
                     amount: 0.4,
@@ -3255,9 +3343,9 @@ fn a_hostile_tint_is_refused_naming_it_and_leaves_the_renderer_drawing() {
                     amount: -0.0,
                 },
             ] {
+                let groups = [Tinted { faces: &face, tint }];
                 let asked = Frame {
-                    tinted: &face,
-                    tint,
+                    tinted: &groups,
                     ..plain
                 };
                 assert!(r.prepare(&asked).is_ok(), "{tint:?}");

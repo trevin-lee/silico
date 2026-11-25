@@ -32,7 +32,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use re_renderer::mesh::{CpuMesh, GpuMesh, Material};
+use re_renderer::mesh::{CpuMesh, GpuMaterial, GpuMesh, Material};
 use re_renderer::renderer::{GpuMeshInstance, MeshDrawData, PointCloudBatchFlags};
 use re_renderer::view_builder::{
     BlendWithBackground, OrthographicCameraMode, Projection as ViewProjection, TargetConfiguration,
@@ -270,16 +270,15 @@ pub struct Frame<'a> {
     /// The colours the highlights and the hover are outlined in: the caller's values (the
     /// app's theme), never read from it here.
     pub outlines: Outlines,
-    /// The faces the app tints (the faces of a feature hovered in its timeline, or of the
-    /// features selected), as `highlights` are given and checked as they are, each a face:
-    /// an edge or a vertex is refused. Each is drawn in [`tint`](Self::tint), its instance's
-    /// own, so a tint, which moves with the pointer, uploads nothing, outlines nothing, and
-    /// changes no picking ID. A face tinted and highlighted or hovered too is drawn both:
-    /// which look wins is the caller's to say, by what it lists.
-    pub tinted: &'a [(u32, Element)],
-    /// What the tinted faces are tinted with: the caller's values, checked
-    /// ([`Tint`]'s rules).
-    pub tint: Tint,
+    /// The faces the app tints, each group's faces in its tint (the app's: the selection's
+    /// faces, the hover's, and those of a feature hovered in its timeline or selected), as
+    /// `highlights` are given and checked as they are, each a face: an edge or a vertex is
+    /// refused. A face in more than one group takes the first's tint. Each is drawn in its
+    /// tint by its instance's own material and tint, so a tint, which moves with the
+    /// pointer, uploads no face, outlines nothing, and changes no picking ID. A face tinted
+    /// and highlighted or hovered too is drawn both: which look wins is the caller's to say,
+    /// by what it lists.
+    pub tinted: &'a [Tinted<'a>],
     /// The pixels to read back for picking, if any: [`Renderer::take_picking`] gives what
     /// they found, a frame or two later.
     pub picking: Option<PixelRect>,
@@ -385,13 +384,20 @@ impl Frame<'_> {
             }
             last = body;
         }
-        self.tint.check()?;
+        for group in self.tinted {
+            group.tint.check()?;
+        }
         let mut lit: BTreeMap<u32, Lit> = BTreeMap::new();
         let lists = [
             ("highlights", self.highlights, Listed::Highlighted),
             ("hovered", self.hovered, Listed::Hovered),
-            ("tinted", self.tinted, Listed::Tinted),
-        ];
+        ]
+        .into_iter()
+        .chain(
+            self.tinted
+                .iter()
+                .map(|group| ("tinted", group.faces, Listed::Tinted(group.tint))),
+        );
         for (parameter, list, listed) in lists {
             for (i, &(body, element)) in list.iter().enumerate() {
                 let Some(mesh) = self
@@ -424,8 +430,10 @@ impl Frame<'_> {
                     (Listed::Highlighted, Element::Edge(n)) => entry.edges.push(n),
                     (Listed::Hovered, Element::Face(n)) => entry.hovered_faces.push(n),
                     (Listed::Hovered, Element::Edge(n)) => entry.hovered_edges.push(n),
-                    (Listed::Tinted, Element::Face(n)) => entry.tinted_faces.push(n),
-                    (Listed::Tinted, _) => {
+                    (Listed::Tinted(tint), Element::Face(n)) => {
+                        entry.tinted_faces.push((n, tint));
+                    }
+                    (Listed::Tinted(_), _) => {
                         return Err(InvalidParameter {
                             parameter,
                             message: format!(
@@ -445,11 +453,14 @@ impl Frame<'_> {
                 &mut entry.edges,
                 &mut entry.hovered_faces,
                 &mut entry.hovered_edges,
-                &mut entry.tinted_faces,
             ] {
                 numbers.sort_unstable();
                 numbers.dedup();
             }
+            // By number, each face once, in the first group's tint that lists it (a stable
+            // sort keeps the groups' order among a face's).
+            entry.tinted_faces.sort_by_key(|&(number, _)| number);
+            entry.tinted_faces.dedup_by_key(|&mut (number, _)| number);
         }
         if let Some(radius) = self.vertices
             && !(radius.is_finite() && radius > 0.0)
@@ -639,13 +650,11 @@ pub struct Outlines {
 }
 
 /// The colours [`Renderer::build`] draws a view in: its outlines', the one behind it, or
-/// none, the view composited over what its pass holds, and what a tinted face's instance
-/// adds to its colour ([`Tint::added`]; a render's tints none).
+/// none, the view composited over what its pass holds.
 #[derive(Clone, Copy)]
 struct Colours {
     outlines: Outlines,
     background: Option<Rgba>,
-    tint: Color32,
 }
 
 impl Outlines {
@@ -667,14 +676,22 @@ impl Default for Outlines {
 /// colour`, then lit as any face is, as a render's highlighted face is mixed with the
 /// highlight's blue ([`HIGHLIGHT_STRENGTH`]).
 ///
-/// `amount` is finite, from 0 (no tint) to 1 (the colour alone). Drawn as `re_renderer`'s
-/// per-instance tint, which is added to a face's colour, opaque (one that isn't makes the
-/// face translucent): so a tint can make a face lighter, never darker, and a `colour` below
-/// the body's ([`BODY`]) in any channel is refused, unless `amount` is 0.
+/// `amount` is finite, from 0 (no tint) to 1 (the colour alone). Drawn by the face's
+/// instance: its mesh's material scaling the body's colour by `1 − amount` ([`Mixes`], the
+/// face's vertices shared, so nothing is uploaded but a material for each amount, once),
+/// and `re_renderer`'s per-instance tint adding `amount · colour`, opaque (one that isn't
+/// makes the face translucent). So any colour mixes, lighter or darker than the body's.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tint {
     pub colour: [u8; 3],
     pub amount: f32,
+}
+
+/// Faces a frame tints, and the tint they're drawn in ([`Frame::tinted`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tinted<'a> {
+    pub faces: &'a [(u32, Element)],
+    pub tint: Tint,
 }
 
 impl Tint {
@@ -684,36 +701,26 @@ impl Tint {
         amount: 0.0,
     };
 
-    /// What `re_renderer` adds to a tinted face's colour, in linear light, for the mix: the
-    /// colour's part less the body's, `amount · (colour − body)`, each channel at least 0
-    /// for a tint [`Frame::check`] takes. Opaque, so the face stays opaque.
+    /// What `re_renderer` adds to a tinted face's colour, scaled by `1 − amount`, for the
+    /// mix: the colour's part, `amount · colour`, in linear light. Opaque, so the face stays
+    /// opaque.
     fn added(self) -> Color32 {
-        let (body, colour) = (srgb(BODY), srgb(self.colour));
-        let part = |body: f32, colour: f32| self.amount * (colour - body);
+        let colour = srgb(self.colour);
         Color32::from(Rgba::from_rgb(
-            part(body.r(), colour.r()),
-            part(body.g(), colour.g()),
-            part(body.b(), colour.b()),
+            self.amount * colour.r(),
+            self.amount * colour.g(),
+            self.amount * colour.b(),
         ))
     }
 
     /// Why a frame can't draw this tint, if it can't: an amount not finite or outside 0 to
-    /// 1, or, for one above 0, a colour below the body's in a channel.
+    /// 1.
     fn check(self) -> Result<(), InvalidParameter> {
         let amount = self.amount;
         if !(amount.is_finite() && (0.0..=1.0).contains(&amount)) {
             return Err(InvalidParameter {
                 parameter: "tint",
                 message: format!("tint's amount {amount:?} must be finite, from 0 to 1"),
-            });
-        }
-        if amount > 0.0 && self.colour.iter().zip(BODY).any(|(c, body)| *c < body) {
-            return Err(InvalidParameter {
-                parameter: "tint",
-                message: format!(
-                    "tint's colour {:?} must be at least the body's, {BODY:?}, in every channel: a tint is added to a face's colour, so it can make it lighter, never darker",
-                    self.colour
-                ),
             });
         }
         Ok(())
@@ -796,6 +803,8 @@ pub struct Renderer {
     backoff: Backoff,
     /// The planes' fill meshes, one for each fill colour drawn ([`planes::Meshes`]).
     plane_meshes: planes::Meshes,
+    /// The materials a tinted face's instance is drawn with, one for each tint's amount.
+    mixes: Mixes,
     /// How many of the next frames fail as the GPU fails one, once built: a stand-in for
     /// out of memory or a lost device, which lavapipe can't be made to give.
     #[cfg(test)]
@@ -872,6 +881,7 @@ impl Renderer {
             generations: 0,
             backoff: Backoff::NONE,
             plane_meshes: planes::Meshes::new(),
+            mixes: Mixes::default(),
             #[cfg(test)]
             fail_frames: 0,
         })
@@ -1024,7 +1034,6 @@ impl Renderer {
             Colours {
                 outlines: frame.outlines,
                 background: frame.background.map(srgb),
-                tint: frame.tint.added(),
             },
             Drawn {
                 bodies: &drawn,
@@ -1297,7 +1306,6 @@ impl Renderer {
             Colours {
                 outlines: Outlines::DEFAULT,
                 background: Some(srgb(BACKGROUND)),
-                tint: Color32::BLACK,
             },
             Drawn {
                 bodies: &drawn,
@@ -1341,7 +1349,6 @@ impl Renderer {
         let Colours {
             outlines,
             background,
-            tint,
         } = colours;
         let Drawn {
             bodies: drawn,
@@ -1354,6 +1361,7 @@ impl Renderer {
             uploads,
             placed,
             plane_meshes,
+            mixes,
             ..
         } = self;
         let placing = std::time::Instant::now();
@@ -1384,7 +1392,7 @@ impl Renderer {
                 continue;
             }
             uploaded.settle(view, lit);
-            *uploads += uploaded.faces(ctx, number, lit, tint, view, &mut instances)?;
+            *uploads += uploaded.faces(ctx, number, lit, mixes, view, &mut instances)?;
             edges(&mut lines, number, uploaded, lit, view, (&strokes, reach));
         }
         // The frame's lines after every body's edges, so a line coinciding with an edge is
@@ -1639,7 +1647,7 @@ fn outlined_as(highlighted: bool, hovered: bool) -> OutlineMaskPreference {
 enum Listed {
     Highlighted,
     Hovered,
-    Tinted,
+    Tinted(Tint),
 }
 
 /// A frame as [`Renderer::check_frame`] passed it: its view, each body's highlights, and
@@ -3739,7 +3747,7 @@ struct Lit {
     edges: Vec<u32>,
     hovered_faces: Vec<u32>,
     hovered_edges: Vec<u32>,
-    tinted_faces: Vec<u32>,
+    tinted_faces: Vec<(u32, Tint)>,
     style: Highlight,
 }
 
@@ -3771,8 +3779,13 @@ impl Lit {
         self.hovered_edges.binary_search(&number).is_ok()
     }
 
-    fn tinted(&self, number: u32) -> bool {
-        self.tinted_faces.binary_search(&number).is_ok()
+    /// Face `number`'s tint, if it's tinted.
+    fn tint(&self, number: u32) -> Option<Tint> {
+        self.tinted_faces
+            .binary_search_by_key(&number, |&(face, _)| face)
+            .ok()
+            .and_then(|at| self.tinted_faces.get(at))
+            .map(|&(_, tint)| tint)
     }
 
     /// Whether anything of the body is highlighted or hovered: outlined (a tint isn't).
@@ -3902,14 +3915,16 @@ impl Uploaded {
 
     /// Each face as a mesh instance of its own, moved into `view` by its own transform, its
     /// picking ID the body's number `body` and the face's; a highlighted one (in `lit`)
-    /// outlined, and its mesh baked in [`Highlight::Baked`]; a tinted one (a frame's) its
-    /// instance's `tint` added. A face's mesh is uploaded where it has none: how many were.
+    /// outlined, and its mesh baked in [`Highlight::Baked`]; a tinted one (a frame's) drawn
+    /// in its tint, its mesh's vertices with `mixes`' material for the tint's amount, and the
+    /// tint's colour added by its instance. A face's mesh is uploaded where it has none: how
+    /// many were.
     fn faces(
         &mut self,
         ctx: &RenderContext,
         body: u32,
         lit: &Lit,
-        tint: Color32,
+        mixes: &mut Mixes,
         view: &View,
         instances: &mut Vec<GpuMeshInstance>,
     ) -> Result<u64, String> {
@@ -3951,16 +3966,16 @@ impl Uploaded {
                     Arc::clone(held.insert(Arc::new(gpu)))
                 }
             };
+            // Opaque black, where it isn't tinted: re_renderer adds the tint's colour and
+            // multiplies by its alpha, so this leaves the face's own colour.
+            let (gpu_mesh, additive_tint) = match lit.tint(number).filter(|t| t.amount > 0.0) {
+                Some(tint) => (mixes.mixed(ctx, &gpu_mesh, tint.amount)?, tint.added()),
+                None => (gpu_mesh, Color32::BLACK),
+            };
             instances.push(GpuMeshInstance {
                 gpu_mesh,
                 world_from_mesh: view.world_from_mesh(face.anchor),
-                // Opaque black, where it isn't tinted: re_renderer adds the tint's colour and
-                // multiplies by its alpha, so this leaves the face's own colour.
-                additive_tint: if lit.tinted(number) {
-                    tint
-                } else {
-                    Color32::BLACK
-                },
+                additive_tint,
                 outline_mask_ids: outlined_as(highlighted, lit.hovered_face(number)),
                 picking_layer_id: PickingLayerId {
                     object: PickingLayerObjectId(u64::from(body)),
@@ -3970,6 +3985,65 @@ impl Uploaded {
             });
         }
         Ok(uploads)
+    }
+}
+
+/// The materials tinted faces are drawn with ([`Tint`]): for each tint's amount `a`, one
+/// scaling a face's colour by `1 − a`, made once (as a material of a one-triangle mesh,
+/// which `re_renderer` builds a material's bind group for) and given to a face's mesh, its
+/// vertices and indices shared, so a tint uploads no face.
+#[derive(Default)]
+struct Mixes {
+    /// By the amount's bits, the material's donor mesh.
+    donors: BTreeMap<u32, Arc<GpuMesh>>,
+}
+
+impl Mixes {
+    /// `face`, a face's mesh of one material, drawn with the colour it holds scaled by
+    /// `1 − amount`: its vertices and indices, its material's index range, and the
+    /// amount's material.
+    fn mixed(
+        &mut self,
+        ctx: &RenderContext,
+        face: &GpuMesh,
+        amount: f32,
+    ) -> Result<Arc<GpuMesh>, String> {
+        let donor = match self.donors.get(&amount.to_bits()) {
+            Some(donor) => Arc::clone(donor),
+            None => {
+                let kept = 1.0 - amount;
+                let cpu = CpuMesh {
+                    label: "tint".into(),
+                    materials: smallvec::smallvec![Material {
+                        label: "tint".into(),
+                        index_range: re_renderer::Span { start: 0, len: 3 },
+                        albedo: ctx.texture_manager_2d.white_texture_unorm_handle().clone(),
+                        albedo_factor: Rgba::from_rgb(kept, kept, kept),
+                    }],
+                    triangle_indices: vec![glam::UVec3::new(0, 1, 2)],
+                    vertex_positions: vec![glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y],
+                    vertex_colors: vec![vertex_colour(false); 3],
+                    vertex_normals: vec![glam::Vec3::Z; 3],
+                    vertex_texcoords: vec![glam::Vec2::ZERO; 3],
+                    bbox: macaw::BoundingBox::from_points(
+                        [glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y].into_iter(),
+                    ),
+                };
+                let donor = Arc::new(GpuMesh::new(ctx, &cpu).map_err(|e| format!("tint: {e}"))?);
+                self.donors.insert(amount.to_bits(), Arc::clone(&donor));
+                donor
+            }
+        };
+        let (Some(own), Some(mix)) = (face.materials.first(), donor.materials.first()) else {
+            return Err("a face's mesh or a tint's has no material".to_owned());
+        };
+        Ok(Arc::new(GpuMesh {
+            materials: smallvec::smallvec![GpuMaterial {
+                index_range: own.index_range,
+                ..mix.clone()
+            }],
+            ..face.clone()
+        }))
     }
 }
 
