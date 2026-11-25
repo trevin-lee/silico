@@ -608,7 +608,7 @@ fn several_originals_are_anchored_at_their_profiles_centre_of_area_a_holes_taken
 }
 
 #[test]
-fn a_direction_of_one_instance_has_no_step_by_extent_and_its_spacing_by_spacing() {
+fn a_direction_of_one_instance_has_no_step_by_extent_and_its_spacing_by_spacing_and_two_have_one() {
     // An extent over one instance has no neighbours to step to; a spacing is its value.
     // Neither places anything along it, and a polar extent of one alike.
     let base = [
@@ -622,6 +622,8 @@ fn a_direction_of_one_instance_has_no_step_by_extent_and_its_spacing_by_spacing(
     let mut features: Vec<String> = base.to_vec();
     features.push(pattern.to_owned());
     features.push(polar.to_owned());
+    // Two instances over 180°: one step of 180 / (2 − 1) = 180°, the copy turned by it.
+    features.push(r#"{"id": "t0000003", "type": "polar_pattern", "v": 1, "name": "P", "base": "t0000002", "copies": {"type": "features", "features": ["q0000002"]}, "axis": "z", "reversed": false, "distribution": {"type": "extent", "angle": 180}, "count": 2, "skip": []}"#.to_owned());
     let dir = tempfile::tempdir().unwrap();
     let (sessions, session, _) = opened(dir.path(), &document(&features));
     let read = answered(sessions.pattern(&session, ModelChoice::Current, id("t0000001")))
@@ -641,6 +643,20 @@ fn a_direction_of_one_instance_has_no_step_by_extent_and_its_spacing_by_spacing(
     // Reversed: its axis −Z.
     assert_eq!(axis.direction, [0.0, 0.0, -1.0]);
     assert!(polar.instances.is_empty());
+    let two = answered(sessions.pattern(&session, ModelChoice::Current, id("t0000003")))
+        .result
+        .unwrap_or_else(|p| panic!("{:?}", p.errors()));
+    assert_eq!(
+        two.axis.unwrap().step.map(|a| a.ndeg()),
+        Some(180_000_000_000)
+    );
+    assert_eq!(two.instances.len(), 1);
+    assert_eq!(
+        two.instances[0].angle.map(|a| a.ndeg()),
+        Some(180_000_000_000)
+    );
+    // (−40, −20) turned a half turn about +Z: (40, 20).
+    assert_eq!(two.instances[0].anchor, Some(point([40.0, 20.0, 0.0])));
 }
 
 /// A sketch `id` on `plane` of two squares, lettered `a` and `b`, each `(x, y, side)`: the
