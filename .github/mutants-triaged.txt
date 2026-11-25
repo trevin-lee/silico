@@ -771,3 +771,4 @@ crates/silico-app/src/plane_pick.rs | under_at | replace match guard boxed with 
 crates/silico-app/src/plane_pick.rs | under_at | replace match guard boxed with false | #565
 crates/silico-core/src/pattern.rs | placements | replace + with - | #576
 crates/silico-core/src/pattern.rs | unplaceable | replace < with <= | #576
+crates/silico-app/src/properties.rs | segments | replace * with / | #605

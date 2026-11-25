@@ -1188,11 +1188,24 @@ pub fn dialog_length(tab: &silico_app::tab::Tab) -> Option<String> {
 
 /// Whether the open dialog's Reversed is ticked.
 pub fn reversed_ticked<P: AppKernel>(h: &AppUi<P>) -> bool {
-    dialog(h)
-        .get_by_role_and_label(Role::CheckBox, "Reversed")
+    let dialog = dialog(h);
+    // A pad's Direction's Reversed (a radio of its segmented choice), or another's toggle.
+    dialog
+        .query_by_role_and_label(Role::RadioButton, "Reversed")
+        .or_else(|| dialog.query_by_role_and_label(Role::CheckBox, "Reversed"))
+        .expect("the dialog's Reversed")
         .accesskit_node()
         .toggled()
         == Some(eframe::egui::accesskit::Toggled::True)
+}
+
+/// A pad's Direction chosen in the open dialog: its `way`'s radio ("Normal" or "Reversed")
+/// clicked, and a frame drawn.
+pub fn direction<P: AppKernel>(h: &mut AppUi<P>, way: &str) {
+    dialog(h)
+        .get_by_role_and_label(Role::RadioButton, way)
+        .click();
+    step(h);
 }
 
 /// The view from the front onto `target`, Z up, orthographic at `per_mm` points a
