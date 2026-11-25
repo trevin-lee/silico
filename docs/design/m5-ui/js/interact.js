@@ -258,7 +258,7 @@
       if (k === 'bracket') openBracket();
       else if (k === 'plate') PAT.openPlate();
       else if (k === 'missing') A.toast("vise-jaw.silico isn't at ~/Git/fixtures any more. Find it with Open…, or remove it from the list.", 'warn', 'err');
-      else A.toast('This prototype models bracket.silico only. ' + (k === 'plate' ? 'plate-with-holes' : 'chamfered-box') + '.silico would open here.');
+      else A.toast('This prototype models bracket.silico and plate-with-holes.silico. chamfered-box.silico would open here.');
     },
     removeRecent() {},
     protoToggle() { S.proto.collapsed = !S.proto.collapsed; A.render(); },

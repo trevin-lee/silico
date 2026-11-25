@@ -8,10 +8,12 @@
   const S = () => A().S;
   const esc = (s) => A().esc(s);
   const clone = (o) => JSON.parse(JSON.stringify(o));
-  const TYPES = { linear_pattern: 'Rectangular pattern', polar_pattern: 'Circular pattern', mirror: 'Mirror' };
-  const TITLE = { linear_pattern: 'Rectangular Pattern', polar_pattern: 'Circular Pattern', mirror: 'Mirror' };
-  const ICON = { linear_pattern: 'patRect', polar_pattern: 'patCirc', mirror: 'mirror' };
-  const isPattern = (t) => t in TYPES;
+  // Each type's command in the registry (app.js's CMD): its label is the dialog's title, its icon the type's.
+  const CMD_OF = { linear_pattern: 'rectPattern', polar_pattern: 'circPattern', mirror: 'mirror' };
+  const TYPES = new Proxy({}, { get: (o, t) => A().FEATURE_KIND[t] });
+  const TITLE = new Proxy({}, { get: (o, t) => A().CMD[CMD_OF[t]].label });
+  const ICON = new Proxy({}, { get: (o, t) => A().CMD[CMD_OF[t]].icon });
+  const isPattern = (t) => t in CMD_OF;
   const SWEEPS = ['pad', 'pocket', 'revolve', 'groove'];
 
   // ───────── The plate, as section 2.2 writes it (its chamfer left out of the stand-in) ─────────
@@ -42,12 +44,12 @@
   }
   // What each sweep's tool is, and where its original sits (the `pattern` read's anchor).
   const TOOLS = {
-    q0000001: { kind: 'rect', x0: 44, x1: 50, y0: -5, y1: 5, cut: true, anchor: [47, 0, 0],
+    q0000001: { kind: 'rect', x0: 44, x1: 50, y0: -5, y1: 5, cut: true, anchor: [47, 0, 0], area: 60,
       names: { x0: 'Edge.nb000004', x1: 'Edge.nb000002', y0: 'Edge.nb000001', y1: 'Edge.nb000003' }, inner: (n) => `q0000001.pocket.Face(G s0000002.sketch.${n})` },
-    q0000002: { kind: 'circle', cx: -40, cy: -20, r: 2.75, cut: true, anchor: [-40, -20, 0], inner: () => 'q0000002.pocket.Face(G s0000003.sketch.Edge.cc000001)' },
-    p0000002: { kind: 'boss', cx: 0, cy: 0, r: 8, z0: 5, z1: 15, cut: false, anchor: [0, 0, 5],
+    q0000002: { kind: 'circle', cx: -40, cy: -20, r: 2.75, cut: true, anchor: [-40, -20, 0], area: Math.PI * 2.75 * 2.75, inner: () => 'q0000002.pocket.Face(G s0000003.sketch.Edge.cc000001)' },
+    p0000002: { kind: 'boss', cx: 0, cy: 0, r: 8, z0: 5, z1: 15, cut: false, anchor: [0, 0, 5], area: Math.PI * 64,
       inner: (n) => n === 'top' ? 'p0000002.pad.Face(G s0000004.sketch.Face1)' : 'p0000002.pad.Face(G s0000004.sketch.Edge.cd000001)' },
-    q0000003: { kind: 'circle', cx: 5, cy: 0, r: 1, cut: true, anchor: [5, 0, 0], inner: () => 'q0000003.pocket.Face(G s0000005.sketch.Edge.ce000001)' },
+    q0000003: { kind: 'circle', cx: 5, cy: 0, r: 1, cut: true, anchor: [5, 0, 0], area: Math.PI, inner: () => 'q0000003.pocket.Face(G s0000005.sketch.Edge.ce000001)' },
   };
   const PLATE_SKETCH_ROWS = {
     s0000001: ['XY', '4 lines', 'None'], s0000002: ['XY', '4 lines', 'None'], s0000003: ['XY', '1 circle, ⌀ 5.5 mm', 'None'],
@@ -187,11 +189,30 @@
       if (TOOLS[f.id]) { apply(TOOLS[f.id], f.id, null, null); continue; }
       if (!isPattern(f.type)) continue;
       const P = d.pat[f.id]; if (!P) continue;
-      if (P.copies.type !== 'features') { instances[f.id] = { list: [], bodies: true }; continue; }
+      // Bodies: the stand-in draws no whole-body copies, so they have no verdict (state null), each
+      // anchored at the base's centre of mass, as the read anchors a solid's copies (m6.0 section 5).
+      if (P.copies.type !== 'features') {
+        const anchor = [0, 0, 2.5];
+        instances[f.id] = { bodies: true, anchor, list: instancesOf(f.type, P).map((x) => ({ ...x, anchor: placePoint(anchor, x.place), state: skipped(P, x.index) ? 'skipped' : null })).sort((a, b) => idxCmp(a.index, b.index)) };
+        continue;
+      }
+      // Two directions along one line: the gate's refusal (m6.0 section 4.2), before anything is placed.
+      if (f.type === 'linear_pattern' && P.directions.length > 1) {
+        const a = dirOf(P.directions[0].along), b = dirOf(P.directions[1].along);
+        if (Math.abs(Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) - 1) < 1e-12) {
+          health[f.id] = 'error'; instances[f.id] = { list: [], anchor: null };
+          const word = (r) => (r.word ? r.word : `"${r.name.slice(0, 40)}"…`);
+          problems.push({ feature: f.id, severity: 'error', code: 'invalid_input', title: `${f.name}'s directions are parallel`,
+            message: `linear_pattern ${f.id}'s directions are parallel: directions.1.along, ${word(P.directions[1].along)}, runs along directions.0.along, ${word(P.directions[0].along)}, so copies would land on copies`,
+            elements: P.directions[1].along.name ? [P.directions[1].along.name] : [], param: 'directions.1.along', fix: 'give directions.1 another way, or drop it and raise directions.0.count' });
+          continue;
+        }
+      }
       const originals = P.copies.features.filter((o) => TOOLS[o]).sort((a, b) => d.features.findIndex((x) => x.id === a) - d.features.findIndex((x) => x.id === b));
       const list = instancesOf(f.type, P).map((x) => ({ ...x, state: skipped(P, x.index) ? 'skipped' : 'built', verdicts: [] }));
-      const anchors = originals.map((o) => TOOLS[o].anchor);
-      const anchor = [0, 1, 2].map((k) => anchors.reduce((s, a) => s + a[k], 0) / Math.max(1, anchors.length));
+      // Several originals: Σ(areaᵢ · centreᵢ) / Σ areaᵢ over their profiles (m6.0 section 12, decided 6).
+      const total = originals.reduce((s, o) => s + TOOLS[o].area, 0);
+      const anchor = [0, 1, 2].map((k) => originals.reduce((s, o) => s + TOOLS[o].area * TOOLS[o].anchor[k], 0) / Math.max(1e-12, total));
       const before = clone(geo);
       for (const o of originals) {
         const t = TOOLS[o];
@@ -213,22 +234,24 @@
       const named = (st) => list.filter((x) => x.state === st);
       const off = named('off_base'), none = named('changed_nothing'), run = list.filter((x) => x.state !== 'skipped');
       const cut = originals.some((o) => TOOLS[o].cut);
+      const baseId = (() => { const i = d.features.findIndex((x) => x.id === f.id); return d.features.slice(0, i).reverse().find((x) => x.type !== 'sketch' && ok(x.id)).id; })();
       const listText = (xs) => { const t = xs.map((x) => idxText(x.index)); return t.length > 1 ? t.slice(0, -1).join(', ') + ' and ' + t[t.length - 1] : t[0]; };
       if (off.length) {
         Object.assign(geo, before); health[f.id] = 'error';
         problems.push({ feature: f.id, severity: 'error', code: 'kernel_failed', title: `${f.name} makes ${off.length + 1} solids`,
           message: `${word} ${f.id} makes ${off.length + 1} solids: the copies of instance${off.length > 1 ? 's' : ''} ${listText(off)} don't touch the base, or meet it only along an edge or at a point`,
-          elements: off.map((x) => idxText(x.index)), param: null, fix: 'Lower the count so every instance touches the base, add them to skip, or move the pattern onto the base.', skipThem: word !== 'mirror' });
+          elements: off.map((x) => idxText(x.index)), param: null, fix: 'lower count so every instance touches the base, add them to skip, or move the pattern onto the base', skipThem: word !== 'mirror' });
       } else if (run.length && none.length === run.length) {
         Object.assign(geo, before); health[f.id] = 'error';
+        const b = Geo.buildPlate(before);
         problems.push({ feature: f.id, severity: 'error', code: 'kernel_failed', title: `${f.name} ${cut ? 'removes' : 'adds'} nothing`,
-          message: `${word} ${f.id} ${cut ? 'removes nothing from' : 'adds nothing to'} its base: every copy lies ${cut ? 'outside the solid, or where the original already cut' : 'inside the solid'}`,
-          elements: [], param: null, fix: word === 'mirror' ? 'Pick another mirror plane: a mirror about the original\'s own plane of symmetry changes nothing.' : 'Change the direction, distance, count, or axis so the copies reach the solid.' });
+          message: `${word} ${f.id} ${cut ? 'removes nothing from' : 'adds nothing to'} its base ${baseId}: the result's volume is the base's, ${A().fmt(b.volume, 6)} mm³ (${b.faces.length} faces, ${b.edges.length} edges, and ${b.verts.length} vertices, against the base's ${b.faces.length}, ${b.edges.length}, and ${b.verts.length})`,
+          elements: [], param: null, fix: "if every copy lies inside the base or misses it, change the direction, length, count, or plane; a mirror about the original's own plane of symmetry changes nothing" });
       } else if (none.length) {
         problems.push({ feature: f.id, severity: 'warning', code: 'instances_changed_nothing', title: `${none.length} ${none.length > 1 ? 'copies' : 'copy'} ${cut ? 'cut' : 'add'}${none.length > 1 ? '' : 's'} nothing`,
           message: `${word} ${f.id}: the copies of instance${none.length > 1 ? 's' : ''} ${listText(none)} ${cut ? 'remove' : 'add'} nothing (no face of theirs is in the result)`,
           elements: none.map((x) => idxText(x.index)), param: word === 'mirror' ? 'copies' : 'skip',
-          fix: word === 'mirror' ? 'Take the original out of copies if it isn\'t meant.' : 'Lower the count, or skip them if they aren\'t meant. A copy that misses the solid is built exactly as asked.', skipThem: word !== 'mirror' });
+          fix: word === 'mirror' ? "take the original out of copies if it isn't meant" : "lower count or add them to skip if they aren't meant; a copy inside the base, or a pocket's copy that misses it, is built exactly as asked", skipThem: word !== 'mirror' });
       }
     }
     return { geo, instances };
@@ -297,6 +320,7 @@
         if (at < 0) {
           const inputs = D.draft.copies.type === 'features' ? [...D.draft.copies.features] : [d.features.filter((f) => f.type !== 'sketch').slice(-1)[0].id];
           d.features.push({ id: D.featureId, type: D.type, name: D.name, inputs });
+          S().selFeature = D.featureId; // it joins the timeline selected, as the dialog's feature is
         } else if (d.features[at].type !== D.type) d.features[at].type = D.type; // Type switched while new: replaced at its place
         d.pat[D.featureId] = docForm(D);
       } else if (at >= 0 && D.isNew) { d.features.splice(at, 1); delete d.pat[D.featureId]; }
@@ -321,7 +345,7 @@
     </div></div>`;
   }
   function chipOf(r, k) { return `<span class="chip">${icon(r.word ? (r.word.length === 1 ? 'axis' : 'plane') : r.kind === 'face' ? 'selFace' : 'selEdge')} ${esc(refLabel(r))}</span><span style="flex:1"></span><button class="ab-btn" style="height:18px;min-width:18px" data-act="patClear" data-k="${k}" aria-label="Clear">${icon('close')}</button>`; }
-  function dropRow(label, k, value, items, opts = {}) {
+  function dropRow(label, k, value, opts = {}) {
     return `<div class="prop"><span class="k">${esc(label)}</span><button class="field select" data-act="patDrop" data-k="${k}" ${opts.disabled ? 'disabled' : ''} aria-haspopup="menu" data-tip="${esc(opts.tip || label)}" data-tipd="${esc(opts.tipd || '')}">${opts.icon ? `<span style="display:flex;align-items:center;gap:6px">${icon(opts.icon)}${esc(value)}</span>` : esc(value)} ${opts.disabled ? icon('lock') : icon('down')}</button></div>`;
   }
   function numRow(label, k, D, unit, opts = {}) {
@@ -334,8 +358,8 @@
     const running = S().rebuild.state === 'running';
     const probs = (d.next ? d.next.problems : d.problems).filter((p) => p.feature === D.featureId);
     let rows = '';
-    if (D.type !== 'mirror') rows += dropRow('Type', 'type', TYPES[D.type], null, { icon: ICON[D.type], disabled: !D.isNew, tip: 'Type', tipd: D.isNew ? 'Rectangular or Circular. Switching keeps Object Type and Objects' : "Fixed in Edit Feature: a pattern's type can't be changed. Delete it and make the other kind" });
-    rows += dropRow('Object Type', 'otype', P.copies.type === 'features' ? 'Features' : 'Bodies', null, { tipd: 'Features copies pads, pockets, revolves, and grooves; Bodies copies the whole body' });
+    if (D.type !== 'mirror') rows += dropRow('Type', 'type', TYPES[D.type], { icon: ICON[D.type], disabled: !D.isNew, tip: 'Type', tipd: D.isNew ? 'Rectangular or Circular. Switching keeps Object Type and Objects' : "Fixed in Edit Feature: a pattern's type can't be changed. Delete it and make the other kind" });
+    rows += dropRow('Object Type', 'otype', P.copies.type === 'features' ? 'Features' : 'Bodies', { tipd: 'Features copies pads, pockets, revolves, and grooves; Bodies copies the whole body' });
     const objs = P.copies.type === 'solid' ? `<span class="chip">${icon('body')} Body1</span>`
       : P.copies.features.map((o) => { const f = d.features.find((x) => x.id === o); return `<span class="chip">${icon(f ? f.type : 'pocket')} ${esc(f ? f.name : o)}<button class="chip-x" data-act="patRemoveObj" data-id="${o}" aria-label="Remove ${esc(f ? f.name : o)}">${icon('close')}</button></span>`; }).join('');
     rows += selRow('Objects', 'objects', D, objs ? objs + `<span style="flex:1"></span><span class="subdued" style="font-size:11px">${P.copies.type === 'solid' ? 1 : P.copies.features.length}</span>` : '', { empty: P.copies.type === 'solid' ? 'Body1' : 'Select features', tip: 'Pick a pad, pocket, revolve, or groove in the timeline, or one of its faces in the canvas' });
@@ -344,25 +368,24 @@
       rows += selRow('Axis 1', 'axis0', D, a.along ? chipOf(a.along, 'axis0') : '', { empty: 'Select an axis, edge, or face', flip: 'axis0', flipped: a.reversed, flipOff: !a.along, tip: 'X, Y, or Z under Origin in the browser, or a straight edge or a flat face in the canvas' });
       rows += selRow('Axis 2', 'axis1', D, b.along ? chipOf(b.along, 'axis1') : '', { empty: 'Optional', flip: 'axis1', flipped: b.reversed, flipOff: !b.along, tip: 'Leave it empty, or its Quantity at 1, for a pattern in one direction' });
       const distLabel = (x) => (x === 'extent' ? 'Extent' : 'Spacing');
-      if (!D.mixed) rows += dropRow('Distribution', 'dist', distLabel(a.dist), null, { tipd: 'Extent: Distance from the first instance to the last. Spacing: between neighbours' });
+      if (!D.mixed) rows += dropRow('Distribution', 'dist', distLabel(a.dist), { tipd: 'Extent: Distance from the first instance to the last. Spacing: between neighbours' });
       for (const k of [0, 1]) {
         const x = P.directions[k]; const off = k === 1 && !x.along;
         rows += `<div class="section">Axis ${k + 1}${k === 1 && (!x.along || x.count <= 1) ? ' <span style="text-transform:none;letter-spacing:0;margin-left:4px">· left out</span>' : ''}</div>`;
-        if (D.mixed) rows += dropRow('Distribution', 'dist' + k, distLabel(x.dist), null, { tipd: 'This pattern\'s directions differ in form, as an agent wrote it: each keeps its own' });
+        if (D.mixed) rows += dropRow('Distribution', 'dist' + k, distLabel(x.dist), { tipd: 'This pattern\'s directions differ in form, as an agent wrote it: each keeps its own' });
         rows += numRow('Quantity', 'q' + k, D, '', { disabled: off });
         rows += numRow('Distance', 'd' + k, D, 'mm', { disabled: off || x.count <= 1 });
       }
     } else if (D.type === 'polar_pattern') {
       rows += selRow('Axis', 'axis', D, P.axis ? chipOf(P.axis, 'axis') : '', { empty: 'Select an axis or an edge', flip: 'axis', flipped: P.reversed, flipOff: !P.axis, tip: 'X, Y, or Z under Origin in the browser, or a straight or circular edge in the canvas' });
-      rows += dropRow('Distribution', 'pdist', { full: 'Full', partial: 'Partial', spacing: 'Spacing' }[D.polarDist], null, { tipd: 'Full: evenly round 360°. Partial: over the Angle. Spacing: the Angle between neighbours' });
+      rows += dropRow('Distribution', 'pdist', { full: 'Full', partial: 'Partial', spacing: 'Spacing' }[D.polarDist], { tipd: 'Full: evenly round 360°. Partial: over the Angle. Spacing: the Angle between neighbours' });
       rows += numRow('Quantity', 'q', D, '');
-      if (D.polarDist !== 'full') rows += numRow(D.polarDist === 'spacing' ? 'Angle' : 'Angle', 'ang', D, '°');
+      if (D.polarDist !== 'full') rows += numRow('Angle', 'ang', D, '°');
     } else {
       rows += selRow('Mirror Plane', 'plane', D, P.plane ? chipOf(P.plane, 'plane') : '', { empty: 'Select a plane or a flat face', tip: 'XY, XZ, or YZ under Origin in the browser, or a flat face in the canvas' });
     }
     if (D.type !== 'mirror') rows += `<div class="prop"><span class="k"></span><button class="check ${D.suppression ? 'on' : ''}" data-act="patSuppression" role="checkbox" aria-checked="${D.suppression}" data-tip="Suppression" data-tipd="Shows a box over each instance in the canvas. Clear one to skip that instance">
       <span class="box"><svg viewBox="0 0 10 10"><path d="M2 5.2l2 2 4-4.4"/></svg></span>Suppression</button></div>`;
-    const inst = d.next && d.next.instances && d.next.instances[D.featureId];
     const nSkip = (P.skip || []).length;
     const total = D.type === 'mirror' ? 2 : D.type === 'linear_pattern' ? P.directions[0].count * (P.directions[1].along ? P.directions[1].count : 1) : P.count;
     let st;
@@ -372,7 +395,6 @@
     else if (probs.some((p) => p.severity === 'error')) st = `<div class="dlg-status" style="color:var(--red)">${icon('error')} The preview has an error. OK keeps the feature with it.</div>`;
     else st = `<div class="dlg-status">${icon('check')} ${D.type === 'mirror' ? 'The original and its mirror image' : `${total} instance${total === 1 ? '' : 's'}${nSkip ? `, ${nSkip} skipped` : ''}, the original counted`} · revision ${d.rev} · ${S().rebuild.ms} ms</div>`;
     const okDisabled = !complete(D) || Object.values(D.bad).some(Boolean);
-    void inst;
     return `<div class="panel-title">${icon(ICON[D.type])}<span>${TITLE[D.type]}</span><span class="grow"></span><button class="ab-btn" data-act="cancelDialog" aria-label="Cancel" data-tip="Cancel" data-tipk="Esc">${icon('close')}</button></div>
       <div class="panel-body">
         <div class="prop"><span class="k">Name</span><div class="field"><input data-key="pat-name" data-input="pat" data-k="name" value="${esc(D.name)}" aria-label="Feature name"></div></div>
@@ -397,7 +419,8 @@
       if (!(whole >= 1)) { D.bad[k] = `"${s}" isn't a whole number of instances. The original counts as one.`; A().render(); return; }
       const product = D.type === 'linear_pattern' ? whole * (k === 'q0' ? (P.directions[1].along ? P.directions[1].count : 1) : P.directions[0].count) : whole;
       if (product > 1000) { D.bad[k] = 'At most 1,000 instances in all, the original included.'; A().render(); return; }
-      D.bad[k] = null;
+      if (k === 'q' && D.polarDist === 'spacing' && P.angle * (whole - 1) >= 360) { D.bad[k] = `${whole} instances ${A().fmt(P.angle)}° apart reach a whole turn or more. Use Full, or fewer.`; A().render(); return; }
+      D.bad[k] = null; if (k === 'q') D.bad.ang = null;
       if (k === 'q') P.count = whole; else P.directions[+k[1]].count = whole;
     } else if (/^d\d$/.test(k)) {
       const r = A().parseValue(v, 'The distance'); D.bad[k] = r.err || null; if (r.err) { A().render(); return; }
@@ -453,7 +476,7 @@
     const app = A(); const D = S().dialog; const d = app.doc(); const P = D.draft;
     const boxes = D.type === 'linear_pattern' ? ['axis0', 'axis1'] : D.type === 'polar_pattern' ? ['axis'] : ['plane'];
     const fitsBox = (b) => {
-      if (b === 'objects') return what.feature != null;
+      if (b === 'objects') return what.feature != null && (D.activeBox === 'objects' || !P.copies.features.length || what.kind == null);
       if (b === 'plane') return what.word ? what.word.length === 2 : what.kind === 'face' && what.ref.kind === 'plane';
       if (b === 'axis') return what.word ? what.word.length === 1 : what.kind === 'edge';
       return what.word ? what.word.length === 1 : (what.kind === 'edge' && what.ref.kind === 'line') || (what.kind === 'face' && what.ref.kind === 'plane');
@@ -487,9 +510,6 @@
       else if (what.kind === 'edge') r = { name: what.ref.stable, kind: 'edge', label: what.id + ' (circle)', vec: [0, 0, 1], point: [what.ref.center[0], what.ref.center[1], 0] };
       else { const f = what.ref; const o = f.frame.o; r = { name: f.stable, kind: 'face', label: what.id + ' (face)', vec: f.normal, normal: f.normal, origin: [o.x, o.y, o.z].map(R) }; }
       if (box === 'axis') P.axis = r; else if (box === 'plane') P.plane = r; else P.directions[+box[4]].along = r;
-      if (box === 'axis0' && D.type === 'linear_pattern' && P.directions[1].along) {
-        const a = dirOf(r), b = dirOf(P.directions[1].along); if (Math.abs(Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2]) - 1) < 1e-9) app.toast("Axis 1 runs along Axis 2: copies would land on copies. Give Axis 2 another way.", 'warn', 'err');
-      }
       D.activeBox = null; // a single pick fills its box; the next goes to the first empty box it fits
     }
     apply();
@@ -531,7 +551,7 @@
     let s = '';
     const pr = (p) => VP.project(new T.Vector3(...p));
     // The mirror plane, as a square about the original's anchor, in the selection's blue.
-    if (type === 'mirror' && P.plane && inst) {
+    if (type === 'mirror' && P.plane && inst && inst.anchor) {
       const pl = P.plane.word ? PLANES[P.plane.word] : { origin: P.plane.origin, normal: P.plane.normal };
       const n = new T.Vector3(...pl.normal); const o = new T.Vector3(...pl.origin);
       const a0 = new T.Vector3(...inst.anchor); const c = a0.clone().sub(n.clone().multiplyScalar(a0.clone().sub(o).dot(n)));
@@ -540,7 +560,7 @@
       s += `<polygon points="${pts.map((p) => p.x.toFixed(1) + ',' + p.y.toFixed(1)).join(' ')}" fill="#186add" fill-opacity=".16" stroke="#4676ff" stroke-width="1" stroke-dasharray="5 3"/>`;
     }
     // Flip arrows from the original's anchor, along each direction (a turn's sense for a circular pattern).
-    if (sh.dialog && inst) {
+    if (sh.dialog && inst && inst.anchor) {
       const a = new T.Vector3(...inst.anchor); const A0 = pr(a);
       const arrow = (dir, k, label) => {
         const b = pr(a.clone().addScaledVector(new T.Vector3(...dir), 10)); const L = Math.hypot(b.x - A0.x, b.y - A0.y); if (L < 2) return '';
@@ -567,7 +587,7 @@
       const p = pr(x.anchor); if (p.z > 1 || p.z < -1) continue;
       if (box) {
         const on = x.state !== 'skipped';
-        s += `<g><rect x="${(p.x - 7).toFixed(1)}" y="${(p.y - 7).toFixed(1)}" width="14" height="14" rx="3" fill="${on ? '#186add' : '#171717'}" stroke="${on ? '#186add' : '#9f9f9f'}" stroke-width="1.2"/>${on ? `<path d="M${(p.x - 4).toFixed(1)},${(p.y + 0.4).toFixed(1)} l2.6,2.6 l5,-5.4" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>` : ''}</g>`;
+        s += `<g><rect x="${(p.x - 6.5).toFixed(1)}" y="${(p.y - 6.5).toFixed(1)}" width="13" height="13" rx="3" fill="${on ? '#186add' : '#171717'}" stroke="${on ? '#186add' : '#525151'}" stroke-width="1"/>${on ? `<path d="M${(p.x - 3.8).toFixed(1)},${(p.y + 0.3).toFixed(1)} l2.5,2.5 l4.8,-5.2" stroke="#fff" stroke-width="1.8" fill="none" stroke-linecap="round" stroke-linejoin="round"/>` : ''}</g>`;
         hits.push({ kind: 'skip', index: x.index, x: p.x, y: p.y, r: 9 });
       } else if (x.state === 'skipped') {
         s += `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="4" fill="none" stroke="#9f9f9f" stroke-width="1.2" stroke-dasharray="2 2"/>`;
@@ -613,7 +633,7 @@
       const all = f.type === 'linear_pattern' ? P.directions.reduce((s, x) => s * x.count, 1) : P.count;
       rows += prop('Instances', `${all}${f.type === 'linear_pattern' && P.directions.length > 1 ? ` (${P.directions.map((x) => x.count).join(' × ')})` : ''}, the original counted`);
       rows += prop('Skipped', (P.skip || []).length ? `<span class="mono">${P.skip.map((s) => '[' + s.join(', ') + ']').join(' ')}</span>` : 'None');
-      if (inst && inst.list) { const n = inst.list.filter((x) => x.state === 'changed_nothing').length; if (n) rows += prop('Cut nothing', `<span class="warn-text">${n}, marked in the canvas</span>`); }
+      if (inst && inst.list) { const n = inst.list.filter((x) => x.state === 'changed_nothing').length; if (n) rows += prop('Changed nothing', `<span class="warn-text">${n}, marked in the canvas</span>`); }
     }
     return rows;
   }
@@ -650,6 +670,11 @@
     if (k === '8') { openPlate(true); at(300, () => { const r = document.querySelector('[data-act="createMenu"]').getBoundingClientRect(); window.PROTO.createMenu(r); }); return true; }
     if (k === '8a') { openPlate(true); at(300, () => { open('linear_pattern', 't0000001'); S().dialog.suppression = true; app.render(); }); return true; }
     if (k === '8b') {
+      openPlate(true);
+      at(300, () => { open('linear_pattern', null); pick({ feature: 'q0000002' }); pick({ word: 'x' }); });
+      return true;
+    }
+    if (k === '8h') {
       openPlate(true);
       at(300, () => { open('linear_pattern', null); pick({ feature: 'q0000002' }); pick({ word: 'x' }); input('q0', '3'); });
       at(900, () => { S().dialog.suppression = true; app.render(); });

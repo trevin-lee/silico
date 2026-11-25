@@ -36,7 +36,9 @@
     const under = new Set(defs.length ? [] : ['na000003', 'na000004', 'na000005', 'P4', 'P5']);
     let dof = defs.length ? 0 : 1;
     for (const [id, f] of Object.entries(FIXED)) if (K.drivenFixed[id]) { under.add(f.line); under.add(f.a); under.add(f.b); dof++; }
-    if (K.unjoined) { under.add(K.unjoined.curve); under.add('NEW'); dof += 2; }
+    // Unjoined, the new end is free (2 DOF), and the kept curve and point lose what the detached
+    // curve's relations held of them (na000004's Vertical held pa000004's x).
+    if (K.unjoined) { under.add(K.unjoined.curve); under.add('NEW'); under.add(K.unjoined.point); linesAt(K.unjoined.point).forEach((l) => under.add(l)); dof += 2; }
     const def = over ? 'over' : under.size ? 'under' : 'full';
     return { def, dof, under, over };
   }
@@ -68,7 +70,8 @@
     if (K.kind === 'bracket') {
       K.dims = { W: d.p.W, H: d.p.H, tb: d.p.tb }; K.tu = d.p.tu;
       K.placed = { tu: opts.mode !== 'placing' };
-      K.extra = []; K.tuDriven = false; K.drivenFixed = {}; K.unjoined = null;
+      // An end unjoined and finished is in the document: the sketch opens with it unjoined still.
+      K.extra = []; K.tuDriven = false; K.drivenFixed = {}; K.unjoined = d.scenario === 'unjoined' && d.p.unjoin ? { ...d.p.unjoin } : null;
       K.sel = []; K.hover = null; K.measure = null; K.dimHits = [];
       if (opts.mode === 'placing') { K.tool = 'dimension'; K.modify = { target: 'tu', text: String(d.p.tu), line: 'na000005', fresh: true }; }
     }
@@ -106,7 +109,7 @@
       const st = lstate();
       const over = st.def === 'over';
       exit();
-      A().edit((dd) => { dd.p.tu = k.tu; dd.sketchState.s0000001 = over ? 'over' : st.def === 'under' ? 'under' : 'full'; if (k.unjoined) dd.scenario = 'unjoined'; else if (dd.scenario === 'unjoined') dd.scenario = null; }, { label: 'Edit Bracket profile' });
+      A().edit((dd) => { dd.p.tu = k.tu; dd.sketchState.s0000001 = over ? 'over' : st.def === 'under' ? 'under' : 'full'; if (k.unjoined) { dd.scenario = 'unjoined'; dd.p.unjoin = { ...k.unjoined }; } else if (dd.scenario === 'unjoined') { dd.scenario = null; delete dd.p.unjoin; } }, { label: 'Edit Bracket profile' });
       if (!(k.tu !== d.p.tu || over || k.unjoined)) A().toast('Bracket profile unchanged');
       return;
     }
@@ -364,7 +367,7 @@
         else { const l = LLINES.find((q) => q[0] === M.line); const horiz = l[3] === 'H'; const dm = dimension(S[l[1]], S[l[2]], horiz ? 0 : 1, horiz ? -1 : 0, 40, '', COL.sel, { noLabel: true }); s += dm.svg; K.modifyAt = dm.mid; }
       }
     }
-    s += drawMeasure(S);
+    s += drawMeasure();
     return s;
   }
   function drawNew() {
@@ -616,7 +619,7 @@
   }
   let hotKey = null;
   function measureHot(k) { if (k !== hotKey) { hotKey = k; VP.request(); } }
-  function drawMeasure(S2) {
+  function drawMeasure() {
     const picks = K.measure ? K.measure.picks : K.sel.length === 2 && K.sel.every((x) => x.kind !== 'dim') ? K.sel : null;
     if (!picks || picks.length !== 2) return '';
     const { draw } = pair(picks[0], picks[1]); if (!draw) return '';
@@ -641,7 +644,6 @@
       const mth = ra + d0 / 2; const L = w2s(X[0] + (R + 5) * Math.cos(mth), X[1] + (R + 5) * Math.sin(mth)); const lbl = deg(ang); const tw = lbl.length * 6.6 + 10;
       s += `<rect x="${(L.x - tw / 2).toFixed(1)}" y="${(L.y - 9).toFixed(1)}" width="${tw}" height="18" rx="3" fill="#212121" stroke="${col}"/><text x="${L.x.toFixed(1)}" y="${(L.y + 4).toFixed(1)}" fill="#fff" font-size="11" text-anchor="middle" font-family="Inter Silico, Inter">${lbl}</text>`;
     }
-    void S2;
     return s;
   }
   function unjoinedCard() {
@@ -726,7 +728,6 @@
   // Prototype states 9a to 9f: the three sketch items on Bracket profile.
   function protoState(k, openBracket) {
     const at = (ms, fn) => setTimeout(fn, ms);
-    const S0 = A().S;
     const go = (fn) => { openBracket(true); at(300, () => { enter({ featureId: 's0000001', plane: 'XZ', mode: 'edit' }); at(450, fn); }); };
     const clientOf = (p) => { const r = document.getElementById('gl').getBoundingClientRect(); return { clientX: r.left + p.x, clientY: r.top + p.y }; };
     const dimAt = (id) => { const hh = K.dimHits.find((x) => x.id === id); return clientOf({ x: hh.x + hh.w / 2, y: hh.y + hh.h / 2 }); };
@@ -738,7 +739,6 @@
     if (k === '9d') { go(() => { unjoin('P4', 'na000004'); }); return; }
     if (k === '9e') { go(() => { measure(); K.measure.picks = [{ kind: 'point', id: 'P6' }, { kind: 'line', id: 'na000002' }]; A().render(); }); return; }
     if (k === '9f') { go(() => { K.sel = [{ kind: 'line', id: 'na000004' }]; A().render(); }); return; }
-    void S0;
   }
 
   function lookAt() { const fr = FRAMES[K.plane] || {}; VP.animateTo(fr.view || viewFromNormal(frameOf(K))); }

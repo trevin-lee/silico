@@ -151,7 +151,10 @@
         health.p0000001 = 'error';
         problems.push({ feature: 'p0000001', severity: 'error', code: 'invalid_input', title: 'Legs has no profile',
           message: "Bracket profile's profile is open at pa000004: points pa000004 and pa000008 are at one place but aren't one point (ends_not_joined).",
-          elements: ['pa000004', 'pa000008'], param: 'sketch', fix: 'Edit Bracket profile and join the two points (Coincident), or close the profile another way.' });
+          elements: ['pa000004', 'pa000008'], param: 'sketch', fix: 'Edit Bracket profile and join the two points (Join them, sketch_merge), or close the profile another way.' });
+        // check's warning on the sketch itself, which the timeline marks as a warning (m5.0-app.md, M5.1's timeline).
+        problems.push({ feature: 's0000001', severity: 'warning', code: 'ends_not_joined', title: 'Ends not joined at pa000004',
+          message: "2 points that end curves are at one place but aren't one point, so the profile is open there", elements: ['pa000004', 'pa000008'], fix: 'share one point: make the curves that end at the points named end at one of them' });
         ['h0000001', 'h0000002', 'f0000001'].forEach((id) => { if (ok(id)) health[id] = 'blocked'; });
       }
       if (ok('s0000003') && d.sketchState.s0000003 === 'under') { /* builds: SolidWorks builds from under-defined sketches */ }
@@ -494,7 +497,7 @@
       <div class="ec-head">${icon(pr.severity === 'warning' ? 'warn' : 'error')}<span class="t">${esc(pr.title)}</span><span class="ec-code" data-tip="The error's code, as agents receive it">${esc(pr.code)}</span></div>
       <div class="ec-body"><p>${esc(pr.message)}</p>
       <div class="ec-kv"><span class="k">Feature</span><span>${esc(f ? f.name : pr.feature)} <span class="mono" style="opacity:.7">${pr.feature}</span></span>
-      ${pr.elements ? `<span class="k">Elements</span><span>${pr.elements.map((e) => `<span class="el-chip">${esc(e.length > 34 ? e.slice(0, 32) + '…' : e)}</span>`).join(' ')}</span>` : ''}
+      ${pr.elements && pr.elements.length ? `<span class="k">Elements</span><span>${pr.elements.map((e) => `<span class="el-chip">${esc(e.length > 34 ? e.slice(0, 32) + '…' : e)}</span>`).join(' ')}</span>` : ''}
       ${pr.param ? `<span class="k">Parameter</span><span>${esc(pr.param)}</span>` : ''}</div>
       <div class="ec-fix">${esc(pr.fix)}</div>`;
     if (pr.candidates) {
@@ -995,7 +998,7 @@
   const PROTO = [
     ['1', 'Start'], ['1b', 'Blank canvas'], ['2', 'Part open'], ['2r', 'Rebuilding'], ['3', 'Pad dialog'], ['3e', 'Failed preview'], ['4', 'Selection'],
     ['5', 'Sketch: dimension'], ['5n', 'New sketch'], ['6a', 'Failed feature'], ['6b', 'Broken reference'], ['6c', 'Agent edit'], ['6d', 'Agent edit + your edits'], ['7', 'Shortcuts'],
-    ['8', 'CREATE › Pattern, Mirror'], ['8a', 'Rectangular Pattern (edit)'], ['8b', 'New pattern, a copy cuts nothing'], ['8c', 'Circular Pattern, Partial'], ['8d', 'Mirror (edit)'], ['8g', 'New mirror that changes nothing'], ['8e', 'A copy selected'], ['8f', 'Pattern selected, its marks'],
+    ['8', 'CREATE › Pattern, Mirror'], ['8a', 'Rectangular Pattern (edit)'], ['8b', 'New pattern, FreeCAD’s first values'], ['8h', 'New pattern, a copy cuts nothing'], ['8c', 'Circular Pattern, Partial'], ['8d', 'Mirror (edit)'], ['8g', 'New mirror that changes nothing'], ['8e', 'A copy selected'], ['8f', 'Pattern selected, its marks'],
     ['9a', 'Sketch: a driven dimension'], ['9b', 'Sketch: driving again'], ['9c', 'Sketch: unjoin'], ['9d', 'Sketch: unjoined'], ['9e', 'Sketch: Measure'], ['9f', 'Sketch: selection measures'],
   ];
   function renderProto() {
