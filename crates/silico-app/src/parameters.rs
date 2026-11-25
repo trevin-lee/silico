@@ -203,24 +203,7 @@ pub fn sketch_rows(read: Option<&SketchRead>) -> Vec<Row> {
         return Vec::new();
     };
     let sketch = &read.members;
-    let plane = crate::panes::plane_meta(&sketch.plane);
-    let mut rows = match &sketch.plane {
-        Plane::Face(face) => vec![
-            text(
-                "Plane",
-                if face.reversed {
-                    format!("{plane}, reversed")
-                } else {
-                    plane.to_owned()
-                },
-            ),
-            Row {
-                key: "Face",
-                value: Shown::Id(face.face.as_str().to_owned()),
-            },
-        ],
-        Plane::Origin(_) => vec![text("Plane", plane)],
-    };
+    let mut rows = plane_rows(&sketch.plane);
     let shown = crate::sketch::state_shown(read);
     let empty = sketch.elements().next().is_none();
     let colour = if read.states.state == SketchState::FullyDefined && !empty {
@@ -232,6 +215,69 @@ pub fn sketch_rows(read: Option<&SketchRead>) -> Vec<Row> {
         key: "Definition",
         value: Shown::Text(shown.words, colour),
     });
+    rows.push(text("Curves", curves(sketch)));
+    rows.push(text("Dimensions", none_or(dimensions(sketch))));
+    rows
+}
+
+/// The rows sketch mode's property panel gives the sketch open, from its read (sketch.js's
+/// `renderProps`): its plane, as [`sketch_rows`] gives it; its definition in sketch mode's
+/// words and colours, Fully defined in its own Gray.900 as the prototype colours every
+/// state there ([`crate::sketch::state_shown`]); its curves, as [`sketch_rows`] counts them;
+/// and how many points, dimensions (driving and driven), and relations it holds, each a
+/// number, as the prototype counts its new sketch's points and relations and its bracket's
+/// dimensions.
+pub fn sketch_mode_rows(read: &SketchRead) -> Vec<Row> {
+    let sketch = &read.members;
+    let mut rows = plane_rows(&sketch.plane);
+    let shown = crate::sketch::state_shown(read);
+    rows.push(Row {
+        key: "Definition",
+        value: Shown::Text(shown.words, shown.colour),
+    });
+    rows.push(text("Curves", curves(sketch)));
+    rows.push(text("Points", sketch.points.len().to_string()));
+    let dimensions = sketch
+        .constraints
+        .iter()
+        .filter(|constraint| constraint.form.is_dimension())
+        .count();
+    rows.push(text("Dimensions", dimensions.to_string()));
+    rows.push(text(
+        "Relations",
+        (sketch.constraints.len() - dimensions).to_string(),
+    ));
+    rows
+}
+
+/// A sketch's Plane row, as the browser's meta names it, and for a planar face, its Face
+/// row, the face by its stored name in the monospace type, `Face, reversed` if it's
+/// flipped.
+fn plane_rows(plane: &Plane) -> Vec<Row> {
+    let meta = crate::panes::plane_meta(plane);
+    match plane {
+        Plane::Face(face) => vec![
+            text(
+                "Plane",
+                if face.reversed {
+                    format!("{meta}, reversed")
+                } else {
+                    meta.to_owned()
+                },
+            ),
+            Row {
+                key: "Face",
+                value: Shown::Id(face.face.as_str().to_owned()),
+            },
+        ],
+        Plane::Origin(_) => vec![text("Plane", meta)],
+    }
+}
+
+/// A sketch's curves, construction left out, counted by kind (`1 line, 2 arcs`), and the
+/// circles' diameter if they share one (the prototype's `2 circles, ⌀ 5.5 mm`, in the
+/// canvas's Ø, as Dimensions marks a diameter); `None` for none.
+fn curves(sketch: &silico_core::document::Sketch) -> String {
     let lines = sketch
         .lines
         .iter()
@@ -262,9 +308,7 @@ pub fn sketch_rows(read: Option<&SketchRead>) -> Vec<Row> {
     {
         curves.push(format!("Ø {} mm", mm(*first)));
     }
-    rows.push(text("Curves", none_or(curves.join(", "))));
-    rows.push(text("Dimensions", none_or(dimensions(sketch))));
-    rows
+    none_or(curves.join(", "))
 }
 
 /// `words`, or "None" if there are none.
@@ -284,32 +328,23 @@ fn counted(count: usize, one: &str, many: &str) -> String {
 /// The sketch's driving dimensions' values, in the order it holds them, as the prototype
 /// writes its bracket's (`40, 30, 6, 8 mm`): the lengths with their unit after the last, a
 /// radius and a diameter marked as the canvas marks them (`R5`, `Ø11`), then the angles,
-/// each with its degree sign; reference dimensions left out, as they define nothing.
+/// each with its degree sign ([`marked`]); reference dimensions left out, as they define
+/// nothing.
 fn dimensions(sketch: &silico_core::document::Sketch) -> String {
-    use silico_core::document::Form;
-    let driving = || {
-        sketch
-            .constraints
+    let driving: Vec<(String, bool)> = sketch
+        .constraints
+        .iter()
+        .filter(|constraint| constraint.form.driving() == Some(true))
+        .filter_map(|constraint| marked(&constraint.form))
+        .collect();
+    let of = |angle: bool| -> Vec<&str> {
+        driving
             .iter()
-            .filter(|constraint| constraint.form.driving() == Some(true))
-            .map(|constraint| &constraint.form)
+            .filter(|(_, is_angle)| *is_angle == angle)
+            .map(|(value, _)| value.as_str())
+            .collect()
     };
-    let lengths: Vec<String> = driving()
-        .filter_map(|form| {
-            let (value, _) = form.length()?;
-            Some(match form {
-                Form::Radius { .. } => format!("R{}", mm(value)),
-                Form::Diameter { .. } => format!("Ø{}", mm(value)),
-                _ => mm(value),
-            })
-        })
-        .collect();
-    let angles: Vec<String> = driving()
-        .filter_map(|form| match form {
-            Form::Angle { value, .. } => Some(degrees(*value)),
-            _ => None,
-        })
-        .collect();
+    let (lengths, angles) = (of(false), of(true));
     let mut parts = Vec::new();
     if !lengths.is_empty() {
         parts.push(format!("{} mm", lengths.join(", ")));
@@ -318,6 +353,27 @@ fn dimensions(sketch: &silico_core::document::Sketch) -> String {
         parts.push(angles.join(", "));
     }
     parts.join(" · ")
+}
+
+/// A dimension's value as the property panel writes it, with its unit, as the Dimensions
+/// row writes it ([`marked`]): a length's millimetres (`40 mm`, `−12.5 mm`), a radius's
+/// and a diameter's marked (`R10 mm`, `Ø11 mm`), an angle's degrees (`90°`); none for a
+/// relation.
+pub fn dimension_value(form: &silico_core::document::Form) -> Option<String> {
+    marked(form).map(|(value, angle)| if angle { value } else { format!("{value} mm") })
+}
+
+/// A dimension's value, marked as the canvas marks it, without a length's unit, and
+/// whether it's an angle: a length's millimetres (`40`, `−12.5`, a true minus), a radius's
+/// `R10`, a diameter's `Ø11`, an angle's degrees with its sign (`90°`); none for a relation.
+fn marked(form: &silico_core::document::Form) -> Option<(String, bool)> {
+    use silico_core::document::Form;
+    match form {
+        Form::Angle { value, .. } => Some((degrees(*value), true)),
+        Form::Radius { value, .. } => Some((format!("R{}", mm(*value)), false)),
+        Form::Diameter { value, .. } => Some((format!("Ø{}", mm(*value)), false)),
+        form => form.length().map(|(value, _)| (mm(value), false)),
+    }
 }
 
 /// A length's millimetres, as the prototype's `fmt` writes them: at most two decimals, a
@@ -812,6 +868,124 @@ mod tests {
                 ("Face", "`b0000001.box.Face6`".to_owned()),
             ]
         );
+    }
+
+    fn sketch_mode_shown(read: &SketchRead) -> Vec<(&'static str, String, Color32)> {
+        sketch_mode_rows(read)
+            .into_iter()
+            .map(|row| match row.value {
+                Shown::Text(words, colour) => (row.key, words, colour),
+                Shown::Id(id) => (row.key, format!("`{id}`"), theme::PROPERTY_VALUE),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn sketch_modes_rows_are_its_plane_definition_curves_and_its_points_dimensions_and_relations_counted()
+     {
+        // sketch.js's `renderProps`: Plane, Definition in its state's colour (Fully defined
+        // too, #eeeeed, as the prototype colours every state there), Curves, then the
+        // counts: DIMENSIONED's six points, its seven dimensions (the reference length and
+        // the two angles among them), and no relation.
+        let read = sketch_read(DIMENSIONED, SketchPlane::Xy, SketchState::FullyDefined, 0);
+        assert_eq!(
+            sketch_mode_shown(&read),
+            [
+                ("Plane", "XY".to_owned(), theme::PROPERTY_VALUE),
+                (
+                    "Definition",
+                    "Fully defined".to_owned(),
+                    crate::sketch::style::SKETCH_FULLY_DEFINED
+                ),
+                ("Curves", "1 line, 2 arcs".to_owned(), theme::PROPERTY_VALUE),
+                ("Points", "6".to_owned(), theme::PROPERTY_VALUE),
+                ("Dimensions", "7".to_owned(), theme::PROPERTY_VALUE),
+                ("Relations", "0".to_owned(), theme::PROPERTY_VALUE),
+            ]
+        );
+        assert_eq!(
+            crate::sketch::style::SKETCH_FULLY_DEFINED,
+            Color32::from_rgb(0xee, 0xee, 0xed)
+        );
+        // Relations: every constraint that isn't a dimension. Two added (a horizontal and a
+        // coincidence of points): still seven dimensions, now two relations.
+        let related = DIMENSIONED.replace(
+            r#""constraints": ["#,
+            r#""constraints": [{"id": "kb000001", "type": "horizontal", "line": "na000001"}, {"id": "kb000002", "type": "on", "point": "pa000006", "curve": "na000001"}, "#,
+        );
+        let read = sketch_read(&related, SketchPlane::Xy, SketchState::UnderDefined, 0);
+        let shown = sketch_mode_shown(&read);
+        assert_eq!(
+            shown[1],
+            (
+                "Definition",
+                "Under defined · 2 DOF".to_owned(),
+                crate::sketch::style::SKETCH_UNDER_DEFINED
+            )
+        );
+        assert_eq!(shown[4].1, "7");
+        assert_eq!(shown[5].1, "2");
+        // A construction point counts among the points, as the prototype counts every point
+        // but the origin; a construction line isn't a curve (DIMENSIONED's na000002).
+        let with_construction_point = DIMENSIONED.replace(
+            r#""points": ["#,
+            r#""points": [{"id": "pa000007", "x": 5, "y": 5, "construction": true}, "#,
+        );
+        let read = sketch_read(
+            &with_construction_point,
+            SketchPlane::Xy,
+            SketchState::UnderDefined,
+            0,
+        );
+        let shown = sketch_mode_shown(&read);
+        assert_eq!(shown[2].1, "1 line, 2 arcs");
+        assert_eq!(shown[3].1, "7");
+        // An empty sketch: Empty, subdued; no curves; nothing counted.
+        let empty = r#""plane": "yz", "points": [], "lines": [], "circles": [], "arcs": [], "constraints": []"#;
+        let empty = sketch_read(empty, SketchPlane::Yz, SketchState::FullyDefined, 0);
+        assert_eq!(
+            sketch_mode_shown(&empty),
+            [
+                ("Plane", "YZ".to_owned(), theme::PROPERTY_VALUE),
+                (
+                    "Definition",
+                    "Empty".to_owned(),
+                    crate::sketch::style::TEXT_SUBDUED
+                ),
+                ("Curves", "None".to_owned(), theme::PROPERTY_VALUE),
+                ("Points", "0".to_owned(), theme::PROPERTY_VALUE),
+                ("Dimensions", "0".to_owned(), theme::PROPERTY_VALUE),
+                ("Relations", "0".to_owned(), theme::PROPERTY_VALUE),
+            ]
+        );
+        // On a face: Plane `Face` and the face's stored name, as the feature view's.
+        let on_face = DIMENSIONED.replace(
+            r#""plane": "xy""#,
+            r#""plane": {"face": "b0000001.box.Face6", "x": "+x", "reversed": true}"#,
+        );
+        let frame = silico_protocol::FaceFrame {
+            origin: [0.0, 0.0, 10.0],
+            x: [1.0, 0.0, 0.0],
+            y: [0.0, 1.0, 0.0],
+        };
+        let read = sketch_read(
+            &on_face,
+            SketchPlane::Face(frame),
+            SketchState::FullyDefined,
+            0,
+        );
+        let shown = sketch_mode_shown(&read);
+        assert_eq!(shown[0].1, "Face, reversed");
+        assert_eq!(
+            shown[1],
+            (
+                "Face",
+                "`b0000001.box.Face6`".to_owned(),
+                theme::PROPERTY_VALUE
+            )
+        );
+        assert_eq!(shown[2].0, "Definition");
     }
 
     const PAD: &str = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 12, "reversed": false}}"#;

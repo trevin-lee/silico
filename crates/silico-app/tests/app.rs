@@ -22716,6 +22716,7 @@ fn press_chord(h: &mut AppHarness, chord: Chord) {
             h.key_press_modifiers(shortcut.modifiers, shortcut.logical_key);
         }
         Chord::Pointer(..) => panic!("{chord:?} is the pointer's"),
+        Chord::Held(..) => panic!("{chord:?} is held as the pointer acts, never pressed"),
     }
 }
 
@@ -22811,6 +22812,7 @@ fn question_mark_opens_the_sheet_its_filter_narrows_it_and_esc_closes_it() {
         ("Orbit", "Shift+Middle-drag"),
         ("Hide or show", "H"),
         ("OK", "↵"),
+        ("Sketch without relations", "Ctrl+hold"),
         ("Keyboard shortcuts", "?"),
     ] {
         assert!(sheet_shows(&h, label), "{label}");
@@ -22967,9 +22969,10 @@ fn under_the_sheet_no_shortcut_acts() {
 
 #[test]
 fn every_command_the_search_lists_runs_from_it_as_its_keys_and_its_button_do() {
-    // Each command the search lists (the registry's but OK, Cancel, and the pointer's three:
-    // 43, the three past its first 40 among them, found by name), run from the search in a
-    // state where it can run: what its keys and its button do, by the same checks.
+    // Each command the search lists (the registry's but OK, Cancel, the pointer's three, and
+    // Sketch without relations: 43, the three past its first 40 among them, found by name),
+    // run from the search in a state where it can run: what its keys and its button do, by
+    // the same checks.
     let listed: Vec<&silico_app::shortcuts::Entry> = REGISTRY
         .iter()
         .filter(|entry| !silico_app::search::LEFT_OUT.contains(&entry.command))
@@ -24366,6 +24369,42 @@ fn same_every_way(entry: &silico_app::shortcuts::Entry, search: bool) {
                 sketch_mode(h).unwrap().settings.construction
             });
             assert_eq!(never_waits::waits(), 0);
+        }
+        Command::NoRelations => {
+            // Ctrl held as the pointer acts (the prototype's `['Mod', 'hold']`): no key to
+            // press, and left out of the search, as the prototype's `paletteItems` leaves
+            // `sNoRel` out. What it says is what the canvas does, through the window's own
+            // events: the Line tool clicked at (30, 30) then (50, 30.3), 0.86° off level,
+            // within the 2° the pointer infers `horizontal` at, is put level, at (50, 30),
+            // and made `horizontal`; the same clicks with Ctrl held add the line as clicked,
+            // with no relation.
+            assert!(!search, "the search leaves {command:?} out");
+            assert_eq!(entry.keys, [Chord::Held(Modifiers::COMMAND)]);
+            for held in [Modifiers::NONE, Modifiers::COMMAND] {
+                let f = fixture();
+                let mut h = triangle_opened(&f);
+                hand_camera(&mut h);
+                step(&mut h);
+                h.key_press(Key::L);
+                step(&mut h);
+                for at in [[30.0, 30.0], [50.0, 30.3]] {
+                    click_as_a_person(&mut h, to_screen(at).unwrap(), held);
+                }
+                settled(&mut h);
+                // Each click lands within a ten-thousandth of a millimetre of where it's
+                // made, through the pane's f32 projection.
+                let sketch = sketch_of_text(&f, &h, "s0000001");
+                let start = point_near(&sketch, 30.0, 30.0, THROUGH_THE_PANE);
+                let level = held == Modifiers::NONE;
+                let y = if level { 30.0 } else { 30.3 };
+                let end = point_near(&sketch, 50.0, y, THROUGH_THE_PANE);
+                let line = line_between(&sketch, &start, &end).unwrap();
+                assert_eq!(holds_direction(&sketch, &line, true), level, "{held:?}");
+                // The triangle's three and the one line: nothing else added.
+                assert_eq!(sketch.lines.len(), 4, "{held:?}");
+                assert_eq!(sketch.constraints.len(), usize::from(level), "{held:?}");
+                assert_eq!(never_waits::waits(), 0);
+            }
         }
         Command::FinishSketch => {
             use silico_app::sketch::tools::Choice;
@@ -27837,6 +27876,121 @@ fn in_sketch_mode_the_status_bar_says_the_sketch_the_pointer_on_it_and_its_state
     assert_eq!(never_waits::waits(), 0);
 }
 
+#[test]
+fn in_sketch_mode_a_drag_from_empty_space_is_a_box_of_the_sketchs_members() {
+    use eframe::egui::{PointerButton, Rect, Shape};
+    // SKETCHED with its triangle moved to pa000000 (40, 20), pb000000 (60, 20), and
+    // pc000000 (40, 30), on the canvas as `to_screen` draws them ([`hand_camera`]): (500,
+    // 300), (700, 300), and (500, 200). na000000 is pa–pb, nb000000 pb–pc, nc000000 pc–pa.
+    let text = SKETCHED
+        .replace(
+            r#""id": "pa000000", "x": 0, "y": 0"#,
+            r#""id": "pa000000", "x": 40, "y": 20"#,
+        )
+        .replace(
+            r#""id": "pb000000", "x": 20, "y": 0"#,
+            r#""id": "pb000000", "x": 60, "y": 20"#,
+        )
+        .replace(
+            r#""id": "pc000000", "x": 0, "y": 10"#,
+            r#""id": "pc000000", "x": 40, "y": 30"#,
+        );
+    assert_ne!(text, SKETCHED);
+    let f = fixture();
+    let (mut h, _) = f.opened("sketched.silico", &text);
+    step_until(&mut h, "its sketch", |h| shows(h, "Browser", "Triangle"));
+    double_click(&mut h, "Browser", "Triangle");
+    sketch_read(&mut h);
+    hand_camera(&mut h);
+    step(&mut h);
+    let picked = |ids: &[&str]| -> Vec<silico_core::document::Reference> {
+        ids.iter().map(|id| element_ref(id)).collect()
+    };
+    // The box's outline, as painted: the solid outline's one closed path, and how many
+    // dashes the crossing's dashed one is drawn in.
+    let stroke = silico_app::theme::color32(silico_app::theme::BOX_SELECT_STROKE);
+    let outline = |h: &AppHarness| -> (usize, usize) {
+        let shapes = shapes_painted(h);
+        let solid = shapes
+            .iter()
+            .filter(|shape| matches!(shape, Shape::Path(p) if p.stroke.color == eframe::epaint::ColorMode::Solid(stroke)))
+            .count();
+        let dashes = shapes
+            .iter()
+            .filter(
+                |shape| matches!(shape, Shape::LineSegment { stroke: s, .. } if s.color == stroke),
+            )
+            .count();
+        (solid, dashes)
+    };
+    // From (39, 19) to (61, 25): (490, 310) to (710, 250), on the canvas, nothing within the
+    // pick of its first corner.
+    let (low, high) = (
+        to_screen([39.0, 19.0]).unwrap(),
+        to_screen([61.0, 25.0]).unwrap(),
+    );
+    let canvas = the_viewport(&h);
+    assert!(canvas.contains(low) && canvas.contains(high), "{canvas:?}");
+    // Pressed and dragged, not yet let go: the box is drawn, the canvas's box fill over the
+    // rectangle the drag spans.
+    h.hover_at(low);
+    button_event(&h, low, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    for at in [low + (high - low) / 2.0, high] {
+        h.hover_at(at);
+        step(&mut h);
+    }
+    let fill = silico_app::theme::color32(silico_app::theme::BOX_SELECT_FILL);
+    let boxes: Vec<Rect> = shapes_painted(&h)
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Rect(r) if r.fill == fill => Some(r.rect),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(boxes, [Rect::from_two_pos(low, high)]);
+    // Left to right, a window: drawn solid, one closed outline and no dashes.
+    assert_eq!(outline(&h), (1, 0));
+    assert!(sketch_picks(&h).is_empty());
+    // Let go: left to right, a window, which takes the bottom side and its two ends, wholly
+    // inside; the other two sides reach up to pc000000 (40, 30), out of it.
+    button_event(&h, high, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_eq!(
+        sketch_picks(&h),
+        picked(&["na000000", "pa000000", "pb000000"])
+    );
+    // Drawn no more.
+    step(&mut h);
+    assert!(
+        !shapes_painted(&h)
+            .into_iter()
+            .any(|shape| matches!(shape, Shape::Rect(r) if r.fill == fill))
+    );
+    // The same box dragged right to left: a crossing, drawn dashed (its 220 by 60 outline
+    // in dashes of 4 and gaps of 3, many of them, and no solid path), which takes the two
+    // sides that cross it too.
+    h.hover_at(high);
+    button_event(&h, high, PointerButton::Primary, true, Modifiers::NONE);
+    step(&mut h);
+    for at in [high + (low - high) / 2.0, low] {
+        h.hover_at(at);
+        step(&mut h);
+    }
+    let (solid, dashes) = outline(&h);
+    assert_eq!(solid, 0);
+    assert!(dashes > 60, "{dashes} dashes");
+    button_event(&h, low, PointerButton::Primary, false, Modifiers::NONE);
+    step(&mut h);
+    assert_eq!(
+        sketch_picks(&h),
+        picked(&["na000000", "nb000000", "nc000000", "pa000000", "pb000000"])
+    );
+    // Nothing sent: a box changes sketch mode's selection alone.
+    assert_eq!(text_of(&f.sessions, &h), text);
+    assert_eq!(never_waits::waits(), 0);
+}
+
 /// A sketch of 511 points, whose 1022 unknowns leave room for one more point and no more
 /// (the gate takes 1024 at most).
 fn crowded() -> String {
@@ -29828,6 +29982,20 @@ fn label_of_dimension(h: &AppHarness, id: &str) -> eframe::egui::Pos2 {
         .unwrap()
 }
 
+/// A click at `at` on the screen, as the pane gives one.
+fn clicked_at(at: eframe::egui::Pos2) -> Vec<silico_app::sketch::PointerEvent> {
+    use silico_app::sketch::PointerAction::{Press, Release};
+    [Press, Release]
+        .into_iter()
+        .map(|action| silico_app::sketch::PointerEvent {
+            action,
+            at,
+            shift: false,
+            ctrl: false,
+        })
+        .collect()
+}
+
 /// A double-click at `at` on the screen, as the pane gives one.
 fn double_clicked_at(at: eframe::egui::Pos2) -> Vec<silico_app::sketch::PointerEvent> {
     use silico_app::sketch::PointerAction::{DoubleClick, Press, Release};
@@ -30213,6 +30381,57 @@ fn a_placed_dimension_double_clicked_is_set_as_typed_and_an_over_defining_edit_o
     assert_eq!(
         length_parts(&constraint_of(&sketch_of_text(&f, &h, &id), &length).form),
         Some((right, "99".to_owned(), false))
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_click_on_a_dimensions_value_selects_the_dimension_drawn_there_on_top() {
+    // Issue #599. The right side's two lengths, its 20 and a 30 left driving: a placed
+    // dimension stores no place, so their values stand at one place, one drawn after the
+    // other (in the order `last_drawn` paints in, the constraints' order, which their drawn
+    // IDs decide), on top of it. A click there selects the one on top, the value that
+    // shows, never the one beneath it.
+    use silico_app::sketch::draw::Drawn;
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (id, right, _) = fully_defined(&f, &mut h);
+    let third = over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    settled(&mut h);
+    // Smart Dimension left, so a click selects.
+    h.key_press(eframe::egui::Key::Escape);
+    step(&mut h);
+    assert_eq!(sketch_mode(&h).unwrap().tools.choice(), None);
+    let first = lengths(&sketch_of_text(&f, &h, &id))
+        .into_iter()
+        .find(|(_, line, value, _)| *line == right && value == "20")
+        .map(|(constraint, ..)| constraint)
+        .unwrap();
+    assert_ne!(first, third);
+    sketch_events(&f, &mut h, &[]);
+    let drawn = sketch_mode(&h).unwrap().last_drawn();
+    let labels: Vec<(String, eframe::egui::Pos2)> = drawn
+        .iter()
+        .filter_map(|d| match d {
+            Drawn::Label {
+                of: Some(of), at, ..
+            } if [first.as_str(), third.as_str()].contains(&of.as_str()) => {
+                Some((of.as_str().to_owned(), *at))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(labels.len(), 2, "{labels:?}");
+    assert_ne!(labels[0].0, labels[1].0);
+    assert!(labels[0].1.distance(labels[1].1) < 0.01, "{labels:?}");
+    let (on_top, at) = labels[1].clone();
+    sketch_events(&f, &mut h, &clicked_at(at));
+    let on_top = silico_core::document::ElementId::new(&on_top).unwrap();
+    assert_eq!(
+        sketch_mode(&h).unwrap().selected_ids(),
+        std::collections::BTreeSet::from([on_top])
     );
     assert_eq!(never_waits::waits(), 0);
 }
@@ -32719,6 +32938,355 @@ fn over_define_offered(
 }
 
 #[test]
+fn sketch_modes_property_panel_is_the_sketchs_own_its_rows_its_over_defined_card_and_its_hints() {
+    // sketch.js's `renderProps`, which app.js's `renderRight` shows while a sketch is open,
+    // before the selection: the head (the sketch's name, `Sketch · ` its ID), SKETCH's rows,
+    // the card for an over-defined sketch, and two hints. Values worked by hand from
+    // BOXED_LENGTH: four points, four lines, a horizontal and a vertical on each pair of
+    // sides, and a length of 40 on the bottom, which `counting_redundant_40` has repeat
+    // the others and agree: solved, over defined.
+    let f = fixture();
+    counting_redundant_40(&f);
+    let mut h = boxed_length(&f);
+    step_until(&mut h, "the sketch's own properties", |h| {
+        shows(h, "Properties", "Sketch · s0000001")
+    });
+    assert!(shows(&h, "Properties", "Box"));
+    // Not the selected feature's view (Edit Sketch selected the sketch): no Name field, no
+    // HEALTH, no ID row.
+    assert_eq!(property(&h, "ID"), None);
+    assert!(!shows(&h, "Properties", "HEALTH"));
+    assert!(shows(&h, "Properties", "SKETCH"));
+    let rows = |h: &AppHarness| {
+        [
+            "Plane",
+            "Definition",
+            "Curves",
+            "Points",
+            "Dimensions",
+            "Relations",
+        ]
+        .map(|key| property(h, key).unwrap_or_default())
+    };
+    assert_eq!(rows(&h), ["XY", "Over defined", "4 lines", "4", "1", "4"]);
+    // The prototype's card, in the app's words: the core reports this as a state, not an
+    // error, so there's no code and nothing to copy.
+    step_until(&mut h, "the card", |h| {
+        showing(h, "Properties", "is over defined").is_some()
+    });
+    assert_eq!(
+        showing(&h, "Properties", "is over defined").as_deref(),
+        Some("Box is over defined")
+    );
+    assert!(
+        showing(
+            &h,
+            "Properties",
+            "The 40 mm dimension repeats what the others already give."
+        )
+        .is_some()
+    );
+    assert!(showing(&h, "Properties", "Make it driven, or delete it.").is_some());
+    assert_eq!(
+        showing(&h, "Properties", "Elements:").as_deref(),
+        Some("Elements: ka000005")
+    );
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    assert!(
+        pane.query_by_role_and_label(Role::Button, "Copy as JSON")
+            .is_none()
+    );
+    assert!(pane.query_by_label("over_constrained").is_none());
+    // The prototype's hints, the drag's moved here from the palette, which no longer has it.
+    let drag = "Drag a blue point or curve to move it: what's fully defined stays put. Double-click a dimension to change it.";
+    assert!(showing(&h, "Properties", drag).is_some());
+    assert!(
+        h.get_by_role_and_label(Role::Group, "Sketch Palette")
+            .query_all_by_label_contains("Drag a blue point")
+            .next()
+            .is_none()
+    );
+    // Finish Sketch's keys as the platform names them: off macOS (egui_kittest's harness
+    // says it's Linux, whatever the host), Ctrl and the prototype's ↵ for Enter, joined by `+`.
+    assert_eq!(
+        showing(&h, "Properties", "keeps your changes and rebuilds").as_deref(),
+        Some("Finish Sketch Ctrl+↵ keeps your changes and rebuilds. Cancel drops them.")
+    );
+    // Finish: the selected feature's view again, the sketch's head and hints gone.
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+        .get_by_role_and_label(Role::Button, "Finish Sketch")
+        .click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    step_until(&mut h, "the feature's view", |h| {
+        property(h, "ID").as_deref() == Some("s0000001")
+    });
+    assert!(!shows(&h, "Properties", "Sketch · s0000001"));
+    assert_eq!(showing(&h, "Properties", drag), None);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn a_new_sketchs_property_panel_counts_nothing_and_its_conflict_is_the_cores_card() {
+    // Create Sketch on XY in the example (no sketch yet: Sketch1), empty: Empty, subdued,
+    // nothing counted. Then a rectangle and its two sides' lengths, fully defined (eight
+    // unknowns, eight equations: `fully_defined`'s count), and a third length of 30 on the
+    // right side, which holds 20: in conflict, the solve refused, and the card the core's
+    // error, its code and Copy as JSON with it.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    step_until(&mut h, "the document's properties", |h| {
+        shows(h, "Properties", "DOCUMENT")
+    });
+    create_sketch(&mut h, "XY plane");
+    sketch_read(&mut h);
+    let id = sketch_mode(&h).unwrap().sketch.clone().unwrap();
+    step_until(&mut h, "the sketch's properties", |h| {
+        shows(h, "Properties", &format!("Sketch · {id}"))
+    });
+    assert!(!shows(&h, "Properties", "DOCUMENT"));
+    let rows = |h: &AppHarness| {
+        [
+            "Plane",
+            "Definition",
+            "Curves",
+            "Points",
+            "Dimensions",
+            "Relations",
+        ]
+        .map(|key| property(h, key).unwrap_or_default())
+    };
+    assert_eq!(rows(&h), ["XY", "Empty", "None", "0", "0", "0"]);
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    step_until(&mut h, "the document's properties", |h| {
+        shows(h, "Properties", "DOCUMENT")
+    });
+    fully_defined(&f, &mut h);
+    step_until(&mut h, "fully defined", |h| {
+        property(h, "Definition").as_deref() == Some("Fully defined")
+    });
+    assert!(shows(&h, "Properties", "Sketch1"));
+    // Four lines, four corners; two lengths; the rectangle's two horizontals and two
+    // verticals and the origin's corner held level and plumb with it (#278's A).
+    assert_eq!(rows(&h), ["XY", "Fully defined", "4 lines", "4", "2", "6"]);
+    assert_eq!(showing(&h, "Properties", "is over defined"), None);
+    assert_eq!(showing(&h, "Properties", "conflict"), None);
+    over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the core's card", |h| {
+        showing(h, "Properties", "the sketch's constraints conflict").is_some()
+    });
+    let pane = h.get_by_role_and_label(Role::Pane, "Properties");
+    assert!(pane.query_by_label("over_constrained").is_some());
+    assert!(
+        pane.query_by_role_and_label(Role::Button, "Copy as JSON")
+            .is_some()
+    );
+    assert!(
+        showing(
+            &h,
+            "Properties",
+            "remove or change one of the constraints named"
+        )
+        .is_some()
+    );
+    assert_eq!(rows(&h)[3..], ["4", "3", "6"]);
+    assert_eq!(rows(&h)[1], "Over defined");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Sketch mode's card's Make it driven, in the Properties pane.
+fn make_it_driven(h: &AppHarness) -> Option<egui_kittest::Node<'_>> {
+    h.get_by_role_and_label(Role::Pane, "Properties")
+        .query_by_role_and_label(Role::Button, "Make it driven")
+}
+
+#[test]
+fn the_cards_make_it_driven_makes_the_one_repeating_dimension_driven_and_undo_puts_it_back() {
+    // sketch.js's card and its `skMakeDriven`: BOXED_LENGTH's bottom, 40, repeats the others
+    // (`counting_redundant_40`), the one dimension over-defining it, so the button means it,
+    // its tooltip saying so. A click sets its `driving` to false; the sketch, solved again
+    // without it, isn't over defined (eight unknowns less four relations: four freedoms),
+    // the card gone. Undo puts it back driving, the card again.
+    let f = fixture();
+    counting_redundant_40(&f);
+    let mut h = boxed_length(&f);
+    let opened = text_of(&f.sessions, &h);
+    step_until(&mut h, "the card's button", |h| make_it_driven(h).is_some());
+    let button = make_it_driven(&h).unwrap();
+    assert!(is_on(&button));
+    assert_eq!(
+        button.accesskit_node().description().as_deref(),
+        Some(
+            "Makes the 40 mm dimension, ka000005, driven: it shows its measured value in parentheses, and constrains nothing."
+        )
+    );
+    button.click();
+    step(&mut h);
+    settled(&mut h);
+    let field = "constraints.ka000005.driving".to_owned();
+    assert_eq!(h.state().tabs()[0].sent.last(), Some(&Sent::Edit(field)));
+    let length = |f: &Fixture, h: &AppHarness| {
+        length_parts(&constraint_of(&sketch_of_text(f, h, "s0000001"), "ka000005").form)
+    };
+    assert_eq!(
+        length(&f, &h),
+        Some(("na000001".to_owned(), "40".to_owned(), false))
+    );
+    step_until(&mut h, "the sketch no longer over defined", |h| {
+        sketch_state(h) == Some((silico_core::sketch_states::SketchState::UnderDefined, 4))
+    });
+    step_until(&mut h, "the card gone", |h| {
+        showing(h, "Properties", "is over defined").is_none() && make_it_driven(h).is_none()
+    });
+    assert_eq!(
+        property(&h, "Definition").as_deref(),
+        Some("Under defined · 4 DOF")
+    );
+    // Undo: driving again, over defined, the card and its button back.
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "the length driving again", |h| {
+        length(&f, h) == Some(("na000001".to_owned(), "40".to_owned(), true))
+    });
+    step_until(&mut h, "the card back", |h| make_it_driven(h).is_some());
+    // Made driven again, then the sketch's Cancel: the file's text as it opened, byte for
+    // byte (the edit, the first since sketch mode opened, began the transaction Cancel
+    // rolls back).
+    make_it_driven(&h).unwrap().click();
+    step(&mut h);
+    settled(&mut h);
+    step_until(&mut h, "driven again", |h| {
+        length(&f, h) == Some(("na000001".to_owned(), "40".to_owned(), false))
+    });
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+        .get_by_role_and_label(Role::Button, "Cancel")
+        .click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    assert_eq!(text_of(&f.sessions, &h), opened);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn after_leave_it_driving_make_it_driven_means_the_dimension_just_placed_though_all_three_conflict()
+{
+    // SolidWorks' prompt is about the dimension just placed (docs/ux/solidworks.md, §2):
+    // left driving, the card's Make it driven means it, though the solve flags all three
+    // lengths of the right side in conflict (`counting`) and nothing is selected. A click
+    // makes it driven, and the sketch is fully defined again, its first two lengths driving.
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (id, right, top) = fully_defined(&f, &mut h);
+    let third = over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    step_until(&mut h, "the card's button", |h| make_it_driven(h).is_some());
+    let button = make_it_driven(&h).unwrap();
+    assert!(is_on(&button));
+    let described = button.accesskit_node().description().unwrap_or_default();
+    assert_eq!(
+        described,
+        format!(
+            "Makes the 30 mm dimension, {third}, driven: it shows its measured value in parentheses, and constrains nothing."
+        )
+    );
+    button.click();
+    step(&mut h);
+    settled(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].sent.last(),
+        Some(&Sent::Edit(format!("constraints.{third}.driving")))
+    );
+    step_until(&mut h, "fully defined again", |h| {
+        sketch_state(h) == Some((silico_core::sketch_states::SketchState::FullyDefined, 0))
+    });
+    let sketch = sketch_of_text(&f, &h, &id);
+    let mut driving: Vec<(String, String, bool)> = lengths(&sketch)
+        .into_iter()
+        .map(|(_, line, value, driving)| (line, value, driving))
+        .collect();
+    driving.sort();
+    let mut expected = vec![
+        (right.clone(), "20".to_owned(), true),
+        (right, "30".to_owned(), false),
+        (top, "40".to_owned(), true),
+    ];
+    expected.sort();
+    assert_eq!(driving, expected);
+    step_until(&mut h, "the card gone", |h| make_it_driven(h).is_none());
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn opened_over_defined_by_several_make_it_driven_is_off_saying_why_until_one_is_selected() {
+    // The third length left driving, then the sketch finished and opened again: sketch mode
+    // knows no dimension left driving, and all three lengths conflict (`counting`), so the
+    // card's Make it driven is off, its reason its description. A click on the top's length's
+    // label (well clear of the right side's two) selects it (SolidWorks' Driven acts on the
+    // selection): on, naming it.
+    use silico_app::sketch::PointerAction::{Press, Release};
+    let f = fixture();
+    counting(&f);
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    let (id, _, top) = fully_defined(&f, &mut h);
+    over_define(&f, &mut h, 60.0, "30", 9);
+    choose_in_prompt(&mut h, "Leave it driving");
+    h.get_by_role_and_label(Role::Toolbar, "Sketch bar")
+        .get_by_role_and_label(Role::Button, "Finish Sketch")
+        .click();
+    step_until(&mut h, "sketch mode closed", |h| sketch_mode(h).is_none());
+    settled(&mut h);
+    double_click(&mut h, "Browser", "Sketch1");
+    step_until(&mut h, "sketch mode again", |h| {
+        sketch_mode(h).is_some_and(|mode| mode.sketch.as_ref().map(|s| s.as_str()) == Some(&id))
+    });
+    sketch_read(&mut h);
+    step_until(&mut h, "the card's button", |h| make_it_driven(h).is_some());
+    let button = make_it_driven(&h).unwrap();
+    assert!(!is_on(&button));
+    assert_eq!(
+        button.accesskit_node().description().as_deref(),
+        Some("Several dimensions over-define the sketch: select the one to make driven")
+    );
+    // The top's length's label clicked: selected, the button on for it.
+    let top_length = lengths(&sketch_of_text(&f, &h, &id))
+        .into_iter()
+        .find(|(_, line, _, _)| *line == top)
+        .map(|(constraint, ..)| constraint)
+        .unwrap();
+    sketch_events(&f, &mut h, &[]);
+    let at = label_of_dimension(&h, &top_length);
+    let click: Vec<silico_app::sketch::PointerEvent> = [Press, Release]
+        .into_iter()
+        .map(|action| silico_app::sketch::PointerEvent {
+            action,
+            at,
+            shift: false,
+            ctrl: false,
+        })
+        .collect();
+    sketch_events(&f, &mut h, &click);
+    step_until(&mut h, "the button on", |h| {
+        make_it_driven(h).is_some_and(|button| is_on(&button))
+    });
+    assert_eq!(
+        make_it_driven(&h)
+            .unwrap()
+            .accesskit_node()
+            .description()
+            .unwrap_or_default(),
+        format!(
+            "Makes the 40 mm dimension, {top_length}, driven: it shows its measured value in parentheses, and constrains nothing."
+        )
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn a_dimension_edited_to_0_is_sent_and_the_gates_refusal_said_in_its_box() {
     let f = fixture();
     counting(&f);
@@ -34201,9 +34769,9 @@ fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_say
     double_click(&mut h, "Browser", "Box");
     step_until(&mut h, "sketch mode", |h| sketch_mode(h).is_some());
     sketch_read(&mut h);
-    // The sketch's properties (main's panel gives its ID, no longer "Type: sketch").
+    // Sketch mode's own properties, its head giving the sketch's ID.
     step_until(&mut h, "the sketch in Properties", |h| {
-        property(h, "ID").as_deref() == Some("s0000001")
+        shows(h, "Properties", "Sketch · s0000001")
     });
     // The block's warning marks the timeline, so a read that marks nothing never clears
     // what was said wholesale.
@@ -34236,7 +34804,7 @@ fn after_the_over_define_prompts_cancel_properties_says_what_the_newest_read_say
     }
     // The block still marked: the timeline marks something, the sketch nothing.
     assert!(marks(&h, "k7f2qx3m").is_some_and(|(_, warnings)| warnings > 0));
-    assert_eq!(property(&h, "ID").as_deref(), Some("s0000001"));
+    assert!(shows(&h, "Properties", "Sketch · s0000001"));
     assert_eq!(showing(&h, "Properties", "conflict"), None);
     assert!(!h.state().tabs()[0].said.contains_key("s0000001"));
     assert_eq!(never_waits::waits(), 0);
@@ -37060,6 +37628,7 @@ fn real_box_description() -> silico_core::kernel::Description {
         },
         area,
         centroid,
+        orientation: silico_protocol::FaceOrientation::Forward,
     };
     let line = |start: [f64; 3], end: [f64; 3]| EdgeDescription {
         curve: EdgeCurve::Line,
@@ -37307,6 +37876,7 @@ fn describes_a_pin(f: &Fixture) {
         },
         area: PI * 6.25,
         centroid: [0.0, 0.0, z],
+        orientation: silico_protocol::FaceOrientation::Forward,
     };
     let rim = |z: f64| EdgeDescription {
         curve: EdgeCurve::Circle {
@@ -37327,6 +37897,7 @@ fn describes_a_pin(f: &Fixture) {
                 },
                 area: 60.0 * PI,
                 centroid: [0.0, 0.0, 6.0],
+                orientation: silico_protocol::FaceOrientation::Forward,
             },
             cap(12.0, 1.0),
             cap(0.0, -1.0),
@@ -56117,6 +56688,250 @@ fn redo_with_nothing_to_redo_by_side_of_the_release_says_so_only_before_it() {
         assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
         assert_eq!(never_waits::waits(), 0);
     }
+}
+
+/// What holds the session's command thread busy: what lets it go, and the check it holds.
+type SessionHeld = (Box<dyn FnOnce()>, Running<CheckAnswer>);
+
+/// The session's command thread held busy: every sketch solve held, and a fresh check
+/// solving the part's sketch on it, so what the tab sends next waits behind it.
+fn session_held(f: &Fixture, h: &AppHarness) -> SessionHeld {
+    let id = h.state().tabs()[0].id;
+    f.sketches.hold();
+    let check = f.sessions.check(&id, CheckModel::Current { fresh: true });
+    assert!(f.sketches.wait_held(WAIT), "the check's solve never held");
+    let solver = f.sketches.clone();
+    (Box::new(move || solver.release()), check)
+}
+
+/// The next frame's status read before what's held runs, then, before that frame takes
+/// any answer, the session let go and every command sent before it answered (a text read
+/// sent now, behind them, answers last): the frame takes their answers ahead of its status,
+/// as a loaded machine's frame does when they land between its status read and its taking
+/// them. `keys` given in that frame, after its answers are taken, as a window's keys are.
+fn answers_after_the_status_read(
+    f: &Fixture,
+    h: &mut AppHarness,
+    held: SessionHeld,
+    keys: Vec<eframe::egui::Event>,
+) {
+    let id = h.state().tabs()[0].id;
+    let mut behind = Some(f.sessions.text(&id, None));
+    let mut held = Some(held);
+    let sessions = Arc::clone(&f.sessions);
+    let before = sessions.status(&id).session.unwrap().revision;
+    let ran = Arc::new(AtomicBool::new(false));
+    let told = Arc::clone(&ran);
+    h.state_mut().tabs_mut()[0].after_status = Some(Box::new(move || {
+        let (Some((release, _check)), Some(mut text)) = (held.take(), behind.take()) else {
+            return;
+        };
+        assert_eq!(sessions.status(&id).session.unwrap().revision, before);
+        release();
+        // Polled, not waited on: this is the frame's thread.
+        let deadline = Instant::now() + WAIT;
+        loop {
+            match text.try_take() {
+                Ok(_) => break,
+                Err(running) => text = running,
+            }
+            assert!(Instant::now() < deadline, "never answered behind the edit");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        told.store(true, Ordering::SeqCst);
+    }));
+    h.input_mut().events.extend(keys);
+    step(h);
+    assert!(ran.load(Ordering::SeqCst), "the hook never ran");
+    h.state_mut().tabs_mut()[0].after_status = None;
+}
+
+#[test]
+fn undo_in_the_frame_a_lines_add_answers_before_its_status_takes_the_line_back() {
+    // A line let go with the session busy, so its `begin` and `sketch_add` wait; ⌘Z in the
+    // frame whose status was read before they ran and that takes their answers: the tab is
+    // ahead of its status (its counts the state before the line). SolidWorks' Undo takes
+    // back the line just drawn; it's never let go unsaid. The undo waits for the next
+    // frame's status, then is sent after the add, the line gone and there to redo.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let sent = line_held(&mut h);
+    let held = session_held(&f, &h);
+    pane_release(&mut h, [30.0, 60.0]);
+    let after = h.state().tabs()[0].sent[sent.len()..].to_vec();
+    assert_eq!(after, [Sent::Begin, Sent::SketchEdit("sketch_add")]);
+    let command = command_modifiers(&h);
+    answers_after_the_status_read(&f, &mut h, held, vec![key_event(Key::Z, command)]);
+    let said = said_while_settling(&mut h, NOTHING_TO_UNDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let added = tab.sent[sent.len()..].to_vec();
+    let add = added
+        .iter()
+        .position(|sent| sent == &Sent::SketchEdit("sketch_add"));
+    let undo = added.iter().position(|sent| matches!(sent, Sent::Undo(_)));
+    assert!(
+        add.is_some_and(|add| undo.is_some_and(|undo| add < undo)),
+        "{added:?}"
+    );
+    assert!(!said, "said there was nothing to undo");
+    assert!(tab.redoable());
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 4, "{sketch:?}");
+    assert!(
+        !line_near(&sketch, [10.0, 50.0], [30.0, 60.0]),
+        "{sketch:?}"
+    );
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_in_the_frame_an_undo_answers_before_its_status_gives_the_line_back() {
+    // A line drawn, then ⌘Z sent with the session busy; ⌘⇧Z in the frame whose status was
+    // read before the undo ran and that takes its answer: the tab is ahead of its status at
+    // the revision its undo came to. Redo gives the line back, sent after the undo, never
+    // let go unsaid.
+    use silico_app::tab::NOTHING_TO_REDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let sent = line_held(&mut h);
+    pane_release(&mut h, [30.0, 60.0]);
+    settled(&mut h);
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 5);
+    let held = session_held(&f, &h);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    assert!(
+        h.state().tabs()[0].sent[sent.len()..]
+            .iter()
+            .any(|sent| matches!(sent, Sent::Undo(_))),
+        "the undo wasn't sent"
+    );
+    answers_after_the_status_read(
+        &f,
+        &mut h,
+        held,
+        vec![key_event(Key::Z, command | Modifiers::SHIFT)],
+    );
+    let said = said_while_settling(&mut h, NOTHING_TO_REDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let after = tab.sent[sent.len()..].to_vec();
+    let undo = after.iter().position(|sent| matches!(sent, Sent::Undo(_)));
+    let redo = after.iter().position(|sent| matches!(sent, Sent::Redo(_)));
+    assert!(
+        undo.is_some_and(|undo| redo.is_some_and(|redo| undo < redo)),
+        "{after:?}"
+    );
+    assert!(!said, "said there was nothing to redo");
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 5, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn undo_in_the_frame_the_last_undo_answers_waits_for_the_status_then_says_nothing_to_undo() {
+    // break-it: the one edit of the transaction (Hole renamed HoleS) undone with the
+    // session busy, and ⌘Z again in the frame that takes that undo's answer before its
+    // status: the tab is ahead of its status, whose counts (one to undo) are of the state
+    // before. The second undo waits for the status, which counts none, so it says "Nothing
+    // to undo" and sends nothing: one undo sent, nothing refused.
+    use silico_app::tab::NOTHING_TO_UNDO;
+    let f = fixture();
+    let (mut h, _) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Hole");
+    type_name(&mut h, "S");
+    step_until(&mut h, "renamed", |h| {
+        h.state().tabs()[0].transaction && shows(h, "Timeline", "HoleS")
+    });
+    settled(&mut h);
+    let from = h.state().tabs()[0].sent.len();
+    let (hold, check) = hold_queue(&f, &h, 0);
+    let command = command_modifiers(&h);
+    h.input_mut().events.push(key_event(Key::Z, command));
+    step(&mut h);
+    assert_eq!(
+        h.state().tabs()[0].sent[from..]
+            .iter()
+            .filter(|sent| matches!(sent, Sent::Undo(_)))
+            .count(),
+        1,
+        "the first undo wasn't sent"
+    );
+    answers_after_the_status_read(
+        &f,
+        &mut h,
+        (Box::new(move || hold.release()), check),
+        vec![key_event(Key::Z, command)],
+    );
+    let said = said_while_settling(&mut h, NOTHING_TO_UNDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let undos = tab.sent[from..]
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Undo(_)))
+        .count();
+    assert_eq!(undos, 1, "{:?}", &tab.sent[from..]);
+    assert!(said, "the second undo went unsaid");
+    assert!(tab.message.is_none(), "{:?}", tab.message);
+    assert!(shows(&h, "Timeline", "Hole") && !shows(&h, "Timeline", "HoleS"));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn redo_in_the_frame_a_redo_answers_before_its_status_gives_the_next_line_back_too() {
+    // Two lines drawn and both undone; ⌘⇧Z sent with the session busy, and ⌘⇧Z again in
+    // the frame that takes the first redo's answer before its status: the tab is ahead of
+    // its status, and its own redo branch still holds the second line. Both redos are sent,
+    // in turn, and both lines are back; nothing is let go unsaid.
+    use silico_app::tab::NOTHING_TO_REDO;
+    let f = fixture();
+    let mut h = boxed_line_tool(&f);
+    settled(&mut h);
+    let from = h.state().tabs()[0].sent.len();
+    for (start, end) in [([10.0, 50.0], [30.0, 60.0]), ([60.0, 40.0], [80.0, 50.0])] {
+        pane_press(&mut h, start);
+        pane_move(
+            &mut h,
+            [(start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0],
+        );
+        pane_move(&mut h, end);
+        pane_release(&mut h, end);
+        settled(&mut h);
+    }
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 6);
+    let command = command_modifiers(&h);
+    for _ in 0..2 {
+        h.input_mut().events.push(key_event(Key::Z, command));
+        step(&mut h);
+        settled(&mut h);
+    }
+    assert_eq!(sketch_of_text(&f, &h, "s0000001").lines.len(), 4);
+    let held = session_held(&f, &h);
+    let redo = key_event(Key::Z, command | Modifiers::SHIFT);
+    h.input_mut().events.push(redo.clone());
+    step(&mut h);
+    answers_after_the_status_read(&f, &mut h, held, vec![redo]);
+    let said = said_while_settling(&mut h, NOTHING_TO_REDO);
+    settled(&mut h);
+    let tab = &h.state().tabs()[0];
+    let redos = tab.sent[from..]
+        .iter()
+        .filter(|sent| matches!(sent, Sent::Redo(_)))
+        .count();
+    assert_eq!(redos, 2, "{:?}", &tab.sent[from..]);
+    assert!(!said, "said there was nothing to redo");
+    let sketch = sketch_of_text(&f, &h, "s0000001");
+    assert_eq!(sketch.lines.len(), 6, "{sketch:?}");
+    assert!(line_near(&sketch, [10.0, 50.0], [30.0, 60.0]), "{sketch:?}");
+    assert!(line_near(&sketch, [60.0, 40.0], [80.0, 50.0]), "{sketch:?}");
+    assert_eq!(never_waits::waits(), 0);
 }
 
 #[test]

@@ -2604,8 +2604,8 @@ fn every_examples_error_ranks_all_its_candidates_or_none() {
             }
         }
     }
-    // 78 errors and the one warning's example.
-    assert_eq!(errors, 79);
+    // 78 errors and the two warnings' examples.
+    assert_eq!(errors, 80);
     assert_eq!(
         ranked,
         [
@@ -2619,12 +2619,14 @@ fn every_examples_error_ranks_all_its_candidates_or_none() {
             ),
         ]
     );
-    // The warning's is `[]`, as a warning has no candidates to rank.
-    let warning: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(root.join("warning/ends-not-joined.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(warning["ranking"], serde_json::json!([]));
+    // The warnings' are `[]`, as a warning has no candidates to rank.
+    for name in ["ends-not-joined", "instances-changed-nothing"] {
+        let warning: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(root.join(format!("warning/{name}.json"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(warning["ranking"], serde_json::json!([]), "{name}");
+    }
 }
 
 #[test]

@@ -388,8 +388,9 @@ fn every_example_holds_to_its_tools_schemas() {
     // suppressed feature and of a response too long, for several bodies and for one; and
     // diff's 3: its request, its result, and its refusal of a revision not held; and text's
     // request of a revision (Fable's restore, 2026-11-04); and diff's request and result of
-    // the file on disk (Fable's 6d decision, the same day).
-    assert_eq!(seen, 197);
+    // the file on disk (Fable's 6d decision, the same day); and M6.3's warning,
+    // `instances_changed_nothing`.
+    assert_eq!(seen, 198);
 }
 
 #[test]

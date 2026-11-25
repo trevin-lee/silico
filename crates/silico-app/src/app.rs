@@ -2464,9 +2464,12 @@ impl<P: Clients + 'static> App<P> {
             | Command::Construction
             | Command::FinishSketch => row(on(tab.in_sketch())),
             // Never listed (`search::LEFT_OUT`).
-            Command::Orbit | Command::Pan | Command::Zoom | Command::Ok | Command::Cancel => {
-                row(Can::Off(None))
-            }
+            Command::Orbit
+            | Command::Pan
+            | Command::Zoom
+            | Command::Ok
+            | Command::Cancel
+            | Command::NoRelations => row(Can::Off(None)),
         }
     }
 
@@ -2573,7 +2576,12 @@ impl<P: Clients + 'static> App<P> {
             | Command::FinishSketch
             | Command::Shortcuts => self.queued = Some(command),
             // Never listed (`search::LEFT_OUT`).
-            Command::Orbit | Command::Pan | Command::Zoom | Command::Ok | Command::Cancel => {
+            Command::Orbit
+            | Command::Pan
+            | Command::Zoom
+            | Command::Ok
+            | Command::Cancel
+            | Command::NoRelations => {
                 return false;
             }
         }

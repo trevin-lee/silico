@@ -34,9 +34,6 @@ pub const PROBLEMS_LISTED: usize = 100;
 /// length and a two-sided prism's whole length alike.
 const MAX_SWEEP_NM: i64 = (MAX_LENGTH * 1e6) as i64;
 
-/// The most a revolve or groove may turn, in nanodegrees: a whole turn.
-const MAX_TURN_NDEG: i64 = 360 * 1_000_000_000;
-
 /// Why a document isn't valid: its problems, in timeline order, as `invalid_input` errors
 /// naming the feature and the field.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,7 +266,7 @@ pub fn validate(document: &Document) -> Result<(), Invalid> {
                             format!("give the {what} a valid {parameter}"),
                         )
                     }),
-                    ExtentValue::Angle(angle) if (1..=MAX_TURN_NDEG).contains(&angle.ndeg()) => {}
+                    ExtentValue::Angle(angle) if (1..=super::TURN_NDEG).contains(&angle.ndeg()) => {}
                     ExtentValue::Angle(angle) => problems.add(|| {
                         refuse(
                             &parameter,
