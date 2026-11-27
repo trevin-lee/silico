@@ -8,12 +8,12 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use silico_core::command::wire::{Layout, ToWire, write as wire};
 use silico_core::document::{Checked, Document, FeatureId, read, write};
 
-use super::within::within;
+use super::cpu_work;
+use super::within::spending;
 
 fn id(text: &str) -> FeatureId {
     FeatureId::new(text).unwrap()
@@ -1116,8 +1116,7 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
     // 1,000,000 originals no feature has; and 60,000 pockets in one chain, each an original.
     // Each repeat found by a look-up, each refusal made only if it's listed, and each
     // original's chain read from the roots worked once, so each checks in well under the
-    // CPU time a square would take. (Measured on the CI VM: the chain case takes 2 s of CPU
-    // checked by roots, and 22 s checked by a list of the chain searched for each original.)
+    // CPU time a square would take (`within_probes`).
     let n: u32 = 600_000;
     let skips: Vec<String> = (1..n).map(|k| format!("[{k}]")).collect();
     let text = edited(
@@ -1127,7 +1126,7 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
     );
     // Past the cap (600,000 by 2), so refused at the count that passes it alone, and that
     // alone: none of the 599,999 distinct skips is taken for a repeat.
-    let refused = within(Duration::from_secs(10), move || {
+    let refused = within_probes(move || {
         let invalid = Checked::new(read(text.as_bytes()).unwrap()).unwrap_err();
         let errors: Vec<(Option<String>, String)> = invalid
             .errors()
@@ -1158,7 +1157,7 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
             ids.join(", ")
         ),
     );
-    let total = within(Duration::from_secs(10), move || {
+    let total = within_probes(move || {
         Checked::new(read(text.as_bytes()).unwrap())
             .unwrap_err()
             .total()
@@ -1184,10 +1183,38 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
         "    {{\"id\": \"m0000001\", \"type\": \"mirror\", \"v\": 1, \"name\": \"Mirror\", \"base\": \"{base}\", \"copies\": {{\"type\": \"features\", \"features\": [{}]}}, \"plane\": \"yz\"}}\n  ]\n}}\n",
         originals.join(", ")
     ));
-    let taken = within(Duration::from_secs(10), move || {
-        Checked::new(read(text.as_bytes()).unwrap()).map(|_| ())
-    });
+    let taken = within_probes(move || Checked::new(read(text.as_bytes()).unwrap()).map(|_| ()));
     assert!(taken.is_ok(), "{taken:?}");
+}
+
+/// How many times a fixed piece of work's CPU (`cpu_work::cost`) a check here may take.
+/// A bound in seconds failed a slow runner: 10.48 s of CPU against 10 on a GitHub-hosted
+/// Intel Xeon Platinum 8370C (gate 45487700650). The checks' CPU follows the machine's
+/// speed and how busy its cores are. On the hosted runners (probe-core-cpus, 2026-11-27)
+/// the second check took 3.2 to 3.4 s alone on an Intel Xeon 6975P-C or 6973P-C, 5.3 s
+/// alone on an AMD EPYC 7763, and 9.6 s there with three more beside it on its four vCPUs,
+/// where the probe's CPU grew alike. Over the probe, every reading was 11.7 to 25.7 times
+/// it, alone or four at once, on every CPU. The chain checked by a list of it searched for
+/// each original, the square this guards against, took 22 s of CPU on the CI VM where
+/// its roots take 2 s: about 140 times the probe. Bounded at 60, near the middle of the two,
+/// 2.3 times from each.
+const PROBE_TIMES: f64 = 60.0;
+
+/// `f`'s result, if its thread's CPU is under [`PROBE_TIMES`] the probe's (the slower of a
+/// reading before `f` and one after, as #292's chain of booleans takes it). A hang fails
+/// at ten times that bound of wall time.
+fn within_probes<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+    let before = cpu_work::cost();
+    let (out, spent) = spending(before.mul_f64(PROBE_TIMES * 10.0), f);
+    let after = cpu_work::cost();
+    let probe = before.max(after);
+    let times = spent.as_secs_f64() / probe.as_secs_f64();
+    assert!(
+        times < PROBE_TIMES,
+        "took {spent:?} of CPU, {times:.1} times the probe's {probe:?} (before {before:?}, \
+         after {after:?}), past {PROBE_TIMES}"
+    );
+    out
 }
 
 #[test]

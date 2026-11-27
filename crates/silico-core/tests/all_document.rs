@@ -20,6 +20,8 @@ mod cache_format;
 mod calls;
 #[path = "common/command.rs"]
 mod commands;
+#[path = "common/cpu_work.rs"]
+mod cpu_work;
 #[path = "common/example.rs"]
 mod example;
 #[path = "common/export_report.rs"]
