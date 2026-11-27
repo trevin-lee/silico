@@ -30,8 +30,7 @@ pub fn open_fds() -> usize {
 /// listing of `/proc/self/task`: a listing that meets a thread as it exits stops there,
 /// and the next read resumes by position in the shorter list, so it misses a live thread
 /// listed after the one that went. A test waiting for its threads to go would read that
-/// short count as them gone. On the CI VM, the pool's drop race counted 3 where 4 were
-/// live in 6 of 1,200 runs under load.
+/// short count as them gone (#617).
 pub fn threads() -> usize {
     if cfg!(target_os = "linux") {
         let status = std::fs::read_to_string("/proc/self/status").unwrap();
