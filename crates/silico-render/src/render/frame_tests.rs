@@ -9414,3 +9414,33 @@ fn a_new_body_colour_makes_the_mesh_drawn_in_a_bodys_place_again_first() {
         },
     );
 }
+
+#[test]
+fn a_rect_over_a_current_body_and_one_replaced_says_stale_beside_its_hit() {
+    // A 5 by 1 row from column 10, its centre (2.5, 0.5) the middle pixel's: body 1's Face2
+    // one left of it, body 2's Face5 under it, body 2 not current (replaced, or drawn by its
+    // mesh before its newest). The hit is body 1's face, the nearest of what's current, and
+    // the answer says it passed over body 2: a click mustn't take the face for what's there.
+    let empty = re_renderer::PickingLayerId::default();
+    let replaced = re_renderer::PickingLayerId {
+        object: re_renderer::PickingLayerObjectId(2),
+        instance: re_renderer::PickingLayerInstanceId(5),
+    };
+    let row = request(rect([10, 10], [5, 1]), [WIDTH, HEIGHT]);
+    let ids = [empty, face_id(2), replaced, empty, empty];
+    let ([any, edge], stale) = row.nearest(&ids, glam::UVec2::new(5, 1), |body| body == 1);
+    assert_eq!(
+        any.map(|(i, p)| (i, p.body, p.hit, p.pixel)),
+        Some((1, 1, Element::Face(2), [11, 10]))
+    );
+    assert_eq!(edge.map(|(i, _)| i), None);
+    assert!(
+        stale,
+        "a replaced body under the centre passed over, not said"
+    );
+    // With an edge of body 1 beside it, so too.
+    let ids = [empty, edge_id(4), replaced, empty, empty];
+    let ([_, edge], stale) = row.nearest(&ids, glam::UVec2::new(5, 1), |body| body == 1);
+    assert_eq!(edge.map(|(i, p)| (i, p.hit)), Some((1, Element::Edge(4))));
+    assert!(stale);
+}

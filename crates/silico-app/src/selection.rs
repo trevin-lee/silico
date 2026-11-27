@@ -3700,6 +3700,52 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_click_answered_on_a_body_beside_one_drawn_otherwise_asks_again_choosing_nothing() {
+        // Body 1 under the click's centre, its Face3, and beside it a body the renderer drew
+        // by its mesh before its newest and passed over: the answer is stale though it has
+        // a hit, so the click decides nothing by it, the selection as it was, and asks again
+        // of a later frame; an answer passing over nothing then picks.
+        use LeftKind::{Press, Release};
+        let mut selection = one_box();
+        let of = (1, Revision::from_number(1).unwrap());
+        selection.pick("aaaaaaaa.box.Face1", How::Replace);
+        let faces: Vec<Arc<Name>> = (1..=3).map(|n| named("aaaaaaaa", face(n))).collect();
+        let mut view = View::holding(BTreeMap::from([(1, view_body("aaaaaaaa", &faces))]));
+        let ctx = egui::Context::default();
+        let rect = square([20.0, 20.0], [100, 100], 3);
+        let on_face3 = |frame, stale| Picking {
+            frame,
+            rect,
+            hit: Some(crate::renderer::Pick {
+                body: 1,
+                hit: Element::Face(3),
+                pixel: centre_of(rect),
+                point: None,
+            }),
+            edge: None,
+            stale,
+        };
+        let click = frame_of(vec![
+            event(Press, [20.0, 20.0], false),
+            event(Release, [20.0, 20.0], false),
+        ]);
+        selection.overlay(&mut view, &click, &ctx, &no_face);
+        view.answered_as(of, on_face3(6, true));
+        view.take_asked();
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
+        let waiting = selection
+            .click
+            .expect("the click decided by a stale answer");
+        assert_eq!((waiting.after, waiting.answered), (Some(6), None));
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
+        // The same hit, of a frame that passed over nothing: Face3 picked.
+        view.answered_as(of, on_face3(7, false));
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
+        assert_eq!(selection.click, None);
+        assert_eq!(selection.names(), [faces[2].to_string()]);
+    }
+
+    #[test]
     fn a_click_answered_past_a_body_drawn_otherwise_asks_again_clearing_nothing() {
         // The renderer draws a body by its mesh before its newest while the new one's faces
         // are made, and passes over its pixels: an answer finding nothing there is no click
