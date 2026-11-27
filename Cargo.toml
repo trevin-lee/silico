@@ -54,7 +54,7 @@ hmac = "0.12"
 # The math OCCT uses (its libm shim's, pinned alike), where Silico must compute as it does.
 libm = { version = "=0.2.16", default-features = false }
 libc = "0.2"
-# Debug views of geometry until the app exists: the logging SDK only, not the viewer.
+# Debug views of geometry, beside the app: the logging SDK only, not the viewer.
 rerun = { version = "=0.38.1", default-features = false, features = ["sdk"] }
 # Rerun's renderer, the one M5's viewport grows from, pinned with the Rerun SDK above
 # (silico-render; docs/design/m4.6-render.md, R1). Its importers are off: nothing reads a
