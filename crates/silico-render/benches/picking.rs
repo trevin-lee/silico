@@ -48,8 +48,9 @@
 //!
 //! Last, the frames that make the faces' GPU meshes (section 10's check, `uploads`): ten
 //! copies as ten bodies, drawn first, one body's mesh replaced, and every body's, each line
-//! the frames it took until every face was made, their most CPU in `Renderer::prepare`, and
-//! the still frame's, by their medians over five runs.
+//! the frames it took until every face was made, their most CPU in `Renderer::prepare`, the
+//! first frame's CPU with the uploads before it (`Renderer::upload`, which the app makes in
+//! that frame's paint callback), and the still frame's, by their medians over five runs.
 //!
 //! Recorded, never budgeted: it fails on no time. Run with
 //! `SILICO_KERNEL_WORKER=target/release/silico-kernel-worker SILICO_BENCH_BREP=part.brep
@@ -515,8 +516,10 @@ fn sketch_lines(
 /// (an edit upstream of them all). Each case's frames run from the one after its uploads
 /// until a frame makes no more; each line gives, over the runs, the medians of how many
 /// frames that took, of their most CPU in `Renderer::prepare` (the UI thread's part of a
-/// frame), of their total, and of the frames' to the GPU's end, against the still frame's
-/// prepare (`still`, the view of the bodies made already).
+/// frame), of their total, of the frames' to the GPU's end, and of the first frame's prepare
+/// with the case's uploads (`Renderer::upload`: each mesh compared, checked, and its faces
+/// listed, over all its triangles, unbudgeted, in the app's paint callback of that frame),
+/// against the still frame's prepare (`still`, the view of the bodies made already).
 fn uploads(
     adapter: &wgpu::Adapter,
     device: &wgpu::Device,
@@ -557,8 +560,10 @@ fn uploads(
         .sqrt();
     let camera = orbit(target, reach, 0);
     // Each case's runs: its frames, and their most prepare, total prepare, and total to the
-    // GPU's end; and the still frames' prepares.
-    let mut cases: [Vec<(usize, Duration, Duration, Duration)>; 3] = Default::default();
+    // GPU's end, and its uploads' (`Renderer::upload`, each mesh checked and its faces listed,
+    // over every triangle, unbudgeted: the app makes them in the paint callback of the frame
+    // that first draws them) with the first frame's prepare; and the still frames' prepares.
+    let mut cases: [Vec<Run>; 3] = Default::default();
     let mut still = Vec::new();
     for _ in 0..RUNS {
         let mut renderer = Renderer::new(
@@ -612,31 +617,50 @@ fn uploads(
         // The frames until the bodies are whole, as the pane asks for them while the
         // renderer says it's uploading: how many, their most prepare and their total, and
         // their total to the GPU's end.
-        let mut whole = |renderer: &mut Renderer| {
-            let (mut frames, mut most, mut total, mut done) =
-                (0usize, Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let mut whole = |renderer: &mut Renderer, uploaded: Duration| {
+            let mut run = Run {
+                frames: 0,
+                most: Duration::ZERO,
+                total: Duration::ZERO,
+                done: Duration::ZERO,
+                first: Duration::ZERO,
+            };
             loop {
                 let (prepared, finished) = frame(renderer)?;
-                frames += 1;
-                most = most.max(prepared);
-                total += prepared;
-                done += finished;
-                if !renderer.uploading() || frames == 10_000 {
+                if run.frames == 0 {
+                    run.first = uploaded + prepared;
+                }
+                run.frames += 1;
+                run.most = run.most.max(prepared);
+                run.total += prepared;
+                run.done += finished;
+                if !renderer.uploading() || run.frames == 10_000 {
                     break;
                 }
             }
-            Ok::<_, String>((frames, most, total, done))
+            Ok::<_, String>(run)
         };
-        for (body, copy) in bodies.iter().zip(&copies) {
-            renderer.upload(*body, copy).map_err(|f| f.to_string())?;
-        }
-        cases[0].push(whole(&mut renderer)?);
-        renderer.upload(1, &once[0]).map_err(|f| f.to_string())?;
-        cases[1].push(whole(&mut renderer)?);
-        for (body, copy) in bodies.iter().zip(&twice) {
-            renderer.upload(*body, copy).map_err(|f| f.to_string())?;
-        }
-        cases[2].push(whole(&mut renderer)?);
+        // Each case's uploads, timed: what the app's first frame of them does before its
+        // prepare.
+        let upload = |renderer: &mut Renderer, meshes: &[(u32, &Arc<Mesh>)]| {
+            let started = Instant::now();
+            for (body, mesh) in meshes {
+                renderer.upload(*body, mesh).map_err(|f| f.to_string())?;
+            }
+            Ok::<_, String>(started.elapsed())
+        };
+        let uploaded = upload(
+            &mut renderer,
+            &bodies.iter().copied().zip(&copies).collect::<Vec<_>>(),
+        )?;
+        cases[0].push(whole(&mut renderer, uploaded)?);
+        let uploaded = upload(&mut renderer, &[(1, &once[0])])?;
+        cases[1].push(whole(&mut renderer, uploaded)?);
+        let uploaded = upload(
+            &mut renderer,
+            &bodies.iter().copied().zip(&twice).collect::<Vec<_>>(),
+        )?;
+        cases[2].push(whole(&mut renderer, uploaded)?);
         for _ in 0..10 {
             still.push(frame(&mut renderer)?.0);
         }
@@ -648,29 +672,40 @@ fn uploads(
         .into_iter()
         .zip(cases)
     {
-        let median =
-            |runs: &mut Vec<(usize, Duration, Duration, Duration)>,
-             key: fn(&(usize, Duration, Duration, Duration)) -> Duration| {
-                runs.sort_by_key(key);
-                key(&runs[runs.len() / 2])
-            };
+        let median = |runs: &mut Vec<Run>, key: fn(&Run) -> Duration| {
+            runs.sort_by_key(key);
+            key(&runs[runs.len() / 2])
+        };
         let frames = {
-            let mut counts: Vec<usize> = runs.iter().map(|r| r.0).collect();
+            let mut counts: Vec<usize> = runs.iter().map(|r| r.frames).collect();
             counts.sort_unstable();
             counts[counts.len() / 2]
         };
-        let most = median(&mut runs, |r| r.1);
-        let total = median(&mut runs, |r| r.2);
-        let done = median(&mut runs, |r| r.3);
+        let most = median(&mut runs, |r| r.most);
+        let total = median(&mut runs, |r| r.total);
+        let done = median(&mut runs, |r| r.done);
+        let first = median(&mut runs, |r| r.first);
         out += &format!(
-            "uploads copies 10 faces {faces} triangles {triangles} size {width}x{height} budget {UPLOAD_BUDGET} face_cost {FACE_COST} case {name} frames_median {frames} prepare_most_median_ms {:.2} prepare_total_median_ms {:.2} to_gpu_done_median_ms {:.2} still_prepare_median_ms {:.2}\n",
+            "uploads copies 10 faces {faces} triangles {triangles} size {width}x{height} budget {UPLOAD_BUDGET} face_cost {FACE_COST} case {name} frames_median {frames} prepare_most_median_ms {:.2} prepare_total_median_ms {:.2} to_gpu_done_median_ms {:.2} first_frame_with_uploads_median_ms {:.2} still_prepare_median_ms {:.2}\n",
             ms(most),
             ms(total),
             ms(done),
+            ms(first),
             ms(still[still.len() / 2]),
         );
     }
     Ok(out)
+}
+
+/// One run of an `uploads` case: its frames until whole, their most prepare, their total
+/// prepare, and their total to the GPU's end; and its uploads with its first frame's prepare,
+/// what the app's first frame of them takes on the CPU.
+struct Run {
+    frames: usize,
+    most: Duration,
+    total: Duration,
+    done: Duration,
+    first: Duration,
 }
 
 /// Where Select Other's casts are made from: the copies filling the view, the pointers across
