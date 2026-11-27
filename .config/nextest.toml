@@ -115,11 +115,13 @@ filter = 'package(silico-kernel) & test(=dropping_the_pool_while_a_slot_replaces
 slow-timeout = { period = "60s", terminate-after = 10 }
 
 # A sketch no algorithm solves, at the most unknowns the worker takes (silico-sketch
-# adversarial_document): every algorithm tried in turn, 74 s to 206 s by the machine's load,
-# and given up to 900 s so it tests the answer, not the speed.
+# adversarial_document): every algorithm tried in turn, 74 s to 206 s by the machine's load
+# (and 351 s on a hosted runner's Xeon Platinum 8370C), and given up to 1,200 s, with 60 s
+# more before the test says it hung, so it tests the answer, not the speed: killed only after
+# that, at 22 minutes.
 [[profile.default.overrides]]
 filter = 'package(silico-sketch) & test(=an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout)'
-slow-timeout = { period = "60s", terminate-after = 17 }
+slow-timeout = { period = "60s", terminate-after = 22 }
 
 
 # A pool whose slot's thread can't start (silico-kernel pool_slot_spawn_fails) takes away its
