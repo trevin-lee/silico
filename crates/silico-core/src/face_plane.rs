@@ -61,8 +61,9 @@ pub(crate) enum Live<'a> {
         map: &'a ElementMap,
         description: Result<&'a Description, Error>,
     },
-    /// Its feature failed, or was blocked: the feature whose failure is at the root.
-    Failed(FeatureId),
+    /// Its feature, `solid`, failed, or was blocked: and `root`, the feature whose failure
+    /// is at the root (`solid` itself, if it failed).
+    Failed { root: FeatureId, solid: FeatureId },
     /// Not built yet, its feature named: it waits on another sketch's face.
     Waits(FeatureId),
 }
@@ -84,8 +85,15 @@ pub(crate) enum Placed {
     /// The face's reference is broken, or its axis is parallel to it: a `reference_broken`
     /// error on the sketch, with candidates.
     Broken(Error),
-    /// A live solid it might be in failed or was blocked: blocked on that failure's root.
-    Blocked(FeatureId),
+    /// A live solid it might be in failed or was blocked: blocked on the first one's root,
+    /// `on`, through each such solid's feature, `through` (in the order looked in), which
+    /// may come to other roots: a fuse blocked on its base's fault, say, whose tool failed
+    /// for the document. What the timeline judges a blocked sketch by, as it does a
+    /// feature by what it uses.
+    Blocked {
+        on: FeatureId,
+        through: Vec<FeatureId>,
+    },
     /// Its solid couldn't be described (a worker's failure, or the kernel's refusal of its
     /// values): that, on the sketch.
     Failed(Error),
@@ -269,11 +277,18 @@ fn found_face<'a>(
             if let Some(on) = waiting(related) {
                 return Err(on);
             }
-            if let Some(root) = related.iter().find_map(|solid| match solid {
-                Live::Failed(root) => Some(root.clone()),
-                Live::Built { .. } | Live::Waits(_) => None,
-            }) {
-                return Ok(Found::Not(Placed::Blocked(root)));
+            let failed: Vec<(&FeatureId, &FeatureId)> = related
+                .iter()
+                .filter_map(|solid| match solid {
+                    Live::Failed { root, solid } => Some((root, solid)),
+                    Live::Built { .. } | Live::Waits(_) => None,
+                })
+                .collect();
+            if let Some(&(root, _)) = failed.first() {
+                return Ok(Found::Not(Placed::Blocked {
+                    on: root.clone(),
+                    through: failed.iter().map(|&(_, solid)| solid.clone()).collect(),
+                }));
             }
             let why = retyped.unwrap_or_else(|| {
                 "names no face of the solids live at the sketch's place: it isn't one of the \
@@ -332,7 +347,7 @@ fn silico_bug(message: &str) -> Error {
 fn waiting(solids: &[Live<'_>]) -> Option<FeatureId> {
     solids.iter().find_map(|solid| match solid {
         Live::Waits(on) => Some(on.clone()),
-        Live::Built { .. } | Live::Failed(_) => None,
+        Live::Built { .. } | Live::Failed { .. } => None,
     })
 }
 
@@ -344,7 +359,7 @@ fn built<'s, 'a>(
         .iter()
         .filter_map(|solid| match solid {
             Live::Built { map, description } => Some((*map, description)),
-            Live::Failed(_) | Live::Waits(_) => None,
+            Live::Failed { .. } | Live::Waits(_) => None,
         })
         .collect()
 }
@@ -1005,27 +1020,49 @@ mod tests {
         };
         let plane = face_plane("b0000002.box.Face6", PlusX, false);
         let sketch = id("s0000001");
+        // A fillet of the box, blocked on the box's failure.
+        let failed = || Live::Failed {
+            root: id("b0000002"),
+            solid: id("f0000002"),
+        };
         // A related solid not built yet: it waits, naming that solid's feature, whatever
         // else failed.
         assert_eq!(
             place(
                 &sketch,
                 &plane,
-                &[Live::Failed(id("b0000002")), Live::Waits(id("p0000001"))],
+                &[failed(), Live::Waits(id("p0000001"))],
                 &Vec::new,
                 &makers
             ),
             Resolved::Waits(id("p0000001"))
         );
         assert_eq!(
+            place(&sketch, &plane, &[failed()], &Vec::new, &makers),
+            Resolved::Placed(Placed::Blocked {
+                on: id("b0000002"),
+                through: vec![id("f0000002")]
+            })
+        );
+        // Two that failed: blocked on the first's root, through both, in order.
+        assert_eq!(
             place(
                 &sketch,
                 &plane,
-                &[Live::Failed(id("b0000002"))],
+                &[
+                    failed(),
+                    Live::Failed {
+                        root: id("c0000003"),
+                        solid: id("j0000003")
+                    }
+                ],
                 &Vec::new,
                 &makers
             ),
-            Resolved::Placed(Placed::Blocked(id("b0000002")))
+            Resolved::Placed(Placed::Blocked {
+                on: id("b0000002"),
+                through: vec![id("f0000002"), id("j0000003")]
+            })
         );
         // A solid that isn't related never holds it: not searched, so its face isn't found
         // there, and the name is broken, the unrelated solid's faces its candidates.
@@ -1049,11 +1086,7 @@ mod tests {
         let found = place(
             &sketch,
             &face_plane("b0000001.box.Face6", PlusX, false),
-            &[
-                Live::Waits(id("p0000001")),
-                built,
-                Live::Failed(id("b0000002")),
-            ],
+            &[Live::Waits(id("p0000001")), built, failed()],
             &Vec::new,
             &makers,
         );

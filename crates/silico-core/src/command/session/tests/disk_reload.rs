@@ -1110,7 +1110,7 @@ fn an_open_wakes_the_client_as_it_answers_and_so_does_one_refused() {
         assert_eq!(settled_in(&sessions, &id, &count), 2 * n + 2);
     }
     let refused = sessions.open(dir.path().join("none.silico"), false).wait();
-    assert!(refused.result.is_err());
+    refused_as_missing(&refused);
     woken(&count, 5);
     drop(sessions);
     // One wake an open, the refused one's too, and none besides.
