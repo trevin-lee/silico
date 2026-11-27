@@ -776,3 +776,5 @@ crates/silico-core/src/command/pattern.rs | anchor | replace > with >= | #603
 crates/silico-core/src/command/pattern.rs | anchor | replace && with || | #603
 crates/silico-oracle/src/features.rs | part_design | replace < with <= | #600
 crates/silico-render/src/render.rs | edges | replace > with >= | #613
+crates/silico-app/src/selection.rs | Selection::overlay | replace > with >= | #615
+crates/silico-render/src/render.rs | seen_by | replace seen_by -> bool with true | #615
