@@ -3063,10 +3063,10 @@ fn session_threads_that_ended_are_joined_as_the_next_opens() {
 #[test]
 fn the_claims_count_each_file_that_changes_hands_and_never_a_claim_made_again_of_what_is_held() {
     // `Book::claims`, which a refused reload waits on to be tried again: one more for a
-    // file claimed anew, a claim moved to a new file at the path, and a session's files let
-    // go; none for a claim made again of what's held, or a release of a session that holds
-    // nothing. Driven step by step on the registry for two sessions no thread serves, so no
-    // session's own end releases anything between the steps.
+    // file or a path claimed anew, a claim moved to a new file at the path, and a session's
+    // files or paths let go; none for a claim made again of what's held, or a release of a
+    // session that holds nothing. Driven step by step on the registry for two sessions no
+    // thread serves, so no session's own end releases anything between the steps.
     let f = opened(BOX);
     let registry = &f.sessions.registry;
     let claims = || lock(&registry.book).claims;
@@ -3103,14 +3103,32 @@ fn the_claims_count_each_file_that_changes_hands_and_never_a_claim_made_again_of
     // Reclaimed again, the same file: nothing changed hands.
     reclaim(&Arc::downgrade(registry), b, &path);
     assert_eq!((claims(), held_by_b()), (start + 3, (1, 1)));
+    // The same file by a second name (a hard link), claimed there too: a path claimed anew.
+    let linked = f.path.with_file_name("b-link.silico");
+    std::fs::hard_link(&path, &linked).unwrap();
+    assert!(claim(registry, file_there(), &linked, &linked, b).is_ok());
+    assert_eq!((claims(), held_by_b()), (start + 4, (1, 2)));
     // A session that holds nothing, released: nothing let go.
     lock(&registry.book).release(c);
-    assert_eq!((claims(), held_by_b()), (start + 3, (1, 1)));
-    // Released: its file and its path let go, once.
+    assert_eq!((claims(), held_by_b()), (start + 4, (1, 2)));
+    // Released: its file and its paths let go, once.
     lock(&registry.book).release(b);
-    assert_eq!((claims(), held_by_b()), (start + 4, (0, 0)));
+    assert_eq!((claims(), held_by_b()), (start + 5, (0, 0)));
     lock(&registry.book).release(b);
-    assert_eq!((claims(), held_by_b()), (start + 4, (0, 0)));
+    assert_eq!((claims(), held_by_b()), (start + 5, (0, 0)));
+    // A session holding a path alone (a Save As whose file couldn't be claimed), released:
+    // the path let go.
+    lock(&registry.book)
+        .paths
+        .insert(f.path.with_file_name("c.silico"), c);
+    lock(&registry.book).release(c);
+    assert_eq!(claims(), start + 6);
+    assert!(
+        lock(&registry.book)
+            .paths
+            .values()
+            .all(|holder| *holder != c)
+    );
 }
 
 #[test]
