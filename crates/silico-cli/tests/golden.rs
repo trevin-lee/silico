@@ -430,7 +430,7 @@ fn the_golden_models_centres_are_where_their_material_is_by_hand() {
     // model's construction and held to the nanometre the file writes (Fable's derivation, M5's
     // milestone review, 2026-11-27). A part is its volume and its centroid; a feature's
     // centre is the volume-weighted mean of what it adds and takes away (`comb`). A fillet of
-    // radius r along a straight edge between two square faces adds or takes the sliver of the
+    // radius r along a straight edge between two faces at right angles adds or takes the sliver of the
     // square r × r less the quarter disc: area A r² with A = 1 − π/4, its centroid K r from the
     // corner along each face, K = (5/6 − π/4) / A; round a rim of radius ρ₀ its centroid runs
     // round ρ = ρ₀ ± K r, so it's 2π ρ A r² by Pappus.
@@ -601,20 +601,26 @@ fn the_golden_models_centres_are_where_their_material_is_by_hand() {
     for (model, feature, (_, want)) in rows {
         assert_eq!(centre(model, feature), want.map(nm), "{model}: {feature}");
     }
-    // Every fingerprint the goldens hold has its row.
-    let fingerprinted: usize = MODELS
+    // Every fingerprint the goldens hold has its row, and no row is another's twice.
+    let fingerprinted: std::collections::BTreeSet<(&str, String)> = MODELS
         .iter()
-        .map(|model| {
+        .flat_map(|model| {
             let text = std::fs::read_to_string(golden().join(model)).unwrap();
             let document = silico_core::document::read(text.as_bytes()).unwrap();
             document
                 .features
                 .iter()
                 .filter(|f| f.fingerprint.is_some())
-                .count()
+                .map(|f| (*model, f.id.as_str().to_owned()))
+                .collect::<Vec<_>>()
         })
-        .sum();
-    assert_eq!(fingerprinted, rows.len());
+        .collect();
+    let held: std::collections::BTreeSet<(&str, String)> = rows
+        .iter()
+        .map(|(model, feature, _)| (*model, (*feature).to_owned()))
+        .collect();
+    assert_eq!(held.len(), rows.len(), "a row is listed twice");
+    assert_eq!(held, fingerprinted);
 }
 
 /// `text` with every fingerprint's centre taken out (`"center": [x, y, z], `), as Silico
