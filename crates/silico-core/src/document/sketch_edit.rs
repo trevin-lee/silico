@@ -226,9 +226,8 @@ pub fn remove<N: Named>(sketch: &Sketch, members: &[N]) -> Result<Edited, Refuse
 /// `curve` and another at the point is removed: they no longer meet there (FreeCAD's vertex
 /// Delete keeps an end-to-end tangency, which an unjoin that left them joined wouldn't be).
 /// A `tangent_on` whose `a` is `curve` and whose `at` is the point goes with `curve`, to the
-/// new point, so its `at` stays an end of `a` (docs/design/m5.0-app.md, open item 14,
-/// pending the maintainer). The point's other constraints (a lock, an `on`) stay with the
-/// curves that keep it, where FreeCAD's vertex Delete (`delConstraintOnPoint`, its
+/// new point, so its `at` stays an end of `a` (docs/design/m5.0-app.md, open item 14). The
+/// point's other constraints (a lock, an `on`) stay with the curves that keep it, where FreeCAD's vertex Delete (`delConstraintOnPoint`, its
 /// `onlyCoincident`) leaves them on the detached curve's end: a shared point doesn't say
 /// which curve's end a constraint was on. Refused, as data naming them: a point or curve the sketch hasn't,
 /// a curve that doesn't use the point, and a point no other curve shares (FreeCAD
