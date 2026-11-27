@@ -694,6 +694,11 @@ impl crate::kernel::Kernel for KernelPool {
     ) -> Pending<T> {
         KernelPool::submit(self, generation, request)
     }
+
+    /// Its slots, at least one (none until it opens).
+    fn capacity(&self) -> usize {
+        self.shared.size.load(Ordering::Relaxed).max(1)
+    }
 }
 
 impl Clients for KernelPool {
@@ -734,6 +739,11 @@ impl crate::kernel::Kernel for PoolClient {
         request: KernelRequest<T>,
     ) -> Pending<T> {
         self.shared.submit(self.id, generation, request)
+    }
+
+    /// Its pool's slots, at least one, which every client shares.
+    fn capacity(&self) -> usize {
+        self.shared.size.load(Ordering::Relaxed).max(1)
     }
 }
 
