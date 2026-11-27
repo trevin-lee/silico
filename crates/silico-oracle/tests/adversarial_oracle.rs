@@ -1343,6 +1343,55 @@ fn a_directory_of_sketch_feature_cases_alone_is_run_and_its_differences_counted(
 }
 
 #[test]
+fn a_directory_of_pattern_cases_alone_is_run_and_its_differences_counted() {
+    // No other cases: a 10 mm cube (1000, agreeing) and two of them along x, touching, said
+    // to be expected at 3000: the run loads patterns.silico, compares both, and the one
+    // difference is the pattern's volume, 2000 by hand, so the run fails.
+    let temp = scratch("patterns-alone");
+    let dir = temp.path();
+    let cases = dir.join("cases");
+    std::fs::create_dir_all(&cases).unwrap();
+    let pattern = r#"{"id": "s0000001", "type": "sketch", "v": 1, "name": "cube_profile", "plane": "xy",
+      "points": [{"id": "p0000001", "x": 0, "y": 0, "construction": false}, {"id": "p0000002", "x": 10, "y": 0, "construction": false}, {"id": "p0000003", "x": 10, "y": 10, "construction": false}, {"id": "p0000004", "x": 0, "y": 10, "construction": false}],
+      "lines": [{"id": "n0000001", "from": "p0000001", "to": "p0000002", "construction": false}, {"id": "n0000002", "from": "p0000002", "to": "p0000003", "construction": false}, {"id": "n0000003", "from": "p0000003", "to": "p0000004", "construction": false}, {"id": "n0000004", "from": "p0000004", "to": "p0000001", "construction": false}],
+      "circles": [], "arcs": [], "constraints": []},
+      {"id": "p0000005", "type": "pad", "v": 1, "name": "cube", "sketch": "s0000001",
+      "extent": {"type": "one_side", "length": 10, "reversed": false},
+      "note": "A 10 mm cube. Expected: volume 1000."},
+      {"id": "t0000001", "type": "linear_pattern", "v": 1, "name": "two_cubes", "base": "p0000005",
+      "copies": {"type": "features", "features": ["p0000005"]},
+      "directions": [{"along": "x", "reversed": false, "distribution": {"type": "spacing", "length": 10}, "count": 2}],
+      "skip": [], "note": "Two cubes. Expected: volume 3000."}"#;
+    std::fs::write(
+        cases.join(silico_oracle::features::PATTERNS),
+        document(pattern),
+    )
+    .unwrap();
+    let ran = cli(
+        dir,
+        &["run", cases.to_str().unwrap()],
+        &[],
+        Duration::from_secs(120),
+    );
+    let lines: Vec<&str> = ran.stdout.lines().collect();
+    let volume = lines.first().and_then(|l| {
+        l.strip_prefix("two_cubes: Silico's volume ")?
+            .strip_suffix(" against the expected 3000")?
+            .parse::<f64>()
+            .ok()
+    });
+    assert!(
+        volume.is_some_and(|v| (v - 2000.0).abs() < 1e-9)
+            && lines.get(1) == Some(&"1 of 2 cases differ from FreeCAD")
+            && lines.len() == 2,
+        "{}{}",
+        ran.stdout,
+        ran.stderr
+    );
+    assert_eq!(ran.status.and_then(|s| s.code()), Some(1));
+}
+
+#[test]
 fn a_directory_of_measure_cases_alone_is_run_and_its_differences_counted() {
     // No other cases: a 10 mm cube's bottom and top, 10 apart, said to be 11 apart, is the
     // run's one case. FreeCAD's MeasureDistance agrees with Silico's 10, so the one

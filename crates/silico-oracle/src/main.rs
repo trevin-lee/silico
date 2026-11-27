@@ -3,7 +3,8 @@
 //! - `silico-oracle run [DIR]`: the cases in DIR (default `tests/oracle`), its sketch
 //!   cases (`sketches.silico`), each solved by Silico's sketch worker and by FreeCAD, and
 //!   its sketch-feature cases (`sketch-features.silico`: pads, pockets, revolves, and
-//!   grooves), the document rebuilt by Silico's recompute and each case built by FreeCAD's
+//!   grooves) and pattern cases (`patterns.silico`: linear patterns, polar patterns, and
+//!   mirrors), each document rebuilt by Silico's recompute and each case built by FreeCAD's
 //!   PartDesign, compared with each other and with the case's expected values; and its
 //!   measure cases (`measures/`), pairs of elements of a document's solids measured by the
 //!   core's `distance` and `angle` and by FreeCAD's Measure, compared by the decision's
@@ -50,7 +51,7 @@ fn main() -> ExitCode {
     let ran = cases().and_then(|(cases, source, sketches, features, measures, edits)| {
         // A directory may hold sketch, sketch-feature, measure, or sketch-edit cases alone.
         let others =
-            !sketches.is_empty() || features.is_some() || measures.is_some() || !edits.is_empty();
+            !sketches.is_empty() || !features.is_empty() || measures.is_some() || !edits.is_empty();
         let mut report = if cases.is_empty() && others {
             silico_oracle::Report::default()
         } else {
@@ -64,8 +65,8 @@ fn main() -> ExitCode {
                 .map(|d| d.to_string())
                 .collect()
         };
-        let feature_count = features.as_ref().map_or(0, |f| f.cases.len());
-        if let Some(features) = &features {
+        let feature_count: usize = features.iter().map(|f| f.cases.len()).sum();
+        for features in &features {
             sketch_differences.extend(
                 silico_oracle::features::run(features)?
                     .into_iter()
@@ -250,13 +251,13 @@ enum Source {
 }
 
 /// The cases the command line asks for, where they come from (for the corpus its files
-/// FreeCAD couldn't read and the B-reps it wrote), the sketch cases, the sketch-feature cases, the measure cases, and
-/// the sketch-edit cases.
+/// FreeCAD couldn't read and the B-reps it wrote), the sketch cases, the sketch-feature and
+/// pattern cases, the measure cases, and the sketch-edit cases.
 type Asked = (
     Vec<Case>,
     Source,
     Vec<sketch::SketchCase>,
-    Option<silico_oracle::features::Cases>,
+    Vec<silico_oracle::features::Cases>,
     Option<silico_oracle::measures::Cases>,
     Vec<sketch_edit::EditCase>,
 );
@@ -275,7 +276,10 @@ fn cases() -> Result<Asked, String> {
                 load(&dir)?,
                 Source::Hand,
                 sketch::load(&dir)?,
-                silico_oracle::features::load(&dir)?,
+                silico_oracle::features::load(&dir)?
+                    .into_iter()
+                    .chain(silico_oracle::features::load_patterns(&dir)?)
+                    .collect(),
                 silico_oracle::measures::load(&dir)?,
                 sketch_edit::load(&dir)?,
             ))
@@ -291,7 +295,7 @@ fn cases() -> Result<Asked, String> {
                     corpus.cases,
                     Source::Corpus(notes),
                     Vec::new(),
-                    None,
+                    Vec::new(),
                     None,
                     Vec::new(),
                 ))
@@ -355,13 +359,20 @@ fn cases() -> Result<Asked, String> {
                         sketch_edit::dump(case, dir, &mut worker)?;
                     }
                 }
-                return Ok((Vec::new(), Source::Sweep, Vec::new(), None, None, cases));
+                return Ok((
+                    Vec::new(),
+                    Source::Sweep,
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                    cases,
+                ));
             }
             Ok((
                 generate::cases(seed, count),
                 Source::Sweep,
                 Vec::new(),
-                None,
+                Vec::new(),
                 None,
                 Vec::new(),
             ))

@@ -1,0 +1,480 @@
+{
+  "silico": 1,
+  "units": {"length": "mm", "resolution": "1nm"},
+  "naming": 6,
+  "features": [
+    {
+      "id": "s0000001",
+      "type": "sketch",
+      "v": 1,
+      "name": "Strip outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 100, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 100, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000001",
+      "type": "pad",
+      "v": 1,
+      "name": "Strip",
+      "sketch": "s0000001",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "100 x 20 x 5 = 10000",
+      "fingerprint": {"volume": 10000, "area": 5200, "center": [50, 10, 2.5], "bbox": [0, 0, 0, 100, 20, 5], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "s0000002",
+      "type": "sketch",
+      "v": 1,
+      "name": "Tab outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 5, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 15, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 15, "y": 15, "construction": false},
+        {"id": "pa000004", "x": 5, "y": 15, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000002",
+      "type": "pad",
+      "v": 1,
+      "name": "Tab",
+      "base": "p0000001",
+      "sketch": "s0000002",
+      "extent": {"type": "one_side", "length": 15, "reversed": false},
+      "note": "A 10 x 10 tab padded 15 from xy, 10 above the strip: 10000 + 1000 = 11000",
+      "fingerprint": {"volume": 11000, "area": 5600, "center": [46.363636, 10, 3.181818], "bbox": [0, 0, 0, 100, 20, 15], "faces": 12, "edges": 28, "vertices": 20}
+    },
+    {
+      "id": "t0000001",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "Tabs",
+      "base": "p0000002",
+      "copies": {"type": "features", "features": ["p0000002"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 25},
+          "count": 4
+        }
+      ],
+      "skip": [
+        [1]
+      ],
+      "note": "Instances 0, 2, and 3 at x = 5, 55, 80, instance 1 skipped: 10000 + 3 x 1000 = 13000; the copies named C2 and C3, never renumbered C1 and C2 for the skip",
+      "fingerprint": {"volume": 13000, "area": 6400, "center": [50.384615, 10, 4.230769], "bbox": [0, 0, 0, 100, 20, 15], "faces": 24, "edges": 60, "vertices": 44}
+    },
+    {
+      "id": "f0000001",
+      "type": "fillet",
+      "v": 1,
+      "name": "Round on C2",
+      "base": "t0000001",
+      "edges": [
+        "t0000001.linear_pattern.Edge(C2 p0000002.pad.Edge(G s0000002.sketch.Edge.na000002))"
+      ],
+      "radius": 2,
+      "note": "C2's tab's top edge at x = 65: 13000 - (40 - 10 pi) = 12991.415927. A fillet r 2 along a straight convex edge 10 long, its ends on faces square to it, removes (1 - pi/4) 2^2 10 = 40 - 10 pi = 8.584073",
+      "fingerprint": {"volume": 12991.415927, "area": 6389.699112, "center": [50.375253, 10, 4.223949], "bbox": [0, 0, 0, 100, 20, 15], "faces": 25, "edges": 63, "vertices": 46}
+    },
+    {
+      "id": "s0000003",
+      "type": "sketch",
+      "v": 1,
+      "name": "Plate outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 100, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 100, "y": 60, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 60, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000003",
+      "type": "pad",
+      "v": 1,
+      "name": "Plate",
+      "sketch": "s0000003",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "100 x 60 x 5 = 30000",
+      "fingerprint": {"volume": 30000, "area": 13600, "center": [50, 30, 2.5], "bbox": [0, 0, 0, 100, 60, 5], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "s0000004",
+      "type": "sketch",
+      "v": 1,
+      "name": "Post outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 5, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 15, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 15, "y": 15, "construction": false},
+        {"id": "pa000004", "x": 5, "y": 15, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000004",
+      "type": "pad",
+      "v": 1,
+      "name": "Post",
+      "base": "p0000003",
+      "sketch": "s0000004",
+      "extent": {"type": "one_side", "length": 15, "reversed": false},
+      "note": "A 10 x 10 post 10 above the plate: 30000 + 1000 = 31000",
+      "fingerprint": {"volume": 31000, "area": 14000, "center": [48.709677, 29.354839, 2.741935], "bbox": [0, 0, 0, 100, 60, 15], "faces": 12, "edges": 28, "vertices": 20}
+    },
+    {
+      "id": "t0000002",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "Posts",
+      "base": "p0000004",
+      "copies": {"type": "features", "features": ["p0000004"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 40},
+          "count": 3
+        },
+        {
+          "along": "y",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 25},
+          "count": 2
+        }
+      ],
+      "skip": [],
+      "note": "A 3 x 2 grid of posts, at x = 5, 45, 85 and y = 5, 30: 30000 + 6 x 1000 = 36000; the post at (85, 30) is instance C2,1",
+      "fingerprint": {"volume": 36000, "area": 16000, "center": [50, 28.75, 3.75], "bbox": [0, 0, 0, 100, 60, 15], "faces": 42, "edges": 108, "vertices": 80}
+    },
+    {
+      "id": "f0000002",
+      "type": "fillet",
+      "v": 1,
+      "name": "Round on C2,1",
+      "base": "t0000002",
+      "edges": [
+        "t0000002.linear_pattern.Edge(C2,1 p0000004.pad.Edge(G s0000004.sketch.Edge.na000002))"
+      ],
+      "radius": 2,
+      "note": "C2,1's post's top edge at x = 95: 36000 - (40 - 10 pi) = 35991.415927. A fillet r 2 along a straight convex edge 10 long, its ends on faces square to it, removes (1 - pi/4) 2^2 10 = 40 - 10 pi = 8.584073",
+      "fingerprint": {"volume": 35991.415927, "area": 15989.699112, "center": [49.989374, 28.748509, 3.747423], "bbox": [0, 0, 0, 100, 60, 15], "faces": 43, "edges": 111, "vertices": 82}
+    },
+    {
+      "id": "s0000005",
+      "type": "sketch",
+      "v": 1,
+      "name": "Disc outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false}
+      ],
+      "lines": [],
+      "circles": [
+        {"id": "ca000001", "center": "pa000001", "radius": 30, "construction": false}
+      ],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000005",
+      "type": "pad",
+      "v": 1,
+      "name": "Disc",
+      "sketch": "s0000005",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "pi 30^2 5 = 4500 pi = 14137.166941",
+      "fingerprint": {"volume": 14137.166941, "area": 6597.344573, "center": [0, 0, 2.5], "bbox": [-30, -30, 0, 30, 30, 5], "faces": 3, "edges": 3, "vertices": 2}
+    },
+    {
+      "id": "s0000006",
+      "type": "sketch",
+      "v": 1,
+      "name": "Lug outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 20, "y": -3, "construction": false},
+        {"id": "pa000002", "x": 26, "y": -3, "construction": false},
+        {"id": "pa000003", "x": 26, "y": 3, "construction": false},
+        {"id": "pa000004", "x": 20, "y": 3, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000006",
+      "type": "pad",
+      "v": 1,
+      "name": "Lug",
+      "base": "p0000005",
+      "sketch": "s0000006",
+      "extent": {"type": "one_side", "length": 15, "reversed": false},
+      "note": "A 6 x 6 lug 10 above the disc: 4500 pi + 360 = 14497.166941",
+      "fingerprint": {"volume": 14497.166941, "area": 6837.344573, "center": [0.571146, 0, 2.686243], "bbox": [-30, -30, 0, 30, 30, 15], "faces": 9, "edges": 19, "vertices": 14}
+    },
+    {
+      "id": "t0000003",
+      "type": "polar_pattern",
+      "v": 1,
+      "name": "Lugs",
+      "base": "p0000006",
+      "copies": {"type": "features", "features": ["p0000006"]},
+      "axis": "z",
+      "reversed": false,
+      "distribution": {"type": "extent", "angle": 360},
+      "count": 4,
+      "skip": [],
+      "note": "4 lugs a quarter turn apart about z: 4500 pi + 4 x 360 = 15577.166941",
+      "fingerprint": {"volume": 15577.166941, "area": 7557.344573, "center": [0, 0, 3.193322], "bbox": [-30, -30, 0, 30, 30, 15], "faces": 27, "edges": 67, "vertices": 50}
+    },
+    {
+      "id": "s0000007",
+      "type": "sketch",
+      "v": 1,
+      "name": "Bar outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": -50, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 50, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 50, "y": 20, "construction": false},
+        {"id": "pa000004", "x": -50, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000007",
+      "type": "pad",
+      "v": 1,
+      "name": "Bar",
+      "sketch": "s0000007",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "100 x 20 x 5 = 10000",
+      "fingerprint": {"volume": 10000, "area": 5200, "center": [0, 10, 2.5], "bbox": [-50, 0, 0, 50, 20, 5], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "s0000008",
+      "type": "sketch",
+      "v": 1,
+      "name": "Block outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 30, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 15, "construction": false},
+        {"id": "pa000004", "x": 30, "y": 15, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000008",
+      "type": "pad",
+      "v": 1,
+      "name": "Block",
+      "base": "p0000007",
+      "sketch": "s0000008",
+      "extent": {"type": "one_side", "length": 15, "reversed": false},
+      "note": "A 10 x 10 block 10 above the bar: 11000",
+      "fingerprint": {"volume": 11000, "area": 5600, "center": [3.181818, 10, 3.181818], "bbox": [-50, 0, 0, 50, 20, 15], "faces": 12, "edges": 28, "vertices": 20}
+    },
+    {
+      "id": "m0000001",
+      "type": "mirror",
+      "v": 1,
+      "name": "Other block",
+      "base": "p0000008",
+      "copies": {"type": "features", "features": ["p0000008"]},
+      "plane": "yz",
+      "note": "The block mirrored in yz, at x = -40 to -30: 12000",
+      "fingerprint": {"volume": 12000, "area": 6000, "center": [0, 10, 3.75], "bbox": [-50, 0, 0, 50, 20, 15], "faces": 18, "edges": 44, "vertices": 32}
+    },
+    {
+      "id": "f0000003",
+      "type": "fillet",
+      "v": 1,
+      "name": "Round on the mirror's C1",
+      "base": "m0000001",
+      "edges": [
+        "m0000001.mirror.Edge(C1 p0000008.pad.Edge(G s0000008.sketch.Edge.na000002))"
+      ],
+      "radius": 2,
+      "note": "The mirrored block's top edge at x = -40, the copy of the block's at x = 40: 12000 - (40 - 10 pi) = 11991.415927. A fillet r 2 along a straight convex edge 10 long, its ends on faces square to it, removes (1 - pi/4) 2^2 10 = 40 - 10 pi = 8.584073",
+      "fingerprint": {"volume": 11991.415927, "area": 5989.699112, "center": [0.028314, 10, 3.742266], "bbox": [-50, 0, 0, 50, 20, 15], "faces": 19, "edges": 47, "vertices": 34}
+    },
+    {
+      "id": "s0000009",
+      "type": "sketch",
+      "v": 1,
+      "name": "Base outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 0, "y": 0, "construction": false},
+        {"id": "pa000002", "x": 40, "y": 0, "construction": false},
+        {"id": "pa000003", "x": 40, "y": 20, "construction": false},
+        {"id": "pa000004", "x": 0, "y": 20, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000009",
+      "type": "pad",
+      "v": 1,
+      "name": "Base",
+      "sketch": "s0000009",
+      "extent": {"type": "one_side", "length": 5, "reversed": false},
+      "note": "40 x 20 x 5 = 4000",
+      "fingerprint": {"volume": 4000, "area": 2200, "center": [20, 10, 2.5], "bbox": [0, 0, 0, 40, 20, 5], "faces": 6, "edges": 12, "vertices": 8}
+    },
+    {
+      "id": "s0000010",
+      "type": "sketch",
+      "v": 1,
+      "name": "Rib outline",
+      "plane": "xy",
+      "points": [
+        {"id": "pa000001", "x": 5, "y": 5, "construction": false},
+        {"id": "pa000002", "x": 11, "y": 5, "construction": false},
+        {"id": "pa000003", "x": 11, "y": 15, "construction": false},
+        {"id": "pa000004", "x": 5, "y": 15, "construction": false}
+      ],
+      "lines": [
+        {"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false},
+        {"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false},
+        {"id": "na000003", "from": "pa000003", "to": "pa000004", "construction": false},
+        {"id": "na000004", "from": "pa000004", "to": "pa000001", "construction": false}
+      ],
+      "circles": [],
+      "arcs": [],
+      "constraints": []
+    },
+    {
+      "id": "p0000010",
+      "type": "pad",
+      "v": 1,
+      "name": "Rib",
+      "base": "p0000009",
+      "sketch": "s0000010",
+      "extent": {"type": "one_side", "length": 15, "reversed": false},
+      "note": "A 6 x 10 rib 10 above the base: 4600",
+      "fingerprint": {"volume": 4600, "area": 2520, "center": [18.434783, 10, 3.478261], "bbox": [0, 0, 0, 40, 20, 15], "faces": 12, "edges": 28, "vertices": 20}
+    },
+    {
+      "id": "t0000004",
+      "type": "linear_pattern",
+      "v": 1,
+      "name": "Ribs",
+      "base": "p0000010",
+      "copies": {"type": "features", "features": ["p0000010"]},
+      "directions": [
+        {
+          "along": "x",
+          "reversed": false,
+          "distribution": {"type": "spacing", "length": 15},
+          "count": 2
+        }
+      ],
+      "skip": [],
+      "note": "2 ribs, at x = 5 and 20: 5200",
+      "fingerprint": {"volume": 5200, "area": 2840, "center": [18.961538, 10, 4.230769], "bbox": [0, 0, 0, 40, 20, 15], "faces": 18, "edges": 44, "vertices": 32}
+    },
+    {
+      "id": "m0000002",
+      "type": "mirror",
+      "v": 1,
+      "name": "Other half",
+      "base": "t0000004",
+      "copies": {"type": "solid"},
+      "plane": "yz",
+      "note": "The whole half, base and ribs, mirrored in yz, face to face at x = 0: 2 x 5200 = 10400",
+      "fingerprint": {"volume": 10400, "area": 5480, "center": [0, 10, 4.230769], "bbox": [-40, 0, 0, 40, 20, 15], "faces": 34, "edges": 84, "vertices": 60}
+    },
+    {
+      "id": "f0000004",
+      "type": "fillet",
+      "v": 1,
+      "name": "Round on S1",
+      "base": "m0000002",
+      "edges": [
+        "m0000002.mirror.Edge(S1 t0000004.linear_pattern.Edge(C1 p0000010.pad.Edge(G s0000010.sketch.Edge.na000002)))"
+      ],
+      "radius": 2,
+      "note": "The mirrored copy of C1's rib's top edge at x = 26, at x = -26: 10400 - (40 - 10 pi) = 10391.415927. A fillet r 2 along a straight convex edge 10 long, its ends on faces square to it, removes (1 - pi/4) 2^2 10 = 40 - 10 pi = 8.584073",
+      "fingerprint": {"volume": 10391.415927, "area": 5469.699112, "center": [0.021109, 10, 4.222242], "bbox": [-40, 0, 0, 40, 20, 15], "faces": 35, "edges": 87, "vertices": 62}
+    }
+  ]
+}

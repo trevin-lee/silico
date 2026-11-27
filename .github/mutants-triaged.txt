@@ -74,7 +74,6 @@ crates/silico-core/src/sweep.rs | significant | replace || with && | #84
 crates/silico-core/src/sweep.rs | significant | replace || with && | #84
 crates/silico-core/src/sweep.rs | judged | replace < with <= | #386
 crates/silico-kernel/src/lib.rs | make_faces | replace > with >= | #44
-crates/silico-oracle/src/features.rs | run | replace || with && | #84
 crates/silico-protocol/src/faces.rs | check_area | replace > with >= | #44
 crates/silico-core/src/pool.rs | Shared::superseded | replace Shared::superseded -> bool with false | #125
 crates/silico-core/src/pool.rs | Shared::supersede | delete ! | #125
@@ -775,3 +774,4 @@ crates/silico-core/src/profile.rs | area_centre | replace > with >= | #603
 crates/silico-core/src/command/pattern.rs | read | replace || with && | #603
 crates/silico-core/src/command/pattern.rs | anchor | replace > with >= | #603
 crates/silico-core/src/command/pattern.rs | anchor | replace && with || | #603
+crates/silico-oracle/src/features.rs | part_design | replace < with <= | #600
