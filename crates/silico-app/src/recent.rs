@@ -322,6 +322,7 @@ fn look_all(paths: &[String]) -> BTreeMap<String, Found> {
 /// document again, once the asks with it have been made.
 fn keep(file: &Path, read: Read, asked: &Receiver<Ask>, tell: &Sender<Told>, wake: &Wake) {
     let _span = tracing::info_span!("recent documents", file = %file.display()).entered();
+    crate::app_data::remove_left_over(file, std::time::SystemTime::now());
     let mut paths: Vec<String> = read(file).map(|bytes| parse(&bytes)).unwrap_or_default();
     let mut found: BTreeMap<String, Found> = BTreeMap::new();
     // The platform's time zone, read here, on the list's thread (its rules may be read from
@@ -581,6 +582,26 @@ pub(crate) mod tests {
             assert!(std::time::Instant::now() < deadline, "never told");
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn the_thread_removes_what_a_killed_write_left_beside_the_list_as_it_starts() {
+        // A write killed mid-way leaves `recent-documents.<pid>.<n>.new` (`app_data::write`):
+        // removed as the thread starts once it's over an hour old; one younger, which may be
+        // another instance's write under way, kept, and so is another file's.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE_NAME);
+        let old = format!("{FILE_NAME}.999.0.new");
+        let young = dir.path().join(format!("{FILE_NAME}.999.1.new"));
+        let other = "pane-widths.999.0.new";
+        crate::app_data::tests::left_two_hours_ago(dir.path(), &old);
+        crate::app_data::tests::left_two_hours_ago(dir.path(), other);
+        std::fs::write(&young, b"half").unwrap();
+        let mut recents = Recents::at(file);
+        polled_until(&mut recents, Recents::is_read);
+        assert!(!dir.path().join(&old).exists());
+        assert!(young.exists());
+        assert!(dir.path().join(other).exists());
     }
 
     #[test]

@@ -2047,6 +2047,22 @@ fn a_pick_of_no_tolerance_takes_a_curve_the_place_is_exactly_on() {
 }
 
 #[test]
+fn a_place_past_an_arcs_end_is_on_no_curve_however_near_the_end() {
+    // The quarter arc of `arced`, radius 10 about (0, 0) from (10, 0) to (0, 10), and a
+    // pick of 0.7. (10, −0.5) is 0.5 from its start, but its foot on the round is at
+    // −2.86°, past the sweep, so it's on no arc, as the core's pick (and so the selection)
+    // finds curves; (−0.5, 10) likewise past its end, at 92.86°. (10, 0.5), at 2.86°, is
+    // √100.25 − 10 = 0.0125 off it, and (0.5, 10) likewise: on it.
+    let read = under(arced());
+    let on = |at: [f64; 2]| curve_at(&read, at, 0.7).map(|(id, kind, _)| (id, kind));
+    assert_eq!(on([10.0, -0.5]), None);
+    assert_eq!(on([-0.5, 10.0]), None);
+    let arc = Some((id("aa000001"), ElementKind::Arc));
+    assert_eq!(on([10.0, 0.5]), arc);
+    assert_eq!(on([0.5, 10.0]), arc);
+}
+
+#[test]
 fn a_place_put_on_a_round_from_infinitely_far_or_onto_no_number_is_none() {
     let round = Curve::Round {
         centre: [0.0, 0.0],
@@ -2289,20 +2305,31 @@ fn a_pointer_half_a_number_is_off_the_plane_and_reaches_no_tool() {
 }
 
 #[test]
-fn an_arcs_distance_is_its_rims_on_its_sweep_and_its_nearer_ends_past_it() {
+fn an_arcs_distance_is_its_rims_on_its_sweep_and_a_place_past_it_is_on_no_arc() {
     // About (0, 0), radius 10, from 90° through 90°: from (0, 10) to (−10, 0).
-    let quarter = crate::sketch::draw::Curve::Round {
-        centre: [0.0, 0.0],
-        radius: 10.0,
-        start: std::f64::consts::FRAC_PI_2,
-        sweep: std::f64::consts::FRAC_PI_2,
-    };
-    let distance = |at| super::distance(quarter, at);
-    // At 135°, 1 outside the rim: 1.
+    let mut sketch = empty();
+    sketch.points = vec![
+        point("pa000001", 0.0, 0.0),
+        point("pa000002", 0.0, 10.0),
+        point("pa000003", -10.0, 0.0),
+    ];
+    sketch.arcs = vec![silico_core::document::SketchArc {
+        id: id("aa000001"),
+        center: id("pa000001"),
+        start: id("pa000002"),
+        end: id("pa000003"),
+        construction: false,
+    }];
+    let read = under(sketch);
+    let on = |at: [f64; 2], tolerance: f64| curve_at(&read, at, tolerance).map(|(id, ..)| id);
+    // At 135°, 1 outside the rim: 1 off it, within 1.01 and not 0.99.
     let out = 11.0 * std::f64::consts::FRAC_1_SQRT_2;
-    assert!((distance([-out, out]) - 1.0).abs() < 1e-9);
-    // (−10, −1), just past its end: 1 from (−10, 0).
-    assert!((distance([-10.0, -1.0]) - 1.0).abs() < 1e-9);
+    assert_eq!(on([-out, out], 1.01), Some(id("aa000001")));
+    assert_eq!(on([-out, out], 0.99), None);
+    // (−10, −1), just past its end, 1 from (−10, 0): its foot at 185.7°, past the sweep, so
+    // on no arc at any tolerance (the core's rule, as a selection finds curves).
+    assert_eq!(on([-10.0, -1.0], 1.5), None);
+    assert_eq!(on([-10.0, -1.0], 100.0), None);
 }
 
 /// A line na000001 from (0, 0) to (10, 0); a wall, nb000001, along x = 30 from (30, −10) to

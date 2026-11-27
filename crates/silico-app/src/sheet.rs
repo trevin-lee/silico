@@ -659,14 +659,16 @@ mod tests {
         // Each group's height: its title's 16 line, 4, its 1 underline, 4, and 22 a row.
         let height =
             |rows: f32| css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN + rows * css::ROW_H;
-        // By hand: File 5 rows (135), Edit 5 (135: Undo, Redo, Search commands, Rename,
-        // Delete), Rebuild 4 (113: Rebuild, Rebuild everything, Reload, Stop), View 13 (311,
-        // Look At its last key's), Selection 5 (135), Dialogs 2 (69), Sketch 10 (245, Sketch
-        // without relations among them), Help 1 (47). The least height that takes three
-        // columns, filled in order, is 460: below it View can't take Selection (311 + 14 +
-        // 135 = 460), and Selection to Help (135 + 14 + 69 + 14 + 245 + 14 + 47 = 538) take
-        // two more. At 460, File, Edit, and Rebuild (135 + 14 + 135 + 14 + 113 = 411); View
-        // and Selection (460); Dialogs, Sketch, and Help (69 + 14 + 245 + 14 + 47 = 389).
+        // By hand: File 5 rows (135; Revert to saved has no keys), Edit 5 (135: Undo, Redo,
+        // Search commands, Rename, Delete), Rebuild 4 (113: Rebuild, Rebuild everything,
+        // Reload, Stop), View 13 (311, Look At its last key's), Selection 6 (157, Select
+        // Other's right click among them), Dialogs 2 (69), Sketch 10 (245, Sketch without
+        // relations among them; Extend and Split have no keys), Help 1 (47); Create, Modify,
+        // and Inspect none. The least height that takes three columns, filled in order, is
+        // 482: below it View can't take Selection (311 + 14 + 157 = 482), and Selection to
+        // Help (157 + 14 + 69 + 14 + 245 + 14 + 47 = 560) take two more. At 482, File, Edit,
+        // and Rebuild (135 + 14 + 135 + 14 + 113 = 411); View and Selection (482); Dialogs,
+        // Sketch, and Help (69 + 14 + 245 + 14 + 47 = 389).
         let placed = [
             ("FILE", 0, 0.0),
             ("EDIT", 0, height(5.0) + css::GROUP_GAP),
@@ -827,11 +829,11 @@ mod tests {
         let h = sheet("");
         let inside = frame_of(&h).shrink(css::BORDER);
         let top = inside.top() + css::HEAD_TOP + css::FILTER_H + css::HEAD_BOTTOM;
-        // The tallest column: View's and Selection's, their 18 rows and a gap (460, by hand;
+        // The tallest column: View's and Selection's, their 19 rows and a gap (482, by hand;
         // File's, Edit's, and Rebuild's are 411, and Dialogs', Sketch's, and Help's 389).
         let title = css::LH + css::TITLE_PAD + 1.0 + css::TITLE_MARGIN;
-        let tallest = top + 2.0 * title + 18.0 * css::ROW_H + css::GROUP_GAP;
-        assert!(near(tallest - top, 460.0));
+        let tallest = top + 2.0 * title + 19.0 * css::ROW_H + css::GROUP_GAP;
+        assert!(near(tallest - top, 482.0));
         let rule = tallest + css::NOTE_TOP;
         let ruled = painted(&h).into_iter().any(|shape| match shape {
             egui::Shape::LineSegment { points, stroke } => {
@@ -988,7 +990,7 @@ mod tests {
             ("EDIT", 5.0),
             ("REBUILD", 4.0),
             ("VIEW", 13.0),
-            ("SELECTION", 5.0),
+            ("SELECTION", 6.0),
             ("DIALOGS", 2.0),
             ("SKETCH", 10.0),
             ("HELP", 1.0),
@@ -1149,6 +1151,42 @@ mod tests {
             assert_eq!(colour(&note), css::G550);
             assert_eq!(note.galley.job.sections[0].format.extra_letter_spacing, 0.0);
         }
+    }
+
+    #[test]
+    fn select_other_is_listed_under_selection_as_right_click_between_clear_selection_and_hide() {
+        // The prototype's `selectOther`: 'Select Other', keys ['Right-click'], group
+        // Selection, after Clear selection and before Hide or show, as its `CMD` orders them;
+        // the sheet lists it with its one cap, as `renderShortcuts` lists every command with
+        // keys.
+        let h = sheet("");
+        let one = |text: &str| {
+            let mut found = texts(&h, text);
+            assert_eq!(found.len(), 1, "{text}");
+            found.remove(0)
+        };
+        let (selection, clear, other, hide) = (
+            one("SELECTION"),
+            one("Clear selection"),
+            one("Select Other"),
+            one("Hide or show"),
+        );
+        assert!(near(other.pos.x, selection.pos.x), "{:?}", other.pos);
+        assert!(
+            near(other.pos.y - clear.pos.y, css::ROW_H),
+            "{:?}",
+            other.pos
+        );
+        assert!(near(hide.pos.y - other.pos.y, css::ROW_H), "{:?}", hide.pos);
+        let cap = one("Right-click");
+        let middle = |shown: &TextShape| shown.pos.y + shown.galley.size().y / 2.0;
+        assert!((middle(&cap) - middle(&other)).abs() < css::ROW_H / 2.0);
+        assert!(cap.pos.x > other.pos.x);
+        assert!(h.query_by_label("Right-click").is_some());
+        // Found by its key, as the filter finds a row.
+        let h = sheet("right-click");
+        assert!(h.query_by_label("Select Other").is_some());
+        assert!(h.query_by_label("Hide or show").is_none());
     }
 
     #[test]

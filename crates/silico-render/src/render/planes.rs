@@ -44,7 +44,7 @@ use silico_protocol::vec3::{cross, dot};
 use silico_protocol::{Class, InvalidParameter, MAX_RENDER_COORDINATE};
 
 use super::{
-    EDGE_DEPTH_OFFSET, MAX_LINE_WIDTH, Strips, View, add_edge_strips, drawn_stroke_fraction, vec3,
+    EDGE_DEPTH_OFFSET, MAX_LINE_WIDTH, Strips, View, add_edge_strips, drawn_edge_fraction, vec3,
 };
 
 /// The most planes a frame may draw: each is placed and drawn on its own, each frame, on the
@@ -175,7 +175,7 @@ pub(super) fn draw(
                     .color(Color32::from_rgba_unmultiplied(red, green, blue, alpha))
                     .picking_instance_id(PickingLayerInstanceId(0));
             };
-            let reach = drawn_stroke_fraction(view.height, plane.width, pixels_per_point);
+            let reach = drawn_edge_fraction(view.height, plane.width, pixels_per_point);
             let put = |p: [f64; 3]| view.strip_from_camera(p, reach);
             for strip in outline.strips() {
                 add_edge_strips(&mut batch, view, &stroke, strip, put, style);

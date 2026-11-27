@@ -219,8 +219,7 @@ fn unchangeable(tab: &Tab) -> Option<String> {
         return Some("Close the open dialog first".to_owned());
     }
     if tab.in_sketch() {
-        // The prototype's words for a dialog asked for in sketch mode (`openDialog`).
-        return Some("Finish or cancel the sketch first".to_owned());
+        return Some(crate::tab::FINISH_SKETCH_FIRST.to_owned());
     }
     if tab
         .timeline

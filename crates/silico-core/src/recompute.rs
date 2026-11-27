@@ -73,7 +73,7 @@ use crate::pool::{Outcome, Pending};
 use crate::profile::Profile;
 use crate::references::EdgeNames;
 use crate::sketch::{
-    Diagnosed, SketchSolution, SketchSolver, SketchWorker, SolveStopper, Translation,
+    Answer, Diagnosed, SketchSolution, SketchSolver, SketchWorker, SolveStopper, Translation,
 };
 use crate::sweep::plus_zero;
 use crate::worker::lock;
@@ -279,8 +279,11 @@ pub enum FeatureOutcome {
     /// (N6: every one, at once), the first [`PROBLEMS_LISTED`](crate::document::PROBLEMS_LISTED)
     /// of them, and how many there are, listed or not. Its step isn't run.
     Broken { errors: Vec<Error>, total: u64 },
-    /// Not built, since it uses a feature that failed: that feature (the first failure
-    /// along its base, then its tool).
+    /// Not built, since it uses a feature that failed: the feature whose failure is at the
+    /// root of the first that failed or was blocked along its base, then its tool (or a
+    /// pattern's originals), then the sketch it sweeps; for a sketch on a face, of the first
+    /// solid its face was looked for in that failed or was blocked (each such solid's
+    /// feature [`Model::blocked_through`]). One root only: what it uses may come to others.
     Blocked { on: FeatureId },
     /// A sketch, solved: it makes no solid. One that didn't solve is `Failed`, with why.
     Sketch(Arc<SketchSolution>),
@@ -355,6 +358,9 @@ pub struct Model {
     /// Each sketch on a face whose face was resolved, by its ID: its frame
     /// ([`Model::frame`]).
     frames: Arc<BTreeMap<FeatureId, silico_protocol::FaceFrame>>,
+    /// Each sketch on a face blocked by the solids its face was looked for in, by its ID:
+    /// their features ([`Model::blocked_through`]).
+    blocked_through: Arc<BTreeMap<FeatureId, Vec<FeatureId>>>,
     /// What each pattern's steps' histories say of its copies, by its ID, each step that
     /// built in order ([`Model::pattern_verdicts`]).
     patterns: Arc<BTreeMap<FeatureId, Arc<[StepVerdict]>>>,
@@ -785,6 +791,14 @@ impl Model {
     /// whose face couldn't be resolved, and a feature that isn't a sketch.
     pub fn frame(&self, id: &FeatureId) -> Option<&silico_protocol::FaceFrame> {
         self.frames.get(id)
+    }
+
+    /// For the sketch on a face `id`, blocked by the solids live at its place that its face
+    /// could be in (each failed or blocked), their features, in the order they were looked
+    /// in: what it was blocked through, as a feature is through what it uses. Its outcome's
+    /// `on` is the first one's root alone. None for any other feature.
+    pub(crate) fn blocked_through(&self, id: &FeatureId) -> &[FeatureId] {
+        self.blocked_through.get(id).map_or(&[], Vec::as_slice)
     }
 
     /// This model as `source`'s: the same steps and outcomes, its document `source`. For a
@@ -1999,6 +2013,12 @@ impl SketchSolvers {
         Self::of(Vec::new(), Box::new(start))
     }
 
+    /// Whether `other` is these solvers, or a clone of them: the same solvers, idle and
+    /// started alike.
+    fn same(&self, other: &SketchSolvers) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+
     /// `solver`, idle, and others started as the sketch worker.
     fn holding(solver: Box<dyn SketchSolver>) -> Self {
         let workers =
@@ -2172,6 +2192,11 @@ struct EngineState {
     results: BTreeMap<Key, StepResult>,
     /// Each sketch solved, by its key, kept as step results are.
     solutions: BTreeMap<Key, SketchResult>,
+    /// Solves made outside any recompute and offered to the next ([`Recompute::offer_solve`]:
+    /// a sketch edit's judging solve of the text it wrote), by key, the newest first, at most
+    /// [`OFFERED_KEPT`]: no plan holds their keys yet, so a trim would drop them from
+    /// `solutions`. A recompute that takes one keeps it as a solve of its own.
+    offered: VecDeque<(Key, SketchResult)>,
     /// The profile of each sketch a feature sweeps, by its solve's key, kept as solves are.
     profiles: BTreeMap<Key, ProfileResult>,
     /// Whether a recompute's sketch thread has the engine's turn at its solvers: one
@@ -2193,7 +2218,34 @@ struct EngineState {
 /// How many published models' results are kept.
 const PUBLISHED_KEPT: usize = 2;
 
+/// How many offered solves are kept ([`EngineState::offered`]): a transaction's edits, each
+/// of one sketch, are rebuilt only once a read asks, so one rebuild may take several.
+const OFFERED_KEPT: usize = 8;
+
 impl EngineState {
+    /// The solve kept for `key`: a recompute's, or else one offered
+    /// ([`Recompute::offer_solve`]), and whether it was offered.
+    fn kept_solution(&self, key: &Key) -> Option<(&SketchResult, bool)> {
+        if let Some(kept) = self.solutions.get(key) {
+            return Some((kept, false));
+        }
+        self.offered
+            .iter()
+            .find_map(|(offered, result)| (offered == key).then_some((result, true)))
+    }
+
+    /// [`kept_solution`](Self::kept_solution), an offered one kept from now on as a
+    /// recompute's own solve, as long as a plan uses its key: for a recompute whose plan
+    /// holds the key already, so no trim before it's planned drops it.
+    fn solution(&mut self, key: &Key) -> Option<SketchResult> {
+        let (result, offered) = self.kept_solution(key)?;
+        let result = result.clone();
+        if offered {
+            self.solutions.insert(*key, result.clone());
+        }
+        Some(result)
+    }
+
     /// Lets go of every result no plan worth keeping uses.
     fn trim(&mut self) {
         let EngineState {
@@ -2289,12 +2341,74 @@ struct SketchResult {
 }
 
 impl SketchResult {
+    /// `answer`, a solve of the sketch `feature`, as a recompute keeps it, its errors naming
+    /// the sketch.
+    fn of(answer: &Answer, feature: &FeatureId) -> Self {
+        let named = |e: &Error| e.clone().with_feature(feature.as_str());
+        match answer.diagnosed() {
+            Ok(diagnosed) => SketchResult {
+                result: diagnosed
+                    .outcome()
+                    .map(|solution| Arc::new(solution.clone()))
+                    .map_err(named),
+                diagnosed: Ok(Arc::new(diagnosed.clone())),
+            },
+            Err(error) => SketchResult::failed(named(error)),
+        }
+    }
+
+    /// Whether it follows from the sketch alone, so it's kept, as a step's result is: a
+    /// solve with its diagnosis, and a failure only if the sketch would fail again (a
+    /// solver that failed diagnosing a sketch the translation refuses may not fail again).
+    fn worth_keeping(&self) -> bool {
+        self.diagnosed.is_ok()
+            && match &self.result {
+                Ok(_) => true,
+                Err(error) => matches!(
+                    error.code(),
+                    ErrorCode::InvalidInput
+                        | ErrorCode::InvalidResult
+                        | ErrorCode::OverConstrained
+                        | ErrorCode::SolveFailed
+                ),
+            }
+    }
+
     /// No solve: `error`, the solver's or a bug's, for both.
     fn failed(error: Error) -> Self {
         SketchResult {
             result: Err(error.clone()),
             diagnosed: Err(error),
         }
+    }
+}
+
+/// A sketch's solve made outside any recompute, as a recompute would keep its own, under the
+/// key it would look it up by: what [`Recompute::offer_solve`] offers.
+pub(crate) struct SolveOffer {
+    key: Key,
+    result: SketchResult,
+}
+
+impl SolveOffer {
+    /// `answer`, a solve of `document`'s sketch `sketch`, keyed as a recompute keys its own
+    /// ([`sketch_key`]: the sketch's ID and its text as written), read as it reads its own
+    /// ([`SketchResult::of`]); none for a document with no such sketch, and for a solve a
+    /// recompute wouldn't keep ([`SketchResult::worth_keeping`]: a failure that might not
+    /// happen again).
+    pub(crate) fn of(document: &Checked, sketch: &FeatureId, answer: &Answer) -> Option<Self> {
+        let Ok(Feature {
+            operation: Operation::Sketch(drawn),
+            ..
+        }) = document.feature(sketch)
+        else {
+            return None;
+        };
+        let result = SketchResult::of(answer, sketch);
+        result.worth_keeping().then(|| SolveOffer {
+            key: sketch_key(sketch, drawn),
+            result,
+        })
     }
 }
 
@@ -2390,6 +2504,7 @@ impl<K: Kernel + 'static> Recompute<K> {
                     dropped: false,
                     results: BTreeMap::new(),
                     solutions: BTreeMap::new(),
+                    offered: VecDeque::new(),
                     profiles: BTreeMap::new(),
                     sketching: false,
                     solving: None,
@@ -2420,6 +2535,23 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// The cache the engine keeps its steps in, if it has one.
     pub fn cache(&self) -> Option<&Cache> {
         self.engine.cache.get()
+    }
+
+    /// Offers the engine `offer`, a solve made outside any recompute on one of `solvers` (a
+    /// sketch edit's judging solve of the text it wrote, M5.10): the next recompute that
+    /// solves that text takes it rather than solving the same text again, since a solve on
+    /// the same solvers is deterministic. Taken only where the engine solves on `solvers`
+    /// too: one solving elsewhere lets it go. At most [`OFFERED_KEPT`] are kept, the oldest
+    /// let go first.
+    pub(crate) fn offer_solve(&self, solvers: &SketchSolvers, offer: SolveOffer) {
+        if !lock(&self.engine.solvers).same(solvers) {
+            return;
+        }
+        let SolveOffer { key, result } = offer;
+        let mut state = lock(&self.engine.state);
+        state.offered.retain(|(offered, _)| *offered != key);
+        state.offered.push_front((key, result));
+        state.offered.truncate(OFFERED_KEPT);
     }
 
     /// The model the newest finished recompute published, if any has.
@@ -4006,7 +4138,7 @@ impl Plan {
                     (OnFace::Waits, _) => StepState::Queued,
                     (OnFace::Placed(Placed::Broken(_)), _) => StepState::Failed,
                     (OnFace::Placed(Placed::Failed(error)), _) => StepState::failed(error),
-                    (OnFace::Placed(Placed::Blocked(_)), _) => StepState::Blocked,
+                    (OnFace::Placed(Placed::Blocked { .. }), _) => StepState::Blocked,
                     (OnFace::No | OnFace::Placed(Placed::Frame(_)), Some(solved)) => {
                         match &solved.result {
                             Ok(_) => StepState::Built,
@@ -5023,11 +5155,15 @@ impl<K: Kernel + 'static> Engine<K> {
                 // Nothing new, yet some still wait: none ever will be placed (every round
                 // places the first that waits, so this is a bug's), and each is blocked,
                 // naming the feature it waits for, in one round more.
-                frames.extend(
-                    waiting
-                        .into_iter()
-                        .map(|(id, on)| (id, Placed::Blocked(on))),
-                );
+                frames.extend(waiting.into_iter().map(|(id, on)| {
+                    (
+                        id,
+                        Placed::Blocked {
+                            on,
+                            through: Vec::new(),
+                        },
+                    )
+                }));
             } else {
                 progress.concluded(&model);
                 break (model, keys);
@@ -5144,9 +5280,9 @@ impl<K: Kernel + 'static> Engine<K> {
             if kept {
                 for (_, key) in &plan.sketches {
                     if !solutions.contains_key(key)
-                        && let Some(result) = state.solutions.get(key)
+                        && let Some(result) = state.solution(key)
                     {
-                        solutions.insert(*key, result.clone());
+                        solutions.insert(*key, result);
                     }
                 }
             }
@@ -5399,21 +5535,21 @@ impl<K: Kernel + 'static> Engine<K> {
             return Ok(Some(SolvedFirst::default()));
         }
         let _span = tracing::debug_span!("solve_swept", sketches = used.len()).entered();
-        let (mut solutions, mut profiles): (SketchResults, BTreeMap<Key, ProfileResult>) =
-            if reads == Reads::Nothing {
-                (BTreeMap::new(), BTreeMap::new())
-            } else {
-                let state = lock(&self.state);
-                let solutions = used
-                    .iter()
-                    .filter_map(|(_, key)| state.solutions.get(key).map(|r| (*key, r.clone())))
-                    .collect();
-                let profiles = used
-                    .iter()
-                    .filter_map(|(_, key)| state.profiles.get(key).map(|p| (*key, p.clone())))
-                    .collect();
-                (solutions, profiles)
-            };
+        let mut solutions = SketchResults::new();
+        let mut profiles = BTreeMap::<Key, ProfileResult>::new();
+        if reads != Reads::Nothing {
+            let state = lock(&self.state);
+            for (_, key) in &used {
+                // An offered solve is kept as this recompute's own once its plan holds the
+                // key (`build_round` takes it again then): kept sooner, a trim drops it.
+                if let Some((result, _)) = state.kept_solution(key) {
+                    solutions.insert(*key, result.clone());
+                }
+                if let Some(profile) = state.profiles.get(key) {
+                    profiles.insert(*key, profile.clone());
+                }
+            }
+        }
         let to_solve: Vec<(FeatureId, Key)> = used
             .iter()
             .filter(|(_, key)| !solutions.contains_key(key))
@@ -5529,18 +5665,7 @@ impl<K: Kernel + 'static> Engine<K> {
             let SketchOutcome::Solved(result) = outcome else {
                 continue;
             };
-            let keep = result.diagnosed.is_ok()
-                && match &result.result {
-                    Ok(_) => true,
-                    Err(error) => matches!(
-                        error.code(),
-                        ErrorCode::InvalidInput
-                            | ErrorCode::InvalidResult
-                            | ErrorCode::OverConstrained
-                            | ErrorCode::SolveFailed
-                    ),
-                };
-            if keep {
+            if result.worth_keeping() {
                 state.solutions.insert(*key, result.clone());
             }
         }
@@ -6857,10 +6982,14 @@ fn faces_at<'m, R>(
                 };
                 Some(Ok(Live::Built { map, description }))
             }
-            FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. } => {
-                Some(Ok(Live::Failed(feature.id.clone())))
-            }
-            FeatureOutcome::Blocked { on } => Some(Ok(Live::Failed(on.clone()))),
+            FeatureOutcome::Failed(_) | FeatureOutcome::Broken { .. } => Some(Ok(Live::Failed {
+                root: feature.id.clone(),
+                solid: feature.id.clone(),
+            })),
+            FeatureOutcome::Blocked { on } => Some(Ok(Live::Failed {
+                root: on.clone(),
+                solid: feature.id.clone(),
+            })),
             // Not live: a sketch makes no solid, and a suppressed feature is left out.
             FeatureOutcome::Sketch(_) | FeatureOutcome::Suppressed => None,
         }
@@ -7102,7 +7231,7 @@ fn model(
                         errors: vec![error.clone()],
                         total: 1,
                     },
-                    (OnFace::Placed(Placed::Blocked(on)), _) => {
+                    (OnFace::Placed(Placed::Blocked { on, .. }), _) => {
                         FeatureOutcome::Blocked { on: on.clone() }
                     }
                     (OnFace::Placed(Placed::Failed(error)), _) => {
@@ -7185,6 +7314,17 @@ fn model(
             OnFace::No | OnFace::Waits | OnFace::Placed(_) => None,
         })
         .collect();
+    let blocked_through = plan
+        .features
+        .iter()
+        .filter(|planned| !planned.suppressed)
+        .filter_map(|planned| match &planned.on_face {
+            OnFace::Placed(Placed::Blocked { through, .. }) => {
+                Some((planned.id.clone(), through.clone()))
+            }
+            OnFace::No | OnFace::Waits | OnFace::Placed(_) => None,
+        })
+        .collect();
     // Every verdict kept (section 4.2): each pattern's copies, step by step, as far as its
     // steps built, whatever its own outcome.
     let patterns = plan
@@ -7222,6 +7362,7 @@ fn model(
         known,
         diagnoses: Arc::new(diagnoses),
         frames: Arc::new(frames),
+        blocked_through: Arc::new(blocked_through),
         patterns: Arc::new(patterns),
     }
 }
@@ -7253,16 +7394,7 @@ fn solve_diagnosed(
     let _span = tracing::info_span!("solve sketch", feature = feature.as_str()).entered();
     match Translation::new(sketch) {
         Ok(translation) => match translation.solve(solver) {
-            Ok(answer) => match answer.diagnosed() {
-                Ok(diagnosed) => SketchResult {
-                    result: diagnosed
-                        .outcome()
-                        .map(|solution| Arc::new(solution.clone()))
-                        .map_err(|e| named(e.clone())),
-                    diagnosed: Ok(Arc::new(diagnosed.clone())),
-                },
-                Err(error) => SketchResult::failed(named(error.clone())),
-            },
+            Ok(answer) => SketchResult::of(&answer, feature),
             Err(error) => SketchResult::failed(named(error)),
         },
         Err(refusal) => SketchResult {
@@ -10636,6 +10768,171 @@ mod tests {
             let kept = kept_if_hung(other.clone());
             assert_eq!(kept, other);
             assert!(!kept_hang(&kept));
+        }
+    }
+
+    /// A sketch `s0000001`, a triangle (0, 0), (`x`, 0), (0, 10) with no constraint: a
+    /// text of its own for each `x`; and, `padded`, a pad of it, so it's solved before the
+    /// plan.
+    fn triangle(x: u32, padded: bool) -> Arc<Checked> {
+        let sketch = format!(
+            r#"{{"id": "s0000001", "type": "sketch", "v": 1, "name": "T", "plane": "xy", "points": [{{"id": "pa000001", "x": 0, "y": 0, "construction": false}}, {{"id": "pa000002", "x": {x}, "y": 0, "construction": false}}, {{"id": "pa000003", "x": 0, "y": 10, "construction": false}}], "lines": [{{"id": "na000001", "from": "pa000001", "to": "pa000002", "construction": false}}, {{"id": "na000002", "from": "pa000002", "to": "pa000003", "construction": false}}, {{"id": "na000003", "from": "pa000003", "to": "pa000001", "construction": false}}], "circles": [], "arcs": [], "constraints": []}}"#
+        );
+        let pad = r#"{"id": "p0000001", "type": "pad", "v": 1, "name": "Pad", "sketch": "s0000001", "extent": {"type": "one_side", "length": 5, "reversed": false}}"#;
+        let mut features = vec![sketch];
+        if padded {
+            features.push(pad.to_owned());
+        }
+        Arc::new(checked_of(&features))
+    }
+
+    fn s1() -> FeatureId {
+        FeatureId::new("s0000001").unwrap()
+    }
+
+    /// `document`'s sketch `s0000001` solved on `solver`, as a sketch edit solves it.
+    fn edit_solve(document: &Checked, solver: &mut dyn SketchSolver) -> Answer {
+        let Operation::Sketch(sketch) = &document.feature(&s1()).unwrap().operation else {
+            panic!("not a sketch");
+        };
+        Translation::new(sketch).unwrap().solve(solver).unwrap()
+    }
+
+    /// `run`'s model, which it published.
+    fn published_by(run: Run) -> Arc<Model> {
+        match run.wait().unwrap() {
+            RunOutcome::Published(model) => model,
+            _ => panic!("not published"),
+        }
+    }
+
+    /// The sketch `s0000001`'s diagnosis as `model` has it, written out: the solve's
+    /// outcome, its solution, and its diagnosis.
+    fn diagnosed_text(model: &Model) -> String {
+        format!("{:?}", model.diagnosed(&s1()))
+    }
+
+    #[test]
+    fn a_solve_offered_is_taken_for_its_own_text_on_the_engines_solvers_and_nothing_else() {
+        // Review A13-M2: a sketch edit's solve of the text it wrote, offered to the engine,
+        // is the next recompute's solve of that text, sent to no solver again; the model it
+        // publishes holds what a fresh solve of the text gives. Not for another text, not
+        // offered from other solvers, not for a recompute that reads nothing kept. Counted by
+        // the requests the fake was sent, one a solve.
+        for padded in [false, true] {
+            let sketches = crate::fake::FakeSketches::new();
+            let solvers = SketchSolvers::holding(Box::new(sketches.clone()));
+            let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+                .with_solvers(solvers.clone());
+            let sent = || sketches.requests().len();
+            let offer = |document: &Arc<Checked>, on: &SketchSolvers| {
+                let answer = edit_solve(document, &mut sketches.clone());
+                engine.offer_solve(on, SolveOffer::of(document, &s1(), &answer).unwrap());
+            };
+            // Its own text: taken, the edit's solve the only one sent.
+            let a = triangle(10, padded);
+            offer(&a, &solvers);
+            assert_eq!(sent(), 1, "padded: {padded}");
+            let model = published_by(engine.start(Arc::clone(&a)));
+            assert_eq!(sent(), 1, "padded: {padded}");
+            let fresh = published_by(
+                Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+                    .with_sketches(crate::fake::FakeSketches::new())
+                    .start(Arc::clone(&a)),
+            );
+            assert!(model.diagnosed(&s1()).is_some_and(|d| d.is_ok()));
+            assert_eq!(diagnosed_text(&model), diagnosed_text(&fresh));
+            let pad = FeatureId::new("p0000001").unwrap();
+            for id in [s1(), pad] {
+                assert_eq!(
+                    format!("{:?}", model.outcome(&id)),
+                    format!("{:?}", fresh.outcome(&id)),
+                    "{id}, padded: {padded}"
+                );
+            }
+            // Another text: solved, the offer not its.
+            published_by(engine.start(triangle(11, padded)));
+            assert_eq!(sent(), 2, "padded: {padded}");
+            // Offered from other solvers: not taken.
+            let other = SketchSolvers::holding(Box::new(crate::fake::FakeSketches::new()));
+            let c = triangle(12, padded);
+            offer(&c, &other);
+            assert_eq!(sent(), 3);
+            published_by(engine.start(Arc::clone(&c)));
+            assert_eq!(sent(), 4, "padded: {padded}");
+            // A fresh recompute reads nothing kept, an offer neither.
+            let d = triangle(13, padded);
+            offer(&d, &solvers);
+            published_by(engine.start_fresh(Arc::clone(&d)));
+            assert_eq!(sent(), 6, "padded: {padded}");
+        }
+    }
+
+    #[test]
+    fn a_solve_a_recompute_wouldnt_keep_or_of_no_such_sketch_is_no_offer() {
+        // A reply the core can't read (a solution called unbuildable, every piece of which
+        // can be built): a recompute keeps no such solve of its own, as the worker may
+        // answer otherwise next time, so it's no offer. A feature that isn't a sketch (the
+        // pad), or isn't there: no offer. A solve a recompute keeps: an offer.
+        let sketches = crate::fake::FakeSketches::new();
+        let a = triangle(10, true);
+        let good = edit_solve(&a, &mut sketches.clone());
+        assert!(SolveOffer::of(&a, &s1(), &good).is_some());
+        for other in ["p0000001", "s0000002"] {
+            let other = FeatureId::new(other).unwrap();
+            assert!(SolveOffer::of(&a, &other, &good).is_none(), "{other}");
+        }
+        sketches.answer(|system| {
+            let mut solved = crate::fake::FakeSketches::as_sent(system);
+            solved.status = silico_protocol::SolveStatus::SolvedInvalid;
+            Ok(solved)
+        });
+        let unread = edit_solve(&a, &mut sketches.clone());
+        assert!(unread.diagnosed().is_err());
+        assert!(SolveOffer::of(&a, &s1(), &unread).is_none());
+    }
+
+    #[test]
+    fn offers_past_their_bound_go_oldest_first_and_one_taken_is_kept_as_the_recomputes_own() {
+        // OFFERED_KEPT (8) offers of texts 1 to 8, then a ninth: text 1's is let go, so its
+        // recompute solves it; text 2's is kept, so its recompute doesn't. The same text
+        // offered again is one offer, not two: offered 2 to 9, then 9 again, then 10 and
+        // 11, 2 and 3 go, and 4 is kept. One taken (text 4) is kept as the recompute's own
+        // solve, as long as a published plan uses it, though its offer is let go after.
+        for padded in [false, true] {
+            let sketches = crate::fake::FakeSketches::new();
+            let solvers = SketchSolvers::holding(Box::new(sketches.clone()));
+            let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap())
+                .with_solvers(solvers.clone());
+            let sent = || sketches.requests().len();
+            let offer = |x: u32| {
+                let document = triangle(x, padded);
+                let answer = edit_solve(&document, &mut sketches.clone());
+                engine.offer_solve(&solvers, SolveOffer::of(&document, &s1(), &answer).unwrap());
+            };
+            for x in 1..=9 {
+                offer(x);
+            }
+            assert_eq!(sent(), 9);
+            published_by(engine.start(triangle(1, padded)));
+            assert_eq!(sent(), 10, "text 1's offer let go, padded: {padded}");
+            published_by(engine.start(triangle(2, padded)));
+            assert_eq!(sent(), 10, "text 2's offer kept, padded: {padded}");
+            for x in [9, 10, 11] {
+                offer(x);
+            }
+            assert_eq!(sent(), 13);
+            published_by(engine.start(triangle(3, padded)));
+            assert_eq!(sent(), 14, "text 3's offer let go, padded: {padded}");
+            published_by(engine.start(triangle(4, padded)));
+            assert_eq!(sent(), 14, "text 4's offer kept, padded: {padded}");
+            // Text 4's offer let go: eight more.
+            for x in 20..28 {
+                offer(x);
+            }
+            assert_eq!(sent(), 22);
+            published_by(engine.start(triangle(4, padded)));
+            assert_eq!(sent(), 22, "text 4 kept as a solve, padded: {padded}");
         }
     }
 }

@@ -172,8 +172,19 @@ fn a_worker_that_crashes_on_a_move_ends_the_drag_and_an_end_with_a_cursor_says_s
     assert_eq!(e.code(), ErrorCode::WorkerCrashed);
     assert!(!drag.is_open());
     assert_eq!(drag.closed().unwrap().code(), ErrorCode::WorkerCrashed);
-    // A move after it is refused as the drag having ended.
-    assert!(drag.move_to([62.0, 7.0]).unwrap().wait().is_err());
+    // A move after it is refused as the drag having ended, with the worker's code, and
+    // why it ended as its cause (`drag::close`).
+    let Err(e) = drag.move_to([62.0, 7.0]).unwrap().wait() else {
+        panic!("a frame after the drag ended")
+    };
+    assert_eq!(
+        (e.code(), e.message(), e.cause()),
+        (
+            ErrorCode::WorkerCrashed,
+            "no drag is open: its worker failed",
+            Some("the fake sketch solver crashed moving")
+        )
+    );
     let Err(e) = drag.end(Some([62.5, 7.0])) else {
         panic!("ended")
     };
@@ -183,7 +194,10 @@ fn a_worker_that_crashes_on_a_move_ends_the_drag_and_an_end_with_a_cursor_says_s
     );
     // Esc after the same failure ends with the file's sketch.
     let Opened { drag, .. } = opened(&solvers);
-    assert!(drag.move_to([62.5, 7.0]).unwrap().wait().is_err());
+    let Err(e) = drag.move_to([62.5, 7.0]).unwrap().wait() else {
+        panic!("a frame")
+    };
+    assert_eq!(e.code(), ErrorCode::WorkerCrashed);
     let ended = drag.end(None).unwrap();
     assert_eq!(
         (ended.kept, ended.changed, ended.why),

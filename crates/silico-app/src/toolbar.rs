@@ -17,7 +17,10 @@
 //! Create Sketch can open, whether its pick is on, the tool on, Construction) and its actions
 //! (Create Sketch's pick begun, a tool, Construction, a relation, Finish Sketch) are the
 //! caller's to wire.
-//! A button the registry (`crate::shortcuts`) gives keys names them in its tooltip.
+//! Each button of a registry command's (`crate::shortcuts`) takes its name, its icon, and its
+//! line from the registry, as the prototype's `tbBtn` takes them from its `CMD`, and names
+//! its keys in its tooltip if it has any; the command search runs the same buttons
+//! ([`searched`]), on or off as they are, doing what their clicks do.
 
 use std::sync::Arc;
 
@@ -142,7 +145,7 @@ pub fn show(ui: &mut Ui, shown: &Shown<'_>) -> Option<Act> {
 /// The toolbar's height: its tabs, its panels, and its border below them.
 const HEIGHT: f32 = theme::TOOLBAR_TABS_HEIGHT + theme::TOOLBAR_PANELS_HEIGHT + theme::BORDER_WIDTH;
 
-// ---- The commands (app.js's `CMD`) ----
+// ---- The buttons (app.js's `tbBtn`, of its `CMD`) ----
 
 /// What a command's button does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,238 +167,154 @@ enum Does {
     NotBuilt,
 }
 
-/// A command as the toolbar offers it: its name (its button's label and its tooltip's
-/// title), its icon, the prototype's line on it, what it does, and the registry's command
-/// whose keys its tooltip names, if it has one.
+/// A button as the toolbar offers it: its name (its label and its tooltip's title), its
+/// icon, its line, what it does, the registry's command it is, if it's one, and the registry's
+/// command whose keys its tooltip names, if it has one. A command of the registry's (`crate::shortcuts`) takes its name, its icon, and
+/// its line from it ([`registered`]), as the prototype's `tbBtn` takes them from its `CMD`;
+/// only what the prototype draws outside `CMD` has words of its own here ([`own`]): the
+/// constraints, and the drawing tools' variants in SKETCH CREATE's drop-down.
 #[derive(Debug, Clone, Copy)]
-struct Command {
+struct Button {
     label: &'static str,
     icon: Icon,
     description: Option<&'static str>,
     does: Does,
+    /// The registry's command it is ([`registered`]); none for one with words of its own.
+    command: Option<shortcuts::Command>,
+    /// The registry's command whose keys reach it: its own, or, for a variant, its row
+    /// button's ([`keyed`]).
     key: Option<shortcuts::Command>,
 }
 
-const fn command(
+/// The registry's `command`'s button, doing `does`: its name, its icon (the prototype's
+/// `box` for one with none, as `tbBtn` draws it), its line, and its keys, the registry's.
+const fn registered(command: shortcuts::Command, does: Does) -> Button {
+    let entry = command.entry();
+    Button {
+        label: entry.label,
+        icon: match entry.icon {
+            Some(icon) => icon,
+            None => Icon::Box,
+        },
+        description: entry.description,
+        does,
+        command: Some(command),
+        key: Some(command),
+    }
+}
+
+/// A button the prototype draws outside its `CMD`, with words of its own.
+const fn own(
     label: &'static str,
     icon: Icon,
     description: Option<&'static str>,
     does: Does,
-) -> Command {
-    Command {
+) -> Button {
+    Button {
         label,
         icon,
         description,
         does,
+        command: None,
         key: None,
     }
 }
 
-/// A command the registry's `key` reaches too, its tooltip naming its keys.
-const fn keyed(command: Command, key: shortcuts::Command) -> Command {
-    Command {
+/// A button of its own that the registry's `key` reaches too, its tooltip naming its keys.
+const fn keyed(button: Button, key: shortcuts::Command) -> Button {
+    Button {
         key: Some(key),
-        ..command
+        ..button
     }
 }
 
 /// What a command's tooltip says when it isn't built yet.
 const NOT_BUILT: &str = "Not built yet";
 
-/// Create Sketch's words: its button's, and its item's in the canvas's context menu
-/// (`crate::canvas_menu`), which begins the same pick (`crate::plane_pick`).
-pub(crate) const CREATE_SKETCH_WORDS: &str = "Create Sketch";
-
-const CREATE_SKETCH: Command = command(
-    CREATE_SKETCH_WORDS,
-    Icon::Sketch,
-    // The prototype's (app.js's `CMD.createSketch`).
-    Some("Pick an origin plane or a flat face, then sketch on it"),
-    Does::CreateSketch,
-);
-const PAD: Command = command(
-    "Pad",
-    Icon::Pad,
-    Some("Extrudes a sketch's profile into solid"),
-    Does::Dialog(Kind::Pad),
-);
-const POCKET: Command = command(
-    "Pocket",
-    Icon::Pocket,
-    Some("Cuts a sketch's profile out of the solid"),
-    Does::Dialog(Kind::Pocket),
-);
-const REVOLVE: Command = command(
-    "Revolve",
-    Icon::Revolve,
-    Some("Sweeps a profile around an axis"),
-    Does::Dialog(Kind::Revolve),
-);
-const GROOVE: Command = command(
-    "Groove",
-    Icon::Groove,
-    Some("Cuts a profile swept around an axis"),
-    Does::Dialog(Kind::Groove),
-);
-const FILLET: Command = command(
-    "Fillet",
-    Icon::Fillet,
-    Some("Rounds the selected edges"),
-    Does::Dialog(Kind::Fillet),
-);
-const CHAMFER: Command = command(
-    "Chamfer",
-    Icon::Chamfer,
-    Some("Bevels the selected edges"),
-    Does::Dialog(Kind::Chamfer),
-);
-const UNION: Command = command("Union", Icon::Union, None, Does::Dialog(Kind::Union));
-const SUBTRACT: Command = command(
-    "Subtract",
-    Icon::Subtract,
-    None,
-    Does::Dialog(Kind::Subtract),
-);
-const INTERSECT: Command = command(
-    "Intersect",
-    Icon::Intersect,
-    None,
-    Does::Dialog(Kind::Intersect),
-);
-const MEASURE: Command = command(
-    "Measure",
-    Icon::Measure,
-    Some("Distance, angle, and size of what you select"),
-    Does::NotBuilt,
-);
-const FACES: Command = command(
-    "Faces",
-    Icon::SelFace,
-    Some("Toggles whether faces can be selected"),
+const CREATE_SKETCH: Button = registered(shortcuts::Command::CreateSketch, Does::CreateSketch);
+const PAD: Button = registered(shortcuts::Command::Pad, Does::Dialog(Kind::Pad));
+const POCKET: Button = registered(shortcuts::Command::Pocket, Does::Dialog(Kind::Pocket));
+const REVOLVE: Button = registered(shortcuts::Command::Revolve, Does::Dialog(Kind::Revolve));
+const GROOVE: Button = registered(shortcuts::Command::Groove, Does::Dialog(Kind::Groove));
+const FILLET: Button = registered(shortcuts::Command::Fillet, Does::Dialog(Kind::Fillet));
+const CHAMFER: Button = registered(shortcuts::Command::Chamfer, Does::Dialog(Kind::Chamfer));
+const UNION: Button = registered(shortcuts::Command::Union, Does::Dialog(Kind::Union));
+const SUBTRACT: Button = registered(shortcuts::Command::Subtract, Does::Dialog(Kind::Subtract));
+const INTERSECT: Button = registered(shortcuts::Command::Intersect, Does::Dialog(Kind::Intersect));
+const MEASURE: Button = registered(shortcuts::Command::Measure, Does::NotBuilt);
+const FACES: Button = registered(
+    shortcuts::Command::FilterFace,
     Does::Filter(FilterKind::Faces),
 );
-const EDGES: Command = command(
-    "Edges",
-    Icon::SelEdge,
-    Some("Toggles whether edges can be selected"),
+const EDGES: Button = registered(
+    shortcuts::Command::FilterEdge,
     Does::Filter(FilterKind::Edges),
 );
-const VERTICES: Command = command(
-    "Vertices",
-    Icon::SelVertex,
-    Some("Toggles whether vertices can be selected"),
+const VERTICES: Button = registered(
+    shortcuts::Command::FilterVertex,
     Does::Filter(FilterKind::Vertices),
 );
-const LINE: Command = keyed(
-    command(
-        "Line",
-        Icon::Line,
-        Some("Click, click: a chain of lines. Double-click ends it"),
-        Does::Tool(Choice::Draw(ToolKind::Line)),
-    ),
+const LINE: Button = registered(
     shortcuts::Command::Line,
+    Does::Tool(Choice::Draw(ToolKind::Line)),
 );
 /// The corner rectangle, Fusion's and SolidWorks' first.
-const RECTANGLE: Command = keyed(
-    command(
-        "Rectangle",
-        Icon::Rect,
-        None,
-        Does::Tool(Choice::Draw(ToolKind::CornerRectangle)),
-    ),
+const RECTANGLE: Button = registered(
     shortcuts::Command::Rectangle,
+    Does::Tool(Choice::Draw(ToolKind::CornerRectangle)),
 );
-const CIRCLE: Command = keyed(
-    command(
-        "Circle",
-        Icon::Circle,
-        None,
-        Does::Tool(Choice::Draw(ToolKind::Circle)),
-    ),
+const CIRCLE: Button = registered(
     shortcuts::Command::Circle,
+    Does::Tool(Choice::Draw(ToolKind::Circle)),
 );
 /// The 3-point arc, Fusion's first, as A chooses it.
-const ARC: Command = keyed(
-    command(
-        "Arc",
-        Icon::Arc,
-        None,
-        Does::Tool(Choice::Draw(ToolKind::ThreePointArc)),
-    ),
+const ARC: Button = registered(
     shortcuts::Command::Arc,
+    Does::Tool(Choice::Draw(ToolKind::ThreePointArc)),
 );
 /// A drawing tool as CREATE's drop-down offers it in a sketch, under the palette's name for
 /// it, with its family's icon. The corner rectangle and the 3-point arc are the row's
 /// Rectangle and Arc, keyed as they are; the variants the row doesn't choose (Fusion's
 /// Center Rectangle, Center Point Arc, and Tangent Arc) are reached here alone, as Fusion
 /// reaches them from its drop-down, with no key, as Fusion gives them none.
-const fn variant(tool: ToolKind, icon: Icon) -> Command {
-    command(
+const fn variant(tool: ToolKind, icon: Icon) -> Button {
+    own(
         crate::sketch::bar::tool_name(tool),
         icon,
         None,
         Does::Tool(Choice::Draw(tool)),
     )
 }
-const CORNER_RECTANGLE: Command = keyed(
+const CORNER_RECTANGLE: Button = keyed(
     variant(ToolKind::CornerRectangle, Icon::Rect),
     shortcuts::Command::Rectangle,
 );
-const CENTER_RECTANGLE: Command = variant(ToolKind::CenterRectangle, Icon::Rect);
-const THREE_POINT_ARC: Command = keyed(
+const CENTER_RECTANGLE: Button = variant(ToolKind::CenterRectangle, Icon::Rect);
+const THREE_POINT_ARC: Button = keyed(
     variant(ToolKind::ThreePointArc, Icon::Arc),
     shortcuts::Command::Arc,
 );
-const CENTERPOINT_ARC: Command = variant(ToolKind::CenterpointArc, Icon::Arc);
-const TANGENT_ARC: Command = variant(ToolKind::TangentArc, Icon::Arc);
-const POINT: Command = keyed(
-    command(
-        "Point",
-        Icon::Point,
-        None,
-        Does::Tool(Choice::Draw(ToolKind::Point)),
-    ),
+const CENTERPOINT_ARC: Button = variant(ToolKind::CenterpointArc, Icon::Arc);
+const TANGENT_ARC: Button = variant(ToolKind::TangentArc, Icon::Arc);
+const POINT: Button = registered(
     shortcuts::Command::Point,
+    Does::Tool(Choice::Draw(ToolKind::Point)),
 );
 /// Construction, as the prototype has it: the selected curves switched between profile and
 /// construction (`Tab::sketch_construction`); with no curve selected, the palette's setting
 /// for the curves drawn next. Shown pressed while that setting is on.
-const CONSTRUCTION: Command = keyed(
-    command(
-        "Construction",
-        Icon::Construction,
-        Some(shortcuts::CONSTRUCTION_HELP),
-        Does::Construction,
-    ),
-    shortcuts::Command::Construction,
-);
-const TRIM: Command = keyed(
-    command("Trim", Icon::Trim, None, Does::Tool(Choice::Trim)),
-    shortcuts::Command::Trim,
-);
+const CONSTRUCTION: Button = registered(shortcuts::Command::Construction, Does::Construction);
+const TRIM: Button = registered(shortcuts::Command::Trim, Does::Tool(Choice::Trim));
 /// SolidWorks' Extend Entities, a tool of its own beside Trim's drag-extend, as the
-/// prototype's `sExtend` is; no key, as it has none.
-const EXTEND: Command = command(
-    "Extend",
-    Icon::Extend,
-    Some("Extends a line or arc to the next curve"),
-    Does::Tool(Choice::Extend),
-);
-const SPLIT: Command = command("Split", Icon::Split, None, Does::Tool(Choice::Split));
-const DIMENSION: Command = keyed(
-    command(
-        "Smart Dimension",
-        Icon::Dimension,
-        Some("Pick a line, a circle, or two entities, then type the value"),
-        Does::Tool(Choice::Dimension),
-    ),
-    shortcuts::Command::Dimension,
-);
+/// prototype's `sExtend` is.
+const EXTEND: Button = registered(shortcuts::Command::Extend, Does::Tool(Choice::Extend));
+const SPLIT: Button = registered(shortcuts::Command::Split, Does::Tool(Choice::Split));
+const DIMENSION: Button = registered(shortcuts::Command::Dimension, Does::Tool(Choice::Dimension));
 
-/// A constraint's button (app.js's `renderToolbar`, CONSTRAINTS): its name, the prototype's
-/// line on them all, and the relation it makes.
-const fn constraint(label: &'static str, icon: Icon, relation: RelationTool) -> Command {
-    command(
+/// A constraint's button (app.js's `renderToolbar`, CONSTRAINTS, drawn outside its `CMD`):
+/// its name, the prototype's line on them all, and the relation it makes.
+const fn constraint(label: &'static str, icon: Icon, relation: RelationTool) -> Button {
+    own(
         label,
         icon,
         Some("Select the curves or points first"),
@@ -406,7 +325,7 @@ const fn constraint(label: &'static str, icon: Icon, relation: RelationTool) -> 
 /// What a drop-down holds.
 #[derive(Debug, Clone, Copy)]
 enum Entry {
-    Command(Command),
+    Button(Button),
     Separator,
     /// A heading (`.mh`), in capitals.
     Heading(&'static str),
@@ -420,7 +339,7 @@ enum Entry {
 /// none, its row's commands.
 struct Panel {
     label: &'static str,
-    row: &'static [Command],
+    row: &'static [Button],
     menu: Option<&'static [Entry]>,
 }
 
@@ -433,25 +352,25 @@ const SOLID: &[Panel] = &[
         label: "CREATE",
         row: &[CREATE_SKETCH, PAD, POCKET, REVOLVE, GROOVE],
         menu: Some(&[
-            Entry::Command(CREATE_SKETCH),
+            Entry::Button(CREATE_SKETCH),
             Entry::Separator,
-            Entry::Command(PAD),
-            Entry::Command(POCKET),
-            Entry::Command(REVOLVE),
-            Entry::Command(GROOVE),
+            Entry::Button(PAD),
+            Entry::Button(POCKET),
+            Entry::Button(REVOLVE),
+            Entry::Button(GROOVE),
         ]),
     },
     Panel {
         label: "MODIFY",
         row: &[FILLET, CHAMFER, UNION, SUBTRACT, INTERSECT],
         menu: Some(&[
-            Entry::Command(FILLET),
-            Entry::Command(CHAMFER),
+            Entry::Button(FILLET),
+            Entry::Button(CHAMFER),
             Entry::Separator,
             Entry::Heading("COMBINE"),
-            Entry::Command(UNION),
-            Entry::Command(SUBTRACT),
-            Entry::Command(INTERSECT),
+            Entry::Button(UNION),
+            Entry::Button(SUBTRACT),
+            Entry::Button(INTERSECT),
         ]),
     },
     Panel {
@@ -464,9 +383,9 @@ const SOLID: &[Panel] = &[
         row: &[FACES, EDGES, VERTICES],
         menu: Some(&[
             Entry::Heading("SELECTION FILTERS"),
-            Entry::Command(FACES),
-            Entry::Command(EDGES),
-            Entry::Command(VERTICES),
+            Entry::Button(FACES),
+            Entry::Button(EDGES),
+            Entry::Button(VERTICES),
             Entry::Separator,
             Entry::AllFilters,
             Entry::ClearSelection,
@@ -484,16 +403,16 @@ const SKETCH: &[Panel] = &[
         // flyouts (`.menu`'s items, interact.js), each under the palette's name for it.
         // Then Construction, the row's last.
         menu: Some(&[
-            Entry::Command(LINE),
-            Entry::Command(CORNER_RECTANGLE),
-            Entry::Command(CENTER_RECTANGLE),
-            Entry::Command(CIRCLE),
-            Entry::Command(THREE_POINT_ARC),
-            Entry::Command(CENTERPOINT_ARC),
-            Entry::Command(TANGENT_ARC),
-            Entry::Command(POINT),
+            Entry::Button(LINE),
+            Entry::Button(CORNER_RECTANGLE),
+            Entry::Button(CENTER_RECTANGLE),
+            Entry::Button(CIRCLE),
+            Entry::Button(THREE_POINT_ARC),
+            Entry::Button(CENTERPOINT_ARC),
+            Entry::Button(TANGENT_ARC),
+            Entry::Button(POINT),
             Entry::Separator,
-            Entry::Command(CONSTRUCTION),
+            Entry::Button(CONSTRUCTION),
         ]),
     },
     Panel {
@@ -515,7 +434,7 @@ const SKETCH: &[Panel] = &[
 
 /// CONSTRAINTS' row: Smart Dimension, then the constraints in the order app.js's
 /// `renderToolbar` gives them.
-const CONSTRAINTS: [Command; 11] = [
+const CONSTRAINTS: [Button; 11] = [
     DIMENSION,
     constraint("Horizontal", Icon::CHorizontal, RelationTool::Horizontal),
     constraint("Vertical", Icon::CVertical, RelationTool::Vertical),
@@ -533,7 +452,7 @@ const CONSTRAINTS: [Command; 11] = [
     constraint("Fix", Icon::CFix, RelationTool::Fix),
 ];
 
-impl Command {
+impl Button {
     /// Whether it's on, as `shown` has the app.
     fn enabled(&self, shown: &Shown<'_>) -> bool {
         match self.does {
@@ -603,6 +522,32 @@ impl Command {
             _ => None,
         }
     }
+}
+
+/// The button the toolbar draws for the registry's `command` in a panel's row, SOLID's or
+/// SKETCH's, if it draws one.
+fn button_of(command: shortcuts::Command) -> Option<&'static Button> {
+    SOLID
+        .iter()
+        .chain(SKETCH)
+        .flat_map(|panel| panel.row)
+        .find(|button| button.command == Some(command))
+}
+
+/// The registry's `command` as the command search runs it, if the toolbar has a button for
+/// it: what a click on its button asks, if it's on as `shown` has the app; or, if it's off,
+/// why, where its tooltip says (not built yet, or a dialog's reason for want of what the part
+/// has).
+pub(crate) fn searched(
+    command: shortcuts::Command,
+    shown: &Shown<'_>,
+) -> Option<Result<Act, Option<&'static str>>> {
+    let button = button_of(command)?;
+    Some(match button.act() {
+        Some(act) if button.enabled(shown) => Ok(act),
+        _ if !button.built(shown) => Err(Some(NOT_BUILT)),
+        _ => Err(button.why_off(shown)),
+    })
 }
 
 // ---- The tabs (`.tb-tabs`) ----
@@ -801,8 +746,8 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
             .layout(Layout::left_to_right(Align::Center));
         ui.scope_builder(buttons, |ui| {
             ui.spacing_mut().item_spacing.x = theme::TOOLBAR_BUTTON_GAP;
-            for command in panel.row {
-                row_button(ui, command, shown, act);
+            for button in panel.row {
+                row_button(ui, button, shown, act);
             }
         });
         let opener = ui.put(label_rect, |ui: &mut Ui| {
@@ -816,8 +761,8 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
                     }
                 }
                 None => {
-                    for command in panel.row {
-                        menu_entry(ui, &Entry::Command(*command), shown, act);
+                    for button in panel.row {
+                        menu_entry(ui, &Entry::Button(*button), shown, act);
                     }
                 }
             });
@@ -835,23 +780,19 @@ fn panel(ui: &mut Ui, panel: &Panel, last: bool, shown: &Shown<'_>, act: &mut Op
 /// A command's button in a panel's row, with its tooltip, its keys named if the registry
 /// gives it any; a click opens its dialog, or, for Create Sketch, begins its pick; or chooses
 /// its tool, or turns Construction on or off.
-fn row_button(ui: &mut Ui, command: &Command, shown: &Shown<'_>, act: &mut Option<Act>) {
+fn row_button(ui: &mut Ui, button: &Button, shown: &Shown<'_>, act: &mut Option<Act>) {
     let response = tool_button(
         ui,
-        command.icon,
-        command.label,
-        command.enabled(shown),
-        command.pressed(shown),
+        button.icon,
+        button.label,
+        button.enabled(shown),
+        button.pressed(shown),
     );
-    let said = command.said(shown);
-    let keys = match command.does {
-        Does::Filter(kind) => Some(filter_command(kind)),
-        _ => command.key,
-    }
-    .and_then(|key| key.shown(ui.ctx()));
-    let response = bar::tooltip(response, command.label, keys, said.as_deref());
+    let said = button.said(shown);
+    let keys = button.key.and_then(|key| key.shown(ui.ctx()));
+    let response = bar::tooltip(response, button.label, keys, said.as_deref());
     if response.clicked()
-        && let Some(asked) = command.act()
+        && let Some(asked) = button.act()
     {
         *act = Some(asked);
     }
@@ -1015,42 +956,45 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                 ui.close();
             }
         }
-        Entry::Command(command) => {
-            let item = egui::Button::image_and_text(icons::icon(command.icon), command.label);
-            let enabled = command.enabled(shown);
-            match command.does {
+        Entry::Button(button) => {
+            let item = egui::Button::image_and_text(icons::icon(button.icon), button.label);
+            let enabled = button.enabled(shown);
+            match button.does {
                 Does::Tool(_) | Does::Construction => {
-                    let on = command.pressed(shown).is_some_and(|(_, on)| on);
+                    let on = button.pressed(shown).is_some_and(|(_, on)| on);
                     if ui.add_enabled(enabled, item.selected(on)).clicked() {
-                        *act = command.act();
+                        *act = button.act();
                         ui.close();
                     }
                 }
                 Does::CreateSketch => {
                     let item = ui.add_enabled(enabled, item);
-                    let item = match (command.built(shown), command.said(shown)) {
+                    let item = match (button.built(shown), button.said(shown)) {
                         (false, Some(said)) => item.on_disabled_hover_text(said),
                         _ => item,
                     };
                     if item.clicked() {
-                        *act = command.act();
+                        *act = button.act();
                         ui.close();
                     }
                 }
                 Does::Dialog(_) | Does::Constraint(_) => {
                     let item = ui.add_enabled(enabled, item);
-                    let item = match command.why_off(shown) {
+                    let item = match button.why_off(shown) {
                         Some(why) => item.on_disabled_hover_text(why),
                         None => item,
                     };
                     if item.clicked() {
-                        *act = command.act();
+                        *act = button.act();
                         ui.close();
                     }
                 }
                 Does::Filter(kind) => {
                     // Checked while its kind is taken (the prototype's `✓`), its key beside it.
-                    let key = filter_command(kind).keys_text(ui.ctx());
+                    let key = button
+                        .key
+                        .map(|key| key.keys_text(ui.ctx()))
+                        .unwrap_or_default();
                     let item = item.selected(kind.on(shown.filter)).shortcut_text(key);
                     if ui.add(item).clicked() {
                         *act = Some(Act::Filter(kind));
@@ -1059,7 +1003,7 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
                 }
                 Does::NotBuilt => {
                     let item = ui.add_enabled(false, item);
-                    if let Some(said) = command.said(shown) {
+                    if let Some(said) = button.said(shown) {
                         item.on_disabled_hover_text(said);
                     }
                 }
@@ -1068,21 +1012,13 @@ fn menu_entry(ui: &mut Ui, entry: &Entry, shown: &Shown<'_>, act: &mut Option<Ac
     }
 }
 
-/// The registry's command for a filter's kind, whose keys its menu item names.
-fn filter_command(kind: FilterKind) -> crate::shortcuts::Command {
-    match kind {
-        FilterKind::Faces => crate::shortcuts::Command::FilterFace,
-        FilterKind::Edges => crate::shortcuts::Command::FilterEdge,
-        FilterKind::Vertices => crate::shortcuts::Command::FilterVertex,
-    }
-}
-
 // ---- Finish Sketch (`.tb-finish`) ----
 
 /// Finish Sketch (`.btn-finish`), at the right of the panels' `row`, its height centred in
 /// it, with its tooltip.
 fn finish(ui: &mut Ui, row: Rect) -> Response {
-    let label = "Finish Sketch";
+    let finish = shortcuts::Command::FinishSketch;
+    let label = finish.label();
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
         FontId::proportional(theme::BODY_SIZE),
@@ -1132,7 +1068,6 @@ fn finish(ui: &mut Ui, row: Rect) -> Response {
         rect.center().y - galley.size().y / 2.0,
     );
     ui.painter().galley(at, galley, theme::TOOLBAR_FINISH_TEXT);
-    let finish = shortcuts::Command::FinishSketch;
     bar::tooltip(
         response,
         label,
@@ -1178,7 +1113,7 @@ mod tests {
         let modify = &SOLID[1];
         assert_eq!(modify.label, "MODIFY");
         for kind in Kind::ALL.into_iter().filter(|kind| kind.modifies()) {
-            let commands = |entries: Vec<&Command>| {
+            let commands = |entries: Vec<&Button>| {
                 entries
                     .into_iter()
                     .filter(|command| command.does == Does::Dialog(kind))
@@ -1191,7 +1126,7 @@ mod tests {
                     .unwrap_or_default()
                     .iter()
                     .filter_map(|entry| match entry {
-                        Entry::Command(command) => Some(command),
+                        Entry::Button(command) => Some(command),
                         _ => None,
                     })
                     .collect(),
@@ -1207,7 +1142,7 @@ mod tests {
             let in_menu: Vec<_> = menu
                 .iter()
                 .filter_map(|entry| match entry {
-                    Entry::Command(command) if command.does == Does::Dialog(kind) => Some(command),
+                    Entry::Button(command) if command.does == Does::Dialog(kind) => Some(command),
                     _ => None,
                 })
                 .collect();
@@ -1237,12 +1172,12 @@ mod tests {
             Kind::Torus,
         ];
         let titles = ["Box", "Cylinder", "Sphere", "Cone", "Torus"];
-        let mut offered: Vec<&Command> = Vec::new();
+        let mut offered: Vec<&Button> = Vec::new();
         for panel in SOLID.iter().chain(SKETCH) {
             offered.extend(panel.row);
             for entry in panel.menu.unwrap_or_default() {
                 match entry {
-                    Entry::Command(command) => offered.push(command),
+                    Entry::Button(command) => offered.push(command),
                     Entry::Heading(text) => {
                         assert_ne!(*text, "PRIMITIVES", "{}", panel.label);
                     }
@@ -2206,9 +2141,6 @@ mod tests {
         );
     }
 
-    /// A button the registry gives keys is the registry's command, under its name and its
-    /// line, so its tooltip and the sheet say the same: the keys that reach it do what it
-    /// does.
     /// SKETCH CREATE's drop-down: each drawing tool under its family's icon and its row
     /// button's key, if the row has it; Construction after the one separator, as its own.
     #[test]
@@ -2217,7 +2149,7 @@ mod tests {
         let seen: Vec<Option<(Does, Icon, Option<shortcuts::Command>)>> = menu
             .iter()
             .map(|entry| match entry {
-                Entry::Command(command) => Some((command.does, command.icon, command.key)),
+                Entry::Button(command) => Some((command.does, command.icon, command.key)),
                 _ => None,
             })
             .collect();
@@ -2249,39 +2181,170 @@ mod tests {
         assert!(matches!(menu[8], Entry::Separator));
     }
 
-    #[test]
-    fn each_keyed_sketch_button_is_its_registry_commands_under_its_name() {
-        let commands: Vec<&Command> = SKETCH.iter().flat_map(|panel| panel.row.iter()).collect();
-        for command in &commands {
-            if let Some(key) = command.key {
-                assert_eq!(
-                    command.description,
-                    key.entry().description,
-                    "{}",
-                    command.label
-                );
+    /// Every button the toolbar draws, in each panel's row and drop-down, SOLID's and
+    /// SKETCH's: its words of its own, or the registry's.
+    fn every_button() -> Vec<&'static Button> {
+        let mut buttons = Vec::new();
+        for panel in SOLID.iter().chain(SKETCH) {
+            buttons.extend(panel.row);
+            for entry in panel.menu.unwrap_or_default() {
+                if let Entry::Button(button) = entry {
+                    buttons.push(button);
+                }
             }
         }
-        let keyed: Vec<(&str, shortcuts::Command)> = commands
-            .iter()
-            .filter_map(|command| command.key.map(|key| (command.label, key)))
+        buttons
+    }
+
+    #[test]
+    fn every_button_is_its_registry_commands_under_its_words_but_what_the_prototype_draws_apart() {
+        // The prototype's `tbBtn` draws each button of its `CMD` under `CMD`'s label, icon,
+        // and `desc`: so every button of the app's is the registry's command, under the
+        // registry's name, icon, and line, its tooltip naming the registry's keys. Only what
+        // the prototype draws outside `CMD` has words of its own: the ten constraints
+        // (`renderToolbar`'s `cHorizontal` to `cFix`), and SKETCH CREATE's drop-down's
+        // variants (Fusion's, which the prototype's menu hasn't), two of them reached by
+        // their row button's keys.
+        let own: Vec<(&str, Option<shortcuts::Command>)> = every_button()
+            .into_iter()
+            .filter(|button| button.command.is_none())
+            .map(|button| (button.label, button.key))
             .collect();
         assert_eq!(
-            keyed,
+            own,
             [
-                ("Line", shortcuts::Command::Line),
-                ("Rectangle", shortcuts::Command::Rectangle),
-                ("Circle", shortcuts::Command::Circle),
-                ("Arc", shortcuts::Command::Arc),
-                ("Point", shortcuts::Command::Point),
-                ("Construction", shortcuts::Command::Construction),
-                ("Trim", shortcuts::Command::Trim),
-                ("Smart Dimension", shortcuts::Command::Dimension),
+                (
+                    crate::sketch::bar::tool_name(ToolKind::CornerRectangle),
+                    Some(shortcuts::Command::Rectangle)
+                ),
+                (
+                    crate::sketch::bar::tool_name(ToolKind::CenterRectangle),
+                    None
+                ),
+                (
+                    crate::sketch::bar::tool_name(ToolKind::ThreePointArc),
+                    Some(shortcuts::Command::Arc)
+                ),
+                (
+                    crate::sketch::bar::tool_name(ToolKind::CenterpointArc),
+                    None
+                ),
+                (crate::sketch::bar::tool_name(ToolKind::TangentArc), None),
+                ("Horizontal", None),
+                ("Vertical", None),
+                ("Coincident", None),
+                ("Tangent", None),
+                ("Equal", None),
+                ("Parallel", None),
+                ("Perpendicular", None),
+                ("Midpoint", None),
+                ("Symmetric", None),
+                ("Fix", None),
             ]
         );
-        for (label, key) in keyed {
-            assert_eq!(key.label(), label);
+        // The rest: each the registry's command, every word of it the registry's.
+        let mut registered: Vec<shortcuts::Command> = Vec::new();
+        for button in every_button() {
+            let Some(command) = button.command else {
+                continue;
+            };
+            let entry = command.entry();
+            assert_eq!(button.label, entry.label);
+            assert_eq!(button.description, entry.description, "{}", button.label);
+            assert_eq!(Some(button.icon), entry.icon, "{}", button.label);
+            assert_eq!(button.key, Some(command), "{}", button.label);
+            if !registered.contains(&command) {
+                registered.push(command);
+            }
         }
+        // Each of the prototype's toolbar commands (`renderToolbar`'s `tbBtn`s), once.
+        use shortcuts::Command as C;
+        assert_eq!(
+            registered,
+            [
+                C::CreateSketch,
+                C::Pad,
+                C::Pocket,
+                C::Revolve,
+                C::Groove,
+                C::Fillet,
+                C::Chamfer,
+                C::Union,
+                C::Subtract,
+                C::Intersect,
+                C::Measure,
+                C::FilterFace,
+                C::FilterEdge,
+                C::FilterVertex,
+                C::Line,
+                C::Rectangle,
+                C::Circle,
+                C::Arc,
+                C::Point,
+                C::Construction,
+                C::Trim,
+                C::Extend,
+                C::Split,
+                C::Dimension,
+            ]
+        );
+    }
+
+    #[test]
+    fn the_search_runs_a_button_as_its_click_does_on_or_off_as_it_is_drawn() {
+        // Pad, a sweep: its dialog, while it can open; off with no words while it can't.
+        let shown = |can: bool, sketch: Option<bool>, in_sketch: bool| {
+            move |command: shortcuts::Command| {
+                let can_open = move |_: Kind| can;
+                let why_closed = |kind: Kind| kind.combines().then_some("Needs two bodies");
+                searched(
+                    command,
+                    &Shown {
+                        in_sketch,
+                        create_sketch: sketch,
+                        picking: false,
+                        can_open: &can_open,
+                        why_closed: &why_closed,
+                        selected: false,
+                        tool: None,
+                        construction: false,
+                        filter: Filter::default(),
+                    },
+                )
+            }
+        };
+        use shortcuts::Command as C;
+        let open = shown(true, Some(true), false);
+        let closed = shown(false, Some(false), false);
+        assert_eq!(open(C::Pad), Some(Ok(Act::Dialog(Kind::Pad))));
+        assert_eq!(closed(C::Pad), Some(Err(None)));
+        assert_eq!(open(C::Fillet), Some(Ok(Act::Dialog(Kind::Fillet))));
+        // A boolean that can't open says why, as its tooltip does.
+        assert_eq!(open(C::Union), Some(Ok(Act::Dialog(Kind::Union))));
+        assert_eq!(closed(C::Union), Some(Err(Some("Needs two bodies"))));
+        // Create Sketch: its pick, while sketch mode can open; not built without it.
+        assert_eq!(open(C::CreateSketch), Some(Ok(Act::CreateSketch)));
+        assert_eq!(closed(C::CreateSketch), Some(Err(None)));
+        assert_eq!(
+            shown(true, None, false)(C::CreateSketch),
+            Some(Err(Some(NOT_BUILT)))
+        );
+        // Measure: not built, however the app stands.
+        assert_eq!(open(C::Measure), Some(Err(Some(NOT_BUILT))));
+        // Extend and Split: their tools in a sketch, off outside one.
+        let sketching = shown(true, Some(true), true);
+        assert_eq!(
+            sketching(C::Extend),
+            Some(Ok(Act::SketchTool(Choice::Extend)))
+        );
+        assert_eq!(
+            sketching(C::Split),
+            Some(Ok(Act::SketchTool(Choice::Split)))
+        );
+        assert_eq!(open(C::Extend), Some(Err(None)));
+        // A command the toolbar draws no button of its own for: none.
+        assert_eq!(open(C::Save), None);
+        assert_eq!(open(C::Revert), None);
     }
 
     #[test]

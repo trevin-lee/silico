@@ -339,7 +339,8 @@ fn revert_drops_every_step_and_the_next_edit_counts_alone() {
     h.get_by_label("File").click();
     step(&mut h);
     step(&mut h);
-    h.get_by_role_and_label(Role::Button, "Revert").click();
+    h.get_by_role_and_label(Role::Button, "Revert to saved")
+        .click();
     step_until(&mut h, "reverted", |h| !h.state().tabs()[0].transaction);
     settled(&mut h);
     assert_eq!(f.text(&h), EXAMPLE);
