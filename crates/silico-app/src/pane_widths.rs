@@ -280,6 +280,7 @@ impl KeptLayout {
 /// file keeps.
 fn keep(file: &Path, read: Read, asked: &Receiver<Kept>, tell: &Sender<Kept>, wake: &Wake) {
     let _span = tracing::info_span!("pane widths", file = %file.display()).entered();
+    crate::app_data::remove_left_over(file, std::time::SystemTime::now());
     let kept = read(file).map_or_else(Kept::default, |bytes| parse(&bytes));
     if tell.send(kept).is_err() {
         return;
@@ -521,6 +522,23 @@ mod tests {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(names, [FILE_NAME]);
+    }
+
+    #[test]
+    fn the_thread_removes_what_a_killed_write_left_beside_the_file_as_it_starts() {
+        // A write killed mid-way leaves `pane-widths.<pid>.<n>.new` (`app_data::write`):
+        // removed as the thread starts once it's over an hour old; one younger, which may be
+        // another instance's write under way, kept.
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join(FILE_NAME);
+        let old = dir.path().join(format!("{FILE_NAME}.999.0.new"));
+        let young = dir.path().join(format!("{FILE_NAME}.999.1.new"));
+        crate::app_data::tests::left_two_hours_ago(dir.path(), &format!("{FILE_NAME}.999.0.new"));
+        std::fs::write(&young, b"half").unwrap();
+        let mut kept = KeptLayout::at(file);
+        assert_eq!(polled_until_read(&mut kept), Kept::default());
+        assert!(!old.exists());
+        assert!(young.exists());
     }
 
     #[test]
