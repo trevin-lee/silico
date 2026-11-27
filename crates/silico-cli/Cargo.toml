@@ -21,7 +21,8 @@ tracing.workspace = true
 [dev-dependencies]
 # The bracket (tests/bracket.rs): its replies validated against their tools' output
 # schemas, read as written (raw_value), its mesh worked out by hand (libm), and its 3MF
-# read back by FreeCAD, the oracle.
+# read back by FreeCAD, the oracle. cpu-time is silico-core's tests/common/share.rs's, which
+# tests/adversarial_worker_start.rs takes in by its path.
 cpu-time.workspace = true
 jsonschema.workspace = true
 libc.workspace = true

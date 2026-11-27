@@ -663,3 +663,507 @@ fn model_maker(
         .find(|f| &f.id == id)
         .map(|f| silico_core::naming::Maker::of(&f.operation))
 }
+
+/// Every face the fake describes is a plane, of normal +Z through z = 10: so every sketch on
+/// a face is placed, and padded.
+fn planar(_: &str, _: usize) -> Surface {
+    Surface::Plane {
+        normal: [0.0, 0.0, 1.0],
+        location: [0.0, 0.0, 10.0],
+    }
+}
+
+/// Whether `done` comes to hold within the tests' one wait: looked at until it does, so a
+/// test fails here only by the wait running out.
+fn within_wait(done: impl Fn() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + WAIT;
+    loop {
+        if done() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// How many requests `engine`'s kernel was asked that `picks` picks.
+fn asked_count(engine: &Recompute<FakeKernel>, picks: impl Fn(&Op) -> bool) -> usize {
+    engine
+        .kernel()
+        .asked()
+        .iter()
+        .filter(|call| picks(&call.op))
+        .count()
+}
+
+fn is_prism(op: &Op) -> bool {
+    matches!(op, Op::Prism { .. } | Op::PrismThroughAll { .. })
+}
+
+/// Whether `op` makes the 5 mm box, `b0000002`.
+fn is_small_box(op: &Op) -> bool {
+    matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 5.0)
+}
+
+/// `features` rebuilt on a fresh engine whose every face is planar, `b0000002`'s make held
+/// until `prisms` prisms are asked for, or the tests' wait runs out: whether they were while
+/// it was held, the model published once it's let go, the rounds the rebuild planned, and
+/// the engine.
+fn rebuilt_holding_the_small_box(
+    features: &[String],
+    prisms: usize,
+) -> (bool, std::sync::Arc<Model>, usize, Recompute<FakeKernel>) {
+    let held = engine();
+    described_as(&held, planar);
+    let hold = held.kernel().hold(is_small_box);
+    let run = held.start(checked_document(&strs(features)));
+    let progress = run.progress();
+    let asked = within_wait(|| asked_count(&held, is_prism) >= prisms);
+    hold.release();
+    let model = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    };
+    (asked, model, progress.rounds(), held)
+}
+
+/// The document as a save writes it.
+fn saved_text(model: &Model) -> String {
+    write(&model.saved()).unwrap()
+}
+
+#[test]
+fn a_face_sketchs_pad_is_built_while_an_unrelated_branch_is_still_building() {
+    // M5's milestone review, A13-M1: s1 is on b1's top, and p1 pads it; b2, a box that
+    // nothing of s1 is made from, is held mid-make. p1's prism is asked for while b2 is still
+    // held, as the attacher note's rounds have it ("a slow or failed branch it doesn't come
+    // from never delays ... a sketch that resolves"): before, s1 was placed only once every
+    // step of its round had settled, b2's make among them, so p1 waited for b2.
+    let features = [
+        cube(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("b0000001"), "s0000001", &one_side("3")),
+    ];
+    let (while_held, model, rounds, held) = rebuilt_holding_the_small_box(&features, 1);
+    assert!(
+        while_held,
+        "p1's prism wasn't asked for while b2's make was held"
+    );
+    assert!(matches!(
+        model.outcome(&id("p0000001")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    // Each step asked for once, the prism no more for having been asked ahead of its round;
+    // and the rounds as before: one placing s1, one finding none waiting.
+    assert_eq!(asked_count(&held, is_prism), 1);
+    assert_eq!(asked_count(&held, is_small_box), 1);
+    assert_eq!(rounds, 2);
+    // The model published is the one a rebuild with nothing held publishes, byte for byte
+    // as a save writes it.
+    let unheld = engine();
+    described_as(&unheld, planar);
+    assert_eq!(
+        saved_text(&model),
+        saved_text(&published(&unheld, &strs(&features)))
+    );
+}
+
+#[test]
+fn a_sketch_on_a_face_of_a_face_sketchs_pad_and_its_pad_are_built_while_an_unrelated_branch_is_still_building()
+ {
+    // A level deeper: s2 is on p1's top, and p2 pads it onto p1. Both prisms are asked for
+    // while b2's make is held: before, each level of nested sketches waited for every step
+    // of its round, b2's make in the first.
+    let features = [
+        cube(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("b0000001"), "s0000001", &one_side("3")),
+        on_face(
+            "s0000002",
+            &face("p0000001.pad.Face(G s0000001.sketch.Face1)", "+x", false),
+        ),
+        pad("p0000002", Some("p0000001"), "s0000002", &one_side("1")),
+    ];
+    let (while_held, model, rounds, held) = rebuilt_holding_the_small_box(&features, 2);
+    assert!(
+        while_held,
+        "p1's and p2's prisms weren't both asked for while b2's make was held"
+    );
+    for built in ["p0000001", "p0000002"] {
+        assert!(
+            matches!(
+                model.outcome(&id(built)),
+                Some(FeatureOutcome::Built { .. })
+            ),
+            "{built}: {:?}",
+            model.outcome(&id(built))
+        );
+    }
+    assert_eq!(asked_count(&held, is_prism), 2);
+    // One round a level, and one more finding none waiting.
+    assert_eq!(rounds, 3);
+    let unheld = engine();
+    described_as(&unheld, planar);
+    assert_eq!(
+        saved_text(&model),
+        saved_text(&published(&unheld, &strs(&features)))
+    );
+}
+
+/// The box, an unrelated 5 mm box, a sketch on the box's top, and its pad onto the box.
+fn beside_a_small_box() -> Vec<String> {
+    vec![
+        cube(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("b0000001"), "s0000001", &one_side("3")),
+    ]
+}
+
+#[test]
+fn a_pad_placed_ahead_whose_prism_the_kernel_refuses_fails_as_it_would_in_its_round() {
+    // Break-it, A13-M1: the step run ahead of its round fails. The pad fails with the
+    // kernel's refusal, naming it, as a rebuild with nothing held has it, byte for byte; the
+    // prism is asked once, not again by the round that plans it; and the rest is built.
+    fn refusing(engine: &Recompute<FakeKernel>) {
+        engine.kernel().refuse(|op| {
+            is_prism(op).then(|| silico_core::Error::new(ErrorCode::InvalidInput, "no prism"))
+        });
+    }
+    let features = beside_a_small_box();
+    let held = engine();
+    described_as(&held, planar);
+    refusing(&held);
+    let hold = held.kernel().hold(is_small_box);
+    let run = held.start(checked_document(&strs(&features)));
+    assert!(
+        within_wait(|| asked_count(&held, is_prism) == 1),
+        "the prism wasn't asked for while b2's make was held"
+    );
+    hold.release();
+    let model = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    };
+    let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("p0000001")) else {
+        panic!("{:?}", model.outcome(&id("p0000001")));
+    };
+    assert_eq!(error.code(), ErrorCode::InvalidInput);
+    assert_eq!(error.feature(), Some("p0000001"));
+    assert!(error.message().contains("no prism"), "{error:?}");
+    for built in ["b0000001", "b0000002"] {
+        assert!(
+            matches!(
+                model.outcome(&id(built)),
+                Some(FeatureOutcome::Built { .. })
+            ),
+            "{built}"
+        );
+    }
+    assert_eq!(asked_count(&held, is_prism), 1);
+    let unheld = engine();
+    described_as(&unheld, planar);
+    refusing(&unheld);
+    assert_eq!(
+        saved_text(&model),
+        saved_text(&published(&unheld, &strs(&features)))
+    );
+}
+
+#[test]
+fn a_rebuild_cancelled_while_a_step_placed_ahead_runs_stops_and_the_next_builds_it() {
+    // Break-it, A13-M1: the pad's prism, run ahead of its round, is held, and so is b2; the
+    // rebuild is cancelled. It ends superseded within the wait, holding no thread on the
+    // held steps; once they're let go, a rebuild of the same document publishes the pad.
+    let features = beside_a_small_box();
+    let engine = engine();
+    described_as(&engine, planar);
+    let small = engine.kernel().hold(is_small_box);
+    let prism = engine.kernel().hold(is_prism);
+    let run = engine.start(checked_document(&strs(&features)));
+    assert!(within_wait(|| asked_count(&engine, is_prism) == 1));
+    engine.cancel();
+    match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Superseded)) => {}
+        Ok(other) => panic!("not superseded: {other:?}"),
+        Err(_) => panic!("the cancelled rebuild didn't end"),
+    }
+    small.release();
+    prism.release();
+    let model = published(&engine, &strs(&features));
+    assert!(matches!(
+        model.outcome(&id("p0000001")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+}
+
+#[test]
+fn a_rebuild_again_of_a_face_sketchs_pad_built_ahead_asks_the_kernel_nothing() {
+    // Break-it, A13-M1: what ran ahead of its round is kept as the round's own steps are,
+    // so a second rebuild of the same document, on the same engine, finds every step and
+    // measure kept: it asks nothing, in the same two rounds, and publishes the same model.
+    let features = beside_a_small_box();
+    let (while_held, first, _, engine) = rebuilt_holding_the_small_box(&features, 1);
+    assert!(while_held);
+    let asked = engine.kernel().asked().len();
+    let run = engine.start(checked_document(&strs(&features)));
+    let progress = run.progress();
+    let again = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    };
+    assert_eq!(engine.kernel().asked().len(), asked);
+    assert_eq!(progress.rounds(), 2);
+    assert_eq!(saved_text(&again), saved_text(&first));
+}
+
+#[test]
+fn while_an_unrelated_branch_is_held_the_rebuild_says_the_sketches_placed_ahead_built_and_counts_their_pads()
+ {
+    // Break-it, A13-M1: `status.rebuild` while b2 is held and both levels' pads have run
+    // ahead of their rounds. Each sketch placed ahead reads built (it solved), each pad
+    // built, b2 running; the steps counted include the pads', and `done` is under them by
+    // b2's make and the step after it (its translate), nothing else. Once let go, every
+    // feature is built, the count done.
+    let features = [
+        cube(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("b0000001"), "s0000001", &one_side("3")),
+        on_face(
+            "s0000002",
+            &face("p0000001.pad.Face(G s0000001.sketch.Face1)", "+x", false),
+        ),
+        pad("p0000002", Some("p0000001"), "s0000002", &one_side("1")),
+    ];
+    let engine = engine();
+    described_as(&engine, planar);
+    let hold = engine.kernel().hold(is_small_box);
+    let run = engine.start(checked_document(&strs(&features)));
+    let progress = run.progress();
+    // p2's every step built and measured: its fuse asked, and its solid described.
+    let fuses = |op: &Op| matches!(op, Op::Boolean { .. });
+    let describes = |op: &Op| matches!(op, Op::DescribeAll { .. });
+    assert!(within_wait(|| {
+        let now = progress.now();
+        asked_count(&engine, fuses) == 2
+            && asked_count(&engine, describes) == 3
+            && now.features.get(&id("p0000002")) == Some(silico_core::recompute::StepState::Built)
+    }));
+    let held = progress.now();
+    use silico_core::recompute::StepState::{Built, Queued, Running};
+    for (feature, state) in [
+        ("b0000001", Built),
+        ("s0000001", Built),
+        ("p0000001", Built),
+        ("s0000002", Built),
+        ("p0000002", Built),
+    ] {
+        assert_eq!(
+            held.features.get(&id(feature)),
+            Some(state),
+            "{feature}: {held:?}"
+        );
+    }
+    assert!(
+        matches!(held.features.get(&id("b0000002")), Some(Running | Queued)),
+        "{held:?}"
+    );
+    // The steps: b1's make; b2's make and translate; the pads' faces, one step, as the two
+    // sketches are the same rectangle on the same frame (every face the plane z = 10, x
+    // along +X: docs/ports/attacher.md, *The key*); and each pad's prism and fuse. All but
+    // b2's two settled.
+    assert_eq!(held.steps, 8, "{held:?}");
+    assert_eq!(held.done, 6, "{held:?}");
+    assert!(!held.ended);
+    hold.release();
+    match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(_))) => {}
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    }
+    let done = progress.now();
+    assert_eq!(
+        (done.done, done.steps, done.ended),
+        (8, 8, true),
+        "{done:?}"
+    );
+    assert!(
+        done.features.iter().all(|(_, state)| state == Built),
+        "{done:?}"
+    );
+}
+
+#[test]
+fn a_fresh_rebuild_asks_again_for_the_steps_a_face_sketch_placed_ahead_makes() {
+    // PR #614's review (tests): a rebuild reading nothing kept builds every step again,
+    // those it runs ahead of their rounds too. After a rebuild on the same engine, a fresh
+    // one asks for the pad's prism again, while b2 is held.
+    let features = beside_a_small_box();
+    let (while_held, _, _, engine) = rebuilt_holding_the_small_box(&features, 1);
+    assert!(while_held);
+    assert_eq!(asked_count(&engine, is_prism), 1);
+    let hold = engine.kernel().hold(is_small_box);
+    let run = engine.start_fresh(checked_document(&strs(&features)));
+    let asked_ahead = within_wait(|| asked_count(&engine, is_prism) >= 2);
+    hold.release();
+    match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(_))) => {}
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    }
+    assert!(
+        asked_ahead,
+        "the fresh rebuild's prism wasn't asked while b2 was held"
+    );
+    assert_eq!(asked_count(&engine, is_prism), 2);
+}
+
+#[test]
+fn a_sketch_on_a_face_is_placed_ahead_only_from_its_own_solid_once_built_never_from_its_maker() {
+    // PR #614's review (tests): s1 names b1's top, but b1 is consumed by a fillet before s1,
+    // so its face is looked for in the fillet's solid, not the box's. The fake describes each
+    // solid's faces as planes through a height of its own (its expression's length), so a
+    // frame taken from the box would be another than the fillet's. The fillet's step is
+    // held: the pad's prism isn't asked for while it is, though the box is built and
+    // described; once it's let go, s1's frame is the fillet's top, through the fillet's
+    // height, and the model is the one a rebuild with nothing held publishes.
+    use std::sync::{Arc, Mutex};
+    fn by_solid(engine: &Recompute<FakeKernel>, heights: &Arc<Mutex<Vec<(String, f64)>>>) {
+        let heights = Arc::clone(heights);
+        engine.kernel().answer_instead(move |op| {
+            let Op::DescribeAll { shape } = op else {
+                return None;
+            };
+            let made = FakeKernel::describe(shape)?;
+            let height = made.len() as f64;
+            heights.lock().unwrap().push((made.clone(), height));
+            let mut description = FakeKernel::described(shape)?;
+            for face in &mut description.faces {
+                face.surface = Surface::Plane {
+                    normal: [0.0, 0.0, 1.0],
+                    location: [0.0, 0.0, height],
+                };
+            }
+            Some(Reply::DescribedAll(description))
+        });
+    }
+    let fillet = r#"{"id": "f0000001", "type": "fillet", "v": 1, "name": "F", "base": "b0000001", "edges": ["b0000001.box.Edge1"], "radius": 1}"#;
+    let features = [
+        cube(),
+        box_at("b0000002", [20.0, 0.0, 0.0], 5.0, 5.0, 5.0),
+        fillet.to_owned(),
+        on_face("s0000001", &face("b0000001.box.Face6", "+x", false)),
+        pad("p0000001", Some("f0000001"), "s0000001", &one_side("3")),
+    ];
+    let is_fillet = |op: &Op| matches!(op, Op::Fillet { .. });
+    let heights = Arc::new(Mutex::new(Vec::new()));
+    let held = engine();
+    by_solid(&held, &heights);
+    let hold = held.kernel().hold(is_fillet);
+    let run = held.start(checked_document(&strs(&features)));
+    // The fillet held, and both boxes built and described: all the look ahead could see.
+    let boxes_described = || {
+        heights
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(made, _)| !made.contains("fillet"))
+            .count()
+            >= 2
+    };
+    assert!(within_wait(
+        || asked_count(&held, is_fillet) == 1 && boxes_described()
+    ));
+    assert_eq!(
+        asked_count(&held, is_prism),
+        0,
+        "the pad's prism was asked for while the fillet its sketch's face is in was held"
+    );
+    hold.release();
+    let model = match run.wait_timeout(WAIT) {
+        Ok(Ok(RunOutcome::Published(model))) => model,
+        other => panic!("{:?}", other.map(|r| r.map(|_| ())).ok()),
+    };
+    assert!(matches!(
+        model.outcome(&id("p0000001")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    let fillet_height = heights
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(made, _)| made.starts_with("fillet"))
+        .map(|(_, height)| *height)
+        .unwrap();
+    let box_height = heights
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|(made, _)| made.starts_with("box"))
+        .map(|(_, height)| *height)
+        .unwrap();
+    assert_ne!(fillet_height, box_height);
+    let frame = model.frame(&id("s0000001")).unwrap();
+    assert_eq!(frame.origin, [0.0, 0.0, fillet_height], "{frame:?}");
+    // The prism asked for once, on the fillet's frame: none run ahead on another.
+    assert_eq!(asked_count(&held, is_prism), 1);
+    let unheld = engine();
+    by_solid(&unheld, &Arc::new(Mutex::new(Vec::new())));
+    assert_eq!(
+        saved_text(&model),
+        saved_text(&published(&unheld, &strs(&features)))
+    );
+}
+
+#[test]
+fn an_edit_of_an_unrelated_branch_asks_again_for_the_edited_box_alone_not_the_face_sketchs_pad() {
+    // Mutants, PR #614: a rebuild after an edit of b2 has only b2's steps to run, and the
+    // pad's steps, whichever plans them (a look ahead, which places s1 ahead on the box it
+    // keeps, or the second round), are taken from what the engine keeps, never asked for
+    // again: a look ahead that read nothing kept for them asked for the prism twice. The
+    // edited box is made again; the prism, once in all.
+    let features = beside_a_small_box();
+    let engine = engine();
+    described_as(&engine, planar);
+    published(&engine, &strs(&features));
+    assert_eq!(asked_count(&engine, is_prism), 1);
+    let mut edited = features.clone();
+    edited[1] = box_at("b0000002", [20.0, 0.0, 0.0], 6.0, 6.0, 6.0);
+    let model = published(&engine, &strs(&edited));
+    assert!(matches!(
+        model.outcome(&id("p0000001")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    let bigger = |op: &Op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 6.0);
+    assert_eq!(asked_count(&engine, bigger), 1);
+    assert_eq!(asked_count(&engine, is_prism), 1);
+}
+
+#[test]
+fn a_face_found_past_the_models_reach_is_never_placed_ahead_so_its_pad_asks_nothing() {
+    // Mutants, PR #614: every face the fake describes is the plane z = 1.5e6, within a
+    // frame's reach (√3·1e6) but placing the sketch's rectangle past 1e6 mm, the model's:
+    // the sketch is refused there, naming `plane`, at its round's end, and never placed
+    // ahead, so its pad's prism is never asked for.
+    fn far(_: &str, _: usize) -> Surface {
+        Surface::Plane {
+            normal: [0.0, 0.0, 1.0],
+            location: [0.0, 0.0, 1.5e6],
+        }
+    }
+    let engine = engine();
+    described_as(&engine, far);
+    let model = published(&engine, &strs(&beside_a_small_box()));
+    let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("s0000001")) else {
+        panic!("{:?}", model.outcome(&id("s0000001")));
+    };
+    assert_eq!(error.parameter(), Some("plane"), "{error:?}");
+    assert_eq!(
+        model.outcome(&id("p0000001")),
+        Some(&FeatureOutcome::Blocked { on: id("s0000001") })
+    );
+    assert_eq!(asked_count(&engine, is_prism), 0);
+}

@@ -27,8 +27,9 @@ use silico_core::disk::Clock;
 use silico_core::fake::{FakeKernel, FakeSketches, never_waits};
 use tempfile::TempDir;
 use ui::{
-    EXAMPLE, SKETCHED_EXAMPLE, apply_look, in_status_bar, plain_read, redo_by_key, settled,
-    stand_in_sessions, step, step_until, tooltip, tooltip_title, type_name, undo_by_key,
+    EXAMPLE, SKETCHED_EXAMPLE, apply_look, in_status_bar, plain_read, redo_by_key,
+    revert_discarding, settled, stand_in_sessions, step, step_until, tooltip, tooltip_title,
+    type_name, undo_by_key,
 };
 
 type Fake = Arc<FakeKernel>;
@@ -341,6 +342,7 @@ fn revert_drops_every_step_and_the_next_edit_counts_alone() {
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert to saved")
         .click();
+    revert_discarding(&mut h);
     step_until(&mut h, "reverted", |h| !h.state().tabs()[0].transaction);
     settled(&mut h);
     assert_eq!(f.text(&h), EXAMPLE);

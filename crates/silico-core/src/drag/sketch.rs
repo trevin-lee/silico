@@ -1,5 +1,5 @@
 //! A drag of a document's sketch point (docs/design/m5.0-app.md, `drag_begin`, `drag_move`,
-//! `drag_end`; decision 9, pending the maintainer): [`super`]'s session in the sketch's
+//! `drag_end`; decision 9): [`super`]'s session in the sketch's
 //! terms, below any command. A point by its ID, with shared points (M3.2's D2) a line's
 //! end, an arc's start, end, or centre, a circle's centre, or a lone point:
 //!

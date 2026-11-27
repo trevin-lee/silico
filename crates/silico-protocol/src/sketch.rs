@@ -27,8 +27,10 @@ pub const MAX_SKETCH_GEOMETRY: usize = 10_000;
 /// unknowns² a step), and a sketch no algorithm solves is tried by all four (DogLeg,
 /// Levenberg–Marquardt, BFGS, anchored SQP). The time that work takes is the machine's, and
 /// `SKETCH_TIMEOUT` bounds it. Measured: a chain of 512 points held too far apart (514
-/// equations) took 74 s on a loaded M4 Pro and 206 s at a load of 80, and at 2,048 unknowns
-/// about 1,660 s; the same chain with one line given `horizontal` 2,000 times (2,514
+/// equations) took 74 s on a loaded M4 Pro, 206 s at a load of 80, and, on the M4 Pro, at
+/// 2,048 unknowns about 1,660 s; on GitHub-hosted runners, 199 to 204 s of the worker's
+/// CPU on an Intel Xeon 6975P-C, 337 s on an Intel Xeon Platinum 8370C, and 285 to 301 s
+/// of wall time on an Intel Xeon Platinum 8573C; the same chain with one line given `horizontal` 2,000 times (2,514
 /// equations, every one kept, since the diagnosis's trial solve fails and so calls none of
 /// them redundant) took DogLeg alone 135 s at a load of 97 and all four past 300 s, the
 /// limit then; a solve past `SKETCH_TIMEOUT` ends as `worker_timeout` naming the sketch

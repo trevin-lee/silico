@@ -402,19 +402,24 @@ fn a_constraint_given_twice_beside_an_impossible_chain_conflicts_and_once_fails(
 fn an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout() {
     // 512 points (1,024 unknowns, at MAX_SKETCH_UNKNOWNS) in one chain of unit links held
     // 2,560 apart: the gate admits it, and every algorithm fails. The answer is
-    // solve_failed, not a timeout. The worker is given 900 s, so this tests what the answer
-    // is, not the machine's speed: the default, SKETCH_TIMEOUT's 600 s, is a measurement
-    // (74 s on a quiet-ish M4 Pro, 206 s at a load average of 80; ~/.cache/silico-review's
-    // m3-open notes; 199 to 204 s of CPU on a GitHub-hosted runner's Xeon 6975P-C), and
-    // that a worker waits the time it's given is document.rs's.
+    // solve_failed, not a timeout. The worker is given 300 s more than the default (1,200 s;
+    // it was given 900 s, which the default now is), so this tests what the answer is, not
+    // the machine's speed: the default, SKETCH_TIMEOUT's 900 s,
+    // is a measurement (74 s on a quiet-ish M4 Pro, 206 s at a load average of 80;
+    // ~/.cache/silico-review's m3-open notes; 199 to 204 s of CPU on a GitHub-hosted
+    // runner's Xeon 6975P-C, and 337 s on its Xeon Platinum 8370C, gate 45487700650, which
+    // failed the assertion below against the 600 s default then), and that a worker waits
+    // the time it's given is document.rs's.
     // Found by break-it: worker_timeout after 60 s, the kernel's request time. Measured one
     // algorithm at a time on this chain (silico_sketch::solve, a loaded M4 Pro): DogLeg
     // 11.5 s, Levenberg–Marquardt 28.9 s, BFGS 0.2 s, anchored SQP 33.2 s: 74 s in all, where
     // the three M3.1 tried took about 40 s. A sketch solve now has its own time,
-    // silico_core::sketch::SKETCH_TIMEOUT (600 s), which SketchWorker::with_timeout sets.
+    // silico_core::sketch::SKETCH_TIMEOUT (900 s), which SketchWorker::with_timeout sets.
     let doc = checked(&impossible_chain(512, 2560.0));
     let started = Instant::now();
-    let given = Duration::from_secs(900);
+    // nextest's kill for this test (.config/nextest.toml, `terminate-after`) must stay past
+    // `within`'s bound, SKETCH_TIMEOUT + 360 s, so a hang is said here: raise both together.
+    let given = silico_core::sketch::SKETCH_TIMEOUT + Duration::from_secs(300);
     let (e, cpu) = within(given + Duration::from_secs(60), move || {
         let mut w = worker().with_timeout(given);
         let e = solved(&doc, &mut w).unwrap_err();

@@ -472,6 +472,7 @@ Others:
 - `testConstraintAfterDeletingGeo` and `testIssue3245` test renumbering. Silico's IDs avoid it, though `testIssue3245_2`'s rule returns with expressions: a deleted constraint takes its expression and no other.
 - The ellipse and B-spline variants.
 - `testValidateConstraintsCase`, which the gate covers.
+- `SketchObjectChanges.cpp`'s `testJoinCurves` and `testJoinCurvesWhenTangent` (995 and 1026 at 1.1.3), which join an arc and a line into one B-spline. Silico has no B-spline, and its join is split's exact inverse, so an arc and a line are never one curve: that refusal is tested (`crates/silico-core/tests/sketch_join.rs`, "a line and an arc are never one curve").
 
 ### Silico's own
 

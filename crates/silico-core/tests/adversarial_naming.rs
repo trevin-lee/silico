@@ -1380,13 +1380,14 @@ fn naming_a_solid_costs_as_its_elements_do() {
     // elements, about four times the CPU (twice as many, at eight, would be the square).
     // Found by the review (via #26): a long chain's recompute took seven times as long as
     // without naming; the cost was the fake kernel's (fixed), and this keeps naming's own
-    // cost from growing past linear. In thread CPU time, which load doesn't change.
+    // cost from growing past linear. In thread CPU time, which load doesn't change but a
+    // busy other hyperthread on the core does, so nextest runs it alone (.config/nextest.toml).
     let small = naming_cost(1_000);
     let large = naming_cost(4_000);
     let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-9);
     assert!(
         ratio < 8.0,
-        "100: {small:?}, 400: {large:?}, {ratio:.1} times"
+        "1000: {small:?}, 4000: {large:?}, {ratio:.1} times"
     );
 }
 
