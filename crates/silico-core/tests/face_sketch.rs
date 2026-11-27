@@ -1117,3 +1117,52 @@ fn a_sketch_on_a_face_is_placed_ahead_only_from_its_own_solid_once_built_never_f
         saved_text(&published(&unheld, &strs(&features)))
     );
 }
+
+#[test]
+fn an_edit_of_an_unrelated_branch_takes_the_steps_a_look_ahead_plans_from_what_the_engine_keeps() {
+    // Mutants, PR #614: a rebuild after an edit of b2 only has b2's steps to run, so it
+    // looks ahead, and places s1 ahead on the box it keeps; the pad's steps it plans then are
+    // taken from what the engine keeps, as the round's own are, not asked for again. The
+    // edited box is made again; the prism, once in all.
+    let features = beside_a_small_box();
+    let engine = engine();
+    described_as(&engine, planar);
+    published(&engine, &strs(&features));
+    assert_eq!(asked_count(&engine, is_prism), 1);
+    let mut edited = features.clone();
+    edited[1] = box_at("b0000002", [20.0, 0.0, 0.0], 6.0, 6.0, 6.0);
+    let model = published(&engine, &strs(&edited));
+    assert!(matches!(
+        model.outcome(&id("p0000001")),
+        Some(FeatureOutcome::Built { .. })
+    ));
+    let bigger = |op: &Op| matches!(op, Op::MakePrimitive(Primitive::Box { dx, .. }) if *dx == 6.0);
+    assert_eq!(asked_count(&engine, bigger), 1);
+    assert_eq!(asked_count(&engine, is_prism), 1);
+}
+
+#[test]
+fn a_face_found_past_the_models_reach_is_never_placed_ahead_so_its_pad_asks_nothing() {
+    // Mutants, PR #614: every face the fake describes is the plane z = 1.5e6, within a
+    // frame's reach (√3·1e6) but placing the sketch's rectangle past 1e6 mm, the model's:
+    // the sketch is refused there, naming `plane`, at its round's end, and never placed
+    // ahead, so its pad's prism is never asked for.
+    fn far(_: &str, _: usize) -> Surface {
+        Surface::Plane {
+            normal: [0.0, 0.0, 1.0],
+            location: [0.0, 0.0, 1.5e6],
+        }
+    }
+    let engine = engine();
+    described_as(&engine, far);
+    let model = published(&engine, &strs(&beside_a_small_box()));
+    let Some(FeatureOutcome::Failed(error)) = model.outcome(&id("s0000001")) else {
+        panic!("{:?}", model.outcome(&id("s0000001")));
+    };
+    assert_eq!(error.parameter(), Some("plane"), "{error:?}");
+    assert_eq!(
+        model.outcome(&id("p0000001")),
+        Some(&FeatureOutcome::Blocked { on: id("s0000001") })
+    );
+    assert_eq!(asked_count(&engine, is_prism), 0);
+}

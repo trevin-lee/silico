@@ -4775,9 +4775,14 @@ impl Schedule {
         }
     }
 
+    /// Whether the recompute is stopping: superseded, or a bug's panic broke it.
+    fn stopped(&self) -> bool {
+        self.superseded || self.broken.is_some()
+    }
+
     /// Whether nothing is left to run: every thread stops.
     fn finished(&self) -> bool {
-        self.superseded || self.broken.is_some() || (self.ready.is_empty() && self.running == 0)
+        self.stopped() || (self.ready.is_empty() && self.running == 0)
     }
 
     /// Each step of `to`, a plan holding every step of `from` (the plan its jobs ran by) and
@@ -5336,15 +5341,6 @@ impl<K: Kernel + 'static> Engine<K> {
                     tracing::warn!(key = %key, "a cache entry doesn't fit its step: rebuilding it");
                 }
             }
-        }
-    }
-
-    /// `plan`'s keys kept as the newest recompute's, if `generation` is the newest: so a step
-    /// run ahead of its round is kept as the round's own are ([`keep`](Self::keep)).
-    fn newest_plan(&self, generation: Generation, plan: &Plan) {
-        let mut state = lock(&self.state);
-        if state.newest_started == generation {
-            state.newest_plan = Some(keys_of(plan));
         }
     }
 
@@ -6052,7 +6048,7 @@ impl<K: Kernel + 'static> Engine<K> {
             // What's settled so far, and the plan the jobs run by: only a look changes it.
             let (plan, done, unmeasured, unresolved, measuring) = {
                 let s = lock(&serving.schedule);
-                if s.superseded || s.broken.is_some() {
+                if s.stopped() {
                     return;
                 }
                 (
@@ -6103,7 +6099,7 @@ impl<K: Kernel + 'static> Engine<K> {
             }
             if placed.is_empty() {
                 let mut s = lock(&serving.schedule);
-                if s.superseded || s.broken.is_some() {
+                if s.stopped() {
                     return;
                 }
                 // None of them settled meanwhile: watched until one has. One that has is
@@ -6131,11 +6127,10 @@ impl<K: Kernel + 'static> Engine<K> {
                     .collect::<Vec<_>>();
                 self.read_kept(&to, new, &mut fetched);
             }
-            self.newest_plan(generation, &to);
             let labels = to.labels(document);
             let more = {
                 let mut s = lock(&serving.schedule);
-                if s.superseded || s.broken.is_some() {
+                if s.stopped() {
                     return;
                 }
                 s.extend(&plan, Arc::clone(&to), fetched);
@@ -7826,6 +7821,83 @@ mod tests {
         hold.release();
         failed_by_the_looks_panic(run);
         assert_eq!(engine.looks_ended(), 2);
+    }
+
+    #[test]
+    fn what_a_feature_is_made_from_is_its_bases_and_sketches_all_the_way_up() {
+        // Mutants, PR #614: a pad of a sketch on a box's face is made from the pad itself,
+        // its sketch, and the box, and not from a box beside them (by hand, from the
+        // document).
+        let document = Arc::new(checked_of(&padded_beside_a_box()));
+        let plan = Plan::of(&document, &BTreeMap::new(), &BTreeMap::new());
+        assert_eq!(
+            made_from(&plan, &BTreeSet::from([2])),
+            BTreeSet::from([0, 1, 2])
+        );
+        assert_eq!(made_from(&plan, &BTreeSet::from([3])), BTreeSet::from([3]));
+    }
+
+    #[test]
+    fn a_look_ahead_waits_for_a_feature_a_sketch_waits_on_to_settle_whole_not_step_by_step() {
+        // Mutants, PR #614: s2, on p1's top, waits on p1, whose faces, prism, and fuse
+        // settle in turn: it's looked at again once p1 has settled whole, not as each step
+        // does. With the box's measure, the prisms, and the fuses held and let go in turn,
+        // the rebuild looks ahead three times: at its start (the box unsettled), as the box
+        // settles (s1 placed, s2 watched, p1's fuse held), and as p1 settles (s2 placed).
+        let kernel = crate::fake::FakeKernel::new(2).unwrap();
+        kernel.answer_instead(|op| {
+            let crate::kernel::Op::DescribeAll { shape } = op else {
+                return None;
+            };
+            let mut description = crate::fake::FakeKernel::described(shape)?;
+            for face in &mut description.faces {
+                face.surface = silico_protocol::Surface::Plane {
+                    normal: [0.0, 0.0, 1.0],
+                    location: [0.0, 0.0, 10.0],
+                };
+            }
+            Some(silico_protocol::Reply::DescribedAll(description))
+        });
+        let measure = kernel.hold(|op| match op {
+            crate::kernel::Op::Summarize { shape } => {
+                crate::fake::FakeKernel::describe(shape).is_some_and(|made| made.starts_with("box"))
+            }
+            _ => false,
+        });
+        let prisms = kernel.hold(|op| matches!(op, crate::kernel::Op::Prism { .. }));
+        let fuses = kernel.hold(|op| matches!(op, crate::kernel::Op::Boolean { .. }));
+        let engine = Recompute::new(kernel).with_sketches(crate::fake::FakeSketches::new());
+        let mut features = padded_beside_a_box();
+        features.extend([
+            face_sketch(
+                "s0000002",
+                "p0000001.pad.Face(G s0000001.sketch.Face1)",
+                3.0,
+            ),
+            face_pad("p0000002", "p0000001", "s0000002"),
+        ]);
+        let run = engine.start(checked_of(&features));
+        let wait = Duration::from_secs(60);
+        assert!(engine.wait_looks(1, wait));
+        measure.release();
+        assert!(engine.wait_looks(2, wait));
+        prisms.release();
+        fuses.release();
+        match run.wait_timeout(wait) {
+            Ok(Ok(RunOutcome::Published(model))) => {
+                for built in ["p0000001", "p0000002"] {
+                    let id = FeatureId::new(built).unwrap();
+                    assert!(
+                        matches!(model.outcome(&id), Some(FeatureOutcome::Built { .. })),
+                        "{built}: {:?}",
+                        model.outcome(&id)
+                    );
+                }
+            }
+            Ok(other) => panic!("not published: {other:?}"),
+            Err(_) => panic!("the rebuild didn't finish"),
+        }
+        assert_eq!(engine.looks_ended(), 3);
     }
 
     #[test]
