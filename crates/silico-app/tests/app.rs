@@ -35,17 +35,18 @@ use silico_core::{Error, ErrorCode};
 use tempfile::TempDir;
 use ui::{
     A_BOX, ARROW_BLUE, ARROW_WHITE, AXIS_X, AXIS_Y, AXIS_Z, EXAMPLE, FAKE_WAIT as WAIT,
-    FakeBrowser, In, LavapipeRenderer, PLATE, PLATE_END, SKETCHED_EXAMPLE, TRIAD_DOT, TWO_BOXES,
-    added, advance, animation_time, answer_question, anywhere, apply_look, arrow_dots,
-    arrow_shafts, begin_sketch_on, body_of, boxed, button_event, choose, chosen, click_as_a_person,
-    click_in_one_frame, click_over_two_frames, close_window, create, create_sketch, cursor, dialog,
-    dialog_length, dialog_open, direction, double_click, drag, edit_plates_pad, every_face,
-    everything, f2_typed, faces_made_by, failing_kernel, field, fields_of, from_the_front,
-    hand_clock, hover_item, image_centre, in_status_bar, is_settled, lavapipe_render_state,
-    leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at, looks_from, meshes_settled,
-    modify, modify_field, move_to, name_field, near_point, new_part, ok_enabled, on_lavapipe,
-    open_export, pad_extent, pads_extent, place_point_in, plain_read, plates_pad_from_the_front,
-    pointer_away, press, prompt, redo_by_key, rename_field, repaint_delay, retype, reversed_ticked,
+    FakeBrowser, In, LavapipeRenderer, PLATE, PLATE_END, REVERT_DISCARD, SKETCHED_EXAMPLE,
+    TRIAD_DOT, TWO_BOXES, added, advance, animation_time, answer_question, anywhere, apply_look,
+    arrow_dots, arrow_shafts, begin_sketch_on, body_of, boxed, button_event, choose, chosen,
+    click_as_a_person, click_in_one_frame, click_over_two_frames, close_window, create,
+    create_sketch, cursor, dialog, dialog_length, dialog_open, direction, double_click, drag,
+    edit_plates_pad, every_face, everything, f2_typed, faces_made_by, failing_kernel, field,
+    fields_of, from_the_front, hand_clock, hover_item, image_centre, in_status_bar, is_settled,
+    lavapipe_render_state, leave_sketch, leave_sketch_unsettled, left_down_at, left_up_at,
+    looks_from, meshes_settled, modify, modify_field, move_to, name_field, near_point, new_part,
+    ok_enabled, on_lavapipe, open_export, pad_extent, pads_extent, place_point_in, plain_read,
+    plates_pad_from_the_front, pointer_away, press, prompt, redo_by_key, rename_field,
+    repaint_delay, retype, reversed_ticked, revert_asked_about, revert_asking, revert_discarding,
     save_as_of, select, selected_names, settled, shapes_painted, sketch_mode, sketch_read,
     sorted_fields, stand_in_sessions, step, step_until, tab_named, tessellated, text_of,
     the_viewport, tooltip_title, triad_origin, type_in, type_name, undo_by_key, up, view,
@@ -1449,6 +1450,7 @@ fn revert_restores_the_files_text_byte_for_byte() {
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert to saved")
         .click();
+    revert_discarding(&mut h);
     step_until(&mut h, "reverted", |h| {
         !anywhere(h, "example.silico *") && shows(h, "Timeline", "Hole")
     });
@@ -1486,6 +1488,337 @@ fn closing_a_changed_document_asks_and_dont_save_rolls_back_then_closes() {
         .click_accesskit();
     step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
     assert!(f.sessions.status(&id).result.is_err(), "the session closed");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// Whether Revert to saved's question is asked about example.silico (SolidWorks' Reload
+/// warns before it loses unsaved changes, docs/ux/solidworks.md, §6; the approved
+/// prototype's revert asks nothing, a recorded departure).
+fn revert_asked(h: &AppHarness) -> bool {
+    revert_asked_about(h, "example.silico")
+}
+
+/// Hole renamed `name` and nothing of it dropped: the transaction still open, the tab
+/// unsaved, the timeline and the session's text holding the name.
+fn rename_kept(f: &Fixture, h: &AppHarness, name: &str) {
+    assert!(h.state().tabs()[0].transaction, "the transaction ended");
+    assert!(anywhere(h, "example.silico *"), "the tab no longer unsaved");
+    assert!(shows(h, "Timeline", name), "{name} gone from the timeline");
+    let text = text_of(&f.sessions, h);
+    assert!(text.contains(&format!(r#""name": "{name}""#)), "{text}");
+}
+
+/// Hole renamed HoleY in example.silico, the edit landed.
+fn hole_renamed(f: &Fixture) -> (AppHarness, std::path::PathBuf) {
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Hole"));
+    select(&mut h, "Hole");
+    type_name(&mut h, "Y");
+    step_until(&mut h, "the edit landed", |h| {
+        h.state().tabs()[0].edits.idle() && shows(h, "Timeline", "HoleY")
+    });
+    (h, path)
+}
+
+/// Revert to saved's question answered by its discard: the file's text back, byte for
+/// byte, in the session and on disk, and the question gone.
+fn discarded(f: &Fixture, h: &mut AppHarness, path: &Path) {
+    revert_discarding(h);
+    step_until(h, "reverted", |h| {
+        !h.state().tabs()[0].transaction
+            && !anywhere(h, "example.silico *")
+            && shows(h, "Timeline", "Hole")
+            && !revert_asked(h)
+    });
+    assert!(!shows(h, "Timeline", "HoleY"));
+    assert_eq!(text_of(&f.sessions, h), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(path).unwrap(), EXAMPLE);
+}
+
+#[test]
+fn revert_from_the_file_menu_asks_first_and_cancel_keeps_the_edits() {
+    // An unsaved edit, then File > Revert to saved: asked first, as Close asks, and nothing
+    // dropped while it asks; Cancel keeps the edit; asked again, its discard reverts.
+    let f = fixture();
+    let (mut h, path) = hole_renamed(&f);
+    from_file_menu(&mut h, "Revert to saved");
+    step_until(&mut h, "the question", revert_asked);
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(revert_asked(&h));
+    rename_kept(&f, &h, "HoleY");
+    assert!(
+        !h.get_by_role_and_label(Role::Button, REVERT_DISCARD)
+            .accesskit_node()
+            .is_disabled()
+    );
+    h.get_by_role_and_label(Role::Button, "Cancel").click();
+    step_until(&mut h, "the question gone", |h| !revert_asked(h));
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    rename_kept(&f, &h, "HoleY");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    from_file_menu(&mut h, "Revert to saved");
+    step_until(&mut h, "asked again", revert_asked);
+    discarded(&f, &mut h, &path);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn revert_from_the_search_asks_first_and_neither_enter_nor_esc_drops_the_edits() {
+    // #612's review: "rev", on the way to Revolve, lights Revert to saved first, and its
+    // Enter dropped every unsaved edit. Now it asks, as File's item does; Enter again is
+    // no one's in the question (as in Close's), and Esc is its Cancel.
+    let f = fixture();
+    let (mut h, path) = hole_renamed(&f);
+    off_fields(&mut h, "SOLID");
+    open_search(&mut h);
+    search_for(&mut h, "rev", "Revert to saved File");
+    assert_eq!(search_lit(&h).as_deref(), Some("Revert to saved File"));
+    h.key_press(eframe::egui::Key::Enter);
+    step_until(&mut h, "the question", revert_asked);
+    assert!(!search_open(&h));
+    h.key_press(eframe::egui::Key::Enter);
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(revert_asked(&h), "Enter answered the question");
+    rename_kept(&f, &h, "HoleY");
+    h.key_press(eframe::egui::Key::Escape);
+    step_until(&mut h, "the question gone", |h| !revert_asked(h));
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    rename_kept(&f, &h, "HoleY");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    // Run from the search again, by its row: asked again, and its discard reverts.
+    run_from_search(&mut h, Command::Revert);
+    step_until(&mut h, "asked again", revert_asked);
+    rename_kept(&f, &h, "HoleY");
+    discarded(&f, &mut h, &path);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn revert_with_nothing_unsaved_asks_nothing_from_the_menu_or_the_search() {
+    // An edit undone: the transaction still open (Revert on), but nothing unsaved, so
+    // nothing is asked, from File's item or the search; the rollback goes at once.
+    for search in [false, true] {
+        let f = fixture();
+        let (mut h, path) = hole_renamed(&f);
+        off_fields(&mut h, "SOLID");
+        h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+        step_until(&mut h, "undone", |h| {
+            let tab = &h.state().tabs()[0];
+            tab.transaction && !tab.unsaved() && shows(h, "Timeline", "Hole")
+        });
+        assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+        if search {
+            run_from_search(&mut h, Command::Revert);
+        } else {
+            from_file_menu(&mut h, "Revert to saved");
+        }
+        step_until(&mut h, "reverted", |h| {
+            assert!(!revert_asking(h), "asked with nothing unsaved");
+            !h.state().tabs()[0].transaction
+        });
+        for _ in 0..5 {
+            step(&mut h);
+            assert!(!revert_asking(&h), "asked with nothing unsaved");
+        }
+        assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+        assert_eq!(never_waits::waits(), 0);
+    }
+}
+
+#[test]
+fn revert_asks_for_an_edit_still_in_flight_after_an_undo() {
+    // An edit undone (the transaction open, nothing changed), then another typed and still
+    // in flight behind a held check: unsaved, though `status` hasn't said so yet, so
+    // Revert asks; its discard drops the edit in flight too.
+    let f = fixture();
+    let (mut h, path) = hole_renamed(&f);
+    off_fields(&mut h, "SOLID");
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::Z);
+    step_until(&mut h, "undone", |h| {
+        let tab = &h.state().tabs()[0];
+        tab.transaction && !tab.unsaved() && shows(h, "Timeline", "Hole")
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    select(&mut h, "Hole");
+    type_name(&mut h, "Z");
+    step(&mut h);
+    assert!(!h.state().tabs()[0].edits.idle(), "the edit not in flight");
+    from_file_menu(&mut h, "Revert to saved");
+    step_until(&mut h, "the question", revert_asked);
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(revert_asked(&h));
+    revert_discarding(&mut h);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "reverted", |h| {
+        let tab = &h.state().tabs()[0];
+        !tab.transaction && tab.edits.idle() && shows(h, "Timeline", "Hole")
+    });
+    assert_eq!(text_of(&f.sessions, &h), EXAMPLE);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn revert_s_question_goes_by_itself_once_a_save_queued_before_it_lands() {
+    // Ctrl+S held behind a check, then Revert: asked, the edit unsaved still (the save may
+    // yet be refused, and the revert behind it would drop the edit). The save lands, ending
+    // the transaction: nothing is left to revert, so the question goes by itself, nothing
+    // rolled back, the file the save's.
+    let f = fixture();
+    let (mut h, path) = hole_renamed(&f);
+    off_fields(&mut h, "SOLID");
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    from_file_menu(&mut h, "Revert to saved");
+    step_until(&mut h, "the question", revert_asked);
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "saved", |h| !h.state().tabs()[0].transaction);
+    step_until(&mut h, "the question gone by itself", |h| !revert_asking(h));
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(!h.state().tabs()[0].sent.contains(&Sent::Rollback));
+    assert!(shows(&h, "Timeline", "HoleY"));
+    assert_eq!(names_in(&path), ["Block", "Pin", "HoleY"]);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn revert_s_question_stays_when_the_save_queued_before_it_is_refused() {
+    // Ctrl+S held behind a check, then Revert: asked. Another program writes the file
+    // meanwhile, so the save is refused as a conflict: the transaction is still open and the
+    // edit unsaved, which the revert behind the save would drop, so the question stays,
+    // and nothing is dropped until its discard.
+    let f = fixture();
+    let (mut h, path) = hole_renamed(&f);
+    off_fields(&mut h, "SOLID");
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    from_file_menu(&mut h, "Revert to saved");
+    step_until(&mut h, "the question", revert_asked);
+    let theirs = EXAMPLE.replace(r#""name": "Pin""#, r#""name": "Theirs""#);
+    std::fs::write(&path, &theirs).unwrap();
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the save refused", |h| {
+        h.state().tabs()[0].edits.idle()
+            && h.query_by_label_contains("changed outside this session")
+                .is_some()
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(revert_asked(&h), "the question went with the edit unsaved");
+    rename_kept(&f, &h, "HoleY");
+    assert!(!h.state().tabs()[0].sent.contains(&Sent::Rollback));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn revert_asks_about_and_reverts_the_tab_shown_alone() {
+    // Two documents, each edited: Revert from b.silico's tab names b.silico, and its
+    // discard reverts b.silico alone; a.silico keeps its edit.
+    let f = fixture();
+    let (mut h, a) = f.opened("a.silico", EXAMPLE);
+    let b = f.file("b.silico", EXAMPLE);
+    h.state_mut().open(b.to_str().unwrap(), false);
+    step_until(&mut h, "two tabs", |h| {
+        h.state().tabs().len() == 2 && h.state().tabs()[1].timeline.is_some()
+    });
+    for name in ["a.silico", "b.silico"] {
+        h.get_by_label(name).click();
+        step(&mut h);
+        step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+        select(&mut h, "Pin");
+        type_name(&mut h, "Q");
+        step_until(&mut h, "unsaved", |h| {
+            anywhere(h, &format!("{name} *")) && shows(h, "Timeline", "PinQ")
+        });
+    }
+    from_file_menu(&mut h, "Revert to saved");
+    step_until(&mut h, "the question", |h| {
+        revert_asked_about(h, "b.silico")
+    });
+    assert!(!revert_asked_about(&h, "a.silico"));
+    revert_discarding(&mut h);
+    step_until(&mut h, "b reverted", |h| {
+        !tab_named(h, "b.silico").transaction && !anywhere(h, "b.silico *")
+    });
+    for _ in 0..10 {
+        step(&mut h);
+    }
+    assert!(tab_named(&h, "a.silico").transaction);
+    assert!(anywhere(&h, "a.silico *"));
+    let text = |name: &str| {
+        let id = tab_named(&h, name).id;
+        f.sessions.text(&id, None).wait().result.unwrap().text
+    };
+    assert_eq!(text("b.silico"), EXAMPLE);
+    assert!(text("a.silico").contains(r#""name": "PinQ""#));
+    for path in [&a, &b] {
+        assert_eq!(std::fs::read_to_string(path).unwrap(), EXAMPLE);
+    }
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
+fn revert_is_off_in_the_search_while_the_tab_closes_and_its_enter_asks_nothing() {
+    // Close's Don't save with an edit still in flight: the close's rollback waits queued,
+    // and the tab is closing, its edits dropped by the close already. The search lists
+    // Revert to saved off, as File's item is, and its Enter runs nothing and asks nothing
+    // (#612's review's low); the close goes on.
+    let f = fixture();
+    let (mut h, path) = f.opened("example.silico", EXAMPLE);
+    step_until(&mut h, "its features", |h| shows(h, "Timeline", "Pin"));
+    select(&mut h, "Pin");
+    type_name(&mut h, "x");
+    step_until(&mut h, "the transaction begun", |h| {
+        h.state().tabs()[0].edits.idle() && h.state().tabs()[0].transaction
+    });
+    let (hold, check) = hold_queue(&f, &h, 0);
+    type_name(&mut h, "y");
+    h.get_by_label("Close example.silico").click();
+    step_until(&mut h, "the close question", |h| {
+        anywhere(h, "Save changes to example.silico before closing?")
+    });
+    h.get_by_role_and_label(Role::Button, "Don't save")
+        .click_accesskit();
+    step(&mut h);
+    assert!(h.state().tabs()[0].closing());
+    assert!(h.state().tabs()[0].unsaved());
+    off_fields(&mut h, "SOLID");
+    open_search(&mut h);
+    search_for(&mut h, "revert", "Revert to saved File");
+    assert_eq!(
+        search_rows(&h),
+        [("Revert to saved File".to_owned(), true, true)]
+    );
+    h.key_press(eframe::egui::Key::Enter);
+    for _ in 0..5 {
+        step(&mut h);
+        assert!(!revert_asking(&h), "asked while the tab closes");
+    }
+    assert!(search_open(&h));
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the tab closed", |h| h.state().tabs().is_empty());
     assert_eq!(std::fs::read_to_string(&path).unwrap(), EXAMPLE);
     assert_eq!(never_waits::waits(), 0);
 }
@@ -1761,6 +2094,7 @@ fn a_reload_the_person_asked_for_shows_no_info_banner() {
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert to saved")
         .click();
+    revert_discarding(&mut h);
     step_until(&mut h, "reverted", |h| {
         shows(h, "Timeline", "Bit") && !anywhere(h, "example.silico *")
     });
@@ -3922,6 +4256,7 @@ fn revert_drops_an_edit_still_waiting_so_nothing_is_saved_after_it() {
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert to saved")
         .click();
+    revert_discarding(&mut h);
     step(&mut h);
     hold.release();
     let _ = check.wait();
@@ -4278,6 +4613,7 @@ fn typing_while_a_revert_runs_comes_after_it_in_a_new_transaction() {
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert to saved")
         .click();
+    revert_discarding(&mut h);
     step(&mut h);
     step(&mut h);
     type_name(&mut h, "r");
@@ -4405,6 +4741,7 @@ fn revert_to_a_name_the_field_typed_before_shows_that_name() {
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert to saved")
         .click();
+    revert_discarding(&mut h);
     step_until(&mut h, "reverted", |h| {
         !anywhere(h, "example.silico *") && shows(h, "Timeline", "Pinx")
     });
@@ -4464,6 +4801,7 @@ fn a_revert_after_a_queued_save_keeps_the_save_and_has_nothing_left_to_revert() 
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert to saved")
         .click();
+    revert_discarding(&mut h);
     step(&mut h);
     hold.release();
     let _ = check.wait();
@@ -6235,6 +6573,7 @@ fn a_revert_after_a_queued_save_as_keeps_it_and_has_nothing_left_to_revert() {
     step(&mut h);
     h.get_by_role_and_label(Role::Button, "Revert to saved")
         .click();
+    revert_discarding(&mut h);
     step(&mut h);
     hold.release();
     let _ = check.wait();
@@ -7944,6 +8283,7 @@ fn a_cancel_an_undo_and_an_add_sent_while_a_preview_rebuilds_land_without_waitin
     step(&mut h);
     step(&mut h);
     h.get_by_label("Revert to saved").click();
+    revert_discarding(&mut h);
     step_until(&mut h, "reverted", |h| {
         !h.state().tabs()[0].transaction && !h.state().tabs()[0].unsettled()
     });
@@ -8124,6 +8464,7 @@ fn revert_closes_an_open_dialog_with_the_edits_it_drops() {
     step(&mut h);
     step(&mut h);
     h.get_by_label("Revert to saved").click();
+    revert_discarding(&mut h);
     step_until(&mut h, "the dialog closed", |h| !dialog_open(h));
     settled(&mut h);
     assert_eq!(text_of(&f.sessions, &h), SKETCHED_EXAMPLE);
@@ -24742,6 +25083,8 @@ fn same_every_way(entry: &silico_app::shortcuts::Entry, search: bool) {
             } else {
                 from_file_menu(&mut h, entry.label);
             }
+            // Asked first, as Close asks, the edit unsaved: its discard reverts.
+            revert_discarding(&mut h);
             step_until(&mut h, "reverted", |h| {
                 !h.state().tabs()[0].transaction && shows(h, "Timeline", "Pin")
             });

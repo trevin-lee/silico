@@ -337,6 +337,39 @@ pub fn answer_question<P: AppKernel>(h: &mut AppUi<P>, label: &str) {
     step(h);
 }
 
+/// What Revert to saved's question says, in Close's words.
+pub const REVERT_SAYS: &str = "It has unsaved edits. Reverting to the saved file drops them.";
+
+/// Revert to saved's button that drops the unsaved edits, in its question (as Reload's
+/// question words its own).
+pub const REVERT_DISCARD: &str = "Revert, discard my edits";
+
+/// Whether Revert to saved's question is asked about the document named `name`: its
+/// title ("Revert example.silico to saved?") and its words shown.
+pub fn revert_asked_about<P: AppKernel>(h: &AppUi<P>, name: &str) -> bool {
+    anywhere(h, &format!("Revert {name} to saved?")) && anywhere(h, REVERT_SAYS)
+}
+
+/// Whether any of Revert to saved's question shows: its words or its discard.
+pub fn revert_asking<P: AppKernel>(h: &AppUi<P>) -> bool {
+    anywhere(h, REVERT_SAYS)
+        || h.query_by_role_and_label(Role::Button, REVERT_DISCARD)
+            .is_some()
+}
+
+/// Revert to saved's question, once it's asked (File's item or the search clicked with
+/// unsaved edits), answered by its discard through AccessKit's click (as
+/// [`answer_question`]'s, which takes the modal's first frame too), and a frame stepped.
+pub fn revert_discarding<P: AppKernel>(h: &mut AppUi<P>) {
+    step_until(h, "Revert to saved's question", |h| {
+        h.query_by_role_and_label(Role::Button, REVERT_DISCARD)
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, REVERT_DISCARD)
+        .click_accesskit();
+    step(h);
+}
+
 // --- The export dialog ---------------------------------------------------------------------
 
 /// File > Export…, its dialog open, titled `title` ("Export bracket.silico").
