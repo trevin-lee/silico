@@ -95,8 +95,9 @@ pub const PARAMETER: &str = "selection";
 /// prototype's (viewport.js: its `pick`, the hover and the click, takes `pickAll`'s `d < 6`),
 /// so one threshold with Select Other's cast, [`HIT_EDGE_POINTS`]. The two still part a
 /// little past it: the square takes an edge drawn anywhere in it, out to the square's
-/// corners, and the edge is drawn 2 points wide about its line, where the cast measures to
-/// the line itself (docs/design/m5.0-app.md, section 9, Select Other as built).
+/// corners, and the edge is drawn 1.5 points wide about its line
+/// ([`theme::VIEWPORT_EDGE_WIDTH`]), where the cast measures to the line itself
+/// (docs/design/m5.0-app.md, section 9, Select Other as built).
 pub const EDGE_BAND_POINTS: f32 = HIT_EDGE_POINTS as f32;
 
 /// How far from a vertex the pointer takes it, in points: the radius of the disc the

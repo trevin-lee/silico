@@ -39954,7 +39954,7 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
                 Modifiers::NONE,
                 &["k7f2qx3m.box.Face3"],
             );
-            // Its top edge, z = 10 (drawn 2 points wide about its line), from the face 2
+            // Its top edge, z = 10 (drawn 1.5 points wide about its line), from the face 2
             // points below its line: inside the 6-point band, the edge, not the face. It's
             // Edge3 in the fixture's numbering (`silico_render::bench::box_mesh`: the front
             // face's bottom, right, top, left first), which the fake kernel meshes every box
@@ -39963,7 +39963,7 @@ fn on_lavapipe_a_click_on_a_boxs_front_face_selects_it_by_name_and_an_edge_is_ta
             let edge = seen(30.0, 10.0);
             let below = |points: f32| edge + eframe::egui::vec2(0.0, points);
             select_at(&mut h, below(2.0), Modifiers::NONE, &["k7f2qx3m.box.Edge3"]);
-            // 9 points below it, past the band and the stroke's half (6 and 1): the face
+            // 9 points below it, past the band and the stroke's half (6 and 0.75): the face
             // under the pointer.
             select_at(&mut h, below(9.0), Modifiers::NONE, &["k7f2qx3m.box.Face3"]);
             // Above the box (z = 14, clear of the ViewCube at the top right), the
