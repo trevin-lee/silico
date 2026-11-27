@@ -9443,4 +9443,13 @@ fn a_rect_over_a_current_body_and_one_replaced_says_stale_beside_its_hit() {
     let ([_, edge], stale) = row.nearest(&ids, glam::UVec2::new(5, 1), |body| body == 1);
     assert_eq!(edge.map(|(i, p)| (i, p.hit)), Some((1, Element::Edge(4))));
     assert!(stale);
+    // And with the replaced body's pixel farther from the centre than the hit: any pixel
+    // passed over makes the answer stale, not only one nearer than what was found.
+    let ids = [empty, empty, face_id(2), empty, replaced];
+    let ([any, _], stale) = row.nearest(&ids, glam::UVec2::new(5, 1), |body| body == 1);
+    assert_eq!(any.map(|(i, p)| (i, p.hit)), Some((2, Element::Face(2))));
+    assert!(
+        stale,
+        "a replaced body passed over, farther than the hit, not said"
+    );
 }
