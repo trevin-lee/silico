@@ -417,6 +417,8 @@ fn an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout()
     // silico_core::sketch::SKETCH_TIMEOUT (900 s), which SketchWorker::with_timeout sets.
     let doc = checked(&impossible_chain(512, 2560.0));
     let started = Instant::now();
+    // nextest's kill for this test (.config/nextest.toml, `terminate-after`) must stay past
+    // `within`'s bound, SKETCH_TIMEOUT + 360 s, so a hang is said here: raise both together.
     let given = silico_core::sketch::SKETCH_TIMEOUT + Duration::from_secs(300);
     let (e, cpu) = within(given + Duration::from_secs(60), move || {
         let mut w = worker().with_timeout(given);
