@@ -899,7 +899,7 @@ fn version_gives_the_designs_numbers_and_limits() {
     // minor radius, half-angle).
     assert_eq!(limits.query_measures, 7);
     assert_eq!(limits.kernel_seconds, 60);
-    assert_eq!(limits.sketch_seconds, 600);
+    assert_eq!(limits.sketch_seconds, 900);
     // A drag's move: ten times the 0.76 s M3.7 sized 256 unknowns for, loaded (M5.0's A4);
     // and those 256 unknowns.
     assert_eq!(limits.drag_move_seconds, 10);

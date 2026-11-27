@@ -92,13 +92,16 @@ pub const MAX_LOAD_RESOLVES: usize = 3;
 /// Xeon 6975P-C) the whole solve of that chain took 199 to 204 s of the worker's CPU, about
 /// its wall time: 68% of the 300 s this limit was set to from the M4 Pro's figures, past
 /// the half of it that silico-sketch's test of that chain allows. Hosted machines are where
-/// agents run `silico serve` too, so the limit is 600 s; FreeCAD has none. The time grows
+/// agents run `silico serve` too, so the limit became 600 s; then a hosted runner's Intel
+/// Xeon Platinum 8370C spent 337 s of CPU on the same chain (gate 45487700650), past half
+/// of that, and its Xeon Platinum 8573C took 285 to 301 s of wall time, at half, so it's
+/// 900 s. FreeCAD has none. The time grows
 /// with the equations the diagnosis keeps too: the same chain with one line given
 /// `horizontal` 2,000 times took DogLeg 8.7× as long, and passed 300 s with all four
 /// (`MAX_SKETCH_UNKNOWNS`'s doc). Every solve that reaches a solution is checked by at
 /// least one load ([`Translation::solve`]): at least two solves, and 1 +
 /// [`MAX_LOAD_RESOLVES`] at most, each with this limit.
-pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(600);
+pub const SKETCH_TIMEOUT: Duration = Duration::from_secs(900);
 
 /// The environment variable that names the sketch worker executable.
 pub const SKETCH_WORKER_ENV: &str = "SILICO_SKETCH_WORKER";
