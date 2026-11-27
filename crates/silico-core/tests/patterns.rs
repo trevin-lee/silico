@@ -1127,7 +1127,7 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
     );
     // Past the cap (600,000 by 2), so refused at the count that passes it alone, and that
     // alone: none of the 599,999 distinct skips is taken for a repeat.
-    let refused = within_probes(move || {
+    let refused = within_probes("600,000 skips", move || {
         let invalid = Checked::new(read(text.as_bytes()).unwrap()).unwrap_err();
         let errors: Vec<(Option<String>, String)> = invalid
             .errors()
@@ -1158,7 +1158,7 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
             ids.join(", ")
         ),
     );
-    let total = within_probes(move || {
+    let total = within_probes("1,000,000 originals", move || {
         Checked::new(read(text.as_bytes()).unwrap())
             .unwrap_err()
             .total()
@@ -1184,7 +1184,9 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
         "    {{\"id\": \"m0000001\", \"type\": \"mirror\", \"v\": 1, \"name\": \"Mirror\", \"base\": \"{base}\", \"copies\": {{\"type\": \"features\", \"features\": [{}]}}, \"plane\": \"yz\"}}\n  ]\n}}\n",
         originals.join(", ")
     ));
-    let taken = within_probes(move || Checked::new(read(text.as_bytes()).unwrap()).map(|_| ()));
+    let taken = within_probes("a chain of 60,000 pockets", move || {
+        Checked::new(read(text.as_bytes()).unwrap()).map(|_| ())
+    });
     assert!(taken.is_ok(), "{taken:?}");
 }
 
@@ -1202,10 +1204,10 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
 const PROBE_TIMES: f64 = 44.0;
 
 /// `f`'s result, if its thread's CPU is under [`PROBE_TIMES`] the probe's (the slower of a
-/// reading before `f` and one after, as #292's chain of booleans takes it), its reading
-/// said on stderr either way. A hang fails at ten times the bound by the reading before
+/// reading before `f` and one after, as #292's chain of booleans takes it), its reading,
+/// named by `what`, written to stderr either way (kept by nextest when the test fails). A hang fails at ten times the bound by the reading before
 /// `f`, of wall time.
-fn within_probes<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+fn within_probes<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
     let before = cpu_work::cost();
     let (out, spent) = spending(before.mul_f64(PROBE_TIMES * 10.0), f);
     let after = cpu_work::cost();
@@ -1213,13 +1215,13 @@ fn within_probes<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T
     let times = spent.as_secs_f64() / probe.as_secs_f64();
     let _ = writeln!(
         std::io::stderr(),
-        "took {spent:?} of CPU, {times:.2} times the probe's {probe:?} (before {before:?}, \
-         after {after:?})"
+        "{what}: took {spent:?} of CPU, {times:.2} times the probe's {probe:?} \
+         (before {before:?}, after {after:?})"
     );
     assert!(
         times < PROBE_TIMES,
-        "took {spent:?} of CPU, {times:.1} times the probe's {probe:?} (before {before:?}, \
-         after {after:?}), past {PROBE_TIMES}"
+        "{what}: took {spent:?} of CPU, {times:.1} times the probe's {probe:?} \
+         (before {before:?}, after {after:?}), past {PROBE_TIMES}"
     );
     out
 }
