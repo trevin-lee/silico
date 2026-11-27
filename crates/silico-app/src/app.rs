@@ -110,6 +110,12 @@ pub fn filter_keys(
     .collect()
 }
 
+/// What Revert to saved's question says it does ([`Asking::Revert`]), in Close's words.
+const REVERT_DROPS: &str = "It has unsaved edits. Reverting to the saved file drops them.";
+
+/// Revert to saved's question's button that drops the edits, in Reload's words.
+const REVERT_DISCARD: &str = "Revert, discard my edits";
+
 /// Whether Revert to saved is on for `tab` (the File menu's, and the search's): with edits
 /// (its transaction), but not while the tab closes, whose close drops them already.
 fn revertible(tab: &Tab) -> bool {
@@ -413,6 +419,9 @@ enum Asking {
     /// Whether to drop `session`'s unsaved edits to reload its file (Reload, Trevin's ask of
     /// 2026-11-09), naming them: the tab's `held_changes`' own.
     Reload(SessionId),
+    /// Whether to drop `session`'s unsaved edits to go back to its file (Revert to saved,
+    /// [`App::revert`]), as Close and Reload ask before they drop them.
+    Revert(SessionId),
 }
 
 /// What's on top of the window (#487): nothing, or the modal open there. In the order they
@@ -2619,10 +2628,10 @@ impl<P: Clients + 'static> App<P> {
                     tab.selection_mut().clear();
                 }
             }
-            // The File menu's Revert to saved.
+            // The File menu's Revert to saved, asking as it asks.
             Command::Revert => {
-                if let Some(tab) = shown.filter(|tab| revertible(tab)) {
-                    tab.revert(sessions, false);
+                if let Some(id) = shown.map(|tab| tab.id) {
+                    self.revert(id);
                 }
             }
             // The toolbar's buttons with no keys, as a click on the button does it, if it's on.
@@ -2780,6 +2789,28 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
+    /// Revert to saved for the tab of session `id` (the File menu's item, and the command
+    /// search's): nothing while it isn't revertible ([`revertible`]); else asking first,
+    /// as Close and Reload ask, if it would drop unsaved edits, as SolidWorks' Reload warns
+    /// before it loses unsaved changes (docs/ux/solidworks.md, §6). *Departure from the
+    /// approved prototype,* whose `revert` drops them asking nothing (docs/design/m5.0-app.md,
+    /// section 4). With none, the `rollback` is sent at once, as before.
+    fn revert(&mut self, id: SessionId) {
+        let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|tab| tab.id == id)
+            .filter(|tab| revertible(tab))
+        else {
+            return;
+        };
+        if tab.unsaved() {
+            self.asking = Some(Asking::Revert(id));
+        } else {
+            tab.revert(&self.sessions, false);
+        }
+    }
+
     /// Close the tab of session `id`: asking first if it holds edits (decision 1).
     fn close(&mut self, id: SessionId) {
         let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
@@ -2878,7 +2909,8 @@ impl<P: Clients + 'static> App<P> {
             | Asking::Quit
             | Asking::Replace { .. }
             | Asking::Changes(_)
-            | Asking::Reload(_) => {}
+            | Asking::Reload(_)
+            | Asking::Revert(_) => {}
         }
         false
     }
@@ -3083,7 +3115,8 @@ impl<P: Clients + 'static> App<P> {
             | Asking::Quit
             | Asking::Replace { .. }
             | Asking::Changes(_)
-            | Asking::Reload(_) => {
+            | Asking::Reload(_)
+            | Asking::Revert(_) => {
                 return None;
             }
         };
@@ -3246,8 +3279,8 @@ impl<P: Clients + 'static> App<P> {
             .add_enabled(revertible, egui::Button::new(Command::Revert.label()))
             .clicked()
         {
-            if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
-                tab.revert(&self.sessions, false);
+            if let Some(id) = self.active {
+                self.revert(id);
                 *next_frame = true;
             }
             ui.close();
@@ -3860,6 +3893,39 @@ impl<P: Clients + 'static> App<P> {
                     );
                 if reload {
                     tab.reload(sessions);
+                    *next_frame = true;
+                    done = true;
+                }
+                if cancel || escape {
+                    done = true;
+                }
+            }
+            Asking::Revert(id) => {
+                let sessions = &self.sessions;
+                let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+                    done = true;
+                    return;
+                };
+                modal::head(
+                    ui,
+                    Some(Icon::Warn),
+                    &format!("Revert {} to saved?", tab.name()),
+                );
+                modal::body(ui, |ui| {
+                    modal::text(ui, REVERT_DROPS, theme::MODAL_TEXT);
+                });
+                // As the close question lays out its buttons: what drops the edits on the
+                // left, Cancel on the right. Enter is no one's, as in Close's and Reload's:
+                // the search's Enter that asked never drops the edits too. Off once nothing
+                // can be reverted ([`revertible`]: the transaction ended meanwhile, by a
+                // save queued before the question, or the tab closing).
+                let ([revert], [cancel]) = modal::foot(
+                    ui,
+                    [Button::new(REVERT_DISCARD, Kind::Danger).enabled(revertible(tab))],
+                    [Button::new("Cancel", Kind::Secondary)],
+                );
+                if revert {
+                    tab.revert(sessions, false);
                     *next_frame = true;
                     done = true;
                 }

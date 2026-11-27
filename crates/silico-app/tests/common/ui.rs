@@ -337,6 +337,23 @@ pub fn answer_question<P: AppKernel>(h: &mut AppUi<P>, label: &str) {
     step(h);
 }
 
+/// Revert to saved's button that drops the unsaved edits, in its question (as Reload's
+/// question words its own).
+pub const REVERT_DISCARD: &str = "Revert, discard my edits";
+
+/// Revert to saved's question, once it's asked (File's item or the search clicked with
+/// unsaved edits), answered by its discard through AccessKit's click (as
+/// [`answer_question`]'s, which takes the modal's first frame too), and a frame stepped.
+pub fn revert_discarding<P: AppKernel>(h: &mut AppUi<P>) {
+    step_until(h, "Revert to saved's question", |h| {
+        h.query_by_role_and_label(Role::Button, REVERT_DISCARD)
+            .is_some()
+    });
+    h.get_by_role_and_label(Role::Button, REVERT_DISCARD)
+        .click_accesskit();
+    step(h);
+}
+
 // --- The export dialog ---------------------------------------------------------------------
 
 /// File > Export…, its dialog open, titled `title` ("Export bracket.silico").
