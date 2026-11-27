@@ -67,7 +67,10 @@ pub(crate) fn empty_part(ui: &mut Ui, canvas: Rect, tab: &mut Tab) {
         words.append(part, 0.0, modal::format(theme::BODY_SIZE, colour));
     }
     let words = ui.painter().layout_job(words);
-    let create = Button::new(crate::toolbar::CREATE_SKETCH_WORDS, Kind::Primary);
+    let create = Button::new(
+        crate::shortcuts::Command::CreateSketch.label(),
+        Kind::Primary,
+    );
     let clicked = chip(
         ui,
         canvas,

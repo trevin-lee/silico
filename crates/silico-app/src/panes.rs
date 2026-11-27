@@ -1051,9 +1051,12 @@ fn one_selected(ui: &mut Ui, tab: &Tab, picked: &Picked, answers: &Answers) -> O
     }
     if kind == Some(ElementKind::Edge) {
         buttons.push(
-            crate::modal::Button::new("Fillet", crate::modal::Kind::Secondary)
-                .icon(Icon::Fillet)
-                .enabled(tab.can_open(crate::dialog::Kind::Fillet)),
+            crate::modal::Button::new(
+                crate::shortcuts::Command::Fillet.label(),
+                crate::modal::Kind::Secondary,
+            )
+            .icon(Icon::Fillet)
+            .enabled(tab.can_open(crate::dialog::Kind::Fillet)),
         );
         acts.push(Some(Viewed::Fillet));
     }

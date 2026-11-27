@@ -630,7 +630,7 @@ impl<C: Kernel + 'static> Session<C> {
                     (),
                     edit::sketch_replaced(checked.document(), &sketch, after)?,
                 );
-                judged(solvers, stop, base.id, checked, &sketch, DRAG, made)
+                judged(self, solvers, stop, checked, &sketch, DRAG, made)
             },
             read,
             claim,

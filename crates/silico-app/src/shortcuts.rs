@@ -19,15 +19,21 @@
 //! acts (`Chord::Held`), descriptive only, as Orbit's is: the sketch tools read it from the
 //! pointer's events themselves.
 //!
-//! Only what the app does today is here. Left out, each a seam:
-//! - SEAM(M5.7): Select Other (right-click), picking's part 3.
-//! - F5, SolidWorks' key for its filter toolbar, which the app hasn't: the app takes it
-//!   itself and says where the filters are (`App::keys`), as the prototype's F5 is no
-//!   command of its `CMD` and isn't on its sheet.
+//! Every command of the prototype's `CMD` is here, Measure among them though the app hasn't
+//! built it yet (its button and its search row say so), and the toolbar's buttons take
+//! their names, lines, and icons from here (`crate::toolbar`), as the prototype's `tbBtn`
+//! takes them from `CMD`: no second table. Its Create, Modify, and Inspect groups have no
+//! keys, so no column on the sheet, as the prototype's sheet has none for them. Select Other
+//! (`Chord::Pointer`'s right click) is descriptive only, as Orbit's is: the canvas's context
+//! menu takes the click itself (`crate::select_other`). F5, SolidWorks' key for its filter
+//! toolbar, which the app hasn't, isn't here: the app takes it itself and says where the
+//! filters are (`App::keys`), as the prototype's F5 is no command of its `CMD` and isn't
+//! on its sheet.
 //!
 //! S opens the command search (`crate::search`), which lists the registry too, each
 //! command with its icon, its group, and its keys, and reaches by name those with no keys
-//! (What's wrong, Suppress, Find in browser, and Find in timeline), as the prototype's does.
+//! (Revert to saved, What's wrong, Suppress, the Find commands, and the toolbar's
+//! commands), as the prototype's does.
 
 use eframe::egui::{self, Key, KeyboardShortcut, Modifiers, Ui};
 
@@ -41,6 +47,7 @@ pub enum Command {
     Open,
     Save,
     SaveAs,
+    Revert,
     Close,
     Undo,
     Redo,
@@ -55,6 +62,17 @@ pub enum Command {
     Reload,
     Stop,
     WhatsWrong,
+    CreateSketch,
+    Pad,
+    Pocket,
+    Revolve,
+    Groove,
+    Fillet,
+    Chamfer,
+    Union,
+    Subtract,
+    Intersect,
+    Measure,
     Fit,
     Home,
     Front,
@@ -72,6 +90,7 @@ pub enum Command {
     FilterEdge,
     FilterVertex,
     ClearSelection,
+    SelectOther,
     Hide,
     Ok,
     Cancel,
@@ -81,6 +100,8 @@ pub enum Command {
     Arc,
     Point,
     Trim,
+    Extend,
+    Split,
     Dimension,
     Construction,
     NoRelations,
@@ -88,12 +109,16 @@ pub enum Command {
     Shortcuts,
 }
 
-/// The sheet's groups, in the order its columns list them (the prototype's `order`).
+/// The registry's groups, in its order: the sheet's (the prototype's `order`), and the
+/// toolbar's Create, Modify, and Inspect after Rebuild, where the prototype's `CMD` has them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Group {
     File,
     Edit,
     Rebuild,
+    Create,
+    Modify,
+    Inspect,
     View,
     Selection,
     Dialogs,
@@ -101,7 +126,9 @@ pub enum Group {
     Help,
 }
 
-/// Every group, in the sheet's order.
+/// The sheet's groups, in its order (the prototype's `order`): every group with a command
+/// that has keys. Create, Modify, and Inspect have none, so no column, as the prototype's
+/// sheet has none for them.
 pub const GROUPS: [Group; 8] = [
     Group::File,
     Group::Edit,
@@ -120,6 +147,9 @@ impl Group {
             Group::File => "File",
             Group::Edit => "Edit",
             Group::Rebuild => "Rebuild",
+            Group::Create => "Create",
+            Group::Modify => "Modify",
+            Group::Inspect => "Inspect",
             Group::View => "View",
             Group::Selection => "Selection",
             Group::Dialogs => "Dialogs",
@@ -254,6 +284,14 @@ const SAVE_AS: Entry = entry(
     &[key(SHIFT_COMMAND, Key::S)],
     None,
 );
+/// No keys, as the prototype has none (`CMD.revert`): the File menu gives it.
+const REVERT: Entry = entry(
+    Command::Revert,
+    "Revert to saved",
+    Group::File,
+    &[],
+    Some("Drops every unsaved edit"),
+);
 const CLOSE: Entry = entry(
     Command::Close,
     "Close",
@@ -387,6 +425,81 @@ const WHATS_WRONG: Entry = entry(
     Some("Every problem in the document"),
 )
 .with_icon(Icon::Error);
+// The toolbar's commands (the prototype's `CMD`, each its words and its icon; no keys, as
+// it gives them none): its buttons and drop-downs take them from here (`crate::toolbar`).
+
+/// Create Sketch: its pick of a plane or a flat face begun (`crate::plane_pick`).
+const CREATE_SKETCH: Entry = entry(
+    Command::CreateSketch,
+    "Create Sketch",
+    Group::Create,
+    &[],
+    Some("Pick an origin plane or a flat face, then sketch on it"),
+)
+.with_icon(Icon::Sketch);
+const PAD: Entry = entry(
+    Command::Pad,
+    "Pad",
+    Group::Create,
+    &[],
+    Some("Extrudes a sketch's profile into solid"),
+)
+.with_icon(Icon::Pad);
+const POCKET: Entry = entry(
+    Command::Pocket,
+    "Pocket",
+    Group::Create,
+    &[],
+    Some("Cuts a sketch's profile out of the solid"),
+)
+.with_icon(Icon::Pocket);
+const REVOLVE: Entry = entry(
+    Command::Revolve,
+    "Revolve",
+    Group::Create,
+    &[],
+    Some("Sweeps a profile around an axis"),
+)
+.with_icon(Icon::Revolve);
+const GROOVE: Entry = entry(
+    Command::Groove,
+    "Groove",
+    Group::Create,
+    &[],
+    Some("Cuts a profile swept around an axis"),
+)
+.with_icon(Icon::Groove);
+const FILLET: Entry = entry(
+    Command::Fillet,
+    "Fillet",
+    Group::Modify,
+    &[],
+    Some("Rounds the selected edges"),
+)
+.with_icon(Icon::Fillet);
+const CHAMFER: Entry = entry(
+    Command::Chamfer,
+    "Chamfer",
+    Group::Modify,
+    &[],
+    Some("Bevels the selected edges"),
+)
+.with_icon(Icon::Chamfer);
+const UNION: Entry =
+    entry(Command::Union, "Union", Group::Modify, &[], None).with_icon(Icon::Union);
+const SUBTRACT: Entry =
+    entry(Command::Subtract, "Subtract", Group::Modify, &[], None).with_icon(Icon::Subtract);
+const INTERSECT: Entry =
+    entry(Command::Intersect, "Intersect", Group::Modify, &[], None).with_icon(Icon::Intersect);
+/// Not built yet: its button and its search row say so.
+const MEASURE: Entry = entry(
+    Command::Measure,
+    "Measure",
+    Group::Inspect,
+    &[],
+    Some("Distance, angle, and size of what you select"),
+)
+.with_icon(Icon::Measure);
 const FIT: Entry = entry(
     Command::Fit,
     "Fit",
@@ -522,6 +635,16 @@ const FILTER_VERTEX: Entry = entry(
     Some("Toggles whether vertices can be selected"),
 )
 .with_icon(Icon::SelVertex);
+/// Select Other (the prototype's `selectOther`, its words): a right click on the canvas, its
+/// context menu's *Select Other…* listing what's under the pointer (`crate::select_other`).
+/// Descriptive only, as Orbit's is: the canvas takes the click itself.
+const SELECT_OTHER: Entry = entry(
+    Command::SelectOther,
+    "Select Other",
+    Group::Selection,
+    &[Chord::Pointer(Modifiers::NONE, "Right-click")],
+    Some("What lies under the pointer, nearest first. Tab or the wheel steps"),
+);
 const HIDE: Entry = entry(
     Command::Hide,
     "Hide or show",
@@ -579,6 +702,18 @@ const TRIM: Entry = entry(
     None,
 )
 .with_icon(Icon::Trim);
+/// SolidWorks' Extend Entities, a tool of its own beside Trim's drag-extend, as the
+/// prototype's `sExtend` is; no key, as it has none.
+const EXTEND: Entry = entry(
+    Command::Extend,
+    "Extend",
+    Group::Sketch,
+    &[],
+    Some("Extends a line or arc to the next curve"),
+)
+.with_icon(Icon::Extend);
+const SPLIT: Entry =
+    entry(Command::Split, "Split", Group::Sketch, &[], None).with_icon(Icon::Split);
 const DIMENSION: Entry = entry(
     Command::Dimension,
     "Smart Dimension",
@@ -630,11 +765,12 @@ const SHORTCUTS: Entry = entry(
 .with_icon(Icon::Help);
 
 /// Every command, in the order the sheet lists each group's.
-pub const REGISTRY: [Entry; 49] = [
+pub const REGISTRY: [Entry; 64] = [
     NEW,
     OPEN,
     SAVE,
     SAVE_AS,
+    REVERT,
     CLOSE,
     UNDO,
     REDO,
@@ -649,6 +785,17 @@ pub const REGISTRY: [Entry; 49] = [
     RELOAD,
     STOP,
     WHATS_WRONG,
+    CREATE_SKETCH,
+    PAD,
+    POCKET,
+    REVOLVE,
+    GROOVE,
+    FILLET,
+    CHAMFER,
+    UNION,
+    SUBTRACT,
+    INTERSECT,
+    MEASURE,
     FIT,
     HOME,
     FRONT,
@@ -666,6 +813,7 @@ pub const REGISTRY: [Entry; 49] = [
     FILTER_EDGE,
     FILTER_VERTEX,
     CLEAR_SELECTION,
+    SELECT_OTHER,
     HIDE,
     OK,
     CANCEL,
@@ -675,6 +823,8 @@ pub const REGISTRY: [Entry; 49] = [
     ARC,
     POINT,
     TRIM,
+    EXTEND,
+    SPLIT,
     DIMENSION,
     CONSTRUCTION,
     NO_RELATIONS,
@@ -684,12 +834,13 @@ pub const REGISTRY: [Entry; 49] = [
 
 impl Command {
     /// Its entry in the registry.
-    pub fn entry(self) -> &'static Entry {
+    pub const fn entry(self) -> &'static Entry {
         match self {
             Command::New => &NEW,
             Command::Open => &OPEN,
             Command::Save => &SAVE,
             Command::SaveAs => &SAVE_AS,
+            Command::Revert => &REVERT,
             Command::Close => &CLOSE,
             Command::Undo => &UNDO,
             Command::Redo => &REDO,
@@ -704,6 +855,17 @@ impl Command {
             Command::Reload => &RELOAD,
             Command::Stop => &STOP,
             Command::WhatsWrong => &WHATS_WRONG,
+            Command::CreateSketch => &CREATE_SKETCH,
+            Command::Pad => &PAD,
+            Command::Pocket => &POCKET,
+            Command::Revolve => &REVOLVE,
+            Command::Groove => &GROOVE,
+            Command::Fillet => &FILLET,
+            Command::Chamfer => &CHAMFER,
+            Command::Union => &UNION,
+            Command::Subtract => &SUBTRACT,
+            Command::Intersect => &INTERSECT,
+            Command::Measure => &MEASURE,
             Command::Fit => &FIT,
             Command::Home => &HOME,
             Command::Front => &FRONT,
@@ -718,6 +880,7 @@ impl Command {
             Command::Pan => &PAN,
             Command::Zoom => &ZOOM,
             Command::ClearSelection => &CLEAR_SELECTION,
+            Command::SelectOther => &SELECT_OTHER,
             Command::FilterFace => &FILTER_FACE,
             Command::FilterEdge => &FILTER_EDGE,
             Command::FilterVertex => &FILTER_VERTEX,
@@ -730,6 +893,8 @@ impl Command {
             Command::Arc => &ARC,
             Command::Point => &POINT,
             Command::Trim => &TRIM,
+            Command::Extend => &EXTEND,
+            Command::Split => &SPLIT,
             Command::Dimension => &DIMENSION,
             Command::Construction => &CONSTRUCTION,
             Command::NoRelations => &NO_RELATIONS,
@@ -739,7 +904,7 @@ impl Command {
     }
 
     /// Its name.
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         self.entry().label
     }
 
@@ -956,12 +1121,14 @@ mod tests {
     fn each_command_has_the_prototypes_icon() {
         // app.js's `CMD`, each command's `icon`, or none where it gives none (Suppress and
         // the two Find commands aren't in `CMD`: none). The command search's row shows it, and
-        // a chevron for none. Every command in the registry is in the table, once.
+        // a chevron for none; the toolbar's button draws it. Every command in the registry is
+        // in the table, once.
         let table = [
             (Command::New, Some(Icon::NewDoc)),
             (Command::Open, Some(Icon::Open)),
             (Command::Save, Some(Icon::Save)),
             (Command::SaveAs, None),
+            (Command::Revert, None),
             (Command::Close, None),
             (Command::Undo, Some(Icon::Undo)),
             (Command::Redo, Some(Icon::Redo)),
@@ -976,6 +1143,17 @@ mod tests {
             (Command::Reload, None),
             (Command::Stop, Some(Icon::Stop)),
             (Command::WhatsWrong, Some(Icon::Error)),
+            (Command::CreateSketch, Some(Icon::Sketch)),
+            (Command::Pad, Some(Icon::Pad)),
+            (Command::Pocket, Some(Icon::Pocket)),
+            (Command::Revolve, Some(Icon::Revolve)),
+            (Command::Groove, Some(Icon::Groove)),
+            (Command::Fillet, Some(Icon::Fillet)),
+            (Command::Chamfer, Some(Icon::Chamfer)),
+            (Command::Union, Some(Icon::Union)),
+            (Command::Subtract, Some(Icon::Subtract)),
+            (Command::Intersect, Some(Icon::Intersect)),
+            (Command::Measure, Some(Icon::Measure)),
             (Command::Fit, Some(Icon::Fit)),
             (Command::Home, Some(Icon::Home)),
             (Command::Front, None),
@@ -993,6 +1171,7 @@ mod tests {
             (Command::FilterFace, Some(Icon::SelFace)),
             (Command::FilterEdge, Some(Icon::SelEdge)),
             (Command::FilterVertex, Some(Icon::SelVertex)),
+            (Command::SelectOther, None),
             (Command::Hide, None),
             (Command::Ok, None),
             (Command::Cancel, None),
@@ -1002,6 +1181,8 @@ mod tests {
             (Command::Arc, Some(Icon::Arc)),
             (Command::Point, Some(Icon::Point)),
             (Command::Trim, Some(Icon::Trim)),
+            (Command::Extend, Some(Icon::Extend)),
+            (Command::Split, Some(Icon::Split)),
             (Command::Dimension, Some(Icon::Dimension)),
             (Command::Construction, Some(Icon::Construction)),
             (Command::NoRelations, None),
@@ -1016,6 +1197,134 @@ mod tests {
                 .collect();
             assert_eq!(mine.len(), 1, "{:?} in the table", entry.command);
             assert_eq!(entry.icon, mine[0].1, "{:?}", entry.command);
+        }
+    }
+
+    #[test]
+    fn the_prototypes_toolbar_commands_and_select_other_are_in_the_registry_under_its_words() {
+        // Typed from js/app.js's `CMD`: each command the toolbar draws, Revert, and Select
+        // Other, its label, its group, its keys (none but Select Other's right click), and
+        // its `desc`; Extend's line is the app's own, the prototype giving it none.
+        let table: [(Command, &str, &str, Option<&str>); 15] = [
+            (
+                Command::Revert,
+                "Revert to saved",
+                "File",
+                Some("Drops every unsaved edit"),
+            ),
+            (
+                Command::CreateSketch,
+                "Create Sketch",
+                "Create",
+                Some("Pick an origin plane or a flat face, then sketch on it"),
+            ),
+            (
+                Command::Pad,
+                "Pad",
+                "Create",
+                Some("Extrudes a sketch's profile into solid"),
+            ),
+            (
+                Command::Pocket,
+                "Pocket",
+                "Create",
+                Some("Cuts a sketch's profile out of the solid"),
+            ),
+            (
+                Command::Revolve,
+                "Revolve",
+                "Create",
+                Some("Sweeps a profile around an axis"),
+            ),
+            (
+                Command::Groove,
+                "Groove",
+                "Create",
+                Some("Cuts a profile swept around an axis"),
+            ),
+            (
+                Command::Fillet,
+                "Fillet",
+                "Modify",
+                Some("Rounds the selected edges"),
+            ),
+            (
+                Command::Chamfer,
+                "Chamfer",
+                "Modify",
+                Some("Bevels the selected edges"),
+            ),
+            (Command::Union, "Union", "Modify", None),
+            (Command::Subtract, "Subtract", "Modify", None),
+            (Command::Intersect, "Intersect", "Modify", None),
+            (
+                Command::Measure,
+                "Measure",
+                "Inspect",
+                Some("Distance, angle, and size of what you select"),
+            ),
+            (
+                Command::SelectOther,
+                "Select Other",
+                "Selection",
+                Some("What lies under the pointer, nearest first. Tab or the wheel steps"),
+            ),
+            (
+                Command::Extend,
+                "Extend",
+                "Sketch",
+                Some("Extends a line or arc to the next curve"),
+            ),
+            (Command::Split, "Split", "Sketch", None),
+        ];
+        let nix = on(OperatingSystem::Nix);
+        for (command, label, group, description) in table {
+            let entry = command.entry();
+            assert_eq!(entry.label, label, "{command:?}");
+            assert_eq!(entry.group.name(), group, "{command:?}");
+            assert_eq!(entry.description, description, "{command:?}");
+            assert!(REGISTRY.iter().any(|each| each.command == command));
+            if command == Command::SelectOther {
+                assert_eq!(command.caps(&nix), ["Right-click"]);
+                assert_eq!(command.caps(&on(OperatingSystem::Mac)), ["Right-click"]);
+            } else {
+                assert!(entry.keys.is_empty(), "{command:?}");
+            }
+        }
+        // Select Other between Clear selection and Hide or show, as `CMD` orders them.
+        let selection: Vec<Command> = REGISTRY
+            .iter()
+            .filter(|entry| entry.group == Group::Selection)
+            .map(|entry| entry.command)
+            .collect();
+        assert_eq!(
+            selection,
+            [
+                Command::FilterFace,
+                Command::FilterEdge,
+                Command::FilterVertex,
+                Command::ClearSelection,
+                Command::SelectOther,
+                Command::Hide
+            ]
+        );
+        // The prototype's `CMD` has 61 commands; the registry has each, and Suppress, Find
+        // in browser, and Find in timeline, which its menus give: 64.
+        assert_eq!(REGISTRY.len(), 64);
+    }
+
+    #[test]
+    fn every_command_with_keys_is_in_a_group_the_sheet_lists() {
+        // The sheet lists `GROUPS` alone: a group outside it (Create, Modify, Inspect) holds
+        // no command with keys, or the sheet would leave it out.
+        for entry in &REGISTRY {
+            if !entry.keys.is_empty() {
+                assert!(GROUPS.contains(&entry.group), "{:?}", entry.command);
+            }
+        }
+        for group in [Group::Create, Group::Modify, Group::Inspect] {
+            assert!(!GROUPS.contains(&group));
+            assert!(REGISTRY.iter().any(|entry| entry.group == group));
         }
     }
 
@@ -1183,10 +1492,10 @@ mod tests {
 
     #[test]
     fn the_sketch_group_is_the_prototypes_letters_and_ctrl_enter_between_dialogs_and_help() {
-        // js/app.js's `CMD`: sLine L, sRect R, sCircle C, sArc A, sPoint P, sTrim T, sDim D,
-        // sConstruction X, sNoRel Mod held, finishSketch Mod Enter, all `group: 'Sketch'`
-        // (sExtend and sSplit have no keys, so no row); its sheet's `order` puts Sketch
-        // after Dialogs, before Help, noted "while a sketch is open".
+        // js/app.js's `CMD`: sLine L, sRect R, sCircle C, sArc A, sPoint P, sTrim T, sExtend
+        // and sSplit no keys (so no row on the sheet), sDim D, sConstruction X, sNoRel Mod
+        // held, finishSketch Mod Enter, all `group: 'Sketch'`; its sheet's `order` puts
+        // Sketch after Dialogs, before Help, noted "while a sketch is open".
         let sketch: Vec<(Command, &[Chord])> = REGISTRY
             .iter()
             .filter(|entry| entry.group == Group::Sketch)
@@ -1202,6 +1511,8 @@ mod tests {
                 (Command::Arc, &[exact(Key::A)]),
                 (Command::Point, &[exact(Key::P)]),
                 (Command::Trim, &[exact(Key::T)]),
+                (Command::Extend, &[]),
+                (Command::Split, &[]),
                 (Command::Dimension, &[exact(Key::D)]),
                 (Command::Construction, &[exact(Key::X)]),
                 (Command::NoRelations, &[Chord::Held(Modifiers::COMMAND)]),
@@ -1430,7 +1741,11 @@ mod tests {
         };
         assert_eq!(found(&nix, "").len(), REGISTRY.len());
         assert_eq!(found(&nix, "  ").len(), REGISTRY.len());
-        assert_eq!(found(&nix, "SAVE"), [Command::Save, Command::SaveAs]);
+        // Revert to saved's name has it too.
+        assert_eq!(
+            found(&nix, "SAVE"),
+            [Command::Save, Command::SaveAs, Command::Revert]
+        );
         assert_eq!(found(&nix, "f6"), [Command::Fit]);
         assert_eq!(found(&nix, "ctrl+b"), [Command::Rebuild]);
         assert_eq!(found(&nix, "shift+b"), [Command::RebuildAll]);

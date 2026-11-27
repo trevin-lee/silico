@@ -186,11 +186,10 @@ pub const FOCUS: Color32 = hex(0x4676ff);
 pub const FOCUS_WIDTH: f32 = 1.0;
 /// The halo outside the focus ring: [`FOCUS`] at 25% (the prototype's `:focus-visible`).
 pub const FOCUS_HALO: Color32 = with_alpha(FOCUS, 64);
-/// The halo's width.
-pub const FOCUS_HALO_WIDTH: f32 = 2.0;
 
 /// The focus ring round `rect`, with `corner_radius`, on its outline's `kind` side, if
-/// `response` has the keyboard's focus.
+/// `response` has the keyboard's focus. SEAM: the prototype's `:focus-visible` has a halo
+/// outside the ring too, [`FOCUS_HALO`] 3 px out (`box-shadow: 0 0 0 3px`), not drawn.
 pub fn focus_ring(
     ui: &egui::Ui,
     response: &egui::Response,
@@ -509,9 +508,10 @@ pub const SKETCH_BAR_HEIGHT: f32 = 32.0;
 /// its sRGB colour (sketch.js's `VP.setDim(0.45)`, viewport.js's `mix(vec3(0.0), c, uDim)`
 /// on its output, three.js r149 writing sRGB values as they are), and the renderer works in
 /// linear light. 0.18 is that dim worked by hand for the body's own colour, lit straight on:
-/// `BODY` (170, 175, 182) in linear light (0.4020, 0.4287, 0.4678), 0.45 of it in sRGB,
-/// (76.5, 78.75, 81.9), in linear light (0.0732, 0.0777, 0.0842), 0.182, 0.181, and 0.180
-/// of it; 0.18 draws it (76.0, 78.5, 81.9). Edges and shaded faces take the same factor.
+/// [`VIEWPORT_BODY`] (185, 192, 202) in linear light (0.4851, 0.5271, 0.5906), 0.45 of it in
+/// sRGB, (83.25, 86.4, 90.9), in linear light (0.0870, 0.0940, 0.1044), 0.179, 0.178, and
+/// 0.177 of it; 0.18 draws it (83.4, 86.8, 91.7), within a level. Edges and shaded faces
+/// take the same factor.
 pub const SKETCH_MODEL_DIM: f32 = 0.18;
 
 /// The canvas: a vertical gradient, soft charcoal along its top to a lighter grey along its
@@ -525,11 +525,12 @@ pub const VIEWPORT_BG_BOTTOM: Rgba8 = rgba8(0x2a2c30);
 /// The renderer's frames' own background: none, so they're composited over the canvas's
 /// gradient, painted under them, which shows wherever no body is.
 pub const VIEWPORT_FRAME_BG: Option<[u8; 3]> = None;
-/// A body's colour (the prototype's; `re_ui` has none).
+/// A body's colour (the prototype's; `re_ui` has none), as the renderer takes it
+/// (`crate::renderer::look`).
 pub const VIEWPORT_BODY: Rgba8 = rgba8(0xb9c0ca);
 /// A body's edges (the prototype's).
 pub const VIEWPORT_EDGE: Rgba8 = rgba8(0x101010);
-/// Their width, in points.
+/// Their width, in points: drawn and picked so.
 pub const VIEWPORT_EDGE_WIDTH: f32 = 1.5;
 /// A shown sketch's curves drawn among the bodies (the prototype's `syncSketchLines`
 /// lines), their width in points.
@@ -549,10 +550,9 @@ pub const VIEWPORT_PLANE_HOVER_OUTLINE: Rgba8 = rgba8_of(FOCUS, 153);
 pub const VIEWPORT_HOVER_TINT: Rgba8 = rgba8(0xffffff);
 /// How much of [`VIEWPORT_HOVER_TINT`] a hovered face takes.
 pub const VIEWPORT_HOVER_TINT_AMOUNT: f32 = 0.28;
-/// A hovered edge.
+/// A hovered edge, drawn as a selected one is wide ([`VIEWPORT_SELECTION_EDGE_WIDTH`]; the
+/// prototype's is 3: `crate::renderer::look`'s SEAM).
 pub const VIEWPORT_HOVER_EDGE: Rgba8 = rgba8(0xffffff);
-/// A hovered edge's width.
-pub const VIEWPORT_HOVER_EDGE_WIDTH: f32 = 3.0;
 /// A selected face's tint, mixed in at [`VIEWPORT_SELECTION_TINT_AMOUNT`]: the prototype's
 /// own blue, a little brighter than [`SELECTION_BG`] so it reads on a lit grey body.
 pub const VIEWPORT_SELECTION_TINT: Rgba8 = rgba8(0x2f7bff);
@@ -560,7 +560,8 @@ pub const VIEWPORT_SELECTION_TINT: Rgba8 = rgba8(0x2f7bff);
 pub const VIEWPORT_SELECTION_TINT_AMOUNT: f32 = 0.55;
 /// A selected edge (the prototype's).
 pub const VIEWPORT_SELECTION_EDGE: Rgba8 = rgba8(0x5b95ff);
-/// A selected edge's width.
+/// A selected edge's width, in points: its stroke, [`VIEWPORT_EDGE_WIDTH`], and its outline
+/// either side (`crate::renderer::look`).
 pub const VIEWPORT_SELECTION_EDGE_WIDTH: f32 = 3.5;
 /// The faces a feature made, while it's hovered in the timeline: Blue.800, mixed into a
 /// face's colour in linear light at [`VIEWPORT_FEATURE_HOVER_TINT_AMOUNT`], before it's lit
@@ -649,9 +650,6 @@ pub const TOAST_SECONDS: f64 = 3.8;
 
 /// Margin on every side of a view, and a panel's padding (`view_padding`).
 pub const VIEW_PADDING: i8 = 12;
-
-/// A panel's margin: the view's padding at its sides (`panel_margin`).
-pub const PANEL_MARGIN: Margin = Margin::symmetric(VIEW_PADDING, 0);
 
 /// The space between items (`item_spacing`).
 pub const ITEM_SPACING: f32 = 8.0;

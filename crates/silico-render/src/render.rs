@@ -55,19 +55,21 @@ use silico_protocol::{
 /// A render's background: a flat light grey, sRGB. A frame's is the caller's
 /// ([`Frame::background`]).
 pub const BACKGROUND: [u8; 3] = [230, 233, 237];
-/// Fusion's default appearance (steel, satin), sRGB.
+/// A render's bodies: Fusion's default appearance (steel, satin), sRGB ([`Look::RENDER`]).
 pub const BODY: [u8; 3] = [170, 175, 182];
-/// Edges, sRGB.
+/// A render's edges, sRGB ([`Look::RENDER`]).
 pub const EDGE: [u8; 3] = [40, 40, 40];
 /// Fusion's selection blue, sRGB.
 pub const HIGHLIGHT: [u8; 3] = [6, 150, 215];
 /// How much of the highlight's blue a highlighted face is tinted with.
 pub const HIGHLIGHT_STRENGTH: f32 = 0.5;
-/// Edges' widths in points (pixels, for the worker): every edge, dark and solid, and a
-/// highlighted one.
+/// A render's edges' widths in points (pixels, for the worker): every edge, dark and solid
+/// ([`Look::RENDER`]), and a highlighted one, drawn wider in the highlight's blue
+/// ([`Highlight::Baked`], a render's alone).
 pub const EDGE_WIDTH: f32 = 2.0;
 pub const HIGHLIGHTED_EDGE_WIDTH: f32 = 4.0;
-/// A highlighted face's outline, in points (pixels, for the worker).
+/// A render's outline about a highlighted element, in points (pixels, for the worker)
+/// ([`Look::RENDER`]).
 pub const OUTLINE_WIDTH: f32 = 1.5;
 /// The format of the target a view is composited into: the worker reads its image from the
 /// view's own target, so this is only the render context's.
@@ -685,9 +687,69 @@ impl std::fmt::Debug for Strips {
     }
 }
 
+/// How a renderer draws its bodies ([`Renderer::set_look`]): their colour, their edges'
+/// colour and width, and how far an outline reaches about what a frame highlights or hovers
+/// ([`Frame::highlights`], [`Frame::hovered`]), so a highlighted or hovered edge shows
+/// `edge_width + 2 · outline_reach` wide in its outline's colour, the outline covering its
+/// stroke. A renderer is made with [`Look::RENDER`], the render worker's: the agents' PNGs
+/// are a product of their own (docs/design/m4.6-render.md), drawn as M4.6 decided them. The
+/// app gives its theme's, the approved prototype's viewport (docs/design/m5-ui/DESIGN.md,
+/// *Viewport*). The bodies' colour is in each face's uploaded mesh, so it's the renderer's,
+/// set once, not a frame's.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Look {
+    /// Every body's colour, sRGB, before its light.
+    pub body: [u8; 3],
+    /// Every edge's colour, sRGB.
+    pub edge: [u8; 3],
+    /// Every edge's width, in points (pixels, for the worker): drawn and picked so, and
+    /// moved toward the eye by the reach that draws its stroke whole ([`drawn_edge_fraction`]).
+    /// Above 0, at most [`MAX_LINE_WIDTH`].
+    pub edge_width: f32,
+    /// How far an outline reaches out from what it outlines, in points: re_renderer's
+    /// outline's one radius, a frame's highlights' and its hover's alike. From 0, at most
+    /// [`MAX_LINE_WIDTH`].
+    pub outline_reach: f32,
+}
+
+impl Look {
+    /// The render worker's look: [`BODY`], [`EDGE`] [`EDGE_WIDTH`] wide, and outlines
+    /// [`OUTLINE_WIDTH`] out.
+    pub const RENDER: Look = Look {
+        body: BODY,
+        edge: EDGE,
+        edge_width: EDGE_WIDTH,
+        outline_reach: OUTLINE_WIDTH,
+    };
+
+    /// Why a renderer can't draw with this look, if it can't: an edge's width not above 0,
+    /// or an outline's below 0, or either not a number or past [`MAX_LINE_WIDTH`].
+    pub fn check(&self) -> Result<(), InvalidParameter> {
+        let edge = self.edge_width;
+        if !(edge.is_finite() && edge > 0.0 && edge <= MAX_LINE_WIDTH) {
+            return Err(InvalidParameter {
+                parameter: "edge_width",
+                message: format!(
+                    "an edge's width {edge:?}, in points, must be above 0 and at most {MAX_LINE_WIDTH}"
+                ),
+            });
+        }
+        let outline = self.outline_reach;
+        if !(outline.is_finite() && (0.0..=MAX_LINE_WIDTH).contains(&outline)) {
+            return Err(InvalidParameter {
+                parameter: "outline_reach",
+                message: format!(
+                    "an outline's reach {outline:?}, in points, must be from 0 to {MAX_LINE_WIDTH}"
+                ),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// The colours a frame's outlines are drawn in, sRGB: its highlights' (a selection's) and
-/// its hover's. Both are drawn [`OUTLINE_WIDTH`] wide: re_renderer's outline has one radius
-/// for both its layers.
+/// its hover's. Both reach the renderer's [`Look::outline_reach`] out: re_renderer's
+/// outline has one radius for both its layers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Outlines {
     pub selected: [u8; 3],
@@ -881,6 +943,8 @@ pub struct Renderer {
     mixes: Mixes,
     /// The material the faces of a frame that dims the bodies are drawn with ([`Dimmed`]).
     dimmed: Dimmed,
+    /// How it draws the bodies, their edges, and the outlines ([`Renderer::set_look`]).
+    look: Look,
     /// How many of the next frames fail as the GPU fails one, once built: a stand-in for
     /// out of memory or a lost device, which lavapipe can't be made to give.
     #[cfg(test)]
@@ -963,9 +1027,32 @@ impl Renderer {
             plane_meshes: planes::Meshes::new(),
             mixes: Mixes::default(),
             dimmed: Dimmed::default(),
+            look: Look::RENDER,
             #[cfg(test)]
             fail_frames: 0,
         })
+    }
+
+    /// The renderer's frames (and renders) drawn with `look` from now on, if it passes
+    /// [`Look::check`]; else refused, naming its parameter, and the look as it was. Another
+    /// body colour drops every face's GPU mesh, which holds it, so each is uploaded again
+    /// the next time a frame draws it; the same colour uploads nothing.
+    pub fn set_look(&mut self, look: Look) -> Result<(), InvalidParameter> {
+        look.check()?;
+        if look.body != self.look.body {
+            // So too a mesh drawn in a body's place: its faces are made again, in the new
+            // colour, before its replacement's, as any of its faces with none.
+            for uploaded in self.bodies.values_mut().chain(self.outgoing.values_mut()) {
+                uploaded.drop_gpu_meshes();
+            }
+        }
+        self.look = look;
+        Ok(())
+    }
+
+    /// How it draws the bodies, their edges, and the outlines.
+    pub fn look(&self) -> Look {
+        self.look
     }
 
     /// How many face meshes it has uploaded since it was made: a face's, plain or in the
@@ -1240,7 +1327,11 @@ impl Renderer {
                             strip_fraction: if frame.edges {
                                 edge_fraction(view.height)
                             } else {
-                                drawn_edge_fraction(view.height, frame.pixels_per_point)
+                                drawn_edge_fraction(
+                                    view.height,
+                                    self.look.edge_width,
+                                    frame.pixels_per_point,
+                                )
                             },
                         },
                     );
@@ -1585,8 +1676,10 @@ impl Renderer {
             plane_meshes,
             mixes,
             dimmed,
+            look,
             ..
         } = self;
+        let look = *look;
         // The material a dimmed frame's faces are drawn with, made once for each dim.
         let dim_material = if dim < 1.0 {
             Some(dimmed.material(ctx, dim)?)
@@ -1598,13 +1691,16 @@ impl Renderer {
         let mut lines = LineDrawableBuilder::new(ctx);
         lines.enable_alpha_blending();
         // An edge's stroke reaches half its width past its line, so edges are placed by the
-        // frustum widened by it: a plain one's, and a highlighted one's (the wider).
+        // frustum widened by it: a plain one's, and the wider of it and a highlighted one's.
         let strokes = [
-            view.stroke_frustum(EDGE_WIDTH, pixels_per_point),
-            view.stroke_frustum(HIGHLIGHTED_EDGE_WIDTH, pixels_per_point),
+            view.stroke_frustum(look.edge_width, pixels_per_point),
+            view.stroke_frustum(
+                look.edge_width.max(HIGHLIGHTED_EDGE_WIDTH),
+                pixels_per_point,
+            ),
         ];
         // Every drawn edge toward the eye by one reach, its plain stroke's.
-        let reach = drawn_edge_fraction(view.height, pixels_per_point);
+        let reach = drawn_edge_fraction(view.height, look.edge_width, pixels_per_point);
         let plain = Lit::default();
         let mut shown = schedule(
             ctx,
@@ -1614,7 +1710,7 @@ impl Renderer {
                 waiting,
             },
             drawn,
-            &plain,
+            (&plain, look.body),
             view,
             &strokes[1],
             (&mut budget, uploads),
@@ -1646,7 +1742,7 @@ impl Renderer {
                 &mut lines,
                 number,
                 uploaded,
-                (lit, dim),
+                (lit, dim, &look),
                 view,
                 (&strokes, reach),
             );
@@ -1673,11 +1769,12 @@ impl Renderer {
         }) = picking
             && let Some(projector) = Projector::new(&view.camera, [view.width, view.height])
         {
-            let half = f64::from(EDGE_WIDTH) / 2.0 * f64::from(pixels_per_point);
+            let half = f64::from(look.edge_width) / 2.0 * f64::from(pixels_per_point);
             let near = Near::of(rect, half).sides(&projector);
             let mut strips = 0usize;
             for &(number, uploaded) in &drawn_by {
-                strips += edge_picks(&mut lines, number, uploaded, view, &near, &strokes[0]);
+                let stroke = (&strokes[0], look.edge_width);
+                strips += edge_picks(&mut lines, number, uploaded, view, &near, stroke);
             }
             tracing::debug!(strips, "edge picks");
         }
@@ -1718,7 +1815,7 @@ impl Renderer {
             projection_from_view: view.projection,
             pixels_per_point,
             outline_config: highlighted.then(|| OutlineConfig {
-                outline_radius_pixel: OUTLINE_WIDTH * pixels_per_point,
+                outline_radius_pixel: look.outline_reach * pixels_per_point,
                 color_layer_a: srgb(outlines.selected),
                 color_layer_b: srgb(outlines.hovered),
             }),
@@ -1852,12 +1949,13 @@ fn settle_seen(uploaded: &mut Uploaded, view: &View, lit: &Lit, stroke: &ViewReg
 /// view places made), the one in its place dropped, and a mesh waiting then made the one
 /// being made, the one just made drawn in its place; till then by the one in its place, if
 /// it has one, else by what's made of the one being made. Highlights (`drawn`'s, of each
-/// body's newest mesh) light only a newest mesh drawn; any other is drawn `plain`.
+/// body's newest mesh) light only a newest mesh drawn; any other is drawn `plain`. Each face
+/// is made in `colour`, the bodies' ([`Look::body`]).
 fn schedule<'a>(
     ctx: &RenderContext,
     held: Held<'a>,
     drawn: &[(u32, &'a Lit)],
-    plain: &'a Lit,
+    (plain, colour): (&'a Lit, [u8; 3]),
     view: &View,
     stroke: &ViewRegion,
     (budget, uploads): (&mut Budget, &mut u64),
@@ -1881,9 +1979,9 @@ fn schedule<'a>(
         settle_seen(own, view, lit, stroke);
         if let Some(before) = outgoing.get_mut(&number) {
             settle_seen(before, view, plain, stroke);
-            *uploads += before.make(ctx, number, plain, view, budget, Making::Unmade)?;
+            *uploads += before.make(ctx, number, (plain, colour), view, budget, Making::Unmade)?;
         }
-        *uploads += own.make(ctx, number, lit, view, budget, Making::Unmade)?;
+        *uploads += own.make(ctx, number, (lit, colour), view, budget, Making::Unmade)?;
         if own.left(lit).unmade > 0 {
             by.push(if outgoing.contains_key(&number) {
                 (By::Outgoing, plain)
@@ -1925,10 +2023,14 @@ fn schedule<'a>(
     }
     for shown in &mut shown {
         if shown.by == By::Own {
-            *uploads +=
-                shown
-                    .uploaded
-                    .make(ctx, shown.number, shown.lit, view, budget, Making::Earlier)?;
+            *uploads += shown.uploaded.make(
+                ctx,
+                shown.number,
+                (shown.lit, colour),
+                view,
+                budget,
+                Making::Earlier,
+            )?;
         }
     }
     Ok(shown)
@@ -3961,7 +4063,8 @@ fn edge_fraction(rows: u32) -> f64 {
 /// face beside it that rises toward the eye across it hides the part of its stroke nearer the
 /// eye than its line: at a concave edge both faces do, and at a fillet's tangent edge the flat
 /// face does. Moved by `R` pixels of the view's depth, a stroke `h` pixels from its line to
-/// its side ([`EDGE_WIDTH`]'s half, `h` = `pixels_per_point`) is drawn whole over a face rising
+/// its side (`width`'s half, in points, times `pixels_per_point`; [`EDGE_WIDTH`]'s, a render's,
+/// `h` = `pixels_per_point`) is drawn whole over a face rising
 /// by up to `g` pixels of depth a pixel where `g h < R`, and over a curved face's mesh, whose
 /// chords lie up to [`MESH_SAGITTA_PIXELS`] of depth nearer the eye than the surface its line
 /// lies on, where `g h + 1/2 < R`. So the least that draws it whole over a face turned up to
@@ -3972,15 +4075,9 @@ fn edge_fraction(rows: u32) -> f64 {
 /// point, 0.75, 37°; a flat face to 1, 45°), and over a steeper one to 2/`g` pixels of its
 /// line. Its cost is an edge's picking's: a wall less than `R` of depth thick in front of an
 /// edge doesn't hide it (0.239 mm in a view 100 mm high on 800 rows), and an edge going
-/// behind a face shows a stub where it's within `R` of it.
-fn drawn_edge_fraction(rows: u32, pixels_per_point: f32) -> f64 {
-    drawn_stroke_fraction(rows, EDGE_WIDTH, pixels_per_point)
-}
-
-/// [`drawn_edge_fraction`]'s rule for a stroke `width` points wide: a frame's line, drawn
-/// over a face it lies on or along an edge as an edge is, moved toward the eye by the reach
-/// that draws its stroke whole there, held to an edge's picking reach as an edge's is.
-fn drawn_stroke_fraction(rows: u32, width: f32, pixels_per_point: f32) -> f64 {
+/// behind a face shows a stub where it's within `R` of it. A frame's line, drawn over a face
+/// it lies on or along an edge as an edge is, is moved by the same rule for its own width.
+fn drawn_edge_fraction(rows: u32, width: f32, pixels_per_point: f32) -> f64 {
     let half = f64::from(width) / 2.0 * f64::from(pixels_per_point);
     let pixels = DRAWN_EDGE_SLOPE * half + MESH_SAGITTA_PIXELS;
     (pixels / f64::from(rows)).min(edge_fraction(rows))
@@ -4106,9 +4203,10 @@ fn srgb([r, g, b]: [u8; 3]) -> Rgba {
     Rgba::from_srgba_unmultiplied(r, g, b, 255)
 }
 
-/// What a frame draws its faces in beyond their own colour: its dim ([`Frame::dim`]), which
-/// a tinted face's mix and added colour take too ([`Frame::tinted`]), and the dim's
-/// material for the faces it dims and doesn't tint, if it dims.
+/// What a frame draws its faces' meshes in (each made in the bodies' colour, [`Look::body`],
+/// by [`schedule`]): its dim ([`Frame::dim`]), which a tinted face's mix and added colour
+/// take too ([`Frame::tinted`]); and the dim's material for the faces it dims and doesn't
+/// tint, if it dims.
 struct FaceLooks<'a> {
     dim: f32,
     material: Option<&'a GpuMaterial>,
@@ -4198,15 +4296,15 @@ fn darkened(colour: Color32, dim: f32) -> Color32 {
     ))
 }
 
-/// The body's colour as a vertex's, plain or tinted with the highlight: in linear light, half
-/// the body's and half the blue, then sRGB (an `Rgba`'s alpha must stay 1, or the
-/// conversion premultiplies in sRGB). re_renderer's light then shades it.
-fn vertex_colour(highlighted: bool) -> Rgba32Unmul {
+/// The body's colour `body` (sRGB) as a vertex's, plain or tinted with the highlight: in
+/// linear light, half the body's and half the blue, then sRGB (an `Rgba`'s alpha must stay
+/// 1, or the conversion premultiplies in sRGB). re_renderer's light then shades it.
+fn vertex_colour(body: [u8; 3], highlighted: bool) -> Rgba32Unmul {
     if !highlighted {
-        let [r, g, b] = BODY;
+        let [r, g, b] = body;
         return Rgba32Unmul::from_rgba_unmul_array([r, g, b, 255]);
     }
-    let (body, blue) = (srgb(BODY), srgb(HIGHLIGHT));
+    let (body, blue) = (srgb(body), srgb(HIGHLIGHT));
     let mix = |a: f32, b: f32| a * (1.0 - HIGHLIGHT_STRENGTH) + b * HIGHLIGHT_STRENGTH;
     let c = Color32::from(Rgba::from_rgb(
         mix(body.r(), blue.r()),
@@ -4552,7 +4650,7 @@ impl Uploaded {
         &mut self,
         ctx: &RenderContext,
         body: u32,
-        lit: &Lit,
+        (lit, colour): (&Lit, [u8; 3]),
         view: &View,
         budget: &mut Budget,
         making: Making,
@@ -4577,7 +4675,7 @@ impl Uploaded {
             let gpu = if vertices.triangles.is_empty() {
                 None
             } else {
-                let cpu = face_cpu_mesh(ctx, body, face.span, vertices, baked)?;
+                let cpu = face_cpu_mesh(ctx, body, face.span, vertices, (colour, baked))?;
                 let gpu = GpuMesh::new(ctx, &cpu).map_err(|e| format!("Face{number}: {e}"))?;
                 uploads += 1;
                 Some(Arc::new(gpu))
@@ -4727,7 +4825,7 @@ impl Mixes {
                     }],
                     triangle_indices: vec![glam::UVec3::new(0, 1, 2)],
                     vertex_positions: vec![glam::Vec3::ZERO, glam::Vec3::X, glam::Vec3::Y],
-                    vertex_colors: vec![vertex_colour(false); 3],
+                    vertex_colors: vec![Rgba32Unmul::WHITE; 3],
                     vertex_normals: vec![glam::Vec3::Z; 3],
                     vertex_texcoords: vec![glam::Vec2::ZERO; 3],
                     bbox: macaw::BoundingBox::from_points(
@@ -4847,21 +4945,22 @@ fn edges(
     lines: &mut LineDrawableBuilder<'_>,
     body: u32,
     uploaded: &Uploaded,
-    (lit, dim): (&Lit, f32),
+    (lit, dim, look): (&Lit, f32, &Look),
     view: &View,
     (strokes, reach): (&[ViewRegion; 2], f64),
 ) {
     let mut batch = edge_batch(lines, body, format!("Body{body}"));
+    let (plain, edge) = (look.edge_width, look.edge);
     for (number, points, bounds) in strip_edges(uploaded) {
         let highlighted = lit.edge(number);
         let hovered = outlined_as(false, lit.hovered_edge(number));
         let (width, colour, outline) = match (highlighted, lit.style) {
             (true, Highlight::Baked) => (HIGHLIGHTED_EDGE_WIDTH, HIGHLIGHT, hovered),
-            (true, Highlight::Outline) => (EDGE_WIDTH, EDGE, outlined_as(true, hovered.is_some())),
-            (false, _) => (EDGE_WIDTH, EDGE, hovered),
+            (true, Highlight::Outline) => (plain, edge, outlined_as(true, hovered.is_some())),
+            (false, _) => (plain, edge, hovered),
         };
         // By the frustum its stroke reaches the image from, not its line's alone.
-        let stroke = if width > EDGE_WIDTH {
+        let stroke = if width > plain {
             &strokes[1]
         } else {
             &strokes[0]
@@ -4883,7 +4982,7 @@ fn edges(
 /// strip whose box the frustum its stroke reaches the image from leaves out not placed, and
 /// one crossing a perspective view's pyramid cut to it), in the set's colour and width, at
 /// [`EDGE_DEPTH_OFFSET`]. Each point is moved toward the eye as a drawn edge's is, by the
-/// reach its own width takes ([`drawn_stroke_fraction`], [`View::strip_from_camera`]): a
+/// reach its own width takes ([`drawn_edge_fraction`], [`View::strip_from_camera`]): a
 /// stroke is drawn square to the view at its line's depth, so on a face not square to the
 /// view (a sketch on a face, seen from aside) or along a concave edge, a face rising toward
 /// the eye across it would hide half of it. Held to an edge's picking reach, as a drawn
@@ -4917,7 +5016,7 @@ fn lines_batch(
             .color(Color32::from_rgb(red, green, blue))
             .picking_instance_id(PickingLayerInstanceId(0));
     };
-    let reach = drawn_stroke_fraction(view.height, set.width, pixels_per_point);
+    let reach = drawn_edge_fraction(view.height, set.width, pixels_per_point);
     let put = |v: [f64; 3]| view.strip_from_camera(v, reach);
     set.strips
         .strips()
@@ -4928,7 +5027,8 @@ fn lines_batch(
 /// Body `body`'s edges of two points or more whose box lands `near` a frame's picking
 /// rectangle ([`NearSides::meets_box`]), each drawn again as a strip into the picking layer
 /// alone, in a batch of the body's: invisible (its colour and alpha 0, blended, so it draws
-/// nothing and writes no depth to the image; outlined by nothing), [`EDGE_WIDTH`] wide at
+/// nothing and writes no depth to the image; outlined by nothing), `width` wide (the
+/// renderer's [`Look::edge_width`], its drawn strip's) at
 /// [`EDGE_DEPTH_OFFSET`], its picking ID its drawn strip's (the body's number, and the edge's
 /// with [`EDGE_BIT`]); found, numbered, and placed as its drawn strip is ([`strip_edges`],
 /// [`add_edge_strips`]: by `stroke`, a frame's edges' frustum, whole or cut to a perspective
@@ -4944,7 +5044,7 @@ fn edge_picks(
     uploaded: &Uploaded,
     view: &View,
     near: &NearSides,
-    stroke: &ViewRegion,
+    (stroke, width): (&ViewRegion, f32),
 ) -> usize {
     let seen = uploaded
         .bounds
@@ -4962,7 +5062,7 @@ fn edge_picks(
         }
         let style = |strip: re_renderer::LineStripBuilder<'_, '_>| {
             strip
-                .radius(Size::new_ui_points(EDGE_WIDTH / 2.0))
+                .radius(Size::new_ui_points(width / 2.0))
                 .color(Color32::TRANSPARENT)
                 .picking_instance_id(edge_instance(number));
         };
@@ -5166,13 +5266,14 @@ fn face_material(ctx: &RenderContext, indices: u32, factor: Rgba) -> Material {
 }
 
 /// The face `span` of body `body` as a mesh of its own, of its `vertices` ([`face_vertices`],
-/// or [`cut_face_vertices`]), coloured plain or baked with the highlight's blue.
+/// or [`cut_face_vertices`]), coloured `colour` (sRGB), plain or baked with the highlight's
+/// blue.
 fn face_cpu_mesh(
     ctx: &RenderContext,
     body: u32,
     span: FaceSpan,
     vertices: FaceVertices,
-    baked: bool,
+    (colour, baked): ([u8; 3], bool),
 ) -> Result<CpuMesh, String> {
     let FaceVertices {
         positions,
@@ -5188,7 +5289,7 @@ fn face_cpu_mesh(
             Rgba::WHITE
         )],
         triangle_indices: triangles,
-        vertex_colors: vec![vertex_colour(baked); vertices],
+        vertex_colors: vec![vertex_colour(colour, baked); vertices],
         vertex_normals: normals,
         vertex_texcoords: vec![glam::Vec2::ZERO; vertices],
         bbox: macaw::BoundingBox::from_points(positions.iter().copied()),
@@ -5390,7 +5491,7 @@ mod tests {
 
     #[test]
     fn a_drawn_edges_reach_is_root_2_strokes_and_half_a_pixel_at_most_an_edges_picking_reach() {
-        use super::{VERTEX_REACH, drawn_edge_fraction, edge_fraction};
+        use super::{EDGE_WIDTH, VERTEX_REACH, drawn_edge_fraction, edge_fraction};
         // The stroke's half width is a point: at a pixel a point, √2 + 1/2 = 1.9142 pixels of
         // the view's height, 1.9142/800 of it at 800 rows (0.2393 mm in a view 100 mm high);
         // at half a pixel a point, √2/2 + 1/2 = 1.2071 pixels.
@@ -5402,7 +5503,7 @@ mod tests {
             (800, 1.06, f64::from(1.06f32) * r2 + 0.5),
         ] {
             let want = pixels / f64::from(rows);
-            let got = drawn_edge_fraction(rows, ppp);
+            let got = drawn_edge_fraction(rows, EDGE_WIDTH, ppp);
             assert!(
                 (got - want).abs() < 1e-15,
                 "{rows} {ppp}: {got} against {want}"
@@ -5412,13 +5513,17 @@ mod tests {
         // From √2 h + 1/2 = 2, h = 1.0607 pixels a point, an edge's picking reach holds it:
         // 2 pixels, 2/800 at 2 pixels a point and at the most a frame takes, 32.
         for ppp in [1.07, 2.0, 4.0, 32.0] {
-            assert_eq!(drawn_edge_fraction(800, ppp), edge_fraction(800), "{ppp}");
+            assert_eq!(
+                drawn_edge_fraction(800, EDGE_WIDTH, ppp),
+                edge_fraction(800),
+                "{ppp}"
+            );
         }
         // At 200 rows it's its own still; under 167 the picking reach is a vertex's 1.2%,
         // which holds this one too (1.9142/48 = 0.040 at 48 rows, and for a view of none).
-        assert!((drawn_edge_fraction(200, 1.0) - (r2 + 0.5) / 200.0).abs() < 1e-15);
-        assert_eq!(drawn_edge_fraction(48, 1.0), VERTEX_REACH);
-        assert_eq!(drawn_edge_fraction(0, 1.0), VERTEX_REACH);
+        assert!((drawn_edge_fraction(200, EDGE_WIDTH, 1.0) - (r2 + 0.5) / 200.0).abs() < 1e-15);
+        assert_eq!(drawn_edge_fraction(48, EDGE_WIDTH, 1.0), VERTEX_REACH);
+        assert_eq!(drawn_edge_fraction(0, EDGE_WIDTH, 1.0), VERTEX_REACH);
     }
 
     #[test]

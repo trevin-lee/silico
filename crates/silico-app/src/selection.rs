@@ -190,8 +190,11 @@ pub const CLICK_REDRAWN: &str =
 /// values for the renderer, which takes values, never the app's theme. A selected face and
 /// a hovered one are tinted, not outlined, as the prototype tints them
 /// ([`theme::VIEWPORT_SELECTION_TINT`], [`theme::VIEWPORT_HOVER_TINT`];
-/// `crate::renderer`'s frame preparation). SEAM: the prototype widens a selected edge; the
-/// renderer outlines both at one width (re_renderer's outline has one radius).
+/// `crate::renderer`'s frame preparation). An outlined edge is drawn
+/// [`theme::VIEWPORT_SELECTION_EDGE_WIDTH`] wide in its outline's colour, the outline's
+/// reach the renderer's look's (`crate::renderer::look`). SEAM: the prototype draws a hovered
+/// edge 3 wide; the renderer outlines both at one width (re_renderer's outline has one
+/// radius).
 pub fn outlines() -> Outlines {
     let rgb = |[r, g, b, _]: theme::Rgba8| [r, g, b];
     Outlines {

@@ -110,6 +110,86 @@ pub fn filter_keys(
     .collect()
 }
 
+/// Whether Revert to saved is on for `tab` (the File menu's, and the search's): with edits
+/// (its transaction), but not while the tab closes, whose close drops them already.
+fn revertible(tab: &Tab) -> bool {
+    tab.transaction && !tab.closing()
+}
+
+/// `f` given the toolbar's view of `tab` (`toolbar::Shown`), the tab shown if there is one:
+/// what the toolbar draws, and what the command search reads of its buttons.
+fn toolbar_shown<R>(tab: Option<&Tab>, f: impl FnOnce(&toolbar::Shown<'_>) -> R) -> R {
+    let can_open = |kind| tab.is_some_and(|tab| tab.can_create(kind));
+    let why_closed = |kind| tab.and_then(|tab| tab.why_closed(kind));
+    f(&toolbar::Shown {
+        in_sketch: tab.is_some_and(Tab::in_sketch),
+        create_sketch: Some(tab.is_some_and(Tab::can_sketch)),
+        picking: tab.is_some_and(|tab| tab.plane_pick.is_some()),
+        can_open: &can_open,
+        why_closed: &why_closed,
+        selected: tab.is_some_and(Tab::selection_clearable),
+        filter: tab.map_or_else(crate::selection::Filter::default, |tab| {
+            tab.selection().filter
+        }),
+        tool: tab
+            .and_then(|tab| tab.sketch.as_ref())
+            .and_then(|mode| mode.tools.choice()),
+        construction: tab
+            .and_then(|tab| tab.sketch.as_ref())
+            .is_some_and(|mode| mode.settings.construction),
+    })
+}
+
+/// What a click on the toolbar asked (`act`), done to `tab`, as the toolbar's button or the
+/// command search, which runs the same buttons, asks it. Whether the frame after is to be
+/// asked for.
+fn toolbar_act<P: Clients + 'static>(
+    tab: &mut Tab,
+    sessions: &Arc<Sessions<P>>,
+    remembered: &crate::dialog::Remembered,
+    act: toolbar::Act,
+) -> bool {
+    match act {
+        toolbar::Act::Dialog(kind) => {
+            tab.open_dialog(sessions, kind, remembered);
+            true
+        }
+        toolbar::Act::ClearSelection => {
+            tab.selection_mut().clear();
+            false
+        }
+        toolbar::Act::Filter(kind) => {
+            let selection = tab.selection_mut();
+            selection.filter = kind.toggled(selection.filter);
+            false
+        }
+        toolbar::Act::AllFilters => {
+            tab.selection_mut().filter = crate::selection::Filter::default();
+            false
+        }
+        toolbar::Act::CreateSketch => {
+            tab.begin_plane_pick();
+            true
+        }
+        toolbar::Act::FinishSketch => {
+            tab.finish_sketch(sessions, true);
+            true
+        }
+        toolbar::Act::SketchTool(choice) => {
+            tab.sketch_toggle(choice);
+            false
+        }
+        toolbar::Act::Construction => {
+            tab.sketch_construction(sessions);
+            true
+        }
+        toolbar::Act::Relate(relation) => {
+            tab.sketch_relate(sessions, relation);
+            true
+        }
+    }
+}
+
 /// Whether Save is on for `tab` (the app bar's Save, its keys, and the search's): off while a
 /// dialog or a sketch is open, its OK or Finish, or its Cancel, ending its edits first; on
 /// for an untitled part with no edits too, its first save writing it, but not while it
@@ -226,7 +306,7 @@ const SKETCH_BAR_FROM_SIDE: f32 = SKETCH_BAR_FROM_TOP;
 const SKETCH_BAR_FROM_RIGHT: f32 = theme::BANNER_MARGIN_RIGHT;
 const PALETTE_MARGIN: f32 = 12.0;
 const PALETTE_FROM_CORNER: egui::Vec2 =
-    egui::Vec2::new(-PALETTE_MARGIN - sketch::style::SKETCH_PALETTE_WIDTH, 118.0);
+    egui::Vec2::new(-PALETTE_MARGIN - theme::SKETCH_PALETTE_WIDTH, 118.0);
 
 /// Where the sketch bar showing `bar` stands over `canvas`, its top left, and the most it may
 /// be wide ([`sketch_bar_room`], [`sketch_bar_left`]), from its widths laid out in the
@@ -286,8 +366,8 @@ fn sketch_inset(
             (canvas.right() - palette.left()) + (canvas.right() - palette.right()),
         ),
         _ => (
-            2.0 * SKETCH_BAR_FROM_TOP + sketch::style::SKETCH_BAR_HEIGHT,
-            2.0 * PALETTE_MARGIN + sketch::style::SKETCH_PALETTE_WIDTH,
+            2.0 * SKETCH_BAR_FROM_TOP + theme::SKETCH_BAR_HEIGHT,
+            2.0 * PALETTE_MARGIN + theme::SKETCH_PALETTE_WIDTH,
         ),
     };
     // Up to a whole pixel, so a band covers its panel; a few hundred at most, and the cast
@@ -2412,6 +2492,7 @@ impl<P: Clients + 'static> App<P> {
             Command::New | Command::Open | Command::Search | Command::Shortcuts => row(Can::Run),
             Command::Save => row(on(save_offered(tab))),
             Command::SaveAs => row(on(self.save_as_offered())),
+            Command::Revert => row(on(revertible(tab))),
             // Ctrl+W and File's Close close the tab shown, whatever it holds, asking first
             // if it holds edits.
             Command::Close => row(Can::Run),
@@ -2454,6 +2535,27 @@ impl<P: Clients + 'static> App<P> {
             }
             Command::ClearSelection => row(on(tab.select_shown() && tab.selection_clearable())),
             Command::Hide => row(on(tab.hideable().is_some())),
+            // The toolbar's buttons with no keys, on or off as the toolbar draws them, off
+            // with their tooltips' reasons (not built yet, or what the part lacks).
+            Command::CreateSketch
+            | Command::Pad
+            | Command::Pocket
+            | Command::Revolve
+            | Command::Groove
+            | Command::Fillet
+            | Command::Chamfer
+            | Command::Union
+            | Command::Subtract
+            | Command::Intersect
+            | Command::Measure
+            | Command::Extend
+            | Command::Split => row(
+                match toolbar_shown(Some(tab), |shown| toolbar::searched(command, shown)) {
+                    Some(Ok(_)) => Can::Run,
+                    Some(Err(why)) => Can::Off(why.map(str::to_owned)),
+                    None => Can::Off(None),
+                },
+            ),
             // The SKETCH tab's, while a sketch is open.
             Command::Line
             | Command::Rectangle
@@ -2468,6 +2570,7 @@ impl<P: Clients + 'static> App<P> {
             Command::Orbit
             | Command::Pan
             | Command::Zoom
+            | Command::SelectOther
             | Command::Ok
             | Command::Cancel
             | Command::NoRelations => row(Can::Off(None)),
@@ -2491,6 +2594,7 @@ impl<P: Clients + 'static> App<P> {
             .filter(|_| !self.start_shown())
             .and_then(|at| self.tabs.get_mut(at));
         let sessions = &self.sessions;
+        let remembered = &self.remembered;
         // A feature menu's item for the feature selected, as its menu does it.
         let menu_item = |tab: &mut Tab, item: Item, place: Place| {
             let act = tab
@@ -2513,6 +2617,33 @@ impl<P: Clients + 'static> App<P> {
             Command::ClearSelection => {
                 if let Some(tab) = shown {
                     tab.selection_mut().clear();
+                }
+            }
+            // The File menu's Revert to saved.
+            Command::Revert => {
+                if let Some(tab) = shown.filter(|tab| revertible(tab)) {
+                    tab.revert(sessions, false);
+                }
+            }
+            // The toolbar's buttons with no keys, as a click on the button does it, if it's on.
+            Command::CreateSketch
+            | Command::Pad
+            | Command::Pocket
+            | Command::Revolve
+            | Command::Groove
+            | Command::Fillet
+            | Command::Chamfer
+            | Command::Union
+            | Command::Subtract
+            | Command::Intersect
+            | Command::Measure
+            | Command::Extend
+            | Command::Split => {
+                if let Some(tab) = shown
+                    && let Some(Ok(act)) =
+                        toolbar_shown(Some(tab), |shown| toolbar::searched(command, shown))
+                {
+                    toolbar_act(tab, sessions, remembered, act);
                 }
             }
             // The status bar's errors.
@@ -2580,6 +2711,7 @@ impl<P: Clients + 'static> App<P> {
             Command::Orbit
             | Command::Pan
             | Command::Zoom
+            | Command::SelectOther
             | Command::Ok
             | Command::Cancel
             | Command::NoRelations => {
@@ -3066,19 +3198,14 @@ impl<P: Clients + 'static> App<P> {
         }
     }
 
-    /// The File menu's items: New, Open…, Save As…, Export…, Revert, Reload, and Close.
+    /// The File menu's items: New, Open…, Save As…, Export…, Revert to saved, Reload, and
+    /// Close.
     fn file_menu(&mut self, ui: &mut Ui, next_frame: &mut bool) {
         let open = !self.tabs.is_empty();
-        let transaction = self
+        let revertible = self
             .active_place()
             .and_then(|at| self.tabs.get(at))
-            .is_some_and(|tab| tab.transaction);
-        // Revert is off while the tab closes: its close drops the edits already.
-        let revertible = transaction
-            && self
-                .active_place()
-                .and_then(|at| self.tabs.get(at))
-                .is_some_and(|tab| !tab.closing());
+            .is_some_and(revertible);
         // New asks nothing: an untitled part at once.
         if ui.button("New").clicked() {
             self.new_part();
@@ -3116,7 +3243,7 @@ impl<P: Clients + 'static> App<P> {
             ui.close();
         }
         if ui
-            .add_enabled(revertible, egui::Button::new("Revert"))
+            .add_enabled(revertible, egui::Button::new(Command::Revert.label()))
             .clicked()
         {
             if let Some(tab) = self.active_place().and_then(|at| self.tabs.get_mut(at)) {
@@ -3236,65 +3363,9 @@ impl<P: Clients + 'static> App<P> {
         let mut tab = self
             .active
             .and_then(|active| self.tabs.iter_mut().find(|tab| tab.id == active));
-        let act = {
-            let shown = tab.as_deref();
-            let can_open = |kind| shown.is_some_and(|tab| tab.can_create(kind));
-            let why_closed = |kind| shown.and_then(|tab| tab.why_closed(kind));
-            toolbar::show(
-                ui,
-                &toolbar::Shown {
-                    in_sketch: shown.is_some_and(Tab::in_sketch),
-                    create_sketch: Some(shown.is_some_and(Tab::can_sketch)),
-                    picking: shown.is_some_and(|tab| tab.plane_pick.is_some()),
-                    can_open: &can_open,
-                    why_closed: &why_closed,
-                    selected: shown.is_some_and(Tab::selection_clearable),
-                    filter: shown.map_or_else(crate::selection::Filter::default, |tab| {
-                        tab.selection().filter
-                    }),
-                    tool: shown
-                        .and_then(|tab| tab.sketch.as_ref())
-                        .and_then(|mode| mode.tools.choice()),
-                    construction: shown
-                        .and_then(|tab| tab.sketch.as_ref())
-                        .is_some_and(|mode| mode.settings.construction),
-                },
-            )
-        };
-        let Some(tab) = tab.as_mut() else {
-            return;
-        };
-        match act {
-            Some(toolbar::Act::Dialog(kind)) => {
-                tab.open_dialog(&self.sessions, kind, &self.remembered);
-                *next_frame = true;
-            }
-            Some(toolbar::Act::ClearSelection) => tab.selection_mut().clear(),
-            Some(toolbar::Act::Filter(kind)) => {
-                let selection = tab.selection_mut();
-                selection.filter = kind.toggled(selection.filter);
-            }
-            Some(toolbar::Act::AllFilters) => {
-                tab.selection_mut().filter = crate::selection::Filter::default();
-            }
-            Some(toolbar::Act::CreateSketch) => {
-                tab.begin_plane_pick();
-                *next_frame = true;
-            }
-            Some(toolbar::Act::FinishSketch) => {
-                tab.finish_sketch(&self.sessions, true);
-                *next_frame = true;
-            }
-            Some(toolbar::Act::SketchTool(choice)) => tab.sketch_toggle(choice),
-            Some(toolbar::Act::Construction) => {
-                tab.sketch_construction(&self.sessions);
-                *next_frame = true;
-            }
-            Some(toolbar::Act::Relate(relation)) => {
-                tab.sketch_relate(&self.sessions, relation);
-                *next_frame = true;
-            }
-            None => {}
+        let act = toolbar_shown(tab.as_deref(), |shown| toolbar::show(ui, shown));
+        if let (Some(tab), Some(act)) = (tab.as_mut(), act) {
+            *next_frame |= toolbar_act(tab, &self.sessions, &self.remembered, act);
         }
     }
 

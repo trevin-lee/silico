@@ -458,6 +458,41 @@ mod tests {
         assert_eq!((one.changes, one.features), (1, 1));
     }
 
+    #[test]
+    fn the_list_says_one_more_change_and_one_feature_in_the_singular() {
+        // LISTED + 1 changes, all of one feature: one past the list, "change" and "feature"
+        // each in the singular (by hand: 9 − 8 = 1).
+        let of_block = |count: usize| -> Vec<Change> {
+            (0..count)
+                .map(|n| {
+                    change(
+                        "b0000001",
+                        "Block",
+                        Some(&format!("f{n}")),
+                        number("1"),
+                        number("2"),
+                    )
+                })
+                .collect()
+        };
+        let listed_nine = listed(&of_block(LISTED + 1));
+        assert_eq!(listed_nine.rows.len(), LISTED);
+        assert_eq!((listed_nine.changes, listed_nine.features), (9, 1));
+        assert_eq!(
+            listed_nine.more.as_deref(),
+            Some("and 1 more change: 1 feature changed in all")
+        );
+        // Two past it, still one feature: the changes plural, the feature not.
+        let listed_ten = listed(&of_block(LISTED + 2));
+        assert_eq!((listed_ten.changes, listed_ten.features), (10, 1));
+        assert_eq!(
+            listed_ten.more.as_deref(),
+            Some("and 2 more changes: 1 feature changed in all")
+        );
+        // Exactly LISTED: none more.
+        assert_eq!(listed(&of_block(LISTED)).more, None);
+    }
+
     fn listed_one() -> Listed {
         listed(&[change(
             "b0000001",
