@@ -7,6 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::BTreeSet;
+use std::io::Write as _;
 use std::path::PathBuf;
 
 use silico_core::command::wire::{Layout, ToWire, write as wire};
@@ -1194,21 +1195,27 @@ fn a_long_skip_copies_list_or_chain_is_checked_promptly() {
 /// the second check took 3.2 to 3.4 s alone on an Intel Xeon 6975P-C or 6973P-C, 5.3 s
 /// alone on an AMD EPYC 7763, and 9.6 s there with three more beside it on its four vCPUs,
 /// where the probe's CPU grew alike. Over the probe, every reading was 11.7 to 25.7 times
-/// it, alone or four at once, on every CPU. The chain checked by a list of it searched for
-/// each original, the square this guards against, took 22 s of CPU on the CI VM where
-/// its roots take 2 s: about 140 times the probe. Bounded at 60, near the middle of the two,
-/// 2.3 times from each.
-const PROBE_TIMES: f64 = 60.0;
+/// it, alone or four at once, on every CPU, and 13.5 to 26.9 on the CI VM. The square this
+/// guards against, the chain checked by a list of it searched for each original, read 71
+/// to 78 times on the CI VM, and a walk of it for each original never finished. Bounded at
+/// 44, near the middle of the worst honest reading and the square's, 1.6 times from each.
+const PROBE_TIMES: f64 = 44.0;
 
 /// `f`'s result, if its thread's CPU is under [`PROBE_TIMES`] the probe's (the slower of a
-/// reading before `f` and one after, as #292's chain of booleans takes it). A hang fails
-/// at ten times that bound of wall time.
+/// reading before `f` and one after, as #292's chain of booleans takes it), its reading
+/// said on stderr either way. A hang fails at ten times the bound by the reading before
+/// `f`, of wall time.
 fn within_probes<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
     let before = cpu_work::cost();
     let (out, spent) = spending(before.mul_f64(PROBE_TIMES * 10.0), f);
     let after = cpu_work::cost();
     let probe = before.max(after);
     let times = spent.as_secs_f64() / probe.as_secs_f64();
+    let _ = writeln!(
+        std::io::stderr(),
+        "took {spent:?} of CPU, {times:.2} times the probe's {probe:?} (before {before:?}, \
+         after {after:?})"
+    );
     assert!(
         times < PROBE_TIMES,
         "took {spent:?} of CPU, {times:.1} times the probe's {probe:?} (before {before:?}, \
