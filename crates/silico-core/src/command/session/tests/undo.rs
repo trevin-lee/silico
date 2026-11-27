@@ -528,6 +528,43 @@ fn past_its_bound_the_stack_drops_its_oldest_states_counted_by_hand_and_undo_sto
 }
 
 #[test]
+fn only_an_edit_that_passes_the_bound_says_so_in_the_sessions_logs_with_the_edits_it_put_out_of_reach()
+ {
+    // The six edits of the test above, bounded at 800 bytes: the first four drop nothing,
+    // and say nothing; the fifth (revision 6) puts two edits out of undo's reach, and the
+    // sixth (7) one more, each said once, at info, in the edit's own command.
+    keep_logs();
+    let f = opened_bounded(BOX, 800);
+    f.begin();
+    for length in 41..=46 {
+        f.set("k7f2qx3m", "length", &length.to_string());
+    }
+    let query = crate::command::logs::LogQuery {
+        level: crate::command::logs::LogLevel::Trace,
+        feature: None,
+        after: None,
+        limit: 1000,
+    };
+    let logs = f.sessions.read_logs(&f.id, &query).result.unwrap();
+    let said: Vec<_> = logs
+        .events
+        .into_iter()
+        .filter(|event| event.message.starts_with("the undo stack"))
+        .map(|event| (event.level, event.spans, event.message))
+        .collect();
+    let passed = |revision: u64, dropped: usize| {
+        (
+            crate::command::logs::LogLevel::Info,
+            vec!["set_field".to_owned()],
+            format!(
+                "the undo stack passed its bound: its oldest edits are out of undo's reach session=s1 revision={revision} dropped={dropped}"
+            ),
+        )
+    };
+    assert_eq!(said, [passed(6, 2), passed(7, 1)]);
+}
+
+#[test]
 fn status_counts_the_bounds_drop_by_hand_as_the_stack_holds_it() {
     // As the bound test above: 800 holds three states beside `begin`'s file. `status` gives
     // each count as the stack keeps it (the design's section 6), and the wire writes them.

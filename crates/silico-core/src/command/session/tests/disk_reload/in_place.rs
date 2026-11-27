@@ -1032,16 +1032,6 @@ impl Watched {
     }
 }
 
-/// The process's subscriber the core's log layer alone, so each session's logs are kept: for
-/// a test alone in its process (nextest runs each test in its own).
-fn keep_logs() {
-    use tracing_subscriber::layer::SubscriberExt as _;
-    tracing::subscriber::set_global_default(
-        tracing_subscriber::registry().with(crate::command::logs::layer()),
-    )
-    .unwrap();
-}
-
 #[test]
 fn settled_bytes_refused_through_a_link_then_found_in_a_third_sessions_file_are_refused_for_it() {
     // Then the path linked to a third session's file with the same bytes, no claim changed

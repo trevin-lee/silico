@@ -22,6 +22,16 @@ const BOX: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"
 const SPHERE: &str = r#"{"silico": 1, "units": {"length": "mm", "resolution": "1nm"}, "naming": 5, "features": [{"id": "a91cw0de", "type": "sphere", "v": 1, "name": "Ball", "position": [0, 0, 0], "radius": 5}]}"#;
 const WAIT: Duration = Duration::from_secs(60);
 
+/// The process's subscriber the core's log layer alone, so each session's logs are kept: for
+/// a test alone in its process (nextest runs each test in its own).
+fn keep_logs() {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::registry().with(crate::command::logs::layer()),
+    )
+    .unwrap();
+}
+
 /// The stop of a command no one cancels: as a queued command's work is handed its own.
 fn probe() -> Arc<Ticket> {
     Ticket::new(SessionCommand::Text)
@@ -3048,6 +3058,77 @@ fn session_threads_that_ended_are_joined_as_the_next_opens() {
     f.sessions.open(&other, false).wait().session.unwrap();
     // The three ended, joined as the next opens: s1's thread and the new one's.
     assert_eq!(book().threads.running.len(), 2);
+}
+
+#[test]
+fn the_claims_count_each_file_that_changes_hands_and_never_a_claim_made_again_of_what_is_held() {
+    // `Book::claims`, which a refused reload waits on to be tried again: one more for a
+    // file or a path claimed anew, a claim moved to a new file at the path, and a session's
+    // files or paths let go; none for a claim made again of what's held, or a release of a
+    // session that holds nothing. Driven step by step on the registry for two sessions no
+    // thread serves, so no session's own end releases anything between the steps.
+    let f = opened(BOX);
+    let registry = &f.sessions.registry;
+    let claims = || lock(&registry.book).claims;
+    let (b, c) = (SessionId(90), SessionId(91));
+    let path = f.path.with_file_name("b.silico");
+    let renamed_over = |text: &str| {
+        let written = f.path.with_file_name("b.tmp");
+        std::fs::write(&written, text).unwrap();
+        std::fs::rename(&written, &path).unwrap();
+    };
+    let file_there = || std::fs::File::open(&path).unwrap();
+    let held_by_b = || {
+        let book = lock(&registry.book);
+        let files = book.files.values().filter(|(h, _)| *h == b).count();
+        let paths = book.paths.values().filter(|h| **h == b).count();
+        (files, paths)
+    };
+    renamed_over(BOX);
+    let start = claims();
+    // Its file and path, claimed anew.
+    assert!(claim(registry, file_there(), &path, &path, b).is_ok());
+    assert_eq!((claims(), held_by_b()), (start + 1, (1, 1)));
+    // The same file at the same path, claimed again: nothing changed hands.
+    assert!(claim(registry, file_there(), &path, &path, b).is_ok());
+    assert_eq!((claims(), held_by_b()), (start + 1, (1, 1)));
+    // A new file put at its path (a reload's), claimed: the one before let go.
+    renamed_over(SPHERE);
+    assert!(claim(registry, file_there(), &path, &path, b).is_ok());
+    assert_eq!((claims(), held_by_b()), (start + 2, (1, 1)));
+    // Its own save's new file at the path, reclaimed: the one before let go.
+    renamed_over(BOX);
+    reclaim(&Arc::downgrade(registry), b, &path);
+    assert_eq!((claims(), held_by_b()), (start + 3, (1, 1)));
+    // Reclaimed again, the same file: nothing changed hands.
+    reclaim(&Arc::downgrade(registry), b, &path);
+    assert_eq!((claims(), held_by_b()), (start + 3, (1, 1)));
+    // The same file by a second name (a hard link), claimed there too: a path claimed anew.
+    let linked = f.path.with_file_name("b-link.silico");
+    std::fs::hard_link(&path, &linked).unwrap();
+    assert!(claim(registry, file_there(), &linked, &linked, b).is_ok());
+    assert_eq!((claims(), held_by_b()), (start + 4, (1, 2)));
+    // A session that holds nothing, released: nothing let go.
+    lock(&registry.book).release(c);
+    assert_eq!((claims(), held_by_b()), (start + 4, (1, 2)));
+    // Released: its file and its paths let go, once.
+    lock(&registry.book).release(b);
+    assert_eq!((claims(), held_by_b()), (start + 5, (0, 0)));
+    lock(&registry.book).release(b);
+    assert_eq!((claims(), held_by_b()), (start + 5, (0, 0)));
+    // A session holding a path alone (a Save As whose file couldn't be claimed), released:
+    // the path let go.
+    lock(&registry.book)
+        .paths
+        .insert(f.path.with_file_name("c.silico"), c);
+    lock(&registry.book).release(c);
+    assert_eq!(claims(), start + 6);
+    assert!(
+        lock(&registry.book)
+            .paths
+            .values()
+            .all(|holder| *holder != c)
+    );
 }
 
 #[test]

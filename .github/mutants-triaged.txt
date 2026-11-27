@@ -776,3 +776,13 @@ crates/silico-core/src/command/pattern.rs | anchor | replace > with >= | #603
 crates/silico-core/src/command/pattern.rs | anchor | replace && with || | #603
 crates/silico-oracle/src/features.rs | part_design | replace < with <= | #600
 crates/silico-render/src/render.rs | edges | replace > with >= | #613
+# Unreachable (#618). `not_held`'s `[] => "none"` arm: its one caller, `Held::text_at`,
+# passes `held_revisions`, which always holds the session's current revision, so the list
+# is never empty. `unsolved`'s `Some([first, ..])` arm: `sketch` reaches `unsolved` only for
+# an unsuppressed sketch the model holds no diagnosis of, and the rebuild enters one for
+# every such sketch (each is keyed in its plan and solved, or its solver's failure kept as
+# a diagnosis that's an error; a sketch uses no feature, so it's never blocked short of its
+# solve), so only a bug in the rebuild leaves one out, and the mutant changes only which
+# error that bug's read words.
+crates/silico-core/src/command/session/revisions.rs | not_held | delete match arm [] | #618
+crates/silico-core/src/command/sketch.rs | unsolved | delete match arm Some([first, ..]) | #618
