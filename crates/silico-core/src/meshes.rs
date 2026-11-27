@@ -64,6 +64,7 @@ fn mesh_bytes(mesh: &Mesh) -> u64 {
         n(&mesh.face_triangles),
         n(&mesh.edge_points),
         n(&mesh.edge_point_counts),
+        n(&mesh.vertex_points),
     ]
     .into_iter()
     .fold(0u64, u64::saturating_add)
@@ -305,17 +306,20 @@ mod tests {
         f64::from_bits(u64::try_from(k + 1023).unwrap() << 52)
     }
 
-    /// A mesh of `triangles` triangles on three positions, its size by hand:
-    /// 3 × (24 + 12) + 12t + 4.
+    /// A mesh of `triangles` triangles on three positions, with an edge of two points and
+    /// three vertices (so its vertices' points and its edges' aren't the same size), its size
+    /// by hand: 3 × (24 + 12) for the positions and normals, 12t for the triangles, 4 for the
+    /// face's count, 2 × 24 + 4 for the edge's points and count, and 3 × 24 for the vertices'
+    /// points.
     fn mesh(triangles: usize) -> Mesh {
         Mesh {
             positions: vec![[0.0; 3]; 3],
             normals: vec![[0.0, 0.0, 1.0]; 3],
             triangles: vec![[0, 1, 2]; triangles],
             face_triangles: vec![u32::try_from(triangles).unwrap()],
-            edge_points: vec![],
-            edge_point_counts: vec![],
-            vertex_points: vec![],
+            edge_points: vec![[0.0; 3], [1.0, 0.0, 0.0]],
+            edge_point_counts: vec![2],
+            vertex_points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             valid: None,
         }
     }
@@ -362,7 +366,7 @@ mod tests {
         assert_eq!(cache.get(&1, 0.25).as_deref(), Some(&mesh(2)));
         assert!(cache.get(&1, 0.5).is_none());
         assert!(cache.get(&2, 0.25).is_none());
-        assert_eq!(cache.bytes(), 3 * 36 + 2 * 12 + 4);
+        assert_eq!(cache.bytes(), 3 * 36 + 2 * 12 + 4 + (2 * 24 + 4) + 3 * 24);
         assert_eq!(cache.bytes(), mesh_bytes(&mesh(2)));
     }
 
@@ -384,7 +388,7 @@ mod tests {
 
     #[test]
     fn past_its_bound_the_least_recently_used_mesh_is_dropped() {
-        // Room for three 136-byte meshes.
+        // Room for three 248-byte meshes (108 + 12 + 4 + 52 + 72).
         let size = mesh_bytes(&mesh(1));
         let cache = MeshCache::new(3 * size);
         for key in 1u32..=3 {
@@ -441,6 +445,32 @@ mod tests {
         none.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
         assert_eq!(none.deflection_for(&1, 1e-9), 1e-9);
         assert_eq!(MESH_FLOORS_KEPT, 65_536);
+    }
+
+    #[test]
+    fn a_level_known_by_a_floor_or_a_mesh_made_as_asked_uses_it_again() {
+        // Room for two of each. Steps 1 and 2 meet their floors, step 1's first; a level
+        // known by step 1's makes it the more recent, so step 3's drops step 2's, not 1's.
+        let cache = MeshCache::with_floors(0, 2);
+        cache.put(&1u32, 1.0 / 128.0, at(0.0173, mesh(1)));
+        cache.put(&2, 1.0 / 128.0, at(0.0291, mesh(1)));
+        assert_eq!(cache.known(&1, 1e-9), Some(0.0173));
+        cache.put(&3, 1.0 / 128.0, at(0.0412, mesh(1)));
+        assert_eq!(cache.deflection_for(&2, 1e-9), 1e-9, "step 2's floor kept");
+        assert_eq!(
+            cache.deflection_for(&1, 1e-9),
+            0.0173,
+            "step 1's floor dropped"
+        );
+        // The same of meshes made as asked: steps 4 and 5 made at 2⁻², step 4's first; a
+        // level known by step 4's makes it the more recent, so step 6's drops step 5's.
+        let made = MeshCache::with_floors(0, 2);
+        made.put(&4u32, 0.25, at(0.25, mesh(1)));
+        made.put(&5, 0.25, at(0.25, mesh(1)));
+        assert_eq!(made.known(&4, 0.5), Some(0.5));
+        made.put(&6, 0.25, at(0.25, mesh(1)));
+        assert_eq!(made.known(&5, 0.25), None, "step 5's kept");
+        assert_eq!(made.known(&4, 0.25), Some(0.25), "step 4's dropped");
     }
 
     #[test]

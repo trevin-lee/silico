@@ -170,6 +170,7 @@ impl Present for Recorder {
                             ..hit
                         }),
                         edge: None,
+                        stale: false,
                     });
                 }
                 // silico-render's own check of the frame's values against the meshes held,
@@ -1124,6 +1125,7 @@ impl Present for LaggingPicks {
                     rect,
                     hit: None,
                     edge: None,
+                    stale: false,
                 },
             ));
         }
@@ -1762,6 +1764,77 @@ fn a_renderer_backing_off_has_the_pane_ask_for_each_frame_at_once_until_it_stops
         assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
     }
     backing_off.store(false, Ordering::SeqCst);
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
+    assert_eq!(never_waits::waits(), 0);
+}
+
+/// A [`Recorder`] whose renderer says its frames leave faces to make while `0` is set.
+struct Uploading(Recorder, Arc<AtomicBool>);
+
+impl Present for Uploading {
+    fn present(
+        &mut self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        changes: Vec<Change>,
+        frame: Option<FrameData>,
+    ) {
+        self.0.present(painter, rect, changes, frame);
+    }
+    fn picked(&mut self) -> Option<Picking> {
+        self.0.picked()
+    }
+    fn refused(&mut self) -> std::collections::BTreeSet<u32> {
+        self.0.refused()
+    }
+    fn uploading(&mut self) -> bool {
+        self.1.load(Ordering::SeqCst)
+    }
+}
+
+#[test]
+fn a_renderer_with_faces_left_to_make_has_the_pane_ask_for_each_frame_at_once_until_theyre_made() {
+    // A frame makes at most so many faces' meshes (silico-render's UPLOAD_BUDGET), the rest
+    // at the frames after: an idle pane, asking a frame each idle interval, would draw a
+    // large part's faces over seconds, or wait for the pointer. While the renderer has faces
+    // left to make, each frame asks for the next at once; once it hasn't, the frames are the
+    // idle ones again.
+    let f = fixture();
+    let record = Record::default();
+    let uploading = Arc::new(AtomicBool::new(false));
+    let present = Uploading(
+        Recorder(FakeRenderer(Arc::clone(&record))),
+        Arc::clone(&uploading),
+    );
+    let app = App::new(Arc::clone(&f.sessions)).presenting(Box::new(present));
+    let mut h = {
+        let _marked = never_waits::marked();
+        Harness::builder()
+            .with_size((1280.0, 800.0))
+            .build_ui_state(|ui, app: &mut App<Fake>| app.frame(ui), app)
+    };
+    apply_look(&h);
+    let path = f.file("boxes.silico", TWO_BOXES);
+    h.state_mut().open(&path, false);
+    meshes_settled(&mut h);
+    let idle = |delay: Option<Duration>| {
+        delay.is_some_and(|delay| {
+            delay > Duration::from_millis(100) && delay <= silico_app::app::IDLE_FRAME
+        })
+    };
+    for _ in 0..3 {
+        step(&mut h);
+    }
+    assert!(idle(repaint_delay(&h)), "{:?}", repaint_delay(&h));
+    uploading.store(true, Ordering::SeqCst);
+    for _ in 0..10 {
+        step(&mut h);
+        assert_eq!(repaint_delay(&h), Some(Duration::ZERO));
+    }
+    uploading.store(false, Ordering::SeqCst);
     for _ in 0..3 {
         step(&mut h);
     }

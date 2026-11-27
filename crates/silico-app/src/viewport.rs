@@ -1929,6 +1929,13 @@ impl Drawing {
             .is_some_and(|present| present.backing_off())
     }
 
+    /// Whether the renderer's last frame left faces to make ([`Present::uploading`]).
+    fn uploading(&mut self) -> bool {
+        self.present
+            .as_mut()
+            .is_some_and(|present| present.uploading())
+    }
+
     /// The changes that make the renderer hold `bodies` of session `session`'s tab (none for
     /// no tab): a body uploaded when its key or its deflection differs from what was
     /// uploaded for it, or it's another tab's; a body not among them forgotten. So each body
@@ -2191,6 +2198,11 @@ pub fn show<P: Clients + 'static>(
     if drawing.backing_off() {
         // The renderer counts its backoff in frames: asked for at once, it lasts a second
         // at most, not 64 idle frames.
+        ui.ctx().request_repaint();
+    }
+    if drawing.uploading() {
+        // A frame makes so many faces' meshes, the rest at the frames after: asked for at
+        // once, a part's faces are all drawn in a few frames, with no input.
         ui.ctx().request_repaint();
     }
     view.navigate(ui, &response, size_px);
@@ -4028,6 +4040,7 @@ mod tests {
             },
             hit: None,
             edge: None,
+            stale: false,
         }
     }
 

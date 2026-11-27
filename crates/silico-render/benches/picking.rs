@@ -46,6 +46,11 @@
 //! points, still and orbiting, with and without them, each run's frames and the CPU's
 //! placing by their medians.
 //!
+//! Last, the frames that make the faces' GPU meshes (section 10's check, `uploads`): ten
+//! copies as ten bodies, drawn first, one body's mesh replaced, and every body's, each line
+//! the frames it took until every face was made, their most CPU in `Renderer::prepare`, and
+//! the still frame's, by their medians over five runs.
+//!
 //! Recorded, never budgeted: it fails on no time. Run with
 //! `SILICO_KERNEL_WORKER=target/release/silico-kernel-worker SILICO_BENCH_BREP=part.brep
 //! pixi run cargo bench -p silico-render --bench picking`, the B-rep Silico's (as
@@ -62,7 +67,9 @@ use std::time::{Duration, Instant};
 
 use silico_core::kernel::{Blob, KernelWorker, ShapeData};
 use silico_protocol::{Camera, Mesh, Projection};
-use silico_render::render::{Element, Frame, Outlines, Pickable, PixelRect, Renderer, hits};
+use silico_render::render::{
+    Element, FACE_COST, Frame, Outlines, Pickable, PixelRect, Renderer, UPLOAD_BUDGET, hits,
+};
 use silico_render::worker::RenderAdapter;
 
 /// The frames timed in each run, after the frames that upload the part's faces.
@@ -247,6 +254,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     out += &cast(&mesh, extent, View::Crowd);
     out += &edge_batch(&mut renderer, &device, &queue, &mesh, extent, &mut serial)?;
     out += &sketch_lines(&mut renderer, &device, &queue, &mesh, &mut serial)?;
+    out += &uploads(&adapter, &device, &queue, &mesh, extent)?;
     std::io::stdout().write_all(out.as_bytes())?;
     Ok(())
 }
@@ -493,6 +501,173 @@ fn sketch_lines(
             ms(times[FRAMES / 2]),
             ms(times[FRAMES * 95 / 100]),
             ms(placing[FRAMES / 2]),
+        );
+    }
+    Ok(out)
+}
+
+/// The frames that make faces' GPU meshes (docs/design/m5.0-app.md section 10, *Picking*):
+/// ten copies of the part as ten bodies (as [`edge_batch`] lays them) in a 1920 by 1080
+/// perspective view of them all, picking each frame as the hover does, on a renderer of its
+/// own each run, so its first frame makes every face. Three cases: `first`, the ten bodies
+/// uploaded and drawn for the first time; `one_replaced`, one body's mesh replaced (the part
+/// moved a micrometre, so every face of it is made again); and `all_replaced`, every body's
+/// (an edit upstream of them all). Each case's frames run from the one after its uploads
+/// until a frame makes no more; each line gives, over the runs, the medians of how many
+/// frames that took, of their most CPU in `Renderer::prepare` (the UI thread's part of a
+/// frame), of their total, and of the frames' to the GPU's end, against the still frame's
+/// prepare (`still`, the view of the bodies made already).
+fn uploads(
+    adapter: &wgpu::Adapter,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    mesh: &Mesh,
+    extent: f64,
+) -> Result<String, Box<dyn Error>> {
+    const RUNS: usize = 5;
+    let (width, height) = (1920u32, 1080u32);
+    let nudged = |by: f64| {
+        let mut moved = mesh.clone();
+        for p in moved.positions.iter_mut().chain(&mut moved.edge_points) {
+            p[2] += by;
+        }
+        for p in &mut moved.vertex_points {
+            p[2] += by;
+        }
+        copies_of(&moved, 10, extent)
+    };
+    let (copies, once, twice) = (copies_of(mesh, 10, extent), nudged(1e-3), nudged(2e-3));
+    let bodies: Vec<u32> = (1..=10).collect();
+    let faces: usize = copies.iter().map(|c| c.face_triangles.len()).sum();
+    let triangles: usize = copies.iter().map(|c| c.triangles.len()).sum();
+    let (low, high) = copies.iter().map(|copy| bounds(copy)).fold(
+        ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]),
+        |(lo, hi), (l, h)| {
+            (
+                std::array::from_fn(|k| lo[k].min(l[k])),
+                std::array::from_fn(|k| hi[k].max(h[k])),
+            )
+        },
+    );
+    let target: [f64; 3] = std::array::from_fn(|k| (low[k] + high[k]) / 2.0);
+    let reach = (0..3)
+        .map(|k| (high[k] - low[k]) / 2.0)
+        .map(|h| h * h)
+        .sum::<f64>()
+        .sqrt();
+    let camera = orbit(target, reach, 0);
+    // Each case's runs: its frames, and their most prepare, total prepare, and total to the
+    // GPU's end; and the still frames' prepares.
+    let mut cases: [Vec<(usize, Duration, Duration, Duration)>; 3] = Default::default();
+    let mut still = Vec::new();
+    for _ in 0..RUNS {
+        let mut renderer = Renderer::new(
+            adapter,
+            device.clone(),
+            queue.clone(),
+            silico_render::render::OUTPUT_FORMAT,
+        )?;
+        let mut serial = 0u64;
+        // A frame: its prepare's time and its time to the GPU's end.
+        let mut frame = |renderer: &mut Renderer| {
+            serial += 1;
+            let started = Instant::now();
+            let commands = renderer
+                .prepare(&Frame {
+                    serial,
+                    camera: &camera,
+                    size_px: [width, height],
+                    pixels_per_point: 1.0,
+                    bodies: &bodies,
+                    highlights: &[],
+                    hovered: &[],
+                    outlines: Outlines::DEFAULT,
+                    tinted: &[],
+                    picking: Some(PixelRect {
+                        min: [
+                            i32::try_from(width / 2).unwrap_or(0),
+                            i32::try_from(height / 2).unwrap_or(0),
+                        ],
+                        size: [SQUARE, SQUARE],
+                    }),
+                    edges: true,
+                    vertices: None,
+                    background: None,
+                    lines: &[],
+                    planes: &[],
+                    dim: 1.0,
+                })
+                .map_err(|f| f.to_string())?;
+            let prepared = started.elapsed();
+            queue.submit([commands]);
+            device
+                .poll(wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: Some(Duration::from_secs(60)),
+                })
+                .map_err(|e| e.to_string())?;
+            renderer.take_picking();
+            Ok::<_, String>((prepared, started.elapsed()))
+        };
+        // The frames until the bodies are whole, as the pane asks for them while the
+        // renderer says it's uploading: how many, their most prepare and their total, and
+        // their total to the GPU's end.
+        let mut whole = |renderer: &mut Renderer| {
+            let (mut frames, mut most, mut total, mut done) =
+                (0usize, Duration::ZERO, Duration::ZERO, Duration::ZERO);
+            loop {
+                let (prepared, finished) = frame(renderer)?;
+                frames += 1;
+                most = most.max(prepared);
+                total += prepared;
+                done += finished;
+                if !renderer.uploading() || frames == 10_000 {
+                    break;
+                }
+            }
+            Ok::<_, String>((frames, most, total, done))
+        };
+        for (body, copy) in bodies.iter().zip(&copies) {
+            renderer.upload(*body, copy).map_err(|f| f.to_string())?;
+        }
+        cases[0].push(whole(&mut renderer)?);
+        renderer.upload(1, &once[0]).map_err(|f| f.to_string())?;
+        cases[1].push(whole(&mut renderer)?);
+        for (body, copy) in bodies.iter().zip(&twice) {
+            renderer.upload(*body, copy).map_err(|f| f.to_string())?;
+        }
+        cases[2].push(whole(&mut renderer)?);
+        for _ in 0..10 {
+            still.push(frame(&mut renderer)?.0);
+        }
+    }
+    still.sort();
+    let ms = |d: Duration| d.as_secs_f64() * 1e3;
+    let mut out = String::new();
+    for (name, mut runs) in ["first", "one_replaced", "all_replaced"]
+        .into_iter()
+        .zip(cases)
+    {
+        let median =
+            |runs: &mut Vec<(usize, Duration, Duration, Duration)>,
+             key: fn(&(usize, Duration, Duration, Duration)) -> Duration| {
+                runs.sort_by_key(key);
+                key(&runs[runs.len() / 2])
+            };
+        let frames = {
+            let mut counts: Vec<usize> = runs.iter().map(|r| r.0).collect();
+            counts.sort_unstable();
+            counts[counts.len() / 2]
+        };
+        let most = median(&mut runs, |r| r.1);
+        let total = median(&mut runs, |r| r.2);
+        let done = median(&mut runs, |r| r.3);
+        out += &format!(
+            "uploads copies 10 faces {faces} triangles {triangles} size {width}x{height} budget {UPLOAD_BUDGET} face_cost {FACE_COST} case {name} frames_median {frames} prepare_most_median_ms {:.2} prepare_total_median_ms {:.2} to_gpu_done_median_ms {:.2} still_prepare_median_ms {:.2}\n",
+            ms(most),
+            ms(total),
+            ms(done),
+            ms(still[still.len() / 2]),
         );
     }
     Ok(out)

@@ -10958,6 +10958,7 @@ impl silico_app::renderer::ViewRenderer for FakeRenderer {
             rect,
             hit,
             edge: told.edge,
+            stale: false,
         })
     }
 }
@@ -11440,6 +11441,7 @@ fn each_frame_gives_the_camera_its_size_scale_pointer_highlights_and_picking_a_f
             rect: rect_px,
             hit: Some(pick),
             edge: None,
+            stale: false,
         })
     );
     assert_eq!(record.lock().unwrap().frames.last().unwrap().picking, None);
@@ -62597,6 +62599,89 @@ fn the_port_draws_byte_for_byte_as_egui_kittests_renderer() {
                 assert!(a.as_raw().iter().any(|&v| v != 0));
                 assert_eq!(a.as_raw(), b.as_raw(), "{size:?} at {ppp}");
             }
+        },
+    );
+}
+
+#[test]
+fn the_renderer_tells_the_pane_while_its_frames_leave_faces_to_make() {
+    // The app's renderer is silico-render's on eframe's device: what it says of the faces
+    // left to make is the renderer's own. A sheet of 1,000 faces of 2 triangles each, at
+    // silico-render's budget (40,000 triangles, each face 2 and 100 more: 393 a frame),
+    // takes three frames: the first two leave faces, the third doesn't.
+    on_lavapipe(
+        "the_renderer_tells_the_pane_while_its_frames_leave_faces_to_make",
+        || {
+            use silico_app::renderer::{Frame, Outlines, Renderer, ViewRenderer};
+            let state = lavapipe_render_state();
+            let mut renderer = Renderer::new(
+                &state.adapter,
+                state.device.clone(),
+                state.queue.clone(),
+                state.target_format,
+            )
+            .expect("no renderer");
+            let mut mesh = silico_protocol::Mesh {
+                positions: Vec::new(),
+                normals: Vec::new(),
+                triangles: Vec::new(),
+                face_triangles: Vec::new(),
+                valid: None,
+                edge_points: Vec::new(),
+                edge_point_counts: Vec::new(),
+                vertex_points: Vec::new(),
+            };
+            for k in 0..1000u32 {
+                let (x, z) = (f64::from(k % 40), f64::from(k / 40));
+                let base = u32::try_from(mesh.positions.len()).unwrap();
+                mesh.positions.extend([
+                    [x, 0.0, z],
+                    [x + 1.0, 0.0, z],
+                    [x + 1.0, 0.0, z + 1.0],
+                    [x, 0.0, z + 1.0],
+                ]);
+                mesh.normals.extend([[0.0, -1.0, 0.0]; 4]);
+                mesh.triangles
+                    .extend([[base, base + 1, base + 2], [base, base + 2, base + 3]]);
+                mesh.face_triangles.push(2);
+            }
+            assert!(!ViewRenderer::uploading(&renderer));
+            ViewRenderer::upload(&mut renderer, 1, &Arc::new(mesh)).unwrap();
+            let camera = silico_protocol::Camera {
+                projection: silico_protocol::Projection::Orthographic { view_height: 40.0 },
+                eye: [20.0, -100.0, 12.5],
+                target: [20.0, 0.0, 12.5],
+                up: [0.0, 0.0, 1.0],
+            };
+            let mut said = Vec::new();
+            for serial in 1..=3 {
+                let commands = ViewRenderer::prepare(
+                    &mut renderer,
+                    &Frame {
+                        serial,
+                        camera: &camera,
+                        size_px: [64, 64],
+                        pixels_per_point: 1.0,
+                        bodies: &[1],
+                        highlights: &[],
+                        hovered: &[],
+                        outlines: Outlines::DEFAULT,
+                        tinted: &[],
+                        picking: None,
+                        edges: false,
+                        vertices: None,
+                        background: None,
+                        lines: &[],
+                        planes: &[],
+                        dim: 1.0,
+                    },
+                )
+                .unwrap();
+                state.queue.submit([commands]);
+                said.push(ViewRenderer::uploading(&renderer));
+            }
+            assert_eq!(said, [true, true, false]);
+            assert_eq!(renderer.uploads(), 1000);
         },
     );
 }

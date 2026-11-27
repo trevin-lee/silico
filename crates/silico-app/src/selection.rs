@@ -20,7 +20,9 @@
 //! release within egui's click distance is a click, and a click asks the renderer to pick
 //! under it, asking again each frame until an answer to a frame since the click comes (an
 //! egui pass that's discarded takes the request and paints nothing, and a renderer backing
-//! off makes none), a newer click supersedes it, the camera moves, or [`CLICK_FRAMES`] go
+//! off makes none; and an answer that passed over a body drawn otherwise than it is now,
+//! its mesh replaced and still drawn by the one before while the new one's faces are made,
+//! decides nothing), a newer click supersedes it, the camera moves, or [`CLICK_FRAMES`] go
 //! by. A hover asks again each frame the pointer moves to another pixel, but while a drag
 //! navigates; what it found is let go when the camera or the bodies change under it, and
 //! answers asked before that change are passed over. A pick takes an edge within
@@ -47,8 +49,10 @@
 //! mode claims the canvas ([`Selection::canvas_claimed`]), or the selection is cleared or
 //! set from elsewhere; and once no meshes are coming: their read refused
 //! ([`View::refused_of`]), or no model built. A read in flight that never answers is let go
-//! after [`CLICK_WAIT`], a backstop. Each let go the person didn't do is said, in its
-//! cause's words, never over what a rebuild left gone from the same model.
+//! after [`CLICK_WAIT`], a backstop; so is a click whose answers pass over a body the
+//! renderer still draws by its mesh before its newest ([`CLICK_UNDRAWN`]), frames it waits
+//! so uncounted. Each let go the person didn't do is said, in its cause's words, never over
+//! what a rebuild left gone from the same model.
 //!
 //! A click acts on what was on the screen when it was made (#568). One on the bodies of
 //! the selection's model is picked on that table of them ([`View::table`]) or not at all:
@@ -142,19 +146,27 @@ pub(crate) fn no_face(_: &View, _: &ViewFrame, _: [u32; 2]) -> Cast {
 /// How many frames a click waits for its pick's answer, asking again each frame: past
 /// this (a second at 60 Hz: a renderer that answers none, or none installed), it's let go,
 /// so the frames asked for while it waits stop. A frame is the unit: each frame drawn is
-/// what answers a pick. Frames waited for the meshes of the selection's model aren't
-/// counted (that wait goes by what changes, and by [`CLICK_WAIT`]).
+/// what answers a pick. Frames waited for the meshes of the selection's model, or for the
+/// renderer to draw a body by its newest mesh ([`Picking::stale`]), aren't counted (those
+/// waits go by what changes, and by [`CLICK_WAIT`]).
 pub const CLICK_FRAMES: u32 = 60;
 
-/// The backstop of a click's wait for the meshes of the selection's model, from the click,
-/// by the viewport's clock: a read in flight that never answers. Never reached in normal
-/// use, where the read answers, is refused, or is overtaken by another model first (each
-/// of which ends the wait as it happens).
+/// The backstop of a click's wait, from the click, by the viewport's clock: for the meshes
+/// of the selection's model (a read in flight that never answers; never reached in normal
+/// use, where the read answers, is refused, or is overtaken by another model first, each
+/// of which ends the wait as it happens), and for the renderer to draw the bodies under it
+/// by their newest meshes ([`Picking::stale`]; reached if it takes that long to make their
+/// faces, [`CLICK_UNDRAWN`]).
 pub const CLICK_WAIT: Duration = Duration::from_secs(10);
 
 /// What the status bar says of a click let go at [`CLICK_WAIT`], its meshes still unread.
 pub const CLICK_STALE: &str = "The click was let go: the model's meshes took too long to read; \
                                click again once they're shown";
+
+/// What the status bar says of a click let go at [`CLICK_WAIT`], the bodies under it still
+/// drawn by their meshes before their newest (whose faces the renderer is still making).
+pub const CLICK_UNDRAWN: &str = "The click was let go: the model's faces took too long to \
+                                 draw; click again once they're shown";
 
 /// What the status bar says of a click let go as another model was published before the
 /// meshes it waited for came: what it would be picked on isn't what it was aimed at.
@@ -408,7 +420,10 @@ struct Click {
     /// The newest frame that carried a pick before the click: its answer is to a frame
     /// after it.
     after: Option<u64>,
-    /// The frames it has asked its pick in.
+    /// The frames it has asked its pick in since it was made, or since what it's asked of
+    /// last changed: a model published under it, the bodies changed under it while it waits
+    /// for boxes, or an answer that passed over a body drawn otherwise than it is now
+    /// ([`Picking::stale`]).
     frames: u32,
     /// The filter it was made under: it picks by it, or not at all.
     filter: Filter,
@@ -1544,6 +1559,29 @@ impl Selection {
                 // Of meshes of another model: the click waits, and asks again once they've
                 // caught up.
                 Some(_) if !current => {}
+                // Of a frame that drew a body otherwise than it is now (its mesh replaced, and
+                // drawn by the one before while the new one's faces are made): what's under
+                // the click isn't known yet, so it asks again, of a frame after this one,
+                // clearing nothing. The frames it waits so aren't counted (the renderer makes
+                // the faces at its own pace); [`CLICK_WAIT`] from the click, it's let go, said.
+                Some(click)
+                    if picking.stale
+                        && click.answered.is_none()
+                        && click.after.is_none_or(|after| picking.frame > after) =>
+                {
+                    if frame.now.saturating_duration_since(click.at) >= CLICK_WAIT {
+                        tracing::debug!("a click's answers passed over bodies redrawn: let go");
+                        self.click = None;
+                        self.say_let_go(CLICK_UNDRAWN);
+                    } else {
+                        tracing::debug!("a click's answer passed over a body redrawn: asked again");
+                        self.click = Some(Click {
+                            after: Some(picking.frame),
+                            frames: 0,
+                            ..click
+                        });
+                    }
+                }
                 Some(click)
                     if click.answered.is_none()
                         && click.after.is_none_or(|after| picking.frame > after) =>
@@ -1805,7 +1843,8 @@ impl Selection {
     }
 
     /// A hover's pick answered: what's under the pointer, read against the published model
-    /// when it's another element than before. While what's under it can't be decided yet,
+    /// when it's another element than before. While what's under it can't be decided yet, or
+    /// the answer passed over a body drawn otherwise than it is now ([`Picking::stale`]),
     /// nothing is hovered, and its pixel is asked again next frame.
     fn hover_answered(
         &mut self,
@@ -1813,10 +1852,15 @@ impl Selection {
         bodies: &BTreeMap<u32, ViewBody>,
         beneath: Beneath<'_>,
     ) {
-        let Ok(under) = self.under(picking, bodies, beneath) else {
-            self.hovered = None;
-            self.hover_asked = None;
-            return;
+        // Of a frame that drew a body otherwise than it is now, or not yet decidable: nothing
+        // hovered, and asked again.
+        let under = match self.under(picking, bodies, beneath) {
+            Ok(under) if !picking.stale => under,
+            _ => {
+                self.hovered = None;
+                self.hover_asked = None;
+                return;
+            }
         };
         self.heard = Some((
             centre_of(picking.rect),
@@ -2524,6 +2568,7 @@ pub(crate) mod tests {
             rect: square([50.0, 50.0], [100, 100], 3),
             hit: None,
             edge: None,
+            stale: false,
         };
         view.answered_as((1, revision(1)), none);
         selection.light(&mut view);
@@ -2868,6 +2913,7 @@ pub(crate) mod tests {
                 rect,
                 hit: None,
                 edge: None,
+                stale: false,
             },
         );
         let mut frame = frame_of(Vec::new());
@@ -3164,6 +3210,7 @@ pub(crate) mod tests {
             rect,
             hit: None,
             edge: None,
+            stale: false,
         };
         view.answered_as(first, answer);
         let ctx = egui::Context::default();
@@ -3396,6 +3443,7 @@ pub(crate) mod tests {
             rect,
             hit: Some(pick(Element::Face(3), centre_of(rect))),
             edge: None,
+            stale: false,
         };
         let under = |selection: &Selection, picking: &Picking| {
             selection
@@ -3451,6 +3499,7 @@ pub(crate) mod tests {
             rect,
             hit: Some(pick(Element::Edge(2), centre)),
             edge: Some(pick(Element::Edge(1), [49, 50])),
+            stale: false,
         };
         // The cast: Face3 under any pixel, each pixel it's asked for kept.
         let asked = std::cell::RefCell::new(Vec::new());
@@ -3546,6 +3595,7 @@ pub(crate) mod tests {
                 point: None,
             }),
             edge: None,
+            stale: false,
         };
         let click = |camera: &silico_protocol::Camera| ViewFrame {
             camera: camera.clone(),
@@ -3650,6 +3700,134 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_click_answered_past_a_body_drawn_otherwise_asks_again_clearing_nothing() {
+        // The renderer draws a body by its mesh before its newest while the new one's faces
+        // are made, and passes over its pixels: an answer finding nothing there is no click
+        // on empty space. The click asks again, of a frame after it, and a plain click is
+        // decided only by an answer that passed over nothing.
+        use LeftKind::{Press, Release};
+        let mut selection = one_box();
+        let of = (1, Revision::from_number(1).unwrap());
+        selection.pick("aaaaaaaa.box.Face1", How::Replace);
+        let mut view = View::default();
+        let ctx = egui::Context::default();
+        let rect = square([20.0, 20.0], [100, 100], 3);
+        let nothing = |frame, stale| Picking {
+            frame,
+            rect,
+            hit: None,
+            edge: None,
+            stale,
+        };
+        let click = frame_of(vec![
+            event(Press, [20.0, 20.0], false),
+            event(Release, [20.0, 20.0], false),
+        ]);
+        selection.overlay(&mut view, &click, &ctx, &no_face);
+        let asked = selection.click.unwrap();
+        view.answered_as(of, nothing(6, true));
+        view.take_asked();
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
+        let waiting = selection.click.expect("the click let go");
+        assert_eq!(
+            (waiting.after, waiting.answered, waiting.rect),
+            (Some(6), None, asked.rect)
+        );
+        assert_eq!(view.asking(), Some(asked.rect), "not asked again");
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
+        // Answered again past it: still waiting. Then by a frame that passed over nothing:
+        // nothing there, and the plain click clears.
+        view.answered_as(of, nothing(7, true));
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
+        assert_eq!(selection.click.map(|c| c.after), Some(Some(7)));
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
+        // Its frames asked meanwhile aren't counted: past CLICK_FRAMES of them, answered
+        // past the body each, it still waits.
+        for n in 0..CLICK_FRAMES + 5 {
+            selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
+            view.answered_as(of, nothing(10 + u64::from(n), true));
+        }
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
+        // Its count started again by the last answer, and the frame's ask counted.
+        assert_eq!(selection.click.map(|c| c.frames), Some(1));
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
+        view.answered_as(of, nothing(100, false));
+        selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
+        assert_eq!(selection.click, None);
+        assert!(selection.is_empty());
+        // One answered past it CLICK_WAIT after it was made is let go, said, clearing
+        // nothing.
+        selection.pick("aaaaaaaa.box.Face1", How::Replace);
+        selection.overlay(&mut view, &click, &ctx, &no_face);
+        let made = selection.click.unwrap().at;
+        // Half the wait on, still waiting: the wait is from the click, not from its last
+        // answer.
+        view.answered_as(of, nothing(101, true));
+        let half = ViewFrame {
+            now: made + CLICK_WAIT / 2,
+            ..frame_of(Vec::new())
+        };
+        selection.overlay(&mut view, &half, &ctx, &no_face);
+        assert_eq!(selection.click.map(|c| c.after), Some(Some(101)));
+        view.answered_as(of, nothing(102, true));
+        let late = ViewFrame {
+            now: made + CLICK_WAIT,
+            ..frame_of(Vec::new())
+        };
+        selection.overlay(&mut view, &late, &ctx, &no_face);
+        assert_eq!(selection.click, None);
+        assert_eq!(selection.said(), Some(CLICK_UNDRAWN));
+        assert_eq!(selection.names(), ["aaaaaaaa.box.Face1"]);
+        // The wait bounds stale answers alone: one past nothing, CLICK_WAIT on, decides.
+        selection.overlay(&mut view, &click, &ctx, &no_face);
+        let made = selection.click.unwrap().at;
+        view.answered_as(of, nothing(103, false));
+        let late = ViewFrame {
+            now: made + CLICK_WAIT,
+            ..frame_of(Vec::new())
+        };
+        selection.overlay(&mut view, &late, &ctx, &no_face);
+        assert_eq!(selection.click, None);
+        assert!(selection.is_empty(), "let go, not decided");
+    }
+
+    #[test]
+    fn a_hover_answered_past_a_body_drawn_otherwise_hovers_nothing_and_asks_again() {
+        let bodies = named_body();
+        let rect = square([50.0, 50.0], [100, 100], 3);
+        let face = |stale| Picking {
+            frame: 1,
+            rect,
+            hit: Some(crate::renderer::Pick {
+                body: 1,
+                hit: Element::Face(3),
+                pixel: centre_of(rect),
+                point: None,
+            }),
+            edge: None,
+            stale,
+        };
+        let mut selection = Selection {
+            hover_asked: Some(centre_of(rect)),
+            ..Selection::default()
+        };
+        selection.hover_answered(&face(true), &bodies, &|_| Cast::Empty);
+        assert_eq!(
+            (
+                selection.hovered.is_none(),
+                selection.hover_asked,
+                selection.heard.is_none()
+            ),
+            (true, None, true)
+        );
+        // The same answer, past nothing: heard, the face hovered.
+        selection.hover_asked = Some(centre_of(rect));
+        selection.hover_answered(&face(false), &bodies, &|_| Cast::Empty);
+        assert!(selection.heard.is_some());
+        assert_eq!(selection.hover_asked, Some(centre_of(rect)));
+    }
+
+    #[test]
     fn a_click_let_go_in_the_frame_a_new_table_is_taken_is_let_go_said_unless_it_waited_for_it() {
         // #568: the release came in the frame the view took another table of the model's
         // bodies, so it was made on the table the frame before drew. It's let go and said,
@@ -3665,6 +3843,7 @@ pub(crate) mod tests {
             rect: square([50.0, 50.0], [100, 100], 6),
             hit: None,
             edge: None,
+            stale: false,
         };
         view.answered_as(of, nothing);
         selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);
@@ -4144,6 +4323,7 @@ pub(crate) mod tests {
                 point: None,
             }),
             edge: None,
+            stale: false,
         };
         let hovered = |selection: &Selection| {
             selection
@@ -4196,6 +4376,7 @@ pub(crate) mod tests {
             rect,
             hit,
             edge: Some(pick(Element::Edge(1), [52, 50])),
+            stale: false,
         };
         let under = |selection: &Selection, picking: &Picking| {
             selection
@@ -4261,6 +4442,7 @@ pub(crate) mod tests {
             rect,
             hit: Some(pick(Element::Vertex(2), [50, 50])),
             edge: Some(pick(Element::Edge(1), [52, 50])),
+            stale: false,
         };
         let mut selection = Selection::default();
         let mut view = View::default();
@@ -4373,6 +4555,7 @@ pub(crate) mod tests {
                 point: None,
             }),
             edge: None,
+            stale: false,
         };
         selection
             .clicked(&picking, How::Replace, &bodies, &|_| Cast::Empty)
@@ -4818,6 +5001,7 @@ pub(crate) mod tests {
                 rect: hover,
                 hit: None,
                 edge: None,
+                stale: false,
             },
         );
         let ctx = egui::Context::default();
@@ -4840,6 +5024,7 @@ pub(crate) mod tests {
                 rect: square([20.0, 20.0], [100, 100], 3),
                 hit: None,
                 edge: None,
+                stale: false,
             },
         );
         selection.overlay(&mut view, &frame_of(Vec::new()), &ctx, &no_face);

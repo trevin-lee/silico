@@ -111,6 +111,13 @@ pub trait ViewRenderer: Send + Sync + 'static {
     fn retry_later(_failure: &Self::Failure) -> bool {
         false
     }
+    /// Whether the last frame [`prepare`](Self::prepare) drew left faces for the frames after
+    /// it to make (a frame makes at most so many: `silico_render::render::UPLOAD_BUDGET`).
+    /// While it did the pane asks for frames at once ([`Present::uploading`]), so a part's
+    /// faces are all drawn with no input, at the display's rate.
+    fn uploading(&self) -> bool {
+        false
+    }
     /// Draws what [`prepare`](Self::prepare) made into egui's render pass, its viewport
     /// already the pane's.
     fn composite(&self, pass: &mut wgpu::RenderPass<'_>);
@@ -132,6 +139,9 @@ impl ViewRenderer for Renderer {
     }
     fn retry_later(failure: &RenderFailure) -> bool {
         matches!(failure, RenderFailure::BackingOff { .. })
+    }
+    fn uploading(&self) -> bool {
+        Renderer::uploading(self)
     }
     fn composite(&self, pass: &mut wgpu::RenderPass<'_>) {
         Renderer::composite(self, pass);
@@ -246,14 +256,19 @@ pub trait Present {
     fn backing_off(&mut self) -> bool {
         false
     }
+    /// Whether the renderer's last frame left faces to make ([`ViewRenderer::uploading`]):
+    /// the pane then asks for the next frame at once.
+    fn uploading(&mut self) -> bool {
+        false
+    }
 }
 
 /// What the pane and the paint callbacks share: the changes not yet made, one for each body
 /// (the last asked: an upload replaces an earlier upload or forget of its body, and a forget
 /// an earlier upload, so frames that are never painted, a window minimized, hold no more
 /// than one mesh a body); the newest picking answer; the bodies refused; the last failure
-/// said, so a renderer refusing every frame is said once, not each frame; and whether the
-/// last frame was refused backing off.
+/// said, so a renderer refusing every frame is said once, not each frame; whether the
+/// last frame was refused backing off; and whether it left faces to make.
 #[derive(Default)]
 struct Shared {
     changes: BTreeMap<u32, Change>,
@@ -261,6 +276,7 @@ struct Shared {
     refused: BTreeSet<u32>,
     failure: Option<String>,
     backing_off: bool,
+    uploading: bool,
 }
 
 impl Shared {
@@ -344,6 +360,10 @@ impl<R: ViewRenderer> Present for OnGpu<R> {
     fn backing_off(&mut self) -> bool {
         locked(&self.shared).backing_off
     }
+
+    fn uploading(&mut self) -> bool {
+        locked(&self.shared).uploading
+    }
 }
 
 /// One frame's paint callback.
@@ -356,7 +376,8 @@ struct Callback<R> {
 /// A frame's preparation, its GPU's half aside: the changes waiting made; the frame drawn
 /// without the bodies whose uploads were refused, and without highlights, hovers, or tints
 /// of a body it doesn't draw (the renderer refuses a whole frame for one); a refusal said
-/// once until a frame is drawn again; and a picking answer kept for the pane. With no
+/// once until a frame is drawn again; a picking answer kept for the pane; and whether the
+/// renderer left faces to make, for the pane ([`Present::uploading`]). With no
 /// renderer installed, the changes are taken, every upload among them refused, so none
 /// waits for ever.
 fn prepared<R: ViewRenderer>(
@@ -417,6 +438,8 @@ fn prepared<R: ViewRenderer>(
     let prepared = renderer.prepare(&frame);
     // Set by a frame refused backing off; cleared by one drawn, or refused otherwise.
     locked(shared).backing_off = matches!(&prepared, Err(failure) if R::retry_later(failure));
+    // Set by a frame that left faces to make; cleared by one that didn't, or was refused.
+    locked(shared).uploading = renderer.uploading();
     let buffers = match prepared {
         Ok(buffer) => {
             locked(shared).failure = None;
@@ -544,6 +567,8 @@ mod tests {
         picking: Option<Picking>,
         /// Refusing each frame as backing off, rather than as having no GPU.
         backing_off: bool,
+        /// Saying each frame left faces to make.
+        uploading: bool,
     }
 
     impl ViewRenderer for Counting {
@@ -577,6 +602,9 @@ mod tests {
         }
         fn retry_later(failure: &String) -> bool {
             failure.starts_with("backing off")
+        }
+        fn uploading(&self) -> bool {
+            self.uploading
         }
         fn composite(&self, _: &mut wgpu::RenderPass<'_>) {}
         fn take_picking(&mut self) -> Option<Picking> {
@@ -750,6 +778,7 @@ mod tests {
             },
             hit: None,
             edge: None,
+            stale: false,
         };
         let mut renderer = Counting {
             picking: Some(pick),
@@ -988,6 +1017,24 @@ mod tests {
         assert!(!<Renderer as ViewRenderer>::retry_later(
             &RenderFailure::OutOfMemory("4 GiB".to_owned())
         ));
+    }
+
+    #[test]
+    fn the_pane_is_told_while_the_renderers_frames_leave_faces_to_make() {
+        // Each frame's word, as the renderer says it after the frame: set by one that left
+        // faces to make, cleared by the next that didn't; never by a frame not prepared.
+        let mut gpu = OnGpu::<Counting>::new();
+        let mut renderer = Counting::default();
+        assert!(!gpu.uploading());
+        renderer.uploading = true;
+        prepared(Some(&mut renderer), &gpu.shared, &data(&[1], &[]));
+        assert!(gpu.uploading());
+        assert!(gpu.uploading(), "until a frame says otherwise");
+        renderer.uploading = false;
+        prepared(Some(&mut renderer), &gpu.shared, &data(&[1], &[]));
+        assert!(!gpu.uploading());
+        // The trait's own says none, as a renderer that makes every face in its frame would.
+        assert!(!ViewRenderer::uploading(&Failing));
     }
 
     /// A renderer that fails every frame, saying nothing of backing off: `retry_later` its
