@@ -1119,10 +1119,11 @@ fn a_sketch_on_a_face_is_placed_ahead_only_from_its_own_solid_once_built_never_f
 }
 
 #[test]
-fn an_edit_of_an_unrelated_branch_takes_the_steps_a_look_ahead_plans_from_what_the_engine_keeps() {
-    // Mutants, PR #614: a rebuild after an edit of b2 only has b2's steps to run, so it
-    // looks ahead, and places s1 ahead on the box it keeps; the pad's steps it plans then are
-    // taken from what the engine keeps, as the round's own are, not asked for again. The
+fn an_edit_of_an_unrelated_branch_asks_again_for_the_edited_box_alone_not_the_face_sketchs_pad() {
+    // Mutants, PR #614: a rebuild after an edit of b2 has only b2's steps to run, and the
+    // pad's steps, whichever plans them (a look ahead, which places s1 ahead on the box it
+    // keeps, or the second round), are taken from what the engine keeps, never asked for
+    // again: a look ahead that read nothing kept for them asked for the prism twice. The
     // edited box is made again; the prism, once in all.
     let features = beside_a_small_box();
     let engine = engine();
