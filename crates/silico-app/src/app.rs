@@ -3902,7 +3902,15 @@ impl<P: Clients + 'static> App<P> {
             }
             Asking::Revert(id) => {
                 let sessions = &self.sessions;
-                let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) else {
+                // Gone by itself once nothing is left to revert ([`revertible`]): the
+                // transaction ended meanwhile (a save queued before the question landed),
+                // or the tab closes or has gone.
+                let Some(tab) = self
+                    .tabs
+                    .iter_mut()
+                    .find(|tab| tab.id == id)
+                    .filter(|tab| revertible(tab))
+                else {
                     done = true;
                     return;
                 };
@@ -3916,12 +3924,10 @@ impl<P: Clients + 'static> App<P> {
                 });
                 // As the close question lays out its buttons: what drops the edits on the
                 // left, Cancel on the right. Enter is no one's, as in Close's and Reload's:
-                // the search's Enter that asked never drops the edits too. Off once nothing
-                // can be reverted ([`revertible`]: the transaction ended meanwhile, by a
-                // save queued before the question, or the tab closing).
+                // the search's Enter that asked never drops the edits too.
                 let ([revert], [cancel]) = modal::foot(
                     ui,
-                    [Button::new(REVERT_DISCARD, Kind::Danger).enabled(revertible(tab))],
+                    [Button::new(REVERT_DISCARD, Kind::Danger)],
                     [Button::new("Cancel", Kind::Secondary)],
                 );
                 if revert {
