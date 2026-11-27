@@ -146,6 +146,8 @@ type Answers = dyn Fn(&Op) -> Option<Reply> + Send + Sync;
 
 struct Shared {
     state: Mutex<State>,
+    /// How many requests it runs at once: its threads.
+    size: usize,
     /// A queue changed, or the kernel is stopping.
     work: Condvar,
     /// A request started or ended, or a hold was released.
@@ -197,6 +199,7 @@ impl FakeKernel {
                 refusals: Vec::new(),
                 answers: Vec::new(),
             }),
+            size: size.clamp(1, MAX_WORKERS),
             work: Condvar::new(),
             changed: Condvar::new(),
         });
@@ -429,6 +432,10 @@ impl Kernel for FakeKernel {
     ) -> Pending<T> {
         self.shared.submit(ClientId::KERNEL, generation, request)
     }
+
+    fn capacity(&self) -> usize {
+        self.shared.size
+    }
 }
 
 impl Clients for FakeKernel {
@@ -515,6 +522,10 @@ impl Kernel for FakeClient {
         request: KernelRequest<T>,
     ) -> Pending<T> {
         self.shared.submit(self.id, generation, request)
+    }
+
+    fn capacity(&self) -> usize {
+        self.shared.size
     }
 }
 

@@ -1922,12 +1922,25 @@ pub(crate) enum LookPanics {
     Watched,
 }
 
-/// A test's view of an engine's looks ahead: how many have ended, and which panic.
+/// A test's view of an engine's looks ahead: which panic, and how much they've done.
 #[cfg(test)]
 #[derive(Default)]
 struct LookHook {
-    state: Mutex<(LookPanics, usize)>,
+    state: Mutex<Looked>,
     changed: Condvar,
+}
+
+/// What a [`LookHook`] holds.
+#[cfg(test)]
+#[derive(Default)]
+struct Looked {
+    panics: LookPanics,
+    /// How many looks ahead have ended, panicked or not.
+    ended: usize,
+    /// How many passes they've made, each a model of the round so far looked at.
+    passes: usize,
+    /// The most threads any one round has started to serve its jobs.
+    spawned: usize,
 }
 
 /// A test's hold on an engine's background naming ([`Recompute::hold_naming`]): while
@@ -2570,7 +2583,7 @@ impl<K: Kernel + 'static> Recompute<K> {
     /// Makes the looks ahead `when` says panic, from now on.
     #[cfg(test)]
     pub(crate) fn panic_looking(&self, when: LookPanics) {
-        lock(&self.engine.looks.state).0 = when;
+        lock(&self.engine.looks.state).panics = when;
     }
 
     /// Waits up to `timeout` until `n` looks ahead have ended, panicked or not: whether they
@@ -2581,15 +2594,27 @@ impl<K: Kernel + 'static> Recompute<K> {
         let state = lock(&hook.state);
         let (state, _) = hook
             .changed
-            .wait_timeout_while(state, timeout, |(_, ended)| *ended < n)
+            .wait_timeout_while(state, timeout, |looked| looked.ended < n)
             .unwrap_or_else(PoisonError::into_inner);
-        state.1 >= n
+        state.ended >= n
     }
 
     /// How many looks ahead have ended, panicked or not.
     #[cfg(test)]
     pub(crate) fn looks_ended(&self) -> usize {
-        lock(&self.engine.looks.state).1
+        lock(&self.engine.looks.state).ended
+    }
+
+    /// How many passes the looks ahead have made, each a model of its round so far.
+    #[cfg(test)]
+    pub(crate) fn look_passes(&self) -> usize {
+        lock(&self.engine.looks.state).passes
+    }
+
+    /// The most threads any one round has started to serve its jobs.
+    #[cfg(test)]
+    pub(crate) fn most_threads(&self) -> usize {
+        lock(&self.engine.looks.state).spawned
     }
 
     /// Lets the background's naming held by [`hold_naming`](Self::hold_naming) go on.
@@ -4885,8 +4910,17 @@ struct Schedule {
     idle: usize,
     /// How many threads it has started.
     threads: usize,
+    /// How many threads it has started, as counted apart from `threads`: a test's.
+    #[cfg(test)]
+    spawned: usize,
     /// The sketches on faces it waits on to look ahead again.
     watch: Watch,
+    /// Whether a look ahead runs now: one at a time.
+    looking: bool,
+    /// Whether a look ahead is due and hasn't run: a sketch on a face has nothing left to
+    /// wait on, and a look was running, or the kernel had no room for what it would place
+    /// ([`take_look`](Self::take_look)).
+    look_due: bool,
     superseded: bool,
     /// A step that panicked, a bug in Silico: the recompute stops, and fails with this.
     broken: Option<Error>,
@@ -4915,6 +4949,24 @@ impl Schedule {
     /// Whether nothing is left to run: every thread stops.
     fn finished(&self) -> bool {
         self.stopped() || (self.ready.is_empty() && self.running == 0)
+    }
+
+    /// Whether the thread of a job ending now (still counted as running) is to look ahead
+    /// ([`Engine::look_ahead`]), marked as looking if so: a look is due, none is running, the
+    /// recompute isn't stopping, and the kernel has room beside the jobs running, fewer of
+    /// them than `capacity` (the kernel's, [`Kernel::capacity`]). A look while the kernel is
+    /// full would place steps that wait behind those running, so it waits too, and then
+    /// takes every sketch whose face has settled meanwhile at once: a wide document's looks
+    /// are as many as the times the kernel has room, not one a sketch. The last job of a
+    /// round finds the kernel empty, so a look due is never left untaken by a round.
+    fn take_look(&mut self, capacity: usize) -> bool {
+        let room = self.running.saturating_sub(1) < capacity;
+        let take = self.look_due && !self.looking && !self.stopped() && room;
+        if take {
+            self.looking = true;
+            self.look_due = false;
+        }
+        take
     }
 
     /// Each step of `to`, a plan holding every step of `from` (the plan its jobs ran by) and
@@ -5007,6 +5059,8 @@ impl Schedule {
 struct Serving<'a> {
     schedule: Mutex<Schedule>,
     changed: Condvar,
+    /// How many requests its kernel runs at once, at least one ([`Kernel::capacity`]).
+    capacity: usize,
     rebuild: Rebuild<'a>,
     frames: &'a BTreeMap<FeatureId, Placed>,
     solutions: &'a SketchResults,
@@ -5016,10 +5070,11 @@ struct Serving<'a> {
 }
 
 impl Serving<'_> {
-    /// A job counted as running no longer (the look ahead a round starts with): if it was
-    /// the last, every thread is told nothing is left.
+    /// The look ahead a round starts with, its thread unstarted: counted as running, and
+    /// looking, no longer; if it was the last job, every thread is told nothing is left.
     fn stopped_running(&self) {
         let mut s = lock(&self.schedule);
+        s.looking = false;
         s.running = s.running.saturating_sub(1);
         let finished = s.finished();
         drop(s);
@@ -5321,7 +5376,11 @@ impl<K: Kernel + 'static> Engine<K> {
             running: 0,
             idle: 0,
             threads: 0,
+            #[cfg(test)]
+            spawned: 0,
             watch: Watch::default(),
+            looking: false,
+            look_due: false,
             superseded: false,
             broken: None,
         };
@@ -5362,11 +5421,13 @@ impl<K: Kernel + 'static> Engine<K> {
             && !to_look(&schedule.plan, &lock(ahead)).is_empty();
         if looks {
             schedule.running += 1;
+            schedule.looking = true;
         }
         let threads = (schedule.ready.len() + schedule.waiting.len()).min(MOST_AT_ONCE);
         let shared = Serving {
             schedule: Mutex::new(schedule),
             changed: Condvar::new(),
+            capacity: self.kernel.capacity().max(1),
             rebuild: *rebuild,
             frames,
             solutions,
@@ -5395,7 +5456,7 @@ impl<K: Kernel + 'static> Engine<K> {
                     .spawn_scoped(scope, move || {
                         let _entered = serving.parent.enter();
                         self.look_ahead_caught(serving, scope);
-                        serving.stopped_running();
+                        self.job_ended(serving, scope);
                     })
                     .map(drop);
                 // No look ahead: what waits is placed at the round's end, as without one.
@@ -5424,6 +5485,11 @@ impl<K: Kernel + 'static> Engine<K> {
             .schedule
             .into_inner()
             .unwrap_or_else(PoisonError::into_inner);
+        #[cfg(test)]
+        {
+            let mut looked = lock(&self.looks.state);
+            looked.spawned = looked.spawned.max(schedule.spawned);
+        }
         if let Some(error) = schedule.broken {
             return Err(error);
         }
@@ -5513,6 +5579,10 @@ impl<K: Kernel + 'static> Engine<K> {
         });
         let mut s = lock(&serving.schedule);
         s.threads -= n - started.as_ref().map_or(0, |started| *started);
+        #[cfg(test)]
+        {
+            s.spawned += started.as_ref().map_or(0, |started| *started);
+        }
         started.map(drop)
     }
 
@@ -6066,9 +6136,12 @@ impl<K: Kernel + 'static> Engine<K> {
             if let Job::Measure(key) = job {
                 s.measuring.remove(&key);
             }
-            // The last feature a sketch on a face waits on settled: looked at again, before
-            // this job stops counting as running, so the round can't end meanwhile.
-            let look = Watch::settled(&mut s, &plan, &key);
+            // The last feature a sketch on a face waits on settled: a look ahead is due, taken
+            // before this job stops counting as running, so the round can't end meanwhile,
+            // if the kernel has room ([`Schedule::take_look`]).
+            if Watch::settled(&mut s, &plan, &key) {
+                s.look_due = true;
+            }
             // A job counts as running until its result is written to the cache, so a
             // recompute doesn't end before its results are on disk; the jobs it made ready
             // start meanwhile.
@@ -6079,17 +6152,34 @@ impl<K: Kernel + 'static> Engine<K> {
             if let (Some(cache), Some(built)) = (self.cache.get(), to_keep) {
                 cache.put(self.kernel.identity(), &key, &built);
             }
-            if look {
+            self.job_ended(serving, scope);
+        }
+    }
+
+    /// A job's end on its thread, the job still counted as running: each look ahead due
+    /// taken first, as the kernel has room for it ([`Schedule::take_look`]), so a look put
+    /// off for a full kernel is taken by a job that ends with room, the round's last at the
+    /// latest; then the job counted as running no longer, and, once nothing is left, every
+    /// thread told.
+    fn job_ended<'scope, 'env: 'scope>(
+        &'env self,
+        serving: &'env Serving<'env>,
+        scope: &'scope std::thread::Scope<'scope, 'env>,
+    ) {
+        loop {
+            let mut s = lock(&serving.schedule);
+            if s.take_look(serving.capacity) {
+                drop(s);
                 self.look_ahead_caught(serving, scope);
+                continue;
             }
-            let mut s = lock(schedule);
             s.running -= 1;
-            // Every thread, once nothing is left.
             let finished = s.finished();
             drop(s);
             if finished {
-                changed.notify_all();
+                serving.changed.notify_all();
             }
+            return;
         }
     }
 
@@ -6107,11 +6197,12 @@ impl<K: Kernel + 'static> Engine<K> {
         }));
         #[cfg(test)]
         {
-            lock(&self.looks.state).1 += 1;
+            lock(&self.looks.state).ended += 1;
             self.looks.changed.notify_all();
         }
+        let mut s = lock(&serving.schedule);
+        s.looking = false;
         if let Err(panic) = looked {
-            let mut s = lock(&serving.schedule);
             if s.broken.is_none() {
                 s.broken = Some(
                     Error::new(
@@ -6160,7 +6251,7 @@ impl<K: Kernel + 'static> Engine<K> {
             let first = std::thread::current()
                 .name()
                 .is_some_and(|name| name.ends_with("-ahead"));
-            let panics = match lock(&self.looks.state).0 {
+            let panics = match lock(&self.looks.state).panics {
                 LookPanics::Never => false,
                 LookPanics::First => first,
                 LookPanics::Watched => !first,
@@ -6194,6 +6285,10 @@ impl<K: Kernel + 'static> Engine<K> {
                 unmeasured: &unmeasured,
                 unresolved: &unresolved,
             };
+            #[cfg(test)]
+            {
+                lock(&self.looks.state).passes += 1;
+            }
             let model = model(
                 document,
                 &plan,
@@ -8030,6 +8125,97 @@ mod tests {
             Err(_) => panic!("the rebuild didn't finish"),
         }
         assert_eq!(engine.looks_ended(), 3);
+    }
+
+    /// `k` boxes in a row, 20 mm apart, each with a sketch on its top, padded onto it: each
+    /// sketch's square at its own place, so no two pads share a step.
+    fn wide(k: usize) -> Vec<String> {
+        let mut features = Vec::new();
+        for i in 0..k {
+            let x = 20.0 * i as f64;
+            features.push(format!(
+                r#"{{"id": "b{i:07}", "type": "box", "v": 1, "name": "B", "position": [{x}, 0, 0], "length": 10, "width": 10, "height": 10}}"#
+            ));
+            features.push(face_sketch(
+                &format!("s{i:07}"),
+                &format!("b{i:07}.box.Face6"),
+                x + 1.0,
+            ));
+            features.push(face_pad(
+                &format!("p{i:07}"),
+                &format!("b{i:07}"),
+                &format!("s{i:07}"),
+            ));
+        }
+        features
+    }
+
+    /// An engine on a fake kernel of `size` threads that describes every face as the
+    /// plane z = 10, so every sketch on a face is placed and padded.
+    fn planar_engine(size: usize) -> Recompute<crate::fake::FakeKernel> {
+        let kernel = crate::fake::FakeKernel::new(size).unwrap();
+        kernel.answer_instead(|op| {
+            let crate::kernel::Op::DescribeAll { shape } = op else {
+                return None;
+            };
+            let mut description = crate::fake::FakeKernel::described(shape)?;
+            for face in &mut description.faces {
+                face.surface = silico_protocol::Surface::Plane {
+                    normal: [0.0, 0.0, 1.0],
+                    location: [0.0, 0.0, 10.0],
+                };
+            }
+            Some(silico_protocol::Reply::DescribedAll(description))
+        });
+        Recompute::new(kernel).with_sketches(crate::fake::FakeSketches::new())
+    }
+
+    /// `features` rebuilt on `engine`, every pad built.
+    fn published_wide(engine: &Recompute<crate::fake::FakeKernel>, features: &[String], k: usize) {
+        match engine
+            .start(checked_of(features))
+            .wait_timeout(Duration::from_secs(60))
+        {
+            Ok(Ok(RunOutcome::Published(model))) => {
+                for i in 0..k {
+                    let pad = FeatureId::new(&format!("p{i:07}")).unwrap();
+                    assert!(
+                        matches!(model.outcome(&pad), Some(FeatureOutcome::Built { .. })),
+                        "{pad}: {:?}",
+                        model.outcome(&pad)
+                    );
+                }
+            }
+            Ok(other) => panic!("not published: {other:?}"),
+            Err(_) => panic!("the rebuild didn't finish"),
+        }
+    }
+
+    #[test]
+    fn a_wide_rebuild_looks_ahead_as_often_as_its_kernel_has_room_not_once_a_sketch() {
+        // M5's milestone review: each look ahead models and plans the whole document, so one
+        // a sketch, as each box settled, cost a wide part's cold rebuild its sketches times
+        // its features. On a kernel of one thread the boxes queue behind one another, so a
+        // look waits while the kernel is full, and takes every sketch whose box has settled
+        // at once: a look at the round's start, which finds no box settled, and then at
+        // most a few once the kernel empties, however many boxes there are.
+        for k in [40, 80] {
+            let engine = planar_engine(1);
+            published_wide(&engine, &wide(k), k);
+            let (looks, passes) = (engine.looks_ended(), engine.look_passes());
+            assert!(looks <= 4, "{k} boxes: {looks} looks");
+            assert!(passes <= 8, "{k} boxes: {passes} passes");
+        }
+    }
+
+    #[test]
+    fn a_look_ahead_starts_no_thread_past_most_at_once() {
+        // M5's milestone review: a round starts at most MOST_AT_ONCE threads in all, a look
+        // ahead's among them. Eighty boxes give the round's start its 64; its look ahead,
+        // placing eighty pads' steps once the kernel empties, finds them all started.
+        let engine = planar_engine(1);
+        published_wide(&engine, &wide(80), 80);
+        assert_eq!(engine.most_threads(), MOST_AT_ONCE);
     }
 
     #[test]

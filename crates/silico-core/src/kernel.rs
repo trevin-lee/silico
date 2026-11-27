@@ -56,6 +56,14 @@ pub trait Kernel: Send + Sync {
         generation: Generation,
         request: KernelRequest<T>,
     ) -> Pending<T>;
+
+    /// How many requests the kernel runs at once, at most: a recompute looks ahead at its
+    /// sketches' faces only while the kernel has room for what it would place
+    /// (`recompute`'s `Schedule::take_look`). Unbounded, unless the kernel says: a stand-in
+    /// that doesn't is looked ahead for at every settle.
+    fn capacity(&self) -> usize {
+        usize::MAX
+    }
 }
 
 /// A kernel shared as one client, by the recomputes of several documents run one after
@@ -83,6 +91,10 @@ impl<K: Kernel> Kernel for Arc<K> {
         request: KernelRequest<T>,
     ) -> Pending<T> {
         (**self).submit(generation, request)
+    }
+
+    fn capacity(&self) -> usize {
+        (**self).capacity()
     }
 }
 

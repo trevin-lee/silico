@@ -379,6 +379,10 @@ impl<C: crate::kernel::Kernel> crate::kernel::Kernel for ReadClient<C> {
     ) -> crate::pool::Pending<T> {
         self.client.submit(generation, request)
     }
+
+    fn capacity(&self) -> usize {
+        self.client.capacity()
+    }
 }
 
 /// Which model a read takes (decision 33): the current revision's, waited for, or the
