@@ -193,7 +193,24 @@ fn a_solver_that_panics_mid_move_still_answers_the_ticket_and_lets_the_drag_end(
     });
     let (outcome, ended) = got.expect("the move's ticket or the drag's end never answered");
     assert!(matches!(outcome, MoveOutcome::Failed(_)), "{outcome:?}");
-    assert!(ended.is_err());
+    a_panic_said_as_silicos_bug(ended);
+}
+
+/// `ended`, the end of a drag whose thread panicked, refused as the drag's thread says a
+/// panic under its solver: `internal`, Silico's bug, not the request's.
+#[track_caller]
+fn a_panic_said_as_silicos_bug(ended: Result<Ended, Error>) {
+    let Err(e) = ended else {
+        panic!("ended after its thread panicked: {ended:?}")
+    };
+    assert_eq!(
+        (e.code(), e.message(), e.suggestion()),
+        (
+            ErrorCode::Internal,
+            "the drag's thread panicked under its solver",
+            Some(silico_core::worker::SILICO_BUG)
+        )
+    );
 }
 
 #[test]
@@ -205,7 +222,7 @@ fn a_solver_that_panics_in_the_closing_solve_still_lets_the_end_answer() {
     fake.answer(|_| panic!("a bug in the sketch solver's solve"));
     let ended = within(move || session.end(Some([2.0, 2.0])))
         .expect("the drag's end never answered after its solver panicked");
-    assert!(ended.is_err(), "{ended:?}");
+    a_panic_said_as_silicos_bug(ended);
 }
 
 // --- Tickets ------------------------------------------------------------------------------
