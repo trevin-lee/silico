@@ -1699,6 +1699,39 @@ fn revert_s_question_goes_by_itself_once_a_save_queued_before_it_lands() {
 }
 
 #[test]
+fn revert_s_question_stays_when_the_save_queued_before_it_is_refused() {
+    // Ctrl+S held behind a check, then Revert: asked. Another program writes the file
+    // meanwhile, so the save is refused as a conflict: the transaction is still open and the
+    // edit unsaved, which the revert behind the save would drop, so the question stays,
+    // and nothing is dropped until its discard.
+    let f = fixture();
+    let (mut h, path) = hole_renamed(&f);
+    off_fields(&mut h, "SOLID");
+    let (hold, check) = hold_queue(&f, &h, 0);
+    h.key_press_modifiers(eframe::egui::Modifiers::COMMAND, eframe::egui::Key::S);
+    step_until(&mut h, "the save sent", |h| h.state().tabs()[0].saves == 1);
+    from_file_menu(&mut h, "Revert to saved");
+    step_until(&mut h, "the question", revert_asked);
+    let theirs = EXAMPLE.replace(r#""name": "Pin""#, r#""name": "Theirs""#);
+    std::fs::write(&path, &theirs).unwrap();
+    hold.release();
+    let _ = check.wait();
+    step_until(&mut h, "the save refused", |h| {
+        h.state().tabs()[0].edits.idle()
+            && h.query_by_label_contains("changed outside this session")
+                .is_some()
+    });
+    for _ in 0..20 {
+        step(&mut h);
+    }
+    assert!(revert_asked(&h), "the question went with the edit unsaved");
+    rename_kept(&f, &h, "HoleY");
+    assert!(!h.state().tabs()[0].sent.contains(&Sent::Rollback));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), theirs);
+    assert_eq!(never_waits::waits(), 0);
+}
+
+#[test]
 fn revert_asks_about_and_reverts_the_tab_shown_alone() {
     // Two documents, each edited: Revert from b.silico's tab names b.silico, and its
     // discard reverts b.silico alone; a.silico keeps its edit.
