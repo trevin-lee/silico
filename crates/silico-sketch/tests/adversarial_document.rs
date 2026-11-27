@@ -402,8 +402,9 @@ fn a_constraint_given_twice_beside_an_impossible_chain_conflicts_and_once_fails(
 fn an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout() {
     // 512 points (1,024 unknowns, at MAX_SKETCH_UNKNOWNS) in one chain of unit links held
     // 2,560 apart: the gate admits it, and every algorithm fails. The answer is
-    // solve_failed, not a timeout. The worker is given 1,200 s, above the default, so this
-    // tests what the answer is, not the machine's speed: the default, SKETCH_TIMEOUT's 900 s,
+    // solve_failed, not a timeout. The worker is given 300 s more than the default (1,200 s;
+    // it was given 900 s, which the default now is), so this tests what the answer is, not
+    // the machine's speed: the default, SKETCH_TIMEOUT's 900 s,
     // is a measurement (74 s on a quiet-ish M4 Pro, 206 s at a load average of 80;
     // ~/.cache/silico-review's m3-open notes; 199 to 204 s of CPU on a GitHub-hosted
     // runner's Xeon 6975P-C, and 337 s on its Xeon Platinum 8370C, gate 45487700650, which
@@ -416,7 +417,7 @@ fn an_impossible_chain_of_the_largest_size_fails_as_solve_failed_not_a_timeout()
     // silico_core::sketch::SKETCH_TIMEOUT (900 s), which SketchWorker::with_timeout sets.
     let doc = checked(&impossible_chain(512, 2560.0));
     let started = Instant::now();
-    let given = Duration::from_secs(1_200);
+    let given = silico_core::sketch::SKETCH_TIMEOUT + Duration::from_secs(300);
     let (e, cpu) = within(given + Duration::from_secs(60), move || {
         let mut w = worker().with_timeout(given);
         let e = solved(&doc, &mut w).unwrap_err();
