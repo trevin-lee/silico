@@ -65,8 +65,9 @@ use crate::shortcuts::Command;
 /// *Select Other…*, as the prototype labels it.
 pub const SELECT_OTHER: &str = "Select Other…";
 
-/// Fillet, as the prototype's `onContext` labels it.
-pub const FILLET: &str = "Fillet";
+/// Fillet, as the prototype's `onContext` labels it: the registry's command (`CMD.fillet`,
+/// which its item runs).
+pub const FILLET: &str = Command::Fillet.label();
 /// Copy name, as the prototype's `onContext` labels it.
 pub const COPY_NAME: &str = "Copy name";
 /// Copy name's dim words, as the prototype's `onContext` has them.
@@ -374,7 +375,7 @@ impl CanvasMenu {
                 let mut sketch = Shown::of(
                     CanvasItem::CreateSketch,
                     Some(Icon::Sketch),
-                    crate::toolbar::CREATE_SKETCH_WORDS,
+                    Command::CreateSketch.label(),
                 );
                 sketch.off = context.sketch_off.clone();
                 CanvasMenu {

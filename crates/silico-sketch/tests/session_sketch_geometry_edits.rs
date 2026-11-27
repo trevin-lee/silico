@@ -584,3 +584,124 @@ fn a_split_then_a_join_solves_cleanly_both_ways_and_gives_the_sketch_back() {
         assert_eq!(f.problems(), [], "{sketch}");
     }
 }
+
+#[test]
+fn what_the_rebuild_publishes_after_each_edit_that_writes_geometry_is_a_fresh_solves() {
+    // Review A13-M2: the rebuild after an edit that writes geometry takes the edit's own
+    // solve of the text it wrote, rather than solving it again. On PlaneGCS, what it then
+    // publishes is what a fresh solve of that text gives: the sketch read (its members at
+    // their solved values, each one's state, the sketch's state and freedom, its profile),
+    // the check's problems, and the text, the same before a fresh check (which solves every
+    // sketch again, reading nothing kept) and after it; and, outside a transaction, the
+    // file the edit's commit saved, its solve written back, is the text after the fresh
+    // check, byte for byte. Each edit is made after those it needs: a merge of what an
+    // unjoin pulled apart, a join of what a split made, and an extend of na000002 once
+    // ka00000a, which holds its length, is removed. And, over-defined first (the base line's
+    // second length, in conflict with its first), a split, a trim, and an unjoin, each made
+    // though its solve still conflicts, so judged against the solve before it too: what's
+    // published is still the solve of the text the edit wrote, not the text before it.
+    let read = r#"{"session": "s1", "model": "current", "sketch": "s0000001"}"#;
+    let edits: [&[(&str, Value)]; 6] = [
+        &[(
+            "sketch_split",
+            json!({"sketch": "s0000001", "curve": "na000003", "at": [[30, 5]], "ids": null}),
+        )],
+        &[(
+            "sketch_trim",
+            json!({"sketch": "s0000001", "curve": "na000004", "pick": [5, 30], "ids": null}),
+        )],
+        &[(
+            "sketch_unjoin",
+            json!({"sketch": "s0000001", "point": "pa000004", "curve": "na000004", "ids": ["pa000008"]}),
+        )],
+        &[
+            (
+                "sketch_unjoin",
+                json!({"sketch": "s0000001", "point": "pa000004", "curve": "na000004", "ids": ["pa000008"]}),
+            ),
+            (
+                "sketch_merge",
+                json!({"sketch": "s0000001", "points": ["pa000004", "pa000008"]}),
+            ),
+        ],
+        &[
+            (
+                "sketch_remove",
+                json!({"sketch": "s0000001", "members": ["ka00000a"]}),
+            ),
+            (
+                "sketch_extend",
+                json!({"sketch": "s0000001", "curve": "na000002", "end": "end", "by": {"type": "length", "length": 2}}),
+            ),
+        ],
+        &[
+            (
+                "sketch_split",
+                json!({"sketch": "s0000001", "curve": "na000003", "at": [[30, 5]], "ids": ["pa000007", "na000007", "ka00000d"]}),
+            ),
+            (
+                "sketch_join",
+                json!({"sketch": "s0000001", "point": "pa000007"}),
+            ),
+        ],
+    ];
+    let over_defined: [(&str, Value); 3] = [
+        (
+            "sketch_split",
+            json!({"sketch": "s0000001", "curve": "na000003", "at": [[30, 5]], "ids": null}),
+        ),
+        (
+            "sketch_trim",
+            json!({"sketch": "s0000001", "curve": "na000004", "pick": [5, 30], "ids": null}),
+        ),
+        (
+            "sketch_unjoin",
+            json!({"sketch": "s0000001", "point": "pa000004", "curve": "na000004", "ids": null}),
+        ),
+    ];
+    let cases = edits.iter().map(|steps| (false, *steps)).chain(
+        over_defined
+            .iter()
+            .map(|step| (true, std::slice::from_ref(step))),
+    );
+    for inside in [true, false] {
+        for (conflicting, steps) in cases.clone() {
+            let f = bracket();
+            if inside {
+                f.ran("begin", r#"{"session": "s1"}"#);
+            }
+            if conflicting {
+                f.over_define();
+            }
+            let command = steps.last().unwrap().0;
+            let what = format!("{command}, inside: {inside}, over-defined: {conflicting}");
+            for (command, request) in steps {
+                let mut request = request.clone();
+                request["session"] = json!("s1");
+                request["revision"] = json!(f.revision());
+                let made = f.ran(command, &request.to_string());
+                assert_eq!(made["changed"], true, "{what}: {made}");
+            }
+            let published = (f.ran("sketch", read), f.problems(), f.text());
+            if conflicting {
+                assert!(
+                    published
+                        .1
+                        .contains(&("over_constrained".to_owned(), Some("s0000001".to_owned()))),
+                    "{what}: {:?}",
+                    published.1
+                );
+            }
+            let saved = std::fs::read_to_string(f.path()).unwrap();
+            f.ran(
+                "check",
+                r#"{"session": "s1", "model": "current", "fresh": true}"#,
+            );
+            let fresh = (f.ran("sketch", read), f.problems(), f.text());
+            assert_eq!(published, fresh, "{what}");
+            if !inside {
+                assert_eq!(saved, fresh.2, "{what}");
+            }
+        }
+    }
+}

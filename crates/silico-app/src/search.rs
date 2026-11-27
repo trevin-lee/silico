@@ -33,15 +33,16 @@ pub(crate) const MCP: &str = "Agents reach the same commands over MCP";
 pub(crate) const MOST: usize = 40;
 
 /// The registry's commands the search leaves out (`paletteItems`'s `ok`, `cancel`, `orbit`,
-/// `pan`, `zoom`, and `sNoRel`: a dialog's keys, the pointer's gestures, and a key held as
-/// the pointer acts; its `selectOther` isn't in the app's registry).
-pub const LEFT_OUT: [Command; 6] = [
+/// `pan`, `zoom`, `sNoRel`, and `selectOther`: a dialog's keys, the pointer's gestures, a
+/// key held as the pointer acts, and the canvas's right click).
+pub const LEFT_OUT: [Command; 7] = [
     Command::Ok,
     Command::Cancel,
     Command::Orbit,
     Command::Pan,
     Command::Zoom,
     Command::NoRelations,
+    Command::SelectOther,
 ];
 
 /// The foot's parts: each one's caps, then its words (`.pm-foot`'s spans).
@@ -561,8 +562,7 @@ mod tests {
 
     #[test]
     fn it_leaves_out_ok_cancel_the_pointers_gestures_and_the_no_relation_hold() {
-        // `paletteItems`: ok, cancel, orbit, pan, zoom, and sNoRel (and select-other, which
-        // the registry hasn't).
+        // `paletteItems`: ok, cancel, orbit, pan, zoom, sNoRel, and selectOther.
         // "ok": OK left out; Look At's name holds it ("lOOK").
         assert_eq!(commands("ok"), [Command::LookAt]);
         assert_eq!(commands("cancel"), []);
@@ -573,6 +573,8 @@ mod tests {
         // "relations": Sketch without relations, left out; no other command's name or
         // description has the word.
         assert_eq!(commands("relations"), []);
+        // "select other": Select Other, left out (the canvas's right click).
+        assert_eq!(commands("select other"), []);
         for left_out in LEFT_OUT {
             assert!(
                 !registry_listed("")
@@ -626,15 +628,21 @@ mod tests {
 
     #[test]
     fn at_most_forty_are_listed_the_first_in_the_registrys_order() {
-        // The registry's 49 less the six left out are 43: the first 40 listed, so the last
-        // three (Construction, Finish Sketch, Keyboard shortcuts) aren't until a query finds
-        // them.
-        assert_eq!(REGISTRY.len(), 49);
+        // The registry's 64 less the seven left out are 57: the first 40 listed, File's six,
+        // Edit's eight, Rebuild's five, Create's five, Modify's five, Inspect's Measure, and
+        // View's ten (its pointer's three left out), Look At the last; so Selection's five,
+        // Sketch's eleven, and Keyboard shortcuts aren't until a query finds them.
+        assert_eq!(REGISTRY.len(), 64);
         let all = registry_listed("");
         assert_eq!(all.len(), 40);
         assert_eq!(all[0].0.command, Command::New);
-        assert_eq!(all[39].0.command, Command::Dimension);
+        assert_eq!(all[19].0.command, Command::CreateSketch);
+        assert_eq!(all[29].0.command, Command::Measure);
+        assert_eq!(all[39].0.command, Command::LookAt);
         for missing in [
+            Command::FilterFace,
+            Command::Hide,
+            Command::Line,
             Command::Construction,
             Command::FinishSketch,
             Command::Shortcuts,
@@ -642,8 +650,41 @@ mod tests {
             assert!(!all.iter().any(|(entry, _)| entry.command == missing));
         }
         assert_eq!(commands("finish"), [Command::FinishSketch]);
-        // "e" is in 43's names, groups, or descriptions or more: still 40.
+        // "e" is in 57's names, groups, or descriptions or more: still 40.
         assert_eq!(registry_listed("e").len(), 40);
+    }
+
+    #[test]
+    fn the_toolbars_commands_are_found_by_name_group_or_description() {
+        // The prototype's `paletteItems` finds `CMD.pad` by its name, `CMD.fillet` by its
+        // group's, and `CMD.union` among Modify's; each listed with its group.
+        assert_eq!(commands("pad"), [Command::Pad]);
+        assert_eq!(
+            commands("modify"),
+            [
+                Command::Fillet,
+                Command::Chamfer,
+                Command::Union,
+                Command::Subtract,
+                Command::Intersect
+            ]
+        );
+        assert_eq!(
+            commands("create"),
+            [
+                Command::CreateSketch,
+                Command::Pad,
+                Command::Pocket,
+                Command::Revolve,
+                Command::Groove
+            ]
+        );
+        // By description: "bevels" is Chamfer's alone; "axis" Revolve's and Groove's.
+        assert_eq!(commands("bevels"), [Command::Chamfer]);
+        assert_eq!(commands("axis"), [Command::Revolve, Command::Groove]);
+        assert_eq!(commands("measure"), [Command::Measure]);
+        assert_eq!(commands("revert"), [Command::Revert]);
+        assert_eq!(commands("split"), [Command::Split]);
     }
 
     #[test]

@@ -813,22 +813,22 @@ mod tests {
             (
                 SketchState::UnderDefined,
                 "Under defined · 2 DOF",
-                crate::sketch::style::SKETCH_UNDER_DEFINED,
+                crate::theme::SKETCH_UNDER_DEFINED,
             ),
             (
                 SketchState::OverDefined,
                 "Over defined",
-                crate::sketch::style::SKETCH_OVER_DEFINED,
+                crate::theme::SKETCH_OVER_DEFINED,
             ),
             (
                 SketchState::NoSolution,
                 "No solution found",
-                crate::sketch::style::SKETCH_OVER_DEFINED,
+                crate::theme::SKETCH_OVER_DEFINED,
             ),
             (
                 SketchState::Invalid,
                 "Invalid solution found",
-                crate::sketch::style::SKETCH_INVALID,
+                crate::theme::SKETCH_INVALID,
             ),
         ] {
             let read = sketch_read(DIMENSIONED, SketchPlane::Xy, state, 0);
@@ -844,11 +844,7 @@ mod tests {
             sketch_shown(&empty),
             [
                 ("Plane", "YZ".to_owned(), theme::PROPERTY_VALUE),
-                (
-                    "Definition",
-                    "Empty".to_owned(),
-                    crate::sketch::style::TEXT_SUBDUED
-                ),
+                ("Definition", "Empty".to_owned(), crate::theme::TEXT_SUBDUED),
                 ("Curves", "None".to_owned(), theme::PROPERTY_VALUE),
                 ("Dimensions", "None".to_owned(), theme::PROPERTY_VALUE),
             ]
@@ -911,7 +907,7 @@ mod tests {
                 (
                     "Definition",
                     "Fully defined".to_owned(),
-                    crate::sketch::style::SKETCH_FULLY_DEFINED
+                    crate::theme::SKETCH_FULLY_DEFINED
                 ),
                 ("Curves", "1 line, 2 arcs".to_owned(), theme::PROPERTY_VALUE),
                 ("Points", "6".to_owned(), theme::PROPERTY_VALUE),
@@ -920,7 +916,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            crate::sketch::style::SKETCH_FULLY_DEFINED,
+            crate::theme::SKETCH_FULLY_DEFINED,
             Color32::from_rgb(0xee, 0xee, 0xed)
         );
         // Relations: every constraint that isn't a dimension. Two added (a horizontal and a
@@ -936,7 +932,7 @@ mod tests {
             (
                 "Definition",
                 "Under defined · 2 DOF".to_owned(),
-                crate::sketch::style::SKETCH_UNDER_DEFINED
+                crate::theme::SKETCH_UNDER_DEFINED
             )
         );
         assert_eq!(shown[4].1, "7");
@@ -963,11 +959,7 @@ mod tests {
             sketch_mode_shown(&empty),
             [
                 ("Plane", "YZ".to_owned(), theme::PROPERTY_VALUE),
-                (
-                    "Definition",
-                    "Empty".to_owned(),
-                    crate::sketch::style::TEXT_SUBDUED
-                ),
+                ("Definition", "Empty".to_owned(), crate::theme::TEXT_SUBDUED),
                 ("Curves", "None".to_owned(), theme::PROPERTY_VALUE),
                 ("Points", "0".to_owned(), theme::PROPERTY_VALUE),
                 ("Dimensions", "0".to_owned(), theme::PROPERTY_VALUE),

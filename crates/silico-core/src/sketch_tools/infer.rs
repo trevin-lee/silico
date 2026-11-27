@@ -489,6 +489,36 @@ pub(super) fn pick_in(
     at: Xy,
     axes: super::Axes,
 ) -> Option<Reference> {
+    picking(view, tolerance, at, axes, |pointer| pointer.pick(at))
+}
+
+/// The curve of `view` a click at `at` is on, within `tolerance` millimetres, by
+/// [`Pointer::pick`]'s rule for curves ([`Pointer::curves_near`]: a line or an arc where
+/// it's drawn, a circle all round), with no point in its way and no axis a candidate: the
+/// nearest, ties in ID order. Trim, split, and extend take a curve by it. The tolerance and
+/// the place are taken as [`pick_in`] takes them.
+pub(super) fn curve_in(view: &View<'_>, tolerance: f64, at: Xy) -> Option<ElementId> {
+    let no_axes = super::Axes { x: false, y: false };
+    picking(view, tolerance, at, no_axes, |pointer| {
+        let near = pointer.curves_near(at);
+        nearest(near.iter().filter_map(|n| match &n.reference {
+            Reference::Element(id) => Some((n.off, id, id)),
+            _ => None,
+        }))
+        .cloned()
+    })
+}
+
+/// `pick` asked of a pointer on `view` that infers nothing, within `tolerance` (one that
+/// isn't a finite number above 0 taken as 0), the axes `axes` allows; nothing for a place
+/// `at` that isn't finite.
+fn picking<T>(
+    view: &View<'_>,
+    tolerance: f64,
+    at: Xy,
+    axes: super::Axes,
+    pick: impl FnOnce(&Pointer<'_, '_>) -> Option<T>,
+) -> Option<T> {
     if !(at[0].is_finite() && at[1].is_finite()) {
         return None;
     }
@@ -507,7 +537,7 @@ pub(super) fn pick_in(
         classes: &classes,
         axes,
     };
-    pointer.pick(at)
+    pick(&pointer)
 }
 
 /// IDs for a gesture's point or line not named yet, none a point or curve of the view: what
@@ -758,8 +788,8 @@ impl Pointer<'_, '_> {
     }
 
     /// The curves within the tolerance of `at`: lines as drawn, circles, arcs where they're
-    /// drawn, and the axes the pointer's `axes` allows, infinite, but where a line of the
-    /// sketch lies along one ([`covers`](Self::covers)).
+    /// drawn (neither from its centre), and the axes the pointer's `axes` allows, infinite,
+    /// but where a line of the sketch lies along one ([`covers`](Self::covers)).
     fn curves_near(&self, at: Xy) -> Vec<Near> {
         let mut near = Vec::new();
         let tolerance = self.tolerance;
@@ -786,7 +816,12 @@ impl Pointer<'_, '_> {
         for (id, geo) in &self.view.curves {
             let (foot, off) = match geo {
                 Geo::Line { from, to } => to_segment(*from, *to, at),
-                Geo::Circle { .. } | Geo::Arc { .. } => {
+                Geo::Circle { center, .. } | Geo::Arc { center, .. } => {
+                    // At a round's centre every place of it is as near, and the pointer is
+                    // on none of it (its projection is the centre itself, 0 off).
+                    if at == *center {
+                        continue;
+                    }
                     let foot = geo.project(at);
                     if !geo.spans(foot) {
                         continue;

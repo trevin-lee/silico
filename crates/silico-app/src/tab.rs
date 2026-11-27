@@ -651,6 +651,14 @@ fn built_from(
         .find(|input| kind_of(input) == Some("sketch"))
 }
 
+/// Why nothing of a feature's changes while a sketch is open (its Cancel undoes to where it
+/// opened, so a change made under it would go with it): the prototype's words for a dialog
+/// asked for in sketch mode (`openDialog`), which a feature's menu and a mend say too.
+pub(crate) const FINISH_SKETCH_FIRST: &str = "Finish or cancel the sketch first";
+
+/// Why a broken reference isn't mended while another feature's dialog is open.
+pub(crate) const CLOSE_DIALOG_TO_MEND: &str = "Close the dialog before mending another feature";
+
 /// Why nothing of a document the gate (or the reader) refused changes but its text: a
 /// feature's menu's items and the toolbar's dialogs say it.
 pub const UNMENDED: &str =
@@ -7709,43 +7717,7 @@ impl Tab {
         broken: &crate::repair::Broken,
         candidate: &str,
     ) -> bool {
-        if self.closing() {
-            return false;
-        }
-        let name = self.named(&broken.feature);
-        if self.dialog_of(&broken.feature) {
-            return self.repair_in_dialog(sessions, broken, Some(candidate), &name);
-        }
-        if self.in_dialog() {
-            self.hush();
-            self.message = Some("Close the dialog before mending another feature".to_owned());
-            return false;
-        }
-        if self.in_sketch() {
-            // Its Cancel undoes to where it opened, a mend too, as a dialog's would.
-            self.hush();
-            self.message = Some("Finish or cancel the sketch first".to_owned());
-            return false;
-        }
-        let Some(dressing) = self.dressing(broken) else {
-            self.hush();
-            self.message = Some(crate::repair::STALE.to_owned());
-            return false;
-        };
-        let read = |name: &str, base: &FeatureId| self.selection.read_on(name, base);
-        match crate::repair::used(broken, candidate, &dressing, &read, &name) {
-            Ok((edit, told)) => {
-                let words = Words::Then(broken.feature.clone(), crate::repair::USED_STEP);
-                self.edit_with_words(sessions, edit, Some(words));
-                self.edit_words.told = Some(told);
-                true
-            }
-            Err(why) => {
-                self.hush();
-                self.message = Some(why);
-                false
-            }
-        }
+        self.mend(sessions, broken, Some(candidate))
     }
 
     /// A broken reference's name dropped from its feature's `edges` (`removeRef`): one
@@ -7758,22 +7730,36 @@ impl Tab {
         sessions: &Arc<Sessions<P>>,
         broken: &crate::repair::Broken,
     ) -> bool {
+        self.mend(sessions, broken, None)
+    }
+
+    /// `broken` mended: `candidate` used in its place ([`use_candidate`](Self::use_candidate)),
+    /// or, for none, its name removed ([`remove_reference`](Self::remove_reference)), each
+    /// past the same guards: in its own dialog's box of names if that's open; refused,
+    /// saying why, under another dialog or a sketch, or for a card no longer the model's.
+    /// Whether a command was started.
+    fn mend<P: Clients + 'static>(
+        &mut self,
+        sessions: &Arc<Sessions<P>>,
+        broken: &crate::repair::Broken,
+        candidate: Option<&str>,
+    ) -> bool {
         if self.closing() {
             return false;
         }
         let name = self.named(&broken.feature);
         if self.dialog_of(&broken.feature) {
-            return self.repair_in_dialog(sessions, broken, None, &name);
+            return self.repair_in_dialog(sessions, broken, candidate, &name);
         }
         if self.in_dialog() {
             self.hush();
-            self.message = Some("Close the dialog before mending another feature".to_owned());
+            self.message = Some(CLOSE_DIALOG_TO_MEND.to_owned());
             return false;
         }
         if self.in_sketch() {
             // Its Cancel undoes to where it opened, a mend too, as a dialog's would.
             self.hush();
-            self.message = Some("Finish or cancel the sketch first".to_owned());
+            self.message = Some(FINISH_SKETCH_FIRST.to_owned());
             return false;
         }
         let Some(dressing) = self.dressing(broken) else {
@@ -7782,9 +7768,19 @@ impl Tab {
             return false;
         };
         let read = |name: &str, base: &FeatureId| self.selection.read_on(name, base);
-        match crate::repair::removed(broken, &dressing, &read, &name) {
+        let (mended, step) = match candidate {
+            Some(candidate) => (
+                crate::repair::used(broken, candidate, &dressing, &read, &name),
+                crate::repair::USED_STEP,
+            ),
+            None => (
+                crate::repair::removed(broken, &dressing, &read, &name),
+                crate::repair::REMOVED_STEP,
+            ),
+        };
+        match mended {
             Ok((edit, told)) => {
-                let words = Words::Then(broken.feature.clone(), crate::repair::REMOVED_STEP);
+                let words = Words::Then(broken.feature.clone(), step);
                 self.edit_with_words(sessions, edit, Some(words));
                 self.edit_words.told = Some(told);
                 true
@@ -13635,6 +13631,31 @@ mod tests {
         tab.sketch = None;
         assert!(tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
         assert_eq!(tab.sent.last(), Some(&Sent::Edit("edges.1".to_owned())));
+    }
+
+    #[test]
+    fn a_repair_with_another_features_dialog_open_is_refused_saying_why_and_made_once_it_closes() {
+        let (_dir, sessions, mut tab) = opened_on(BROKEN_ROUND, |_| {});
+        published_quietly(&mut tab, &sessions);
+        let card = round_card(1, "k7f2qx3m.box.Edge13", tab.revision);
+        // A dialog open on another feature (the block's): its Cancel undoes to where it
+        // opened, so a mend made under it would go with it. Use and Remove the edge refused,
+        // saying why, sending nothing.
+        let mut other = Dialog::new(Kind::Box, None, 1);
+        other.feature = Some(FeatureId::new("k7f2qx3m").unwrap());
+        tab.dialog = Some(other);
+        let sent = tab.sent.clone();
+        let why = Some("Close the dialog before mending another feature");
+        assert!(!tab.use_candidate(&sessions, &card, "k7f2qx3m.box.Edge12"));
+        assert_eq!(tab.message.as_deref(), why);
+        tab.message = None;
+        assert!(!tab.remove_reference(&sessions, &card));
+        assert_eq!(tab.message.as_deref(), why);
+        assert_eq!(tab.sent, sent);
+        // The dialog closed: Remove the edge mends it, `edges` set without the broken name.
+        tab.dialog = None;
+        assert!(tab.remove_reference(&sessions, &card));
+        assert_eq!(tab.sent.last(), Some(&Sent::Edit("edges".to_owned())));
     }
 
     #[test]

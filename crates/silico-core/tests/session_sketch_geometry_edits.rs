@@ -3158,3 +3158,186 @@ fn a_join_that_would_hold_the_joined_lines_own_point_off_itself_is_refused_the_s
     );
     assert_eq!((f.text(), f.revision()), (text, revision(3)));
 }
+
+/// Each edit that writes geometry, by name, after the edits it needs made first, each at
+/// the revision it's made against counted from the first, `at`: what review A13-M2 runs. A
+/// drag's end writes geometry too, judged as the edits are.
+fn each_writing_edit(at: u64) -> Vec<(&'static str, Vec<(&'static str, String)>)> {
+    let split_base = || {
+        (
+            "sketch_split",
+            split(
+                at,
+                "s0000001",
+                "na000001",
+                json!([[30, 0]]),
+                json!(["pa000007", "na000007", "ka00000d"]),
+            ),
+        )
+    };
+    let unjoin_corner = || {
+        (
+            "sketch_unjoin",
+            unjoin(at, "s0000001", "pa000004", "na000004", json!(["pa000008"])),
+        )
+    };
+    vec![
+        ("sketch_split", vec![split_base()]),
+        (
+            "sketch_trim",
+            vec![(
+                "sketch_trim",
+                trim(at, "s0000001", "na000001", [30.0, 0.0], json!(null)),
+            )],
+        ),
+        ("sketch_unjoin", vec![unjoin_corner()]),
+        (
+            "sketch_merge",
+            vec![
+                unjoin_corner(),
+                (
+                    "sketch_merge",
+                    merge(at + 1, "s0000001", &["pa000004", "pa000008"]),
+                ),
+            ],
+        ),
+        (
+            "sketch_extend",
+            vec![(
+                "sketch_extend",
+                extend(
+                    at,
+                    "s0000001",
+                    "na000002",
+                    "end",
+                    json!({"type": "length", "length": 2}),
+                ),
+            )],
+        ),
+        (
+            "sketch_join",
+            vec![
+                split_base(),
+                ("sketch_join", join(at + 1, "s0000001", "pa000007")),
+            ],
+        ),
+        (
+            "drag_end",
+            vec![
+                (
+                    "drag_begin",
+                    r#"{"session": "s1", "sketch": "s0000001", "point": "pa000003", "curve": null, "press": null}"#
+                        .to_owned(),
+                ),
+                ("drag_end", r#"{"session": "s1", "to": [61, 6]}"#.to_owned()),
+            ],
+        ),
+    ]
+}
+
+#[test]
+fn the_rebuild_after_an_edit_that_writes_geometry_takes_the_edits_solve_and_never_sends_it_again() {
+    // Review A13-M2: an edit's solve of the text it wrote judges it, and the rebuild of that
+    // text then solved it again, the same system sent twice (on PlaneGCS's dense SQP, tens
+    // of seconds each for a large sketch). The edit's solve is now the rebuild's: the edit
+    // sends only its own solves, counted by hand below, and the rebuild nothing, whether it
+    // runs in the edit's commit (outside a transaction) or for the read after (inside one,
+    // where it waits for the read).
+    // What's published is what a fresh solve gives (a fresh check solves every sketch
+    // again): the sketch read, its states and freedom, and the text, the same before it and
+    // after it; and the fresh check sends the edit's own system, so the solve the rebuild
+    // took was keyed to that text.
+    for inside in [true, false] {
+        for (edit, steps) in each_writing_edit(1) {
+            let what = format!("{edit}, inside: {inside}");
+            let f = opened(&bracket());
+            f.checked();
+            if inside {
+                f.begin();
+            }
+            let (last, before) = steps.split_last().unwrap();
+            for (command, request) in before {
+                f.ran(command, request);
+            }
+            f.checked();
+            let sent = f.sketches.requests().len();
+            let (command, request) = last;
+            let made = f.ran(command, request);
+            assert_eq!(made["changed"], true, "{what}: {made}");
+            // What the edit solves, its judging solve of the text it wrote last, clean, so the
+            // text before it isn't solved after it. An extend solves the text before it
+            // first, to write its solve back, as a drag begins; a drag's end solves the moved
+            // sketch whole on release, then as a load does, before the judging solve, each
+            // the same system on this fake. Outside a transaction the commit's rebuild runs
+            // inside the edit: none of these counts holds a solve of the rebuild's.
+            let solves = match edit {
+                "sketch_extend" => 2,
+                "drag_end" => 3,
+                _ => 1,
+            };
+            let by_edit = f.sketches.requests()[sent..].to_vec();
+            assert_eq!(by_edit.len(), solves, "{what}: the edit's solves");
+            f.checked();
+            let new = f.sketches.requests()[sent..].to_vec();
+            assert_eq!(new, by_edit, "{what}: the read's rebuild solved again");
+            let read = r#"{"session": "s1", "model": "current", "sketch": "s0000001"}"#;
+            let published = f.ran("sketch", read);
+            let text = f.text();
+            let sent = f.sketches.requests().len();
+            f.ran(
+                "check",
+                r#"{"session": "s1", "model": "current", "fresh": true}"#,
+            );
+            let fresh = f.sketches.requests()[sent..].to_vec();
+            assert!(
+                fresh.contains(by_edit.last().unwrap()),
+                "{what}: the fresh check didn't send the edit's system"
+            );
+            assert_eq!(f.ran("sketch", read), published, "{what}");
+            assert_eq!(f.text(), text, "{what}");
+        }
+    }
+}
+
+#[test]
+fn an_edit_whose_solve_the_core_cant_read_is_refused_with_the_solvers_fault_the_session_kept() {
+    // A reply the core can't trust (a solution called one that can't be built, every piece
+    // of which can be): the solver's fault, not the sketch's, so the edit is refused with it,
+    // `protocol_error`, naming the sketch, in the reader's words, as a crash or a hang would
+    // be; never judged as the sketch's solve. The session as it was, inside a transaction
+    // and out.
+    fn unreadable(system: &SketchSystem) -> Solved {
+        let mut solved = FakeSketches::as_sent(system);
+        solved.status = SolveStatus::SolvedInvalid;
+        solved
+    }
+    for inside in [true, false] {
+        let f = opened(&bracket());
+        f.checked();
+        if inside {
+            f.begin();
+        }
+        let text = f.text();
+        let file = std::fs::read(f.path()).unwrap();
+        answering_edits(&f, unreadable);
+        let refused = f.refused(
+            "sketch_split",
+            &split(1, "s0000001", "na000001", json!([[30, 0]]), json!(null)),
+        );
+        assert_eq!(
+            (&refused[0]["code"], &refused[0]["feature"]),
+            (&json!("protocol_error"), &json!("s0000001")),
+            "inside: {inside}: {refused}"
+        );
+        // In the reader's own words: the worker's fault, not an edit's verdict ("after the
+        // split, ..."), which a sketch's own refusal of the solve would be.
+        assert_eq!(
+            refused[0]["message"],
+            "the sketch worker calls its solution one that can't be built, and every piece of it can be",
+            "{refused}"
+        );
+        assert_eq!(refused.as_array().unwrap().len(), 1, "{refused}");
+        assert_eq!((f.text(), f.revision()), (text, revision(1)));
+        assert_eq!(std::fs::read(f.path()).unwrap(), file);
+    }
+}

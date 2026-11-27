@@ -245,8 +245,10 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
         .into_iter()
         .collect();
     // What each feature uses as it builds: what stands for each of its inputs, a suppressed
-    // one's base passed through (`document::suppression`), and the sketch it sweeps. A
-    // feature blocked through a suppressed one is blocked by what that one passes through.
+    // one's base passed through (`document::suppression`), the sketch it sweeps, and, for a
+    // sketch on a face, the solids that blocked it, which its face was looked for in (the
+    // face's own feature, or what consumes it). A feature blocked through a suppressed one
+    // is blocked by what that one passes through.
     let features = &model.document().features;
     let links = crate::document::suppression::Links::of(features);
     let place = |id: &FeatureId| links.place(id);
@@ -260,7 +262,14 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
                     .into_iter()
                     .filter_map(|(_, stands)| stands.and_then(|s| features.get(s)))
                     .map(|stand| &stand.id);
-            (&f.id, inputs.chain(f.operation.sketch()).collect())
+            let looked_in = model.blocked_through(&f.id);
+            (
+                &f.id,
+                inputs
+                    .chain(f.operation.sketch())
+                    .chain(looked_in)
+                    .collect(),
+            )
         })
         .collect();
     // What each failed or blocked feature comes to, in timeline order: a feature's inputs
@@ -308,7 +317,8 @@ fn marks(model: &Model, excepted: &Excepted) -> BTreeMap<FeatureId, Mark> {
                 }
             }
             // Blocked: an error if any failure upstream is the document's, whichever of
-            // its inputs names it first; unknown if every one is a kernel fault.
+            // what it uses comes to it (the rebuild's `on` is only the first); unknown if
+            // every one is a kernel fault.
             FeatureOutcome::Blocked { .. } => {
                 let inputs = uses.get(id).map(Vec::as_slice).unwrap_or_default();
                 let root = if inputs.iter().any(|i| roots.get(i) == Some(&Root::Document)) {

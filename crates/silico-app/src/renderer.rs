@@ -21,8 +21,10 @@ use eframe::egui_wgpu;
 use eframe::wgpu;
 use silico_protocol::{Camera, Mesh};
 pub use silico_render::render::{
-    Element, Frame, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer, Tint, Tinted,
+    Element, Frame, Look, Outlines, Pick, Picking, PixelRect, RenderFailure, Renderer, Tint, Tinted,
 };
+
+use crate::theme;
 
 /// A [`Frame`] whose values it holds: what the pane hands on, to be drawn once the paint
 /// callback is prepared.
@@ -144,12 +146,19 @@ impl ViewRenderer for Renderer {
 /// or, if `silico-render` can't draw on that device, why, said in the log too: the app then
 /// runs with no viewport drawn, the pane saying why ([`crate::App::not_drawing`]).
 pub fn on_eframe(render_state: &egui_wgpu::RenderState) -> Result<OnGpu<Renderer>, String> {
-    match Renderer::new(
+    let made = Renderer::new(
         &render_state.adapter,
         render_state.device.clone(),
         render_state.queue.clone(),
         render_state.target_format,
-    ) {
+    )
+    .and_then(|mut renderer| {
+        renderer
+            .set_look(look())
+            .map_err(|refused| format!("the theme's look: {}", refused.message))?;
+        Ok(renderer)
+    });
+    match made {
         Ok(renderer) => {
             install(render_state, renderer);
             Ok(OnGpu::new())
@@ -158,6 +167,27 @@ pub fn on_eframe(render_state: &egui_wgpu::RenderState) -> Result<OnGpu<Renderer
             tracing::warn!("the viewport can't draw on this device: {why}");
             Err(why)
         }
+    }
+}
+
+/// How the viewport draws the bodies, the theme's (DESIGN.md's *Viewport*): bodies
+/// [`theme::VIEWPORT_BODY`], their edges [`theme::VIEWPORT_EDGE`]
+/// [`theme::VIEWPORT_EDGE_WIDTH`] wide, and a selected edge
+/// [`theme::VIEWPORT_SELECTION_EDGE_WIDTH`] wide, its outline (in
+/// [`theme::VIEWPORT_SELECTION_EDGE`], `crate::selection::outlines`) covering its stroke and
+/// reaching half the difference out either side. The render worker's PNGs for agents keep
+/// their own look (`silico_render::render::Look::RENDER`). SEAM: `re_renderer`'s outline has
+/// one radius for the selection and the hover, so a hovered edge is drawn 3.5 wide too, where
+/// the prototype draws it 3. SEAM: the start page's pictures (`crate::thumbs`) are the
+/// `render` command's, so they're in the render worker's look, not this one: `render` takes
+/// no look.
+pub fn look() -> Look {
+    let rgb = |[r, g, b, _]: theme::Rgba8| [r, g, b];
+    Look {
+        body: rgb(theme::VIEWPORT_BODY),
+        edge: rgb(theme::VIEWPORT_EDGE),
+        edge_width: theme::VIEWPORT_EDGE_WIDTH,
+        outline_reach: (theme::VIEWPORT_SELECTION_EDGE_WIDTH - theme::VIEWPORT_EDGE_WIDTH) / 2.0,
     }
 }
 
@@ -749,6 +779,24 @@ mod tests {
         );
         assert_eq!(locked(&shared).picked, Some(pick));
         assert!(locked(&shared).changes.is_empty());
+    }
+
+    #[test]
+    fn the_viewports_look_is_the_prototypes() {
+        // DESIGN.md's *Viewport*, typed here: body #b9c0ca, edges #101010 1.5 pt, a selected
+        // edge 3.5 pt, so its outline reaches (3.5 − 1.5) / 2 = 1 pt either side of its
+        // stroke; and it's a look the renderer takes.
+        let look = look();
+        assert_eq!(
+            look,
+            Look {
+                body: [0xb9, 0xc0, 0xca],
+                edge: [0x10, 0x10, 0x10],
+                edge_width: 1.5,
+                outline_reach: 1.0,
+            }
+        );
+        assert_eq!(look.check(), Ok(()));
     }
 
     #[test]
