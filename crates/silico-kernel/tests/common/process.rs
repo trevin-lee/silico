@@ -25,9 +25,23 @@ pub fn open_fds() -> usize {
 }
 
 /// Threads in this process.
+///
+/// On Linux, the count the kernel keeps (`Threads:` in `/proc/self/status`), never a
+/// listing of `/proc/self/task`: a listing that meets a thread as it exits stops there,
+/// and the next read resumes by position in the shorter list, so it misses a live thread
+/// listed after the one that went. A test waiting for its threads to go would read that
+/// short count as them gone. On the CI VM, the pool's drop race counted 3 where 4 were
+/// live in 6 of 1,200 runs under load.
 pub fn threads() -> usize {
     if cfg!(target_os = "linux") {
-        return std::fs::read_dir("/proc/self/task").unwrap().count();
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        return status
+            .lines()
+            .find_map(|line| line.strip_prefix("Threads:"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
     }
     let out = Command::new("ps")
         .args(["-M", "-p", &std::process::id().to_string()])
