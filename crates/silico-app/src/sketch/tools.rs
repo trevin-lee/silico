@@ -9,8 +9,9 @@
 //! to an add is given back by its token ([`Tools::added`], [`Tools::refused`]), in whatever
 //! order it comes.
 //!
-//! What's here of trim and split is only where the pointer is: which curve it's on (within
-//! the pick tolerance, as sketch mode's selection hits one), where a drag's path crosses a
+//! What's here of trim and split is only where the pointer is: which curve it's on (the
+//! core's `sketch_tools::curve_at`, the rule sketch mode's selection takes a curve by, within
+//! the pick tolerance, with no point in its way), where a drag's path crosses a
 //! curve, and, for a split, the click put on its curve (the core refuses a position farther
 //! than 1e-7 mm from it, decision 4). Where to cut, what's removed, and what's kept are the
 //! core's.
@@ -24,13 +25,12 @@ use silico_core::document::sketch_edit::Members;
 use silico_core::document::{Coordinate, ElementId, ElementKind, FeatureId};
 use silico_core::extend::End;
 use silico_core::sketch_tools::{
-    AddToken, Axes, Context, DimensionEvent, DimensionPreview, Event, Modifiers, NewIds, Offer,
-    Outcome, Preview, SketchTool, SmartDimension, SystemIds, ToolKind, extend_end, extend_preview,
+    self, AddToken, Axes, Context, DimensionEvent, DimensionPreview, Event, Modifiers, NewIds,
+    Offer, Outcome, Preview, SketchTool, SmartDimension, SystemIds, ToolKind, extend_end,
+    extend_preview,
 };
 
-use super::draw::{
-    Curve, Geometry, add, angle, direction, dot, foot, length, mul, segment_distance, sub,
-};
+use super::draw::{Curve, Geometry, add, angle, dot, foot, length, mul, sub};
 
 /// The tool chosen: a drawing tool of the core's, Smart Dimension, trim, split, or extend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -593,45 +593,25 @@ impl Tools {
 }
 
 /// The curve of `read` nearest `at`, within `tolerance` millimetres: its ID, its kind, and
-/// its geometry; ties to the lower ID. Points don't stand in the way, as they do for a
-/// selection: trim and split act on curves alone.
+/// its geometry; ties to the lower ID. The core's rule (`sketch_tools::curve_at`), the one
+/// sketch mode's selection takes curves by (`sketch_tools::pick`): a line or an arc where
+/// it's drawn, so a place past an arc's end is on no arc, however near that end; a circle
+/// all round. Points don't stand in the way, as they do for a selection: trim, split, and
+/// extend act on curves alone. None for a tolerance below zero or not a number (which the
+/// core's rule takes as 0).
 pub(crate) fn curve_at(
     read: &SketchRead,
     at: [f64; 2],
     tolerance: f64,
 ) -> Option<(ElementId, ElementKind, Curve)> {
-    if !(at[0].is_finite() && at[1].is_finite()) || tolerance.is_nan() || tolerance < 0.0 {
+    if tolerance.is_nan() || tolerance < 0.0 {
         return None;
     }
+    let id = sketch_tools::curve_at(&read.members, at, tolerance)?;
     Geometry::of(read)
         .curves()
-        .map(|(id, curve, kind)| (distance(curve, at), id, kind, curve))
-        .filter(|(d, ..)| *d <= tolerance)
-        .min_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(b.1)))
-        .map(|(_, id, kind, curve)| (id.clone(), kind, curve))
-}
-
-/// How far `at` is from `curve`, as trim and split take a curve under the pointer: from a
-/// line's segment, a circle's rim, or an arc's (or its nearer end, past its sweep).
-fn distance(curve: Curve, at: [f64; 2]) -> f64 {
-    match curve {
-        Curve::Line { from, to } => segment_distance(at, from, to),
-        Curve::Round {
-            centre,
-            radius,
-            start,
-            sweep,
-        } => {
-            let off = sub(at, centre);
-            let within = (angle(off) - start).rem_euclid(TAU) <= sweep;
-            if sweep >= TAU || within {
-                (length(off) - radius).abs()
-            } else {
-                let end = |a: f64| add(centre, mul(direction(a), radius));
-                length(sub(at, end(start))).min(length(sub(at, end(start + sweep))))
-            }
-        }
-    }
+        .find(|(each, ..)| **each == id)
+        .map(|(_, curve, kind)| (id.clone(), kind, curve))
 }
 
 /// `at` put on `curve`: the nearest place of a line's line, or of an arc's or a circle's
