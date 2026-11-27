@@ -426,14 +426,125 @@ fn the_plate_with_a_boss_measures_what_its_features_make_by_hand() {
 
 #[test]
 fn the_golden_models_centres_are_where_their_material_is_by_hand() {
-    // Each fingerprint's centre of mass, worked by hand and held to the nanometre the file
-    // writes: the plate 60 × 30 × 5 at its middle, (30, 15, 2.5); its first hole, r 1.5
-    // through its 5 at (15, 15), takes V_h = 11.25π from it, so x = (9000 · 30 − 15 V_h) /
-    // (9000 − V_h) = 30.0591371 (y and z unchanged, the hole being centred on both); the
-    // fused boxes, a 10 mm cube at (5, 5, 5) and a 10 × 10 × 5 slab beside it at
-    // (15, 5, 2.5), (1000 · 5 + 500 · 15) / 1500 = 8.333333 and (5000 + 1250) / 1500 =
-    // 4.166667; and the plate with a boss's pad, 60 × 30 × 8 about the origin, (0, 0, 4).
+    // Every fingerprint's centre of mass in the six goldens, all 26, worked by hand from each
+    // model's construction and held to the nanometre the file writes (Fable's derivation, M5's
+    // milestone review, 2026-11-27). A part is its volume and its centroid; a feature's
+    // centre is the volume-weighted mean of what it adds and takes away (`comb`). A fillet of
+    // radius r along a straight edge between two faces at right angles adds or takes the sliver of the
+    // square r × r less the quarter disc: area A r² with A = 1 − π/4, its centroid K r from the
+    // corner along each face, K = (5/6 − π/4) / A; round a rim of radius ρ₀ its centroid runs
+    // round ρ = ρ₀ ± K r, so it's 2π ρ A r² by Pappus.
     use std::f64::consts::PI;
+    type Part = (f64, [f64; 3]);
+    fn comb(parts: &[Part]) -> Part {
+        let volume: f64 = parts.iter().map(|(v, _)| v).sum();
+        let at = |i: usize| parts.iter().map(|(v, c)| v * c[i]).sum::<f64>() / volume;
+        (volume, [at(0), at(1), at(2)])
+    }
+    let a = 1.0 - PI / 4.0;
+    let k = (5.0 / 6.0 - PI / 4.0) / a;
+
+    // example: a block 40 × 20 × 10, a pin r 2.5 through it, 12 long, at (20, 10), cut.
+    let block = (8000.0, [20.0, 10.0, 5.0]);
+    let pin = (PI * 6.25 * 12.0, [20.0, 10.0, 5.0]);
+    let pinned = comb(&[block, (-PI * 6.25 * 10.0, [20.0, 10.0, 5.0])]);
+
+    // fused-boxes: a 10 mm cube, a 10 × 10 × 5 step beside it, fused; the inside corner along
+    // y at x 10, z 5 filleted r 1, adding its sliver into +x, +z.
+    let cube = (1000.0, [5.0, 5.0, 5.0]);
+    let step = (500.0, [15.0, 5.0, 2.5]);
+    let fused = comb(&[cube, step]);
+    let rounded = comb(&[fused, (a * 10.0, [10.0 + k, 5.0, 5.0 + k])]);
+
+    // chamfered-box: the cube's vertical edges at (0, 0), (10, 0), and (10, 10) chamfered 1,
+    // each taking a prism of a right triangle of legs 1, area 1/2, centroid 1/3 from the
+    // corner; then a fillet r 0.5 of the edge at (10, 9), between the side x = 10 and the
+    // chamfer's face toward (9, 10), whose turn is 45°: it takes the kite (P, T1, C, T2) less
+    // the circle's sector of 45°, the tangent points r tan(22.5°) from P, the circle's centre
+    // r / cos(22.5°) from P along the bisector. (Its twin edge at (9, 10) would give
+    // (4.976092, 5.023419), so this row pins which edge it took.)
+    let third = 1.0 / 3.0;
+    let chamfered = comb(&[
+        cube,
+        (-5.0, [third, third, 5.0]),
+        (-5.0, [10.0 - third, third, 5.0]),
+        (-5.0, [10.0 - third, 10.0 - third, 5.0]),
+    ]);
+    let filleted = {
+        let r = 0.5;
+        let turn = PI / 4.0;
+        let reach = r * libm::tan(turn / 2.0);
+        let p = [10.0, 9.0];
+        let u1 = [0.0, -1.0];
+        let u2 = [-0.5f64.sqrt(), 0.5f64.sqrt()];
+        let t1 = [p[0] + reach * u1[0], p[1] + reach * u1[1]];
+        let t2 = [p[0] + reach * u2[0], p[1] + reach * u2[1]];
+        let sum = [u1[0] + u2[0], u1[1] + u2[1]];
+        let length = libm::hypot(sum[0], sum[1]);
+        let bisector = [sum[0] / length, sum[1] / length];
+        let apart = r / libm::cos(turn / 2.0);
+        let c = [p[0] + apart * bisector[0], p[1] + apart * bisector[1]];
+        let kite = r * reach;
+        let kite_at = [
+            (p[0] + t1[0] + c[0]) / 6.0 + (p[0] + t2[0] + c[0]) / 6.0,
+            (p[1] + t1[1] + c[1]) / 6.0 + (p[1] + t2[1] + c[1]) / 6.0,
+        ];
+        let sector = r * r * turn / 2.0;
+        let toward = 4.0 * r * libm::sin(turn / 2.0) / (3.0 * turn);
+        let sector_at = [c[0] - toward * bisector[0], c[1] - toward * bisector[1]];
+        let taken = kite - sector;
+        let at = |i: usize| (kite * kite_at[i] - sector * sector_at[i]) / taken;
+        comb(&[chamfered, (-taken * 10.0, [at(0), at(1), 5.0])])
+    };
+
+    // pointed-cone: a cone r 5 to a point over 10; a pin r 1 from z −1 to 11; the bore, the
+    // cone less the pin's cylinder to z 8 and its tip, a cone r 1 over 8 to 10; then the
+    // bore's rim at ρ 1, z 0 filleted r 0.2, its sliver taken round ρ = 1 + K r.
+    let cone = (PI * 25.0 * 10.0 / 3.0, [0.0, 0.0, 2.5]);
+    let rod = (PI * 12.0, [0.0, 0.0, 5.0]);
+    let bore = comb(&[
+        cone,
+        (-PI * 8.0, [0.0, 0.0, 4.0]),
+        (-PI * 2.0 / 3.0, [0.0, 0.0, 8.5]),
+    ]);
+    let rim = {
+        let r = 0.2;
+        comb(&[
+            bore,
+            (-2.0 * PI * (1.0 + k * r) * a * r * r, [0.0, 0.0, k * r]),
+        ])
+    };
+
+    // plate-with-holes: a plate 60 × 30 × 5; holes r 1.5 at (15, 15) through it, r 2 at
+    // (30, 15) 3 deep from z 2 (the pin 4 long, at its middle z 4), r 2.5 at (45, 15)
+    // through; the r 2 hole's rim at z 5 filleted r 0.5, round ρ = 2 + K r.
+    let plate = (9000.0, [30.0, 15.0, 2.5]);
+    let first = comb(&[plate, (-PI * 2.25 * 5.0, [15.0, 15.0, 2.5])]);
+    let second = comb(&[first, (-PI * 4.0 * 3.0, [30.0, 15.0, 3.5])]);
+    let third_hole = comb(&[second, (-PI * 6.25 * 5.0, [45.0, 15.0, 2.5])]);
+    let holes_rim = {
+        let r = 0.5;
+        comb(&[
+            third_hole,
+            (
+                -2.0 * PI * (2.0 + k * r) * a * r * r,
+                [30.0, 15.0, 5.0 - k * r],
+            ),
+        ])
+    };
+
+    // plate-with-boss (M3.6, S10): the pad 60 × 30 × 8 about the origin; pockets r 3 at
+    // (−15, 0) and r 4 at (15, 0) through it; the boss r 5, 6 high, on its top; the front top
+    // edge (y −15, z 8, 60 long) filleted r 1, its sliver taken from the corner into +y, −z.
+    let pad = (14400.0, [0.0, 0.0, 4.0]);
+    let pocketed = comb(&[
+        pad,
+        (-PI * 9.0 * 8.0, [-15.0, 0.0, 4.0]),
+        (-PI * 16.0 * 8.0, [15.0, 0.0, 4.0]),
+    ]);
+    let bossed = comb(&[pocketed, (PI * 25.0 * 6.0, [0.0, 0.0, 11.0])]);
+    let edged = comb(&[bossed, (-a * 60.0, [0.0, -15.0 + k, 8.0 - k])]);
+
     let centre = |model: &str, feature: &str| {
         let text = std::fs::read_to_string(golden().join(model)).unwrap();
         let document = silico_core::document::read(text.as_bytes()).unwrap();
@@ -447,23 +558,69 @@ fn the_golden_models_centres_are_where_their_material_is_by_hand() {
             .unwrap_or_else(|| panic!("{model}: {feature} has no centre"))
     };
     let nm = |mm: f64| (mm * 1e6).round() as i64;
-    let hole = 11.25 * PI;
-    for (model, feature, want) in [
-        ("plate-with-holes.silico", "pppppppp", [30.0, 15.0, 2.5]),
+    let rows: [(&str, &str, Part); 26] = [
+        ("example.silico", "k7f2qx3m", block),
+        ("example.silico", "a91cw0de", pin),
+        ("example.silico", "m3tq8v0z", pinned),
+        ("fused-boxes.silico", "aaaaaaaa", cube),
+        ("fused-boxes.silico", "bbbbbbbb", step),
+        ("fused-boxes.silico", "rrrrrrrr", fused),
+        ("fused-boxes.silico", "ffffffff", rounded),
+        ("chamfered-box.silico", "aaaaaaaa", cube),
+        ("chamfered-box.silico", "cccccccc", chamfered),
+        ("chamfered-box.silico", "ffffffff", filleted),
+        ("pointed-cone.silico", "kkkkkkkk", cone),
+        ("pointed-cone.silico", "pppppppp", rod),
+        ("pointed-cone.silico", "hhhhhhhh", bore),
+        ("pointed-cone.silico", "ffffffff", rim),
+        ("plate-with-holes.silico", "pppppppp", plate),
         (
             "plate-with-holes.silico",
-            "c0000001",
-            [(9000.0 * 30.0 - 15.0 * hole) / (9000.0 - hole), 15.0, 2.5],
+            "y0000001",
+            (PI * 2.25 * 7.0, [15.0, 15.0, 2.5]),
         ),
+        ("plate-with-holes.silico", "c0000001", first),
         (
-            "fused-boxes.silico",
-            "rrrrrrrr",
-            [12.5 / 1.5, 5.0, 6.25 / 1.5],
+            "plate-with-holes.silico",
+            "y0000002",
+            (PI * 4.0 * 4.0, [30.0, 15.0, 4.0]),
         ),
-        ("plate-with-boss.silico", "p0000001", [0.0, 0.0, 4.0]),
-    ] {
+        ("plate-with-holes.silico", "c0000002", second),
+        (
+            "plate-with-holes.silico",
+            "y0000003",
+            (PI * 6.25 * 7.0, [45.0, 15.0, 2.5]),
+        ),
+        ("plate-with-holes.silico", "c0000003", third_hole),
+        ("plate-with-holes.silico", "f0000001", holes_rim),
+        ("plate-with-boss.silico", "p0000001", pad),
+        ("plate-with-boss.silico", "q0000001", pocketed),
+        ("plate-with-boss.silico", "r0000001", bossed),
+        ("plate-with-boss.silico", "f0000001", edged),
+    ];
+    for (model, feature, (_, want)) in rows {
         assert_eq!(centre(model, feature), want.map(nm), "{model}: {feature}");
     }
+    // Every fingerprint the goldens hold has its row, and no row is another's twice.
+    let fingerprinted: std::collections::BTreeSet<(&str, String)> = MODELS
+        .iter()
+        .flat_map(|model| {
+            let text = std::fs::read_to_string(golden().join(model)).unwrap();
+            let document = silico_core::document::read(text.as_bytes()).unwrap();
+            document
+                .features
+                .iter()
+                .filter(|f| f.fingerprint.is_some())
+                .map(|f| (*model, f.id.as_str().to_owned()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let held: std::collections::BTreeSet<(&str, String)> = rows
+        .iter()
+        .map(|(model, feature, _)| (*model, (*feature).to_owned()))
+        .collect();
+    assert_eq!(held.len(), rows.len(), "a row is listed twice");
+    assert_eq!(held, fingerprinted);
 }
 
 /// `text` with every fingerprint's centre taken out (`"center": [x, y, z], `), as Silico
