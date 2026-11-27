@@ -78,10 +78,13 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 # other, the ratio read 8.3 on an Intel Xeon 6975P-C (gate 45498831531, the small 148.7 ms as
 # quiet, the large 1.23 s as busy). On the hosted runners (probe-core-cpus, 2026-11-27) it
 # read 4.30 to 4.58 alone, and 3.94 to 6.03 beside three busy neighbours. So it runs alone,
-# with every test thread. Renaming it means renaming it here.
+# with every test thread, and first (above CI's slowest, at 100): a test that needs every
+# thread holds the queue behind it until all are free, so started mid-run it would wait out
+# the slowest tests with the other threads idle. Renaming it means renaming it here.
 [[profile.default.overrides]]
 filter = 'package(silico-core) & test(=naming_a_solid_costs_as_its_elements_do)'
 threads-required = 'num-test-threads'
+priority = 101
 
 # The 300 mm sphere and torus exported at 0.01 (silico-kernel adversarial_export): 22 s of
 # meshing unloaded, each request held to 10 minutes of its own.
