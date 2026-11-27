@@ -8670,6 +8670,31 @@ mod tests {
     }
 
     #[test]
+    fn a_models_unnamed_copy_lists_its_elements_from_its_own_names_not_the_models_list() {
+        // The model's elements listed, its copy's are listed anew: a read of them names the
+        // copy's elements, as a client's first read of a model just published does, and
+        // names nothing of another copy's.
+        let engine = Recompute::new(crate::fake::FakeKernel::new(2).unwrap());
+        let model = published(engine.start(Arc::new(boxes(2, |_| false))));
+        let ids: Vec<FeatureId> = model.features().iter().map(|(id, _)| id.clone()).collect();
+        assert_eq!(ids.len(), 2);
+        for id in &ids {
+            assert!(!model.entries(id).unwrap().unwrap().is_empty(), "{id}");
+        }
+        let unnamed = model.unnamed();
+        let other = model.unnamed();
+        for id in &ids {
+            assert!(unnamed.named_so_far(id).is_none(), "{id}");
+            assert_eq!(
+                unnamed.entries(id).unwrap().unwrap(),
+                model.entries(id).unwrap().unwrap()
+            );
+            assert!(unnamed.named_element_map(id).is_some(), "{id}");
+            assert!(other.named_so_far(id).is_none(), "{id}");
+        }
+    }
+
+    #[test]
     fn a_models_unnamable_copy_lists_none_of_that_features_elements_whatever_the_model_listed() {
         // `unnamable` settles one feature's names as never made: its elements can't be
         // listed, the fault saying why, though the model it's copied from listed them
